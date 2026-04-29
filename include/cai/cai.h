@@ -73,8 +73,21 @@ typedef struct cai_client_config {
 typedef struct cai_agent_config {
   const char *model;
   const char *instructions;
+  const char *reasoning_effort;
+  const char *reasoning_summary;
   int max_output_tokens;
 } cai_agent_config;
+
+#define CAI_REASONING_EFFORT_NONE "none"
+#define CAI_REASONING_EFFORT_MINIMAL "minimal"
+#define CAI_REASONING_EFFORT_LOW "low"
+#define CAI_REASONING_EFFORT_MEDIUM "medium"
+#define CAI_REASONING_EFFORT_HIGH "high"
+#define CAI_REASONING_EFFORT_XHIGH "xhigh"
+
+#define CAI_REASONING_SUMMARY_AUTO "auto"
+#define CAI_REASONING_SUMMARY_CONCISE "concise"
+#define CAI_REASONING_SUMMARY_DETAILED "detailed"
 
 typedef struct cai_list_params {
   const char *after;
@@ -213,6 +226,10 @@ int cai_response_create_params_set_conversation_id(
 int cai_response_create_params_set_max_output_tokens(
     cai_response_create_params *params, int max_output_tokens,
     cai_error *error);
+int cai_response_create_params_set_reasoning(cai_response_create_params *params,
+                                             const char *effort,
+                                             const char *summary,
+                                             cai_error *error);
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
                                         cai_error *error);

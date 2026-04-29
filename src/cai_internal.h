@@ -26,6 +26,8 @@ struct cai_agent {
   cai_client *client;
   char *model;
   char *instructions;
+  char *reasoning_effort;
+  char *reasoning_summary;
   int max_output_tokens;
   cai_tool_registry *tools;
 };
@@ -93,6 +95,8 @@ struct cai_response_create_params {
   char *conversation_id;
   char *instructions;
   char *previous_response_id;
+  char *reasoning_effort;
+  char *reasoning_summary;
   int max_output_tokens;
   lonejson_object_array input;
   lonejson_object_array tools;

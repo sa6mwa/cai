@@ -338,6 +338,44 @@ static int cai_json_builder_field_int(cai_json_builder *builder,
   return rc;
 }
 
+static int
+cai_serialize_reasoning_json(cai_json_builder *builder,
+                             const cai_response_create_params *params,
+                             int *need_comma, cai_error *error) {
+  int reasoning_comma;
+  int rc;
+
+  if (params->reasoning_effort == NULL && params->reasoning_summary == NULL) {
+    return CAI_OK;
+  }
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_json_builder_string(builder, "reasoning", error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, ":{", error);
+  }
+  reasoning_comma = 0;
+  if (rc == CAI_OK && params->reasoning_effort != NULL) {
+    rc = cai_json_builder_field_string(
+        builder, "effort", params->reasoning_effort, &reasoning_comma, error);
+  }
+  if (rc == CAI_OK && params->reasoning_summary != NULL) {
+    rc = cai_json_builder_field_string(
+        builder, "summary", params->reasoning_summary, &reasoning_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "}", error);
+  }
+  if (rc == CAI_OK) {
+    *need_comma = 1;
+  }
+  return rc;
+}
+
 int cai_response_create_params_new(cai_response_create_params **out,
                                    cai_error *error) {
   cai_response_create_params *params;
@@ -360,6 +398,8 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->conversation_id = NULL;
   params->instructions = NULL;
   params->previous_response_id = NULL;
+  params->reasoning_effort = NULL;
+  params->reasoning_summary = NULL;
   params->max_output_tokens = 0;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
   cai_object_array_init(&params->tools, sizeof(struct cai_function_tool));
@@ -379,6 +419,8 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->conversation_id);
   cai_free_mem(&params->allocator, params->instructions);
   cai_free_mem(&params->allocator, params->previous_response_id);
+  cai_free_mem(&params->allocator, params->reasoning_effort);
+  cai_free_mem(&params->allocator, params->reasoning_summary);
   messages = (struct cai_input_message *)params->input.items;
   for (i = 0U; i < params->input.count; i++) {
     cai_input_message_cleanup(&params->allocator, &messages[i]);
@@ -446,6 +488,25 @@ int cai_response_create_params_set_max_output_tokens(
   }
   params->max_output_tokens = max_output_tokens;
   return CAI_OK;
+}
+
+int cai_response_create_params_set_reasoning(cai_response_create_params *params,
+                                             const char *effort,
+                                             const char *summary,
+                                             cai_error *error) {
+  int rc;
+
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  rc = cai_replace_string(&params->allocator, &params->reasoning_effort, effort,
+                          error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_replace_string(&params->allocator, &params->reasoning_summary,
+                            summary, error);
 }
 
 static int cai_response_params_add_part(cai_response_create_params *params,
@@ -800,6 +861,9 @@ int cai_response_create_params_serialize_json(
     rc = cai_json_builder_field_int(&builder, "max_output_tokens",
                                     params->max_output_tokens, &need_comma,
                                     error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_reasoning_json(&builder, params, &need_comma, error);
   }
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(&builder, ",", error);

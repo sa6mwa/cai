@@ -449,6 +449,11 @@ static void test_response_json(test_state *state) {
       cai_response_create_params_set_max_output_tokens(params, 128, &error),
       CAI_OK);
   expect_int(
+      state, "params_set_reasoning",
+      cai_response_create_params_set_reasoning(
+          params, CAI_REASONING_EFFORT_LOW, CAI_REASONING_SUMMARY_AUTO, &error),
+      CAI_OK);
+  expect_int(
       state, "params_set_bad_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, -1, &error),
       CAI_ERR_INVALID);
@@ -486,6 +491,11 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"max_output_tokens\":128") == NULL) {
       test_fail(state, "params_serialize",
                 "max output tokens missing from JSON");
+    }
+    if (strstr(json,
+               "\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"}") ==
+        NULL) {
+      test_fail(state, "params_serialize", "reasoning missing from JSON");
     }
     if (strstr(json, "\"type\":\"input_text\"") == NULL) {
       test_fail(state, "params_serialize", "text content missing from JSON");
@@ -708,6 +718,9 @@ static const char *mock_response_for_request(const char *request) {
     }
     if (strstr(request, "session first") != NULL &&
         strstr(request, "\"max_output_tokens\":64") != NULL &&
+        strstr(request,
+               "\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"}") !=
+            NULL &&
         strstr(request, "previous_response_id") == NULL) {
       return session_first_body;
     }
@@ -1211,6 +1224,8 @@ static void test_agent_session(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   agent_config.instructions = "answer tersely";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   agent_config.max_output_tokens = 64;
   client = NULL;
   agent = NULL;

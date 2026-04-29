@@ -33,6 +33,8 @@ void cai_agent_config_init(cai_agent_config *config) {
   }
   config->model = NULL;
   config->instructions = NULL;
+  config->reasoning_effort = NULL;
+  config->reasoning_summary = NULL;
   config->max_output_tokens = 0;
 }
 
@@ -66,10 +68,16 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   agent->client = client;
   agent->model = cai_strdup(&client->allocator, config->model);
   agent->instructions = cai_strdup(&client->allocator, config->instructions);
+  agent->reasoning_effort =
+      cai_strdup(&client->allocator, config->reasoning_effort);
+  agent->reasoning_summary =
+      cai_strdup(&client->allocator, config->reasoning_summary);
   agent->max_output_tokens = config->max_output_tokens;
   agent->tools = NULL;
   if (agent->model == NULL ||
-      (config->instructions != NULL && agent->instructions == NULL)) {
+      (config->instructions != NULL && agent->instructions == NULL) ||
+      (config->reasoning_effort != NULL && agent->reasoning_effort == NULL) ||
+      (config->reasoning_summary != NULL && agent->reasoning_summary == NULL)) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
   }
@@ -90,6 +98,8 @@ void cai_agent_destroy(cai_agent *agent) {
   allocator = &agent->client->allocator;
   cai_free_mem(allocator, agent->model);
   cai_free_mem(allocator, agent->instructions);
+  cai_free_mem(allocator, agent->reasoning_effort);
+  cai_free_mem(allocator, agent->reasoning_summary);
   cai_tool_registry_destroy(agent->tools);
   cai_free_mem(allocator, agent);
 }
@@ -544,6 +554,12 @@ static int cai_session_init_response_params(cai_session *session,
   if (rc == CAI_OK && session->agent->max_output_tokens > 0) {
     rc = cai_response_create_params_set_max_output_tokens(
         params, session->agent->max_output_tokens, error);
+  }
+  if (rc == CAI_OK && (session->agent->reasoning_effort != NULL ||
+                       session->agent->reasoning_summary != NULL)) {
+    rc = cai_response_create_params_set_reasoning(
+        params, session->agent->reasoning_effort,
+        session->agent->reasoning_summary, error);
   }
   if (rc == CAI_OK && session->previous_response_id != NULL) {
     rc = cai_response_create_params_set_previous_response_id(
