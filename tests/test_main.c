@@ -77,6 +77,7 @@ static void write_file_or_die(const char *path, const char *text) {
 
 static void test_model_capabilities(test_state *state) {
   const cai_model_info *info;
+  cai_agent_config agent_config;
 
   info = cai_model_info_by_id(CAI_MODEL_GPT_5_4_NANO);
   if (info == NULL) {
@@ -96,6 +97,11 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_4_NANO), 400000L);
   expect_int(state, "model_compact_limit",
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
+  cai_agent_config_init(&agent_config);
+  expect_int(state, "agent_config_auto_compact_default",
+             agent_config.auto_compact, 0L);
+  expect_int(state, "agent_config_compact_limit_default",
+             agent_config.auto_compact_token_limit, 0L);
 }
 
 static void test_env_precedence(test_state *state) {
@@ -2119,8 +2125,7 @@ static void test_agent_auto_compaction(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
-  agent_config.auto_compact_token_limit =
-      cai_model_auto_compact_token_limit(agent_config.model);
+  agent_config.auto_compact = 1;
   agent_config.history_memory_limit = 16U;
   client = NULL;
   agent = NULL;
@@ -2134,6 +2139,8 @@ static void test_agent_auto_compaction(test_state *state) {
              CAI_OK);
   expect_int(state, "agent_compact_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_compact_auto_limit",
+             cai_session_auto_compact_token_limit(session), 320000L);
   expect_int(state, "agent_compact_add",
              cai_session_add_text(session, "user", "compact first", &error),
              CAI_OK);

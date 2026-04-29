@@ -72,6 +72,7 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->text_format_strict = 0;
   config->max_output_tokens = 0;
   config->parallel_tool_calls = -1;
+  config->auto_compact = 0;
   config->auto_compact_token_limit = 0LL;
   config->history_memory_limit = 128U * 1024U;
   config->history_spool_dir = NULL;
@@ -120,7 +121,16 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   agent->text_format_strict = config->text_format_strict;
   agent->max_output_tokens = config->max_output_tokens;
   agent->parallel_tool_calls = config->parallel_tool_calls;
-  agent->auto_compact_token_limit = config->auto_compact_token_limit;
+  agent->auto_compact =
+      config->auto_compact || config->auto_compact_token_limit > 0LL ? 1 : 0;
+  if (config->auto_compact_token_limit > 0LL) {
+    agent->auto_compact_token_limit = config->auto_compact_token_limit;
+  } else if (agent->auto_compact) {
+    agent->auto_compact_token_limit =
+        cai_model_auto_compact_token_limit(agent->model);
+  } else {
+    agent->auto_compact_token_limit = 0LL;
+  }
   agent->history_memory_limit = config->history_memory_limit != 0U
                                     ? config->history_memory_limit
                                     : 128U * 1024U;
@@ -139,6 +149,11 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       (config->history_spool_dir != NULL && agent->history_spool_dir == NULL)) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
+  }
+  if (agent->auto_compact && agent->auto_compact_token_limit <= 0LL) {
+    cai_agent_destroy(agent);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "model has unknown auto compact token limit");
   }
   if (cai_tool_registry_new(&agent->tools, error) != CAI_OK) {
     cai_agent_destroy(agent);

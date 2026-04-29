@@ -77,8 +77,7 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   agent_config.instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
-  agent_config.auto_compact_token_limit =
-      cai_model_auto_compact_token_limit(agent_config.model);
+  agent_config.auto_compact = 1;
   client = NULL;
   agent = NULL;
   session = NULL;

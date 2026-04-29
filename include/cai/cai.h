@@ -83,6 +83,7 @@ typedef struct cai_agent_config {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  int auto_compact;
   long long auto_compact_token_limit;
   size_t history_memory_limit;
   const char *history_spool_dir;
