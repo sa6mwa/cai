@@ -23,9 +23,16 @@ typedef struct cai_response_output_doc {
   lonejson_object_array content;
 } cai_response_output_doc;
 
+typedef struct cai_response_usage_doc {
+  long long input_tokens;
+  long long output_tokens;
+  long long total_tokens;
+} cai_response_usage_doc;
+
 typedef struct cai_response_doc {
   char *id;
   char *status;
+  cai_response_usage_doc usage;
   lonejson_object_array output;
 } cai_response_doc;
 
@@ -53,9 +60,18 @@ static const lonejson_field cai_response_output_fields[] = {
 LONEJSON_MAP_DEFINE(cai_response_output_map, cai_response_output_doc,
                     cai_response_output_fields);
 
+static const lonejson_field cai_response_usage_fields[] = {
+    LONEJSON_FIELD_I64(cai_response_usage_doc, input_tokens, "input_tokens"),
+    LONEJSON_FIELD_I64(cai_response_usage_doc, output_tokens, "output_tokens"),
+    LONEJSON_FIELD_I64(cai_response_usage_doc, total_tokens, "total_tokens")};
+LONEJSON_MAP_DEFINE(cai_response_usage_map, cai_response_usage_doc,
+                    cai_response_usage_fields);
+
 static const lonejson_field cai_response_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, status, "status"),
+    LONEJSON_FIELD_OBJECT(cai_response_doc, usage, "usage",
+                          &cai_response_usage_map),
     LONEJSON_FIELD_OBJECT_ARRAY(
         cai_response_doc, output, "output", cai_response_output_doc,
         &cai_response_output_map, LONEJSON_OVERFLOW_FAIL)};
@@ -842,6 +858,9 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->status = cai_strdup(NULL, doc.status);
   response->output_text = cai_response_collect_text(&doc);
   response->raw_json = cai_strdup(NULL, json);
+  response->input_tokens = doc.usage.input_tokens;
+  response->output_tokens = doc.usage.output_tokens;
+  response->total_tokens = doc.usage.total_tokens;
   response->tool_calls = NULL;
   response->tool_call_count = 0U;
   if (response->id == NULL || response->status == NULL ||
@@ -875,6 +894,18 @@ const char *cai_response_output_text(const cai_response *response) {
 
 const char *cai_response_raw_json(const cai_response *response) {
   return response != NULL ? response->raw_json : NULL;
+}
+
+long long cai_response_input_tokens(const cai_response *response) {
+  return response != NULL ? response->input_tokens : 0LL;
+}
+
+long long cai_response_output_tokens(const cai_response *response) {
+  return response != NULL ? response->output_tokens : 0LL;
+}
+
+long long cai_response_total_tokens(const cai_response *response) {
+  return response != NULL ? response->total_tokens : 0LL;
 }
 
 size_t cai_response_tool_call_count(const cai_response *response) {

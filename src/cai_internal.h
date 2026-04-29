@@ -112,6 +112,9 @@ struct cai_response {
   char *status;
   char *output_text;
   char *raw_json;
+  long long input_tokens;
+  long long output_tokens;
+  long long total_tokens;
   cai_response_tool_call *tool_calls;
   size_t tool_call_count;
 };

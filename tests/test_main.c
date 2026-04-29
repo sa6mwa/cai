@@ -414,7 +414,9 @@ static void test_response_json(test_state *state) {
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello "
       "\"},{\"type\":\"output_text\",\"text\":\"world\"}]},{\"id\":"
       "\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\","
-      "\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Malmo\\\"}\"}]}";
+      "\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Malmo\\\"}\"}],"
+      "\"usage\":{\"input_tokens\":11,\"output_tokens\":7,"
+      "\"total_tokens\":18}}";
   cai_response_create_params *params;
   cai_response *response;
   cai_error error;
@@ -489,6 +491,12 @@ static void test_response_json(test_state *state) {
              "completed");
   expect_str(state, "response_text", cai_response_output_text(response),
              "hello world");
+  expect_int(state, "response_input_tokens",
+             cai_response_input_tokens(response), 11L);
+  expect_int(state, "response_output_tokens",
+             cai_response_output_tokens(response), 7L);
+  expect_int(state, "response_total_tokens",
+             cai_response_total_tokens(response), 18L);
   expect_int(state, "response_tool_count",
              (long)cai_response_tool_call_count(response), 1L);
   expect_str(state, "response_tool_id", cai_response_tool_call_id(response, 0U),

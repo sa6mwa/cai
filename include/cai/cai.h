@@ -240,6 +240,9 @@ const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 const char *cai_response_raw_json(const cai_response *response);
+long long cai_response_input_tokens(const cai_response *response);
+long long cai_response_output_tokens(const cai_response *response);
+long long cai_response_total_tokens(const cai_response *response);
 size_t cai_response_tool_call_count(const cai_response *response);
 const char *cai_response_tool_call_id(const cai_response *response,
                                       size_t index);
