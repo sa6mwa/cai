@@ -83,6 +83,9 @@ typedef struct cai_agent_config {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  long long auto_compact_token_limit;
+  size_t history_memory_limit;
+  const char *history_spool_dir;
 } cai_agent_config;
 
 #define CAI_REASONING_EFFORT_NONE "none"
@@ -203,6 +206,11 @@ int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
 int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
                            cai_error *error);
+long long cai_session_context_window_tokens(const cai_session *session);
+long long cai_session_auto_compact_token_limit(const cai_session *session);
+int cai_session_context_percent(const cai_session *session, double *out,
+                                cai_error *error);
+int cai_session_history_spilled(const cai_session *session);
 
 void cai_error_init(cai_error *error);
 void cai_error_cleanup(cai_error *error);

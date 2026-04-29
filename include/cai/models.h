@@ -21,10 +21,14 @@ extern "C" {
 typedef struct cai_model_info {
   const char *id;
   unsigned int capabilities;
+  long long context_window_tokens;
+  long long auto_compact_token_limit;
 } cai_model_info;
 
 const cai_model_info *cai_model_info_by_id(const char *model_id);
 int cai_model_supports(const char *model_id, unsigned int capability);
+long long cai_model_context_window_tokens(const char *model_id);
+long long cai_model_auto_compact_token_limit(const char *model_id);
 
 #ifdef __cplusplus
 }

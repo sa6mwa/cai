@@ -37,10 +37,20 @@ static void trim_newline(char *line) {
   }
 }
 
-static void print_usage(const cai_token_usage *usage) {
+static void print_usage(const cai_token_usage *usage, double context_percent,
+                        int has_context_percent) {
+  if (has_context_percent) {
+    fprintf(stderr,
+            "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
+            "total=%lld context=%.2f%%\n",
+            usage->input_tokens, usage->input_cached_tokens,
+            usage->output_tokens, usage->output_reasoning_tokens,
+            usage->total_tokens, context_percent);
+    return;
+  }
   fprintf(stderr,
           "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
-          "total=%lld\n",
+          "total=%lld context=n/a\n",
           usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
           usage->output_reasoning_tokens, usage->total_tokens);
 }
@@ -55,6 +65,8 @@ int main(void) {
   cai_sink *sink;
   cai_error error;
   cai_token_usage usage;
+  double context_percent;
+  int has_context_percent;
   char line[4096];
   int exit_code;
   int rc;
@@ -65,6 +77,8 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   agent_config.instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
+  agent_config.auto_compact_token_limit =
+      cai_model_auto_compact_token_limit(agent_config.model);
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -121,7 +135,14 @@ int main(void) {
       break;
     }
     if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
-      print_usage(&usage);
+      context_percent = 0.0;
+      has_context_percent = cai_session_context_percent(
+                                session, &context_percent, &error) == CAI_OK;
+      if (!has_context_percent) {
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+      }
+      print_usage(&usage, context_percent, has_context_percent);
     } else {
       cai_error_cleanup(&error);
       cai_error_init(&error);

@@ -5,6 +5,7 @@
 
 #include <lonejson.h>
 #include <stddef.h>
+#include <stdio.h>
 
 struct curl_slist;
 
@@ -37,8 +38,21 @@ struct cai_agent {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  long long auto_compact_token_limit;
+  size_t history_memory_limit;
+  char *history_spool_dir;
   cai_tool_registry *tools;
 };
+
+typedef struct cai_history_spool {
+  char *memory;
+  char *path;
+  FILE *file;
+  size_t length;
+  size_t capacity;
+  size_t memory_limit;
+  int spilled;
+} cai_history_spool;
 
 typedef struct cai_session_text_input {
   int kind;
@@ -56,6 +70,7 @@ struct cai_session {
   char *conversation_id;
   cai_token_usage last_usage;
   int has_last_usage;
+  cai_history_spool history;
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
@@ -115,6 +130,7 @@ struct cai_response_create_params {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  char *raw_input_json;
   lonejson_object_array input;
   lonejson_object_array tools;
 };
@@ -204,8 +220,17 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error);
+int cai_response_create_params_set_raw_input_json(
+    cai_response_create_params *params, const char *raw_input_json,
+    cai_error *error);
+void cai_response_create_params_clear_input(cai_response_create_params *params);
+int cai_response_params_input_items_json(
+    const cai_response_create_params *params, char **out_json,
+    cai_error *error);
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error);
+int cai_response_output_items_json(const cai_response *response,
+                                   char **out_json, cai_error *error);
 int cai_output_from_response(cai_response *response, cai_output **out,
                              cai_error *error);
 int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,

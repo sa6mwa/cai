@@ -15,6 +15,11 @@ typedef struct cai_tool_output_capture {
   size_t limit;
 } cai_tool_output_capture;
 
+typedef struct cai_session_stream_context {
+  cai_session *session;
+  char *pending_items_json;
+} cai_session_stream_context;
+
 enum {
   CAI_SESSION_INPUT_TEXT = 0,
   CAI_SESSION_INPUT_IMAGE = 1,
@@ -23,12 +28,35 @@ enum {
 
 static int cai_capture_open_spool(cai_tool_output_capture *capture,
                                   cai_error *error);
+static int cai_history_append(cai_session *session, const char *json,
+                              cai_error *error);
+static int cai_history_materialize(const cai_session *session, char **out,
+                                   cai_error *error);
+static void cai_history_cleanup(cai_session *session);
+static int
+cai_session_prepare_history_params(cai_session *session,
+                                   cai_response_create_params *params,
+                                   char **out_pending_items, cai_error *error);
+static int cai_session_after_response(cai_session *session,
+                                      const char *pending_items_json,
+                                      const cai_response *response,
+                                      cai_error *error);
+static int cai_session_after_stream(cai_session *session,
+                                    const char *pending_items_json,
+                                    const char *response_id,
+                                    const cai_token_usage *usage,
+                                    cai_error *error);
+static int cai_session_maybe_compact(cai_session *session, cai_error *error);
 static int cai_session_init_response_params(cai_session *session,
                                             cai_response_create_params **out,
                                             cai_error *error);
 static int cai_session_remember_response_id(cai_session *session,
                                             const char *response_id,
                                             cai_error *error);
+static int cai_session_remember_stream(cai_session *session,
+                                       const char *response_id,
+                                       const cai_token_usage *usage,
+                                       cai_error *error);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -44,6 +72,9 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->text_format_strict = 0;
   config->max_output_tokens = 0;
   config->parallel_tool_calls = -1;
+  config->auto_compact_token_limit = 0LL;
+  config->history_memory_limit = 128U * 1024U;
+  config->history_spool_dir = NULL;
 }
 
 void cai_run_options_init(cai_run_options *options) {
@@ -89,6 +120,12 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   agent->text_format_strict = config->text_format_strict;
   agent->max_output_tokens = config->max_output_tokens;
   agent->parallel_tool_calls = config->parallel_tool_calls;
+  agent->auto_compact_token_limit = config->auto_compact_token_limit;
+  agent->history_memory_limit = config->history_memory_limit != 0U
+                                    ? config->history_memory_limit
+                                    : 128U * 1024U;
+  agent->history_spool_dir =
+      cai_strdup(&client->allocator, config->history_spool_dir);
   agent->tools = NULL;
   if (agent->model == NULL ||
       (config->instructions != NULL && agent->instructions == NULL) ||
@@ -98,7 +135,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       (config->text_format_description != NULL &&
        agent->text_format_description == NULL) ||
       (config->text_format_schema_json != NULL &&
-       agent->text_format_schema_json == NULL)) {
+       agent->text_format_schema_json == NULL) ||
+      (config->history_spool_dir != NULL && agent->history_spool_dir == NULL)) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
   }
@@ -124,6 +162,7 @@ void cai_agent_destroy(cai_agent *agent) {
   cai_free_mem(allocator, agent->text_format_name);
   cai_free_mem(allocator, agent->text_format_description);
   cai_free_mem(allocator, agent->text_format_schema_json);
+  cai_free_mem(allocator, agent->history_spool_dir);
   cai_tool_registry_destroy(agent->tools);
   cai_free_mem(allocator, agent);
 }
@@ -177,6 +216,13 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   session->conversation_id = NULL;
   memset(&session->last_usage, 0, sizeof(session->last_usage));
   session->has_last_usage = 0;
+  session->history.memory = NULL;
+  session->history.path = NULL;
+  session->history.file = NULL;
+  session->history.length = 0U;
+  session->history.capacity = 0U;
+  session->history.memory_limit = agent->history_memory_limit;
+  session->history.spilled = 0;
   session->inputs = NULL;
   session->input_count = 0U;
   session->input_capacity = 0U;
@@ -266,6 +312,178 @@ static void cai_session_clear_inputs(cai_session *session) {
   session->input_count = 0U;
 }
 
+static int cai_history_open_spool(cai_session *session, cai_error *error) {
+  static const char suffix[] = "/cai-history-XXXXXX";
+  cai_history_spool *history;
+  const char *dir;
+  size_t dir_len;
+  size_t suffix_len;
+  int fd;
+
+  history = &session->history;
+  if (history->file != NULL) {
+    return CAI_OK;
+  }
+  dir = session->agent->history_spool_dir;
+  if (dir == NULL || dir[0] == '\0') {
+    dir = "/tmp";
+  }
+  dir_len = strlen(dir);
+  suffix_len = sizeof(suffix) - 1U;
+  history->path = (char *)cai_alloc(&session->agent->client->allocator,
+                                    dir_len + suffix_len + 1U);
+  if (history->path == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate history spool path");
+  }
+  memcpy(history->path, dir, dir_len);
+  memcpy(history->path + dir_len, suffix, suffix_len);
+  history->path[dir_len + suffix_len] = '\0';
+  fd = mkstemp(history->path);
+  if (fd < 0) {
+    cai_free_mem(&session->agent->client->allocator, history->path);
+    history->path = NULL;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to create history spool file");
+  }
+  history->file = fdopen(fd, "w+b");
+  if (history->file == NULL) {
+    close(fd);
+    unlink(history->path);
+    cai_free_mem(&session->agent->client->allocator, history->path);
+    history->path = NULL;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open history spool file");
+  }
+  if (history->length > 0U && fwrite(history->memory, 1U, history->length,
+                                     history->file) != history->length) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to write history spool file");
+  }
+  cai_free_mem(&session->agent->client->allocator, history->memory);
+  history->memory = NULL;
+  history->capacity = 0U;
+  history->spilled = 1;
+  return CAI_OK;
+}
+
+static int cai_history_append(cai_session *session, const char *json,
+                              cai_error *error) {
+  cai_history_spool *history;
+  size_t length;
+  size_t needed;
+  size_t new_capacity;
+  char *grown;
+
+  if (json == NULL || json[0] == '\0') {
+    return CAI_OK;
+  }
+  history = &session->history;
+  length = strlen(json);
+  needed = history->length + length + 1U;
+  if (history->file == NULL && history->memory_limit > 0U &&
+      needed > history->memory_limit) {
+    if (cai_history_open_spool(session, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+  }
+  if (history->file != NULL) {
+    if (fwrite(json, 1U, length, history->file) != length ||
+        fwrite("\n", 1U, 1U, history->file) != 1U) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to append history spool file");
+    }
+    history->length += length + 1U;
+    return CAI_OK;
+  }
+  if (needed + 1U > history->capacity) {
+    new_capacity = history->capacity == 0U ? 1024U : history->capacity;
+    while (new_capacity < needed + 1U) {
+      new_capacity *= 2U;
+    }
+    grown = (char *)cai_realloc_mem(&session->agent->client->allocator,
+                                    history->memory, new_capacity);
+    if (grown == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to grow history buffer");
+    }
+    history->memory = grown;
+    history->capacity = new_capacity;
+  }
+  memcpy(history->memory + history->length, json, length);
+  history->length += length;
+  history->memory[history->length] = '\n';
+  history->length++;
+  history->memory[history->length] = '\0';
+  return CAI_OK;
+}
+
+static int cai_history_materialize(const cai_session *session, char **out,
+                                   cai_error *error) {
+  const cai_history_spool *history;
+  char *data;
+  size_t nread;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history output pointer is required");
+  }
+  *out = NULL;
+  history = &session->history;
+  data = (char *)cai_alloc(&session->agent->client->allocator,
+                           history->length + 1U);
+  if (data == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate history JSON");
+  }
+  if (history->file == NULL) {
+    if (history->length > 0U) {
+      memcpy(data, history->memory, history->length);
+    }
+  } else {
+    if (fflush(history->file) != 0 || fseek(history->file, 0L, SEEK_SET) != 0) {
+      cai_free_mem(&session->agent->client->allocator, data);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to rewind history spool file");
+    }
+    nread = fread(data, 1U, history->length, history->file);
+    if (nread != history->length) {
+      cai_free_mem(&session->agent->client->allocator, data);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read history spool file");
+    }
+  }
+  data[history->length] = '\0';
+  *out = data;
+  return CAI_OK;
+}
+
+static void cai_history_reset(cai_session *session) {
+  cai_history_spool *history;
+
+  history = &session->history;
+  if (history->file != NULL) {
+    fclose(history->file);
+    history->file = NULL;
+  }
+  if (history->path != NULL) {
+    unlink(history->path);
+    cai_free_mem(&session->agent->client->allocator, history->path);
+    history->path = NULL;
+  }
+  cai_free_mem(&session->agent->client->allocator, history->memory);
+  history->memory = NULL;
+  history->length = 0U;
+  history->capacity = 0U;
+  history->spilled = 0;
+}
+
+static void cai_history_cleanup(cai_session *session) {
+  if (session != NULL) {
+    cai_history_reset(session);
+  }
+}
+
 void cai_session_destroy(cai_session *session) {
   cai_allocator *allocator;
 
@@ -274,6 +492,7 @@ void cai_session_destroy(cai_session *session) {
   }
   allocator = &session->agent->client->allocator;
   cai_session_clear_inputs(session);
+  cai_history_cleanup(session);
   cai_free_mem(allocator, session->inputs);
   cai_free_mem(allocator, session->previous_response_id);
   cai_free_mem(allocator, session->conversation_id);
@@ -446,6 +665,98 @@ static int cai_session_add_pending_inputs(cai_session *session,
   return rc;
 }
 
+static int cai_history_to_array_items(cai_session *session, char **out,
+                                      cai_error *error) {
+  char *history;
+  char *cursor;
+  char *writep;
+  int need_comma;
+  int rc;
+
+  history = NULL;
+  rc = cai_history_materialize(session, &history, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  cursor = history;
+  writep = history;
+  need_comma = 0;
+  while (*cursor != '\0') {
+    while (*cursor == '\n' || *cursor == '\r') {
+      cursor++;
+    }
+    if (*cursor == '\0') {
+      break;
+    }
+    if (need_comma) {
+      *writep = ',';
+      writep++;
+    }
+    while (*cursor != '\0' && *cursor != '\n' && *cursor != '\r') {
+      *writep = *cursor;
+      writep++;
+      cursor++;
+    }
+    need_comma = 1;
+  }
+  *writep = '\0';
+  *out = history;
+  return CAI_OK;
+}
+
+static int
+cai_session_prepare_history_params(cai_session *session,
+                                   cai_response_create_params *params,
+                                   char **out_pending_items, cai_error *error) {
+  char *history_items;
+  char *pending_items;
+  cai_json_builder builder;
+  int rc;
+
+  if (out_pending_items != NULL) {
+    *out_pending_items = NULL;
+  }
+  if (session->agent->auto_compact_token_limit <= 0LL) {
+    return cai_session_add_pending_inputs(session, params, error);
+  }
+  history_items = NULL;
+  pending_items = NULL;
+  rc = cai_history_to_array_items(session, &history_items, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_params_input_items_json(params, &pending_items, error);
+  }
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, history_items, error);
+  }
+  if (rc == CAI_OK && history_items[0] != '\0' && pending_items[0] != '\0') {
+    rc = cai_json_builder_lit(&builder, ",", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_raw_input_json(params, builder.data,
+                                                       error);
+  }
+  if (rc == CAI_OK) {
+    cai_response_create_params_clear_input(params);
+  }
+  if (out_pending_items != NULL && rc == CAI_OK) {
+    *out_pending_items = pending_items;
+    pending_items = NULL;
+  }
+  cai_free_mem(&session->agent->client->allocator, history_items);
+  cai_free_mem(NULL, pending_items);
+  cai_free_mem(NULL, builder.data);
+  return rc;
+}
+
 static int cai_session_remember_response(cai_session *session,
                                          const cai_response *response,
                                          cai_error *error) {
@@ -462,6 +773,151 @@ static int cai_session_remember_response(cai_session *session,
         cai_response_output_reasoning_tokens(response);
     session->last_usage.total_tokens = cai_response_total_tokens(response);
     session->has_last_usage = 1;
+  }
+  return rc;
+}
+
+static int cai_session_compact(cai_session *session, cai_error *error) {
+  cai_response_create_params *params;
+  cai_response *response;
+  char *history_items;
+  char *request_json;
+  char *body;
+  char *request_id;
+  char *output_items;
+  long http_status;
+  int rc;
+
+  params = NULL;
+  response = NULL;
+  history_items = NULL;
+  request_json = NULL;
+  body = NULL;
+  request_id = NULL;
+  output_items = NULL;
+  rc = cai_history_to_array_items(session, &history_items, error);
+  if (rc == CAI_OK && history_items[0] == '\0') {
+    rc = CAI_OK;
+    goto done;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_init_response_params(session, &params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_raw_input_json(params, history_items,
+                                                       error);
+  }
+  if (rc == CAI_OK) {
+    cai_response_create_params_clear_input(params);
+    cai_free_mem(&params->allocator, params->previous_response_id);
+    params->previous_response_id = NULL;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_serialize_json(params, &request_json, NULL,
+                                                   error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_http_json_request(session->agent->client, "POST",
+                               "responses/compact", request_json, &body,
+                               &http_status, &request_id, error);
+  }
+  if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
+    rc = cai_set_openai_error(error, http_status, body, request_id);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_parse_json(body != NULL ? body : "", &response, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_output_items_json(response, &output_items, error);
+  }
+  if (rc == CAI_OK) {
+    cai_history_reset(session);
+    rc = cai_history_append(session, output_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_remember_response(session, response, error);
+  }
+
+done:
+  cai_response_create_params_destroy(params);
+  cai_response_destroy(response);
+  cai_free_mem(&session->agent->client->allocator, history_items);
+  cai_free_mem(NULL, request_json);
+  cai_free_mem(NULL, body);
+  cai_free_mem(NULL, request_id);
+  cai_free_mem(NULL, output_items);
+  return rc;
+}
+
+static int cai_session_maybe_compact(cai_session *session, cai_error *error) {
+  long long limit;
+
+  limit = session->agent->auto_compact_token_limit;
+  if (limit <= 0LL) {
+    return CAI_OK;
+  }
+  if (!session->has_last_usage || session->last_usage.total_tokens < limit) {
+    return CAI_OK;
+  }
+  return cai_session_compact(session, error);
+}
+
+static int cai_session_after_response(cai_session *session,
+                                      const char *pending_items_json,
+                                      const cai_response *response,
+                                      cai_error *error) {
+  char *output_items;
+  int rc;
+
+  rc = cai_session_remember_response(session, response, error);
+  if (rc != CAI_OK || session->agent->auto_compact_token_limit <= 0LL) {
+    return rc;
+  }
+  output_items = NULL;
+  rc = cai_response_output_items_json(response, &output_items, error);
+  if (rc == CAI_OK) {
+    rc = cai_history_append(session, pending_items_json, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_history_append(session, output_items, error);
+  }
+  cai_free_mem(NULL, output_items);
+  if (rc == CAI_OK) {
+    rc = cai_session_maybe_compact(session, error);
+  }
+  return rc;
+}
+
+static int cai_session_after_stream(cai_session *session,
+                                    const char *pending_items_json,
+                                    const char *response_id,
+                                    const cai_token_usage *usage,
+                                    cai_error *error) {
+  cai_response *response;
+  char *output_items;
+  int rc;
+
+  rc = cai_session_remember_stream(session, response_id, usage, error);
+  if (rc != CAI_OK || session->agent->auto_compact_token_limit <= 0LL) {
+    return rc;
+  }
+  response = NULL;
+  output_items = NULL;
+  rc = cai_client_retrieve_response(session->agent->client, response_id,
+                                    &response, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_output_items_json(response, &output_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_history_append(session, pending_items_json, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_history_append(session, output_items, error);
+  }
+  cai_free_mem(NULL, output_items);
+  cai_response_destroy(response);
+  if (rc == CAI_OK) {
+    rc = cai_session_maybe_compact(session, error);
   }
   return rc;
 }
@@ -507,10 +963,27 @@ static int cai_session_stream_complete(void *context, const char *response_id,
                                      NULL);
 }
 
-static int
-cai_session_create_response_from_params(cai_session *session,
-                                        cai_response_create_params *params,
-                                        cai_response **out, cai_error *error) {
+static int cai_session_history_stream_complete(void *context,
+                                               const char *response_id,
+                                               const cai_token_usage *usage) {
+  cai_session_stream_context *stream_context;
+  int rc;
+
+  stream_context = (cai_session_stream_context *)context;
+  if (stream_context == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  rc = cai_session_after_stream(stream_context->session,
+                                stream_context->pending_items_json, response_id,
+                                usage, NULL);
+  cai_free_mem(NULL, stream_context->pending_items_json);
+  cai_free_mem(NULL, stream_context);
+  return rc;
+}
+
+static int cai_session_create_response_from_params(
+    cai_session *session, cai_response_create_params *params,
+    const char *pending_items_json, cai_response **out, cai_error *error) {
   cai_response *response;
   int rc;
 
@@ -521,7 +994,7 @@ cai_session_create_response_from_params(cai_session *session,
     cai_response_destroy(response);
     return rc;
   }
-  rc = cai_session_remember_response(session, response, error);
+  rc = cai_session_after_response(session, pending_items_json, response, error);
   if (rc != CAI_OK) {
     cai_response_destroy(response);
     return rc;
@@ -533,6 +1006,7 @@ cai_session_create_response_from_params(cai_session *session,
 int cai_session_run(cai_session *session, cai_response **out,
                     cai_error *error) {
   cai_response_create_params *params;
+  char *pending_items_json;
   int rc;
 
   if (out == NULL) {
@@ -548,14 +1022,18 @@ int cai_session_run(cai_session *session, cai_response **out,
                          "session has no pending input");
   }
   params = NULL;
+  pending_items_json = NULL;
   rc = cai_session_init_response_params(session, &params, error);
   if (rc == CAI_OK) {
-    rc = cai_session_add_pending_inputs(session, params, error);
+    rc = cai_session_prepare_history_params(session, params,
+                                            &pending_items_json, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_create_response_from_params(session, params, out, error);
+    rc = cai_session_create_response_from_params(
+        session, params, pending_items_json, out, error);
   }
   cai_response_create_params_destroy(params);
+  cai_free_mem(NULL, pending_items_json);
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
   }
@@ -773,7 +1251,8 @@ static int cai_session_init_response_params(cai_session *session,
     rc = cai_response_create_params_set_conversation_id(
         params, session->conversation_id, error);
   }
-  if (rc == CAI_OK && session->previous_response_id != NULL) {
+  if (rc == CAI_OK && session->previous_response_id != NULL &&
+      session->agent->auto_compact_token_limit <= 0LL) {
     rc = cai_response_create_params_set_previous_response_id(
         params, session->previous_response_id, error);
   }
@@ -922,6 +1401,7 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
                             cai_error *error) {
   cai_response_create_params *params;
   char *response_id;
+  char *pending_items_json;
   cai_token_usage usage;
   int rc;
 
@@ -931,20 +1411,24 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
   }
   params = NULL;
   response_id = NULL;
+  pending_items_json = NULL;
   memset(&usage, 0, sizeof(usage));
   rc = cai_session_init_response_params(session, &params, error);
   if (rc == CAI_OK) {
-    rc = cai_session_add_pending_inputs(session, params, error);
+    rc = cai_session_prepare_history_params(session, params,
+                                            &pending_items_json, error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_stream_response_text_with_id(
         session->agent->client, params, sink, &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_remember_stream(session, response_id, &usage, error);
+    rc = cai_session_after_stream(session, pending_items_json, response_id,
+                                  &usage, error);
   }
   cai_response_create_params_destroy(params);
   cai_free_mem(NULL, response_id);
+  cai_free_mem(NULL, pending_items_json);
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
   }
@@ -954,6 +1438,8 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
 int cai_session_open_text_source(cai_session *session, cai_source **out,
                                  cai_error *error) {
   cai_response_create_params *params;
+  cai_session_stream_context *stream_context;
+  char *pending_items_json;
   int rc;
 
   if (out == NULL) {
@@ -965,16 +1451,45 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
   }
   params = NULL;
+  stream_context = NULL;
+  pending_items_json = NULL;
   rc = cai_session_init_response_params(session, &params, error);
   if (rc == CAI_OK) {
-    rc = cai_session_add_pending_inputs(session, params, error);
+    rc = cai_session_prepare_history_params(session, params,
+                                            &pending_items_json, error);
+  }
+  if (rc == CAI_OK && session->agent->auto_compact_token_limit > 0LL) {
+    stream_context =
+        (cai_session_stream_context *)cai_alloc(NULL, sizeof(*stream_context));
+    if (stream_context == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate stream context");
+    } else {
+      stream_context->session = session;
+      stream_context->pending_items_json = pending_items_json;
+      pending_items_json = NULL;
+    }
   }
   if (rc == CAI_OK) {
-    rc = cai_client_open_response_text_source_with_complete(
-        session->agent->client, params, cai_session_stream_complete, session,
-        out, error);
+    if (session->agent->auto_compact_token_limit > 0LL) {
+      rc = cai_client_open_response_text_source_with_complete(
+          session->agent->client, params, cai_session_history_stream_complete,
+          stream_context, out, error);
+      if (rc == CAI_OK) {
+        stream_context = NULL;
+      }
+    } else {
+      rc = cai_client_open_response_text_source_with_complete(
+          session->agent->client, params, cai_session_stream_complete, session,
+          out, error);
+    }
   }
   cai_response_create_params_destroy(params);
+  if (stream_context != NULL) {
+    cai_free_mem(NULL, stream_context->pending_items_json);
+    cai_free_mem(NULL, stream_context);
+  }
+  cai_free_mem(NULL, pending_items_json);
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
   }
@@ -1013,4 +1528,46 @@ int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
   }
   *out = session->last_usage;
   return CAI_OK;
+}
+
+long long cai_session_context_window_tokens(const cai_session *session) {
+  if (session == NULL || session->agent == NULL) {
+    return 0LL;
+  }
+  return cai_model_context_window_tokens(session->agent->model);
+}
+
+long long cai_session_auto_compact_token_limit(const cai_session *session) {
+  if (session == NULL || session->agent == NULL) {
+    return 0LL;
+  }
+  return session->agent->auto_compact_token_limit;
+}
+
+int cai_session_context_percent(const cai_session *session, double *out,
+                                cai_error *error) {
+  long long window;
+
+  if (session == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and percent output are required");
+  }
+  if (!session->has_last_usage) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session has no completed response usage");
+  }
+  window = cai_session_context_window_tokens(session);
+  if (window <= 0LL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session model has unknown context window");
+  }
+  *out = ((double)session->last_usage.total_tokens * 100.0) / (double)window;
+  return CAI_OK;
+}
+
+int cai_session_history_spilled(const cai_session *session) {
+  if (session == NULL) {
+    return 0;
+  }
+  return session->history.spilled;
 }

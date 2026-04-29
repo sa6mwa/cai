@@ -92,6 +92,10 @@ static void test_model_capabilities(test_state *state) {
              1L);
   expect_int(state, "model_unknown",
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
+  expect_int(state, "model_context",
+             cai_model_context_window_tokens(CAI_MODEL_GPT_5_4_NANO), 400000L);
+  expect_int(state, "model_compact_limit",
+             cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
 }
 
 static void test_env_precedence(test_state *state) {
@@ -836,6 +840,21 @@ static const char *mock_response_for_request(const char *request) {
       "\"conversation\":{\"id\":\"conv_mock\"},\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"auto conversation turn\"}]}]}";
+  static const char compact_first_body[] =
+      "{\"id\":\"resp_compact_1\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"before compact\"}]}],\"usage\":{\"input_tokens\":320000,"
+      "\"output_tokens\":1000,\"total_tokens\":321000}}";
+  static const char compact_body[] =
+      "{\"id\":\"resp_compact_summary\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"compacted summary\"}]}],\"usage\":{\"input_tokens\":100,"
+      "\"output_tokens\":20,\"total_tokens\":120}}";
+  static const char compact_second_body[] =
+      "{\"id\":\"resp_compact_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"after compact\"}]}],\"usage\":{\"input_tokens\":200,"
+      "\"output_tokens\":30,\"total_tokens\":230}}";
   static const char agent_tool_body[] =
       "{\"id\":\"resp_agent_tool\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -895,6 +914,13 @@ static const char *mock_response_for_request(const char *request) {
       "\"output_tokens_details\":{\"reasoning_tokens\":4},"
       "\"total_tokens\":46}}}\n\n";
 
+  if (strstr(request, "POST /v1/responses/compact HTTP/") != NULL) {
+    if (strstr(request, "compact first") != NULL &&
+        strstr(request, "before compact") != NULL) {
+      return compact_body;
+    }
+    return NULL;
+  }
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
     if (strstr(request, "\"stream\":true") != NULL) {
       if (strstr(request, "session stream one") != NULL &&
@@ -986,6 +1012,15 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"conversation\":\"conv_mock\"") != NULL &&
         strstr(request, "previous_response_id") == NULL) {
       return session_auto_conversation_body;
+    }
+    if (strstr(request, "compact first") != NULL &&
+        strstr(request, "previous_response_id") == NULL) {
+      return compact_first_body;
+    }
+    if (strstr(request, "compact second") != NULL &&
+        strstr(request, "compacted summary") != NULL &&
+        strstr(request, "previous_response_id") == NULL) {
+      return compact_second_body;
     }
     return create_body;
   }
@@ -2034,6 +2069,112 @@ static void test_agent_tool_manual_step(test_state *state) {
   }
 }
 
+static void test_agent_auto_compaction(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_token_usage usage;
+  cai_error error;
+  double percent;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_compact_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_compact_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 3);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_compact_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.auto_compact_token_limit =
+      cai_model_auto_compact_token_limit(agent_config.model);
+  agent_config.history_memory_limit = 16U;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  expect_int(state, "agent_compact_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_compact_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_compact_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_compact_add",
+             cai_session_add_text(session, "user", "compact first", &error),
+             CAI_OK);
+  expect_int(state, "agent_compact_run",
+             cai_session_run(session, &response, &error), CAI_OK);
+  expect_str(state, "agent_compact_text", cai_response_output_text(response),
+             "before compact");
+  expect_int(state, "agent_compact_spilled",
+             cai_session_history_spilled(session), 1L);
+  expect_int(state, "agent_compact_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "agent_compact_usage_total", usage.total_tokens, 120L);
+  expect_int(state, "agent_compact_window",
+             cai_session_context_window_tokens(session), 400000L);
+  expect_int(state, "agent_compact_percent",
+             cai_session_context_percent(session, &percent, &error), CAI_OK);
+  if (percent <= 0.0) {
+    test_fail(state, "agent_compact_percent_value", "percent not positive");
+  }
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "agent_compact_add_second",
+             cai_session_add_text(session, "user", "compact second", &error),
+             CAI_OK);
+  expect_int(state, "agent_compact_run_second",
+             cai_session_run(session, &response, &error), CAI_OK);
+  expect_str(state, "agent_compact_text_second",
+             cai_response_output_text(response), "after compact");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_compact_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_compact_mock", "mock child failed");
+  }
+}
+
 static void test_stream_response_text(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -2254,6 +2395,7 @@ int main(void) {
   test_agent_session(&state);
   test_agent_tool_declarations(&state);
   test_agent_tool_manual_step(&state);
+  test_agent_auto_compaction(&state);
   test_agent_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);
   test_conversations(&state);
