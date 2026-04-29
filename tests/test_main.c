@@ -1186,6 +1186,7 @@ static void test_conversations(test_state *state) {
   cai_client_config config;
   cai_client *client;
   cai_conversation *conversation;
+  cai_conversation *conversation_ref;
   cai_input_item_list *items;
   cai_conversation_items_params *item_params;
   cai_list_params list_params;
@@ -1224,6 +1225,7 @@ static void test_conversations(test_state *state) {
   config.timeout_ms = 5000L;
   client = NULL;
   conversation = NULL;
+  conversation_ref = NULL;
   items = NULL;
   item_params = NULL;
   expect_int(state, "conversation_client_open",
@@ -1244,6 +1246,12 @@ static void test_conversations(test_state *state) {
   expect_str(state, "conversation_retrieve_id",
              cai_conversation_id(conversation), "conv_get");
   cai_conversation_destroy(conversation);
+  conversation = NULL;
+  expect_int(state, "conversation_from_id",
+             cai_conversation_from_id("conv_get", &conversation_ref, &error),
+             CAI_OK);
+  expect_str(state, "conversation_from_id_value",
+             cai_conversation_id(conversation_ref), "conv_get");
   expect_int(state, "conversation_items_params_new",
              cai_conversation_items_params_new(&item_params, &error), CAI_OK);
   expect_int(state, "conversation_items_add_text",
@@ -1256,8 +1264,8 @@ static void test_conversations(test_state *state) {
           item_params, "user", "https://example.test/conv.png", "low", &error),
       CAI_OK);
   expect_int(state, "conversation_create_items",
-             cai_client_create_conversation_items(client, "conv_get",
-                                                  item_params, &items, &error),
+             cai_client_create_conversation_items_handle(
+                 client, conversation_ref, item_params, &items, &error),
              CAI_OK);
   expect_str(state, "conversation_create_items_id",
              cai_input_item_id(items, 0U), "conv_msg_new");
@@ -1268,8 +1276,8 @@ static void test_conversations(test_state *state) {
   list_params.limit = 1;
   list_params.order = "desc";
   expect_int(state, "conversation_list_items",
-             cai_client_list_conversation_items(client, "conv_get",
-                                                &list_params, &items, &error),
+             cai_client_list_conversation_items_handle(
+                 client, conversation_ref, &list_params, &items, &error),
              CAI_OK);
   expect_int(state, "conversation_list_items_count",
              (long)cai_input_item_list_count(items), 1L);
@@ -1279,12 +1287,14 @@ static void test_conversations(test_state *state) {
              cai_input_item_role(items, 0U), "user");
   cai_input_item_list_destroy(items);
   expect_int(state, "conversation_delete_item",
-             cai_client_delete_conversation_item(client, "conv_get",
-                                                 "conv_msg_1", &error),
+             cai_client_delete_conversation_item_handle(
+                 client, conversation_ref, "conv_msg_1", &error),
              CAI_OK);
-  expect_int(state, "conversation_delete",
-             cai_client_delete_conversation(client, "conv_get", &error),
-             CAI_OK);
+  expect_int(
+      state, "conversation_delete",
+      cai_client_delete_conversation_handle(client, conversation_ref, &error),
+      CAI_OK);
+  cai_conversation_destroy(conversation_ref);
   cai_client_close(client);
   cai_error_cleanup(&error);
 
@@ -1307,6 +1317,7 @@ static void test_agent_session(test_state *state) {
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_conversation *conversation;
   cai_response *response;
   cai_error error;
 
@@ -1357,6 +1368,7 @@ static void test_agent_session(test_state *state) {
   client = NULL;
   agent = NULL;
   session = NULL;
+  conversation = NULL;
   response = NULL;
 
   expect_int(state, "agent_client_open",
@@ -1414,7 +1426,10 @@ static void test_agent_session(test_state *state) {
   cai_response_destroy(response);
   response = NULL;
   expect_int(state, "agent_session_conversation",
-             cai_session_set_conversation_id(session, "conv_session", &error),
+             cai_conversation_from_id("conv_session", &conversation, &error),
+             CAI_OK);
+  expect_int(state, "agent_session_set_conversation",
+             cai_session_set_conversation(session, conversation, &error),
              CAI_OK);
   expect_str(state, "agent_session_conversation_id",
              cai_session_conversation_id(session), "conv_session");
@@ -1432,6 +1447,21 @@ static void test_agent_session(test_state *state) {
   cai_session_destroy(session);
   session = NULL;
   response = NULL;
+  cai_conversation_destroy(conversation);
+  conversation = NULL;
+  expect_int(state, "agent_conversation_from_id",
+             cai_conversation_from_id("conv_session", &conversation, &error),
+             CAI_OK);
+  expect_int(state, "agent_existing_conversation_session",
+             cai_agent_new_session_for_conversation(agent, conversation,
+                                                    &session, &error),
+             CAI_OK);
+  expect_str(state, "agent_existing_conversation_session_id",
+             cai_session_conversation_id(session), "conv_session");
+  cai_session_destroy(session);
+  session = NULL;
+  cai_conversation_destroy(conversation);
+  conversation = NULL;
   expect_int(state, "agent_auto_conversation_session",
              cai_agent_new_conversation_session(agent, &session, &error),
              CAI_OK);

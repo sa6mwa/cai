@@ -122,6 +122,34 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
   return CAI_OK;
 }
 
+int cai_conversation_from_id(const char *conversation_id,
+                             cai_conversation **out, cai_error *error) {
+  cai_conversation *conversation;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation output pointer is required");
+  }
+  *out = NULL;
+  if (conversation_id == NULL || conversation_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "conversation id is required");
+  }
+  conversation = (cai_conversation *)cai_alloc(NULL, sizeof(*conversation));
+  if (conversation == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate conversation");
+  }
+  conversation->id = cai_strdup(NULL, conversation_id);
+  conversation->object = cai_strdup(NULL, "conversation");
+  if (conversation->id == NULL || conversation->object == NULL) {
+    cai_conversation_destroy(conversation);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate conversation");
+  }
+  *out = conversation;
+  return CAI_OK;
+}
+
 static int cai_build_conversation_path(cai_client *client,
                                        const char *conversation_id,
                                        const char *suffix, char **out,
@@ -235,6 +263,15 @@ int cai_client_retrieve_conversation(cai_client *client,
   return rc;
 }
 
+int cai_client_retrieve_conversation_handle(
+    cai_client *client, const cai_conversation *conversation,
+    cai_conversation **out, cai_error *error) {
+  if (conversation == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
+  }
+  return cai_client_retrieve_conversation(client, conversation->id, out, error);
+}
+
 int cai_client_delete_conversation(cai_client *client,
                                    const char *conversation_id,
                                    cai_error *error) {
@@ -253,6 +290,15 @@ int cai_client_delete_conversation(cai_client *client,
   cai_free_mem(client != NULL ? &client->allocator : NULL, path);
   cai_conversation_destroy(conversation);
   return rc;
+}
+
+int cai_client_delete_conversation_handle(cai_client *client,
+                                          const cai_conversation *conversation,
+                                          cai_error *error) {
+  if (conversation == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
+  }
+  return cai_client_delete_conversation(client, conversation->id, error);
 }
 
 int cai_client_list_conversation_items(cai_client *client,
@@ -303,6 +349,17 @@ int cai_client_list_conversation_items(cai_client *client,
   return rc;
 }
 
+int cai_client_list_conversation_items_handle(
+    cai_client *client, const cai_conversation *conversation,
+    const cai_list_params *params, cai_input_item_list **out,
+    cai_error *error) {
+  if (conversation == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
+  }
+  return cai_client_list_conversation_items(client, conversation->id, params,
+                                            out, error);
+}
+
 int cai_client_delete_conversation_item(cai_client *client,
                                         const char *conversation_id,
                                         const char *item_id, cai_error *error) {
@@ -322,6 +379,16 @@ int cai_client_delete_conversation_item(cai_client *client,
   cai_free_mem(client != NULL ? &client->allocator : NULL, path);
   cai_conversation_destroy(conversation);
   return rc;
+}
+
+int cai_client_delete_conversation_item_handle(
+    cai_client *client, const cai_conversation *conversation,
+    const char *item_id, cai_error *error) {
+  if (conversation == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
+  }
+  return cai_client_delete_conversation_item(client, conversation->id, item_id,
+                                             error);
 }
 
 int cai_conversation_items_params_new(cai_conversation_items_params **out,
@@ -540,6 +607,17 @@ int cai_client_create_conversation_items(
   free(json);
   free(request_id);
   return rc;
+}
+
+int cai_client_create_conversation_items_handle(
+    cai_client *client, const cai_conversation *conversation,
+    const cai_conversation_items_params *params, cai_input_item_list **out,
+    cai_error *error) {
+  if (conversation == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
+  }
+  return cai_client_create_conversation_items(client, conversation->id, params,
+                                              out, error);
 }
 
 const char *cai_conversation_id(const cai_conversation *conversation) {

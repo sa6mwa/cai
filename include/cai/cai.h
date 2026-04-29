@@ -157,10 +157,16 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
                                        cai_error *error);
+int cai_agent_new_session_for_conversation(cai_agent *agent,
+                                           const cai_conversation *conversation,
+                                           cai_session **out, cai_error *error);
 void cai_session_destroy(cai_session *session);
 int cai_session_set_conversation_id(cai_session *session,
                                     const char *conversation_id,
                                     cai_error *error);
+int cai_session_set_conversation(cai_session *session,
+                                 const cai_conversation *conversation,
+                                 cai_error *error);
 const char *cai_session_conversation_id(const cai_session *session);
 int cai_session_add_text(cai_session *session, const char *role,
                          const char *text, cai_error *error);
@@ -317,20 +323,34 @@ void cai_input_item_list_destroy(cai_input_item_list *list);
 
 int cai_client_create_conversation(cai_client *client, cai_conversation **out,
                                    cai_error *error);
+int cai_conversation_from_id(const char *conversation_id,
+                             cai_conversation **out, cai_error *error);
 int cai_client_retrieve_conversation(cai_client *client,
                                      const char *conversation_id,
                                      cai_conversation **out, cai_error *error);
+int cai_client_retrieve_conversation_handle(
+    cai_client *client, const cai_conversation *conversation,
+    cai_conversation **out, cai_error *error);
 int cai_client_delete_conversation(cai_client *client,
                                    const char *conversation_id,
                                    cai_error *error);
+int cai_client_delete_conversation_handle(cai_client *client,
+                                          const cai_conversation *conversation,
+                                          cai_error *error);
 int cai_client_list_conversation_items(cai_client *client,
                                        const char *conversation_id,
                                        const cai_list_params *params,
                                        cai_input_item_list **out,
                                        cai_error *error);
+int cai_client_list_conversation_items_handle(
+    cai_client *client, const cai_conversation *conversation,
+    const cai_list_params *params, cai_input_item_list **out, cai_error *error);
 int cai_client_delete_conversation_item(cai_client *client,
                                         const char *conversation_id,
                                         const char *item_id, cai_error *error);
+int cai_client_delete_conversation_item_handle(
+    cai_client *client, const cai_conversation *conversation,
+    const char *item_id, cai_error *error);
 int cai_conversation_items_params_new(cai_conversation_items_params **out,
                                       cai_error *error);
 void cai_conversation_items_params_destroy(
@@ -343,6 +363,10 @@ int cai_conversation_items_params_add_image_url(
     const char *detail, cai_error *error);
 int cai_client_create_conversation_items(
     cai_client *client, const char *conversation_id,
+    const cai_conversation_items_params *params, cai_input_item_list **out,
+    cai_error *error);
+int cai_client_create_conversation_items_handle(
+    cai_client *client, const cai_conversation *conversation,
     const cai_conversation_items_params *params, cai_input_item_list **out,
     cai_error *error);
 const char *cai_conversation_id(const cai_conversation *conversation);
