@@ -23,6 +23,9 @@ enum {
 
 static int cai_capture_open_spool(cai_tool_output_capture *capture,
                                   cai_error *error);
+static int cai_session_init_response_params(cai_session *session,
+                                            cai_response_create_params **out,
+                                            cai_error *error);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -275,45 +278,13 @@ int cai_session_add_function_call_output(cai_session *session,
                                NULL, NULL, NULL, NULL, call_id, output, error);
 }
 
-int cai_session_run(cai_session *session, cai_response **out,
-                    cai_error *error) {
-  cai_response_create_params *params;
-  cai_response *response;
-  char *next_response_id;
+static int cai_session_add_pending_inputs(cai_session *session,
+                                          cai_response_create_params *params,
+                                          cai_error *error) {
   size_t i;
   int rc;
 
-  if (out == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "response output pointer is required");
-  }
-  *out = NULL;
-  if (session == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
-  }
-  if (session->input_count == 0U) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "session has no pending input");
-  }
-  params = NULL;
-  response = NULL;
-  rc = cai_response_create_params_new(&params, error);
-  if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, session->agent->model,
-                                              error);
-  }
-  if (rc == CAI_OK && session->agent->instructions != NULL) {
-    rc = cai_response_create_params_set_instructions(
-        params, session->agent->instructions, error);
-  }
-  if (rc == CAI_OK && session->previous_response_id != NULL) {
-    rc = cai_response_create_params_set_previous_response_id(
-        params, session->previous_response_id, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_tool_registry_add_to_response_params(session->agent->tools, params,
-                                                  error);
-  }
+  rc = CAI_OK;
   for (i = 0U; rc == CAI_OK && i < session->input_count; i++) {
     if (session->inputs[i].kind == CAI_SESSION_INPUT_IMAGE) {
       rc = cai_response_create_params_add_image_url(
@@ -328,28 +299,7 @@ int cai_session_run(cai_session *session, cai_response **out,
                                                session->inputs[i].text, error);
     }
   }
-  if (rc == CAI_OK) {
-    rc = cai_client_create_response(session->agent->client, params, &response,
-                                    error);
-  }
-  cai_response_create_params_destroy(params);
-  if (rc != CAI_OK) {
-    cai_response_destroy(response);
-    return rc;
-  }
-  next_response_id =
-      cai_strdup(&session->agent->client->allocator, cai_response_id(response));
-  if (next_response_id == NULL) {
-    cai_response_destroy(response);
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to remember previous response id");
-  }
-  cai_free_mem(&session->agent->client->allocator,
-               session->previous_response_id);
-  session->previous_response_id = next_response_id;
-  cai_session_clear_inputs(session);
-  *out = response;
-  return CAI_OK;
+  return rc;
 }
 
 static int cai_session_remember_response(cai_session *session,
@@ -367,6 +317,61 @@ static int cai_session_remember_response(cai_session *session,
                session->previous_response_id);
   session->previous_response_id = next_response_id;
   return CAI_OK;
+}
+
+static int
+cai_session_create_response_from_params(cai_session *session,
+                                        cai_response_create_params *params,
+                                        cai_response **out, cai_error *error) {
+  cai_response *response;
+  int rc;
+
+  response = NULL;
+  rc = cai_client_create_response(session->agent->client, params, &response,
+                                  error);
+  if (rc != CAI_OK) {
+    cai_response_destroy(response);
+    return rc;
+  }
+  rc = cai_session_remember_response(session, response, error);
+  if (rc != CAI_OK) {
+    cai_response_destroy(response);
+    return rc;
+  }
+  *out = response;
+  return CAI_OK;
+}
+
+int cai_session_run(cai_session *session, cai_response **out,
+                    cai_error *error) {
+  cai_response_create_params *params;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response output pointer is required");
+  }
+  *out = NULL;
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (session->input_count == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session has no pending input");
+  }
+  params = NULL;
+  rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_create_response_from_params(session, params, out, error);
+  }
+  cai_response_create_params_destroy(params);
+  if (rc == CAI_OK) {
+    cai_session_clear_inputs(session);
+  }
+  return rc;
 }
 
 static int cai_capture_tool_output(void *context, const void *bytes,
