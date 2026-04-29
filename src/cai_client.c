@@ -13,6 +13,7 @@ void cai_client_config_init(cai_client_config *config) {
   config->insecure_skip_verify = 0;
   config->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
   config->logger = NULL;
+  config->logger_disabled = 0;
   config->allocator.malloc_fn = NULL;
   config->allocator.realloc_fn = NULL;
   config->allocator.free_fn = NULL;
@@ -60,7 +61,8 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   client->http_2_disabled = effective->http_2_disabled;
   client->insecure_skip_verify = effective->insecure_skip_verify;
   client->json_response_limit_bytes = effective->json_response_limit_bytes;
-  client->logger = effective->logger;
+  client->logger = effective->logger_disabled ? NULL : effective->logger;
+  client->logger_disabled = effective->logger_disabled;
 
   if (client->json_response_limit_bytes == 0U) {
     client->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;

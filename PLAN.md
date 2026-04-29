@@ -23,7 +23,8 @@ application.
 - Dependency source: develop against the liblockdc SDK tarballs, reusing their
   curl, OpenSSL, nghttp2, lonejson, and pslog artifacts.
 - JSON: all API JSON construction/parsing goes through lonejson.
-- Logging: pslog is accepted as a borrowed host-owned logger in client config.
+- Logging: pslog is accepted as a borrowed host-owned logger in client config,
+  with `logger_disabled` as the zero-default opt-out.
 - API coverage target: full OpenAI Responses API surface, including newer
   Conversations endpoints.
 - WebSocket coverage target: both Responses WebSocket mode and Realtime
@@ -51,8 +52,10 @@ application.
 
 ## Product shape
 
-`cai` should feel like a C SDK, not a transport wrapper. The API should expose
-opaque handles with method tables, similar in spirit to liblockdc:
+`cai` should feel like a C SDK, not a transport wrapper. The API exposes opaque
+handles with free functions. That shape is easier to wrap from Vectis and Lua
+than embedding method tables in public structs, while still keeping ownership
+and state scoped to handles:
 
 - `cai_client`: owns shared configuration, dependency handles, base URLs,
   auth, logger, allocator, and transport defaults.
@@ -106,13 +109,13 @@ static vectis_status handle_request(vectis_request *req,
   vectis_request_json_into(req, &my_input_map, &input);
 
   cai_client_new_agent(app->cai, &support_agent_config, &agent, &error);
-  agent->new_session(agent, &session, &error);
-  session->add_text(session, "user", input.question, &error);
-  session->add_image_source(session, "user", input.image, NULL, &error);
-  session->run(session, &output, &error);
+  cai_agent_new_session(agent, &session, &error);
+  cai_session_add_text(session, "user", input.question, &error);
+  cai_session_add_image_source(session, "user", input.image, NULL, &error);
+  cai_session_run_output(session, &output, &error);
+  cai_output_as_lc_source(output, &source, &error);
 
-  return vectis_response_json_source(res, 200, output->as_lc_source(output),
-                                     &my_output_map);
+  return vectis_response_json_source(res, 200, source, &my_output_map);
 }
 ```
 
@@ -192,6 +195,7 @@ typedef struct cai_client_config {
   int insecure_skip_verify;
   size_t json_response_limit_bytes;
   pslog_logger *logger;             /* borrowed */
+  int logger_disabled;
   cai_allocator allocator;
 } cai_client_config;
 
@@ -204,6 +208,11 @@ void cai_client_close(cai_client *client);
 The client constructor performs `.env` resolution unless `api_key` is provided
 explicitly. Explicit `api_key` always wins over `.env` and process environment
 because it is a direct API call argument.
+
+All string fields and `logger` are borrowed for the duration of
+`cai_client_open()`. The client copies strings it needs to retain. The logger is
+borrowed and not destroyed by CAI; when `logger_disabled` is nonzero, the client
+stores no logger even if `logger` is set.
 
 ### Source and sink interop
 
@@ -352,10 +361,10 @@ cai_agent_config_init(&agent_config);
 agent_config.model = CAI_MODEL_GPT_5_4_NANO;
 agent_config.instructions = "You are concise.";
 
-client->new_agent(client, &agent_config, &agent, &error);
-agent->new_session(agent, &session, &error);
-session->send_text(session, "Explain epoll in one paragraph.", &response,
-                   &error);
+cai_client_new_agent(client, &agent_config, &agent, &error);
+cai_agent_new_session(agent, &session, &error);
+cai_session_send_text(session, "Explain epoll in one paragraph.", &response,
+                      &error);
 ```
 
 Decision:
@@ -370,13 +379,13 @@ For workflow-heavy hosts, the session facade should support incremental setup
 and streaming run output:
 
 ```c
-agent->new_session(agent, &session, &error);
-session->add_text(session, "system", system_prompt, &error);
-session->add_text(session, "user", user_text, &error);
-session->add_image_source(session, "user", image_source, "high", &error);
-session->register_tool(session, &tool, &error);
-session->run_stream(session, &handler, &error);
-session->run_output(session, &output, &error);
+cai_agent_new_session(agent, &session, &error);
+cai_session_add_text(session, "system", system_prompt, &error);
+cai_session_add_text(session, "user", user_text, &error);
+cai_session_add_image_source(session, "user", image_source, "high", &error);
+cai_session_register_tool(session, &tool, &error);
+cai_session_run_stream(session, &handler, &error);
+cai_session_run_output(session, &output, &error);
 ```
 
 Multi-agent workflows should remain host-driven. `cai` should make it cheap to

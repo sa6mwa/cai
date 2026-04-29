@@ -36,7 +36,7 @@ I don't know if there is an OpenAPI Spec for the responses API, but the document
 
 ## CAI API Surface
 
-The SDK API should **not** be a transport API, it should be a proper facade with excellent Developer Experience (DX) usage. My preference is for handler-based usage where you init (not memset) a pointer type that is a client struct with attached function pointers (e.g `client->operation(...)`). Similarily there should be handlers returned for sessions, conversations, etc which hold the context confined and context-scoped to those instances making it easy to run multiple conversations simulataneously just by using a different handler instance.
+The SDK API should **not** be a transport API, it should be a proper facade with excellent Developer Experience (DX) usage. The original preference was for handler-based usage with attached function pointers, but the implementation has settled on opaque handles with free functions, for example `cai_client_new_agent(client, ...)` and `cai_session_send_text(session, ...)`. This keeps state scoped to handles while making the C API easier to wrap from Vectis and Lua.
 
 It should be simple to setup system prompt, etc and perhaps add an *agent* layer making this more steered towards agentic work where we can register tools with the agent.
 
@@ -47,4 +47,3 @@ We are to add MCP support to `cai` eventually, but that is out-of-scope for the 
 ## Lua binding
 
 As with `liblockdc`, `lonejson`, etc, `cai` should have a Lua binding for the entire C SDK API and should be distributed as a LuaRock (put Lua under `lua/` and the luarock spec and src rock should be built under `dist/` as with the SDK tarballs).
-

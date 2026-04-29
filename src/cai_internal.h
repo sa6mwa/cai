@@ -20,6 +20,7 @@ struct cai_client {
   int insecure_skip_verify;
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;
+  int logger_disabled;
 };
 
 struct cai_agent {

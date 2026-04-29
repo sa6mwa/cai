@@ -386,12 +386,15 @@ static void test_tool_registry(test_state *state) {
 static void test_client_open(test_state *state) {
   cai_client_config config;
   cai_client *client;
+  struct pslog_logger *logger;
   cai_error error;
 
   cai_error_init(&error);
   cai_client_config_init(&config);
+  logger = (struct pslog_logger *)(void *)&state->failures;
   config.api_key = "test-key";
   config.base_url = "http://example.test/v1";
+  config.logger = logger;
   client = NULL;
   expect_int(state, "client_open", cai_client_open(&config, &client, &error),
              CAI_OK);
@@ -402,8 +405,27 @@ static void test_client_open(test_state *state) {
     expect_str(state, "client_base_url", client->base_url,
                "http://example.test/v1");
     expect_int(state, "client_http_2_disabled", client->http_2_disabled, 0);
+    if (client->logger != logger) {
+      test_fail(state, "client_logger", "borrowed logger not preserved");
+    }
+    expect_int(state, "client_logger_disabled", client->logger_disabled, 0);
     expect_int(state, "client_limit", (long)client->json_response_limit_bytes,
                (long)CAI_DEFAULT_JSON_RESPONSE_LIMIT);
+  }
+  cai_client_close(client);
+  client = NULL;
+  config.logger_disabled = 1;
+  expect_int(state, "client_open_logger_disabled",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client == NULL) {
+    test_fail(state, "client_open_logger_disabled", "client not allocated");
+  } else {
+    if (client->logger != NULL) {
+      test_fail(state, "client_logger_disabled_null",
+                "disabled logger should not be retained");
+    }
+    expect_int(state, "client_logger_disabled_flag", client->logger_disabled,
+               1);
   }
   cai_client_close(client);
   cai_error_cleanup(&error);
