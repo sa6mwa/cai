@@ -168,7 +168,8 @@ if(CAI_BUILD_EXAMPLES)
   elseif(TARGET cai_shared)
     set(_cai_example_link_target cai_shared)
   endif()
-  foreach(_cai_example IN ITEMS basic_response conversation_handles)
+  foreach(_cai_example IN ITEMS basic_response conversation_handles
+                             streaming_text)
     add_executable(cai_example_${_cai_example}
       "examples/${_cai_example}.c")
     target_include_directories(cai_example_${_cai_example} PRIVATE

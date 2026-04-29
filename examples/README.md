@@ -29,3 +29,13 @@ call:
 
 Set `CAI_EXAMPLE_MODEL` to override the example model. The default is
 `CAI_MODEL_GPT_5_4_NANO`.
+
+## Streaming Text
+
+Read response text from a pipe-backed `cai_source` while the SSE response is
+still being generated:
+
+```sh
+cmake --build --preset debug --target cai_example_streaming_text
+./build/debug/cai_example_streaming_text
+```
