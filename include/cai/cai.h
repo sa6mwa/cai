@@ -238,8 +238,13 @@ int cai_client_list_response_input_items(cai_client *client,
 
 const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
+const char *cai_response_model(const cai_response *response);
+long long cai_response_created_at(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 const char *cai_response_raw_json(const cai_response *response);
+const char *cai_response_error_code(const cai_response *response);
+const char *cai_response_error_message(const cai_response *response);
+const char *cai_response_incomplete_reason(const cai_response *response);
 long long cai_response_input_tokens(const cai_response *response);
 long long cai_response_output_tokens(const cai_response *response);
 long long cai_response_total_tokens(const cai_response *response);

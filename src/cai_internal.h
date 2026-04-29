@@ -110,8 +110,13 @@ typedef struct cai_response_tool_call {
 struct cai_response {
   char *id;
   char *status;
+  char *model;
   char *output_text;
   char *raw_json;
+  char *error_code;
+  char *error_message;
+  char *incomplete_reason;
+  long long created_at;
   long long input_tokens;
   long long output_tokens;
   long long total_tokens;

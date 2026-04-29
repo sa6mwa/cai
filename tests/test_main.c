@@ -410,7 +410,10 @@ static void test_client_open(test_state *state) {
 
 static void test_response_json(test_state *state) {
   static const char response_json[] =
-      "{\"id\":\"resp_123\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "{\"id\":\"resp_123\",\"status\":\"completed\",\"model\":"
+      "\"gpt-5.4-nano\",\"created_at\":123,\"error\":{\"code\":"
+      "\"rate_limited\",\"message\":\"slow down\"},\"incomplete_details\":"
+      "{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":"
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello "
       "\"},{\"type\":\"output_text\",\"text\":\"world\"}]},{\"id\":"
       "\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\","
@@ -489,8 +492,18 @@ static void test_response_json(test_state *state) {
   expect_str(state, "response_id", cai_response_id(response), "resp_123");
   expect_str(state, "response_status", cai_response_status(response),
              "completed");
+  expect_str(state, "response_model", cai_response_model(response),
+             CAI_MODEL_GPT_5_4_NANO);
+  expect_int(state, "response_created_at",
+             (long)cai_response_created_at(response), 123L);
   expect_str(state, "response_text", cai_response_output_text(response),
              "hello world");
+  expect_str(state, "response_error_code", cai_response_error_code(response),
+             "rate_limited");
+  expect_str(state, "response_error_message",
+             cai_response_error_message(response), "slow down");
+  expect_str(state, "response_incomplete_reason",
+             cai_response_incomplete_reason(response), "max_output_tokens");
   expect_int(state, "response_input_tokens",
              cai_response_input_tokens(response), 11L);
   expect_int(state, "response_output_tokens",

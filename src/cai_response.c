@@ -29,9 +29,22 @@ typedef struct cai_response_usage_doc {
   long long total_tokens;
 } cai_response_usage_doc;
 
+typedef struct cai_response_error_doc {
+  char *code;
+  char *message;
+} cai_response_error_doc;
+
+typedef struct cai_response_incomplete_doc {
+  char *reason;
+} cai_response_incomplete_doc;
+
 typedef struct cai_response_doc {
   char *id;
   char *status;
+  char *model;
+  long long created_at;
+  cai_response_error_doc error;
+  cai_response_incomplete_doc incomplete_details;
   cai_response_usage_doc usage;
   lonejson_object_array output;
 } cai_response_doc;
@@ -67,9 +80,26 @@ static const lonejson_field cai_response_usage_fields[] = {
 LONEJSON_MAP_DEFINE(cai_response_usage_map, cai_response_usage_doc,
                     cai_response_usage_fields);
 
+static const lonejson_field cai_response_error_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_error_doc, code, "code"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_error_doc, message, "message")};
+LONEJSON_MAP_DEFINE(cai_response_error_map, cai_response_error_doc,
+                    cai_response_error_fields);
+
+static const lonejson_field cai_response_incomplete_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_incomplete_doc, reason, "reason")};
+LONEJSON_MAP_DEFINE(cai_response_incomplete_map, cai_response_incomplete_doc,
+                    cai_response_incomplete_fields);
+
 static const lonejson_field cai_response_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, status, "status"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, model, "model"),
+    LONEJSON_FIELD_I64(cai_response_doc, created_at, "created_at"),
+    LONEJSON_FIELD_OBJECT(cai_response_doc, error, "error",
+                          &cai_response_error_map),
+    LONEJSON_FIELD_OBJECT(cai_response_doc, incomplete_details,
+                          "incomplete_details", &cai_response_incomplete_map),
     LONEJSON_FIELD_OBJECT(cai_response_doc, usage, "usage",
                           &cai_response_usage_map),
     LONEJSON_FIELD_OBJECT_ARRAY(
@@ -856,15 +886,25 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->raw_json = NULL;
   response->id = cai_strdup(NULL, doc.id);
   response->status = cai_strdup(NULL, doc.status);
+  response->model = cai_strdup(NULL, doc.model);
   response->output_text = cai_response_collect_text(&doc);
   response->raw_json = cai_strdup(NULL, json);
+  response->error_code = cai_strdup(NULL, doc.error.code);
+  response->error_message = cai_strdup(NULL, doc.error.message);
+  response->incomplete_reason = cai_strdup(NULL, doc.incomplete_details.reason);
+  response->created_at = doc.created_at;
   response->input_tokens = doc.usage.input_tokens;
   response->output_tokens = doc.usage.output_tokens;
   response->total_tokens = doc.usage.total_tokens;
   response->tool_calls = NULL;
   response->tool_call_count = 0U;
   if (response->id == NULL || response->status == NULL ||
-      response->output_text == NULL || response->raw_json == NULL) {
+      (doc.model != NULL && response->model == NULL) ||
+      response->output_text == NULL || response->raw_json == NULL ||
+      (doc.error.code != NULL && response->error_code == NULL) ||
+      (doc.error.message != NULL && response->error_message == NULL) ||
+      (doc.incomplete_details.reason != NULL &&
+       response->incomplete_reason == NULL)) {
     cai_response_destroy(response);
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -888,12 +928,32 @@ const char *cai_response_status(const cai_response *response) {
   return response != NULL ? response->status : NULL;
 }
 
+const char *cai_response_model(const cai_response *response) {
+  return response != NULL ? response->model : NULL;
+}
+
+long long cai_response_created_at(const cai_response *response) {
+  return response != NULL ? response->created_at : 0LL;
+}
+
 const char *cai_response_output_text(const cai_response *response) {
   return response != NULL ? response->output_text : NULL;
 }
 
 const char *cai_response_raw_json(const cai_response *response) {
   return response != NULL ? response->raw_json : NULL;
+}
+
+const char *cai_response_error_code(const cai_response *response) {
+  return response != NULL ? response->error_code : NULL;
+}
+
+const char *cai_response_error_message(const cai_response *response) {
+  return response != NULL ? response->error_message : NULL;
+}
+
+const char *cai_response_incomplete_reason(const cai_response *response) {
+  return response != NULL ? response->incomplete_reason : NULL;
 }
 
 long long cai_response_input_tokens(const cai_response *response) {
@@ -953,7 +1013,11 @@ void cai_response_destroy(cai_response *response) {
   cai_free_mem(NULL, response->tool_calls);
   cai_free_mem(NULL, response->id);
   cai_free_mem(NULL, response->status);
+  cai_free_mem(NULL, response->model);
   cai_free_mem(NULL, response->output_text);
   cai_free_mem(NULL, response->raw_json);
+  cai_free_mem(NULL, response->error_code);
+  cai_free_mem(NULL, response->error_message);
+  cai_free_mem(NULL, response->incomplete_reason);
   cai_free_mem(NULL, response);
 }
