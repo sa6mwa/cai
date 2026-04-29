@@ -146,6 +146,10 @@ struct cai_response {
   size_t tool_call_count;
 };
 
+struct cai_output {
+  cai_response *response;
+};
+
 typedef struct cai_input_item {
   char *id;
   char *type;
@@ -189,6 +193,8 @@ int cai_response_create_params_serialize_json(
     cai_error *error);
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error);
+int cai_output_from_response(cai_response *response, cai_output **out,
+                             cai_error *error);
 int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
                                    cai_error *error);
 int cai_build_url(const cai_allocator *allocator, const char *base_url,

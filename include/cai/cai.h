@@ -178,9 +178,14 @@ int cai_session_add_function_call_output(cai_session *session,
                                          const char *call_id,
                                          const char *output, cai_error *error);
 int cai_session_run(cai_session *session, cai_response **out, cai_error *error);
+int cai_session_run_output(cai_session *session, cai_output **out,
+                           cai_error *error);
 void cai_run_options_init(cai_run_options *options);
 int cai_session_run_auto(cai_session *session, const cai_run_options *options,
                          cai_response **out, cai_error *error);
+int cai_session_run_auto_output(cai_session *session,
+                                const cai_run_options *options,
+                                cai_output **out, cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
 
@@ -206,8 +211,19 @@ void cai_sink_close(cai_sink *sink);
 
 int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
                             cai_error *error);
+const cai_response *cai_output_response(const cai_output *output);
+const char *cai_output_text(const cai_output *output);
+const char *cai_output_refusal(const cai_output *output);
+const char *cai_output_raw_json(const cai_output *output);
+int cai_output_write_text(const cai_output *output, cai_sink *sink,
+                          cai_error *error);
+int cai_output_write_refusal(const cai_output *output, cai_sink *sink,
+                             cai_error *error);
+int cai_output_write_raw_json(const cai_output *output, cai_sink *sink,
+                              cai_error *error);
 int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                           void *value, cai_error *error);
+void cai_output_destroy(cai_output *output);
 
 int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);
 void cai_tool_registry_destroy(cai_tool_registry *registry);

@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
   cai_client_config client_config;
   cai_input_item_list *items;
   cai_conversation *conversation;
-  cai_response *response;
+  cai_output *output;
   cai_session *session;
   cai_client *client;
   cai_agent *agent;
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
   client = NULL;
   agent = NULL;
   session = NULL;
-  response = NULL;
+  output = NULL;
   conversation = NULL;
   items = NULL;
   exit_code = 1;
@@ -75,19 +75,20 @@ int main(int argc, char **argv) {
         print_error("cai_agent_new_session_for_conversation", rc, &error);
     goto done;
   }
-  rc = cai_session_send_text(session,
-                             "Say one short sentence about reusable "
-                             "conversation handles.",
-                             &response, &error);
+  rc = cai_session_add_text(session, "user",
+                            "Say one short sentence about reusable "
+                            "conversation handles.",
+                            &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_run_output(session, &output, &error);
+  }
   if (rc != CAI_OK) {
-    exit_code = print_error("cai_session_send_text", rc, &error);
+    exit_code = print_error("cai_session_run_output", rc, &error);
     goto done;
   }
-
   printf("conversation: %s\n", cai_conversation_id(conversation));
-  printf("response: %s\n", cai_response_output_text(response) != NULL
-                               ? cai_response_output_text(response)
-                               : "");
+  printf("response: %s\n",
+         cai_output_text(output) != NULL ? cai_output_text(output) : "");
 
   rc = cai_client_list_conversation_items_handle(client, conversation, NULL,
                                                  &items, &error);
@@ -101,7 +102,7 @@ int main(int argc, char **argv) {
 
 done:
   cai_input_item_list_destroy(items);
-  cai_response_destroy(response);
+  cai_output_destroy(output);
   cai_session_destroy(session);
   cai_conversation_destroy(conversation);
   cai_agent_destroy(agent);

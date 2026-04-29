@@ -513,6 +513,27 @@ int cai_session_run(cai_session *session, cai_response **out,
   return rc;
 }
 
+int cai_session_run_output(cai_session *session, cai_output **out,
+                           cai_error *error) {
+  cai_response *response;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "output pointer is required");
+  }
+  *out = NULL;
+  response = NULL;
+  rc = cai_session_run(session, &response, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_output_from_response(response, out, error);
+  if (rc != CAI_OK) {
+    cai_response_destroy(response);
+  }
+  return rc;
+}
+
 static int cai_capture_tool_output(void *context, const void *bytes,
                                    size_t count, cai_error *error) {
   cai_tool_output_capture *capture;
@@ -824,6 +845,28 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
   }
   *out = current;
   return CAI_OK;
+}
+
+int cai_session_run_auto_output(cai_session *session,
+                                const cai_run_options *options,
+                                cai_output **out, cai_error *error) {
+  cai_response *response;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "output pointer is required");
+  }
+  *out = NULL;
+  response = NULL;
+  rc = cai_session_run_auto(session, options, &response, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_output_from_response(response, out, error);
+  if (rc != CAI_OK) {
+    cai_response_destroy(response);
+  }
+  return rc;
 }
 
 int cai_session_send_text(cai_session *session, const char *text,

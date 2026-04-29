@@ -434,6 +434,7 @@ static void test_client_open(test_state *state) {
 static void test_response_json(test_state *state) {
   cai_response_create_params *params;
   cai_response *response;
+  cai_output *output;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   cai_error error;
@@ -461,6 +462,7 @@ static void test_response_json(test_state *state) {
 
   cai_error_init(&error);
   params = NULL;
+  output = NULL;
   json = NULL;
   expect_int(state, "params_new",
              cai_response_create_params_new(&params, &error), CAI_OK);
@@ -676,6 +678,29 @@ static void test_response_json(test_state *state) {
   if (strstr(cai_response_raw_json(response), "\"id\":\"resp_123\"") == NULL) {
     test_fail(state, "response_raw_json", "raw JSON missing response id");
   }
+  expect_int(state, "output_from_response",
+             cai_output_from_response(response, &output, &error), CAI_OK);
+  response = NULL;
+  expect_str(state, "output_text", cai_output_text(output), "hello world");
+  expect_str(state, "output_refusal", cai_output_refusal(output),
+             "cannot comply");
+  if (cai_output_response(output) == NULL) {
+    test_fail(state, "output_response", "response not retained");
+  }
+  if (strstr(cai_output_raw_json(output), "\"id\":\"resp_123\"") == NULL) {
+    test_fail(state, "output_raw_json", "raw JSON missing response id");
+  }
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink = NULL;
+  expect_int(state, "output_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "output_write_text",
+             cai_output_write_text(output, sink, &error), CAI_OK);
+  expect_str(state, "output_written_text", writer.buffer, "hello world");
+  cai_sink_close(sink);
+  cai_output_destroy(output);
   cai_response_destroy(response);
   cai_error_cleanup(&error);
 }
@@ -1342,6 +1367,8 @@ static void test_agent_session(test_state *state) {
   cai_session *session;
   cai_conversation *conversation;
   cai_response *response;
+  cai_output *output;
+  const cai_response *output_response;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -1393,6 +1420,8 @@ static void test_agent_session(test_state *state) {
   session = NULL;
   conversation = NULL;
   response = NULL;
+  output = NULL;
+  output_response = NULL;
 
   expect_int(state, "agent_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -1490,17 +1519,20 @@ static void test_agent_session(test_state *state) {
              CAI_OK);
   expect_str(state, "agent_auto_conversation_id",
              cai_session_conversation_id(session), "conv_mock");
+  expect_int(
+      state, "agent_auto_conversation_add_text",
+      cai_session_add_text(session, "user", "auto conversation turn", &error),
+      CAI_OK);
   expect_int(state, "agent_auto_conversation_turn",
-             cai_session_send_text(session, "auto conversation turn", &response,
-                                   &error),
-             CAI_OK);
+             cai_session_run_output(session, &output, &error), CAI_OK);
+  output_response = cai_output_response(output);
   expect_str(state, "agent_auto_conversation_response_id",
-             cai_response_id(response), "resp_session_auto_conv");
+             cai_response_id(output_response), "resp_session_auto_conv");
   expect_str(state, "agent_auto_conversation_response_conversation",
-             cai_response_conversation_id(response), "conv_mock");
-  expect_str(state, "agent_auto_conversation_text",
-             cai_response_output_text(response), "auto conversation turn");
-  cai_response_destroy(response);
+             cai_response_conversation_id(output_response), "conv_mock");
+  expect_str(state, "agent_auto_conversation_text", cai_output_text(output),
+             "auto conversation turn");
+  cai_output_destroy(output);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
