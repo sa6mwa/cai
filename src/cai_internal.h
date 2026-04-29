@@ -131,6 +131,7 @@ struct cai_response {
   char *model;
   char *conversation_id;
   char *output_text;
+  char *refusal;
   char *raw_json;
   char *error_code;
   char *error_message;

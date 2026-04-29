@@ -13,6 +13,7 @@ enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
 typedef struct cai_response_content_doc {
   char *type;
   char *text;
+  char *refusal;
 } cai_response_content_doc;
 
 typedef struct cai_response_output_doc {
@@ -62,7 +63,8 @@ LONEJSON_MAP_DEFINE(cai_json_string_map, cai_json_string_doc,
 
 static const lonejson_field cai_response_content_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, type, "type"),
-    LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, text, "text")};
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, text, "text"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, refusal, "refusal")};
 LONEJSON_MAP_DEFINE(cai_response_content_map, cai_response_content_doc,
                     cai_response_content_fields);
 
@@ -1102,6 +1104,52 @@ static char *cai_response_collect_text(cai_response_doc *doc) {
   return text;
 }
 
+static char *cai_response_collect_refusal(cai_response_doc *doc, int *present) {
+  cai_response_output_doc *outputs;
+  cai_response_content_doc *content;
+  size_t total;
+  size_t i;
+  size_t j;
+  char *text;
+  char *cursor;
+  size_t len;
+
+  *present = 0;
+  total = 0U;
+  outputs = (cai_response_output_doc *)doc->output.items;
+  for (i = 0U; i < doc->output.count; i++) {
+    content = (cai_response_content_doc *)outputs[i].content.items;
+    for (j = 0U; j < outputs[i].content.count; j++) {
+      if (content[j].refusal != NULL) {
+        *present = 1;
+        total += strlen(content[j].refusal);
+      }
+    }
+  }
+  if (!*present) {
+    return NULL;
+  }
+  text = (char *)cai_alloc(NULL, total + 1U);
+  if (text == NULL) {
+    return NULL;
+  }
+  cursor = text;
+  for (i = 0U; i < doc->output.count; i++) {
+    content = (cai_response_content_doc *)outputs[i].content.items;
+    for (j = 0U; j < outputs[i].content.count; j++) {
+      if (content[j].refusal != NULL) {
+        len = strlen(content[j].refusal);
+        if (len > 0U) {
+          memcpy(cursor, content[j].refusal, len);
+          cursor += len;
+        }
+      }
+    }
+  }
+  *cursor = '\0';
+  return text;
+}
+
 static size_t cai_response_count_tool_calls(cai_response_doc *doc) {
   cai_response_output_doc *outputs;
   size_t count;
@@ -1170,6 +1218,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
   cai_response *response;
   lonejson_error json_error;
   lonejson_status status;
+  int refusal_present;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -1204,6 +1253,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->model = cai_strdup(NULL, doc.model);
   response->conversation_id = cai_strdup(NULL, doc.conversation.id);
   response->output_text = cai_response_collect_text(&doc);
+  response->refusal = cai_response_collect_refusal(&doc, &refusal_present);
   response->raw_json = cai_strdup(NULL, json);
   response->error_code = cai_strdup(NULL, doc.error.code);
   response->error_message = cai_strdup(NULL, doc.error.message);
@@ -1218,6 +1268,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
       (doc.model != NULL && response->model == NULL) ||
       (doc.conversation.id != NULL && response->conversation_id == NULL) ||
       response->output_text == NULL || response->raw_json == NULL ||
+      (refusal_present && response->refusal == NULL) ||
       (doc.error.code != NULL && response->error_code == NULL) ||
       (doc.error.message != NULL && response->error_message == NULL) ||
       (doc.incomplete_details.reason != NULL &&
@@ -1259,6 +1310,10 @@ long long cai_response_created_at(const cai_response *response) {
 
 const char *cai_response_output_text(const cai_response *response) {
   return response != NULL ? response->output_text : NULL;
+}
+
+const char *cai_response_refusal(const cai_response *response) {
+  return response != NULL ? response->refusal : NULL;
 }
 
 const char *cai_response_raw_json(const cai_response *response) {
@@ -1337,6 +1392,7 @@ void cai_response_destroy(cai_response *response) {
   cai_free_mem(NULL, response->model);
   cai_free_mem(NULL, response->conversation_id);
   cai_free_mem(NULL, response->output_text);
+  cai_free_mem(NULL, response->refusal);
   cai_free_mem(NULL, response->raw_json);
   cai_free_mem(NULL, response->error_code);
   cai_free_mem(NULL, response->error_message);

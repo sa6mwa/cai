@@ -409,23 +409,29 @@ static void test_client_open(test_state *state) {
 }
 
 static void test_response_json(test_state *state) {
-  static const char response_json[] =
-      "{\"id\":\"resp_123\",\"status\":\"completed\",\"model\":"
-      "\"gpt-5.4-nano\",\"created_at\":123,\"error\":{\"code\":"
-      "\"rate_limited\",\"message\":\"slow down\"},\"incomplete_details\":"
-      "{\"reason\":\"max_output_tokens\"},\"conversation\":{\"id\":"
-      "\"conv_123\"},\"output\":[{\"type\":"
-      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello "
-      "\"},{\"type\":\"output_text\",\"text\":\"world\"}]},{\"id\":"
-      "\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\","
-      "\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Malmo\\\"}\"}],"
-      "\"usage\":{\"input_tokens\":11,\"output_tokens\":7,"
-      "\"total_tokens\":18}}";
   cai_response_create_params *params;
   cai_response *response;
   cai_error error;
+  char response_json[768];
   char *json;
   size_t json_len;
+
+  strcpy(response_json, "{\"id\":\"resp_123\",\"status\":\"completed\",");
+  strcat(response_json, "\"model\":\"gpt-5.4-nano\",\"created_at\":123,");
+  strcat(response_json, "\"error\":{\"code\":\"rate_limited\",");
+  strcat(response_json, "\"message\":\"slow down\"},");
+  strcat(response_json, "\"incomplete_details\":{\"reason\":");
+  strcat(response_json, "\"max_output_tokens\"},\"conversation\":{\"id\":");
+  strcat(response_json, "\"conv_123\"},\"output\":[{\"type\":\"message\",");
+  strcat(response_json, "\"content\":[{\"type\":\"output_text\",");
+  strcat(response_json, "\"text\":\"hello \"},{\"type\":\"output_text\",");
+  strcat(response_json, "\"text\":\"world\"},{\"type\":\"refusal\",");
+  strcat(response_json, "\"refusal\":\"cannot comply\"}]},{\"id\":\"fc_1\",");
+  strcat(response_json, "\"type\":\"function_call\",\"call_id\":\"call_1\",");
+  strcat(response_json, "\"name\":\"weather\",\"arguments\":");
+  strcat(response_json, "\"{\\\"city\\\":\\\"Malmo\\\"}\"}],\"usage\":{");
+  strcat(response_json, "\"input_tokens\":11,\"output_tokens\":7,");
+  strcat(response_json, "\"total_tokens\":18}}");
 
   cai_error_init(&error);
   params = NULL;
@@ -595,6 +601,8 @@ static void test_response_json(test_state *state) {
              (long)cai_response_created_at(response), 123L);
   expect_str(state, "response_text", cai_response_output_text(response),
              "hello world");
+  expect_str(state, "response_refusal", cai_response_refusal(response),
+             "cannot comply");
   expect_str(state, "response_error_code", cai_response_error_code(response),
              "rate_limited");
   expect_str(state, "response_error_message",
