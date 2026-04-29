@@ -54,6 +54,8 @@ struct cai_session {
   cai_agent *agent;
   char *previous_response_id;
   char *conversation_id;
+  cai_token_usage last_usage;
+  int has_last_usage;
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
@@ -142,7 +144,9 @@ struct cai_response {
   char *incomplete_reason;
   long long created_at;
   long long input_tokens;
+  long long input_cached_tokens;
   long long output_tokens;
+  long long output_reasoning_tokens;
   long long total_tokens;
   cai_response_tool_call *tool_calls;
   size_t tool_call_count;
@@ -225,19 +229,19 @@ int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
                           char **out_request_id, cai_error *error);
-int cai_client_stream_response_text_json_with_id(cai_client *client,
-                                                 const char *request_json,
-                                                 cai_sink *sink,
-                                                 char **out_response_id,
-                                                 cai_error *error);
-typedef int (*cai_stream_complete_fn)(void *context, const char *response_id);
+int cai_client_stream_response_text_json_with_id(
+    cai_client *client, const char *request_json, cai_sink *sink,
+    char **out_response_id, cai_token_usage *out_usage, cai_error *error);
+typedef int (*cai_stream_complete_fn)(void *context, const char *response_id,
+                                      const cai_token_usage *usage);
 int cai_client_open_response_text_source_with_complete(
     cai_client *client, const cai_response_create_params *params,
     cai_stream_complete_fn on_complete, void *complete_context,
     cai_source **out, cai_error *error);
 int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
-    cai_sink *sink, char **out_response_id, cai_error *error);
+    cai_sink *sink, char **out_response_id, cai_token_usage *out_usage,
+    cai_error *error);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,

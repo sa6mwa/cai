@@ -25,10 +25,22 @@ typedef struct cai_response_output_doc {
   lonejson_object_array content;
 } cai_response_output_doc;
 
+typedef struct cai_response_input_tokens_details_doc {
+  long long cached_tokens;
+} cai_response_input_tokens_details_doc;
+
+typedef struct cai_response_output_tokens_details_doc {
+  long long reasoning_tokens;
+} cai_response_output_tokens_details_doc;
+
 typedef struct cai_response_usage_doc {
   long long input_tokens;
+  long long input_cached_tokens;
   long long output_tokens;
+  long long output_reasoning_tokens;
   long long total_tokens;
+  cai_response_input_tokens_details_doc input_tokens_details;
+  cai_response_output_tokens_details_doc output_tokens_details;
 } cai_response_usage_doc;
 
 typedef struct cai_response_error_doc {
@@ -81,9 +93,33 @@ static const lonejson_field cai_response_output_fields[] = {
 LONEJSON_MAP_DEFINE(cai_response_output_map, cai_response_output_doc,
                     cai_response_output_fields);
 
+static const lonejson_field cai_response_input_tokens_details_fields[] = {
+    LONEJSON_FIELD_I64(cai_response_input_tokens_details_doc, cached_tokens,
+                       "cached_tokens")};
+LONEJSON_MAP_DEFINE(cai_response_input_tokens_details_map,
+                    cai_response_input_tokens_details_doc,
+                    cai_response_input_tokens_details_fields);
+
+static const lonejson_field cai_response_output_tokens_details_fields[] = {
+    LONEJSON_FIELD_I64(cai_response_output_tokens_details_doc, reasoning_tokens,
+                       "reasoning_tokens")};
+LONEJSON_MAP_DEFINE(cai_response_output_tokens_details_map,
+                    cai_response_output_tokens_details_doc,
+                    cai_response_output_tokens_details_fields);
+
 static const lonejson_field cai_response_usage_fields[] = {
     LONEJSON_FIELD_I64(cai_response_usage_doc, input_tokens, "input_tokens"),
+    LONEJSON_FIELD_I64(cai_response_usage_doc, input_cached_tokens,
+                       "input_cached_tokens"),
+    LONEJSON_FIELD_OBJECT(cai_response_usage_doc, input_tokens_details,
+                          "input_tokens_details",
+                          &cai_response_input_tokens_details_map),
     LONEJSON_FIELD_I64(cai_response_usage_doc, output_tokens, "output_tokens"),
+    LONEJSON_FIELD_I64(cai_response_usage_doc, output_reasoning_tokens,
+                       "output_reasoning_tokens"),
+    LONEJSON_FIELD_OBJECT(cai_response_usage_doc, output_tokens_details,
+                          "output_tokens_details",
+                          &cai_response_output_tokens_details_map),
     LONEJSON_FIELD_I64(cai_response_usage_doc, total_tokens, "total_tokens")};
 LONEJSON_MAP_DEFINE(cai_response_usage_map, cai_response_usage_doc,
                     cai_response_usage_fields);
@@ -1260,7 +1296,15 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->incomplete_reason = cai_strdup(NULL, doc.incomplete_details.reason);
   response->created_at = doc.created_at;
   response->input_tokens = doc.usage.input_tokens;
+  response->input_cached_tokens =
+      doc.usage.input_cached_tokens != 0LL
+          ? doc.usage.input_cached_tokens
+          : doc.usage.input_tokens_details.cached_tokens;
   response->output_tokens = doc.usage.output_tokens;
+  response->output_reasoning_tokens =
+      doc.usage.output_reasoning_tokens != 0LL
+          ? doc.usage.output_reasoning_tokens
+          : doc.usage.output_tokens_details.reasoning_tokens;
   response->total_tokens = doc.usage.total_tokens;
   response->tool_calls = NULL;
   response->tool_call_count = 0U;
@@ -1372,12 +1416,34 @@ long long cai_response_input_tokens(const cai_response *response) {
   return response != NULL ? response->input_tokens : 0LL;
 }
 
+long long cai_response_input_cached_tokens(const cai_response *response) {
+  return response != NULL ? response->input_cached_tokens : 0LL;
+}
+
 long long cai_response_output_tokens(const cai_response *response) {
   return response != NULL ? response->output_tokens : 0LL;
 }
 
+long long cai_response_output_reasoning_tokens(const cai_response *response) {
+  return response != NULL ? response->output_reasoning_tokens : 0LL;
+}
+
 long long cai_response_total_tokens(const cai_response *response) {
   return response != NULL ? response->total_tokens : 0LL;
+}
+
+int cai_response_usage(const cai_response *response, cai_token_usage *out,
+                       cai_error *error) {
+  if (response == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response and usage output are required");
+  }
+  out->input_tokens = response->input_tokens;
+  out->input_cached_tokens = response->input_cached_tokens;
+  out->output_tokens = response->output_tokens;
+  out->output_reasoning_tokens = response->output_reasoning_tokens;
+  out->total_tokens = response->total_tokens;
+  return CAI_OK;
 }
 
 size_t cai_response_tool_call_count(const cai_response *response) {

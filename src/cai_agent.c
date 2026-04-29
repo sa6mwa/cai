@@ -175,6 +175,8 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   session->agent = agent;
   session->previous_response_id = NULL;
   session->conversation_id = NULL;
+  memset(&session->last_usage, 0, sizeof(session->last_usage));
+  session->has_last_usage = 0;
   session->inputs = NULL;
   session->input_count = 0U;
   session->input_capacity = 0U;
@@ -447,8 +449,21 @@ static int cai_session_add_pending_inputs(cai_session *session,
 static int cai_session_remember_response(cai_session *session,
                                          const cai_response *response,
                                          cai_error *error) {
-  return cai_session_remember_response_id(session, cai_response_id(response),
-                                          error);
+  int rc;
+
+  rc = cai_session_remember_response_id(session, cai_response_id(response),
+                                        error);
+  if (rc == CAI_OK && response != NULL) {
+    session->last_usage.input_tokens = cai_response_input_tokens(response);
+    session->last_usage.input_cached_tokens =
+        cai_response_input_cached_tokens(response);
+    session->last_usage.output_tokens = cai_response_output_tokens(response);
+    session->last_usage.output_reasoning_tokens =
+        cai_response_output_reasoning_tokens(response);
+    session->last_usage.total_tokens = cai_response_total_tokens(response);
+    session->has_last_usage = 1;
+  }
+  return rc;
 }
 
 static int cai_session_remember_response_id(cai_session *session,
@@ -472,9 +487,24 @@ static int cai_session_remember_response_id(cai_session *session,
   return CAI_OK;
 }
 
-static int cai_session_stream_complete(void *context, const char *response_id) {
-  return cai_session_remember_response_id((cai_session *)context, response_id,
-                                          NULL);
+static int cai_session_remember_stream(cai_session *session,
+                                       const char *response_id,
+                                       const cai_token_usage *usage,
+                                       cai_error *error) {
+  int rc;
+
+  rc = cai_session_remember_response_id(session, response_id, error);
+  if (rc == CAI_OK && usage != NULL) {
+    session->last_usage = *usage;
+    session->has_last_usage = 1;
+  }
+  return rc;
+}
+
+static int cai_session_stream_complete(void *context, const char *response_id,
+                                       const cai_token_usage *usage) {
+  return cai_session_remember_stream((cai_session *)context, response_id, usage,
+                                     NULL);
 }
 
 static int
@@ -892,6 +922,7 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
                             cai_error *error) {
   cai_response_create_params *params;
   char *response_id;
+  cai_token_usage usage;
   int rc;
 
   if (session == NULL || sink == NULL) {
@@ -900,16 +931,17 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
   }
   params = NULL;
   response_id = NULL;
+  memset(&usage, 0, sizeof(usage));
   rc = cai_session_init_response_params(session, &params, error);
   if (rc == CAI_OK) {
     rc = cai_session_add_pending_inputs(session, params, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_text_with_id(session->agent->client, params,
-                                                 sink, &response_id, error);
+    rc = cai_client_stream_response_text_with_id(
+        session->agent->client, params, sink, &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_remember_response_id(session, response_id, error);
+    rc = cai_session_remember_stream(session, response_id, &usage, error);
   }
   cai_response_create_params_destroy(params);
   cai_free_mem(NULL, response_id);
@@ -966,4 +998,19 @@ int cai_session_send_text(cai_session *session, const char *text,
     cai_session_clear_inputs(session);
   }
   return rc;
+}
+
+int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
+                           cai_error *error) {
+  if (session == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and usage output are required");
+  }
+  if (!session->has_last_usage) {
+    memset(out, 0, sizeof(*out));
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session has no completed response usage");
+  }
+  *out = session->last_usage;
+  return CAI_OK;
 }

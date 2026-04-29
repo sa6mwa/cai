@@ -7,8 +7,27 @@
 #include <string.h>
 #include <unistd.h>
 
+typedef struct cai_stream_input_tokens_details_doc {
+  long long cached_tokens;
+} cai_stream_input_tokens_details_doc;
+
+typedef struct cai_stream_output_tokens_details_doc {
+  long long reasoning_tokens;
+} cai_stream_output_tokens_details_doc;
+
+typedef struct cai_stream_usage_doc {
+  long long input_tokens;
+  long long input_cached_tokens;
+  long long output_tokens;
+  long long output_reasoning_tokens;
+  long long total_tokens;
+  cai_stream_input_tokens_details_doc input_tokens_details;
+  cai_stream_output_tokens_details_doc output_tokens_details;
+} cai_stream_usage_doc;
+
 typedef struct cai_stream_response_doc {
   char *id;
+  cai_stream_usage_doc usage;
 } cai_stream_response_doc;
 
 typedef struct cai_stream_delta_doc {
@@ -17,8 +36,41 @@ typedef struct cai_stream_delta_doc {
   cai_stream_response_doc response;
 } cai_stream_delta_doc;
 
+static const lonejson_field cai_stream_input_tokens_details_fields[] = {
+    LONEJSON_FIELD_I64(cai_stream_input_tokens_details_doc, cached_tokens,
+                       "cached_tokens")};
+LONEJSON_MAP_DEFINE(cai_stream_input_tokens_details_map,
+                    cai_stream_input_tokens_details_doc,
+                    cai_stream_input_tokens_details_fields);
+
+static const lonejson_field cai_stream_output_tokens_details_fields[] = {
+    LONEJSON_FIELD_I64(cai_stream_output_tokens_details_doc, reasoning_tokens,
+                       "reasoning_tokens")};
+LONEJSON_MAP_DEFINE(cai_stream_output_tokens_details_map,
+                    cai_stream_output_tokens_details_doc,
+                    cai_stream_output_tokens_details_fields);
+
+static const lonejson_field cai_stream_usage_fields[] = {
+    LONEJSON_FIELD_I64(cai_stream_usage_doc, input_tokens, "input_tokens"),
+    LONEJSON_FIELD_I64(cai_stream_usage_doc, input_cached_tokens,
+                       "input_cached_tokens"),
+    LONEJSON_FIELD_OBJECT(cai_stream_usage_doc, input_tokens_details,
+                          "input_tokens_details",
+                          &cai_stream_input_tokens_details_map),
+    LONEJSON_FIELD_I64(cai_stream_usage_doc, output_tokens, "output_tokens"),
+    LONEJSON_FIELD_I64(cai_stream_usage_doc, output_reasoning_tokens,
+                       "output_reasoning_tokens"),
+    LONEJSON_FIELD_OBJECT(cai_stream_usage_doc, output_tokens_details,
+                          "output_tokens_details",
+                          &cai_stream_output_tokens_details_map),
+    LONEJSON_FIELD_I64(cai_stream_usage_doc, total_tokens, "total_tokens")};
+LONEJSON_MAP_DEFINE(cai_stream_usage_map, cai_stream_usage_doc,
+                    cai_stream_usage_fields);
+
 static const lonejson_field cai_stream_response_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(cai_stream_response_doc, id, "id")};
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_response_doc, id, "id"),
+    LONEJSON_FIELD_OBJECT(cai_stream_response_doc, usage, "usage",
+                          &cai_stream_usage_map)};
 LONEJSON_MAP_DEFINE(cai_stream_response_map, cai_stream_response_doc,
                     cai_stream_response_fields);
 
@@ -33,6 +85,7 @@ LONEJSON_MAP_DEFINE(cai_stream_delta_map, cai_stream_delta_doc,
 typedef struct cai_sse_state {
   cai_sink *sink;
   char **out_response_id;
+  cai_token_usage *out_usage;
   char *line;
   size_t length;
   size_t capacity;
@@ -45,6 +98,8 @@ typedef struct cai_pipe_stream {
   char *response_id;
   cai_stream_complete_fn on_complete;
   void *complete_context;
+  cai_token_usage usage;
+  int has_usage;
   int read_fd;
   int write_fd;
   pthread_t thread;
@@ -84,6 +139,23 @@ static int cai_stream_request_json(const cai_response_create_params *params,
   free(json);
   *out = stream_json;
   return CAI_OK;
+}
+
+static void cai_stream_copy_usage(cai_token_usage *out,
+                                  const cai_stream_usage_doc *usage) {
+  if (out == NULL || usage == NULL) {
+    return;
+  }
+  out->input_tokens = usage->input_tokens;
+  out->input_cached_tokens = usage->input_cached_tokens != 0LL
+                                 ? usage->input_cached_tokens
+                                 : usage->input_tokens_details.cached_tokens;
+  out->output_tokens = usage->output_tokens;
+  out->output_reasoning_tokens =
+      usage->output_reasoning_tokens != 0LL
+          ? usage->output_reasoning_tokens
+          : usage->output_tokens_details.reasoning_tokens;
+  out->total_tokens = usage->total_tokens;
 }
 
 static int cai_sse_line_reserve(cai_sse_state *state, size_t extra) {
@@ -142,6 +214,10 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
       rc = CAI_ERR_NOMEM;
     }
   }
+  if (rc == CAI_OK && state->out_usage != NULL && doc.type != NULL &&
+      strcmp(doc.type, "response.completed") == 0) {
+    cai_stream_copy_usage(state->out_usage, &doc.response.usage);
+  }
   lonejson_cleanup(&cai_stream_delta_map, &doc);
   return rc;
 }
@@ -191,11 +267,9 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
   return total;
 }
 
-int cai_client_stream_response_text_json_with_id(cai_client *client,
-                                                 const char *request_json,
-                                                 cai_sink *sink,
-                                                 char **out_response_id,
-                                                 cai_error *error) {
+int cai_client_stream_response_text_json_with_id(
+    cai_client *client, const char *request_json, cai_sink *sink,
+    char **out_response_id, cai_token_usage *out_usage, cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -213,8 +287,12 @@ int cai_client_stream_response_text_json_with_id(cai_client *client,
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
+  if (out_usage != NULL) {
+    memset(out_usage, 0, sizeof(*out_usage));
+  }
   state.sink = sink;
   state.out_response_id = out_response_id;
+  state.out_usage = out_usage;
   state.line = NULL;
   state.length = 0U;
   state.capacity = 0U;
@@ -295,17 +373,21 @@ int cai_client_stream_response_text(cai_client *client,
                                     const cai_response_create_params *params,
                                     cai_sink *sink, cai_error *error) {
   return cai_client_stream_response_text_with_id(client, params, sink, NULL,
-                                                 error);
+                                                 NULL, error);
 }
 
 int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
-    cai_sink *sink, char **out_response_id, cai_error *error) {
+    cai_sink *sink, char **out_response_id, cai_token_usage *out_usage,
+    cai_error *error) {
   char *request_json;
   int rc;
 
   if (out_response_id != NULL) {
     *out_response_id = NULL;
+  }
+  if (out_usage != NULL) {
+    memset(out_usage, 0, sizeof(*out_usage));
   }
   request_json = NULL;
   if (params == NULL) {
@@ -314,7 +396,7 @@ int cai_client_stream_response_text_with_id(
   rc = cai_stream_request_json(params, &request_json, error);
   if (rc == CAI_OK) {
     rc = cai_client_stream_response_text_json_with_id(
-        client, request_json, sink, out_response_id, error);
+        client, request_json, sink, out_response_id, out_usage, error);
   }
   cai_free_mem(NULL, request_json);
   return rc;
@@ -346,6 +428,7 @@ static void *cai_pipe_stream_main(void *arg) {
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   cai_error error;
+  int rc;
 
   stream = (cai_pipe_stream *)arg;
   sink = NULL;
@@ -354,9 +437,12 @@ static void *cai_pipe_stream_main(void *arg) {
   callbacks.close = NULL;
   callbacks.context = &stream->write_fd;
   if (cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK) {
-    (void)cai_client_stream_response_text_json_with_id(
+    rc = cai_client_stream_response_text_json_with_id(
         stream->client, stream->request_json, sink, &stream->response_id,
-        &error);
+        &stream->usage, &error);
+    if (rc == CAI_OK) {
+      stream->has_usage = 1;
+    }
   }
   cai_sink_close(sink);
   close(stream->write_fd);
@@ -397,7 +483,8 @@ static void cai_pipe_source_close(void *context) {
     pthread_join(stream->thread, NULL);
   }
   if (stream->on_complete != NULL && stream->response_id != NULL) {
-    (void)stream->on_complete(stream->complete_context, stream->response_id);
+    (void)stream->on_complete(stream->complete_context, stream->response_id,
+                              stream->has_usage ? &stream->usage : NULL);
   }
   if (stream->write_fd >= 0) {
     close(stream->write_fd);
@@ -448,6 +535,8 @@ int cai_client_open_response_text_source_with_complete(
   stream->response_id = NULL;
   stream->on_complete = on_complete;
   stream->complete_context = complete_context;
+  memset(&stream->usage, 0, sizeof(stream->usage));
+  stream->has_usage = 0;
   stream->read_fd = fds[0];
   stream->write_fd = fds[1];
   stream->thread_started = 0;

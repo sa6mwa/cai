@@ -438,8 +438,9 @@ static void test_response_json(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   cai_error error;
+  cai_token_usage usage;
   write_state writer;
-  char response_json[768];
+  char response_json[1024];
   char *json;
   size_t json_len;
 
@@ -457,7 +458,10 @@ static void test_response_json(test_state *state) {
   strcat(response_json, "\"type\":\"function_call\",\"call_id\":\"call_1\",");
   strcat(response_json, "\"name\":\"weather\",\"arguments\":");
   strcat(response_json, "\"{\\\"city\\\":\\\"Malmo\\\"}\"}],\"usage\":{");
-  strcat(response_json, "\"input_tokens\":11,\"output_tokens\":7,");
+  strcat(response_json, "\"input_tokens\":11,\"input_tokens_details\":{");
+  strcat(response_json, "\"cached_tokens\":5},\"output_tokens\":7,");
+  strcat(response_json, "\"output_tokens_details\":{");
+  strcat(response_json, "\"reasoning_tokens\":3},");
   strcat(response_json, "\"total_tokens\":18}}");
 
   cai_error_init(&error);
@@ -662,10 +666,19 @@ static void test_response_json(test_state *state) {
              cai_response_incomplete_reason(response), "max_output_tokens");
   expect_int(state, "response_input_tokens",
              cai_response_input_tokens(response), 11L);
+  expect_int(state, "response_input_cached_tokens",
+             cai_response_input_cached_tokens(response), 5L);
   expect_int(state, "response_output_tokens",
              cai_response_output_tokens(response), 7L);
+  expect_int(state, "response_output_reasoning_tokens",
+             cai_response_output_reasoning_tokens(response), 3L);
   expect_int(state, "response_total_tokens",
              cai_response_total_tokens(response), 18L);
+  expect_int(state, "response_usage",
+             cai_response_usage(response, &usage, &error), CAI_OK);
+  expect_int(state, "response_usage_cached", usage.input_cached_tokens, 5L);
+  expect_int(state, "response_usage_reasoning", usage.output_reasoning_tokens,
+             3L);
   expect_int(state, "response_tool_count",
              (long)cai_response_tool_call_count(response), 1L);
   expect_str(state, "response_tool_id", cai_response_tool_call_id(response, 0U),
@@ -849,23 +862,38 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n"
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_raw\"}}\n\n";
+      "\"resp_stream_raw\",\"usage\":{\"input_tokens\":1,"
+      "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":2,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":0},"
+      "\"total_tokens\":3}}}\n\n";
   static const char stream_session_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"one\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_session_1\"}}\n\n";
+      "\"resp_stream_session_1\",\"usage\":{\"input_tokens\":10,"
+      "\"input_tokens_details\":{\"cached_tokens\":4},\"output_tokens\":3,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":1},"
+      "\"total_tokens\":13}}}\n\n";
   static const char stream_session_second_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_session_2\"}}\n\n";
+      "\"resp_stream_session_2\",\"usage\":{\"input_tokens\":20,"
+      "\"input_tokens_details\":{\"cached_tokens\":8},\"output_tokens\":4,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":2},"
+      "\"total_tokens\":24}}}\n\n";
   static const char stream_session_source_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_source_session_1\"}}\n\n";
+      "\"resp_stream_source_session_1\",\"usage\":{\"input_tokens\":30,"
+      "\"input_tokens_details\":{\"cached_tokens\":12},\"output_tokens\":5,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":3},"
+      "\"total_tokens\":35}}}\n\n";
   static const char stream_session_source_second_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src2\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_source_session_2\"}}\n\n";
+      "\"resp_stream_source_session_2\",\"usage\":{\"input_tokens\":40,"
+      "\"input_tokens_details\":{\"cached_tokens\":16},\"output_tokens\":6,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":4},"
+      "\"total_tokens\":46}}}\n\n";
 
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
     if (strstr(request, "\"stream\":true") != NULL) {
@@ -2024,6 +2052,7 @@ static void test_stream_response_text(test_state *state) {
   cai_source *source;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
+  cai_token_usage usage;
   write_state writer;
   cai_error error;
 
@@ -2129,6 +2158,12 @@ static void test_stream_response_text(test_state *state) {
   expect_int(state, "stream_session_to_sink",
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_session_sink_value", writer.buffer, "one");
+  expect_int(state, "stream_session_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_session_usage_cached", usage.input_cached_tokens,
+             4L);
+  expect_int(state, "stream_session_usage_reasoning",
+             usage.output_reasoning_tokens, 1L);
   cai_sink_close(sink);
   sink = NULL;
   writer.length = 0U;
@@ -2165,6 +2200,12 @@ static void test_stream_response_text(test_state *state) {
   expect_str(state, "stream_session_source_value", read_buffer, "src1");
   cai_source_close(source);
   source = NULL;
+  expect_int(state, "stream_session_source_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_session_source_usage_cached",
+             usage.input_cached_tokens, 12L);
+  expect_int(state, "stream_session_source_usage_reasoning",
+             usage.output_reasoning_tokens, 3L);
 
   expect_int(
       state, "stream_session_source_add_second",

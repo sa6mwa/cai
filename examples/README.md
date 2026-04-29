@@ -42,8 +42,9 @@ cmake --build --preset debug --target cai_example_streaming_text
 
 ## Terminal Chat
 
-Run a small terminal chat agent that reads a prompt from stdin and streams the
-response tokens to stdout:
+Run a small terminal chat agent that reads prompts from stdin, streams response
+tokens to stdout, and prints token usage to stderr after each turn. Exit with
+Ctrl-D at an empty prompt, `/quit`, or `/exit`.
 
 ```sh
 cmake --build --preset debug --target cai_example_terminal_chat

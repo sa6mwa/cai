@@ -108,6 +108,14 @@ typedef struct cai_run_options {
   const char *tool_spool_dir;
 } cai_run_options;
 
+typedef struct cai_token_usage {
+  long long input_tokens;
+  long long input_cached_tokens;
+  long long output_tokens;
+  long long output_reasoning_tokens;
+  long long total_tokens;
+} cai_token_usage;
+
 typedef size_t (*cai_source_read_fn)(void *context, void *buffer, size_t count,
                                      cai_error *error);
 typedef int (*cai_source_reset_fn)(void *context, cai_error *error);
@@ -193,6 +201,8 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
                                  cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
+int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
+                           cai_error *error);
 
 void cai_error_init(cai_error *error);
 void cai_error_cleanup(cai_error *error);
@@ -329,8 +339,12 @@ const char *cai_response_error_code(const cai_response *response);
 const char *cai_response_error_message(const cai_response *response);
 const char *cai_response_incomplete_reason(const cai_response *response);
 long long cai_response_input_tokens(const cai_response *response);
+long long cai_response_input_cached_tokens(const cai_response *response);
 long long cai_response_output_tokens(const cai_response *response);
+long long cai_response_output_reasoning_tokens(const cai_response *response);
 long long cai_response_total_tokens(const cai_response *response);
+int cai_response_usage(const cai_response *response, cai_token_usage *out,
+                       cai_error *error);
 size_t cai_response_tool_call_count(const cai_response *response);
 const char *cai_response_tool_call_id(const cai_response *response,
                                       size_t index);

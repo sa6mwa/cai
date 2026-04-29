@@ -37,6 +37,14 @@ static void trim_newline(char *line) {
   }
 }
 
+static void print_usage(const cai_token_usage *usage) {
+  fprintf(stderr,
+          "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
+          "total=%lld\n",
+          usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
+          usage->output_reasoning_tokens, usage->total_tokens);
+}
+
 int main(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
@@ -46,6 +54,7 @@ int main(void) {
   cai_session *session;
   cai_sink *sink;
   cai_error error;
+  cai_token_usage usage;
   char line[4096];
   int exit_code;
   int rc;
@@ -97,7 +106,8 @@ int main(void) {
     if (line[0] == '\0') {
       continue;
     }
-    if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
+    if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0 ||
+        strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
       exit_code = 0;
       break;
     }
@@ -109,6 +119,12 @@ int main(void) {
     if (rc != CAI_OK) {
       exit_code = print_error("cai_session_stream_text", rc, &error);
       break;
+    }
+    if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
+      print_usage(&usage);
+    } else {
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
     }
   }
 
