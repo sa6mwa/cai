@@ -1,0 +1,680 @@
+# cai implementation plan
+
+This document turns `SPEC.md` into an implementation plan for `cai`, a C89
+SDK-style OpenAI API client focused on the Responses API, Conversations, and
+both Responses and Realtime WebSocket workflows.
+
+The goal is not to expose libcurl, raw JSON, or transport primitives as the
+main user experience. The public API should be a small, handle-oriented C SDK
+with clear ownership, explicit model selection, synchronous tool callbacks for
+the first version, and predictable diagnostics through pslog.
+
+The primary downstream integration target is Vectis (`../vectis/`): a
+Kore-backed REST API service runtime that already treats `lonejson`, `lc_source`,
+lockd queues/state, curl, pslog, and Lua as first-class workflow building
+blocks. `cai` must fit that style: stream request/response data where possible,
+avoid avoidable transient allocations, and make agentic workflows easy to drive
+from a C or Lua route handler without leaking transport machinery into the
+application.
+
+## Current decisions
+
+- Language and platform: C89 with POSIX features, built with CMake/Ninja/Make.
+- Dependency source: develop against the liblockdc SDK tarballs, reusing their
+  curl, OpenSSL, nghttp2, lonejson, and pslog artifacts.
+- JSON: all API JSON construction/parsing goes through lonejson.
+- Logging: pslog is accepted as a borrowed host-owned logger in client config.
+- API coverage target: full OpenAI Responses API surface, including newer
+  Conversations endpoints.
+- WebSocket coverage target: both Responses WebSocket mode and Realtime
+  WebSocket.
+- MCP: not part of the first implementation, except that the C SDK design must
+  not paint us into a corner for later MCP support.
+- Tool execution: synchronous local C callbacks only in the first version.
+- Default SDK model: no hidden default for production SDK calls. Callers must
+  choose a model explicitly.
+- Development/live-test model: `gpt-5.4-nano`, unless the live environment
+  rejects it. OpenAI docs currently list it as supporting `v1/responses`,
+  `v1/realtime`, streaming, function calling, structured outputs, and image
+  input.
+- Unit tests never hit OpenAI. Live integration tests require explicit opt-in.
+- `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
+  and let it override the process environment. If `.env` does not exist, use
+  the inherited `OPENAI_API_KEY`.
+- Single-header distribution is not a primary goal. `cai` is too broad for a
+  lonejson/libpslog-style single-header implementation to be the architectural
+  center. Ship a normal library with installed headers; consider a declarations
+  convenience header or generated amalgamation only after the core stabilizes.
+- Streaming and low-allocation operation are design requirements, not
+  afterthoughts. Convenience helpers may allocate, but route-handler and worker
+  workflows must have streaming alternatives.
+
+## Product shape
+
+`cai` should feel like a C SDK, not a transport wrapper. The API should expose
+opaque handles with method tables, similar in spirit to liblockdc:
+
+- `cai_client`: owns shared configuration, dependency handles, base URLs,
+  auth, logger, allocator, and transport defaults.
+- `cai_agent`: optional higher-level facade over model, instructions, tools,
+  and default generation settings.
+- `cai_session`: SDK-level stateful workflow handle. It should hide the choice
+  between `previous_response_id` chaining and OpenAI Conversation IDs where that
+  improves DX.
+- `cai_conversation`: explicit handle for the OpenAI Conversations endpoints.
+- `cai_response`: owned parsed response object with helpers for status, usage,
+  text output, tool calls, and raw JSON escape hatches.
+- `cai_stream`: synchronous event stream handle/callback runner for SSE and
+  WebSocket events.
+- `cai_realtime_session`: Realtime WebSocket session facade.
+- `cai_tool_registry`: synchronous function-tool callback registry.
+- `cai_output`: streaming result facade that can feed lonejson sinks,
+  `lc_source` consumers, files, or application callbacks without forcing a
+  whole response body into memory.
+- `cai_workflow`: optional orchestration helper for multi-agent flows where the
+  host still owns branching decisions, persistence, and external side effects.
+
+The implementation should keep lower-level HTTP, SSE, WebSocket, JSON, and
+tool-loop machinery internal unless a narrow escape hatch is needed.
+
+## Target integration model
+
+The canonical serious use case is a Vectis route handler or worker that:
+
+1. Streams the inbound Kore request body into a lonejson-mapped request struct.
+2. Builds one or more `cai_agent` instances with explicit instructions, model,
+   tools, and input attachments.
+3. Seeds a session with text, images, and context from the request, lockd state,
+   queue message, or another `lc_source`.
+4. Runs one or more agent turns.
+5. Branches in C with `if`/`switch`, or delegates judgment to another agent.
+6. Streams the final output into a lonejson response writer, an `lc_source`, a
+   lockd state object, a lockd queue message, or a downstream curl request.
+
+The SDK should make the simple path compact while preserving host control:
+
+```c
+static vectis_status handle_request(vectis_request *req,
+                                    vectis_response *res,
+                                    void *ctx) {
+  struct my_input input;
+  cai_agent *agent;
+  cai_session *session;
+  cai_output *output;
+  cai_error error;
+
+  vectis_request_json_into(req, &my_input_map, &input);
+
+  cai_client_new_agent(app->cai, &support_agent_config, &agent, &error);
+  agent->new_session(agent, &session, &error);
+  session->add_text(session, "user", input.question, &error);
+  session->add_image_source(session, "user", input.image, NULL, &error);
+  session->run(session, &output, &error);
+
+  return vectis_response_json_source(res, 200, output->as_lc_source(output),
+                                     &my_output_map);
+}
+```
+
+That example is intentionally approximate; the important point is the dataflow:
+the host owns the web request, JSON schema, lockd/curl side effects, and control
+flow, while `cai` owns OpenAI request/response mechanics and agent/session
+state.
+
+## Allocation and streaming policy
+
+`cai` should have two API tiers:
+
+- Convenience tier: returns owned strings and parsed response objects for simple
+  CLIs, tests, and small services.
+- Streaming tier: lets hosts provide sinks/sources/callbacks so large inputs,
+  images, generated JSON, tool outputs, and final response bodies do not need to
+  be fully materialized.
+
+Rules:
+
+- Request input should accept borrowed strings, `lc_source`, file paths, and
+  application callbacks.
+- Response output should be representable as:
+  - parsed metadata plus streamed content events,
+  - a generated lonejson writer/source,
+  - an `lc_source`-compatible byte source,
+  - an application callback sink.
+- Use fixed-capacity or caller-provided buffers where practical for hot paths.
+- Avoid hidden global state. A Vectis worker process may own multiple clients,
+  agents, and sessions.
+- Do not allocate just to bridge between lonejson and `lc_source` when a
+  callback bridge can stream.
+- Any helper named like `*_text()` or `*_string()` may allocate, but the docs
+  must mark it as a convenience path.
+- Tool callbacks should be able to stream their output, not only return a
+  heap-allocated string, even if string output is the first implemented result
+  type.
+
+## Proposed public API direction
+
+Names and field lists will change during implementation, but this is the API
+shape to iterate from.
+
+```c
+typedef struct cai_client cai_client;
+typedef struct cai_agent cai_agent;
+typedef struct cai_session cai_session;
+typedef struct cai_conversation cai_conversation;
+typedef struct cai_response cai_response;
+typedef struct cai_stream cai_stream;
+typedef struct cai_output cai_output;
+typedef struct cai_source cai_source;
+typedef struct cai_sink cai_sink;
+typedef struct cai_error cai_error;
+
+typedef enum cai_status {
+  CAI_OK = 0,
+  CAI_ERR_INVALID = 1,
+  CAI_ERR_NOMEM = 2,
+  CAI_ERR_TRANSPORT = 3,
+  CAI_ERR_PROTOCOL = 4,
+  CAI_ERR_SERVER = 5,
+  CAI_ERR_CANCELLED = 6
+} cai_status;
+```
+
+### Client configuration
+
+```c
+typedef struct cai_client_config {
+  const char *api_key;              /* optional; env/.env fallback */
+  const char *base_url;             /* default https://api.openai.com/v1 */
+  const char *organization_id;      /* optional OpenAI-Organization */
+  const char *project_id;           /* optional OpenAI-Project */
+  long timeout_ms;
+  int prefer_http_2;
+  int insecure_skip_verify;
+  size_t json_response_limit_bytes;
+  pslog_logger *logger;             /* borrowed */
+  cai_allocator allocator;
+} cai_client_config;
+
+void cai_client_config_init(cai_client_config *config);
+int cai_client_open(const cai_client_config *config, cai_client **out,
+                    cai_error *error);
+void cai_client_close(cai_client *client);
+```
+
+The client constructor performs `.env` resolution unless `api_key` is provided
+explicitly. Explicit `api_key` always wins over `.env` and process environment
+because it is a direct API call argument.
+
+### Source and sink interop
+
+`cai` should not make `liblockdc` a conceptual requirement for all users, but it
+can interoperate with `lc_source` and `lc_sink` when liblockdc headers are
+available through the SDK bundle.
+
+```c
+typedef size_t (*cai_source_read_fn)(void *context, void *buffer,
+                                     size_t count, cai_error *error);
+typedef int (*cai_source_reset_fn)(void *context, cai_error *error);
+typedef void (*cai_source_close_fn)(void *context);
+
+typedef int (*cai_sink_write_fn)(void *context, const void *bytes,
+                                 size_t count, cai_error *error);
+typedef void (*cai_sink_close_fn)(void *context);
+
+int cai_source_from_callbacks(const cai_source_callbacks *callbacks,
+                              cai_source **out, cai_error *error);
+int cai_source_from_lc(struct lc_source *source, cai_source **out,
+                       cai_error *error);
+int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
+                            cai_error *error);
+int cai_output_write_json(cai_output *output, const lonejson_map *map,
+                          void *value, cai_error *error);
+```
+
+The exact function names can change, but the boundary must exist. Vectis should
+be able to hand request bodies, image payloads, lockd state, and generated
+outputs across the cai boundary without converting everything through temporary
+heap strings.
+
+### Models
+
+Expose model constants as strings, not a restrictive enum, because OpenAI model
+availability changes over time and users may need newly released IDs before a
+new `cai` release.
+
+```c
+#define CAI_MODEL_GPT_5_4_NANO "gpt-5.4-nano"
+#define CAI_MODEL_GPT_5_4_MINI "gpt-5.4-mini"
+#define CAI_MODEL_GPT_5_4 "gpt-5.4"
+```
+
+Plan:
+
+- Seed `include/cai/models.h` with documented model IDs that support
+  `v1/responses`.
+- Annotate models with endpoint/tool capability metadata in generated or
+  table-driven code: Responses, Realtime, streaming, function calling,
+  structured output, image input, audio support, tool support.
+- Do not prevent callers from passing an arbitrary model string.
+- Provide `cai_model_info()` and `cai_model_supports()` helpers for local
+  validation and better errors.
+- Treat unknown model strings as allowed by default, with optional strict
+  validation mode.
+
+### Responses
+
+The raw Responses API surface should be represented without forcing users to
+manually build JSON:
+
+```c
+typedef struct cai_response_create_params cai_response_create_params;
+
+void cai_response_create_params_init(cai_response_create_params *params);
+int cai_response_create_params_set_model(cai_response_create_params *params,
+                                         const char *model);
+int cai_response_create_params_add_text(cai_response_create_params *params,
+                                        const char *role,
+                                        const char *text);
+int cai_response_create_params_add_image_url(cai_response_create_params *params,
+                                             const char *role,
+                                             const char *url,
+                                             const char *detail);
+int cai_response_create_params_set_instructions(
+    cai_response_create_params *params, const char *instructions);
+int cai_response_create_params_set_previous_response_id(
+    cai_response_create_params *params, const char *response_id);
+int cai_response_create_params_set_conversation_id(
+    cai_response_create_params *params, const char *conversation_id);
+
+int cai_client_create_response(cai_client *client,
+                               const cai_response_create_params *params,
+                               cai_response **out, cai_error *error);
+int cai_client_stream_response(cai_client *client,
+                               const cai_response_create_params *params,
+                               const cai_stream_handler *handler,
+                               cai_error *error);
+int cai_client_retrieve_response(cai_client *client, const char *response_id,
+                                 cai_response **out, cai_error *error);
+int cai_client_delete_response(cai_client *client, const char *response_id,
+                               cai_error *error);
+int cai_client_cancel_response(cai_client *client, const char *response_id,
+                               cai_response **out, cai_error *error);
+```
+
+Response helpers should cover common DX needs:
+
+- `cai_response_id()`
+- `cai_response_status()`
+- `cai_response_output_text()`
+- `cai_response_usage()`
+- `cai_response_tool_call_count()`
+- `cai_response_tool_call_at()`
+- `cai_response_raw_json()`
+- `cai_response_destroy()`
+
+Streaming alternatives must exist for the same output:
+
+- `cai_response_output_source()`
+- `cai_response_write_output_json()`
+- `cai_response_each_output_item()`
+- `cai_response_each_event()`
+
+### Conversations
+
+Expose OpenAI conversation objects directly, but let sessions use them
+internally where convenient.
+
+```c
+int cai_client_create_conversation(cai_client *client,
+                                   const cai_conversation_create_params *params,
+                                   cai_conversation **out, cai_error *error);
+int cai_client_retrieve_conversation(cai_client *client, const char *id,
+                                     cai_conversation **out, cai_error *error);
+int cai_client_update_conversation(cai_client *client, const char *id,
+                                   const cai_conversation_update_params *params,
+                                   cai_conversation **out, cai_error *error);
+int cai_client_delete_conversation(cai_client *client, const char *id,
+                                   cai_error *error);
+int cai_conversation_create_item(cai_conversation *conversation,
+                                 const cai_item_params *params,
+                                 cai_error *error);
+int cai_conversation_list_items(cai_conversation *conversation,
+                                cai_item_list **out, cai_error *error);
+```
+
+### Sessions and agents
+
+The recommended DX should start here for normal users:
+
+```c
+cai_agent_config agent_config;
+cai_agent_config_init(&agent_config);
+agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+agent_config.instructions = "You are concise.";
+
+client->new_agent(client, &agent_config, &agent, &error);
+agent->new_session(agent, &session, &error);
+session->send_text(session, "Explain epoll in one paragraph.", &response,
+                   &error);
+```
+
+Decision:
+
+- `cai_session` should use `previous_response_id` by default because it is the
+  smallest state model and maps cleanly to Responses.
+- If a session is created with `use_conversation=1`, it should create or attach
+  an OpenAI Conversation ID and send future turns through that conversation.
+- This keeps the default simple while preserving explicit conversation support.
+
+For workflow-heavy hosts, the session facade should support incremental setup
+and streaming run output:
+
+```c
+agent->new_session(agent, &session, &error);
+session->add_text(session, "system", system_prompt, &error);
+session->add_text(session, "user", user_text, &error);
+session->add_image_source(session, "user", image_source, "high", &error);
+session->register_tool(session, &tool, &error);
+session->run_stream(session, &handler, &error);
+session->run_output(session, &output, &error);
+```
+
+Multi-agent workflows should remain host-driven. `cai` should make it cheap to
+construct several agents and sessions, but it should not impose a graph runtime
+or hidden planner in the first version. The host should be able to do:
+
+- main agent generates a proposed answer,
+- judge agent evaluates or selects a branch,
+- repair agent rewrites or asks for another tool call,
+- host persists intermediate state to lockd or enqueues follow-up work.
+
+An optional `cai_workflow` helper may be added later if repeated patterns emerge
+from examples, but the first implementation should keep orchestration explicit.
+
+### Tool callbacks
+
+First version supports synchronous local function tools:
+
+```c
+typedef int (*cai_tool_fn)(void *context,
+                           const cai_tool_call *call,
+                           cai_tool_result *result,
+                           cai_error *error);
+
+int cai_tool_registry_add_function(cai_tool_registry *registry,
+                                   const char *name,
+                                   const char *description,
+                                   const char *json_schema,
+                                   cai_tool_fn callback,
+                                   void *context);
+```
+
+Tool execution loop:
+
+1. Send response request with registered function tool schemas.
+2. Parse completed response or stream events.
+3. For each function call, invoke the registered synchronous callback.
+4. Submit `function_call_output` items with matching `call_id`.
+5. Continue until the response completes without pending local tool calls or an
+   error occurs.
+
+Initial result payload support:
+
+- Required: string output.
+- Early follow-up: content-array output for text/image/file tool outputs.
+- Required in the API design even if implemented after string output:
+  source-backed tool output so a C or Lua callback can stream data generated
+  from lockd, files, or downstream APIs.
+
+### Streaming and WebSockets
+
+SSE streaming and Responses WebSocket events should share the same semantic
+event parser and callback shape where possible:
+
+```c
+typedef int (*cai_stream_event_fn)(void *context,
+                                   const cai_stream_event *event,
+                                   cai_error *error);
+
+typedef struct cai_stream_handler {
+  cai_stream_event_fn on_event;
+  void *context;
+} cai_stream_handler;
+```
+
+Responses WebSocket mode:
+
+- Connect to `wss://api.openai.com/v1/responses`.
+- Send `response.create` events whose payload mirrors Responses create, except
+  transport-only fields such as `stream` and `background`.
+- Support `previous_response_id` continuation and incremental input.
+- Support `generate=false` warmup after the core path works.
+
+Realtime WebSocket:
+
+- Separate `cai_realtime_session` facade, because Realtime has different
+  models, event types, audio behavior, and session lifecycle.
+- First Realtime milestone should support text in/text out and synchronous
+  function calls.
+- Audio streaming can follow after the text/tool path is stable.
+
+## Internal architecture
+
+Suggested source layout:
+
+```text
+include/cai/cai.h
+include/cai/models.h
+src/cai_client.c
+src/cai_env.c
+src/cai_error.c
+src/cai_http.c
+src/cai_json.c
+src/cai_models.c
+src/cai_response.c
+src/cai_conversation.c
+src/cai_agent.c
+src/cai_session.c
+src/cai_tools.c
+src/cai_stream_sse.c
+src/cai_ws_responses.c
+src/cai_ws_realtime.c
+src/cai_log.c
+src/cai_allocator.c
+src/cai_internal.h
+lua/
+tests/
+mock/
+cmake/
+scripts/
+```
+
+Boundary rules:
+
+- Public headers expose opaque handles and stable structs only.
+- JSON schema details stay in `src/cai_json.c` and endpoint-specific modules.
+- HTTP and WebSocket transport stay internal.
+- Agent/session logic calls public-ish internal response/conversation
+  primitives, not curl directly.
+- Lua binding wraps the C SDK surface, not internal transport.
+
+## Testing strategy
+
+### Unit tests
+
+Unit tests must be offline and deterministic:
+
+- `.env` precedence parser.
+- Model capability lookup.
+- Request JSON serialization.
+- Response JSON parsing.
+- API error parsing.
+- SSE event framing and event parsing.
+- WebSocket event JSON parsing independent of network.
+- Tool-loop state machine.
+- Ownership and cleanup behavior.
+
+### Mock integration tests
+
+Add a repo-local mock OpenAI service written in C:
+
+- Lives under `mock/`.
+- Built by CMake.
+- Runs inside `docker-compose.yaml` for integration tests.
+- Implements enough HTTP endpoints and WebSocket behavior to verify cai:
+  - `POST /v1/responses`
+  - `GET /v1/responses/{id}`
+  - `DELETE /v1/responses/{id}`
+  - `POST /v1/responses/{id}/cancel`
+  - `GET /v1/responses/{id}/input_items`
+  - conversation CRUD and item endpoints
+  - SSE streaming responses
+  - Responses WebSocket mode
+  - Realtime WebSocket text/tool subset
+- No extra implementation-language dependency for the mock server.
+
+The mock server can use POSIX sockets directly. TLS is not required for the
+first mock milestone if the SDK supports configurable `http://` base URLs for
+tests.
+
+### Live integration tests
+
+Live tests hit OpenAI only when explicitly enabled:
+
+```sh
+CAI_ENABLE_LIVE_TESTS=1 make test-live
+```
+
+Live tests:
+
+- Resolve API key through the same `.env` precedence rules as the SDK.
+- Use `CAI_TEST_MODEL` if set, otherwise `gpt-5.4-nano`.
+- Keep prompts tiny and deterministic.
+- Never run from default `make test`.
+
+## Build and release plan
+
+Mirror liblockdc where practical:
+
+- `CMakeLists.txt`, `CMakePresets.json`, and `Makefile` with familiar targets.
+- Host debug, ASan/UBSan, coverage, release, and cross presets.
+- Dependency provisioning from liblockdc SDK tarballs.
+- Release matrix:
+  - `x86_64-linux-gnu`
+  - `x86_64-linux-musl`
+  - `armhf-linux-gnu`
+  - `armhf-linux-musl`
+  - `aarch64-linux-gnu`
+  - `aarch64-linux-musl`
+  - `arm64-apple-darwin`
+- `make release` writes tarballs under `dist/`.
+- If HEAD has a `vX.Y.Z` tag, use that version for archive names and version
+  macros.
+- Archives use `tar --owner=0 --group=0`.
+- Build LuaRock artifacts under `dist/` once the C API is stable enough to
+  wrap.
+
+## Implementation milestones
+
+### Milestone 0: project skeleton
+
+- Add CMake/Makefile/scripts based on liblockdc conventions.
+- Add public header skeleton, version header generation, pkg-config metadata.
+- Add dependency fetch/use logic for liblockdc SDK tarballs.
+- Add C89 compile flags and clang-format.
+- Add minimal tests for build metadata and public header C-only inclusion.
+
+### Milestone 1: core client and offline JSON
+
+- Implement allocator, error, logger, `.env`, auth header, and base URL config.
+- Implement `cai_source`, `cai_sink`, and `lc_source` interop shims.
+- Implement request JSON generation for basic `responses.create`.
+- Implement response parsing for IDs, status, output text, errors, and usage.
+- Implement output metadata/content separation so convenience strings and
+  streaming output share the same parsed event model.
+- Unit-test serialization/parsing exhaustively with fixtures.
+
+### Milestone 2: HTTP Responses API
+
+- Implement non-streamed Responses endpoints.
+- Implement Conversations endpoints.
+- Implement count/compact/list input items if current docs expose them.
+- Add mock HTTP server path for deterministic integration tests.
+
+### Milestone 3: agent/session DX
+
+- Implement `cai_agent` and `cai_session`.
+- Default session chain uses `previous_response_id`.
+- Conversation-backed session mode is opt-in.
+- Support incremental session setup with text, image URLs, image sources, tool
+  registries, and host-owned context pointers.
+- Add streaming `run_stream()` and `run_output()` paths before adding richer
+  orchestration helpers.
+- Add examples that demonstrate the intended DX.
+
+### Milestone 4: tools
+
+- Implement function tool registry.
+- Serialize JSON schemas into Responses requests.
+- Parse tool calls.
+- Run synchronous callbacks.
+- Submit `function_call_output`.
+- Add source-backed tool result API even if the first implementation internally
+  falls back to bounded buffering for unsupported OpenAI result shapes.
+- Unit-test multi-tool and error paths.
+
+### Milestone 5: SSE streaming
+
+- Implement `stream=true` HTTP streaming.
+- Parse semantic Responses events.
+- Surface callback API.
+- Support streaming tool-call arguments.
+
+### Milestone 6: Responses WebSocket mode
+
+- Implement WebSocket connect/send/receive for `wss://.../v1/responses`.
+- Reuse event parser and tool loop.
+- Support incremental input with `previous_response_id`.
+- Add mock WebSocket tests.
+
+### Milestone 7: Realtime WebSocket
+
+- Implement Realtime text/tool subset.
+- Keep Realtime facade separate from Responses sessions.
+- Add audio-aware type placeholders but avoid full audio streaming until text
+  and tool behavior is solid.
+
+### Milestone 8: Lua binding
+
+- Wrap client, response, agent/session, and basic tools.
+- Add Lua tests and LuaRock packaging.
+- Keep logger injection C-only for now as requested.
+
+### Milestone 9: release matrix
+
+- Complete cross-build scripts.
+- Verify archives, checksums, pkg-config, CMake package metadata, and LuaRock.
+- Add release verification tests modeled after liblockdc.
+
+## Open questions before the long implementation run
+
+1. Should `cai_client_config.api_key` override `.env`, as proposed here, or
+   should `.env` override even an explicit config field?
+2. Should strict model validation default to off, as proposed, so new OpenAI
+   model IDs work before cai is updated?
+3. Should `cai_session` default to `previous_response_id` chaining, with
+   OpenAI Conversation-backed sessions opt-in?
+4. Is the mock OpenAI server allowed to start as plain HTTP for tests, with TLS
+   coverage handled by libcurl/OpenSSL dependency smoke tests later?
+5. Should Lua bindings wait until after the C agent/session API stabilizes, or
+   should they track each milestone from the beginning?
+
+## Documentation sources checked
+
+- OpenAI Responses API reference, including Responses and Conversations
+  endpoint navigation.
+- OpenAI Streaming guide for semantic Responses events.
+- OpenAI WebSocket Mode guide for Responses WebSocket behavior.
+- OpenAI Authentication reference for Bearer auth and optional organization /
+  project headers.
+- OpenAI model docs for `gpt-5.4-nano` endpoint and feature compatibility.

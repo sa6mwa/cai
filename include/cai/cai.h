@@ -1,0 +1,121 @@
+#ifndef CAI_CAI_H
+#define CAI_CAI_H
+
+#include <cai/models.h>
+#include <cai/version.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct lc_source;
+struct lc_sink;
+struct lonejson_map;
+struct pslog_logger;
+
+typedef struct cai_client cai_client;
+typedef struct cai_source cai_source;
+typedef struct cai_sink cai_sink;
+typedef struct cai_output cai_output;
+
+typedef enum cai_status {
+  CAI_OK = 0,
+  CAI_ERR_INVALID = 1,
+  CAI_ERR_NOMEM = 2,
+  CAI_ERR_TRANSPORT = 3,
+  CAI_ERR_PROTOCOL = 4,
+  CAI_ERR_SERVER = 5,
+  CAI_ERR_CANCELLED = 6
+} cai_status;
+
+typedef struct cai_error {
+  int code;
+  long http_status;
+  char *message;
+  char *detail;
+  char *server_code;
+  char *request_id;
+} cai_error;
+
+typedef void *(*cai_malloc_fn)(void *context, size_t size);
+typedef void *(*cai_realloc_fn)(void *context, void *ptr, size_t size);
+typedef void (*cai_free_fn)(void *context, void *ptr);
+
+typedef struct cai_allocator {
+  cai_malloc_fn malloc_fn;
+  cai_realloc_fn realloc_fn;
+  cai_free_fn free_fn;
+  void *context;
+} cai_allocator;
+
+typedef struct cai_client_config {
+  const char *api_key;
+  const char *base_url;
+  const char *organization_id;
+  const char *project_id;
+  long timeout_ms;
+  int prefer_http_2;
+  int insecure_skip_verify;
+  size_t json_response_limit_bytes;
+  struct pslog_logger *logger;
+  cai_allocator allocator;
+} cai_client_config;
+
+typedef size_t (*cai_source_read_fn)(void *context, void *buffer, size_t count,
+                                     cai_error *error);
+typedef int (*cai_source_reset_fn)(void *context, cai_error *error);
+typedef void (*cai_source_close_fn)(void *context);
+
+typedef struct cai_source_callbacks {
+  cai_source_read_fn read;
+  cai_source_reset_fn reset;
+  cai_source_close_fn close;
+  void *context;
+} cai_source_callbacks;
+
+typedef int (*cai_sink_write_fn)(void *context, const void *bytes, size_t count,
+                                 cai_error *error);
+typedef void (*cai_sink_close_fn)(void *context);
+
+typedef struct cai_sink_callbacks {
+  cai_sink_write_fn write;
+  cai_sink_close_fn close;
+  void *context;
+} cai_sink_callbacks;
+
+void cai_client_config_init(cai_client_config *config);
+int cai_client_open(const cai_client_config *config, cai_client **out,
+                    cai_error *error);
+void cai_client_close(cai_client *client);
+
+void cai_error_init(cai_error *error);
+void cai_error_cleanup(cai_error *error);
+const char *cai_status_string(int status);
+
+int cai_source_from_callbacks(const cai_source_callbacks *callbacks,
+                              cai_source **out, cai_error *error);
+int cai_source_from_lc(struct lc_source *source, cai_source **out,
+                       cai_error *error);
+size_t cai_source_read(cai_source *source, void *buffer, size_t count,
+                       cai_error *error);
+int cai_source_reset(cai_source *source, cai_error *error);
+void cai_source_close(cai_source *source);
+
+int cai_sink_from_callbacks(const cai_sink_callbacks *callbacks, cai_sink **out,
+                            cai_error *error);
+int cai_sink_from_lc(struct lc_sink *sink, cai_sink **out, cai_error *error);
+int cai_sink_write(cai_sink *sink, const void *bytes, size_t count,
+                   cai_error *error);
+void cai_sink_close(cai_sink *sink);
+
+int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
+                            cai_error *error);
+int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
+                          void *value, cai_error *error);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
