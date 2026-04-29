@@ -86,7 +86,10 @@ typedef struct cai_sse_state {
   cai_sink *sink;
   char **out_response_id;
   cai_token_usage *out_usage;
+  char *body;
   char *line;
+  size_t body_length;
+  size_t body_capacity;
   size_t length;
   size_t capacity;
   int failed;
@@ -244,10 +247,37 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
   const char *bytes;
   size_t total;
   size_t i;
+  size_t capture;
+  size_t needed;
+  size_t new_capacity;
+  char *grown;
 
   state = (cai_sse_state *)user;
   bytes = (const char *)ptr;
   total = size * nmemb;
+  capture = total;
+  if (state->body_length + capture > 65536U) {
+    capture = 65536U - state->body_length;
+  }
+  if (capture > 0U) {
+    needed = state->body_length + capture + 1U;
+    if (needed > state->body_capacity) {
+      new_capacity = state->body_capacity == 0U ? 1024U : state->body_capacity;
+      while (new_capacity < needed) {
+        new_capacity *= 2U;
+      }
+      grown = (char *)cai_realloc_mem(NULL, state->body, new_capacity);
+      if (grown == NULL) {
+        state->failed = 1;
+        return 0U;
+      }
+      state->body = grown;
+      state->body_capacity = new_capacity;
+    }
+    memcpy(state->body + state->body_length, bytes, capture);
+    state->body_length += capture;
+    state->body[state->body_length] = '\0';
+  }
   for (i = 0U; i < total; i++) {
     if (cai_sse_line_reserve(state, 1U) != CAI_OK) {
       state->failed = 1;
@@ -293,7 +323,10 @@ int cai_client_stream_response_text_json_with_id(
   state.sink = sink;
   state.out_response_id = out_response_id;
   state.out_usage = out_usage;
+  state.body = NULL;
   state.line = NULL;
+  state.body_length = 0U;
+  state.body_capacity = 0U;
   state.length = 0U;
   state.capacity = 0U;
   state.failed = 0;
@@ -354,18 +387,23 @@ int cai_client_stream_response_text_json_with_id(
   cai_free_mem(&client->allocator, url);
   cai_free_mem(NULL, state.line);
   if (curl_rc != CURLE_OK) {
+    cai_free_mem(NULL, state.body);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "streaming HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
   if (state.failed) {
+    cai_free_mem(NULL, state.body);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "streaming response sink failed");
   }
   if (http_status < 200L || http_status >= 300L) {
-    return cai_set_error(error, CAI_ERR_SERVER,
-                         "streaming HTTP request failed");
+    rc = cai_set_openai_error(error, http_status,
+                              state.body != NULL ? state.body : "", NULL);
+    cai_free_mem(NULL, state.body);
+    return rc;
   }
+  cai_free_mem(NULL, state.body);
   return CAI_OK;
 }
 

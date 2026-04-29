@@ -386,8 +386,10 @@ static int cai_history_append(cai_session *session, const char *json,
                               cai_error *error) {
   cai_history_spool *history;
   size_t length;
+  size_t header_length;
   size_t needed;
   size_t new_capacity;
+  char header[32];
   char *grown;
 
   if (json == NULL || json[0] == '\0') {
@@ -395,7 +397,9 @@ static int cai_history_append(cai_session *session, const char *json,
   }
   history = &session->history;
   length = strlen(json);
-  needed = history->length + length + 1U;
+  snprintf(header, sizeof(header), "%lu\n", (unsigned long)length);
+  header_length = strlen(header);
+  needed = history->length + header_length + length + 1U;
   if (history->file == NULL && history->memory_limit > 0U &&
       needed > history->memory_limit) {
     if (cai_history_open_spool(session, error) != CAI_OK) {
@@ -403,12 +407,13 @@ static int cai_history_append(cai_session *session, const char *json,
     }
   }
   if (history->file != NULL) {
-    if (fwrite(json, 1U, length, history->file) != length ||
+    if (fwrite(header, 1U, header_length, history->file) != header_length ||
+        fwrite(json, 1U, length, history->file) != length ||
         fwrite("\n", 1U, 1U, history->file) != 1U) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "failed to append history spool file");
     }
-    history->length += length + 1U;
+    history->length += header_length + length + 1U;
     return CAI_OK;
   }
   if (needed + 1U > history->capacity) {
@@ -425,6 +430,8 @@ static int cai_history_append(cai_session *session, const char *json,
     history->memory = grown;
     history->capacity = new_capacity;
   }
+  memcpy(history->memory + history->length, header, header_length);
+  history->length += header_length;
   memcpy(history->memory + history->length, json, length);
   history->length += length;
   history->memory[history->length] = '\n';
@@ -685,6 +692,8 @@ static int cai_history_to_array_items(cai_session *session, char **out,
   char *history;
   char *cursor;
   char *writep;
+  unsigned long item_length;
+  char *endptr;
   int need_comma;
   int rc;
 
@@ -703,13 +712,23 @@ static int cai_history_to_array_items(cai_session *session, char **out,
     if (*cursor == '\0') {
       break;
     }
+    item_length = strtoul(cursor, &endptr, 10);
+    if (endptr == cursor || *endptr != '\n') {
+      cai_free_mem(&session->agent->client->allocator, history);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "invalid history record length");
+    }
+    cursor = endptr + 1;
     if (need_comma) {
       *writep = ',';
       writep++;
     }
-    while (*cursor != '\0' && *cursor != '\n' && *cursor != '\r') {
-      *writep = *cursor;
-      writep++;
+    if (item_length > 0UL) {
+      memcpy(writep, cursor, (size_t)item_length);
+      writep += (size_t)item_length;
+      cursor += (size_t)item_length;
+    }
+    if (*cursor == '\n') {
       cursor++;
     }
     need_comma = 1;

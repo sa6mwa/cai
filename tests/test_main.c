@@ -919,6 +919,37 @@ static const char *mock_response_for_request(const char *request) {
       "\"input_tokens_details\":{\"cached_tokens\":16},\"output_tokens\":6,"
       "\"output_tokens_details\":{\"reasoning_tokens\":4},"
       "\"total_tokens\":46}}}\n\n";
+  static const char stream_history_first_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hist1\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_history_1\",\"usage\":{\"input_tokens\":10,"
+      "\"output_tokens\":2,\"total_tokens\":12}}}\n\n";
+  static const char stream_history_second_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hist2\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_history_2\",\"usage\":{\"input_tokens\":20,"
+      "\"output_tokens\":3,\"total_tokens\":23}}}\n\n";
+  static const char stream_history_first_retrieve_body[] =
+      "{\n"
+      "  \"id\": \"resp_stream_history_1\",\n"
+      "  \"status\": \"completed\",\n"
+      "  \"output\": [\n"
+      "    {\n"
+      "      \"type\": \"message\",\n"
+      "      \"role\": \"assistant\",\n"
+      "      \"content\": [\n"
+      "        {\n"
+      "          \"type\": \"output_text\",\n"
+      "          \"text\": \"history stream answer\"\n"
+      "        }\n"
+      "      ]\n"
+      "    }\n"
+      "  ]\n"
+      "}";
+  static const char stream_history_second_retrieve_body[] =
+      "{\"id\":\"resp_stream_history_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"output_text\",\"text\":\"history stream second answer\"}]}]}";
 
   if (strstr(request, "POST /v1/responses/compact HTTP/") != NULL) {
     if (strstr(request, "compact first") != NULL &&
@@ -949,6 +980,15 @@ static const char *mock_response_for_request(const char *request) {
           strstr(request, "\"previous_response_id\":"
                           "\"resp_stream_source_session_1\"") != NULL) {
         return stream_session_source_second_body;
+      }
+      if (strstr(request, "history stream second") != NULL &&
+          strstr(request, "history stream answer") != NULL &&
+          strstr(request, "previous_response_id") == NULL) {
+        return stream_history_second_body;
+      }
+      if (strstr(request, "history stream first") != NULL &&
+          strstr(request, "previous_response_id") == NULL) {
+        return stream_history_first_body;
       }
       return stream_body;
     }
@@ -1032,6 +1072,14 @@ static const char *mock_response_for_request(const char *request) {
   }
   if (strncmp(request, "GET /v1/responses/resp_get HTTP/", 32U) == 0) {
     return retrieve_body;
+  }
+  if (strstr(request, "GET /v1/responses/resp_stream_history_1 HTTP/") !=
+      NULL) {
+    return stream_history_first_retrieve_body;
+  }
+  if (strstr(request, "GET /v1/responses/resp_stream_history_2 HTTP/") !=
+      NULL) {
+    return stream_history_second_retrieve_body;
   }
   if (strncmp(request, "POST /v1/responses/resp_get/cancel HTTP/", 40U) == 0) {
     return cancel_body;
@@ -2387,6 +2435,112 @@ static void test_stream_response_text(test_state *state) {
   }
 }
 
+static void test_stream_history_preserves_pretty_json(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_history_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_history_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 4);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_history_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.auto_compact = 1;
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+
+  expect_int(state, "stream_history_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_history_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_history_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink_callbacks.context = &writer;
+  expect_int(
+      state, "stream_history_add",
+      cai_session_add_text(session, "user", "history stream first", &error),
+      CAI_OK);
+  expect_int(state, "stream_history_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_history_first",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_history_first_value", writer.buffer, "hist1");
+  cai_sink_close(sink);
+  sink = NULL;
+
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(
+      state, "stream_history_add_second",
+      cai_session_add_text(session, "user", "history stream second", &error),
+      CAI_OK);
+  expect_int(state, "stream_history_sink_create_second",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_history_second",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_history_second_value", writer.buffer, "hist2");
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_history_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_history_mock", "mock child failed");
+  }
+}
+
 int main(void) {
   test_state state;
 
@@ -2407,6 +2561,7 @@ int main(void) {
   test_agent_tool_auto_round_limit(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
+  test_stream_history_preserves_pretty_json(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;
