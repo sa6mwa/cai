@@ -344,6 +344,9 @@ static void test_response_json(test_state *state) {
              "completed");
   expect_str(state, "response_text", cai_response_output_text(response),
              "hello world");
+  if (strstr(cai_response_raw_json(response), "\"id\":\"resp_123\"") == NULL) {
+    test_fail(state, "response_raw_json", "raw JSON missing response id");
+  }
   cai_response_destroy(response);
   cai_error_cleanup(&error);
 }

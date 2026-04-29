@@ -82,6 +82,7 @@ struct cai_response {
   char *id;
   char *status;
   char *output_text;
+  char *raw_json;
 };
 
 struct cai_conversation {

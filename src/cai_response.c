@@ -580,11 +580,13 @@ int cai_response_parse_json(const char *json, cai_response **out,
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate response");
   }
+  response->raw_json = NULL;
   response->id = cai_strdup(NULL, doc.id);
   response->status = cai_strdup(NULL, doc.status);
   response->output_text = cai_response_collect_text(&doc);
+  response->raw_json = cai_strdup(NULL, json);
   if (response->id == NULL || response->status == NULL ||
-      response->output_text == NULL) {
+      response->output_text == NULL || response->raw_json == NULL) {
     cai_response_destroy(response);
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -607,6 +609,10 @@ const char *cai_response_output_text(const cai_response *response) {
   return response != NULL ? response->output_text : NULL;
 }
 
+const char *cai_response_raw_json(const cai_response *response) {
+  return response != NULL ? response->raw_json : NULL;
+}
+
 void cai_response_destroy(cai_response *response) {
   if (response == NULL) {
     return;
@@ -614,5 +620,6 @@ void cai_response_destroy(cai_response *response) {
   cai_free_mem(NULL, response->id);
   cai_free_mem(NULL, response->status);
   cai_free_mem(NULL, response->output_text);
+  cai_free_mem(NULL, response->raw_json);
   cai_free_mem(NULL, response);
 }

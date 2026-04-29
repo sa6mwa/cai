@@ -171,6 +171,7 @@ int cai_client_delete_response(cai_client *client, const char *response_id,
 const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
+const char *cai_response_raw_json(const cai_response *response);
 void cai_response_destroy(cai_response *response);
 
 int cai_client_create_conversation(cai_client *client, cai_conversation **out,
