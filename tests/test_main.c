@@ -779,6 +779,8 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"conv_mock\",\"object\":\"conversation\",\"created_at\":1}";
   static const char conversation_get_body[] =
       "{\"id\":\"conv_get\",\"object\":\"conversation\",\"created_at\":1}";
+  static const char conversation_update_body[] =
+      "{\"id\":\"conv_get\",\"object\":\"conversation\",\"created_at\":1}";
   static const char conversation_delete_body[] =
       "{\"id\":\"conv_get\",\"object\":\"conversation.deleted\","
       "\"deleted\":true}";
@@ -793,6 +795,8 @@ static const char *mock_response_for_request(const char *request) {
   static const char conversation_item_delete_body[] =
       "{\"id\":\"conv_msg_1\",\"object\":\"conversation.item.deleted\","
       "\"deleted\":true}";
+  static const char conversation_item_retrieve_body[] =
+      "{\"id\":\"conv_msg_1\",\"type\":\"message\",\"role\":\"user\"}";
   static const char session_first_body[] =
       "{\"id\":\"resp_session_1\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -933,6 +937,10 @@ static const char *mock_response_for_request(const char *request) {
   if (strncmp(request, "GET /v1/conversations/conv_get HTTP/", 36U) == 0) {
     return conversation_get_body;
   }
+  if (strncmp(request, "PATCH /v1/conversations/conv_get HTTP/", 38U) == 0 &&
+      strstr(request, "\"metadata\":{\"tenant\":\"vectis\"}") != NULL) {
+    return conversation_update_body;
+  }
   if (strstr(request, "POST /v1/conversations/conv_get/items HTTP/") != NULL &&
       strstr(request, "\"items\":[") != NULL &&
       strstr(request, "\"type\":\"input_text\"") != NULL &&
@@ -945,6 +953,10 @@ static const char *mock_response_for_request(const char *request) {
       strstr(request, "limit=1") != NULL &&
       strstr(request, "order=desc") != NULL) {
     return conversation_items_body;
+  }
+  if (strstr(request,
+             "GET /v1/conversations/conv_get/items/conv_msg_1 HTTP/") != NULL) {
+    return conversation_item_retrieve_body;
   }
   if (strstr(request,
              "DELETE /v1/conversations/conv_get/items/conv_msg_1 HTTP/") !=
@@ -1235,6 +1247,7 @@ static void test_conversations(test_state *state) {
   cai_client *client;
   cai_conversation *conversation;
   cai_conversation *conversation_ref;
+  cai_conversation_item *item;
   cai_input_item_list *items;
   cai_conversation_items_params *item_params;
   cai_list_params list_params;
@@ -1253,7 +1266,7 @@ static void test_conversations(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 6);
+    mock_openai_child(pipe_fds[1], 8);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -1274,6 +1287,7 @@ static void test_conversations(test_state *state) {
   client = NULL;
   conversation = NULL;
   conversation_ref = NULL;
+  item = NULL;
   items = NULL;
   item_params = NULL;
   expect_int(state, "conversation_client_open",
@@ -1300,6 +1314,15 @@ static void test_conversations(test_state *state) {
              CAI_OK);
   expect_str(state, "conversation_from_id_value",
              cai_conversation_id(conversation_ref), "conv_get");
+  expect_int(state, "conversation_update_metadata",
+             cai_client_update_conversation_metadata_handle(
+                 client, conversation_ref, "{\"tenant\":\"vectis\"}",
+                 &conversation, &error),
+             CAI_OK);
+  expect_str(state, "conversation_update_metadata_id",
+             cai_conversation_id(conversation), "conv_get");
+  cai_conversation_destroy(conversation);
+  conversation = NULL;
   expect_int(state, "conversation_items_params_new",
              cai_conversation_items_params_new(&item_params, &error), CAI_OK);
   expect_int(state, "conversation_items_add_text",
@@ -1334,6 +1357,19 @@ static void test_conversations(test_state *state) {
   expect_str(state, "conversation_list_items_role",
              cai_input_item_role(items, 0U), "user");
   cai_input_item_list_destroy(items);
+  items = NULL;
+  expect_int(state, "conversation_retrieve_item",
+             cai_client_retrieve_conversation_item_handle(
+                 client, conversation_ref, "conv_msg_1", &item, &error),
+             CAI_OK);
+  expect_str(state, "conversation_retrieve_item_id",
+             cai_conversation_item_id(item), "conv_msg_1");
+  expect_str(state, "conversation_retrieve_item_type",
+             cai_conversation_item_type(item), "message");
+  expect_str(state, "conversation_retrieve_item_role",
+             cai_conversation_item_role(item), "user");
+  cai_conversation_item_destroy(item);
+  item = NULL;
   expect_int(state, "conversation_delete_item",
              cai_client_delete_conversation_item_handle(
                  client, conversation_ref, "conv_msg_1", &error),

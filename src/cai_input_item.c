@@ -134,6 +134,56 @@ int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
   return CAI_OK;
 }
 
+int cai_conversation_item_parse_json(const char *json,
+                                     cai_conversation_item **out,
+                                     cai_error *error) {
+  cai_input_item_doc doc;
+  cai_conversation_item *item;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation item output pointer is required");
+  }
+  *out = NULL;
+  if (json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation item JSON is required");
+  }
+  lonejson_init(&cai_input_item_map, &doc);
+  status =
+      lonejson_parse_cstr(&cai_input_item_map, &doc, json, NULL, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&cai_input_item_map, &doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse conversation item JSON",
+                                json_error.message);
+  }
+  item = (cai_conversation_item *)cai_alloc(NULL, sizeof(*item));
+  if (item == NULL) {
+    lonejson_cleanup(&cai_input_item_map, &doc);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate conversation item");
+  }
+  memset(item, 0, sizeof(*item));
+  item->id = cai_strdup(NULL, doc.id);
+  item->type = cai_strdup(NULL, doc.type);
+  item->role = cai_strdup(NULL, doc.role);
+  item->raw_json = cai_strdup(NULL, json);
+  if ((doc.id != NULL && item->id == NULL) ||
+      (doc.type != NULL && item->type == NULL) ||
+      (doc.role != NULL && item->role == NULL) || item->raw_json == NULL) {
+    cai_conversation_item_destroy(item);
+    lonejson_cleanup(&cai_input_item_map, &doc);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate conversation item fields");
+  }
+  lonejson_cleanup(&cai_input_item_map, &doc);
+  *out = item;
+  return CAI_OK;
+}
+
 size_t cai_input_item_list_count(const cai_input_item_list *list) {
   return list != NULL ? list->count : 0U;
 }
@@ -192,4 +242,31 @@ void cai_input_item_list_destroy(cai_input_item_list *list) {
   cai_free_mem(NULL, list->last_id);
   cai_free_mem(NULL, list->raw_json);
   cai_free_mem(NULL, list);
+}
+
+const char *cai_conversation_item_id(const cai_conversation_item *item) {
+  return item != NULL ? item->id : NULL;
+}
+
+const char *cai_conversation_item_type(const cai_conversation_item *item) {
+  return item != NULL ? item->type : NULL;
+}
+
+const char *cai_conversation_item_role(const cai_conversation_item *item) {
+  return item != NULL ? item->role : NULL;
+}
+
+const char *cai_conversation_item_raw_json(const cai_conversation_item *item) {
+  return item != NULL ? item->raw_json : NULL;
+}
+
+void cai_conversation_item_destroy(cai_conversation_item *item) {
+  if (item == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, item->id);
+  cai_free_mem(NULL, item->type);
+  cai_free_mem(NULL, item->role);
+  cai_free_mem(NULL, item->raw_json);
+  cai_free_mem(NULL, item);
 }

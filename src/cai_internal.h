@@ -166,6 +166,13 @@ struct cai_input_item_list {
   size_t count;
 };
 
+struct cai_conversation_item {
+  char *id;
+  char *type;
+  char *role;
+  char *raw_json;
+};
+
 struct cai_conversation {
   char *id;
   char *object;
@@ -197,6 +204,9 @@ int cai_output_from_response(cai_response *response, cai_output **out,
                              cai_error *error);
 int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
                                    cai_error *error);
+int cai_conversation_item_parse_json(const char *json,
+                                     cai_conversation_item **out,
+                                     cai_error *error);
 int cai_build_url(const cai_allocator *allocator, const char *base_url,
                   const char *path, char **out, cai_error *error);
 int cai_append_list_query_params(const cai_allocator *allocator, char **path,
