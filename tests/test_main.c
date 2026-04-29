@@ -622,8 +622,28 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_auto_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"auto done\"}]}]}";
+  static const char manual_tool_call_body[] =
+      "{\"id\":\"resp_manual_tool_1\",\"status\":\"completed\",\"output\":[{"
+      "\"id\":\"fc_manual_1\",\"type\":\"function_call\",\"call_id\":"
+      "\"call_manual_1\",\"name\":\"raw_echo\",\"arguments\":\"{\\\"y\\\":2}\""
+      "}]}";
+  static const char manual_tool_done_body[] =
+      "{\"id\":\"resp_manual_tool_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"manual done\"}]}]}";
 
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
+    if (strstr(request, "manual tool turn") != NULL &&
+        strstr(request, "\"name\":\"raw_echo\"") != NULL) {
+      return manual_tool_call_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_manual_1\"") != NULL &&
+        strstr(request, "\"output\":\"{\\\"y\\\":2}\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_manual_tool_1\"") !=
+            NULL) {
+      return manual_tool_done_body;
+    }
     if (strstr(request, "auto tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return auto_tool_call_body;
@@ -1405,6 +1425,104 @@ static void test_agent_tool_auto_run(test_state *state) {
   }
 }
 
+static void test_agent_tool_manual_step(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_manual_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_manual_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_manual_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.prefer_http_2 = 0;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  expect_int(state, "agent_manual_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_manual_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_manual_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, NULL,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_manual_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_manual_add",
+             cai_session_add_text(session, "user", "manual tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_manual_run_first",
+             cai_session_run(session, &response, &error), CAI_OK);
+  expect_int(state, "agent_manual_tool_count",
+             (long)cai_response_tool_call_count(response), 1L);
+  expect_str(state, "agent_manual_tool_id",
+             cai_response_tool_call_id(response, 0U), "call_manual_1");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "agent_manual_add_output",
+             cai_session_add_function_call_output(session, "call_manual_1",
+                                                  "{\"y\":2}", &error),
+             CAI_OK);
+  expect_int(state, "agent_manual_run_second",
+             cai_session_run(session, &response, &error), CAI_OK);
+  expect_str(state, "agent_manual_response", cai_response_output_text(response),
+             "manual done");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_manual_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_manual_mock", "mock child failed");
+  }
+}
+
 int main(void) {
   test_state state;
 
@@ -1419,6 +1537,7 @@ int main(void) {
   test_http_error_details(&state);
   test_agent_session(&state);
   test_agent_tool_declarations(&state);
+  test_agent_tool_manual_step(&state);
   test_agent_tool_auto_run(&state);
   test_conversations(&state);
   if (state.failures != 0) {

@@ -142,6 +142,9 @@ int cai_session_add_text(cai_session *session, const char *role,
 int cai_session_add_image_url(cai_session *session, const char *role,
                               const char *url, const char *detail,
                               cai_error *error);
+int cai_session_add_function_call_output(cai_session *session,
+                                         const char *call_id,
+                                         const char *output, cai_error *error);
 int cai_session_run(cai_session *session, cai_response **out, cai_error *error);
 void cai_run_options_init(cai_run_options *options);
 int cai_session_run_auto(cai_session *session, const cai_run_options *options,

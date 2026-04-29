@@ -15,6 +15,12 @@ typedef struct cai_tool_output_capture {
   size_t limit;
 } cai_tool_output_capture;
 
+enum {
+  CAI_SESSION_INPUT_TEXT = 0,
+  CAI_SESSION_INPUT_IMAGE = 1,
+  CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT = 2
+};
+
 static int cai_capture_open_spool(cai_tool_output_capture *capture,
                                   cai_error *error);
 
@@ -149,6 +155,8 @@ static void cai_session_clear_inputs(cai_session *session) {
     cai_free_mem(allocator, session->inputs[i].text);
     cai_free_mem(allocator, session->inputs[i].image_url);
     cai_free_mem(allocator, session->inputs[i].detail);
+    cai_free_mem(allocator, session->inputs[i].call_id);
+    cai_free_mem(allocator, session->inputs[i].output);
   }
   session->input_count = 0U;
 }
@@ -186,15 +194,20 @@ static int cai_session_grow_inputs(cai_session *session, cai_error *error) {
   return CAI_OK;
 }
 
-static int cai_session_add_input(cai_session *session, const char *role,
-                                 const char *text, const char *image_url,
-                                 const char *detail, int is_image,
+static int cai_session_add_input(cai_session *session, int kind,
+                                 const char *role, const char *text,
+                                 const char *image_url, const char *detail,
+                                 const char *call_id, const char *output,
                                  cai_error *error) {
   cai_session_input *input;
   cai_allocator *allocator;
   int rc;
 
-  if (session == NULL || role == NULL || role[0] == '\0') {
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (kind != CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT &&
+      (role == NULL || role[0] == '\0')) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and role are required");
   }
@@ -204,22 +217,27 @@ static int cai_session_add_input(cai_session *session, const char *role,
   }
   allocator = &session->agent->client->allocator;
   input = &session->inputs[session->input_count];
+  memset(input, 0, sizeof(*input));
+  input->kind = kind;
   input->role = cai_strdup(allocator, role);
   input->text = cai_strdup(allocator, text);
   input->image_url = cai_strdup(allocator, image_url);
   input->detail = cai_strdup(allocator, detail);
-  input->is_image = is_image;
-  if (input->role == NULL || (text != NULL && input->text == NULL) ||
+  input->call_id = cai_strdup(allocator, call_id);
+  input->output = cai_strdup(allocator, output);
+  if ((role != NULL && input->role == NULL) ||
+      (text != NULL && input->text == NULL) ||
       (image_url != NULL && input->image_url == NULL) ||
-      (detail != NULL && input->detail == NULL)) {
+      (detail != NULL && input->detail == NULL) ||
+      (call_id != NULL && input->call_id == NULL) ||
+      (output != NULL && input->output == NULL)) {
     cai_free_mem(allocator, input->role);
     cai_free_mem(allocator, input->text);
     cai_free_mem(allocator, input->image_url);
     cai_free_mem(allocator, input->detail);
-    input->role = NULL;
-    input->text = NULL;
-    input->image_url = NULL;
-    input->detail = NULL;
+    cai_free_mem(allocator, input->call_id);
+    cai_free_mem(allocator, input->output);
+    memset(input, 0, sizeof(*input));
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate session input");
   }
@@ -232,7 +250,8 @@ int cai_session_add_text(cai_session *session, const char *role,
   if (text == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "text is required");
   }
-  return cai_session_add_input(session, role, text, NULL, NULL, 0, error);
+  return cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, role, text,
+                               NULL, NULL, NULL, NULL, error);
 }
 
 int cai_session_add_image_url(cai_session *session, const char *role,
@@ -241,7 +260,19 @@ int cai_session_add_image_url(cai_session *session, const char *role,
   if (url == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "image URL is required");
   }
-  return cai_session_add_input(session, role, NULL, url, detail, 1, error);
+  return cai_session_add_input(session, CAI_SESSION_INPUT_IMAGE, role, NULL,
+                               url, detail, NULL, NULL, error);
+}
+
+int cai_session_add_function_call_output(cai_session *session,
+                                         const char *call_id,
+                                         const char *output, cai_error *error) {
+  if (call_id == NULL || call_id[0] == '\0' || output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "function call id and output are required");
+  }
+  return cai_session_add_input(session, CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT,
+                               NULL, NULL, NULL, NULL, call_id, output, error);
 }
 
 int cai_session_run(cai_session *session, cai_response **out,
@@ -284,10 +315,14 @@ int cai_session_run(cai_session *session, cai_response **out,
                                                   error);
   }
   for (i = 0U; rc == CAI_OK && i < session->input_count; i++) {
-    if (session->inputs[i].is_image) {
+    if (session->inputs[i].kind == CAI_SESSION_INPUT_IMAGE) {
       rc = cai_response_create_params_add_image_url(
           params, session->inputs[i].role, session->inputs[i].image_url,
           session->inputs[i].detail, error);
+    } else if (session->inputs[i].kind ==
+               CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT) {
+      rc = cai_response_create_params_add_function_call_output(
+          params, session->inputs[i].call_id, session->inputs[i].output, error);
     } else {
       rc = cai_response_create_params_add_text(params, session->inputs[i].role,
                                                session->inputs[i].text, error);

@@ -30,11 +30,13 @@ struct cai_agent {
 };
 
 typedef struct cai_session_text_input {
+  int kind;
   char *role;
   char *text;
   char *image_url;
   char *detail;
-  int is_image;
+  char *call_id;
+  char *output;
 } cai_session_input;
 
 struct cai_session {
