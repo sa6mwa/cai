@@ -1978,8 +1978,11 @@ static void test_stream_response_text(test_state *state) {
   char read_buffer[16];
   size_t got;
   cai_client_config config;
+  cai_agent_config agent_config;
   cai_response_create_params *params;
   cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
   cai_source *source;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -1999,7 +2002,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 3);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -2013,11 +2016,15 @@ static void test_stream_response_text(test_state *state) {
   cai_error_init(&error);
   snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
   cai_client_config_init(&config);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   config.api_key = "mock-key";
   config.base_url = base_url;
   config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
   client = NULL;
+  agent = NULL;
+  session = NULL;
   params = NULL;
   sink = NULL;
   source = NULL;
@@ -2065,7 +2072,28 @@ static void test_stream_response_text(test_state *state) {
   read_buffer[got] = '\0';
   expect_str(state, "stream_source_value", read_buffer, "hello");
   cai_source_close(source);
+  source = NULL;
+  expect_int(state, "stream_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_session_add",
+             cai_session_add_text(session, "user", "stream", &error), CAI_OK);
+  expect_int(state, "stream_session_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_session_to_sink",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_session_sink_value", writer.buffer, "hello");
+  cai_sink_close(sink);
+  sink = NULL;
   cai_response_create_params_destroy(params);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
 

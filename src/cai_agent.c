@@ -869,6 +869,60 @@ int cai_session_run_auto_output(cai_session *session,
   return rc;
 }
 
+int cai_session_stream_text(cai_session *session, cai_sink *sink,
+                            cai_error *error) {
+  cai_response_create_params *params;
+  int rc;
+
+  if (session == NULL || sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and sink are required");
+  }
+  params = NULL;
+  rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_stream_response_text(session->agent->client, params, sink,
+                                         error);
+  }
+  cai_response_create_params_destroy(params);
+  if (rc == CAI_OK) {
+    cai_session_clear_inputs(session);
+  }
+  return rc;
+}
+
+int cai_session_open_text_source(cai_session *session, cai_source **out,
+                                 cai_error *error) {
+  cai_response_create_params *params;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "source output pointer is required");
+  }
+  *out = NULL;
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  params = NULL;
+  rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_open_response_text_source(session->agent->client, params,
+                                              out, error);
+  }
+  cai_response_create_params_destroy(params);
+  if (rc == CAI_OK) {
+    cai_session_clear_inputs(session);
+  }
+  return rc;
+}
+
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error) {
   int rc;

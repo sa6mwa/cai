@@ -187,6 +187,10 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
 int cai_session_run_auto_output(cai_session *session,
                                 const cai_run_options *options,
                                 cai_output **out, cai_error *error);
+int cai_session_stream_text(cai_session *session, cai_sink *sink,
+                            cai_error *error);
+int cai_session_open_text_source(cai_session *session, cai_source **out,
+                                 cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
 
