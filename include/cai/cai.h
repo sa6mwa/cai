@@ -75,6 +75,10 @@ typedef struct cai_agent_config {
   const char *instructions;
   const char *reasoning_effort;
   const char *reasoning_summary;
+  const char *text_format_name;
+  const char *text_format_description;
+  const char *text_format_schema_json;
+  int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
 } cai_agent_config;
@@ -233,6 +237,12 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
                                              cai_error *error);
 int cai_response_create_params_set_parallel_tool_calls(
     cai_response_create_params *params, int enabled, cai_error *error);
+int cai_response_create_params_set_text_format_json_object(
+    cai_response_create_params *params, cai_error *error);
+int cai_response_create_params_set_text_format_json_schema(
+    cai_response_create_params *params, const char *name,
+    const char *description, const char *schema_json, int strict,
+    cai_error *error);
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
                                         cai_error *error);

@@ -463,6 +463,14 @@ static void test_response_json(test_state *state) {
       CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(state, "params_set_text_format",
+             cai_response_create_params_set_text_format_json_schema(
+                 params, "answer", "Answer payload",
+                 "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":"
+                 "\"string\"}},\"required\":[\"answer\"],"
+                 "\"additionalProperties\":false}",
+                 1, &error),
+             CAI_OK);
   expect_int(
       state, "params_set_bad_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, -1, &error),
@@ -511,6 +519,14 @@ static void test_response_json(test_state *state) {
       test_fail(state, "params_serialize",
                 "parallel tool calls missing from JSON");
     }
+    if (strstr(json, "\"text\":{\"format\":{\"type\":\"json_schema\"") ==
+            NULL ||
+        strstr(json, "\"name\":\"answer\"") == NULL ||
+        strstr(json, "\"description\":\"Answer payload\"") == NULL ||
+        strstr(json, "\"schema\":{\"type\":\"object\"") == NULL ||
+        strstr(json, "\"strict\":true") == NULL) {
+      test_fail(state, "params_serialize", "text format missing from JSON");
+    }
     if (strstr(json, "\"type\":\"input_text\"") == NULL) {
       test_fail(state, "params_serialize", "text content missing from JSON");
     }
@@ -529,6 +545,39 @@ static void test_response_json(test_state *state) {
     expect_int(state, "params_serialize_len", (long)strlen(json),
                (long)json_len);
     free(json);
+    json = NULL;
+  }
+  cai_response_create_params_destroy(params);
+  params = NULL;
+
+  expect_int(state, "json_object_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "json_object_params_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+             CAI_OK);
+  expect_int(
+      state, "json_object_params_format",
+      cai_response_create_params_set_text_format_json_object(params, &error),
+      CAI_OK);
+  expect_int(
+      state, "json_object_params_text",
+      cai_response_create_params_add_text(params, "user", "JSON only", &error),
+      CAI_OK);
+  expect_int(state, "json_object_params_serialize",
+             cai_response_create_params_serialize_json(params, &json, &json_len,
+                                                       &error),
+             CAI_OK);
+  if (json == NULL) {
+    test_fail(state, "json_object_params_serialize", "no JSON returned");
+  } else {
+    if (strstr(json, "\"text\":{\"format\":{\"type\":\"json_object\"}}") ==
+        NULL) {
+      test_fail(state, "json_object_params_serialize",
+                "JSON object format missing");
+    }
+    free(json);
+    json = NULL;
   }
   cai_response_create_params_destroy(params);
 
@@ -734,6 +783,8 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"max_output_tokens\":64") != NULL &&
         strstr(request,
                "\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"}") !=
+            NULL &&
+        strstr(request, "\"text\":{\"format\":{\"type\":\"json_schema\"") !=
             NULL &&
         strstr(request, "\"parallel_tool_calls\":false") != NULL &&
         strstr(request, "previous_response_id") == NULL) {
@@ -1241,6 +1292,12 @@ static void test_agent_session(test_state *state) {
   agent_config.instructions = "answer tersely";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  agent_config.text_format_name = "agent_answer";
+  agent_config.text_format_description = "Agent answer payload";
+  agent_config.text_format_schema_json =
+      "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},"
+      "\"required\":[\"answer\"],\"additionalProperties\":false}";
+  agent_config.text_format_strict = 1;
   agent_config.max_output_tokens = 64;
   agent_config.parallel_tool_calls = 0;
   client = NULL;

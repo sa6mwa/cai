@@ -398,6 +398,63 @@ cai_serialize_reasoning_json(cai_json_builder *builder,
   return rc;
 }
 
+static int
+cai_serialize_text_format_json(cai_json_builder *builder,
+                               const cai_response_create_params *params,
+                               int *need_comma, cai_error *error) {
+  int format_comma;
+  int rc;
+
+  if (params->text_format_type == NULL) {
+    return CAI_OK;
+  }
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_json_builder_lit(builder, "\"text\":{\"format\":{", error);
+  format_comma = 0;
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_field_string(
+        builder, "type", params->text_format_type, &format_comma, error);
+  }
+  if (rc == CAI_OK && params->text_format_name != NULL) {
+    rc = cai_json_builder_field_string(
+        builder, "name", params->text_format_name, &format_comma, error);
+  }
+  if (rc == CAI_OK && params->text_format_description != NULL) {
+    rc = cai_json_builder_field_string(builder, "description",
+                                       params->text_format_description,
+                                       &format_comma, error);
+  }
+  if (rc == CAI_OK && params->text_format_schema_json != NULL) {
+    if (format_comma) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "\"schema\":", error);
+    }
+    if (rc == CAI_OK) {
+      rc =
+          cai_json_builder_lit(builder, params->text_format_schema_json, error);
+    }
+    format_comma = 1;
+  }
+  if (rc == CAI_OK && params->text_format_schema_json != NULL) {
+    rc = cai_json_builder_field_bool(
+        builder, "strict", params->text_format_strict, &format_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "}}", error);
+  }
+  if (rc == CAI_OK) {
+    *need_comma = 1;
+  }
+  return rc;
+}
+
 int cai_response_create_params_new(cai_response_create_params **out,
                                    cai_error *error) {
   cai_response_create_params *params;
@@ -422,6 +479,11 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->previous_response_id = NULL;
   params->reasoning_effort = NULL;
   params->reasoning_summary = NULL;
+  params->text_format_type = NULL;
+  params->text_format_name = NULL;
+  params->text_format_description = NULL;
+  params->text_format_schema_json = NULL;
+  params->text_format_strict = 0;
   params->max_output_tokens = 0;
   params->parallel_tool_calls = -1;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
@@ -444,6 +506,10 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->previous_response_id);
   cai_free_mem(&params->allocator, params->reasoning_effort);
   cai_free_mem(&params->allocator, params->reasoning_summary);
+  cai_free_mem(&params->allocator, params->text_format_type);
+  cai_free_mem(&params->allocator, params->text_format_name);
+  cai_free_mem(&params->allocator, params->text_format_description);
+  cai_free_mem(&params->allocator, params->text_format_schema_json);
   messages = (struct cai_input_message *)params->input.items;
   for (i = 0U; i < params->input.count; i++) {
     cai_input_message_cleanup(&params->allocator, &messages[i]);
@@ -544,6 +610,66 @@ int cai_response_create_params_set_parallel_tool_calls(
   }
   params->parallel_tool_calls = enabled;
   return CAI_OK;
+}
+
+static int
+cai_response_params_set_text_format_type(cai_response_create_params *params,
+                                         const char *type, cai_error *error) {
+  int rc;
+
+  rc = cai_replace_string(&params->allocator, &params->text_format_type, type,
+                          error);
+  if (rc == CAI_OK && strcmp(type, "json_object") == 0) {
+    cai_free_mem(&params->allocator, params->text_format_name);
+    cai_free_mem(&params->allocator, params->text_format_description);
+    cai_free_mem(&params->allocator, params->text_format_schema_json);
+    params->text_format_name = NULL;
+    params->text_format_description = NULL;
+    params->text_format_schema_json = NULL;
+    params->text_format_strict = 0;
+  }
+  return rc;
+}
+
+int cai_response_create_params_set_text_format_json_object(
+    cai_response_create_params *params, cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  return cai_response_params_set_text_format_type(params, "json_object", error);
+}
+
+int cai_response_create_params_set_text_format_json_schema(
+    cai_response_create_params *params, const char *name,
+    const char *description, const char *schema_json, int strict,
+    cai_error *error) {
+  int rc;
+
+  if (params == NULL || name == NULL || name[0] == '\0' ||
+      schema_json == NULL || schema_json[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "text format name and schema are required");
+  }
+  rc = cai_response_params_set_text_format_type(params, "json_schema", error);
+  if (rc == CAI_OK) {
+    rc = cai_replace_string(&params->allocator, &params->text_format_name, name,
+                            error);
+  }
+  if (rc == CAI_OK) {
+    rc =
+        cai_replace_string(&params->allocator, &params->text_format_description,
+                           description, error);
+  }
+  if (rc == CAI_OK) {
+    rc =
+        cai_replace_string(&params->allocator, &params->text_format_schema_json,
+                           schema_json, error);
+  }
+  if (rc == CAI_OK) {
+    params->text_format_strict = strict ? 1 : 0;
+  }
+  return rc;
 }
 
 static int cai_response_params_add_part(cai_response_create_params *params,
@@ -901,6 +1027,9 @@ int cai_response_create_params_serialize_json(
   }
   if (rc == CAI_OK) {
     rc = cai_serialize_reasoning_json(&builder, params, &need_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_text_format_json(&builder, params, &need_comma, error);
   }
   if (rc == CAI_OK && params->parallel_tool_calls >= 0) {
     rc = cai_json_builder_field_bool(&builder, "parallel_tool_calls",

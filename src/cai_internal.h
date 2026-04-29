@@ -28,6 +28,10 @@ struct cai_agent {
   char *instructions;
   char *reasoning_effort;
   char *reasoning_summary;
+  char *text_format_name;
+  char *text_format_description;
+  char *text_format_schema_json;
+  int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
   cai_tool_registry *tools;
@@ -98,6 +102,11 @@ struct cai_response_create_params {
   char *previous_response_id;
   char *reasoning_effort;
   char *reasoning_summary;
+  char *text_format_type;
+  char *text_format_name;
+  char *text_format_description;
+  char *text_format_schema_json;
+  int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
   lonejson_object_array input;
