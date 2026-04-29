@@ -311,6 +311,13 @@ static void test_response_json(test_state *state) {
       cai_response_create_params_add_image_url(
           params, "user", "https://example.test/image.png", "high", &error),
       CAI_OK);
+  expect_int(state, "params_add_tool",
+             cai_response_create_params_add_function_tool(
+                 params, "get_weather", "Get weather",
+                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":"
+                 "\"string\"}},\"required\":[\"city\"]}",
+                 1, &error),
+             CAI_OK);
   expect_int(state, "params_serialize",
              cai_response_create_params_serialize_json(params, &json, &json_len,
                                                        &error),
@@ -326,6 +333,12 @@ static void test_response_json(test_state *state) {
     }
     if (strstr(json, "\"type\":\"input_image\"") == NULL) {
       test_fail(state, "params_serialize", "image content missing from JSON");
+    }
+    if (strstr(json, "\"tools\":[") == NULL ||
+        strstr(json, "\"name\":\"get_weather\"") == NULL ||
+        strstr(json, "\"strict\":true") == NULL ||
+        strstr(json, "\"parameters\":{\"type\":\"object\"") == NULL) {
+      test_fail(state, "params_serialize", "function tool missing from JSON");
     }
     if (strstr(json, ":null") != NULL) {
       test_fail(state, "params_serialize", "unexpected null field in JSON");

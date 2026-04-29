@@ -77,6 +77,16 @@ static void cai_input_message_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, message->content.items);
 }
 
+static void cai_function_tool_cleanup(const cai_allocator *allocator,
+                                      struct cai_function_tool *tool) {
+  if (tool == NULL) {
+    return;
+  }
+  cai_free_mem(allocator, tool->name);
+  cai_free_mem(allocator, tool->description);
+  cai_free_mem(allocator, tool->parameters_json);
+}
+
 static void cai_object_array_init(lonejson_object_array *array,
                                   size_t elem_size) {
   array->items = NULL;
@@ -249,12 +259,14 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->instructions = NULL;
   params->previous_response_id = NULL;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
+  cai_object_array_init(&params->tools, sizeof(struct cai_function_tool));
   *out = params;
   return CAI_OK;
 }
 
 void cai_response_create_params_destroy(cai_response_create_params *params) {
   struct cai_input_message *messages;
+  struct cai_function_tool *tools;
   size_t i;
 
   if (params == NULL) {
@@ -267,7 +279,12 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   for (i = 0U; i < params->input.count; i++) {
     cai_input_message_cleanup(&params->allocator, &messages[i]);
   }
+  tools = (struct cai_function_tool *)params->tools.items;
+  for (i = 0U; i < params->tools.count; i++) {
+    cai_function_tool_cleanup(&params->allocator, &tools[i]);
+  }
   cai_free_mem(&params->allocator, params->input.items);
+  cai_free_mem(&params->allocator, params->tools.items);
   cai_free_mem(&params->allocator, params);
 }
 
@@ -393,6 +410,94 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
   return rc;
 }
 
+int cai_response_create_params_add_function_tool(
+    cai_response_create_params *params, const char *name,
+    const char *description, const char *parameters_json, int strict,
+    cai_error *error) {
+  struct cai_function_tool *tools;
+  struct cai_function_tool *tool;
+  int rc;
+
+  if (params == NULL || name == NULL || name[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool name is required");
+  }
+  rc = cai_object_array_grow(&params->allocator, &params->tools,
+                             sizeof(struct cai_function_tool), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  tools = (struct cai_function_tool *)params->tools.items;
+  tool = &tools[params->tools.count];
+  tool->name = cai_strdup(&params->allocator, name);
+  tool->description = cai_strdup(&params->allocator, description);
+  tool->parameters_json = cai_strdup(
+      &params->allocator, parameters_json != NULL ? parameters_json : "{}");
+  tool->strict = strict ? 1 : 0;
+  if (tool->name == NULL ||
+      (description != NULL && tool->description == NULL) ||
+      tool->parameters_json == NULL) {
+    cai_function_tool_cleanup(&params->allocator, tool);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function tool");
+  }
+  params->tools.count++;
+  return CAI_OK;
+}
+
+static int cai_serialize_function_tools_json(cai_json_builder *builder,
+                                             const lonejson_object_array *array,
+                                             cai_error *error) {
+  struct cai_function_tool *tools;
+  size_t i;
+  int need_comma;
+  int rc;
+
+  rc = cai_json_builder_lit(builder, "\"tools\":[", error);
+  tools = (struct cai_function_tool *)array->items;
+  for (i = 0U; rc == CAI_OK && i < array->count; i++) {
+    if (i > 0U) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    need_comma = 0;
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "{", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_field_string(builder, "type", "function",
+                                         &need_comma, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_field_string(builder, "name", tools[i].name,
+                                         &need_comma, error);
+    }
+    if (rc == CAI_OK && tools[i].description != NULL) {
+      rc = cai_json_builder_field_string(
+          builder, "description", tools[i].description, &need_comma, error);
+    }
+    if (rc == CAI_OK && need_comma) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "\"parameters\":", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, tools[i].parameters_json, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(
+          builder, tools[i].strict ? ",\"strict\":true" : ",\"strict\":false",
+          error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "]", error);
+  }
+  return rc;
+}
+
 int cai_serialize_input_messages_json(cai_json_builder *builder,
                                       const char *field_name,
                                       const lonejson_object_array *input,
@@ -503,6 +608,12 @@ int cai_response_create_params_serialize_json(
   }
   rc = cai_serialize_input_messages_json(&builder, "input", &params->input,
                                          error);
+  if (rc == CAI_OK && params->tools.count > 0U) {
+    rc = cai_json_builder_lit(&builder, ",", error);
+  }
+  if (rc == CAI_OK && params->tools.count > 0U) {
+    rc = cai_serialize_function_tools_json(&builder, &params->tools, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_json_builder_lit(&builder, "}", error);
   }

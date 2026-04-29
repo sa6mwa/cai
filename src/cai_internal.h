@@ -73,12 +73,20 @@ struct cai_input_message {
   lonejson_object_array content;
 };
 
+struct cai_function_tool {
+  char *name;
+  char *description;
+  char *parameters_json;
+  int strict;
+};
+
 struct cai_response_create_params {
   cai_allocator allocator;
   char *model;
   char *instructions;
   char *previous_response_id;
   lonejson_object_array input;
+  lonejson_object_array tools;
 };
 
 struct cai_conversation_items_params {
