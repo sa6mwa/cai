@@ -413,7 +413,8 @@ static void test_response_json(test_state *state) {
       "{\"id\":\"resp_123\",\"status\":\"completed\",\"model\":"
       "\"gpt-5.4-nano\",\"created_at\":123,\"error\":{\"code\":"
       "\"rate_limited\",\"message\":\"slow down\"},\"incomplete_details\":"
-      "{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":"
+      "{\"reason\":\"max_output_tokens\"},\"conversation\":{\"id\":"
+      "\"conv_123\"},\"output\":[{\"type\":"
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello "
       "\"},{\"type\":\"output_text\",\"text\":\"world\"}]},{\"id\":"
       "\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\","
@@ -439,6 +440,10 @@ static void test_response_json(test_state *state) {
       state, "params_set_instructions",
       cai_response_create_params_set_instructions(params, "be brief", &error),
       CAI_OK);
+  expect_int(state, "params_set_conversation",
+             cai_response_create_params_set_conversation_id(params, "conv_123",
+                                                            &error),
+             CAI_OK);
   expect_int(
       state, "params_add_text",
       cai_response_create_params_add_text(params, "user", "hello", &error),
@@ -464,6 +469,9 @@ static void test_response_json(test_state *state) {
   } else {
     if (strstr(json, "\"model\":\"gpt-5.4-nano\"") == NULL) {
       test_fail(state, "params_serialize", "model missing from JSON");
+    }
+    if (strstr(json, "\"conversation\":\"conv_123\"") == NULL) {
+      test_fail(state, "params_serialize", "conversation missing from JSON");
     }
     if (strstr(json, "\"type\":\"input_text\"") == NULL) {
       test_fail(state, "params_serialize", "text content missing from JSON");
@@ -494,6 +502,8 @@ static void test_response_json(test_state *state) {
              "completed");
   expect_str(state, "response_model", cai_response_model(response),
              CAI_MODEL_GPT_5_4_NANO);
+  expect_str(state, "response_conversation",
+             cai_response_conversation_id(response), "conv_123");
   expect_int(state, "response_created_at",
              (long)cai_response_created_at(response), 123L);
   expect_str(state, "response_text", cai_response_output_text(response),

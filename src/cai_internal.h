@@ -89,6 +89,7 @@ struct cai_function_tool {
 struct cai_response_create_params {
   cai_allocator allocator;
   char *model;
+  char *conversation_id;
   char *instructions;
   char *previous_response_id;
   lonejson_object_array input;
@@ -111,6 +112,7 @@ struct cai_response {
   char *id;
   char *status;
   char *model;
+  char *conversation_id;
   char *output_text;
   char *raw_json;
   char *error_code;

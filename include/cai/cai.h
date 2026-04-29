@@ -206,6 +206,9 @@ int cai_response_create_params_set_instructions(
 int cai_response_create_params_set_previous_response_id(
     cai_response_create_params *params, const char *response_id,
     cai_error *error);
+int cai_response_create_params_set_conversation_id(
+    cai_response_create_params *params, const char *conversation_id,
+    cai_error *error);
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
                                         cai_error *error);
@@ -239,6 +242,7 @@ int cai_client_list_response_input_items(cai_client *client,
 const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
 const char *cai_response_model(const cai_response *response);
+const char *cai_response_conversation_id(const cai_response *response);
 long long cai_response_created_at(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 const char *cai_response_raw_json(const cai_response *response);

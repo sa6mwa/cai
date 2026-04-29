@@ -38,6 +38,10 @@ typedef struct cai_response_incomplete_doc {
   char *reason;
 } cai_response_incomplete_doc;
 
+typedef struct cai_response_conversation_doc {
+  char *id;
+} cai_response_conversation_doc;
+
 typedef struct cai_response_doc {
   char *id;
   char *status;
@@ -45,6 +49,7 @@ typedef struct cai_response_doc {
   long long created_at;
   cai_response_error_doc error;
   cai_response_incomplete_doc incomplete_details;
+  cai_response_conversation_doc conversation;
   cai_response_usage_doc usage;
   lonejson_object_array output;
 } cai_response_doc;
@@ -91,6 +96,12 @@ static const lonejson_field cai_response_incomplete_fields[] = {
 LONEJSON_MAP_DEFINE(cai_response_incomplete_map, cai_response_incomplete_doc,
                     cai_response_incomplete_fields);
 
+static const lonejson_field cai_response_conversation_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_conversation_doc, id, "id")};
+LONEJSON_MAP_DEFINE(cai_response_conversation_map,
+                    cai_response_conversation_doc,
+                    cai_response_conversation_fields);
+
 static const lonejson_field cai_response_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, status, "status"),
@@ -100,6 +111,8 @@ static const lonejson_field cai_response_fields[] = {
                           &cai_response_error_map),
     LONEJSON_FIELD_OBJECT(cai_response_doc, incomplete_details,
                           "incomplete_details", &cai_response_incomplete_map),
+    LONEJSON_FIELD_OBJECT(cai_response_doc, conversation, "conversation",
+                          &cai_response_conversation_map),
     LONEJSON_FIELD_OBJECT(cai_response_doc, usage, "usage",
                           &cai_response_usage_map),
     LONEJSON_FIELD_OBJECT_ARRAY(
@@ -315,6 +328,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->allocator.free_fn = NULL;
   params->allocator.context = NULL;
   params->model = NULL;
+  params->conversation_id = NULL;
   params->instructions = NULL;
   params->previous_response_id = NULL;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
@@ -332,6 +346,7 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
     return;
   }
   cai_free_mem(&params->allocator, params->model);
+  cai_free_mem(&params->allocator, params->conversation_id);
   cai_free_mem(&params->allocator, params->instructions);
   cai_free_mem(&params->allocator, params->previous_response_id);
   messages = (struct cai_input_message *)params->input.items;
@@ -375,6 +390,17 @@ int cai_response_create_params_set_previous_response_id(
   }
   return cai_replace_string(&params->allocator, &params->previous_response_id,
                             response_id, error);
+}
+
+int cai_response_create_params_set_conversation_id(
+    cai_response_create_params *params, const char *conversation_id,
+    cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  return cai_replace_string(&params->allocator, &params->conversation_id,
+                            conversation_id, error);
 }
 
 static int cai_response_params_add_part(cai_response_create_params *params,
@@ -721,6 +747,10 @@ int cai_response_create_params_serialize_json(
                                        params->previous_response_id,
                                        &need_comma, error);
   }
+  if (rc == CAI_OK && params->conversation_id != NULL) {
+    rc = cai_json_builder_field_string(
+        &builder, "conversation", params->conversation_id, &need_comma, error);
+  }
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(&builder, ",", error);
   }
@@ -887,6 +917,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->id = cai_strdup(NULL, doc.id);
   response->status = cai_strdup(NULL, doc.status);
   response->model = cai_strdup(NULL, doc.model);
+  response->conversation_id = cai_strdup(NULL, doc.conversation.id);
   response->output_text = cai_response_collect_text(&doc);
   response->raw_json = cai_strdup(NULL, json);
   response->error_code = cai_strdup(NULL, doc.error.code);
@@ -900,6 +931,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->tool_call_count = 0U;
   if (response->id == NULL || response->status == NULL ||
       (doc.model != NULL && response->model == NULL) ||
+      (doc.conversation.id != NULL && response->conversation_id == NULL) ||
       response->output_text == NULL || response->raw_json == NULL ||
       (doc.error.code != NULL && response->error_code == NULL) ||
       (doc.error.message != NULL && response->error_message == NULL) ||
@@ -930,6 +962,10 @@ const char *cai_response_status(const cai_response *response) {
 
 const char *cai_response_model(const cai_response *response) {
   return response != NULL ? response->model : NULL;
+}
+
+const char *cai_response_conversation_id(const cai_response *response) {
+  return response != NULL ? response->conversation_id : NULL;
 }
 
 long long cai_response_created_at(const cai_response *response) {
@@ -1014,6 +1050,7 @@ void cai_response_destroy(cai_response *response) {
   cai_free_mem(NULL, response->id);
   cai_free_mem(NULL, response->status);
   cai_free_mem(NULL, response->model);
+  cai_free_mem(NULL, response->conversation_id);
   cai_free_mem(NULL, response->output_text);
   cai_free_mem(NULL, response->raw_json);
   cai_free_mem(NULL, response->error_code);
