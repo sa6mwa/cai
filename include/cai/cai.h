@@ -81,6 +81,12 @@ typedef struct cai_list_params {
   const char *order;
 } cai_list_params;
 
+typedef struct cai_run_options {
+  int max_tool_rounds;
+  size_t tool_output_memory_limit;
+  const char *tool_spool_dir;
+} cai_run_options;
+
 typedef size_t (*cai_source_read_fn)(void *context, void *buffer, size_t count,
                                      cai_error *error);
 typedef int (*cai_source_reset_fn)(void *context, cai_error *error);
@@ -137,6 +143,9 @@ int cai_session_add_image_url(cai_session *session, const char *role,
                               const char *url, const char *detail,
                               cai_error *error);
 int cai_session_run(cai_session *session, cai_response **out, cai_error *error);
+void cai_run_options_init(cai_run_options *options);
+int cai_session_run_auto(cai_session *session, const cai_run_options *options,
+                         cai_response **out, cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
 
@@ -204,6 +213,9 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
 int cai_response_create_params_add_function_tool(
     cai_response_create_params *params, const char *name,
     const char *description, const char *parameters_json, int strict,
+    cai_error *error);
+int cai_response_create_params_add_function_call_output(
+    cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error);
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,

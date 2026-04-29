@@ -1,11 +1,29 @@
 #include "cai_internal.h"
 
+#include <string.h>
+
+typedef struct cai_tool_output_capture {
+  char *data;
+  size_t length;
+  size_t capacity;
+  size_t limit;
+} cai_tool_output_capture;
+
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
     return;
   }
   config->model = NULL;
   config->instructions = NULL;
+}
+
+void cai_run_options_init(cai_run_options *options) {
+  if (options == NULL) {
+    return;
+  }
+  options->max_tool_rounds = 4;
+  options->tool_output_memory_limit = 1024U * 1024U;
+  options->tool_spool_dir = NULL;
 }
 
 int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
@@ -287,6 +305,186 @@ int cai_session_run(cai_session *session, cai_response **out,
   session->previous_response_id = next_response_id;
   cai_session_clear_inputs(session);
   *out = response;
+  return CAI_OK;
+}
+
+static int cai_session_remember_response(cai_session *session,
+                                         const cai_response *response,
+                                         cai_error *error) {
+  char *next_response_id;
+
+  next_response_id =
+      cai_strdup(&session->agent->client->allocator, cai_response_id(response));
+  if (next_response_id == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to remember previous response id");
+  }
+  cai_free_mem(&session->agent->client->allocator,
+               session->previous_response_id);
+  session->previous_response_id = next_response_id;
+  return CAI_OK;
+}
+
+static int cai_capture_tool_output(void *context, const void *bytes,
+                                   size_t count, cai_error *error) {
+  cai_tool_output_capture *capture;
+  size_t needed;
+  size_t new_capacity;
+  char *grown;
+
+  capture = (cai_tool_output_capture *)context;
+  needed = capture->length + count + 1U;
+  if (capture->limit > 0U && needed - 1U > capture->limit) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool output exceeded memory limit");
+  }
+  if (needed > capture->capacity) {
+    new_capacity = capture->capacity == 0U ? 256U : capture->capacity;
+    while (new_capacity < needed) {
+      new_capacity *= 2U;
+    }
+    grown = (char *)cai_realloc_mem(NULL, capture->data, new_capacity);
+    if (grown == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow tool output");
+    }
+    capture->data = grown;
+    capture->capacity = new_capacity;
+  }
+  if (count > 0U) {
+    memcpy(capture->data + capture->length, bytes, count);
+    capture->length += count;
+  }
+  capture->data[capture->length] = '\0';
+  return CAI_OK;
+}
+
+static int cai_session_init_response_params(cai_session *session,
+                                            cai_response_create_params **out,
+                                            cai_error *error) {
+  cai_response_create_params *params;
+  int rc;
+
+  params = NULL;
+  rc = cai_response_create_params_new(&params, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_model(params, session->agent->model,
+                                              error);
+  }
+  if (rc == CAI_OK && session->agent->instructions != NULL) {
+    rc = cai_response_create_params_set_instructions(
+        params, session->agent->instructions, error);
+  }
+  if (rc == CAI_OK && session->previous_response_id != NULL) {
+    rc = cai_response_create_params_set_previous_response_id(
+        params, session->previous_response_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_add_to_response_params(session->agent->tools, params,
+                                                  error);
+  }
+  if (rc != CAI_OK) {
+    cai_response_create_params_destroy(params);
+    return rc;
+  }
+  *out = params;
+  return CAI_OK;
+}
+
+static int cai_session_run_tool_round(cai_session *session,
+                                      const cai_response *response,
+                                      const cai_run_options *options,
+                                      cai_response **out, cai_error *error) {
+  cai_response_create_params *params;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_tool_output_capture capture;
+  size_t i;
+  int rc;
+
+  params = NULL;
+  rc = cai_session_init_response_params(session, &params, error);
+  for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
+       i++) {
+    capture.data = NULL;
+    capture.length = 0U;
+    capture.capacity = 0U;
+    capture.limit = options->tool_output_memory_limit;
+    callbacks.write = cai_capture_tool_output;
+    callbacks.close = NULL;
+    callbacks.context = &capture;
+    sink = NULL;
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+    if (rc == CAI_OK) {
+      rc = cai_tool_registry_run(
+          session->agent->tools, cai_response_tool_call_name(response, i),
+          cai_response_tool_call_arguments(response, i), sink, error);
+    }
+    cai_sink_close(sink);
+    if (rc == CAI_OK) {
+      rc = cai_response_create_params_add_function_call_output(
+          params, cai_response_tool_call_id(response, i),
+          capture.data != NULL ? capture.data : "", error);
+    }
+    cai_free_mem(NULL, capture.data);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_create_response(session->agent->client, params, out, error);
+  }
+  cai_response_create_params_destroy(params);
+  return rc;
+}
+
+int cai_session_run_auto(cai_session *session, const cai_run_options *options,
+                         cai_response **out, cai_error *error) {
+  cai_run_options defaults;
+  const cai_run_options *effective;
+  cai_response *current;
+  cai_response *next;
+  int rounds;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response output pointer is required");
+  }
+  *out = NULL;
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  cai_run_options_init(&defaults);
+  effective = options != NULL ? options : &defaults;
+  if (effective->max_tool_rounds < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max tool rounds cannot be negative");
+  }
+  if (effective->tool_spool_dir != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool output spooling is not implemented yet");
+  }
+
+  current = NULL;
+  rc = cai_session_run(session, &current, error);
+  rounds = 0;
+  while (rc == CAI_OK && cai_response_tool_call_count(current) > 0U &&
+         rounds < effective->max_tool_rounds) {
+    if (cai_session_remember_response(session, current, error) != CAI_OK) {
+      rc = error != NULL ? error->code : CAI_ERR_NOMEM;
+      break;
+    }
+    next = NULL;
+    rc = cai_session_run_tool_round(session, current, effective, &next, error);
+    cai_response_destroy(current);
+    current = next;
+    rounds++;
+    if (rc == CAI_OK) {
+      rc = cai_session_remember_response(session, current, error);
+    }
+  }
+  if (rc != CAI_OK) {
+    cai_response_destroy(current);
+    return rc;
+  }
+  *out = current;
   return CAI_OK;
 }
 

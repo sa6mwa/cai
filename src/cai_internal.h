@@ -70,8 +70,11 @@ struct cai_content_part {
 };
 
 struct cai_input_message {
+  int kind;
   char *role;
   lonejson_object_array content;
+  char *call_id;
+  char *output;
 };
 
 struct cai_function_tool {

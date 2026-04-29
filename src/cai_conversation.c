@@ -383,6 +383,7 @@ static int cai_conversation_items_params_add_part(
   }
   messages = (struct cai_input_message *)params->items.items;
   message = &messages[params->items.count];
+  memset(message, 0, sizeof(*message));
   message->role = NULL;
   cai_conversation_object_array_init(&message->content,
                                      sizeof(struct cai_content_part));

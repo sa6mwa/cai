@@ -7,6 +7,8 @@ typedef struct cai_json_string_doc {
   char *value;
 } cai_json_string_doc;
 
+enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
+
 typedef struct cai_response_content_doc {
   char *type;
   char *text;
@@ -79,6 +81,8 @@ static void cai_input_message_cleanup(const cai_allocator *allocator,
     return;
   }
   cai_free_mem(allocator, message->role);
+  cai_free_mem(allocator, message->call_id);
+  cai_free_mem(allocator, message->output);
   parts = (struct cai_content_part *)message->content.items;
   for (i = 0U; i < message->content.count; i++) {
     cai_content_part_cleanup(allocator, &parts[i]);
@@ -346,6 +350,8 @@ static int cai_response_params_add_part(cai_response_create_params *params,
   }
   messages = (struct cai_input_message *)params->input.items;
   message = &messages[params->input.count];
+  memset(message, 0, sizeof(*message));
+  message->kind = CAI_INPUT_MESSAGE;
   message->role = NULL;
   cai_object_array_init(&message->content, sizeof(struct cai_content_part));
   message->role = cai_strdup(&params->allocator, role);
@@ -453,6 +459,39 @@ int cai_response_create_params_add_function_tool(
   return CAI_OK;
 }
 
+int cai_response_create_params_add_function_call_output(
+    cai_response_create_params *params, const char *call_id, const char *output,
+    cai_error *error) {
+  struct cai_input_message *messages;
+  struct cai_input_message *message;
+  int rc;
+
+  if (params == NULL || call_id == NULL || call_id[0] == '\0' ||
+      output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "function call id and output are required");
+  }
+  rc = cai_object_array_grow(&params->allocator, &params->input,
+                             sizeof(struct cai_input_message), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  messages = (struct cai_input_message *)params->input.items;
+  message = &messages[params->input.count];
+  memset(message, 0, sizeof(*message));
+  message->kind = CAI_INPUT_FUNCTION_CALL_OUTPUT;
+  cai_object_array_init(&message->content, sizeof(struct cai_content_part));
+  message->call_id = cai_strdup(&params->allocator, call_id);
+  message->output = cai_strdup(&params->allocator, output);
+  if (message->call_id == NULL || message->output == NULL) {
+    cai_input_message_cleanup(&params->allocator, message);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function call output");
+  }
+  params->input.count++;
+  return CAI_OK;
+}
+
 static int cai_serialize_function_tools_json(cai_json_builder *builder,
                                              const lonejson_object_array *array,
                                              cai_error *error) {
@@ -529,6 +568,30 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
   for (i = 0U; rc == CAI_OK && i < input->count; i++) {
     if (i > 0U) {
       rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT) {
+      int need_comma;
+
+      need_comma = 0;
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, "{", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_field_string(
+            builder, "type", "function_call_output", &need_comma, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_field_string(
+            builder, "call_id", messages[i].call_id, &need_comma, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_field_string(
+            builder, "output", messages[i].output, &need_comma, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, "}", error);
+      }
+      continue;
     }
     if (rc == CAI_OK) {
       rc = cai_json_builder_lit(builder, "{\"role\":", error);
