@@ -134,6 +134,9 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
                                              const char *role, const char *url,
                                              const char *detail,
                                              cai_error *error);
+int cai_client_create_response(cai_client *client,
+                               const cai_response_create_params *params,
+                               cai_response **out, cai_error *error);
 
 const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);

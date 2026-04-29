@@ -9,6 +9,8 @@ project(cai VERSION ${CAI_RESOLVED_VERSION} LANGUAGES C)
 include(CTest)
 include(GNUInstallDirs)
 
+find_package(CURL REQUIRED)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CAI_BUILD_STATIC "Build the static cai library." ON)
@@ -108,6 +110,7 @@ set(CAI_SOURCES
   src/cai_client.c
   src/cai_env.c
   src/cai_error.c
+  src/cai_http.c
   src/cai_models.c
   src/cai_response.c
   src/cai_source.c)
@@ -144,6 +147,7 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
     else()
       target_link_libraries(${_cai_target} PRIVATE lonejson)
     endif()
+    target_link_libraries(${_cai_target} PRIVATE CURL::libcurl)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()

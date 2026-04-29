@@ -2,9 +2,14 @@
 
 #include "cai_internal.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 typedef struct test_state {
@@ -340,6 +345,158 @@ static void test_response_json(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static int mock_write_all(int fd, const char *data, size_t length) {
+  size_t offset;
+  ssize_t written;
+
+  offset = 0U;
+  while (offset < length) {
+    written = write(fd, data + offset, length - offset);
+    if (written <= 0) {
+      return -1;
+    }
+    offset += (size_t)written;
+  }
+  return 0;
+}
+
+static void mock_openai_child(int pipe_fd) {
+  static const char response_body[] =
+      "{\"id\":\"resp_mock\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"mock "
+      "ok\"}]}]}";
+  char response[512];
+  char request[4096];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  int response_len;
+
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0) {
+    _exit(4);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  client_fd = accept(server_fd, NULL, NULL);
+  if (client_fd < 0) {
+    _exit(7);
+  }
+  if (read(client_fd, request, sizeof(request)) <= 0) {
+    _exit(8);
+  }
+  response_len =
+      snprintf(response, sizeof(response),
+               "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+               "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
+               (unsigned long)(sizeof(response_body) - 1U), response_body);
+  if (response_len <= 0 || (size_t)response_len >= sizeof(response)) {
+    _exit(9);
+  }
+  if (mock_write_all(client_fd, response, (size_t)response_len) != 0) {
+    _exit(10);
+  }
+  close(client_fd);
+  close(server_fd);
+  _exit(0);
+}
+
+static void test_http_create_response(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_client *client;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "http_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "http_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1]);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "http_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.prefer_http_2 = 0;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  params = NULL;
+  response = NULL;
+  expect_int(state, "http_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "http_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "http_params_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+             CAI_OK);
+  expect_int(
+      state, "http_params_input",
+      cai_response_create_params_add_text(params, "user", "hello", &error),
+      CAI_OK);
+  expect_int(state, "http_create",
+             cai_client_create_response(client, params, &response, &error),
+             CAI_OK);
+  expect_str(state, "http_response_id", cai_response_id(response), "resp_mock");
+  expect_str(state, "http_response_text", cai_response_output_text(response),
+             "mock ok");
+  cai_response_destroy(response);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "http_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "http_mock", "mock child failed");
+  }
+}
+
 int main(void) {
   test_state state;
 
@@ -349,6 +506,7 @@ int main(void) {
   test_source_sink(&state);
   test_client_open(&state);
   test_response_json(&state);
+  test_http_create_response(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;

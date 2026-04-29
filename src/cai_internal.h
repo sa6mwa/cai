@@ -67,5 +67,7 @@ int cai_response_create_params_serialize_json(
     cai_error *error);
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error);
+int cai_build_url(const cai_allocator *allocator, const char *base_url,
+                  const char *path, char **out, cai_error *error);
 
 #endif
