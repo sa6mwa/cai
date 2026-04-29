@@ -153,10 +153,10 @@ static int cai_append_bearer_header(cai_client *client,
   return rc;
 }
 
-static int cai_http_response_request(cai_client *client, const char *method,
-                                     const char *path, const char *request_json,
-                                     cai_http_response_mode mode,
-                                     cai_response **out, cai_error *error) {
+int cai_http_json_request(cai_client *client, const char *method,
+                          const char *path, const char *request_json,
+                          char **out_json, long *out_http_status,
+                          cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -165,8 +165,13 @@ static int cai_http_response_request(cai_client *client, const char *method,
   long http_status;
   int rc;
 
-  if (out != NULL) {
-    *out = NULL;
+  if (out_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "JSON output pointer is required");
+  }
+  *out_json = NULL;
+  if (out_http_status != NULL) {
+    *out_http_status = 0L;
   }
   if (client == NULL || method == NULL || path == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -233,11 +238,43 @@ static int cai_http_response_request(cai_client *client, const char *method,
   curl_slist_free_all(headers);
   cai_free_mem(&client->allocator, url);
 
+  if (out_http_status != NULL) {
+    *out_http_status = http_status;
+  }
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "response request transport failed",
+                                "HTTP request transport failed",
                                 curl_easy_strerror(curl_rc));
+  }
+  *out_json = body.data != NULL ? body.data : cai_strdup(NULL, "");
+  if (*out_json == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate empty response body");
+  }
+  return CAI_OK;
+}
+
+static int cai_http_response_request(cai_client *client, const char *method,
+                                     const char *path, const char *request_json,
+                                     cai_http_response_mode mode,
+                                     cai_response **out, cai_error *error) {
+  char *body;
+  long http_status;
+  int rc;
+
+  if (out != NULL) {
+    *out = NULL;
+  }
+  if (client == NULL || method == NULL || path == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "client, method, and path are required");
+  }
+  body = NULL;
+  rc = cai_http_json_request(client, method, path, request_json, &body,
+                             &http_status, error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   if (http_status < 200L || http_status >= 300L) {
     if (error != NULL) {
@@ -245,21 +282,21 @@ static int cai_http_response_request(cai_client *client, const char *method,
     }
     rc = cai_set_error_detail(error, CAI_ERR_SERVER,
                               "response request returned an error",
-                              body.data != NULL ? body.data : "");
-    cai_free_mem(NULL, body.data);
+                              body != NULL ? body : "");
+    cai_free_mem(NULL, body);
     return rc;
   }
   if (mode == CAI_HTTP_RESPONSE_IGNORE) {
-    cai_free_mem(NULL, body.data);
+    cai_free_mem(NULL, body);
     return CAI_OK;
   }
   if (out == NULL) {
-    cai_free_mem(NULL, body.data);
+    cai_free_mem(NULL, body);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response output pointer is required");
   }
-  rc = cai_response_parse_json(body.data != NULL ? body.data : "", out, error);
-  cai_free_mem(NULL, body.data);
+  rc = cai_response_parse_json(body != NULL ? body : "", out, error);
+  cai_free_mem(NULL, body);
   return rc;
 }
 

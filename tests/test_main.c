@@ -403,6 +403,13 @@ static const char *mock_response_for_request(const char *request) {
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"cancel "
       "ok\"}]}]}";
   static const char delete_body[] = "{\"deleted\":true,\"id\":\"resp_get\"}";
+  static const char conversation_create_body[] =
+      "{\"id\":\"conv_mock\",\"object\":\"conversation\",\"created_at\":1}";
+  static const char conversation_get_body[] =
+      "{\"id\":\"conv_get\",\"object\":\"conversation\",\"created_at\":1}";
+  static const char conversation_delete_body[] =
+      "{\"id\":\"conv_get\",\"object\":\"conversation.deleted\","
+      "\"deleted\":true}";
   static const char session_first_body[] =
       "{\"id\":\"resp_session_1\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -453,6 +460,15 @@ static const char *mock_response_for_request(const char *request) {
   }
   if (strncmp(request, "DELETE /v1/responses/resp_get HTTP/", 35U) == 0) {
     return delete_body;
+  }
+  if (strncmp(request, "POST /v1/conversations HTTP/", 28U) == 0) {
+    return conversation_create_body;
+  }
+  if (strncmp(request, "GET /v1/conversations/conv_get HTTP/", 36U) == 0) {
+    return conversation_get_body;
+  }
+  if (strncmp(request, "DELETE /v1/conversations/conv_get HTTP/", 39U) == 0) {
+    return conversation_delete_body;
   }
   return NULL;
 }
@@ -608,6 +624,82 @@ static void test_http_create_response(test_state *state) {
   }
 }
 
+static void test_conversations(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_client *client;
+  cai_conversation *conversation;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "conversation_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "conversation_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 3);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "conversation_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.prefer_http_2 = 0;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  conversation = NULL;
+  expect_int(state, "conversation_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "conversation_create",
+             cai_client_create_conversation(client, &conversation, &error),
+             CAI_OK);
+  expect_str(state, "conversation_create_id", cai_conversation_id(conversation),
+             "conv_mock");
+  expect_str(state, "conversation_create_object",
+             cai_conversation_object(conversation), "conversation");
+  cai_conversation_destroy(conversation);
+  conversation = NULL;
+  expect_int(state, "conversation_retrieve",
+             cai_client_retrieve_conversation(client, "conv_get", &conversation,
+                                              &error),
+             CAI_OK);
+  expect_str(state, "conversation_retrieve_id",
+             cai_conversation_id(conversation), "conv_get");
+  cai_conversation_destroy(conversation);
+  expect_int(state, "conversation_delete",
+             cai_client_delete_conversation(client, "conv_get", &error),
+             CAI_OK);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "conversation_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "conversation_mock", "mock child failed");
+  }
+}
+
 static void test_agent_session(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -738,6 +830,7 @@ int main(void) {
   test_response_json(&state);
   test_http_create_response(&state);
   test_agent_session(&state);
+  test_conversations(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;

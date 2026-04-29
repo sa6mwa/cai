@@ -109,6 +109,7 @@ set(CAI_SOURCES
   src/cai_agent.c
   src/cai_allocator.c
   src/cai_client.c
+  src/cai_conversation.c
   src/cai_env.c
   src/cai_error.c
   src/cai_http.c

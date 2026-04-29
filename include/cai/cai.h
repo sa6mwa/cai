@@ -17,6 +17,7 @@ struct pslog_logger;
 typedef struct cai_client cai_client;
 typedef struct cai_agent cai_agent;
 typedef struct cai_session cai_session;
+typedef struct cai_conversation cai_conversation;
 typedef struct cai_source cai_source;
 typedef struct cai_sink cai_sink;
 typedef struct cai_output cai_output;
@@ -171,6 +172,18 @@ const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 void cai_response_destroy(cai_response *response);
+
+int cai_client_create_conversation(cai_client *client, cai_conversation **out,
+                                   cai_error *error);
+int cai_client_retrieve_conversation(cai_client *client,
+                                     const char *conversation_id,
+                                     cai_conversation **out, cai_error *error);
+int cai_client_delete_conversation(cai_client *client,
+                                   const char *conversation_id,
+                                   cai_error *error);
+const char *cai_conversation_id(const cai_conversation *conversation);
+const char *cai_conversation_object(const cai_conversation *conversation);
+void cai_conversation_destroy(cai_conversation *conversation);
 
 #ifdef __cplusplus
 }
