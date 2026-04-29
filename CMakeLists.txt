@@ -106,6 +106,7 @@ if(CAI_LONEJSON_INCLUDE_DIR STREQUAL "")
 endif()
 
 set(CAI_SOURCES
+  src/cai_agent.c
   src/cai_allocator.c
   src/cai_client.c
   src/cai_env.c

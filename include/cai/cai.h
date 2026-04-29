@@ -15,6 +15,8 @@ struct lonejson_map;
 struct pslog_logger;
 
 typedef struct cai_client cai_client;
+typedef struct cai_agent cai_agent;
+typedef struct cai_session cai_session;
 typedef struct cai_source cai_source;
 typedef struct cai_sink cai_sink;
 typedef struct cai_output cai_output;
@@ -64,6 +66,11 @@ typedef struct cai_client_config {
   cai_allocator allocator;
 } cai_client_config;
 
+typedef struct cai_agent_config {
+  const char *model;
+  const char *instructions;
+} cai_agent_config;
+
 typedef size_t (*cai_source_read_fn)(void *context, void *buffer, size_t count,
                                      cai_error *error);
 typedef int (*cai_source_reset_fn)(void *context, cai_error *error);
@@ -90,6 +97,16 @@ void cai_client_config_init(cai_client_config *config);
 int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
 void cai_client_close(cai_client *client);
+
+void cai_agent_config_init(cai_agent_config *config);
+int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
+                         cai_agent **out, cai_error *error);
+void cai_agent_destroy(cai_agent *agent);
+int cai_agent_new_session(cai_agent *agent, cai_session **out,
+                          cai_error *error);
+void cai_session_destroy(cai_session *session);
+int cai_session_send_text(cai_session *session, const char *text,
+                          cai_response **out, cai_error *error);
 
 void cai_error_init(cai_error *error);
 void cai_error_cleanup(cai_error *error);

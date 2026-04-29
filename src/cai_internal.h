@@ -22,6 +22,17 @@ struct cai_client {
   struct pslog_logger *logger;
 };
 
+struct cai_agent {
+  cai_client *client;
+  char *model;
+  char *instructions;
+};
+
+struct cai_session {
+  cai_agent *agent;
+  char *previous_response_id;
+};
+
 void *cai_alloc(const cai_allocator *allocator, size_t size);
 void *cai_realloc_mem(const cai_allocator *allocator, void *ptr, size_t size);
 void cai_free_mem(const cai_allocator *allocator, void *ptr);
