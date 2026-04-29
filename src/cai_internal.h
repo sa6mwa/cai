@@ -26,6 +26,7 @@ struct cai_agent {
   cai_client *client;
   char *model;
   char *instructions;
+  cai_tool_registry *tools;
 };
 
 typedef struct cai_session_text_input {

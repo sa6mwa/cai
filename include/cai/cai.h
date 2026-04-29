@@ -117,6 +117,17 @@ void cai_agent_config_init(cai_agent_config *config);
 int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          cai_agent **out, cai_error *error);
 void cai_agent_destroy(cai_agent *agent);
+int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
+                                     const char *description,
+                                     const struct lonejson_map *map,
+                                     const char *schema_json, int strict,
+                                     cai_tool_lonejson_fn callback,
+                                     void *context, cai_error *error);
+int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
+                                const char *description,
+                                const char *schema_json, int strict,
+                                cai_tool_raw_fn callback, void *context,
+                                cai_error *error);
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 void cai_session_destroy(cai_session *session);
