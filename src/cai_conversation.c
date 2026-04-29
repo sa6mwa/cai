@@ -97,24 +97,24 @@ static int cai_conversation_request(cai_client *client, const char *method,
                                     const char *path, const char *body,
                                     cai_conversation **out, cai_error *error) {
   char *json;
+  char *request_id;
   long http_status;
   int rc;
 
   json = NULL;
+  request_id = NULL;
   rc = cai_http_json_request(client, method, path, body, &json, &http_status,
-                             error);
+                             &request_id, error);
   if (rc != CAI_OK) {
     return rc;
   }
   if (http_status < 200L || http_status >= 300L) {
-    if (error != NULL) {
-      error->http_status = http_status;
-    }
-    rc = cai_set_error_detail(error, CAI_ERR_SERVER,
-                              "conversation request returned an error", json);
+    rc = cai_set_openai_error(error, http_status, json, request_id);
     free(json);
+    free(request_id);
     return rc;
   }
+  free(request_id);
   rc = cai_conversation_parse_json(json, out, error);
   free(json);
   return rc;

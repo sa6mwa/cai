@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 typedef struct cai_http_buffer {
   char *data;
@@ -11,10 +12,31 @@ typedef struct cai_http_buffer {
   size_t capacity;
 } cai_http_buffer;
 
+typedef struct cai_api_error_body {
+  char *message;
+  char *type;
+  char *code;
+} cai_api_error_body;
+
+typedef struct cai_api_error_doc {
+  cai_api_error_body error;
+} cai_api_error_doc;
+
 typedef enum cai_http_response_mode {
   CAI_HTTP_RESPONSE_PARSE = 0,
   CAI_HTTP_RESPONSE_IGNORE = 1
 } cai_http_response_mode;
+
+static const lonejson_field cai_api_error_body_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_api_error_body, message, "message"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_api_error_body, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_api_error_body, code, "code")};
+LONEJSON_MAP_DEFINE(cai_api_error_body_map, cai_api_error_body,
+                    cai_api_error_body_fields);
+
+static const lonejson_field cai_api_error_fields[] = {LONEJSON_FIELD_OBJECT(
+    cai_api_error_doc, error, "error", &cai_api_error_body_map)};
+LONEJSON_MAP_DEFINE(cai_api_error_map, cai_api_error_doc, cai_api_error_fields);
 
 static size_t cai_http_write(char *ptr, size_t size, size_t nmemb,
                              void *userdata) {
@@ -46,6 +68,70 @@ static size_t cai_http_write(char *ptr, size_t size, size_t nmemb,
   }
   buffer->data[buffer->length] = '\0';
   return count;
+}
+
+static size_t cai_http_header_write(char *ptr, size_t size, size_t nmemb,
+                                    void *userdata) {
+  static const char request_id_header[] = "x-request-id:";
+  char **request_id;
+  size_t count;
+  char *start;
+  char *end;
+  char *copy;
+
+  request_id = (char **)userdata;
+  count = size * nmemb;
+  if (request_id == NULL || *request_id != NULL ||
+      count <= sizeof(request_id_header) - 1U) {
+    return count;
+  }
+  if (strncasecmp(ptr, request_id_header, sizeof(request_id_header) - 1U) !=
+      0) {
+    return count;
+  }
+  start = ptr + sizeof(request_id_header) - 1U;
+  end = ptr + count;
+  while (start < end && (*start == ' ' || *start == '\t')) {
+    start++;
+  }
+  while (end > start && (end[-1] == '\r' || end[-1] == '\n' || end[-1] == ' ' ||
+                         end[-1] == '\t')) {
+    end--;
+  }
+  if (end <= start) {
+    return count;
+  }
+  copy = cai_strndup(NULL, start, (size_t)(end - start));
+  if (copy == NULL) {
+    return 0U;
+  }
+  *request_id = copy;
+  return count;
+}
+
+int cai_set_openai_error(cai_error *error, long http_status, const char *body,
+                         const char *request_id) {
+  cai_api_error_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  const char *detail;
+  const char *server_code;
+  int rc;
+
+  detail = body != NULL ? body : "";
+  server_code = NULL;
+  lonejson_init(&cai_api_error_map, &doc);
+  status =
+      lonejson_parse_cstr(&cai_api_error_map, &doc, detail, NULL, &json_error);
+  if (status == LONEJSON_STATUS_OK && doc.error.message != NULL) {
+    detail = doc.error.message;
+    server_code = doc.error.code != NULL ? doc.error.code : doc.error.type;
+  }
+  rc = cai_set_error_http(error, CAI_ERR_SERVER, http_status,
+                          "OpenAI API request failed", detail, server_code,
+                          request_id);
+  lonejson_cleanup(&cai_api_error_map, &doc);
+  return rc;
 }
 
 int cai_build_url(const cai_allocator *allocator, const char *base_url,
@@ -156,12 +242,13 @@ static int cai_append_bearer_header(cai_client *client,
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
-                          cai_error *error) {
+                          char **out_request_id, cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
   cai_http_buffer body;
   char *url;
+  char *request_id;
   long http_status;
   int rc;
 
@@ -173,6 +260,9 @@ int cai_http_json_request(cai_client *client, const char *method,
   if (out_http_status != NULL) {
     *out_http_status = 0L;
   }
+  if (out_request_id != NULL) {
+    *out_request_id = NULL;
+  }
   if (client == NULL || method == NULL || path == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client, method, and path are required");
@@ -182,6 +272,7 @@ int cai_http_json_request(cai_client *client, const char *method,
   body.data = NULL;
   body.length = 0U;
   body.capacity = 0U;
+  request_id = NULL;
 
   rc = cai_build_url(&client->allocator, client->base_url, path, &url, error);
   if (rc != CAI_OK) {
@@ -218,6 +309,8 @@ int cai_http_json_request(cai_client *client, const char *method,
   }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_http_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_http_header_write);
+  curl_easy_setopt(curl, CURLOPT_HEADERDATA, &request_id);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   if (client->timeout_ms > 0L) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, client->timeout_ms);
@@ -243,14 +336,21 @@ int cai_http_json_request(cai_client *client, const char *method,
   }
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);
+    cai_free_mem(NULL, request_id);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "HTTP request transport failed",
                                 curl_easy_strerror(curl_rc));
   }
   *out_json = body.data != NULL ? body.data : cai_strdup(NULL, "");
   if (*out_json == NULL) {
+    cai_free_mem(NULL, request_id);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate empty response body");
+  }
+  if (out_request_id != NULL) {
+    *out_request_id = request_id;
+  } else {
+    cai_free_mem(NULL, request_id);
   }
   return CAI_OK;
 }
@@ -260,6 +360,7 @@ static int cai_http_response_request(cai_client *client, const char *method,
                                      cai_http_response_mode mode,
                                      cai_response **out, cai_error *error) {
   char *body;
+  char *request_id;
   long http_status;
   int rc;
 
@@ -271,21 +372,19 @@ static int cai_http_response_request(cai_client *client, const char *method,
                          "client, method, and path are required");
   }
   body = NULL;
+  request_id = NULL;
   rc = cai_http_json_request(client, method, path, request_json, &body,
-                             &http_status, error);
+                             &http_status, &request_id, error);
   if (rc != CAI_OK) {
     return rc;
   }
   if (http_status < 200L || http_status >= 300L) {
-    if (error != NULL) {
-      error->http_status = http_status;
-    }
-    rc = cai_set_error_detail(error, CAI_ERR_SERVER,
-                              "response request returned an error",
-                              body != NULL ? body : "");
+    rc = cai_set_openai_error(error, http_status, body, request_id);
     cai_free_mem(NULL, body);
+    cai_free_mem(NULL, request_id);
     return rc;
   }
+  cai_free_mem(NULL, request_id);
   if (mode == CAI_HTTP_RESPONSE_IGNORE) {
     cai_free_mem(NULL, body);
     return CAI_OK;

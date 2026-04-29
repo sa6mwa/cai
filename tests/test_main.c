@@ -377,19 +377,29 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
   return 0;
 }
 
-static int mock_write_json_response(int fd, const char *body) {
-  char response[512];
+static int mock_write_status_json_response(int fd, int status,
+                                           const char *status_text,
+                                           const char *request_id,
+                                           const char *body) {
+  char response[1024];
   int response_len;
 
-  response_len =
-      snprintf(response, sizeof(response),
-               "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-               "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
-               (unsigned long)strlen(body), body);
+  response_len = snprintf(
+      response, sizeof(response),
+      "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
+      "%s%s%s"
+      "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
+      status, status_text, request_id != NULL ? "x-request-id: " : "",
+      request_id != NULL ? request_id : "", request_id != NULL ? "\r\n" : "",
+      (unsigned long)strlen(body), body);
   if (response_len <= 0 || (size_t)response_len >= sizeof(response)) {
     return -1;
   }
   return mock_write_all(fd, response, (size_t)response_len);
+}
+
+static int mock_write_json_response(int fd, const char *body) {
+  return mock_write_status_json_response(fd, 200, "OK", NULL, body);
 }
 
 static const char *mock_response_for_request(const char *request) {
@@ -517,6 +527,17 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
       _exit(8);
     }
+    if (strstr(request, "GET /v1/responses/resp_error HTTP/") != NULL) {
+      if (mock_write_status_json_response(
+              client_fd, 400, "Bad Request", "req_mock_error",
+              "{\"error\":{\"message\":\"model is required\",\"type\":"
+              "\"invalid_request_error\",\"code\":\"missing_required_"
+              "parameter\"}}") != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
     body = mock_response_for_request(request);
     if (body == NULL) {
       _exit(9);
@@ -624,6 +645,78 @@ static void test_http_create_response(test_state *state) {
     test_fail(state, "http_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "http_mock", "mock child failed");
+  }
+}
+
+static void test_http_error_details(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_client *client;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "http_error_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "http_error_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "http_error_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.prefer_http_2 = 0;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  response = NULL;
+
+  expect_int(state, "http_error_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(
+      state, "http_error_retrieve",
+      cai_client_retrieve_response(client, "resp_error", &response, &error),
+      CAI_ERR_SERVER);
+  expect_int(state, "http_error_status", error.http_status, 400L);
+  expect_str(state, "http_error_message", error.message,
+             "OpenAI API request failed");
+  expect_str(state, "http_error_detail", error.detail, "model is required");
+  expect_str(state, "http_error_code", error.server_code,
+             "missing_required_parameter");
+  expect_str(state, "http_error_request_id", error.request_id,
+             "req_mock_error");
+
+  cai_response_destroy(response);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "http_error_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "http_error_mock", "mock child failed");
   }
 }
 
@@ -832,6 +925,7 @@ int main(void) {
   test_client_open(&state);
   test_response_json(&state);
   test_http_create_response(&state);
+  test_http_error_details(&state);
   test_agent_session(&state);
   test_conversations(&state);
   if (state.failures != 0) {

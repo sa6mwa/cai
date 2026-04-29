@@ -54,6 +54,9 @@ char *cai_strndup(const cai_allocator *allocator, const char *value,
 int cai_set_error(cai_error *error, int code, const char *message);
 int cai_set_error_detail(cai_error *error, int code, const char *message,
                          const char *detail);
+int cai_set_error_http(cai_error *error, int code, long http_status,
+                       const char *message, const char *detail,
+                       const char *server_code, const char *request_id);
 
 int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, char **out, cai_error *error);
@@ -100,7 +103,9 @@ int cai_build_url(const cai_allocator *allocator, const char *base_url,
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
-                          cai_error *error);
+                          char **out_request_id, cai_error *error);
+int cai_set_openai_error(cai_error *error, long http_status, const char *body,
+                         const char *request_id);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
 
