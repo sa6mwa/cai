@@ -42,6 +42,9 @@ typedef struct cai_sse_state {
 typedef struct cai_pipe_stream {
   cai_client *client;
   char *request_json;
+  char *response_id;
+  cai_stream_complete_fn on_complete;
+  void *complete_context;
   int read_fd;
   int write_fd;
   pthread_t thread;
@@ -352,7 +355,8 @@ static void *cai_pipe_stream_main(void *arg) {
   callbacks.context = &stream->write_fd;
   if (cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK) {
     (void)cai_client_stream_response_text_json_with_id(
-        stream->client, stream->request_json, sink, NULL, &error);
+        stream->client, stream->request_json, sink, &stream->response_id,
+        &error);
   }
   cai_sink_close(sink);
   close(stream->write_fd);
@@ -392,15 +396,27 @@ static void cai_pipe_source_close(void *context) {
   if (stream->thread_started) {
     pthread_join(stream->thread, NULL);
   }
+  if (stream->on_complete != NULL && stream->response_id != NULL) {
+    (void)stream->on_complete(stream->complete_context, stream->response_id);
+  }
   if (stream->write_fd >= 0) {
     close(stream->write_fd);
   }
   cai_free_mem(NULL, stream->request_json);
+  cai_free_mem(NULL, stream->response_id);
   cai_free_mem(NULL, stream);
 }
 
 int cai_client_open_response_text_source(
     cai_client *client, const cai_response_create_params *params,
+    cai_source **out, cai_error *error) {
+  return cai_client_open_response_text_source_with_complete(
+      client, params, NULL, NULL, out, error);
+}
+
+int cai_client_open_response_text_source_with_complete(
+    cai_client *client, const cai_response_create_params *params,
+    cai_stream_complete_fn on_complete, void *complete_context,
     cai_source **out, cai_error *error) {
   cai_pipe_stream *stream;
   cai_source_callbacks callbacks;
@@ -429,6 +445,9 @@ int cai_client_open_response_text_source(
   }
   stream->client = client;
   stream->request_json = NULL;
+  stream->response_id = NULL;
+  stream->on_complete = on_complete;
+  stream->complete_context = complete_context;
   stream->read_fd = fds[0];
   stream->write_fd = fds[1];
   stream->thread_started = 0;

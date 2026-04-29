@@ -230,6 +230,11 @@ int cai_client_stream_response_text_json_with_id(cai_client *client,
                                                  cai_sink *sink,
                                                  char **out_response_id,
                                                  cai_error *error);
+typedef int (*cai_stream_complete_fn)(void *context, const char *response_id);
+int cai_client_open_response_text_source_with_complete(
+    cai_client *client, const cai_response_create_params *params,
+    cai_stream_complete_fn on_complete, void *complete_context,
+    cai_source **out, cai_error *error);
 int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
     cai_sink *sink, char **out_response_id, cai_error *error);

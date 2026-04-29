@@ -472,6 +472,11 @@ static int cai_session_remember_response_id(cai_session *session,
   return CAI_OK;
 }
 
+static int cai_session_stream_complete(void *context, const char *response_id) {
+  return cai_session_remember_response_id((cai_session *)context, response_id,
+                                          NULL);
+}
+
 static int
 cai_session_create_response_from_params(cai_session *session,
                                         cai_response_create_params *params,
@@ -933,8 +938,9 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
     rc = cai_session_add_pending_inputs(session, params, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_open_response_text_source(session->agent->client, params,
-                                              out, error);
+    rc = cai_client_open_response_text_source_with_complete(
+        session->agent->client, params, cai_session_stream_complete, session,
+        out, error);
   }
   cai_response_create_params_destroy(params);
   if (rc == CAI_OK) {

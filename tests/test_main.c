@@ -858,6 +858,14 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_session_2\"}}\n\n";
+  static const char stream_session_source_first_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_source_session_1\"}}\n\n";
+  static const char stream_session_source_second_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src2\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_source_session_2\"}}\n\n";
 
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
     if (strstr(request, "\"stream\":true") != NULL) {
@@ -870,6 +878,17 @@ static const char *mock_response_for_request(const char *request) {
                  "\"previous_response_id\":\"resp_stream_session_1\"") !=
               NULL) {
         return stream_session_second_body;
+      }
+      if (strstr(request, "session source one") != NULL &&
+          strstr(request,
+                 "\"previous_response_id\":\"resp_stream_session_2\"") !=
+              NULL) {
+        return stream_session_source_first_body;
+      }
+      if (strstr(request, "session source two") != NULL &&
+          strstr(request, "\"previous_response_id\":"
+                          "\"resp_stream_source_session_1\"") != NULL) {
+        return stream_session_source_second_body;
       }
       return stream_body;
     }
@@ -2021,7 +2040,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 4);
+    mock_openai_child(pipe_fds[1], 6);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -2126,6 +2145,46 @@ static void test_stream_response_text(test_state *state) {
   expect_str(state, "stream_session_sink_value_second", writer.buffer, "two");
   cai_sink_close(sink);
   sink = NULL;
+
+  expect_int(
+      state, "stream_session_source_add",
+      cai_session_add_text(session, "user", "session source one", &error),
+      CAI_OK);
+  expect_int(state, "stream_session_source_open",
+             cai_session_open_text_source(session, &source, &error), CAI_OK);
+  got = 0U;
+  while (got < 4U) {
+    nread =
+        (ssize_t)cai_source_read(source, read_buffer + got, 4U - got, &error);
+    if (nread <= 0) {
+      break;
+    }
+    got += (size_t)nread;
+  }
+  read_buffer[got] = '\0';
+  expect_str(state, "stream_session_source_value", read_buffer, "src1");
+  cai_source_close(source);
+  source = NULL;
+
+  expect_int(
+      state, "stream_session_source_add_second",
+      cai_session_add_text(session, "user", "session source two", &error),
+      CAI_OK);
+  expect_int(state, "stream_session_source_open_second",
+             cai_session_open_text_source(session, &source, &error), CAI_OK);
+  got = 0U;
+  while (got < 4U) {
+    nread =
+        (ssize_t)cai_source_read(source, read_buffer + got, 4U - got, &error);
+    if (nread <= 0) {
+      break;
+    }
+    got += (size_t)nread;
+  }
+  read_buffer[got] = '\0';
+  expect_str(state, "stream_session_source_value_second", read_buffer, "src2");
+  cai_source_close(source);
+  source = NULL;
   cai_response_create_params_destroy(params);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
