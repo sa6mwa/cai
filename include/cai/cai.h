@@ -107,6 +107,9 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
 void cai_session_destroy(cai_session *session);
 int cai_session_add_text(cai_session *session, const char *role,
                          const char *text, cai_error *error);
+int cai_session_add_image_url(cai_session *session, const char *role,
+                              const char *url, const char *detail,
+                              cai_error *error);
 int cai_session_run(cai_session *session, cai_response **out, cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);

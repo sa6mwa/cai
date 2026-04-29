@@ -415,6 +415,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_3\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"third turn\"}]}]}";
+  static const char session_image_body[] =
+      "{\"id\":\"resp_session_img\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"image turn\"}]}]}";
 
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
     if (strstr(request, "session first") != NULL &&
@@ -431,6 +435,13 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_session_2\"") !=
             NULL) {
       return session_third_body;
+    }
+    if (strstr(request, "\"type\":\"input_image\"") != NULL &&
+        strstr(request, "https://example.test/session.png") != NULL &&
+        strstr(request, "\"detail\":\"high\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_session_3\"") !=
+            NULL) {
+      return session_image_body;
     }
     return create_body;
   }
@@ -625,7 +636,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 3);
+    mock_openai_child(pipe_fds[1], 4);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -690,6 +701,19 @@ static void test_agent_session(test_state *state) {
              "resp_session_3");
   expect_str(state, "agent_third_text", cai_response_output_text(response),
              "third turn");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "agent_add_image",
+             cai_session_add_image_url(session, "user",
+                                       "https://example.test/session.png",
+                                       "high", &error),
+             CAI_OK);
+  expect_int(state, "agent_image_run",
+             cai_session_run(session, &response, &error), CAI_OK);
+  expect_str(state, "agent_image_id", cai_response_id(response),
+             "resp_session_img");
+  expect_str(state, "agent_image_text", cai_response_output_text(response),
+             "image turn");
   cai_response_destroy(response);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
