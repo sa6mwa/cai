@@ -1304,6 +1304,7 @@ static void test_agent_tool_declarations(test_state *state) {
 
 static void test_agent_tool_auto_run(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  char spool_dir[] = "/tmp/cai-tool-spool-XXXXXX";
   int pipe_fds[2];
   pid_t pid;
   int port;
@@ -1354,6 +1355,13 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   cai_run_options_init(&run_options);
+  if (mkdtemp(spool_dir) == NULL) {
+    test_fail(state, "agent_auto_spool", "mkdtemp failed");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+  run_options.tool_output_memory_limit = 4U;
+  run_options.tool_spool_dir = spool_dir;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -1386,6 +1394,9 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
+  if (rmdir(spool_dir) != 0) {
+    test_fail(state, "agent_auto_spool", "spool dir not empty");
+  }
 
   if (waitpid(pid, &child_status, 0) != pid) {
     test_fail(state, "agent_auto_mock", "waitpid failed");

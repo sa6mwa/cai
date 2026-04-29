@@ -1,13 +1,22 @@
 #include "cai_internal.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct cai_tool_output_capture {
   char *data;
+  char *spool_path;
+  FILE *spool;
+  const char *spool_dir;
   size_t length;
   size_t capacity;
   size_t limit;
 } cai_tool_output_capture;
+
+static int cai_capture_open_spool(cai_tool_output_capture *capture,
+                                  cai_error *error);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -335,8 +344,17 @@ static int cai_capture_tool_output(void *context, const void *bytes,
   capture = (cai_tool_output_capture *)context;
   needed = capture->length + count + 1U;
   if (capture->limit > 0U && needed - 1U > capture->limit) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "tool output exceeded memory limit");
+    if (cai_capture_open_spool(capture, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+  }
+  if (capture->spool != NULL) {
+    if (count > 0U && fwrite(bytes, 1U, count, capture->spool) != count) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to write tool output spool file");
+    }
+    capture->length += count;
+    return CAI_OK;
   }
   if (needed > capture->capacity) {
     new_capacity = capture->capacity == 0U ? 256U : capture->capacity;
@@ -355,6 +373,113 @@ static int cai_capture_tool_output(void *context, const void *bytes,
     capture->length += count;
   }
   capture->data[capture->length] = '\0';
+  return CAI_OK;
+}
+
+static int cai_capture_open_spool(cai_tool_output_capture *capture,
+                                  cai_error *error) {
+  static const char suffix[] = "/cai-tool-output-XXXXXX";
+  size_t dir_len;
+  size_t suffix_len;
+  int fd;
+
+  if (capture->spool != NULL) {
+    return CAI_OK;
+  }
+  if (capture->spool_dir == NULL || capture->spool_dir[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool output exceeded memory limit");
+  }
+  dir_len = strlen(capture->spool_dir);
+  suffix_len = sizeof(suffix) - 1U;
+  capture->spool_path = (char *)cai_alloc(NULL, dir_len + suffix_len + 1U);
+  if (capture->spool_path == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate tool output spool path");
+  }
+  memcpy(capture->spool_path, capture->spool_dir, dir_len);
+  memcpy(capture->spool_path + dir_len, suffix, suffix_len);
+  capture->spool_path[dir_len + suffix_len] = '\0';
+  fd = mkstemp(capture->spool_path);
+  if (fd < 0) {
+    cai_free_mem(NULL, capture->spool_path);
+    capture->spool_path = NULL;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to create tool output spool file");
+  }
+  capture->spool = fdopen(fd, "w+b");
+  if (capture->spool == NULL) {
+    close(fd);
+    unlink(capture->spool_path);
+    cai_free_mem(NULL, capture->spool_path);
+    capture->spool_path = NULL;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open tool output spool file");
+  }
+  if (capture->length > 0U && fwrite(capture->data, 1U, capture->length,
+                                     capture->spool) != capture->length) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to write tool output spool file");
+  }
+  cai_free_mem(NULL, capture->data);
+  capture->data = NULL;
+  capture->capacity = 0U;
+  return CAI_OK;
+}
+
+static void cai_capture_cleanup(cai_tool_output_capture *capture) {
+  if (capture == NULL) {
+    return;
+  }
+  if (capture->spool != NULL) {
+    fclose(capture->spool);
+    capture->spool = NULL;
+  }
+  if (capture->spool_path != NULL) {
+    unlink(capture->spool_path);
+    cai_free_mem(NULL, capture->spool_path);
+    capture->spool_path = NULL;
+  }
+  cai_free_mem(NULL, capture->data);
+  capture->data = NULL;
+}
+
+static int cai_capture_materialize(cai_tool_output_capture *capture, char **out,
+                                   cai_error *error) {
+  char *data;
+  size_t nread;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool output pointer is required");
+  }
+  *out = NULL;
+  if (capture->spool == NULL) {
+    data = cai_strdup(NULL, capture->data != NULL ? capture->data : "");
+    if (data == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate tool output");
+    }
+    *out = data;
+    return CAI_OK;
+  }
+  if (fflush(capture->spool) != 0 || fseek(capture->spool, 0L, SEEK_SET) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to rewind tool output spool file");
+  }
+  data = (char *)cai_alloc(NULL, capture->length + 1U);
+  if (data == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate spooled tool output");
+  }
+  nread = fread(data, 1U, capture->length, capture->spool);
+  if (nread != capture->length) {
+    cai_free_mem(NULL, data);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read tool output spool file");
+  }
+  data[capture->length] = '\0';
+  *out = data;
   return CAI_OK;
 }
 
@@ -398,17 +523,23 @@ static int cai_session_run_tool_round(cai_session *session,
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   cai_tool_output_capture capture;
+  char *tool_output;
   size_t i;
   int rc;
 
   params = NULL;
+  tool_output = NULL;
   rc = cai_session_init_response_params(session, &params, error);
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
        i++) {
     capture.data = NULL;
+    capture.spool_path = NULL;
+    capture.spool = NULL;
+    capture.spool_dir = options->tool_spool_dir;
     capture.length = 0U;
     capture.capacity = 0U;
     capture.limit = options->tool_output_memory_limit;
+    tool_output = NULL;
     callbacks.write = cai_capture_tool_output;
     callbacks.close = NULL;
     callbacks.context = &capture;
@@ -421,11 +552,14 @@ static int cai_session_run_tool_round(cai_session *session,
     }
     cai_sink_close(sink);
     if (rc == CAI_OK) {
-      rc = cai_response_create_params_add_function_call_output(
-          params, cai_response_tool_call_id(response, i),
-          capture.data != NULL ? capture.data : "", error);
+      rc = cai_capture_materialize(&capture, &tool_output, error);
     }
-    cai_free_mem(NULL, capture.data);
+    if (rc == CAI_OK) {
+      rc = cai_response_create_params_add_function_call_output(
+          params, cai_response_tool_call_id(response, i), tool_output, error);
+    }
+    cai_free_mem(NULL, tool_output);
+    cai_capture_cleanup(&capture);
   }
   if (rc == CAI_OK) {
     rc = cai_client_create_response(session->agent->client, params, out, error);
@@ -457,11 +591,6 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "max tool rounds cannot be negative");
   }
-  if (effective->tool_spool_dir != NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "tool output spooling is not implemented yet");
-  }
-
   current = NULL;
   rc = cai_session_run(session, &current, error);
   rounds = 0;
