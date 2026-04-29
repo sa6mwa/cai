@@ -619,6 +619,16 @@ static void test_response_json(test_state *state) {
              cai_response_write_output_text(response, sink, &error), CAI_OK);
   expect_str(state, "response_written_text", writer.buffer, "hello world");
   cai_sink_close(sink);
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink = NULL;
+  expect_int(state, "response_refusal_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "response_write_refusal",
+             cai_response_write_refusal(response, sink, &error), CAI_OK);
+  expect_str(state, "response_written_refusal", writer.buffer, "cannot comply");
+  cai_sink_close(sink);
   expect_str(state, "response_error_code", cai_response_error_code(response),
              "rate_limited");
   expect_str(state, "response_error_message",
