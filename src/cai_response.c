@@ -348,6 +348,99 @@ int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
   return rc;
 }
 
+static lonejson_status cai_json_builder_lonejson_sink(void *user,
+                                                      const void *data,
+                                                      size_t len,
+                                                      lonejson_error *error) {
+  cai_json_builder *builder;
+  cai_error sink_error;
+  int rc;
+
+  builder = (cai_json_builder *)user;
+  cai_error_init(&sink_error);
+  rc = cai_json_builder_append(builder, (const char *)data, len, &sink_error);
+  if (rc != CAI_OK) {
+    (void)error;
+    cai_error_cleanup(&sink_error);
+    return LONEJSON_STATUS_ALLOCATION_FAILED;
+  }
+  cai_error_cleanup(&sink_error);
+  return LONEJSON_STATUS_OK;
+}
+
+int cai_json_compact_array_items(const char *items_json, char **out_json,
+                                 cai_error *error) {
+  lonejson_json_value value;
+  lonejson_error json_error;
+  cai_json_builder input;
+  cai_json_builder output;
+  char *copy;
+  size_t len;
+  int rc;
+
+  if (out_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compact JSON output pointer is required");
+  }
+  *out_json = NULL;
+  if (items_json == NULL || items_json[0] == '\0') {
+    copy = cai_strdup(NULL, "");
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate compact JSON");
+    }
+    *out_json = copy;
+    return CAI_OK;
+  }
+  input.data = NULL;
+  input.length = 0U;
+  input.capacity = 0U;
+  output.data = NULL;
+  output.length = 0U;
+  output.capacity = 0U;
+  rc = cai_json_builder_lit(&input, "[", error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&input, items_json, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&input, "]", error);
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, input.data);
+    return rc;
+  }
+  lonejson_error_init(&json_error);
+  lonejson_json_value_init(&value);
+  if (lonejson_json_value_set_buffer(&value, input.data, input.length,
+                                     &json_error) != LONEJSON_STATUS_OK ||
+      lonejson_json_value_write_to_sink(&value, cai_json_builder_lonejson_sink,
+                                        &output,
+                                        &json_error) != LONEJSON_STATUS_OK) {
+    lonejson_json_value_cleanup(&value);
+    cai_free_mem(NULL, input.data);
+    cai_free_mem(NULL, output.data);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to validate JSON history item",
+                                json_error.message);
+  }
+  lonejson_json_value_cleanup(&value);
+  cai_free_mem(NULL, input.data);
+  len = output.length;
+  if (len < 2U || output.data[0] != '[' || output.data[len - 1U] != ']') {
+    cai_free_mem(NULL, output.data);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "lonejson produced an unexpected array wrapper");
+  }
+  copy = cai_strndup(NULL, output.data + 1, len - 2U);
+  cai_free_mem(NULL, output.data);
+  if (copy == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate compact JSON");
+  }
+  *out_json = copy;
+  return CAI_OK;
+}
+
 static int cai_json_builder_field_int(cai_json_builder *builder,
                                       const char *name, int value,
                                       int *need_comma, cai_error *error) {

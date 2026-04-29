@@ -385,6 +385,7 @@ static int cai_history_open_spool(cai_session *session, cai_error *error) {
 static int cai_history_append(cai_session *session, const char *json,
                               cai_error *error) {
   cai_history_spool *history;
+  char *compact_json;
   size_t length;
   size_t header_length;
   size_t needed;
@@ -395,25 +396,36 @@ static int cai_history_append(cai_session *session, const char *json,
   if (json == NULL || json[0] == '\0') {
     return CAI_OK;
   }
+  compact_json = NULL;
+  if (cai_json_compact_array_items(json, &compact_json, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_PROTOCOL;
+  }
+  if (compact_json[0] == '\0') {
+    cai_free_mem(NULL, compact_json);
+    return CAI_OK;
+  }
   history = &session->history;
-  length = strlen(json);
+  length = strlen(compact_json);
   snprintf(header, sizeof(header), "%lu\n", (unsigned long)length);
   header_length = strlen(header);
   needed = history->length + header_length + length + 1U;
   if (history->file == NULL && history->memory_limit > 0U &&
       needed > history->memory_limit) {
     if (cai_history_open_spool(session, error) != CAI_OK) {
+      cai_free_mem(NULL, compact_json);
       return error != NULL ? error->code : CAI_ERR_TRANSPORT;
     }
   }
   if (history->file != NULL) {
     if (fwrite(header, 1U, header_length, history->file) != header_length ||
-        fwrite(json, 1U, length, history->file) != length ||
+        fwrite(compact_json, 1U, length, history->file) != length ||
         fwrite("\n", 1U, 1U, history->file) != 1U) {
+      cai_free_mem(NULL, compact_json);
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "failed to append history spool file");
     }
     history->length += header_length + length + 1U;
+    cai_free_mem(NULL, compact_json);
     return CAI_OK;
   }
   if (needed + 1U > history->capacity) {
@@ -424,6 +436,7 @@ static int cai_history_append(cai_session *session, const char *json,
     grown = (char *)cai_realloc_mem(&session->agent->client->allocator,
                                     history->memory, new_capacity);
     if (grown == NULL) {
+      cai_free_mem(NULL, compact_json);
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to grow history buffer");
     }
@@ -432,11 +445,12 @@ static int cai_history_append(cai_session *session, const char *json,
   }
   memcpy(history->memory + history->length, header, header_length);
   history->length += header_length;
-  memcpy(history->memory + history->length, json, length);
+  memcpy(history->memory + history->length, compact_json, length);
   history->length += length;
   history->memory[history->length] = '\n';
   history->length++;
   history->memory[history->length] = '\0';
+  cai_free_mem(NULL, compact_json);
   return CAI_OK;
 }
 
