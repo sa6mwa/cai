@@ -73,6 +73,7 @@ typedef struct cai_client_config {
 typedef struct cai_agent_config {
   const char *model;
   const char *instructions;
+  int max_output_tokens;
 } cai_agent_config;
 
 typedef struct cai_list_params {
@@ -208,6 +209,9 @@ int cai_response_create_params_set_previous_response_id(
     cai_error *error);
 int cai_response_create_params_set_conversation_id(
     cai_response_create_params *params, const char *conversation_id,
+    cai_error *error);
+int cai_response_create_params_set_max_output_tokens(
+    cai_response_create_params *params, int max_output_tokens,
     cai_error *error);
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,

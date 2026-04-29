@@ -1,5 +1,6 @@
 #include "cai_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -309,6 +310,34 @@ int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
   return rc;
 }
 
+static int cai_json_builder_field_int(cai_json_builder *builder,
+                                      const char *name, int value,
+                                      int *need_comma, cai_error *error) {
+  char buffer[32];
+  int rc;
+
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_json_builder_string(builder, name, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_json_builder_lit(builder, ":", error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  snprintf(buffer, sizeof(buffer), "%d", value);
+  rc = cai_json_builder_lit(builder, buffer, error);
+  if (rc == CAI_OK) {
+    *need_comma = 1;
+  }
+  return rc;
+}
+
 int cai_response_create_params_new(cai_response_create_params **out,
                                    cai_error *error) {
   cai_response_create_params *params;
@@ -331,6 +360,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->conversation_id = NULL;
   params->instructions = NULL;
   params->previous_response_id = NULL;
+  params->max_output_tokens = 0;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
   cai_object_array_init(&params->tools, sizeof(struct cai_function_tool));
   *out = params;
@@ -401,6 +431,21 @@ int cai_response_create_params_set_conversation_id(
   }
   return cai_replace_string(&params->allocator, &params->conversation_id,
                             conversation_id, error);
+}
+
+int cai_response_create_params_set_max_output_tokens(
+    cai_response_create_params *params, int max_output_tokens,
+    cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (max_output_tokens < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max output tokens cannot be negative");
+  }
+  params->max_output_tokens = max_output_tokens;
+  return CAI_OK;
 }
 
 static int cai_response_params_add_part(cai_response_create_params *params,
@@ -750,6 +795,11 @@ int cai_response_create_params_serialize_json(
   if (rc == CAI_OK && params->conversation_id != NULL) {
     rc = cai_json_builder_field_string(
         &builder, "conversation", params->conversation_id, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->max_output_tokens > 0) {
+    rc = cai_json_builder_field_int(&builder, "max_output_tokens",
+                                    params->max_output_tokens, &need_comma,
+                                    error);
   }
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(&builder, ",", error);

@@ -33,6 +33,7 @@ void cai_agent_config_init(cai_agent_config *config) {
   }
   config->model = NULL;
   config->instructions = NULL;
+  config->max_output_tokens = 0;
 }
 
 void cai_run_options_init(cai_run_options *options) {
@@ -65,6 +66,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   agent->client = client;
   agent->model = cai_strdup(&client->allocator, config->model);
   agent->instructions = cai_strdup(&client->allocator, config->instructions);
+  agent->max_output_tokens = config->max_output_tokens;
   agent->tools = NULL;
   if (agent->model == NULL ||
       (config->instructions != NULL && agent->instructions == NULL)) {
@@ -538,6 +540,10 @@ static int cai_session_init_response_params(cai_session *session,
   if (rc == CAI_OK && session->agent->instructions != NULL) {
     rc = cai_response_create_params_set_instructions(
         params, session->agent->instructions, error);
+  }
+  if (rc == CAI_OK && session->agent->max_output_tokens > 0) {
+    rc = cai_response_create_params_set_max_output_tokens(
+        params, session->agent->max_output_tokens, error);
   }
   if (rc == CAI_OK && session->previous_response_id != NULL) {
     rc = cai_response_create_params_set_previous_response_id(

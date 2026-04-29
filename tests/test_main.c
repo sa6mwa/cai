@@ -445,6 +445,16 @@ static void test_response_json(test_state *state) {
                                                             &error),
              CAI_OK);
   expect_int(
+      state, "params_set_max_output_tokens",
+      cai_response_create_params_set_max_output_tokens(params, 128, &error),
+      CAI_OK);
+  expect_int(
+      state, "params_set_bad_max_output_tokens",
+      cai_response_create_params_set_max_output_tokens(params, -1, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
       state, "params_add_text",
       cai_response_create_params_add_text(params, "user", "hello", &error),
       CAI_OK);
@@ -472,6 +482,10 @@ static void test_response_json(test_state *state) {
     }
     if (strstr(json, "\"conversation\":\"conv_123\"") == NULL) {
       test_fail(state, "params_serialize", "conversation missing from JSON");
+    }
+    if (strstr(json, "\"max_output_tokens\":128") == NULL) {
+      test_fail(state, "params_serialize",
+                "max output tokens missing from JSON");
     }
     if (strstr(json, "\"type\":\"input_text\"") == NULL) {
       test_fail(state, "params_serialize", "text content missing from JSON");
@@ -693,6 +707,7 @@ static const char *mock_response_for_request(const char *request) {
       return agent_tool_body;
     }
     if (strstr(request, "session first") != NULL &&
+        strstr(request, "\"max_output_tokens\":64") != NULL &&
         strstr(request, "previous_response_id") == NULL) {
       return session_first_body;
     }
@@ -1196,6 +1211,7 @@ static void test_agent_session(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   agent_config.instructions = "answer tersely";
+  agent_config.max_output_tokens = 64;
   client = NULL;
   agent = NULL;
   session = NULL;
