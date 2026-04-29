@@ -63,7 +63,7 @@ typedef struct cai_client_config {
   const char *organization_id;
   const char *project_id;
   long timeout_ms;
-  int prefer_http_2;
+  int http_2_disabled;
   int insecure_skip_verify;
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;

@@ -17,6 +17,7 @@ option(CAI_BUILD_STATIC "Build the static cai library." ON)
 option(CAI_BUILD_SHARED "Build the shared cai library." ON)
 option(CAI_BUILD_TESTS "Build cai unit tests." ON)
 option(CAI_BUILD_LIVE_TESTS "Build live tests that hit OpenAI when run." OFF)
+option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
 
@@ -157,6 +158,25 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
   endif()
 endforeach()
 
+if(CAI_BUILD_EXAMPLES)
+  set(_cai_example_link_target "")
+  if(TARGET cai_static)
+    set(_cai_example_link_target cai_static)
+  elseif(TARGET cai_shared)
+    set(_cai_example_link_target cai_shared)
+  endif()
+  foreach(_cai_example IN ITEMS basic_response conversation_handles)
+    add_executable(cai_example_${_cai_example}
+      "examples/${_cai_example}.c")
+    target_include_directories(cai_example_${_cai_example} PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}"
+      "${CAI_GENERATED_INCLUDE_DIR}")
+    target_link_libraries(cai_example_${_cai_example} PRIVATE
+      ${_cai_example_link_target})
+    cai_configure_c_target(cai_example_${_cai_example})
+  endforeach()
+endif()
+
 if(CAI_BUILD_TESTS)
   enable_testing()
   add_executable(cai_tests tests/test_main.c)
@@ -187,6 +207,7 @@ endif()
 find_program(CLANG_FORMAT_BIN NAMES clang-format)
 file(GLOB_RECURSE CAI_FORMAT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.c"

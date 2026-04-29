@@ -488,7 +488,7 @@ int cai_http_json_request(cai_client *client, const char *method,
   if (client->timeout_ms > 0L) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, client->timeout_ms);
   }
-  if (!client->prefer_http_2) {
+  if (client->http_2_disabled) {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
   } else {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_2TLS);

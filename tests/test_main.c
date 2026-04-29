@@ -401,6 +401,7 @@ static void test_client_open(test_state *state) {
     expect_str(state, "client_api_key", client->api_key, "test-key");
     expect_str(state, "client_base_url", client->base_url,
                "http://example.test/v1");
+    expect_int(state, "client_http_2_disabled", client->http_2_disabled, 0);
     expect_int(state, "client_limit", (long)client->json_response_limit_bytes,
                (long)CAI_DEFAULT_JSON_RESPONSE_LIMIT);
   }
@@ -1025,7 +1026,7 @@ static void test_http_create_response(test_state *state) {
   config.base_url = base_url;
   config.organization_id = "org_mock";
   config.project_id = "proj_mock";
-  config.prefer_http_2 = 0;
+  config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
   client = NULL;
   params = NULL;
@@ -1145,7 +1146,7 @@ static void test_http_error_details(test_state *state) {
   cai_client_config_init(&config);
   config.api_key = "mock-key";
   config.base_url = base_url;
-  config.prefer_http_2 = 0;
+  config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
   client = NULL;
   response = NULL;
@@ -1221,7 +1222,7 @@ static void test_conversations(test_state *state) {
   cai_client_config_init(&config);
   config.api_key = "mock-key";
   config.base_url = base_url;
-  config.prefer_http_2 = 0;
+  config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
   client = NULL;
   conversation = NULL;
@@ -1350,7 +1351,7 @@ static void test_agent_session(test_state *state) {
   cai_client_config_init(&client_config);
   client_config.api_key = "mock-key";
   client_config.base_url = base_url;
-  client_config.prefer_http_2 = 0;
+  client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
@@ -1536,7 +1537,7 @@ static void test_agent_tool_declarations(test_state *state) {
   cai_client_config_init(&client_config);
   client_config.api_key = "mock-key";
   client_config.base_url = base_url;
-  client_config.prefer_http_2 = 0;
+  client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
@@ -1625,7 +1626,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_client_config_init(&client_config);
   client_config.api_key = "mock-key";
   client_config.base_url = base_url;
-  client_config.prefer_http_2 = 0;
+  client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
@@ -1727,7 +1728,7 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   cai_client_config_init(&client_config);
   client_config.api_key = "mock-key";
   client_config.base_url = base_url;
-  client_config.prefer_http_2 = 0;
+  client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
@@ -1817,7 +1818,7 @@ static void test_agent_tool_manual_step(test_state *state) {
   cai_client_config_init(&client_config);
   client_config.api_key = "mock-key";
   client_config.base_url = base_url;
-  client_config.prefer_http_2 = 0;
+  client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;

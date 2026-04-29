@@ -9,7 +9,7 @@ void cai_client_config_init(cai_client_config *config) {
   config->organization_id = NULL;
   config->project_id = NULL;
   config->timeout_ms = 0L;
-  config->prefer_http_2 = 1;
+  config->http_2_disabled = 0;
   config->insecure_skip_verify = 0;
   config->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
   config->logger = NULL;
@@ -57,7 +57,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   client->organization_id = NULL;
   client->project_id = NULL;
   client->timeout_ms = effective->timeout_ms;
-  client->prefer_http_2 = effective->prefer_http_2;
+  client->http_2_disabled = effective->http_2_disabled;
   client->insecure_skip_verify = effective->insecure_skip_verify;
   client->json_response_limit_bytes = effective->json_response_limit_bytes;
   client->logger = effective->logger;

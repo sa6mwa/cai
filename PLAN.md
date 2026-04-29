@@ -188,7 +188,7 @@ typedef struct cai_client_config {
   const char *organization_id;      /* optional OpenAI-Organization */
   const char *project_id;           /* optional OpenAI-Project */
   long timeout_ms;
-  int prefer_http_2;
+  int http_2_disabled;
   int insecure_skip_verify;
   size_t json_response_limit_bytes;
   pslog_logger *logger;             /* borrowed */
