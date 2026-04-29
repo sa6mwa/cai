@@ -107,6 +107,8 @@ struct cai_input_message {
   lonejson_object_array content;
   char *call_id;
   char *output;
+  FILE *output_file;
+  char *output_spool_path;
 };
 
 struct cai_function_tool {
@@ -225,6 +227,9 @@ int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
     cai_error *error);
 void cai_response_create_params_clear_input(cai_response_create_params *params);
+int cai_response_create_params_add_function_call_output_stream(
+    cai_response_create_params *params, const char *call_id, char *output,
+    FILE *output_file, char *output_spool_path, cai_error *error);
 int cai_response_params_input_items_json(
     const cai_response_create_params *params, char **out_json,
     cai_error *error);

@@ -3,10 +3,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct cai_json_string_doc {
   char *value;
 } cai_json_string_doc;
+
+typedef struct cai_json_source_doc {
+  lonejson_source value;
+} cai_json_source_doc;
+
+typedef struct cai_json_builder_lonejson_sink_state {
+  cai_json_builder *builder;
+  size_t skip;
+  int hold_last;
+  char last;
+} cai_json_builder_lonejson_sink_state;
 
 enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
 
@@ -72,6 +84,11 @@ static const lonejson_field cai_json_string_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_json_string_doc, value, "value")};
 LONEJSON_MAP_DEFINE(cai_json_string_map, cai_json_string_doc,
                     cai_json_string_fields);
+
+static const lonejson_field cai_json_source_fields[] = {
+    LONEJSON_FIELD_STRING_SOURCE_REQ(cai_json_source_doc, value, "value")};
+LONEJSON_MAP_DEFINE(cai_json_source_map, cai_json_source_doc,
+                    cai_json_source_fields);
 
 static const lonejson_field cai_response_content_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, type, "type"),
@@ -181,6 +198,15 @@ static void cai_input_message_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, message->role);
   cai_free_mem(allocator, message->call_id);
   cai_free_mem(allocator, message->output);
+  if (message->output_file != NULL) {
+    fclose(message->output_file);
+    message->output_file = NULL;
+  }
+  if (message->output_spool_path != NULL) {
+    unlink(message->output_spool_path);
+    cai_free_mem(allocator, message->output_spool_path);
+    message->output_spool_path = NULL;
+  }
   parts = (struct cai_content_part *)message->content.items;
   for (i = 0U; i < message->content.count; i++) {
     cai_content_part_cleanup(allocator, &parts[i]);
@@ -271,6 +297,54 @@ static int cai_json_builder_append(cai_json_builder *builder, const char *text,
   return CAI_OK;
 }
 
+static lonejson_status cai_json_builder_lonejson_sink(void *user,
+                                                      const void *data,
+                                                      size_t len,
+                                                      lonejson_error *error) {
+  cai_json_builder_lonejson_sink_state *state;
+  const char *bytes;
+  size_t offset;
+  size_t chunk;
+  cai_error sink_error;
+  int rc;
+
+  (void)error;
+  state = (cai_json_builder_lonejson_sink_state *)user;
+  bytes = (const char *)data;
+  offset = 0U;
+  if (state->skip > 0U) {
+    chunk = len < state->skip ? len : state->skip;
+    offset += chunk;
+    state->skip -= chunk;
+  }
+  cai_error_init(&sink_error);
+  while (offset < len) {
+    if (state->hold_last) {
+      rc = cai_json_builder_append(state->builder, &state->last, 1U,
+                                   &sink_error);
+      if (rc != CAI_OK) {
+        cai_error_cleanup(&sink_error);
+        return LONEJSON_STATUS_ALLOCATION_FAILED;
+      }
+    }
+    state->last = bytes[offset];
+    state->hold_last = 1;
+    offset++;
+  }
+  cai_error_cleanup(&sink_error);
+  return LONEJSON_STATUS_OK;
+}
+
+static int cai_json_builder_lonejson_sink_finish(
+    cai_json_builder_lonejson_sink_state *state, cai_error *error) {
+  if (state->skip != 0U || !state->hold_last || state->last != '}') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "lonejson produced an unexpected string wrapper");
+  }
+  state->hold_last = 0;
+  return CAI_OK;
+}
+
 int cai_json_builder_lit(cai_json_builder *builder, const char *text,
                          cai_error *error) {
   return cai_json_builder_append(builder, text, strlen(text), error);
@@ -279,12 +353,10 @@ int cai_json_builder_lit(cai_json_builder *builder, const char *text,
 int cai_json_builder_string(cai_json_builder *builder, const char *value,
                             cai_error *error) {
   cai_json_string_doc doc;
+  cai_json_builder_lonejson_sink_state sink_state;
   lonejson_error json_error;
-  char *json;
-  char *colon;
   char *copy;
-  size_t len;
-  int rc;
+  lonejson_status status;
 
   copy = cai_strdup(NULL, value);
   if (copy == NULL) {
@@ -292,34 +364,57 @@ int cai_json_builder_string(cai_json_builder *builder, const char *value,
                          "failed to allocate JSON string");
   }
   doc.value = copy;
-  json = lonejson_serialize_alloc(&cai_json_string_map, &doc, NULL, NULL,
-                                  &json_error);
-  if (json == NULL) {
+  sink_state.builder = builder;
+  sink_state.skip = sizeof("{\"value\":") - 1U;
+  sink_state.hold_last = 0;
+  sink_state.last = '\0';
+  lonejson_error_init(&json_error);
+  status = lonejson_serialize_sink(&cai_json_string_map, &doc,
+                                   cai_json_builder_lonejson_sink, &sink_state,
+                                   NULL, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
     cai_free_mem(NULL, copy);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to serialize JSON string",
                                 json_error.message);
   }
-  colon = strchr(json, ':');
-  if (colon == NULL) {
-    free(json);
-    cai_free_mem(NULL, copy);
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "lonejson produced an unexpected string wrapper");
-  }
-  colon++;
-  len = strlen(colon);
-  if (len == 0U || colon[len - 1U] != '}') {
-    free(json);
-    cai_free_mem(NULL, copy);
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "lonejson produced an unexpected string wrapper");
-  }
-  len--;
-  rc = cai_json_builder_append(builder, colon, len, error);
-  free(json);
   cai_free_mem(NULL, copy);
-  return rc;
+  return cai_json_builder_lonejson_sink_finish(&sink_state, error);
+}
+
+static int cai_json_builder_string_file(cai_json_builder *builder, FILE *fp,
+                                        cai_error *error) {
+  cai_json_source_doc doc;
+  cai_json_builder_lonejson_sink_state sink_state;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (fp == NULL) {
+    return cai_json_builder_lit(builder, "null", error);
+  }
+  lonejson_error_init(&json_error);
+  lonejson_source_init(&doc.value);
+  if (lonejson_source_set_file(&doc.value, fp, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_source_cleanup(&doc.value);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to configure JSON source string",
+                                json_error.message);
+  }
+  sink_state.builder = builder;
+  sink_state.skip = sizeof("{\"value\":") - 1U;
+  sink_state.hold_last = 0;
+  sink_state.last = '\0';
+  status = lonejson_serialize_sink(&cai_json_source_map, &doc,
+                                   cai_json_builder_lonejson_sink, &sink_state,
+                                   NULL, &json_error);
+  lonejson_source_cleanup(&doc.value);
+  if (status != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to serialize JSON source string",
+                                json_error.message);
+  }
+  return cai_json_builder_lonejson_sink_finish(&sink_state, error);
 }
 
 int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
@@ -869,18 +964,52 @@ int cai_response_create_params_add_function_tool(
 int cai_response_create_params_add_function_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error) {
+  char *copy;
+
+  copy = NULL;
+  if (output != NULL) {
+    copy = cai_strdup(params != NULL ? &params->allocator : NULL, output);
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate function call output");
+    }
+  }
+  return cai_response_create_params_add_function_call_output_stream(
+      params, call_id, copy, NULL, NULL, error);
+}
+
+int cai_response_create_params_add_function_call_output_stream(
+    cai_response_create_params *params, const char *call_id, char *output,
+    FILE *output_file, char *output_spool_path, cai_error *error) {
   struct cai_input_message *messages;
   struct cai_input_message *message;
   int rc;
 
   if (params == NULL || call_id == NULL || call_id[0] == '\0' ||
-      output == NULL) {
+      (output == NULL && output_file == NULL)) {
+    cai_free_mem(params != NULL ? &params->allocator : NULL, output);
+    if (output_file != NULL) {
+      fclose(output_file);
+    }
+    if (output_spool_path != NULL) {
+      unlink(output_spool_path);
+      cai_free_mem(params != NULL ? &params->allocator : NULL,
+                   output_spool_path);
+    }
     return cai_set_error(error, CAI_ERR_INVALID,
                          "function call id and output are required");
   }
   rc = cai_object_array_grow(&params->allocator, &params->input,
                              sizeof(struct cai_input_message), error);
   if (rc != CAI_OK) {
+    cai_free_mem(&params->allocator, output);
+    if (output_file != NULL) {
+      fclose(output_file);
+    }
+    if (output_spool_path != NULL) {
+      unlink(output_spool_path);
+      cai_free_mem(&params->allocator, output_spool_path);
+    }
     return rc;
   }
   messages = (struct cai_input_message *)params->input.items;
@@ -889,8 +1018,10 @@ int cai_response_create_params_add_function_call_output(
   message->kind = CAI_INPUT_FUNCTION_CALL_OUTPUT;
   cai_object_array_init(&message->content, sizeof(struct cai_content_part));
   message->call_id = cai_strdup(&params->allocator, call_id);
-  message->output = cai_strdup(&params->allocator, output);
-  if (message->call_id == NULL || message->output == NULL) {
+  message->output = output;
+  message->output_file = output_file;
+  message->output_spool_path = output_spool_path;
+  if (message->call_id == NULL) {
     cai_input_message_cleanup(&params->allocator, message);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate function call output");
@@ -992,8 +1123,21 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
             builder, "call_id", messages[i].call_id, &need_comma, error);
       }
       if (rc == CAI_OK) {
-        rc = cai_json_builder_field_string(
-            builder, "output", messages[i].output, &need_comma, error);
+        if (need_comma) {
+          rc = cai_json_builder_lit(builder, ",", error);
+        }
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_string(builder, "output", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, ":", error);
+      }
+      if (rc == CAI_OK && messages[i].output_file != NULL) {
+        rc = cai_json_builder_string_file(builder, messages[i].output_file,
+                                          error);
+      } else if (rc == CAI_OK) {
+        rc = cai_json_builder_string(builder, messages[i].output, error);
       }
       if (rc == CAI_OK) {
         rc = cai_json_builder_lit(builder, "}", error);

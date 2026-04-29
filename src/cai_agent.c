@@ -30,6 +30,13 @@ typedef struct cai_history_sink_context {
   cai_history_spool *spool;
 } cai_history_sink_context;
 
+typedef struct cai_segment_reader {
+  const char *segments[3];
+  size_t lengths[3];
+  size_t index;
+  size_t offset;
+} cai_segment_reader;
+
 static const lonejson_field cai_history_json_fields[] = {
     LONEJSON_FIELD_JSON_VALUE_REQ(cai_history_json_doc, value, "value")};
 LONEJSON_MAP_DEFINE(cai_history_json_map, cai_history_json_doc,
@@ -460,6 +467,37 @@ static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
   return rc == CAI_OK ? LONEJSON_STATUS_OK : LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
+static lonejson_read_result
+cai_segment_reader_read(void *user, unsigned char *buffer, size_t capacity) {
+  cai_segment_reader *reader;
+  lonejson_read_result result;
+  size_t available;
+  size_t take;
+
+  reader = (cai_segment_reader *)user;
+  result = lonejson_default_read_result();
+  if (capacity == 0U) {
+    return result;
+  }
+  while (reader->index < 3U &&
+         reader->offset >= reader->lengths[reader->index]) {
+    reader->index++;
+    reader->offset = 0U;
+  }
+  if (reader->index >= 3U) {
+    result.eof = 1;
+    return result;
+  }
+  available = reader->lengths[reader->index] - reader->offset;
+  take = available < capacity ? available : capacity;
+  if (take > 0U) {
+    memcpy(buffer, reader->segments[reader->index] + reader->offset, take);
+    reader->offset += take;
+    result.bytes_read = take;
+  }
+  return result;
+}
+
 static void cai_history_spool_clear(const cai_allocator *allocator,
                                     cai_history_spool *history) {
   if (history->file != NULL) {
@@ -484,10 +522,9 @@ static int cai_history_capture_compact_array(cai_session *session,
                                              cai_error *error) {
   cai_history_json_doc doc;
   cai_history_sink_context sink_context;
-  cai_json_builder wrapper;
+  cai_segment_reader reader;
   lonejson_parse_options options;
   lonejson_error json_error;
-  int rc;
 
   item->memory = NULL;
   item->path = NULL;
@@ -499,20 +536,14 @@ static int cai_history_capture_compact_array(cai_session *session,
   if (json == NULL || json[0] == '\0') {
     return CAI_OK;
   }
-  wrapper.data = NULL;
-  wrapper.length = 0U;
-  wrapper.capacity = 0U;
-  rc = cai_json_builder_lit(&wrapper, "{\"value\":[", error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&wrapper, json, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&wrapper, "]}", error);
-  }
-  if (rc != CAI_OK) {
-    cai_free_mem(NULL, wrapper.data);
-    return rc;
-  }
+  reader.segments[0] = "{\"value\":[";
+  reader.segments[1] = json;
+  reader.segments[2] = "]}";
+  reader.lengths[0] = strlen(reader.segments[0]);
+  reader.lengths[1] = strlen(reader.segments[1]);
+  reader.lengths[2] = strlen(reader.segments[2]);
+  reader.index = 0U;
+  reader.offset = 0U;
   sink_context.allocator = &session->agent->client->allocator;
   sink_context.spool_dir = session->agent->history_spool_dir;
   sink_context.spool = item;
@@ -523,18 +554,16 @@ static int cai_history_capture_compact_array(cai_session *session,
   if (lonejson_json_value_set_parse_sink(&doc.value, cai_history_lonejson_sink,
                                          &sink_context,
                                          &json_error) != LONEJSON_STATUS_OK ||
-      lonejson_parse_buffer(&cai_history_json_map, &doc, wrapper.data,
-                            wrapper.length, &options,
+      lonejson_parse_reader(&cai_history_json_map, &doc,
+                            cai_segment_reader_read, &reader, &options,
                             &json_error) != LONEJSON_STATUS_OK) {
     lonejson_json_value_cleanup(&doc.value);
-    cai_free_mem(NULL, wrapper.data);
     cai_history_spool_clear(&session->agent->client->allocator, item);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to validate JSON history item",
                                 json_error.message);
   }
   lonejson_json_value_cleanup(&doc.value);
-  cai_free_mem(NULL, wrapper.data);
   return CAI_OK;
 }
 
@@ -1381,45 +1410,6 @@ static void cai_capture_cleanup(cai_tool_output_capture *capture) {
   capture->data = NULL;
 }
 
-static int cai_capture_materialize(cai_tool_output_capture *capture, char **out,
-                                   cai_error *error) {
-  char *data;
-  size_t nread;
-
-  if (out == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "tool output pointer is required");
-  }
-  *out = NULL;
-  if (capture->spool == NULL) {
-    data = cai_strdup(NULL, capture->data != NULL ? capture->data : "");
-    if (data == NULL) {
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to allocate tool output");
-    }
-    *out = data;
-    return CAI_OK;
-  }
-  if (fflush(capture->spool) != 0 || fseek(capture->spool, 0L, SEEK_SET) != 0) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to rewind tool output spool file");
-  }
-  data = (char *)cai_alloc(NULL, capture->length + 1U);
-  if (data == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate spooled tool output");
-  }
-  nread = fread(data, 1U, capture->length, capture->spool);
-  if (nread != capture->length) {
-    cai_free_mem(NULL, data);
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to read tool output spool file");
-  }
-  data[capture->length] = '\0';
-  *out = data;
-  return CAI_OK;
-}
-
 static int cai_session_init_response_params(cai_session *session,
                                             cai_response_create_params **out,
                                             cai_error *error) {
@@ -1486,12 +1476,13 @@ static int cai_session_run_tool_round(cai_session *session,
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   cai_tool_output_capture capture;
-  char *tool_output;
+  char *output_data;
+  char *output_spool_path;
+  FILE *output_file;
   size_t i;
   int rc;
 
   params = NULL;
-  tool_output = NULL;
   rc = cai_session_init_response_params(session, &params, error);
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
        i++) {
@@ -1502,7 +1493,6 @@ static int cai_session_run_tool_round(cai_session *session,
     capture.length = 0U;
     capture.capacity = 0U;
     capture.limit = options->tool_output_memory_limit;
-    tool_output = NULL;
     callbacks.write = cai_capture_tool_output;
     callbacks.close = NULL;
     callbacks.context = &capture;
@@ -1515,13 +1505,29 @@ static int cai_session_run_tool_round(cai_session *session,
     }
     cai_sink_close(sink);
     if (rc == CAI_OK) {
-      rc = cai_capture_materialize(&capture, &tool_output, error);
+      output_data = capture.data;
+      output_file = capture.spool;
+      output_spool_path = capture.spool_path;
+      if (output_data == NULL && output_file == NULL) {
+        output_data = cai_strdup(NULL, "");
+        if (output_data == NULL) {
+          rc = cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to allocate empty tool output");
+        } else {
+          capture.data = output_data;
+        }
+      }
     }
     if (rc == CAI_OK) {
-      rc = cai_response_create_params_add_function_call_output(
-          params, cai_response_tool_call_id(response, i), tool_output, error);
+      rc = cai_response_create_params_add_function_call_output_stream(
+          params, cai_response_tool_call_id(response, i), output_data,
+          output_file, output_spool_path, error);
+      if (rc == CAI_OK) {
+        capture.data = NULL;
+        capture.spool = NULL;
+        capture.spool_path = NULL;
+      }
     }
-    cai_free_mem(NULL, tool_output);
     cai_capture_cleanup(&capture);
   }
   if (rc == CAI_OK) {
