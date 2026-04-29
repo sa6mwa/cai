@@ -239,6 +239,33 @@ static int cai_append_bearer_header(cai_client *client,
   return rc;
 }
 
+static int cai_append_prefixed_header(cai_client *client,
+                                      struct curl_slist **headers,
+                                      const char *prefix, const char *value,
+                                      cai_error *error) {
+  size_t prefix_len;
+  size_t value_len;
+  char *header;
+  int rc;
+
+  if (value == NULL) {
+    return CAI_OK;
+  }
+  prefix_len = strlen(prefix);
+  value_len = strlen(value);
+  header = (char *)cai_alloc(&client->allocator, prefix_len + value_len + 1U);
+  if (header == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate HTTP header");
+  }
+  memcpy(header, prefix, prefix_len);
+  memcpy(header + prefix_len, value, value_len);
+  header[prefix_len + value_len] = '\0';
+  rc = cai_append_header(headers, header, error);
+  cai_free_mem(&client->allocator, header);
+  return rc;
+}
+
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
@@ -284,6 +311,14 @@ int cai_http_json_request(cai_client *client, const char *method,
   }
   if (rc == CAI_OK) {
     rc = cai_append_bearer_header(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
+                                    client->organization_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(
+        client, &headers, "OpenAI-Project: ", client->project_id, error);
   }
   if (rc != CAI_OK) {
     cai_free_mem(&client->allocator, url);

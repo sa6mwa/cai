@@ -527,6 +527,11 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
       _exit(8);
     }
+    if (strstr(request, "\"text\":\"hello\"") != NULL &&
+        (strstr(request, "OpenAI-Organization: org_mock") == NULL ||
+         strstr(request, "OpenAI-Project: proj_mock") == NULL)) {
+      _exit(11);
+    }
     if (strstr(request, "GET /v1/responses/resp_error HTTP/") != NULL) {
       if (mock_write_status_json_response(
               client_fd, 400, "Bad Request", "req_mock_error",
@@ -593,6 +598,8 @@ static void test_http_create_response(test_state *state) {
   cai_client_config_init(&config);
   config.api_key = "mock-key";
   config.base_url = base_url;
+  config.organization_id = "org_mock";
+  config.project_id = "proj_mock";
   config.prefer_http_2 = 0;
   config.timeout_ms = 5000L;
   client = NULL;
