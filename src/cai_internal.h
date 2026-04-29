@@ -6,6 +6,8 @@
 #include <lonejson.h>
 #include <stddef.h>
 
+struct curl_slist;
+
 #define CAI_DEFAULT_BASE_URL "https://api.openai.com/v1"
 #define CAI_DEFAULT_JSON_RESPONSE_LIMIT (1024UL * 1024UL)
 
@@ -212,6 +214,13 @@ int cai_build_url(const cai_allocator *allocator, const char *base_url,
 int cai_append_list_query_params(const cai_allocator *allocator, char **path,
                                  const cai_list_params *params,
                                  cai_error *error);
+int cai_append_header(struct curl_slist **headers, const char *header,
+                      cai_error *error);
+int cai_append_bearer_header(cai_client *client, struct curl_slist **headers,
+                             cai_error *error);
+int cai_append_prefixed_header(cai_client *client, struct curl_slist **headers,
+                               const char *prefix, const char *value,
+                               cai_error *error);
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,

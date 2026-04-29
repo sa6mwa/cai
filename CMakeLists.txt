@@ -10,6 +10,7 @@ include(CTest)
 include(GNUInstallDirs)
 
 find_package(CURL REQUIRED)
+find_package(Threads REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -119,6 +120,7 @@ set(CAI_SOURCES
   src/cai_models.c
   src/cai_response.c
   src/cai_source.c
+  src/cai_stream.c
   src/cai_tool.c)
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -154,6 +156,7 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
       target_link_libraries(${_cai_target} PRIVATE lonejson)
     endif()
     target_link_libraries(${_cai_target} PRIVATE CURL::libcurl)
+    target_link_libraries(${_cai_target} PRIVATE Threads::Threads)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()

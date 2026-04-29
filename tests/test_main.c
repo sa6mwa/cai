@@ -845,8 +845,15 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_manual_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"manual done\"}]}]}";
+  static const char stream_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n"
+      "data: {\"type\":\"response.completed\"}\n\n";
 
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
+    if (strstr(request, "\"stream\":true") != NULL) {
+      return stream_body;
+    }
     if (strstr(request, "manual tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return manual_tool_call_body;
@@ -1961,6 +1968,114 @@ static void test_agent_tool_manual_step(test_state *state) {
   }
 }
 
+static void test_stream_response_text(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char read_buffer[16];
+  size_t got;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_source *source;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  params = NULL;
+  sink = NULL;
+  source = NULL;
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_params_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+             CAI_OK);
+  expect_int(
+      state, "stream_params_text",
+      cai_response_create_params_add_text(params, "user", "stream", &error),
+      CAI_OK);
+  expect_int(state, "stream_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_to_sink",
+             cai_client_stream_response_text(client, params, sink, &error),
+             CAI_OK);
+  expect_str(state, "stream_sink_value", writer.buffer, "hello");
+  cai_sink_close(sink);
+  sink = NULL;
+
+  expect_int(
+      state, "stream_source_open",
+      cai_client_open_response_text_source(client, params, &source, &error),
+      CAI_OK);
+  got = 0U;
+  while (got < 5U) {
+    nread =
+        (ssize_t)cai_source_read(source, read_buffer + got, 5U - got, &error);
+    if (nread <= 0) {
+      break;
+    }
+    got += (size_t)nread;
+  }
+  read_buffer[got] = '\0';
+  expect_str(state, "stream_source_value", read_buffer, "hello");
+  cai_source_close(source);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_mock", "mock child failed");
+  }
+}
+
 int main(void) {
   test_state state;
 
@@ -1979,6 +2094,7 @@ int main(void) {
   test_agent_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);
   test_conversations(&state);
+  test_stream_response_text(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;

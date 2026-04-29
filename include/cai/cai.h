@@ -290,6 +290,12 @@ int cai_response_create_params_add_function_call_output(
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,
                                cai_response **out, cai_error *error);
+int cai_client_stream_response_text(cai_client *client,
+                                    const cai_response_create_params *params,
+                                    cai_sink *sink, cai_error *error);
+int cai_client_open_response_text_source(
+    cai_client *client, const cai_response_create_params *params,
+    cai_source **out, cai_error *error);
 int cai_client_retrieve_response(cai_client *client, const char *response_id,
                                  cai_response **out, cai_error *error);
 int cai_client_cancel_response(cai_client *client, const char *response_id,

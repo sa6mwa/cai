@@ -338,8 +338,8 @@ static int cai_build_response_input_items_path(const cai_allocator *allocator,
   return CAI_OK;
 }
 
-static int cai_append_header(struct curl_slist **headers, const char *header,
-                             cai_error *error) {
+int cai_append_header(struct curl_slist **headers, const char *header,
+                      cai_error *error) {
   struct curl_slist *next;
 
   next = curl_slist_append(*headers, header);
@@ -353,9 +353,8 @@ static int cai_append_header(struct curl_slist **headers, const char *header,
   return CAI_OK;
 }
 
-static int cai_append_bearer_header(cai_client *client,
-                                    struct curl_slist **headers,
-                                    cai_error *error) {
+int cai_append_bearer_header(cai_client *client, struct curl_slist **headers,
+                             cai_error *error) {
   static const char prefix[] = "Authorization: Bearer ";
   size_t prefix_len;
   size_t key_len;
@@ -377,10 +376,9 @@ static int cai_append_bearer_header(cai_client *client,
   return rc;
 }
 
-static int cai_append_prefixed_header(cai_client *client,
-                                      struct curl_slist **headers,
-                                      const char *prefix, const char *value,
-                                      cai_error *error) {
+int cai_append_prefixed_header(cai_client *client, struct curl_slist **headers,
+                               const char *prefix, const char *value,
+                               cai_error *error) {
   size_t prefix_len;
   size_t value_len;
   char *header;
