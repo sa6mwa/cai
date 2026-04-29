@@ -1425,6 +1425,98 @@ static void test_agent_tool_auto_run(test_state *state) {
   }
 }
 
+static void test_agent_tool_auto_round_limit(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_limit_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_limit_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_limit_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.prefer_http_2 = 0;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 0;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  raw_state.seen[0] = '\0';
+
+  expect_int(state, "agent_limit_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_limit_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_limit_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_limit_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_limit_add",
+             cai_session_add_text(session, "user", "auto tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_limit_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_ERR_CANCELLED);
+  expect_str(state, "agent_limit_error", error.message,
+             "tool auto-run exhausted max tool rounds");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_limit_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_limit_mock", "mock child failed");
+  }
+}
+
 static void test_agent_tool_manual_step(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   int pipe_fds[2];
@@ -1539,6 +1631,7 @@ int main(void) {
   test_agent_tool_declarations(&state);
   test_agent_tool_manual_step(&state);
   test_agent_tool_auto_run(&state);
+  test_agent_tool_auto_round_limit(&state);
   test_conversations(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);

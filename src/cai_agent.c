@@ -648,6 +648,11 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
     cai_response_destroy(current);
     return rc;
   }
+  if (cai_response_tool_call_count(current) > 0U) {
+    cai_response_destroy(current);
+    return cai_set_error(error, CAI_ERR_CANCELLED,
+                         "tool auto-run exhausted max tool rounds");
+  }
   *out = current;
   return CAI_OK;
 }
