@@ -428,6 +428,13 @@ static const char *mock_response_for_request(const char *request) {
   static const char conversation_delete_body[] =
       "{\"id\":\"conv_get\",\"object\":\"conversation.deleted\","
       "\"deleted\":true}";
+  static const char conversation_items_body[] =
+      "{\"object\":\"list\",\"data\":[{\"id\":\"conv_msg_1\",\"type\":"
+      "\"message\",\"role\":\"user\"}],\"first_id\":\"conv_msg_1\","
+      "\"last_id\":\"conv_msg_1\",\"has_more\":false}";
+  static const char conversation_item_delete_body[] =
+      "{\"id\":\"conv_msg_1\",\"object\":\"conversation.item.deleted\","
+      "\"deleted\":true}";
   static const char session_first_body[] =
       "{\"id\":\"resp_session_1\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -490,6 +497,16 @@ static const char *mock_response_for_request(const char *request) {
   }
   if (strncmp(request, "GET /v1/conversations/conv_get HTTP/", 36U) == 0) {
     return conversation_get_body;
+  }
+  if (strstr(request, "GET /v1/conversations/conv_get/items?") != NULL &&
+      strstr(request, "limit=1") != NULL &&
+      strstr(request, "order=desc") != NULL) {
+    return conversation_items_body;
+  }
+  if (strstr(request,
+             "DELETE /v1/conversations/conv_get/items/conv_msg_1 HTTP/") !=
+      NULL) {
+    return conversation_item_delete_body;
   }
   if (strncmp(request, "DELETE /v1/conversations/conv_get HTTP/", 39U) == 0) {
     return conversation_delete_body;
@@ -774,6 +791,8 @@ static void test_conversations(test_state *state) {
   cai_client_config config;
   cai_client *client;
   cai_conversation *conversation;
+  cai_input_item_list *items;
+  cai_list_params list_params;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -789,7 +808,7 @@ static void test_conversations(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 3);
+    mock_openai_child(pipe_fds[1], 5);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -809,6 +828,7 @@ static void test_conversations(test_state *state) {
   config.timeout_ms = 5000L;
   client = NULL;
   conversation = NULL;
+  items = NULL;
   expect_int(state, "conversation_client_open",
              cai_client_open(&config, &client, &error), CAI_OK);
   expect_int(state, "conversation_create",
@@ -827,6 +847,24 @@ static void test_conversations(test_state *state) {
   expect_str(state, "conversation_retrieve_id",
              cai_conversation_id(conversation), "conv_get");
   cai_conversation_destroy(conversation);
+  cai_list_params_init(&list_params);
+  list_params.limit = 1;
+  list_params.order = "desc";
+  expect_int(state, "conversation_list_items",
+             cai_client_list_conversation_items(client, "conv_get",
+                                                &list_params, &items, &error),
+             CAI_OK);
+  expect_int(state, "conversation_list_items_count",
+             (long)cai_input_item_list_count(items), 1L);
+  expect_str(state, "conversation_list_items_id", cai_input_item_id(items, 0U),
+             "conv_msg_1");
+  expect_str(state, "conversation_list_items_role",
+             cai_input_item_role(items, 0U), "user");
+  cai_input_item_list_destroy(items);
+  expect_int(state, "conversation_delete_item",
+             cai_client_delete_conversation_item(client, "conv_get",
+                                                 "conv_msg_1", &error),
+             CAI_OK);
   expect_int(state, "conversation_delete",
              cai_client_delete_conversation(client, "conv_get", &error),
              CAI_OK);

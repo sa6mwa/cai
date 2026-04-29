@@ -64,12 +64,14 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
 }
 
 static int cai_build_conversation_path(cai_client *client,
-                                       const char *conversation_id, char **out,
+                                       const char *conversation_id,
+                                       const char *suffix, char **out,
                                        cai_error *error) {
   static const char prefix[] = "conversations/";
   char *path;
   size_t prefix_len;
   size_t id_len;
+  size_t suffix_len;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "path output is required");
@@ -80,17 +82,50 @@ static int cai_build_conversation_path(cai_client *client,
   }
   prefix_len = sizeof(prefix) - 1U;
   id_len = strlen(conversation_id);
+  suffix_len = suffix != NULL ? strlen(suffix) : 0U;
   path = (char *)cai_alloc(client != NULL ? &client->allocator : NULL,
-                           prefix_len + id_len + 1U);
+                           prefix_len + id_len + suffix_len + 1U);
   if (path == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation path");
   }
   memcpy(path, prefix, prefix_len);
   memcpy(path + prefix_len, conversation_id, id_len);
-  path[prefix_len + id_len] = '\0';
+  if (suffix_len > 0U) {
+    memcpy(path + prefix_len + id_len, suffix, suffix_len);
+  }
+  path[prefix_len + id_len + suffix_len] = '\0';
   *out = path;
   return CAI_OK;
+}
+
+static int cai_build_conversation_item_path(cai_client *client,
+                                            const char *conversation_id,
+                                            const char *item_id, char **out,
+                                            cai_error *error) {
+  static const char items_prefix[] = "/items/";
+  char *suffix;
+  size_t prefix_len;
+  size_t id_len;
+  int rc;
+
+  if (item_id == NULL || item_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "item id is required");
+  }
+  prefix_len = sizeof(items_prefix) - 1U;
+  id_len = strlen(item_id);
+  suffix = (char *)cai_alloc(client != NULL ? &client->allocator : NULL,
+                             prefix_len + id_len + 1U);
+  if (suffix == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate conversation item path");
+  }
+  memcpy(suffix, items_prefix, prefix_len);
+  memcpy(suffix + prefix_len, item_id, id_len);
+  suffix[prefix_len + id_len] = '\0';
+  rc = cai_build_conversation_path(client, conversation_id, suffix, out, error);
+  cai_free_mem(client != NULL ? &client->allocator : NULL, suffix);
+  return rc;
 }
 
 static int cai_conversation_request(cai_client *client, const char *method,
@@ -132,7 +167,7 @@ int cai_client_retrieve_conversation(cai_client *client,
   char *path;
   int rc;
 
-  rc = cai_build_conversation_path(client, conversation_id, &path, error);
+  rc = cai_build_conversation_path(client, conversation_id, NULL, &path, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -150,7 +185,76 @@ int cai_client_delete_conversation(cai_client *client,
 
   path = NULL;
   conversation = NULL;
-  rc = cai_build_conversation_path(client, conversation_id, &path, error);
+  rc = cai_build_conversation_path(client, conversation_id, NULL, &path, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_conversation_request(client, "DELETE", path, NULL, &conversation,
+                                error);
+  cai_free_mem(client != NULL ? &client->allocator : NULL, path);
+  cai_conversation_destroy(conversation);
+  return rc;
+}
+
+int cai_client_list_conversation_items(cai_client *client,
+                                       const char *conversation_id,
+                                       const cai_list_params *params,
+                                       cai_input_item_list **out,
+                                       cai_error *error) {
+  char *path;
+  char *json;
+  char *request_id;
+  long http_status;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input item list output pointer is required");
+  }
+  *out = NULL;
+  path = NULL;
+  json = NULL;
+  request_id = NULL;
+  rc = cai_build_conversation_path(client, conversation_id, "/items", &path,
+                                   error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_append_list_query_params(client != NULL ? &client->allocator : NULL,
+                                    &path, params, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(client != NULL ? &client->allocator : NULL, path);
+    return rc;
+  }
+  rc = cai_http_json_request(client, "GET", path, NULL, &json, &http_status,
+                             &request_id, error);
+  cai_free_mem(client != NULL ? &client->allocator : NULL, path);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (http_status < 200L || http_status >= 300L) {
+    rc = cai_set_openai_error(error, http_status, json, request_id);
+    free(json);
+    free(request_id);
+    return rc;
+  }
+  rc = cai_input_item_list_parse_json(json, out, error);
+  free(json);
+  free(request_id);
+  return rc;
+}
+
+int cai_client_delete_conversation_item(cai_client *client,
+                                        const char *conversation_id,
+                                        const char *item_id, cai_error *error) {
+  cai_conversation *conversation;
+  char *path;
+  int rc;
+
+  path = NULL;
+  conversation = NULL;
+  rc = cai_build_conversation_item_path(client, conversation_id, item_id, &path,
+                                        error);
   if (rc != CAI_OK) {
     return rc;
   }

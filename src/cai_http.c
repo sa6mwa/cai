@@ -266,42 +266,35 @@ static int cai_append_query_piece(const cai_allocator *allocator, char **path,
   return CAI_OK;
 }
 
-static int cai_build_response_input_items_path(const cai_allocator *allocator,
-                                               const char *response_id,
-                                               const cai_list_params *params,
-                                               char **out, cai_error *error) {
+int cai_append_list_query_params(const cai_allocator *allocator, char **path,
+                                 const cai_list_params *params,
+                                 cai_error *error) {
   char limit_text[32];
   size_t length;
   size_t capacity;
   int has_query;
   int rc;
 
-  rc = cai_build_response_path(allocator, response_id, "/input_items", out,
-                               error);
-  if (rc != CAI_OK) {
-    return rc;
+  if (path == NULL || *path == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "path is required");
   }
-  length = strlen(*out);
-  capacity = length + 1U;
-  has_query = 0;
   if (params == NULL) {
     return CAI_OK;
   }
   if (params->limit < 0 || params->limit > 100) {
-    cai_free_mem(allocator, *out);
-    *out = NULL;
     return cai_set_error(error, CAI_ERR_INVALID,
                          "list limit must be between 1 and 100");
   }
   if (params->order != NULL && strcmp(params->order, "asc") != 0 &&
       strcmp(params->order, "desc") != 0) {
-    cai_free_mem(allocator, *out);
-    *out = NULL;
     return cai_set_error(error, CAI_ERR_INVALID,
                          "list order must be asc or desc");
   }
+  length = strlen(*path);
+  capacity = length + 1U;
+  has_query = strchr(*path, '?') != NULL;
   if (params->after != NULL) {
-    rc = cai_append_query_piece(allocator, out, &length, &capacity, "after",
+    rc = cai_append_query_piece(allocator, path, &length, &capacity, "after",
                                 params->after, &has_query, error);
     if (rc != CAI_OK) {
       return rc;
@@ -309,18 +302,38 @@ static int cai_build_response_input_items_path(const cai_allocator *allocator,
   }
   if (params->limit > 0) {
     snprintf(limit_text, sizeof(limit_text), "%d", params->limit);
-    rc = cai_append_query_piece(allocator, out, &length, &capacity, "limit",
+    rc = cai_append_query_piece(allocator, path, &length, &capacity, "limit",
                                 limit_text, &has_query, error);
     if (rc != CAI_OK) {
       return rc;
     }
   }
   if (params->order != NULL) {
-    rc = cai_append_query_piece(allocator, out, &length, &capacity, "order",
+    rc = cai_append_query_piece(allocator, path, &length, &capacity, "order",
                                 params->order, &has_query, error);
     if (rc != CAI_OK) {
       return rc;
     }
+  }
+  return CAI_OK;
+}
+
+static int cai_build_response_input_items_path(const cai_allocator *allocator,
+                                               const char *response_id,
+                                               const cai_list_params *params,
+                                               char **out, cai_error *error) {
+  int rc;
+
+  rc = cai_build_response_path(allocator, response_id, "/input_items", out,
+                               error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_append_list_query_params(allocator, out, params, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(allocator, *out);
+    *out = NULL;
+    return rc;
   }
   return CAI_OK;
 }

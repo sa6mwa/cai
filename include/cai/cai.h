@@ -204,6 +204,14 @@ int cai_client_retrieve_conversation(cai_client *client,
 int cai_client_delete_conversation(cai_client *client,
                                    const char *conversation_id,
                                    cai_error *error);
+int cai_client_list_conversation_items(cai_client *client,
+                                       const char *conversation_id,
+                                       const cai_list_params *params,
+                                       cai_input_item_list **out,
+                                       cai_error *error);
+int cai_client_delete_conversation_item(cai_client *client,
+                                        const char *conversation_id,
+                                        const char *item_id, cai_error *error);
 const char *cai_conversation_id(const cai_conversation *conversation);
 const char *cai_conversation_object(const cai_conversation *conversation);
 void cai_conversation_destroy(cai_conversation *conversation);

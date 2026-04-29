@@ -118,6 +118,9 @@ int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
                                    cai_error *error);
 int cai_build_url(const cai_allocator *allocator, const char *base_url,
                   const char *path, char **out, cai_error *error);
+int cai_append_list_query_params(const cai_allocator *allocator, char **path,
+                                 const cai_list_params *params,
+                                 cai_error *error);
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
