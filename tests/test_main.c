@@ -937,7 +937,7 @@ static const char *mock_response_for_request(const char *request) {
   if (strncmp(request, "GET /v1/conversations/conv_get HTTP/", 36U) == 0) {
     return conversation_get_body;
   }
-  if (strncmp(request, "PATCH /v1/conversations/conv_get HTTP/", 38U) == 0 &&
+  if (strncmp(request, "POST /v1/conversations/conv_get HTTP/", 37U) == 0 &&
       strstr(request, "\"metadata\":{\"tenant\":\"vectis\"}") != NULL) {
     return conversation_update_body;
   }

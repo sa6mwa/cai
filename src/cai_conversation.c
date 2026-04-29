@@ -304,7 +304,7 @@ int cai_client_update_conversation_metadata(cai_client *client,
                                      error);
   }
   if (rc == CAI_OK) {
-    rc = cai_conversation_request(client, "PATCH", path, builder.data, out,
+    rc = cai_conversation_request(client, "POST", path, builder.data, out,
                                   error);
   }
   cai_free_mem(client != NULL ? &client->allocator : NULL, path);
