@@ -76,6 +76,7 @@ typedef struct cai_agent_config {
   const char *reasoning_effort;
   const char *reasoning_summary;
   int max_output_tokens;
+  int parallel_tool_calls;
 } cai_agent_config;
 
 #define CAI_REASONING_EFFORT_NONE "none"
@@ -230,6 +231,8 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
                                              const char *effort,
                                              const char *summary,
                                              cai_error *error);
+int cai_response_create_params_set_parallel_tool_calls(
+    cai_response_create_params *params, int enabled, cai_error *error);
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
                                         cai_error *error);

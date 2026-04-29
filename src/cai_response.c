@@ -338,6 +338,28 @@ static int cai_json_builder_field_int(cai_json_builder *builder,
   return rc;
 }
 
+static int cai_json_builder_field_bool(cai_json_builder *builder,
+                                       const char *name, int value,
+                                       int *need_comma, cai_error *error) {
+  int rc;
+
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_json_builder_string(builder, name, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_json_builder_lit(builder, value ? ":true" : ":false", error);
+  if (rc == CAI_OK) {
+    *need_comma = 1;
+  }
+  return rc;
+}
+
 static int
 cai_serialize_reasoning_json(cai_json_builder *builder,
                              const cai_response_create_params *params,
@@ -401,6 +423,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->reasoning_effort = NULL;
   params->reasoning_summary = NULL;
   params->max_output_tokens = 0;
+  params->parallel_tool_calls = -1;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
   cai_object_array_init(&params->tools, sizeof(struct cai_function_tool));
   *out = params;
@@ -507,6 +530,20 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
   }
   return cai_replace_string(&params->allocator, &params->reasoning_summary,
                             summary, error);
+}
+
+int cai_response_create_params_set_parallel_tool_calls(
+    cai_response_create_params *params, int enabled, cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (enabled != 0 && enabled != 1) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "parallel tool calls must be 0 or 1");
+  }
+  params->parallel_tool_calls = enabled;
+  return CAI_OK;
 }
 
 static int cai_response_params_add_part(cai_response_create_params *params,
@@ -864,6 +901,11 @@ int cai_response_create_params_serialize_json(
   }
   if (rc == CAI_OK) {
     rc = cai_serialize_reasoning_json(&builder, params, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->parallel_tool_calls >= 0) {
+    rc = cai_json_builder_field_bool(&builder, "parallel_tool_calls",
+                                     params->parallel_tool_calls, &need_comma,
+                                     error);
   }
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(&builder, ",", error);

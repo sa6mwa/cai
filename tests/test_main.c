@@ -454,6 +454,16 @@ static void test_response_json(test_state *state) {
           params, CAI_REASONING_EFFORT_LOW, CAI_REASONING_SUMMARY_AUTO, &error),
       CAI_OK);
   expect_int(
+      state, "params_set_parallel_tools",
+      cai_response_create_params_set_parallel_tool_calls(params, 0, &error),
+      CAI_OK);
+  expect_int(
+      state, "params_set_bad_parallel_tools",
+      cai_response_create_params_set_parallel_tool_calls(params, 2, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
       state, "params_set_bad_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, -1, &error),
       CAI_ERR_INVALID);
@@ -496,6 +506,10 @@ static void test_response_json(test_state *state) {
                "\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"}") ==
         NULL) {
       test_fail(state, "params_serialize", "reasoning missing from JSON");
+    }
+    if (strstr(json, "\"parallel_tool_calls\":false") == NULL) {
+      test_fail(state, "params_serialize",
+                "parallel tool calls missing from JSON");
     }
     if (strstr(json, "\"type\":\"input_text\"") == NULL) {
       test_fail(state, "params_serialize", "text content missing from JSON");
@@ -721,6 +735,7 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request,
                "\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"}") !=
             NULL &&
+        strstr(request, "\"parallel_tool_calls\":false") != NULL &&
         strstr(request, "previous_response_id") == NULL) {
       return session_first_body;
     }
@@ -1227,6 +1242,7 @@ static void test_agent_session(test_state *state) {
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   agent_config.max_output_tokens = 64;
+  agent_config.parallel_tool_calls = 0;
   client = NULL;
   agent = NULL;
   session = NULL;
