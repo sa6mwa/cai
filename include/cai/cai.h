@@ -137,6 +137,12 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,
                                cai_response **out, cai_error *error);
+int cai_client_retrieve_response(cai_client *client, const char *response_id,
+                                 cai_response **out, cai_error *error);
+int cai_client_cancel_response(cai_client *client, const char *response_id,
+                               cai_response **out, cai_error *error);
+int cai_client_delete_response(cai_client *client, const char *response_id,
+                               cai_error *error);
 
 const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);

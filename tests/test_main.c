@@ -363,19 +363,71 @@ static int mock_write_all(int fd, const char *data, size_t length) {
   return 0;
 }
 
-static void mock_openai_child(int pipe_fd) {
-  static const char response_body[] =
+static int mock_read_request(int fd, char *request, size_t capacity) {
+  ssize_t nread;
+
+  nread = read(fd, request, capacity - 1U);
+  if (nread <= 0) {
+    return -1;
+  }
+  request[nread] = '\0';
+  return 0;
+}
+
+static int mock_write_json_response(int fd, const char *body) {
+  char response[512];
+  int response_len;
+
+  response_len =
+      snprintf(response, sizeof(response),
+               "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+               "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
+               (unsigned long)strlen(body), body);
+  if (response_len <= 0 || (size_t)response_len >= sizeof(response)) {
+    return -1;
+  }
+  return mock_write_all(fd, response, (size_t)response_len);
+}
+
+static const char *mock_response_for_request(const char *request) {
+  static const char create_body[] =
       "{\"id\":\"resp_mock\",\"status\":\"completed\",\"output\":[{\"type\":"
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"mock "
       "ok\"}]}]}";
-  char response[512];
+  static const char retrieve_body[] =
+      "{\"id\":\"resp_get\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"get "
+      "ok\"}]}]}";
+  static const char cancel_body[] =
+      "{\"id\":\"resp_cancel\",\"status\":\"cancelled\",\"output\":[{\"type\":"
+      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"cancel "
+      "ok\"}]}]}";
+  static const char delete_body[] = "{\"deleted\":true,\"id\":\"resp_get\"}";
+
+  if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
+    return create_body;
+  }
+  if (strncmp(request, "GET /v1/responses/resp_get HTTP/", 32U) == 0) {
+    return retrieve_body;
+  }
+  if (strncmp(request, "POST /v1/responses/resp_get/cancel HTTP/", 40U) == 0) {
+    return cancel_body;
+  }
+  if (strncmp(request, "DELETE /v1/responses/resp_get HTTP/", 35U) == 0) {
+    return delete_body;
+  }
+  return NULL;
+}
+
+static void mock_openai_child(int pipe_fd, int request_count) {
   char request[4096];
   struct sockaddr_in addr;
   socklen_t addr_len;
   int server_fd;
   int client_fd;
   int port;
-  int response_len;
+  int i;
+  const char *body;
 
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
@@ -400,25 +452,23 @@ static void mock_openai_child(int pipe_fd) {
     _exit(6);
   }
   close(pipe_fd);
-  client_fd = accept(server_fd, NULL, NULL);
-  if (client_fd < 0) {
-    _exit(7);
+  for (i = 0; i < request_count; i++) {
+    client_fd = accept(server_fd, NULL, NULL);
+    if (client_fd < 0) {
+      _exit(7);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      _exit(8);
+    }
+    body = mock_response_for_request(request);
+    if (body == NULL) {
+      _exit(9);
+    }
+    if (mock_write_json_response(client_fd, body) != 0) {
+      _exit(10);
+    }
+    close(client_fd);
   }
-  if (read(client_fd, request, sizeof(request)) <= 0) {
-    _exit(8);
-  }
-  response_len =
-      snprintf(response, sizeof(response),
-               "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-               "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
-               (unsigned long)(sizeof(response_body) - 1U), response_body);
-  if (response_len <= 0 || (size_t)response_len >= sizeof(response)) {
-    _exit(9);
-  }
-  if (mock_write_all(client_fd, response, (size_t)response_len) != 0) {
-    _exit(10);
-  }
-  close(client_fd);
   close(server_fd);
   _exit(0);
 }
@@ -449,7 +499,7 @@ static void test_http_create_response(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1]);
+    mock_openai_child(pipe_fds[1], 4);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -489,6 +539,26 @@ static void test_http_create_response(test_state *state) {
   expect_str(state, "http_response_text", cai_response_output_text(response),
              "mock ok");
   cai_response_destroy(response);
+  response = NULL;
+  expect_int(
+      state, "http_retrieve",
+      cai_client_retrieve_response(client, "resp_get", &response, &error),
+      CAI_OK);
+  expect_str(state, "http_retrieve_id", cai_response_id(response), "resp_get");
+  expect_str(state, "http_retrieve_text", cai_response_output_text(response),
+             "get ok");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "http_cancel",
+             cai_client_cancel_response(client, "resp_get", &response, &error),
+             CAI_OK);
+  expect_str(state, "http_cancel_status", cai_response_status(response),
+             "cancelled");
+  expect_str(state, "http_cancel_text", cai_response_output_text(response),
+             "cancel ok");
+  cai_response_destroy(response);
+  expect_int(state, "http_delete",
+             cai_client_delete_response(client, "resp_get", &error), CAI_OK);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
   cai_error_cleanup(&error);
