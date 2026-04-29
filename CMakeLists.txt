@@ -21,6 +21,8 @@ set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_EXTERNAL_ROOT "${CMAKE_SOURCE_DIR}/.cache/deps/host-debug"
     CACHE PATH "Provisioned third-party dependency root.")
+set(CAI_LONEJSON_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../lonejson"
+    CACHE PATH "Development lonejson checkout used until SDK dependency provisioning lands.")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -69,12 +71,45 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
+set(CAI_LONEJSON_INCLUDE_DIR "")
+if(EXISTS "${CAI_EXTERNAL_ROOT}/include/lonejson.h")
+  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_EXTERNAL_ROOT}/include")
+  find_library(CAI_LONEJSON_LIBRARY NAMES lonejson PATHS "${CAI_EXTERNAL_ROOT}/lib" NO_DEFAULT_PATH)
+elseif(EXISTS "${CAI_LONEJSON_SOURCE_DIR}/include/lonejson.h")
+  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_SOURCE_DIR}/include")
+  add_library(cai_lonejson STATIC "${CAI_LONEJSON_SOURCE_DIR}/src/lonejson.c")
+  target_include_directories(cai_lonejson PUBLIC "${CAI_LONEJSON_SOURCE_DIR}/include")
+  set_target_properties(cai_lonejson PROPERTIES
+    C_STANDARD 90
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON)
+  target_compile_definitions(cai_lonejson PRIVATE
+    _POSIX_C_SOURCE=200809L
+    _ISOC99_SOURCE=1)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(cai_lonejson PRIVATE
+      -std=c89
+      -Wall
+      -Wextra
+      -Wpedantic
+      -Wno-long-long)
+  endif()
+endif()
+
+if(CAI_LONEJSON_INCLUDE_DIR STREQUAL "")
+  message(FATAL_ERROR
+    "lonejson is required. Provision ${CAI_EXTERNAL_ROOT}/include/lonejson.h "
+    "or set CAI_LONEJSON_SOURCE_DIR to a lonejson checkout.")
+endif()
+
 set(CAI_SOURCES
   src/cai_allocator.c
   src/cai_client.c
   src/cai_env.c
   src/cai_error.c
   src/cai_models.c
+  src/cai_response.c
   src/cai_source.c)
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -101,6 +136,14 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<BUILD_INTERFACE:${CAI_PUBLIC_INCLUDE_DIR}>
         $<BUILD_INTERFACE:${CAI_GENERATED_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
+    if(TARGET cai_lonejson)
+      target_link_libraries(${_cai_target} PRIVATE cai_lonejson)
+    elseif(CAI_LONEJSON_LIBRARY)
+      target_link_libraries(${_cai_target} PRIVATE "${CAI_LONEJSON_LIBRARY}")
+    else()
+      target_link_libraries(${_cai_target} PRIVATE lonejson)
+    endif()
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()
@@ -111,6 +154,7 @@ if(CAI_BUILD_TESTS)
   target_include_directories(cai_tests PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
+    "${CAI_LONEJSON_INCLUDE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(cai_tests PRIVATE cai_static)
   cai_configure_c_target(cai_tests)

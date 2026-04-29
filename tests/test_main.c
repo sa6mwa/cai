@@ -273,6 +273,73 @@ static void test_client_open(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_response_json(test_state *state) {
+  static const char response_json[] =
+      "{\"id\":\"resp_123\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello "
+      "\"},{\"type\":\"output_text\",\"text\":\"world\"}]}]}";
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_error error;
+  char *json;
+  size_t json_len;
+
+  cai_error_init(&error);
+  params = NULL;
+  json = NULL;
+  expect_int(state, "params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "params_set_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+             CAI_OK);
+  expect_int(
+      state, "params_set_instructions",
+      cai_response_create_params_set_instructions(params, "be brief", &error),
+      CAI_OK);
+  expect_int(
+      state, "params_add_text",
+      cai_response_create_params_add_text(params, "user", "hello", &error),
+      CAI_OK);
+  expect_int(
+      state, "params_add_image",
+      cai_response_create_params_add_image_url(
+          params, "user", "https://example.test/image.png", "high", &error),
+      CAI_OK);
+  expect_int(state, "params_serialize",
+             cai_response_create_params_serialize_json(params, &json, &json_len,
+                                                       &error),
+             CAI_OK);
+  if (json == NULL) {
+    test_fail(state, "params_serialize", "no JSON returned");
+  } else {
+    if (strstr(json, "\"model\":\"gpt-5.4-nano\"") == NULL) {
+      test_fail(state, "params_serialize", "model missing from JSON");
+    }
+    if (strstr(json, "\"type\":\"input_text\"") == NULL) {
+      test_fail(state, "params_serialize", "text content missing from JSON");
+    }
+    if (strstr(json, "\"type\":\"input_image\"") == NULL) {
+      test_fail(state, "params_serialize", "image content missing from JSON");
+    }
+    expect_int(state, "params_serialize_len", (long)strlen(json),
+               (long)json_len);
+    free(json);
+  }
+  cai_response_create_params_destroy(params);
+
+  response = NULL;
+  expect_int(state, "response_parse",
+             cai_response_parse_json(response_json, &response, &error), CAI_OK);
+  expect_str(state, "response_id", cai_response_id(response), "resp_123");
+  expect_str(state, "response_status", cai_response_status(response),
+             "completed");
+  expect_str(state, "response_text", cai_response_output_text(response),
+             "hello world");
+  cai_response_destroy(response);
+  cai_error_cleanup(&error);
+}
+
 int main(void) {
   test_state state;
 
@@ -281,6 +348,7 @@ int main(void) {
   test_env_precedence(&state);
   test_source_sink(&state);
   test_client_open(&state);
+  test_response_json(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;

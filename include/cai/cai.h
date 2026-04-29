@@ -18,6 +18,8 @@ typedef struct cai_client cai_client;
 typedef struct cai_source cai_source;
 typedef struct cai_sink cai_sink;
 typedef struct cai_output cai_output;
+typedef struct cai_response_create_params cai_response_create_params;
+typedef struct cai_response cai_response;
 
 typedef enum cai_status {
   CAI_OK = 0,
@@ -113,6 +115,30 @@ int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
                             cai_error *error);
 int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                           void *value, cai_error *error);
+
+int cai_response_create_params_new(cai_response_create_params **out,
+                                   cai_error *error);
+void cai_response_create_params_destroy(cai_response_create_params *params);
+int cai_response_create_params_set_model(cai_response_create_params *params,
+                                         const char *model, cai_error *error);
+int cai_response_create_params_set_instructions(
+    cai_response_create_params *params, const char *instructions,
+    cai_error *error);
+int cai_response_create_params_set_previous_response_id(
+    cai_response_create_params *params, const char *response_id,
+    cai_error *error);
+int cai_response_create_params_add_text(cai_response_create_params *params,
+                                        const char *role, const char *text,
+                                        cai_error *error);
+int cai_response_create_params_add_image_url(cai_response_create_params *params,
+                                             const char *role, const char *url,
+                                             const char *detail,
+                                             cai_error *error);
+
+const char *cai_response_id(const cai_response *response);
+const char *cai_response_status(const cai_response *response);
+const char *cai_response_output_text(const cai_response *response);
+void cai_response_destroy(cai_response *response);
 
 #ifdef __cplusplus
 }
