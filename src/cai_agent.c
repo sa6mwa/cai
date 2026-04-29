@@ -179,6 +179,40 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   return CAI_OK;
 }
 
+int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
+                                       cai_error *error) {
+  cai_conversation *conversation;
+  cai_session *session;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session output pointer is required");
+  }
+  *out = NULL;
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  conversation = NULL;
+  session = NULL;
+  rc = cai_client_create_conversation(agent->client, &conversation, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_agent_new_session(agent, &session, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_set_conversation_id(
+        session, cai_conversation_id(conversation), error);
+  }
+  cai_conversation_destroy(conversation);
+  if (rc != CAI_OK) {
+    cai_session_destroy(session);
+    return rc;
+  }
+  *out = session;
+  return CAI_OK;
+}
+
 static void cai_session_clear_inputs(cai_session *session) {
   cai_allocator *allocator;
   size_t i;
