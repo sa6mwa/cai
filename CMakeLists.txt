@@ -117,7 +117,8 @@ set(CAI_SOURCES
   src/cai_input_item.c
   src/cai_models.c
   src/cai_response.c
-  src/cai_source.c)
+  src/cai_source.c
+  src/cai_tool.c)
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 

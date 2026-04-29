@@ -28,6 +28,20 @@ typedef struct write_state {
   int closed;
 } write_state;
 
+typedef struct tool_weather_args {
+  char *city;
+  long long days;
+} tool_weather_args;
+
+typedef struct raw_tool_state {
+  const char *seen;
+} raw_tool_state;
+
+static const lonejson_field tool_weather_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(tool_weather_args, city, "city"),
+    LONEJSON_FIELD_I64(tool_weather_args, days, "days")};
+LONEJSON_MAP_DEFINE(tool_weather_map, tool_weather_args, tool_weather_fields);
+
 static void test_fail(test_state *state, const char *name, const char *msg) {
   state->failures++;
   fprintf(stderr, "FAIL %s: %s\n", name, msg);
@@ -202,6 +216,30 @@ static void test_write_close(void *context) {
   state->closed = 1;
 }
 
+static int test_weather_tool(void *context, const void *params,
+                             cai_sink *output, cai_error *error) {
+  const tool_weather_args *args;
+  char text[64];
+  int len;
+
+  (void)context;
+  args = (const tool_weather_args *)params;
+  len = snprintf(text, sizeof(text), "%s:%lld", args->city, args->days);
+  if (len <= 0 || (size_t)len >= sizeof(text)) {
+    return cai_set_error(error, CAI_ERR_INVALID, "weather output too large");
+  }
+  return cai_sink_write(output, text, (size_t)len, error);
+}
+
+static int test_raw_tool(void *context, const char *arguments_json,
+                         cai_sink *output, cai_error *error) {
+  raw_tool_state *state;
+
+  state = (raw_tool_state *)context;
+  state->seen = arguments_json;
+  return cai_sink_write(output, arguments_json, strlen(arguments_json), error);
+}
+
 static void test_source_sink(test_state *state) {
   read_state reader;
   write_state writer;
@@ -250,6 +288,98 @@ static void test_source_sink(test_state *state) {
   expect_str(state, "sink_write_value", writer.buffer, "xyz");
   cai_sink_close(sink);
   expect_int(state, "sink_closed", writer.closed, 1L);
+  cai_error_cleanup(&error);
+}
+
+static void test_tool_registry(test_state *state) {
+  static const char schema[] =
+      "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},"
+      "\"days\":{\"type\":\"integer\"}},\"required\":[\"city\"]}";
+  cai_tool_registry *registry;
+  cai_response_create_params *params;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  raw_tool_state raw_state;
+  cai_error error;
+  char *json;
+
+  cai_error_init(&error);
+  registry = NULL;
+  params = NULL;
+  sink = NULL;
+  json = NULL;
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  writer.closed = 0;
+  raw_state.seen = NULL;
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "tool_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "tool_register_typed",
+             cai_tool_registry_register_lonejson(
+                 registry, "weather", "Get weather", &tool_weather_map, schema,
+                 1, test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "tool_register_raw",
+             cai_tool_registry_register_raw(registry, "raw_echo",
+                                            "Echo raw JSON", schema, 0,
+                                            test_raw_tool, &raw_state, &error),
+             CAI_OK);
+  expect_int(state, "tool_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "tool_run_typed",
+             cai_tool_registry_run(registry, "weather",
+                                   "{\"city\":\"Malmo\",\"days\":3}", sink,
+                                   &error),
+             CAI_OK);
+  expect_str(state, "tool_run_typed_output", writer.buffer, "Malmo:3");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(
+      state, "tool_run_raw",
+      cai_tool_registry_run(registry, "raw_echo", "{\"x\":1}", sink, &error),
+      CAI_OK);
+  expect_str(state, "tool_run_raw_output", writer.buffer, "{\"x\":1}");
+  expect_str(state, "tool_run_raw_seen", raw_state.seen, "{\"x\":1}");
+  cai_sink_close(sink);
+  sink = NULL;
+
+  expect_int(state, "tool_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "tool_params_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+             CAI_OK);
+  expect_int(
+      state, "tool_params_input",
+      cai_response_create_params_add_text(params, "user", "hello", &error),
+      CAI_OK);
+  expect_int(state, "tool_params_add_registry",
+             cai_tool_registry_add_to_response_params(registry, params, &error),
+             CAI_OK);
+  expect_int(
+      state, "tool_params_serialize",
+      cai_response_create_params_serialize_json(params, &json, NULL, &error),
+      CAI_OK);
+  if (json == NULL) {
+    test_fail(state, "tool_params_serialize", "no JSON returned");
+  } else {
+    if (strstr(json, "\"name\":\"weather\"") == NULL ||
+        strstr(json, "\"name\":\"raw_echo\"") == NULL ||
+        strstr(json, "\"strict\":true") == NULL ||
+        strstr(json, "\"strict\":false") == NULL) {
+      test_fail(state, "tool_params_serialize",
+                "registry tools missing from JSON");
+    }
+    free(json);
+  }
+
+  cai_response_create_params_destroy(params);
+  cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
 }
 
@@ -1051,6 +1181,7 @@ int main(void) {
   test_model_capabilities(&state);
   test_env_precedence(&state);
   test_source_sink(&state);
+  test_tool_registry(&state);
   test_client_open(&state);
   test_response_json(&state);
   test_http_create_response(&state);

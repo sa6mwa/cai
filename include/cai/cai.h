@@ -25,6 +25,7 @@ typedef struct cai_response_create_params cai_response_create_params;
 typedef struct cai_response cai_response;
 typedef struct cai_input_item_list cai_input_item_list;
 typedef struct cai_conversation_items_params cai_conversation_items_params;
+typedef struct cai_tool_registry cai_tool_registry;
 
 typedef enum cai_status {
   CAI_OK = 0,
@@ -102,6 +103,11 @@ typedef struct cai_sink_callbacks {
   void *context;
 } cai_sink_callbacks;
 
+typedef int (*cai_tool_lonejson_fn)(void *context, const void *params,
+                                    cai_sink *output, cai_error *error);
+typedef int (*cai_tool_raw_fn)(void *context, const char *arguments_json,
+                               cai_sink *output, cai_error *error);
+
 void cai_client_config_init(cai_client_config *config);
 int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
@@ -147,6 +153,24 @@ int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
                             cai_error *error);
 int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                           void *value, cai_error *error);
+
+int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);
+void cai_tool_registry_destroy(cai_tool_registry *registry);
+int cai_tool_registry_register_lonejson(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const struct lonejson_map *map, const char *schema_json, int strict,
+    cai_tool_lonejson_fn callback, void *context, cai_error *error);
+int cai_tool_registry_register_raw(cai_tool_registry *registry,
+                                   const char *name, const char *description,
+                                   const char *schema_json, int strict,
+                                   cai_tool_raw_fn callback, void *context,
+                                   cai_error *error);
+int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
+                                             cai_response_create_params *params,
+                                             cai_error *error);
+int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
+                          const char *arguments_json, cai_sink *output,
+                          cai_error *error);
 
 int cai_response_create_params_new(cai_response_create_params **out,
                                    cai_error *error);
