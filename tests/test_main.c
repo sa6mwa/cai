@@ -327,6 +327,9 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"type\":\"input_image\"") == NULL) {
       test_fail(state, "params_serialize", "image content missing from JSON");
     }
+    if (strstr(json, ":null") != NULL) {
+      test_fail(state, "params_serialize", "unexpected null field in JSON");
+    }
     expect_int(state, "params_serialize_len", (long)strlen(json),
                (long)json_len);
     free(json);

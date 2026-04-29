@@ -1,13 +1,11 @@
 #include "cai_internal.h"
 
+#include <stdlib.h>
 #include <string.h>
 
-typedef struct cai_request_doc {
-  char *model;
-  char *instructions;
-  char *previous_response_id;
-  lonejson_object_array input;
-} cai_request_doc;
+typedef struct cai_json_string_doc {
+  char *value;
+} cai_json_string_doc;
 
 typedef struct cai_response_content_doc {
   char *type;
@@ -25,32 +23,10 @@ typedef struct cai_response_doc {
   lonejson_object_array output;
 } cai_response_doc;
 
-static const lonejson_field cai_content_part_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(struct cai_content_part, type, "type"),
-    LONEJSON_FIELD_STRING_ALLOC(struct cai_content_part, text, "text"),
-    LONEJSON_FIELD_STRING_ALLOC(struct cai_content_part, image_url,
-                                "image_url"),
-    LONEJSON_FIELD_STRING_ALLOC(struct cai_content_part, detail, "detail")};
-LONEJSON_MAP_DEFINE(cai_content_part_map, struct cai_content_part,
-                    cai_content_part_fields);
-
-static const lonejson_field cai_input_message_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(struct cai_input_message, role, "role"),
-    LONEJSON_FIELD_OBJECT_ARRAY(struct cai_input_message, content, "content",
-                                struct cai_content_part, &cai_content_part_map,
-                                LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(cai_input_message_map, struct cai_input_message,
-                    cai_input_message_fields);
-
-static const lonejson_field cai_request_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(cai_request_doc, model, "model"),
-    LONEJSON_FIELD_STRING_ALLOC(cai_request_doc, instructions, "instructions"),
-    LONEJSON_FIELD_STRING_ALLOC(cai_request_doc, previous_response_id,
-                                "previous_response_id"),
-    LONEJSON_FIELD_OBJECT_ARRAY(
-        cai_request_doc, input, "input", struct cai_input_message,
-        &cai_input_message_map, LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(cai_request_map, cai_request_doc, cai_request_fields);
+static const lonejson_field cai_json_string_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_json_string_doc, value, "value")};
+LONEJSON_MAP_DEFINE(cai_json_string_map, cai_json_string_doc,
+                    cai_json_string_fields);
 
 static const lonejson_field cai_response_content_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, type, "type"),
@@ -145,6 +121,116 @@ static int cai_replace_string(const cai_allocator *allocator, char **slot,
   cai_free_mem(allocator, *slot);
   *slot = copy;
   return CAI_OK;
+}
+
+typedef struct cai_json_builder {
+  char *data;
+  size_t length;
+  size_t capacity;
+} cai_json_builder;
+
+static int cai_json_builder_append(cai_json_builder *builder, const char *text,
+                                   size_t length, cai_error *error) {
+  size_t needed;
+  size_t new_capacity;
+  char *grown;
+
+  needed = builder->length + length + 1U;
+  if (needed > builder->capacity) {
+    new_capacity = builder->capacity == 0U ? 256U : builder->capacity;
+    while (new_capacity < needed) {
+      new_capacity *= 2U;
+    }
+    grown = (char *)cai_realloc_mem(NULL, builder->data, new_capacity);
+    if (grown == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow JSON buffer");
+    }
+    builder->data = grown;
+    builder->capacity = new_capacity;
+  }
+  if (length > 0U) {
+    memcpy(builder->data + builder->length, text, length);
+    builder->length += length;
+  }
+  builder->data[builder->length] = '\0';
+  return CAI_OK;
+}
+
+static int cai_json_builder_lit(cai_json_builder *builder, const char *text,
+                                cai_error *error) {
+  return cai_json_builder_append(builder, text, strlen(text), error);
+}
+
+static int cai_json_builder_string(cai_json_builder *builder, const char *value,
+                                   cai_error *error) {
+  cai_json_string_doc doc;
+  lonejson_error json_error;
+  char *json;
+  char *colon;
+  char *copy;
+  size_t len;
+  int rc;
+
+  copy = cai_strdup(NULL, value);
+  if (copy == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate JSON string");
+  }
+  doc.value = copy;
+  json = lonejson_serialize_alloc(&cai_json_string_map, &doc, NULL, NULL,
+                                  &json_error);
+  if (json == NULL) {
+    cai_free_mem(NULL, copy);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to serialize JSON string",
+                                json_error.message);
+  }
+  colon = strchr(json, ':');
+  if (colon == NULL) {
+    free(json);
+    cai_free_mem(NULL, copy);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "lonejson produced an unexpected string wrapper");
+  }
+  colon++;
+  len = strlen(colon);
+  if (len == 0U || colon[len - 1U] != '}') {
+    free(json);
+    cai_free_mem(NULL, copy);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "lonejson produced an unexpected string wrapper");
+  }
+  len--;
+  rc = cai_json_builder_append(builder, colon, len, error);
+  free(json);
+  cai_free_mem(NULL, copy);
+  return rc;
+}
+
+static int cai_json_builder_field_string(cai_json_builder *builder,
+                                         const char *name, const char *value,
+                                         int *need_comma, cai_error *error) {
+  int rc;
+
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_json_builder_string(builder, name, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_json_builder_lit(builder, ":", error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_json_builder_string(builder, value, error);
+  if (rc == CAI_OK) {
+    *need_comma = 1;
+  }
+  return rc;
 }
 
 int cai_response_create_params_new(cai_response_create_params **out,
@@ -316,8 +402,14 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error) {
-  cai_request_doc doc;
-  lonejson_error json_error;
+  cai_json_builder builder;
+  struct cai_input_message *messages;
+  struct cai_content_part *parts;
+  size_t i;
+  size_t j;
+  int need_comma;
+  int part_comma;
+  int rc;
 
   if (out_json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -328,17 +420,88 @@ int cai_response_create_params_serialize_json(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model and at least one input message are required");
   }
-  doc.model = params->model;
-  doc.instructions = params->instructions;
-  doc.previous_response_id = params->previous_response_id;
-  doc.input = params->input;
-  *out_json = lonejson_serialize_alloc(&cai_request_map, &doc, out_len, NULL,
-                                       &json_error);
-  if (*out_json == NULL) {
-    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to serialize response request",
-                                json_error.message);
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  need_comma = 0;
+  rc = cai_json_builder_lit(&builder, "{", error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_field_string(&builder, "model", params->model,
+                                       &need_comma, error);
   }
+  if (rc == CAI_OK && params->instructions != NULL) {
+    rc = cai_json_builder_field_string(
+        &builder, "instructions", params->instructions, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->previous_response_id != NULL) {
+    rc = cai_json_builder_field_string(&builder, "previous_response_id",
+                                       params->previous_response_id,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && need_comma) {
+    rc = cai_json_builder_lit(&builder, ",", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, "\"input\":[", error);
+  }
+  messages = (struct cai_input_message *)params->input.items;
+  for (i = 0U; rc == CAI_OK && i < params->input.count; i++) {
+    if (i > 0U) {
+      rc = cai_json_builder_lit(&builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(&builder, "{\"role\":", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_string(&builder, messages[i].role, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(&builder, ",\"content\":[", error);
+    }
+    parts = (struct cai_content_part *)messages[i].content.items;
+    for (j = 0U; rc == CAI_OK && j < messages[i].content.count; j++) {
+      if (j > 0U) {
+        rc = cai_json_builder_lit(&builder, ",", error);
+      }
+      part_comma = 0;
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(&builder, "{", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_field_string(&builder, "type", parts[j].type,
+                                           &part_comma, error);
+      }
+      if (rc == CAI_OK && parts[j].text != NULL) {
+        rc = cai_json_builder_field_string(&builder, "text", parts[j].text,
+                                           &part_comma, error);
+      }
+      if (rc == CAI_OK && parts[j].image_url != NULL) {
+        rc = cai_json_builder_field_string(
+            &builder, "image_url", parts[j].image_url, &part_comma, error);
+      }
+      if (rc == CAI_OK && parts[j].detail != NULL) {
+        rc = cai_json_builder_field_string(&builder, "detail", parts[j].detail,
+                                           &part_comma, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(&builder, "}", error);
+      }
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(&builder, "]}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, "]}", error);
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, builder.data);
+    return rc;
+  }
+  if (out_len != NULL) {
+    *out_len = builder.length;
+  }
+  *out_json = builder.data;
   return CAI_OK;
 }
 
