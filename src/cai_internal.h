@@ -88,6 +88,22 @@ struct cai_response {
   char *raw_json;
 };
 
+typedef struct cai_input_item {
+  char *id;
+  char *type;
+  char *role;
+} cai_input_item;
+
+struct cai_input_item_list {
+  char *object;
+  char *first_id;
+  char *last_id;
+  char *raw_json;
+  int has_more;
+  cai_input_item *items;
+  size_t count;
+};
+
 struct cai_conversation {
   char *id;
   char *object;
@@ -98,6 +114,8 @@ int cai_response_create_params_serialize_json(
     cai_error *error);
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error);
+int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
+                                   cai_error *error);
 int cai_build_url(const cai_allocator *allocator, const char *base_url,
                   const char *path, char **out, cai_error *error);
 int cai_http_json_request(cai_client *client, const char *method,

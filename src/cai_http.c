@@ -200,6 +200,131 @@ static int cai_build_response_path(const cai_allocator *allocator,
   return CAI_OK;
 }
 
+static int cai_query_is_unreserved(unsigned char ch) {
+  return (ch >= (unsigned char)'A' && ch <= (unsigned char)'Z') ||
+         (ch >= (unsigned char)'a' && ch <= (unsigned char)'z') ||
+         (ch >= (unsigned char)'0' && ch <= (unsigned char)'9') ||
+         ch == (unsigned char)'-' || ch == (unsigned char)'_' ||
+         ch == (unsigned char)'.' || ch == (unsigned char)'~';
+}
+
+static int cai_append_query_piece(const cai_allocator *allocator, char **path,
+                                  size_t *length, size_t *capacity,
+                                  const char *key, const char *value,
+                                  int *has_query, cai_error *error) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t key_len;
+  size_t value_len;
+  size_t extra;
+  size_t needed;
+  size_t i;
+  char *grown;
+  char *cursor;
+  unsigned char ch;
+
+  key_len = strlen(key);
+  value_len = strlen(value);
+  extra = 1U + key_len + 1U;
+  for (i = 0U; i < value_len; i++) {
+    ch = (unsigned char)value[i];
+    extra += cai_query_is_unreserved(ch) ? 1U : 3U;
+  }
+  needed = *length + extra + 1U;
+  if (needed > *capacity) {
+    size_t new_capacity;
+
+    new_capacity = *capacity == 0U ? 128U : *capacity;
+    while (new_capacity < needed) {
+      new_capacity *= 2U;
+    }
+    grown = (char *)cai_realloc_mem(allocator, *path, new_capacity);
+    if (grown == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate query path");
+    }
+    *path = grown;
+    *capacity = new_capacity;
+  }
+  cursor = *path + *length;
+  *cursor++ = *has_query ? '&' : '?';
+  *has_query = 1;
+  memcpy(cursor, key, key_len);
+  cursor += key_len;
+  *cursor++ = '=';
+  for (i = 0U; i < value_len; i++) {
+    ch = (unsigned char)value[i];
+    if (cai_query_is_unreserved(ch)) {
+      *cursor++ = (char)ch;
+    } else {
+      *cursor++ = '%';
+      *cursor++ = hex[(ch >> 4U) & 0x0FU];
+      *cursor++ = hex[ch & 0x0FU];
+    }
+  }
+  *cursor = '\0';
+  *length = (size_t)(cursor - *path);
+  return CAI_OK;
+}
+
+static int cai_build_response_input_items_path(const cai_allocator *allocator,
+                                               const char *response_id,
+                                               const cai_list_params *params,
+                                               char **out, cai_error *error) {
+  char limit_text[32];
+  size_t length;
+  size_t capacity;
+  int has_query;
+  int rc;
+
+  rc = cai_build_response_path(allocator, response_id, "/input_items", out,
+                               error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  length = strlen(*out);
+  capacity = length + 1U;
+  has_query = 0;
+  if (params == NULL) {
+    return CAI_OK;
+  }
+  if (params->limit < 0 || params->limit > 100) {
+    cai_free_mem(allocator, *out);
+    *out = NULL;
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list limit must be between 1 and 100");
+  }
+  if (params->order != NULL && strcmp(params->order, "asc") != 0 &&
+      strcmp(params->order, "desc") != 0) {
+    cai_free_mem(allocator, *out);
+    *out = NULL;
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list order must be asc or desc");
+  }
+  if (params->after != NULL) {
+    rc = cai_append_query_piece(allocator, out, &length, &capacity, "after",
+                                params->after, &has_query, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  if (params->limit > 0) {
+    snprintf(limit_text, sizeof(limit_text), "%d", params->limit);
+    rc = cai_append_query_piece(allocator, out, &length, &capacity, "limit",
+                                limit_text, &has_query, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  if (params->order != NULL) {
+    rc = cai_append_query_piece(allocator, out, &length, &capacity, "order",
+                                params->order, &has_query, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  return CAI_OK;
+}
+
 static int cai_append_header(struct curl_slist **headers, const char *header,
                              cai_error *error) {
   struct curl_slist *next;
@@ -504,5 +629,48 @@ int cai_client_delete_response(cai_client *client, const char *response_id,
   rc = cai_http_response_request(client, "DELETE", path, NULL,
                                  CAI_HTTP_RESPONSE_IGNORE, NULL, error);
   cai_free_mem(client != NULL ? &client->allocator : NULL, path);
+  return rc;
+}
+
+int cai_client_list_response_input_items(cai_client *client,
+                                         const char *response_id,
+                                         const cai_list_params *params,
+                                         cai_input_item_list **out,
+                                         cai_error *error) {
+  char *path;
+  char *body;
+  char *request_id;
+  long http_status;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input item list output pointer is required");
+  }
+  *out = NULL;
+  path = NULL;
+  body = NULL;
+  request_id = NULL;
+  rc = cai_build_response_input_items_path(client != NULL ? &client->allocator
+                                                          : NULL,
+                                           response_id, params, &path, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_http_json_request(client, "GET", path, NULL, &body, &http_status,
+                             &request_id, error);
+  cai_free_mem(client != NULL ? &client->allocator : NULL, path);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (http_status < 200L || http_status >= 300L) {
+    rc = cai_set_openai_error(error, http_status, body, request_id);
+    cai_free_mem(NULL, body);
+    cai_free_mem(NULL, request_id);
+    return rc;
+  }
+  rc = cai_input_item_list_parse_json(body, out, error);
+  cai_free_mem(NULL, body);
+  cai_free_mem(NULL, request_id);
   return rc;
 }

@@ -23,6 +23,7 @@ typedef struct cai_sink cai_sink;
 typedef struct cai_output cai_output;
 typedef struct cai_response_create_params cai_response_create_params;
 typedef struct cai_response cai_response;
+typedef struct cai_input_item_list cai_input_item_list;
 
 typedef enum cai_status {
   CAI_OK = 0,
@@ -71,6 +72,12 @@ typedef struct cai_agent_config {
   const char *model;
   const char *instructions;
 } cai_agent_config;
+
+typedef struct cai_list_params {
+  const char *after;
+  int limit;
+  const char *order;
+} cai_list_params;
 
 typedef size_t (*cai_source_read_fn)(void *context, void *buffer, size_t count,
                                      cai_error *error);
@@ -167,12 +174,27 @@ int cai_client_cancel_response(cai_client *client, const char *response_id,
                                cai_response **out, cai_error *error);
 int cai_client_delete_response(cai_client *client, const char *response_id,
                                cai_error *error);
+void cai_list_params_init(cai_list_params *params);
+int cai_client_list_response_input_items(cai_client *client,
+                                         const char *response_id,
+                                         const cai_list_params *params,
+                                         cai_input_item_list **out,
+                                         cai_error *error);
 
 const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 const char *cai_response_raw_json(const cai_response *response);
 void cai_response_destroy(cai_response *response);
+size_t cai_input_item_list_count(const cai_input_item_list *list);
+int cai_input_item_list_has_more(const cai_input_item_list *list);
+const char *cai_input_item_list_first_id(const cai_input_item_list *list);
+const char *cai_input_item_list_last_id(const cai_input_item_list *list);
+const char *cai_input_item_list_raw_json(const cai_input_item_list *list);
+const char *cai_input_item_id(const cai_input_item_list *list, size_t index);
+const char *cai_input_item_type(const cai_input_item_list *list, size_t index);
+const char *cai_input_item_role(const cai_input_item_list *list, size_t index);
+void cai_input_item_list_destroy(cai_input_item_list *list);
 
 int cai_client_create_conversation(cai_client *client, cai_conversation **out,
                                    cai_error *error);

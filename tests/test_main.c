@@ -416,6 +416,11 @@ static const char *mock_response_for_request(const char *request) {
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"cancel "
       "ok\"}]}]}";
   static const char delete_body[] = "{\"deleted\":true,\"id\":\"resp_get\"}";
+  static const char input_items_body[] =
+      "{\"object\":\"list\",\"data\":[{\"id\":\"msg_1\",\"type\":\"message\","
+      "\"role\":\"user\"},{\"id\":\"msg_2\",\"type\":\"message\",\"role\":"
+      "\"assistant\"}],\"first_id\":\"msg_1\",\"last_id\":\"msg_2\","
+      "\"has_more\":true}";
   static const char conversation_create_body[] =
       "{\"id\":\"conv_mock\",\"object\":\"conversation\",\"created_at\":1}";
   static const char conversation_get_body[] =
@@ -473,6 +478,12 @@ static const char *mock_response_for_request(const char *request) {
   }
   if (strncmp(request, "DELETE /v1/responses/resp_get HTTP/", 35U) == 0) {
     return delete_body;
+  }
+  if (strstr(request, "GET /v1/responses/resp_get/input_items?") != NULL &&
+      strstr(request, "after=msg_0%20x") != NULL &&
+      strstr(request, "limit=2") != NULL &&
+      strstr(request, "order=asc") != NULL) {
+    return input_items_body;
   }
   if (strncmp(request, "POST /v1/conversations HTTP/", 28U) == 0) {
     return conversation_create_body;
@@ -567,6 +578,8 @@ static void test_http_create_response(test_state *state) {
   cai_client *client;
   cai_response_create_params *params;
   cai_response *response;
+  cai_input_item_list *items;
+  cai_list_params list_params;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -582,7 +595,7 @@ static void test_http_create_response(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 4);
+    mock_openai_child(pipe_fds[1], 5);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -605,6 +618,7 @@ static void test_http_create_response(test_state *state) {
   client = NULL;
   params = NULL;
   response = NULL;
+  items = NULL;
   expect_int(state, "http_client_open",
              cai_client_open(&config, &client, &error), CAI_OK);
   expect_int(state, "http_params_new",
@@ -644,6 +658,29 @@ static void test_http_create_response(test_state *state) {
   cai_response_destroy(response);
   expect_int(state, "http_delete",
              cai_client_delete_response(client, "resp_get", &error), CAI_OK);
+  cai_list_params_init(&list_params);
+  list_params.after = "msg_0 x";
+  list_params.limit = 2;
+  list_params.order = "asc";
+  expect_int(state, "http_list_input_items",
+             cai_client_list_response_input_items(client, "resp_get",
+                                                  &list_params, &items, &error),
+             CAI_OK);
+  expect_int(state, "http_list_input_items_count",
+             (long)cai_input_item_list_count(items), 2L);
+  expect_int(state, "http_list_input_items_more",
+             cai_input_item_list_has_more(items), 1L);
+  expect_str(state, "http_list_input_items_first",
+             cai_input_item_list_first_id(items), "msg_1");
+  expect_str(state, "http_list_input_items_last",
+             cai_input_item_list_last_id(items), "msg_2");
+  expect_str(state, "http_list_input_items_id", cai_input_item_id(items, 0U),
+             "msg_1");
+  expect_str(state, "http_list_input_items_type",
+             cai_input_item_type(items, 0U), "message");
+  expect_str(state, "http_list_input_items_role",
+             cai_input_item_role(items, 1U), "assistant");
+  cai_input_item_list_destroy(items);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
   cai_error_cleanup(&error);
