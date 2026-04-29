@@ -412,7 +412,9 @@ static void test_response_json(test_state *state) {
   static const char response_json[] =
       "{\"id\":\"resp_123\",\"status\":\"completed\",\"output\":[{\"type\":"
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello "
-      "\"},{\"type\":\"output_text\",\"text\":\"world\"}]}]}";
+      "\"},{\"type\":\"output_text\",\"text\":\"world\"}]},{\"id\":"
+      "\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\","
+      "\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Malmo\\\"}\"}]}";
   cai_response_create_params *params;
   cai_response *response;
   cai_error error;
@@ -487,6 +489,15 @@ static void test_response_json(test_state *state) {
              "completed");
   expect_str(state, "response_text", cai_response_output_text(response),
              "hello world");
+  expect_int(state, "response_tool_count",
+             (long)cai_response_tool_call_count(response), 1L);
+  expect_str(state, "response_tool_id", cai_response_tool_call_id(response, 0U),
+             "call_1");
+  expect_str(state, "response_tool_name",
+             cai_response_tool_call_name(response, 0U), "weather");
+  expect_str(state, "response_tool_arguments",
+             cai_response_tool_call_arguments(response, 0U),
+             "{\"city\":\"Malmo\"}");
   if (strstr(cai_response_raw_json(response), "\"id\":\"resp_123\"") == NULL) {
     test_fail(state, "response_raw_json", "raw JSON missing response id");
   }

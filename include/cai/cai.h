@@ -225,6 +225,13 @@ const char *cai_response_id(const cai_response *response);
 const char *cai_response_status(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 const char *cai_response_raw_json(const cai_response *response);
+size_t cai_response_tool_call_count(const cai_response *response);
+const char *cai_response_tool_call_id(const cai_response *response,
+                                      size_t index);
+const char *cai_response_tool_call_name(const cai_response *response,
+                                        size_t index);
+const char *cai_response_tool_call_arguments(const cai_response *response,
+                                             size_t index);
 void cai_response_destroy(cai_response *response);
 size_t cai_input_item_list_count(const cai_input_item_list *list);
 int cai_input_item_list_has_more(const cai_input_item_list *list);

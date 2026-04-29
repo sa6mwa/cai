@@ -13,7 +13,11 @@ typedef struct cai_response_content_doc {
 } cai_response_content_doc;
 
 typedef struct cai_response_output_doc {
+  char *id;
   char *type;
+  char *call_id;
+  char *name;
+  char *arguments;
   lonejson_object_array content;
 } cai_response_output_doc;
 
@@ -35,7 +39,12 @@ LONEJSON_MAP_DEFINE(cai_response_content_map, cai_response_content_doc,
                     cai_response_content_fields);
 
 static const lonejson_field cai_response_output_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, call_id, "call_id"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, arguments,
+                                "arguments"),
     LONEJSON_FIELD_OBJECT_ARRAY(
         cai_response_output_doc, content, "content", cai_response_content_doc,
         &cai_response_content_map, LONEJSON_OVERFLOW_FAIL)};
@@ -669,6 +678,68 @@ static char *cai_response_collect_text(cai_response_doc *doc) {
   return text;
 }
 
+static size_t cai_response_count_tool_calls(cai_response_doc *doc) {
+  cai_response_output_doc *outputs;
+  size_t count;
+  size_t i;
+
+  count = 0U;
+  outputs = (cai_response_output_doc *)doc->output.items;
+  for (i = 0U; i < doc->output.count; i++) {
+    if (outputs[i].type != NULL &&
+        strcmp(outputs[i].type, "function_call") == 0) {
+      count++;
+    }
+  }
+  return count;
+}
+
+static int cai_response_copy_tool_calls(cai_response *response,
+                                        cai_response_doc *doc,
+                                        cai_error *error) {
+  cai_response_output_doc *outputs;
+  size_t index;
+  size_t i;
+
+  response->tool_call_count = cai_response_count_tool_calls(doc);
+  response->tool_calls = NULL;
+  if (response->tool_call_count == 0U) {
+    return CAI_OK;
+  }
+  response->tool_calls = (cai_response_tool_call *)cai_alloc(
+      NULL, response->tool_call_count * sizeof(response->tool_calls[0]));
+  if (response->tool_calls == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate response tool calls");
+  }
+  memset(response->tool_calls, 0,
+         response->tool_call_count * sizeof(response->tool_calls[0]));
+  outputs = (cai_response_output_doc *)doc->output.items;
+  index = 0U;
+  for (i = 0U; i < doc->output.count; i++) {
+    if (outputs[i].type == NULL ||
+        strcmp(outputs[i].type, "function_call") != 0) {
+      continue;
+    }
+    response->tool_calls[index].id = cai_strdup(NULL, outputs[i].id);
+    response->tool_calls[index].call_id = cai_strdup(NULL, outputs[i].call_id);
+    response->tool_calls[index].name = cai_strdup(NULL, outputs[i].name);
+    response->tool_calls[index].arguments =
+        cai_strdup(NULL, outputs[i].arguments);
+    if ((outputs[i].id != NULL && response->tool_calls[index].id == NULL) ||
+        (outputs[i].call_id != NULL &&
+         response->tool_calls[index].call_id == NULL) ||
+        (outputs[i].name != NULL && response->tool_calls[index].name == NULL) ||
+        (outputs[i].arguments != NULL &&
+         response->tool_calls[index].arguments == NULL)) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate response tool call fields");
+    }
+    index++;
+  }
+  return CAI_OK;
+}
+
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error) {
   cai_response_doc doc;
@@ -708,12 +779,19 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->status = cai_strdup(NULL, doc.status);
   response->output_text = cai_response_collect_text(&doc);
   response->raw_json = cai_strdup(NULL, json);
+  response->tool_calls = NULL;
+  response->tool_call_count = 0U;
   if (response->id == NULL || response->status == NULL ||
       response->output_text == NULL || response->raw_json == NULL) {
     cai_response_destroy(response);
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate parsed response");
+  }
+  if (cai_response_copy_tool_calls(response, &doc, error) != CAI_OK) {
+    cai_response_destroy(response);
+    lonejson_cleanup(&cai_response_map, &doc);
+    return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
   lonejson_cleanup(&cai_response_map, &doc);
   *out = response;
@@ -736,10 +814,49 @@ const char *cai_response_raw_json(const cai_response *response) {
   return response != NULL ? response->raw_json : NULL;
 }
 
+size_t cai_response_tool_call_count(const cai_response *response) {
+  return response != NULL ? response->tool_call_count : 0U;
+}
+
+const char *cai_response_tool_call_id(const cai_response *response,
+                                      size_t index) {
+  if (response == NULL || index >= response->tool_call_count) {
+    return NULL;
+  }
+  return response->tool_calls[index].call_id != NULL
+             ? response->tool_calls[index].call_id
+             : response->tool_calls[index].id;
+}
+
+const char *cai_response_tool_call_name(const cai_response *response,
+                                        size_t index) {
+  if (response == NULL || index >= response->tool_call_count) {
+    return NULL;
+  }
+  return response->tool_calls[index].name;
+}
+
+const char *cai_response_tool_call_arguments(const cai_response *response,
+                                             size_t index) {
+  if (response == NULL || index >= response->tool_call_count) {
+    return NULL;
+  }
+  return response->tool_calls[index].arguments;
+}
+
 void cai_response_destroy(cai_response *response) {
+  size_t i;
+
   if (response == NULL) {
     return;
   }
+  for (i = 0U; i < response->tool_call_count; i++) {
+    cai_free_mem(NULL, response->tool_calls[i].id);
+    cai_free_mem(NULL, response->tool_calls[i].call_id);
+    cai_free_mem(NULL, response->tool_calls[i].name);
+    cai_free_mem(NULL, response->tool_calls[i].arguments);
+  }
+  cai_free_mem(NULL, response->tool_calls);
   cai_free_mem(NULL, response->id);
   cai_free_mem(NULL, response->status);
   cai_free_mem(NULL, response->output_text);

@@ -95,11 +95,20 @@ struct cai_conversation_items_params {
   lonejson_object_array items;
 };
 
+typedef struct cai_response_tool_call {
+  char *id;
+  char *call_id;
+  char *name;
+  char *arguments;
+} cai_response_tool_call;
+
 struct cai_response {
   char *id;
   char *status;
   char *output_text;
   char *raw_json;
+  cai_response_tool_call *tool_calls;
+  size_t tool_call_count;
 };
 
 typedef struct cai_input_item {
