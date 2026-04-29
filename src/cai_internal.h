@@ -81,6 +81,11 @@ struct cai_response_create_params {
   lonejson_object_array input;
 };
 
+struct cai_conversation_items_params {
+  cai_allocator allocator;
+  lonejson_object_array items;
+};
+
 struct cai_response {
   char *id;
   char *status;
@@ -109,6 +114,23 @@ struct cai_conversation {
   char *object;
 };
 
+typedef struct cai_json_builder {
+  char *data;
+  size_t length;
+  size_t capacity;
+} cai_json_builder;
+
+int cai_json_builder_lit(cai_json_builder *builder, const char *text,
+                         cai_error *error);
+int cai_json_builder_string(cai_json_builder *builder, const char *value,
+                            cai_error *error);
+int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
+                                  const char *value, int *need_comma,
+                                  cai_error *error);
+int cai_serialize_input_messages_json(cai_json_builder *builder,
+                                      const char *field_name,
+                                      const lonejson_object_array *messages,
+                                      cai_error *error);
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error);

@@ -24,6 +24,7 @@ typedef struct cai_output cai_output;
 typedef struct cai_response_create_params cai_response_create_params;
 typedef struct cai_response cai_response;
 typedef struct cai_input_item_list cai_input_item_list;
+typedef struct cai_conversation_items_params cai_conversation_items_params;
 
 typedef enum cai_status {
   CAI_OK = 0,
@@ -212,6 +213,20 @@ int cai_client_list_conversation_items(cai_client *client,
 int cai_client_delete_conversation_item(cai_client *client,
                                         const char *conversation_id,
                                         const char *item_id, cai_error *error);
+int cai_conversation_items_params_new(cai_conversation_items_params **out,
+                                      cai_error *error);
+void cai_conversation_items_params_destroy(
+    cai_conversation_items_params *params);
+int cai_conversation_items_params_add_text(
+    cai_conversation_items_params *params, const char *role, const char *text,
+    cai_error *error);
+int cai_conversation_items_params_add_image_url(
+    cai_conversation_items_params *params, const char *role, const char *url,
+    const char *detail, cai_error *error);
+int cai_client_create_conversation_items(
+    cai_client *client, const char *conversation_id,
+    const cai_conversation_items_params *params, cai_input_item_list **out,
+    cai_error *error);
 const char *cai_conversation_id(const cai_conversation *conversation);
 const char *cai_conversation_object(const cai_conversation *conversation);
 void cai_conversation_destroy(cai_conversation *conversation);

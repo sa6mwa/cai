@@ -14,6 +14,65 @@ static const lonejson_field cai_conversation_fields[] = {
 LONEJSON_MAP_DEFINE(cai_conversation_map, cai_conversation_doc,
                     cai_conversation_fields);
 
+static void cai_conversation_object_array_init(lonejson_object_array *array,
+                                               size_t elem_size) {
+  array->items = NULL;
+  array->count = 0U;
+  array->capacity = 0U;
+  array->elem_size = elem_size;
+  array->flags = 0U;
+}
+
+static int cai_conversation_object_array_grow(const cai_allocator *allocator,
+                                              lonejson_object_array *array,
+                                              size_t elem_size,
+                                              cai_error *error) {
+  size_t new_capacity;
+  void *grown;
+
+  if (array->count < array->capacity) {
+    return CAI_OK;
+  }
+  new_capacity = array->capacity == 0U ? 2U : array->capacity * 2U;
+  grown = cai_realloc_mem(allocator, array->items, new_capacity * elem_size);
+  if (grown == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow item array");
+  }
+  array->items = grown;
+  array->capacity = new_capacity;
+  array->elem_size = elem_size;
+  return CAI_OK;
+}
+
+static void
+cai_conversation_content_part_cleanup(const cai_allocator *allocator,
+                                      struct cai_content_part *part) {
+  if (part == NULL) {
+    return;
+  }
+  cai_free_mem(allocator, part->type);
+  cai_free_mem(allocator, part->text);
+  cai_free_mem(allocator, part->image_url);
+  cai_free_mem(allocator, part->detail);
+}
+
+static void
+cai_conversation_input_message_cleanup(const cai_allocator *allocator,
+                                       struct cai_input_message *message) {
+  struct cai_content_part *parts;
+  size_t i;
+
+  if (message == NULL) {
+    return;
+  }
+  cai_free_mem(allocator, message->role);
+  parts = (struct cai_content_part *)message->content.items;
+  for (i = 0U; i < message->content.count; i++) {
+    cai_conversation_content_part_cleanup(allocator, &parts[i]);
+  }
+  cai_free_mem(allocator, message->content.items);
+}
+
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error) {
   cai_conversation_doc doc;
@@ -262,6 +321,223 @@ int cai_client_delete_conversation_item(cai_client *client,
                                 error);
   cai_free_mem(client != NULL ? &client->allocator : NULL, path);
   cai_conversation_destroy(conversation);
+  return rc;
+}
+
+int cai_conversation_items_params_new(cai_conversation_items_params **out,
+                                      cai_error *error) {
+  cai_conversation_items_params *params;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation items params output is required");
+  }
+  *out = NULL;
+  params = (cai_conversation_items_params *)cai_alloc(NULL, sizeof(*params));
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate conversation items params");
+  }
+  params->allocator.malloc_fn = NULL;
+  params->allocator.realloc_fn = NULL;
+  params->allocator.free_fn = NULL;
+  params->allocator.context = NULL;
+  cai_conversation_object_array_init(&params->items,
+                                     sizeof(struct cai_input_message));
+  *out = params;
+  return CAI_OK;
+}
+
+void cai_conversation_items_params_destroy(
+    cai_conversation_items_params *params) {
+  struct cai_input_message *messages;
+  size_t i;
+
+  if (params == NULL) {
+    return;
+  }
+  messages = (struct cai_input_message *)params->items.items;
+  for (i = 0U; i < params->items.count; i++) {
+    cai_conversation_input_message_cleanup(&params->allocator, &messages[i]);
+  }
+  cai_free_mem(&params->allocator, params->items.items);
+  cai_free_mem(&params->allocator, params);
+}
+
+static int cai_conversation_items_params_add_part(
+    cai_conversation_items_params *params, const char *role,
+    struct cai_content_part *part, cai_error *error) {
+  struct cai_input_message *messages;
+  struct cai_input_message *message;
+  struct cai_content_part *parts;
+  int rc;
+
+  if (params == NULL || role == NULL || role[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "role is required");
+  }
+  rc = cai_conversation_object_array_grow(&params->allocator, &params->items,
+                                          sizeof(struct cai_input_message),
+                                          error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  messages = (struct cai_input_message *)params->items.items;
+  message = &messages[params->items.count];
+  message->role = NULL;
+  cai_conversation_object_array_init(&message->content,
+                                     sizeof(struct cai_content_part));
+  message->role = cai_strdup(&params->allocator, role);
+  if (message->role == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate role");
+  }
+  rc = cai_conversation_object_array_grow(&params->allocator, &message->content,
+                                          sizeof(struct cai_content_part),
+                                          error);
+  if (rc != CAI_OK) {
+    cai_conversation_input_message_cleanup(&params->allocator, message);
+    return rc;
+  }
+  parts = (struct cai_content_part *)message->content.items;
+  parts[0] = *part;
+  message->content.count = 1U;
+  params->items.count++;
+  return CAI_OK;
+}
+
+int cai_conversation_items_params_add_text(
+    cai_conversation_items_params *params, const char *role, const char *text,
+    cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "text is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  part.type = cai_strdup(allocator, "input_text");
+  part.text = cai_strdup(allocator, text);
+  part.image_url = NULL;
+  part.detail = NULL;
+  if (part.type == NULL || part.text == NULL) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_conversation_items_params_add_image_url(
+    cai_conversation_items_params *params, const char *role, const char *url,
+    const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (url == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "image URL is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  part.type = cai_strdup(allocator, "input_image");
+  part.text = NULL;
+  part.image_url = cai_strdup(allocator, url);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.image_url == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate image input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+static int cai_conversation_items_params_serialize_json(
+    const cai_conversation_items_params *params, char **out_json,
+    cai_error *error) {
+  cai_json_builder builder;
+  int rc;
+
+  if (out_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "JSON output pointer is required");
+  }
+  *out_json = NULL;
+  if (params == NULL || params->items.count == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "at least one conversation item is required");
+  }
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  rc = cai_json_builder_lit(&builder, "{", error);
+  if (rc == CAI_OK) {
+    rc = cai_serialize_input_messages_json(&builder, "items", &params->items,
+                                           error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, "}", error);
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, builder.data);
+    return rc;
+  }
+  *out_json = builder.data;
+  return CAI_OK;
+}
+
+int cai_client_create_conversation_items(
+    cai_client *client, const char *conversation_id,
+    const cai_conversation_items_params *params, cai_input_item_list **out,
+    cai_error *error) {
+  char *path;
+  char *body;
+  char *json;
+  char *request_id;
+  long http_status;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input item list output pointer is required");
+  }
+  *out = NULL;
+  path = NULL;
+  body = NULL;
+  json = NULL;
+  request_id = NULL;
+  rc = cai_conversation_items_params_serialize_json(params, &body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_build_conversation_path(client, conversation_id, "/items", &path,
+                                   error);
+  if (rc != CAI_OK) {
+    free(body);
+    return rc;
+  }
+  rc = cai_http_json_request(client, "POST", path, body, &json, &http_status,
+                             &request_id, error);
+  cai_free_mem(client != NULL ? &client->allocator : NULL, path);
+  free(body);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (http_status < 200L || http_status >= 300L) {
+    rc = cai_set_openai_error(error, http_status, json, request_id);
+    free(json);
+    free(request_id);
+    return rc;
+  }
+  rc = cai_input_item_list_parse_json(json, out, error);
+  free(json);
+  free(request_id);
   return rc;
 }
 

@@ -432,6 +432,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"object\":\"list\",\"data\":[{\"id\":\"conv_msg_1\",\"type\":"
       "\"message\",\"role\":\"user\"}],\"first_id\":\"conv_msg_1\","
       "\"last_id\":\"conv_msg_1\",\"has_more\":false}";
+  static const char conversation_items_create_body[] =
+      "{\"object\":\"list\",\"data\":[{\"id\":\"conv_msg_new\",\"type\":"
+      "\"message\",\"role\":\"user\"}],\"first_id\":\"conv_msg_new\","
+      "\"last_id\":\"conv_msg_new\",\"has_more\":false}";
   static const char conversation_item_delete_body[] =
       "{\"id\":\"conv_msg_1\",\"object\":\"conversation.item.deleted\","
       "\"deleted\":true}";
@@ -497,6 +501,14 @@ static const char *mock_response_for_request(const char *request) {
   }
   if (strncmp(request, "GET /v1/conversations/conv_get HTTP/", 36U) == 0) {
     return conversation_get_body;
+  }
+  if (strstr(request, "POST /v1/conversations/conv_get/items HTTP/") != NULL &&
+      strstr(request, "\"items\":[") != NULL &&
+      strstr(request, "\"type\":\"input_text\"") != NULL &&
+      strstr(request, "\"text\":\"conversation item\"") != NULL &&
+      strstr(request, "\"type\":\"input_image\"") != NULL &&
+      strstr(request, "https://example.test/conv.png") != NULL) {
+    return conversation_items_create_body;
   }
   if (strstr(request, "GET /v1/conversations/conv_get/items?") != NULL &&
       strstr(request, "limit=1") != NULL &&
@@ -792,6 +804,7 @@ static void test_conversations(test_state *state) {
   cai_client *client;
   cai_conversation *conversation;
   cai_input_item_list *items;
+  cai_conversation_items_params *item_params;
   cai_list_params list_params;
   cai_error error;
 
@@ -808,7 +821,7 @@ static void test_conversations(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 5);
+    mock_openai_child(pipe_fds[1], 6);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -829,6 +842,7 @@ static void test_conversations(test_state *state) {
   client = NULL;
   conversation = NULL;
   items = NULL;
+  item_params = NULL;
   expect_int(state, "conversation_client_open",
              cai_client_open(&config, &client, &error), CAI_OK);
   expect_int(state, "conversation_create",
@@ -847,6 +861,26 @@ static void test_conversations(test_state *state) {
   expect_str(state, "conversation_retrieve_id",
              cai_conversation_id(conversation), "conv_get");
   cai_conversation_destroy(conversation);
+  expect_int(state, "conversation_items_params_new",
+             cai_conversation_items_params_new(&item_params, &error), CAI_OK);
+  expect_int(state, "conversation_items_add_text",
+             cai_conversation_items_params_add_text(
+                 item_params, "user", "conversation item", &error),
+             CAI_OK);
+  expect_int(
+      state, "conversation_items_add_image",
+      cai_conversation_items_params_add_image_url(
+          item_params, "user", "https://example.test/conv.png", "low", &error),
+      CAI_OK);
+  expect_int(state, "conversation_create_items",
+             cai_client_create_conversation_items(client, "conv_get",
+                                                  item_params, &items, &error),
+             CAI_OK);
+  expect_str(state, "conversation_create_items_id",
+             cai_input_item_id(items, 0U), "conv_msg_new");
+  cai_input_item_list_destroy(items);
+  items = NULL;
+  cai_conversation_items_params_destroy(item_params);
   cai_list_params_init(&list_params);
   list_params.limit = 1;
   list_params.order = "desc";

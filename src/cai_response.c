@@ -123,12 +123,6 @@ static int cai_replace_string(const cai_allocator *allocator, char **slot,
   return CAI_OK;
 }
 
-typedef struct cai_json_builder {
-  char *data;
-  size_t length;
-  size_t capacity;
-} cai_json_builder;
-
 static int cai_json_builder_append(cai_json_builder *builder, const char *text,
                                    size_t length, cai_error *error) {
   size_t needed;
@@ -156,13 +150,13 @@ static int cai_json_builder_append(cai_json_builder *builder, const char *text,
   return CAI_OK;
 }
 
-static int cai_json_builder_lit(cai_json_builder *builder, const char *text,
-                                cai_error *error) {
+int cai_json_builder_lit(cai_json_builder *builder, const char *text,
+                         cai_error *error) {
   return cai_json_builder_append(builder, text, strlen(text), error);
 }
 
-static int cai_json_builder_string(cai_json_builder *builder, const char *value,
-                                   cai_error *error) {
+int cai_json_builder_string(cai_json_builder *builder, const char *value,
+                            cai_error *error) {
   cai_json_string_doc doc;
   lonejson_error json_error;
   char *json;
@@ -207,9 +201,9 @@ static int cai_json_builder_string(cai_json_builder *builder, const char *value,
   return rc;
 }
 
-static int cai_json_builder_field_string(cai_json_builder *builder,
-                                         const char *name, const char *value,
-                                         int *need_comma, cai_error *error) {
+int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
+                                  const char *value, int *need_comma,
+                                  cai_error *error) {
   int rc;
 
   if (*need_comma) {
@@ -399,16 +393,82 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
   return rc;
 }
 
-int cai_response_create_params_serialize_json(
-    const cai_response_create_params *params, char **out_json, size_t *out_len,
-    cai_error *error) {
-  cai_json_builder builder;
+int cai_serialize_input_messages_json(cai_json_builder *builder,
+                                      const char *field_name,
+                                      const lonejson_object_array *input,
+                                      cai_error *error) {
   struct cai_input_message *messages;
   struct cai_content_part *parts;
   size_t i;
   size_t j;
-  int need_comma;
   int part_comma;
+  int rc;
+
+  if (input == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "input messages are required");
+  }
+  rc = cai_json_builder_string(builder, field_name, error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, ":[", error);
+  }
+  messages = (struct cai_input_message *)input->items;
+  for (i = 0U; rc == CAI_OK && i < input->count; i++) {
+    if (i > 0U) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "{\"role\":", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_string(builder, messages[i].role, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, ",\"content\":[", error);
+    }
+    parts = (struct cai_content_part *)messages[i].content.items;
+    for (j = 0U; rc == CAI_OK && j < messages[i].content.count; j++) {
+      if (j > 0U) {
+        rc = cai_json_builder_lit(builder, ",", error);
+      }
+      part_comma = 0;
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, "{", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_field_string(builder, "type", parts[j].type,
+                                           &part_comma, error);
+      }
+      if (rc == CAI_OK && parts[j].text != NULL) {
+        rc = cai_json_builder_field_string(builder, "text", parts[j].text,
+                                           &part_comma, error);
+      }
+      if (rc == CAI_OK && parts[j].image_url != NULL) {
+        rc = cai_json_builder_field_string(
+            builder, "image_url", parts[j].image_url, &part_comma, error);
+      }
+      if (rc == CAI_OK && parts[j].detail != NULL) {
+        rc = cai_json_builder_field_string(builder, "detail", parts[j].detail,
+                                           &part_comma, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, "}", error);
+      }
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "]}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "]", error);
+  }
+  return rc;
+}
+
+int cai_response_create_params_serialize_json(
+    const cai_response_create_params *params, char **out_json, size_t *out_len,
+    cai_error *error) {
+  cai_json_builder builder;
+  int need_comma;
   int rc;
 
   if (out_json == NULL) {
@@ -441,58 +501,10 @@ int cai_response_create_params_serialize_json(
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(&builder, ",", error);
   }
+  rc = cai_serialize_input_messages_json(&builder, "input", &params->input,
+                                         error);
   if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "\"input\":[", error);
-  }
-  messages = (struct cai_input_message *)params->input.items;
-  for (i = 0U; rc == CAI_OK && i < params->input.count; i++) {
-    if (i > 0U) {
-      rc = cai_json_builder_lit(&builder, ",", error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_json_builder_lit(&builder, "{\"role\":", error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_json_builder_string(&builder, messages[i].role, error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_json_builder_lit(&builder, ",\"content\":[", error);
-    }
-    parts = (struct cai_content_part *)messages[i].content.items;
-    for (j = 0U; rc == CAI_OK && j < messages[i].content.count; j++) {
-      if (j > 0U) {
-        rc = cai_json_builder_lit(&builder, ",", error);
-      }
-      part_comma = 0;
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_lit(&builder, "{", error);
-      }
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_field_string(&builder, "type", parts[j].type,
-                                           &part_comma, error);
-      }
-      if (rc == CAI_OK && parts[j].text != NULL) {
-        rc = cai_json_builder_field_string(&builder, "text", parts[j].text,
-                                           &part_comma, error);
-      }
-      if (rc == CAI_OK && parts[j].image_url != NULL) {
-        rc = cai_json_builder_field_string(
-            &builder, "image_url", parts[j].image_url, &part_comma, error);
-      }
-      if (rc == CAI_OK && parts[j].detail != NULL) {
-        rc = cai_json_builder_field_string(&builder, "detail", parts[j].detail,
-                                           &part_comma, error);
-      }
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_lit(&builder, "}", error);
-      }
-    }
-    if (rc == CAI_OK) {
-      rc = cai_json_builder_lit(&builder, "]}", error);
-    }
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "]}", error);
+    rc = cai_json_builder_lit(&builder, "}", error);
   }
   if (rc != CAI_OK) {
     cai_free_mem(NULL, builder.data);
