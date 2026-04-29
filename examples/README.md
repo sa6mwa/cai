@@ -39,3 +39,13 @@ still being generated:
 cmake --build --preset debug --target cai_example_streaming_text
 ./build/debug/cai_example_streaming_text
 ```
+
+## Terminal Chat
+
+Run a small terminal chat agent that reads a prompt from stdin and streams the
+response tokens to stdout:
+
+```sh
+cmake --build --preset debug --target cai_example_terminal_chat
+OPENAI_API_KEY=... ./build/debug/cai_example_terminal_chat
+```
