@@ -16,6 +16,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CAI_BUILD_STATIC "Build the static cai library." ON)
 option(CAI_BUILD_SHARED "Build the shared cai library." ON)
 option(CAI_BUILD_TESTS "Build cai unit tests." ON)
+option(CAI_BUILD_LIVE_TESTS "Build live tests that hit OpenAI when run." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
 
@@ -165,6 +166,18 @@ if(CAI_BUILD_TESTS)
   target_link_libraries(cai_tests PRIVATE cai_static)
   cai_configure_c_target(cai_tests)
   add_test(NAME cai_tests COMMAND cai_tests)
+
+  if(CAI_BUILD_LIVE_TESTS)
+    add_executable(cai_live_tests tests/live_main.c)
+    target_include_directories(cai_live_tests PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}"
+      "${CAI_GENERATED_INCLUDE_DIR}"
+      "${CAI_LONEJSON_INCLUDE_DIR}")
+    target_link_libraries(cai_live_tests PRIVATE cai_static)
+    cai_configure_c_target(cai_live_tests)
+    add_test(NAME cai_live_tests COMMAND cai_live_tests)
+    set_tests_properties(cai_live_tests PROPERTIES LABELS live)
+  endif()
 endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)
