@@ -411,6 +411,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"second turn\"}]}]}";
+  static const char session_third_body[] =
+      "{\"id\":\"resp_session_3\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"third turn\"}]}]}";
 
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
     if (strstr(request, "session first") != NULL &&
@@ -421,6 +425,12 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_session_1\"") !=
             NULL) {
       return session_second_body;
+    }
+    if (strstr(request, "incremental turn") != NULL &&
+        strstr(request, "\"role\":\"developer\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_session_2\"") !=
+            NULL) {
+      return session_third_body;
     }
     return create_body;
   }
@@ -615,7 +625,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 3);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -665,6 +675,21 @@ static void test_agent_session(test_state *state) {
              "resp_session_2");
   expect_str(state, "agent_second_text", cai_response_output_text(response),
              "second turn");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(
+      state, "agent_add_developer",
+      cai_session_add_text(session, "developer", "internal note", &error),
+      CAI_OK);
+  expect_int(state, "agent_add_user",
+             cai_session_add_text(session, "user", "incremental turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_run", cai_session_run(session, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_third_id", cai_response_id(response),
+             "resp_session_3");
+  expect_str(state, "agent_third_text", cai_response_output_text(response),
+             "third turn");
   cai_response_destroy(response);
   cai_session_destroy(session);
   cai_agent_destroy(agent);

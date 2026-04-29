@@ -69,8 +69,26 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   }
   session->agent = agent;
   session->previous_response_id = NULL;
+  session->text_inputs = NULL;
+  session->text_input_count = 0U;
+  session->text_input_capacity = 0U;
   *out = session;
   return CAI_OK;
+}
+
+static void cai_session_clear_inputs(cai_session *session) {
+  cai_allocator *allocator;
+  size_t i;
+
+  if (session == NULL) {
+    return;
+  }
+  allocator = &session->agent->client->allocator;
+  for (i = 0U; i < session->text_input_count; i++) {
+    cai_free_mem(allocator, session->text_inputs[i].role);
+    cai_free_mem(allocator, session->text_inputs[i].text);
+  }
+  session->text_input_count = 0U;
 }
 
 void cai_session_destroy(cai_session *session) {
@@ -80,15 +98,70 @@ void cai_session_destroy(cai_session *session) {
     return;
   }
   allocator = &session->agent->client->allocator;
+  cai_session_clear_inputs(session);
+  cai_free_mem(allocator, session->text_inputs);
   cai_free_mem(allocator, session->previous_response_id);
   cai_free_mem(allocator, session);
 }
 
-int cai_session_send_text(cai_session *session, const char *text,
-                          cai_response **out, cai_error *error) {
+static int cai_session_grow_inputs(cai_session *session, cai_error *error) {
+  size_t new_capacity;
+  void *grown;
+
+  if (session->text_input_count < session->text_input_capacity) {
+    return CAI_OK;
+  }
+  new_capacity = session->text_input_capacity == 0U
+                     ? 2U
+                     : session->text_input_capacity * 2U;
+  grown =
+      cai_realloc_mem(&session->agent->client->allocator, session->text_inputs,
+                      new_capacity * sizeof(session->text_inputs[0]));
+  if (grown == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to grow session input list");
+  }
+  session->text_inputs = (cai_session_text_input *)grown;
+  session->text_input_capacity = new_capacity;
+  return CAI_OK;
+}
+
+int cai_session_add_text(cai_session *session, const char *role,
+                         const char *text, cai_error *error) {
+  cai_session_text_input *input;
+  cai_allocator *allocator;
+  int rc;
+
+  if (session == NULL || role == NULL || role[0] == '\0' || text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session, role, and text are required");
+  }
+  rc = cai_session_grow_inputs(session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  allocator = &session->agent->client->allocator;
+  input = &session->text_inputs[session->text_input_count];
+  input->role = cai_strdup(allocator, role);
+  input->text = cai_strdup(allocator, text);
+  if (input->role == NULL || input->text == NULL) {
+    cai_free_mem(allocator, input->role);
+    cai_free_mem(allocator, input->text);
+    input->role = NULL;
+    input->text = NULL;
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate session input");
+  }
+  session->text_input_count++;
+  return CAI_OK;
+}
+
+int cai_session_run(cai_session *session, cai_response **out,
+                    cai_error *error) {
   cai_response_create_params *params;
   cai_response *response;
   char *next_response_id;
+  size_t i;
   int rc;
 
   if (out == NULL) {
@@ -96,9 +169,12 @@ int cai_session_send_text(cai_session *session, const char *text,
                          "response output pointer is required");
   }
   *out = NULL;
-  if (session == NULL || text == NULL) {
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (session->text_input_count == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session and text are required");
+                         "session has no pending input");
   }
   params = NULL;
   response = NULL;
@@ -115,8 +191,10 @@ int cai_session_send_text(cai_session *session, const char *text,
     rc = cai_response_create_params_set_previous_response_id(
         params, session->previous_response_id, error);
   }
-  if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(params, "user", text, error);
+  for (i = 0U; rc == CAI_OK && i < session->text_input_count; i++) {
+    rc = cai_response_create_params_add_text(
+        params, session->text_inputs[i].role, session->text_inputs[i].text,
+        error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_create_response(session->agent->client, params, &response,
@@ -137,6 +215,26 @@ int cai_session_send_text(cai_session *session, const char *text,
   cai_free_mem(&session->agent->client->allocator,
                session->previous_response_id);
   session->previous_response_id = next_response_id;
+  cai_session_clear_inputs(session);
   *out = response;
   return CAI_OK;
+}
+
+int cai_session_send_text(cai_session *session, const char *text,
+                          cai_response **out, cai_error *error) {
+  int rc;
+
+  if (session == NULL || text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and text are required");
+  }
+  rc = cai_session_add_text(session, "user", text, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_session_run(session, out, error);
+  if (rc != CAI_OK) {
+    cai_session_clear_inputs(session);
+  }
+  return rc;
 }

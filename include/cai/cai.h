@@ -105,6 +105,9 @@ void cai_agent_destroy(cai_agent *agent);
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 void cai_session_destroy(cai_session *session);
+int cai_session_add_text(cai_session *session, const char *role,
+                         const char *text, cai_error *error);
+int cai_session_run(cai_session *session, cai_response **out, cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
 

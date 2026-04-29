@@ -28,9 +28,17 @@ struct cai_agent {
   char *instructions;
 };
 
+typedef struct cai_session_text_input {
+  char *role;
+  char *text;
+} cai_session_text_input;
+
 struct cai_session {
   cai_agent *agent;
   char *previous_response_id;
+  cai_session_text_input *text_inputs;
+  size_t text_input_count;
+  size_t text_input_capacity;
 };
 
 void *cai_alloc(const cai_allocator *allocator, size_t size);
