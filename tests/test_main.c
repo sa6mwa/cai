@@ -2175,6 +2175,7 @@ static void test_agent_auto_compaction(test_state *state) {
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   agent_config.auto_compact = 1;
   agent_config.history_memory_limit = 16U;
+  agent_config.history_memory_limit = 16U;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -2482,6 +2483,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_4_NANO;
   agent_config.auto_compact = 1;
+  agent_config.history_memory_limit = 16U;
   config.api_key = "mock-key";
   config.base_url = base_url;
   config.http_2_disabled = 1;
@@ -2513,6 +2515,8 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   expect_int(state, "stream_history_first",
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_history_first_value", writer.buffer, "hist1");
+  expect_int(state, "stream_history_spilled",
+             cai_session_history_spilled(session), 1L);
   cai_sink_close(sink);
   sink = NULL;
 
