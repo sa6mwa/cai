@@ -176,7 +176,9 @@ if(CAI_BUILD_TESTS)
     target_link_libraries(cai_live_tests PRIVATE cai_static)
     cai_configure_c_target(cai_live_tests)
     add_test(NAME cai_live_tests COMMAND cai_live_tests)
-    set_tests_properties(cai_live_tests PROPERTIES LABELS live)
+    set_tests_properties(cai_live_tests PROPERTIES
+      LABELS live
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
 endif()
 
