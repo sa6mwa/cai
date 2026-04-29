@@ -280,6 +280,8 @@ const char *cai_response_conversation_id(const cai_response *response);
 long long cai_response_created_at(const cai_response *response);
 const char *cai_response_output_text(const cai_response *response);
 const char *cai_response_refusal(const cai_response *response);
+int cai_response_write_output_text(const cai_response *response, cai_sink *sink,
+                                   cai_error *error);
 const char *cai_response_raw_json(const cai_response *response);
 const char *cai_response_error_code(const cai_response *response);
 const char *cai_response_error_message(const cai_response *response);

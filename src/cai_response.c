@@ -1316,6 +1316,24 @@ const char *cai_response_refusal(const cai_response *response) {
   return response != NULL ? response->refusal : NULL;
 }
 
+int cai_response_write_output_text(const cai_response *response, cai_sink *sink,
+                                   cai_error *error) {
+  size_t length;
+
+  if (response == NULL || sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response and sink are required");
+  }
+  if (response->output_text == NULL) {
+    return CAI_OK;
+  }
+  length = strlen(response->output_text);
+  if (length == 0U) {
+    return CAI_OK;
+  }
+  return cai_sink_write(sink, response->output_text, length, error);
+}
+
 const char *cai_response_raw_json(const cai_response *response) {
   return response != NULL ? response->raw_json : NULL;
 }

@@ -411,7 +411,10 @@ static void test_client_open(test_state *state) {
 static void test_response_json(test_state *state) {
   cai_response_create_params *params;
   cai_response *response;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
   cai_error error;
+  write_state writer;
   char response_json[768];
   char *json;
   size_t json_len;
@@ -603,6 +606,19 @@ static void test_response_json(test_state *state) {
              "hello world");
   expect_str(state, "response_refusal", cai_response_refusal(response),
              "cannot comply");
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "response_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "response_write_text",
+             cai_response_write_output_text(response, sink, &error), CAI_OK);
+  expect_str(state, "response_written_text", writer.buffer, "hello world");
+  cai_sink_close(sink);
   expect_str(state, "response_error_code", cai_response_error_code(response),
              "rate_limited");
   expect_str(state, "response_error_message",
