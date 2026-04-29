@@ -761,6 +761,11 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_img\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"image turn\"}]}]}";
+  static const char session_conversation_body[] =
+      "{\"id\":\"resp_session_conv\",\"status\":\"completed\","
+      "\"conversation\":{\"id\":\"conv_session\"},\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"conversation turn\"}]}]}";
   static const char agent_tool_body[] =
       "{\"id\":\"resp_agent_tool\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -841,6 +846,11 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_session_3\"") !=
             NULL) {
       return session_image_body;
+    }
+    if (strstr(request, "conversation turn") != NULL &&
+        strstr(request, "\"conversation\":\"conv_session\"") != NULL &&
+        strstr(request, "previous_response_id") == NULL) {
+      return session_conversation_body;
     }
     return create_body;
   }
@@ -1303,7 +1313,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 4);
+    mock_openai_child(pipe_fds[1], 5);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -1391,6 +1401,23 @@ static void test_agent_session(test_state *state) {
              "resp_session_img");
   expect_str(state, "agent_image_text", cai_response_output_text(response),
              "image turn");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "agent_session_conversation",
+             cai_session_set_conversation_id(session, "conv_session", &error),
+             CAI_OK);
+  expect_str(state, "agent_session_conversation_id",
+             cai_session_conversation_id(session), "conv_session");
+  expect_int(
+      state, "agent_conversation_turn",
+      cai_session_send_text(session, "conversation turn", &response, &error),
+      CAI_OK);
+  expect_str(state, "agent_conversation_response_id", cai_response_id(response),
+             "resp_session_conv");
+  expect_str(state, "agent_conversation_response_conversation",
+             cai_response_conversation_id(response), "conv_session");
+  expect_str(state, "agent_conversation_text",
+             cai_response_output_text(response), "conversation turn");
   cai_response_destroy(response);
   cai_session_destroy(session);
   cai_agent_destroy(agent);

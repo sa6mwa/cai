@@ -171,6 +171,7 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   }
   session->agent = agent;
   session->previous_response_id = NULL;
+  session->conversation_id = NULL;
   session->inputs = NULL;
   session->input_count = 0U;
   session->input_capacity = 0U;
@@ -207,7 +208,39 @@ void cai_session_destroy(cai_session *session) {
   cai_session_clear_inputs(session);
   cai_free_mem(allocator, session->inputs);
   cai_free_mem(allocator, session->previous_response_id);
+  cai_free_mem(allocator, session->conversation_id);
   cai_free_mem(allocator, session);
+}
+
+int cai_session_set_conversation_id(cai_session *session,
+                                    const char *conversation_id,
+                                    cai_error *error) {
+  char *copy;
+  cai_allocator *allocator;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  allocator = &session->agent->client->allocator;
+  copy = NULL;
+  if (conversation_id != NULL) {
+    copy = cai_strdup(allocator, conversation_id);
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate conversation id");
+    }
+  }
+  cai_free_mem(allocator, session->conversation_id);
+  session->conversation_id = copy;
+  if (copy != NULL) {
+    cai_free_mem(allocator, session->previous_response_id);
+    session->previous_response_id = NULL;
+  }
+  return CAI_OK;
+}
+
+const char *cai_session_conversation_id(const cai_session *session) {
+  return session != NULL ? session->conversation_id : NULL;
 }
 
 static int cai_session_grow_inputs(cai_session *session, cai_error *error) {
@@ -592,6 +625,10 @@ static int cai_session_init_response_params(cai_session *session,
   if (rc == CAI_OK && session->agent->parallel_tool_calls >= 0) {
     rc = cai_response_create_params_set_parallel_tool_calls(
         params, session->agent->parallel_tool_calls, error);
+  }
+  if (rc == CAI_OK && session->conversation_id != NULL) {
+    rc = cai_response_create_params_set_conversation_id(
+        params, session->conversation_id, error);
   }
   if (rc == CAI_OK && session->previous_response_id != NULL) {
     rc = cai_response_create_params_set_previous_response_id(

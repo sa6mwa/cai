@@ -50,6 +50,7 @@ typedef struct cai_session_text_input {
 struct cai_session {
   cai_agent *agent;
   char *previous_response_id;
+  char *conversation_id;
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;

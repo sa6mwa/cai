@@ -156,6 +156,10 @@ int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 void cai_session_destroy(cai_session *session);
+int cai_session_set_conversation_id(cai_session *session,
+                                    const char *conversation_id,
+                                    cai_error *error);
+const char *cai_session_conversation_id(const cai_session *session);
 int cai_session_add_text(cai_session *session, const char *role,
                          const char *text, cai_error *error);
 int cai_session_add_image_url(cai_session *session, const char *role,
