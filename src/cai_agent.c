@@ -26,6 +26,9 @@ static int cai_capture_open_spool(cai_tool_output_capture *capture,
 static int cai_session_init_response_params(cai_session *session,
                                             cai_response_create_params **out,
                                             cai_error *error);
+static int cai_session_remember_response_id(cai_session *session,
+                                            const char *response_id,
+                                            cai_error *error);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -444,10 +447,21 @@ static int cai_session_add_pending_inputs(cai_session *session,
 static int cai_session_remember_response(cai_session *session,
                                          const cai_response *response,
                                          cai_error *error) {
+  return cai_session_remember_response_id(session, cai_response_id(response),
+                                          error);
+}
+
+static int cai_session_remember_response_id(cai_session *session,
+                                            const char *response_id,
+                                            cai_error *error) {
   char *next_response_id;
 
+  if (response_id == NULL || response_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "streaming response did not include a response id");
+  }
   next_response_id =
-      cai_strdup(&session->agent->client->allocator, cai_response_id(response));
+      cai_strdup(&session->agent->client->allocator, response_id);
   if (next_response_id == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to remember previous response id");
@@ -872,6 +886,7 @@ int cai_session_run_auto_output(cai_session *session,
 int cai_session_stream_text(cai_session *session, cai_sink *sink,
                             cai_error *error) {
   cai_response_create_params *params;
+  char *response_id;
   int rc;
 
   if (session == NULL || sink == NULL) {
@@ -879,15 +894,20 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
                          "session and sink are required");
   }
   params = NULL;
+  response_id = NULL;
   rc = cai_session_init_response_params(session, &params, error);
   if (rc == CAI_OK) {
     rc = cai_session_add_pending_inputs(session, params, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_text(session->agent->client, params, sink,
-                                         error);
+    rc = cai_client_stream_response_text_with_id(session->agent->client, params,
+                                                 sink, &response_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_remember_response_id(session, response_id, error);
   }
   cai_response_create_params_destroy(params);
+  cai_free_mem(NULL, response_id);
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
   }

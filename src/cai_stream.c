@@ -7,19 +7,32 @@
 #include <string.h>
 #include <unistd.h>
 
+typedef struct cai_stream_response_doc {
+  char *id;
+} cai_stream_response_doc;
+
 typedef struct cai_stream_delta_doc {
   char *type;
   char *delta;
+  cai_stream_response_doc response;
 } cai_stream_delta_doc;
+
+static const lonejson_field cai_stream_response_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_response_doc, id, "id")};
+LONEJSON_MAP_DEFINE(cai_stream_response_map, cai_stream_response_doc,
+                    cai_stream_response_fields);
 
 static const lonejson_field cai_stream_delta_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, type, "type"),
-    LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, delta, "delta")};
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, delta, "delta"),
+    LONEJSON_FIELD_OBJECT(cai_stream_delta_doc, response, "response",
+                          &cai_stream_response_map)};
 LONEJSON_MAP_DEFINE(cai_stream_delta_map, cai_stream_delta_doc,
                     cai_stream_delta_fields);
 
 typedef struct cai_sse_state {
   cai_sink *sink;
+  char **out_response_id;
   char *line;
   size_t length;
   size_t capacity;
@@ -119,6 +132,13 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
       rc = cai_sink_write(state->sink, doc.delta, length, NULL);
     }
   }
+  if (rc == CAI_OK && state->out_response_id != NULL &&
+      *state->out_response_id == NULL && doc.response.id != NULL) {
+    *state->out_response_id = cai_strdup(NULL, doc.response.id);
+    if (*state->out_response_id == NULL) {
+      rc = CAI_ERR_NOMEM;
+    }
+  }
   lonejson_cleanup(&cai_stream_delta_map, &doc);
   return rc;
 }
@@ -168,10 +188,11 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
   return total;
 }
 
-static int cai_client_stream_response_text_json(cai_client *client,
-                                                const char *request_json,
-                                                cai_sink *sink,
-                                                cai_error *error) {
+int cai_client_stream_response_text_json_with_id(cai_client *client,
+                                                 const char *request_json,
+                                                 cai_sink *sink,
+                                                 char **out_response_id,
+                                                 cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -186,7 +207,11 @@ static int cai_client_stream_response_text_json(cai_client *client,
   }
   url = NULL;
   headers = NULL;
+  if (out_response_id != NULL) {
+    *out_response_id = NULL;
+  }
   state.sink = sink;
+  state.out_response_id = out_response_id;
   state.line = NULL;
   state.length = 0U;
   state.capacity = 0U;
@@ -266,17 +291,27 @@ static int cai_client_stream_response_text_json(cai_client *client,
 int cai_client_stream_response_text(cai_client *client,
                                     const cai_response_create_params *params,
                                     cai_sink *sink, cai_error *error) {
+  return cai_client_stream_response_text_with_id(client, params, sink, NULL,
+                                                 error);
+}
+
+int cai_client_stream_response_text_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    cai_sink *sink, char **out_response_id, cai_error *error) {
   char *request_json;
   int rc;
 
+  if (out_response_id != NULL) {
+    *out_response_id = NULL;
+  }
   request_json = NULL;
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "params are required");
   }
   rc = cai_stream_request_json(params, &request_json, error);
   if (rc == CAI_OK) {
-    rc =
-        cai_client_stream_response_text_json(client, request_json, sink, error);
+    rc = cai_client_stream_response_text_json_with_id(
+        client, request_json, sink, out_response_id, error);
   }
   cai_free_mem(NULL, request_json);
   return rc;
@@ -316,8 +351,8 @@ static void *cai_pipe_stream_main(void *arg) {
   callbacks.close = NULL;
   callbacks.context = &stream->write_fd;
   if (cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK) {
-    (void)cai_client_stream_response_text_json(
-        stream->client, stream->request_json, sink, &error);
+    (void)cai_client_stream_response_text_json_with_id(
+        stream->client, stream->request_json, sink, NULL, &error);
   }
   cai_sink_close(sink);
   close(stream->write_fd);

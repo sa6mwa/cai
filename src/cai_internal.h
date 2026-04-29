@@ -225,6 +225,14 @@ int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
                           char **out_request_id, cai_error *error);
+int cai_client_stream_response_text_json_with_id(cai_client *client,
+                                                 const char *request_json,
+                                                 cai_sink *sink,
+                                                 char **out_response_id,
+                                                 cai_error *error);
+int cai_client_stream_response_text_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    cai_sink *sink, char **out_response_id, cai_error *error);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
