@@ -1306,9 +1306,12 @@ static const char *mock_response_for_request(const char *request) {
       "\"output_tokens_details\":{\"reasoning_tokens\":0},"
       "\"total_tokens\":3}}}\n\n";
   static const char stream_session_first_body[] =
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+      "\"resp_stream_session_1\",\"usage\":null,\"instructions\":\"large "
+      "developer instructions are present before deltas\"}}\n\n"
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"one\"}\n\n"
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_session_1\",\"usage\":{\"input_tokens\":10,"
+      "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{"
+      "\"input_tokens\":10,"
       "\"input_tokens_details\":{\"cached_tokens\":4},\"output_tokens\":3,"
       "\"output_tokens_details\":{\"reasoning_tokens\":1},"
       "\"total_tokens\":13}}}\n\n";

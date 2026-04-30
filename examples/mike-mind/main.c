@@ -127,11 +127,11 @@ int main(void) {
       "[" CAI_ANSI_MAGENTA "reasoning" CAI_ANSI_GRAY "] " CAI_ANSI_GRAY;
   stream_sinks.reasoning_summary_suffix.text = CAI_ANSI_RESET "\n\n";
   stream_sinks.output_text_prefix.text = CAI_ANSI_GRAY
-      "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]" CAI_ANSI_RESET " ";
+      "[" CAI_ANSI_GREEN "mike" CAI_ANSI_GRAY "]" CAI_ANSI_RESET " ";
   stream_sinks.output_text_suffix.text = CAI_ANSI_RESET "\n";
 
   for (;;) {
-    fputs("mike> ", stdout);
+    fputs("> ", stdout);
     fflush(stdout);
     if (fgets(line, sizeof(line), stdin) == NULL) {
       if (ferror(stdin)) {

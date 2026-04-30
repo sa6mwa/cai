@@ -273,6 +273,89 @@ static int cai_sse_write_output_delta(cai_sse_state *state,
   return cai_sink_write(state->sinks.output_text, delta, length, NULL);
 }
 
+static const char *cai_sse_json_object_end(const char *start) {
+  const char *cursor;
+  int depth;
+  int in_string;
+  int escaped;
+
+  if (start == NULL || *start != '{') {
+    return NULL;
+  }
+  cursor = start;
+  depth = 0;
+  in_string = 0;
+  escaped = 0;
+  while (*cursor != '\0') {
+    if (in_string) {
+      if (escaped) {
+        escaped = 0;
+      } else if (*cursor == '\\') {
+        escaped = 1;
+      } else if (*cursor == '"') {
+        in_string = 0;
+      }
+    } else if (*cursor == '"') {
+      in_string = 1;
+    } else if (*cursor == '{') {
+      depth++;
+    } else if (*cursor == '}') {
+      depth--;
+      if (depth == 0) {
+        return cursor + 1;
+      }
+    }
+    cursor++;
+  }
+  return NULL;
+}
+
+static int cai_sse_extract_usage(cai_sse_state *state, const char *data) {
+  cai_stream_usage_doc usage;
+  lonejson_error json_error;
+  lonejson_status status;
+  const char *usage_key;
+  const char *start;
+  const char *end;
+  char *json;
+
+  if (state->out_usage == NULL || data == NULL ||
+      strstr(data, "\"type\":\"response.completed\"") == NULL) {
+    return CAI_OK;
+  }
+  usage_key = strstr(data, "\"usage\"");
+  start = usage_key != NULL ? strchr(usage_key, ':') : NULL;
+  if (start == NULL) {
+    return CAI_OK;
+  }
+  start++;
+  while (*start == ' ' || *start == '\t') {
+    start++;
+  }
+  if (*start != '{') {
+    return CAI_OK;
+  }
+  end = cai_sse_json_object_end(start);
+  if (end == NULL) {
+    return CAI_OK;
+  }
+  json = cai_strndup(NULL, start, (size_t)(end - start));
+  if (json == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  memset(&usage, 0, sizeof(usage));
+  lonejson_init(&cai_stream_usage_map, &usage);
+  status =
+      lonejson_parse_cstr(&cai_stream_usage_map, &usage, json, NULL,
+                          &json_error);
+  cai_free_mem(NULL, json);
+  if (status == LONEJSON_STATUS_OK) {
+    cai_stream_copy_usage(state->out_usage, &usage);
+  }
+  lonejson_cleanup(&cai_stream_usage_map, &usage);
+  return CAI_OK;
+}
+
 static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   cai_stream_delta_doc doc;
   lonejson_error json_error;
@@ -285,6 +368,40 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   }
   while (*data == ' ') {
     data++;
+  }
+  if (state->out_response_id != NULL && *state->out_response_id == NULL) {
+    const char *response;
+    const char *id;
+    const char *start;
+    const char *end;
+
+    response = strstr(data, "\"response\"");
+    id = response != NULL ? strstr(response, "\"id\"") : NULL;
+    start = id != NULL ? strchr(id, ':') : NULL;
+    if (start != NULL) {
+      start++;
+      while (*start == ' ' || *start == '\t') {
+        start++;
+      }
+    }
+    if (start != NULL && *start == '"') {
+      start++;
+      end = start;
+      while (*end != '\0' && *end != '"' && *end != '\\') {
+        end++;
+      }
+      if (*end == '"') {
+        *state->out_response_id = cai_strndup(NULL, start,
+                                              (size_t)(end - start));
+        if (*state->out_response_id == NULL) {
+          return CAI_ERR_NOMEM;
+        }
+      }
+    }
+  }
+  rc = cai_sse_extract_usage(state, data);
+  if (rc != CAI_OK) {
+    return rc;
   }
   memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_stream_delta_map, &doc);
@@ -608,9 +725,10 @@ int cai_client_stream_response_text_with_id(
 
 int cai_client_stream_response_with_id(
     cai_client *client, const cai_response_create_params *params,
-    const cai_stream_sinks *sinks, char **out_response_id,
-    cai_token_usage *out_usage, cai_error *error) {
-  lonejson_spooled request_json;
+  const cai_stream_sinks *sinks, char **out_response_id,
+  cai_token_usage *out_usage, cai_error *error) {
+  char *request_json;
+  char *grown;
   size_t request_json_len;
   int rc;
 
@@ -623,14 +741,34 @@ int cai_client_stream_response_with_id(
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "params are required");
   }
-  rc = cai_response_create_params_spool_json(params, 1, &request_json,
-                                             &request_json_len, error);
+  request_json = NULL;
+  grown = NULL;
+  rc = cai_response_create_params_serialize_json(params, &request_json,
+                                                 &request_json_len, error);
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_spooled_with_id(
-        client, &request_json, request_json_len, sinks, out_response_id,
-        out_usage, error);
-    lonejson_spooled_cleanup(&request_json);
+    if (request_json_len == 0U || request_json[request_json_len - 1U] != '}') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to serialize streaming request JSON");
+    }
   }
+  if (rc == CAI_OK) {
+    grown = (char *)cai_realloc_mem(NULL, request_json, request_json_len + 15U);
+    if (grown == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to grow streaming request JSON");
+    } else {
+      request_json = grown;
+      request_json[request_json_len - 1U] = ',';
+      memcpy(request_json + request_json_len, "\"stream\":true}", 14U);
+      request_json_len += 14U;
+      request_json[request_json_len] = '\0';
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_stream_response_json_with_id(
+        client, request_json, sinks, out_response_id, out_usage, error);
+  }
+  cai_free_mem(NULL, request_json);
   return rc;
 }
 
