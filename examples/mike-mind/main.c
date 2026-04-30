@@ -219,7 +219,6 @@ int main(void) {
   }
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.instructions = prompt.data;
-  agent_config.auto_compact = 1;
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {

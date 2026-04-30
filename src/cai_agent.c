@@ -9,12 +9,6 @@ typedef struct cai_tool_output_capture {
   lonejson_spooled output;
 } cai_tool_output_capture;
 
-typedef struct cai_session_stream_context {
-  cai_session *session;
-  lonejson_spooled pending_items;
-  int has_pending_items;
-} cai_session_stream_context;
-
 typedef struct cai_history_sink_context {
   lonejson_spooled *spool;
 } cai_history_sink_context;
@@ -54,7 +48,6 @@ static int cai_session_after_stream(cai_session *session,
                                     const char *response_id,
                                     const cai_token_usage *usage,
                                     cai_error *error);
-static int cai_session_maybe_compact(cai_session *session, cai_error *error);
 static int cai_session_init_response_params(cai_session *session,
                                             cai_response_create_params **out,
                                             cai_error *error);
@@ -80,6 +73,9 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->text_format_strict = 0;
   config->max_output_tokens = 0;
   config->parallel_tool_calls = -1;
+  config->disable_auto_compaction = 0;
+  config->compact_threshold_tokens = 0LL;
+  config->compact_threshold_percent = 80U;
   config->auto_compact = 0;
   config->auto_compact_token_limit = 0LL;
   config->history_memory_limit = 128U * 1024U;
@@ -129,13 +125,24 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   agent->text_format_strict = config->text_format_strict;
   agent->max_output_tokens = config->max_output_tokens;
   agent->parallel_tool_calls = config->parallel_tool_calls;
-  agent->auto_compact =
-      config->auto_compact || config->auto_compact_token_limit > 0LL ? 1 : 0;
-  if (config->auto_compact_token_limit > 0LL) {
+  agent->auto_compact = config->disable_auto_compaction ? 0 : 1;
+  agent->compact_threshold_percent =
+      config->compact_threshold_percent != 0U
+          ? config->compact_threshold_percent
+          : 80U;
+  if (config->compact_threshold_tokens > 0LL) {
+    agent->auto_compact_token_limit = config->compact_threshold_tokens;
+  } else if (config->auto_compact_token_limit > 0LL) {
     agent->auto_compact_token_limit = config->auto_compact_token_limit;
   } else if (agent->auto_compact) {
+    long long context_window;
+
+    context_window = cai_model_context_window_tokens(agent->model);
     agent->auto_compact_token_limit =
-        cai_model_auto_compact_token_limit(agent->model);
+        context_window > 0LL
+            ? (context_window * (long long)agent->compact_threshold_percent) /
+                  100LL
+            : 0LL;
   } else {
     agent->auto_compact_token_limit = 0LL;
   }
@@ -161,7 +168,20 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   if (agent->auto_compact && agent->auto_compact_token_limit <= 0LL) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "model has unknown auto compact token limit");
+                         "model has unknown context window; set "
+                         "compact_threshold_tokens or disable auto compaction");
+  }
+  if (agent->auto_compact && agent->compact_threshold_percent > 95U &&
+      config->compact_threshold_tokens <= 0LL &&
+      config->auto_compact_token_limit <= 0LL) {
+    cai_agent_destroy(agent);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compact threshold percent must be 1..95");
+  }
+  if (agent->auto_compact && agent->auto_compact_token_limit < 1000LL) {
+    cai_agent_destroy(agent);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compact threshold must be at least 1000 tokens");
   }
   if (cai_tool_registry_new(&agent->tools, error) != CAI_OK) {
     cai_agent_destroy(agent);
@@ -821,11 +841,8 @@ cai_session_prepare_history_params(cai_session *session,
                                    lonejson_spooled *out_pending_items,
                                    int *out_has_pending_items,
                                    cai_error *error) {
-  lonejson_spooled history_items;
   lonejson_spooled pending_items;
-  size_t history_len;
   size_t pending_len;
-  int has_history_items;
   int has_pending_items;
   int rc;
 
@@ -835,20 +852,10 @@ cai_session_prepare_history_params(cai_session *session,
   if (session->agent->auto_compact_token_limit <= 0LL) {
     return cai_session_add_pending_inputs(session, params, error);
   }
-  memset(&history_items, 0, sizeof(history_items));
   memset(&pending_items, 0, sizeof(pending_items));
-  history_len = 0U;
   pending_len = 0U;
-  has_history_items = 0;
   has_pending_items = 0;
-  rc = cai_history_to_array_items_spool(session, &history_items, &history_len,
-                                        error);
-  if (rc == CAI_OK) {
-    has_history_items = 1;
-  }
-  if (rc == CAI_OK) {
-    rc = cai_session_add_pending_inputs(session, params, error);
-  }
+  rc = cai_session_add_pending_inputs(session, params, error);
   if (rc == CAI_OK) {
     rc = cai_response_params_input_items_spool(params, &pending_items,
                                                &pending_len, error);
@@ -856,21 +863,11 @@ cai_session_prepare_history_params(cai_session *session,
       has_pending_items = 1;
     }
   }
-  if (rc == CAI_OK && history_len > 0U) {
-    rc = cai_response_create_params_set_raw_input_spooled(params, &history_items,
-                                                          error);
-    if (rc == CAI_OK) {
-      has_history_items = 0;
-    }
-  }
   if (out_pending_items != NULL && out_has_pending_items != NULL &&
       rc == CAI_OK) {
     *out_pending_items = pending_items;
     *out_has_pending_items = has_pending_items;
     has_pending_items = 0;
-  }
-  if (has_history_items) {
-    lonejson_spooled_cleanup(&history_items);
   }
   if (has_pending_items) {
     lonejson_spooled_cleanup(&pending_items);
@@ -898,7 +895,7 @@ static int cai_session_remember_response(cai_session *session,
   return rc;
 }
 
-static int cai_session_compact(cai_session *session, cai_error *error) {
+int cai_session_compact_experimental(cai_session *session, cai_error *error) {
   cai_response_create_params *params;
   cai_response *response;
   lonejson_spooled request_json;
@@ -928,6 +925,9 @@ static int cai_session_compact(cai_session *session, cai_error *error) {
   has_output_items = 0;
   body = NULL;
   request_id = NULL;
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
   rc = cai_history_to_array_items_spool(session, &history_items, &history_len,
                                         error);
   if (rc == CAI_OK) {
@@ -1007,19 +1007,6 @@ done:
   return rc;
 }
 
-static int cai_session_maybe_compact(cai_session *session, cai_error *error) {
-  long long limit;
-
-  limit = session->agent->auto_compact_token_limit;
-  if (limit <= 0LL) {
-    return CAI_OK;
-  }
-  if (!session->has_last_usage || session->last_usage.total_tokens < limit) {
-    return CAI_OK;
-  }
-  return cai_session_compact(session, error);
-}
-
 static int cai_session_after_response(cai_session *session,
                                       const lonejson_spooled *pending_items,
                                       int has_pending_items,
@@ -1051,9 +1038,6 @@ static int cai_session_after_response(cai_session *session,
   if (has_output_items) {
     lonejson_spooled_cleanup(&output_items);
   }
-  if (rc == CAI_OK) {
-    rc = cai_session_maybe_compact(session, error);
-  }
   return rc;
 }
 
@@ -1063,43 +1047,9 @@ static int cai_session_after_stream(cai_session *session,
                                     const char *response_id,
                                     const cai_token_usage *usage,
                                     cai_error *error) {
-  cai_response *response;
-  lonejson_spooled output_items;
-  size_t output_items_len;
-  int has_output_items;
-  int rc;
-
-  rc = cai_session_remember_stream(session, response_id, usage, error);
-  if (rc != CAI_OK || session->agent->auto_compact_token_limit <= 0LL) {
-    return rc;
-  }
-  response = NULL;
-  memset(&output_items, 0, sizeof(output_items));
-  output_items_len = 0U;
-  has_output_items = 0;
-  rc = cai_client_retrieve_response(session->agent->client, response_id,
-                                    &response, error);
-  if (rc == CAI_OK) {
-    rc = cai_response_output_items_spool(response, &output_items,
-                                         &output_items_len, error);
-    if (rc == CAI_OK) {
-      has_output_items = 1;
-    }
-  }
-  if (rc == CAI_OK && has_pending_items) {
-    rc = cai_history_append_spooled(session, pending_items, error);
-  }
-  if (rc == CAI_OK && output_items_len > 0U) {
-    rc = cai_history_append_spooled(session, &output_items, error);
-  }
-  if (has_output_items) {
-    lonejson_spooled_cleanup(&output_items);
-  }
-  cai_response_destroy(response);
-  if (rc == CAI_OK) {
-    rc = cai_session_maybe_compact(session, error);
-  }
-  return rc;
+  (void)pending_items;
+  (void)has_pending_items;
+  return cai_session_remember_stream(session, response_id, usage, error);
 }
 
 static int cai_session_remember_response_id(cai_session *session,
@@ -1141,27 +1091,6 @@ static int cai_session_stream_complete(void *context, const char *response_id,
                                        const cai_token_usage *usage) {
   return cai_session_remember_stream((cai_session *)context, response_id, usage,
                                      NULL);
-}
-
-static int cai_session_history_stream_complete(void *context,
-                                               const char *response_id,
-                                               const cai_token_usage *usage) {
-  cai_session_stream_context *stream_context;
-  int rc;
-
-  stream_context = (cai_session_stream_context *)context;
-  if (stream_context == NULL) {
-    return CAI_ERR_INVALID;
-  }
-  rc = cai_session_after_stream(stream_context->session,
-                                &stream_context->pending_items,
-                                stream_context->has_pending_items, response_id,
-                                usage, NULL);
-  if (stream_context->has_pending_items) {
-    lonejson_spooled_cleanup(&stream_context->pending_items);
-  }
-  cai_free_mem(NULL, stream_context);
-  return rc;
 }
 
 static int cai_session_create_response_from_params(
@@ -1311,12 +1240,16 @@ static int cai_session_init_response_params(cai_session *session,
     rc = cai_response_create_params_set_parallel_tool_calls(
         params, session->agent->parallel_tool_calls, error);
   }
+  if (rc == CAI_OK && session->agent->auto_compact &&
+      session->agent->auto_compact_token_limit > 0LL) {
+    rc = cai_response_create_params_set_compact_threshold(
+        params, session->agent->auto_compact_token_limit, error);
+  }
   if (rc == CAI_OK && session->conversation_id != NULL) {
     rc = cai_response_create_params_set_conversation_id(
         params, session->conversation_id, error);
   }
-  if (rc == CAI_OK && session->previous_response_id != NULL &&
-      session->agent->auto_compact_token_limit <= 0LL) {
+  if (rc == CAI_OK && session->previous_response_id != NULL) {
     rc = cai_response_create_params_set_previous_response_id(
         params, session->previous_response_id, error);
   }
@@ -1503,7 +1436,6 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
 int cai_session_open_text_source(cai_session *session, cai_source **out,
                                  cai_error *error) {
   cai_response_create_params *params;
-  cai_session_stream_context *stream_context;
   lonejson_spooled pending_items;
   int has_pending_items;
   int rc;
@@ -1517,7 +1449,6 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
   }
   params = NULL;
-  stream_context = NULL;
   memset(&pending_items, 0, sizeof(pending_items));
   has_pending_items = 0;
   rc = cai_session_init_response_params(session, &params, error);
@@ -1526,43 +1457,12 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
                                             &pending_items, &has_pending_items,
                                             error);
   }
-  if (rc == CAI_OK && session->agent->auto_compact_token_limit > 0LL) {
-    stream_context =
-        (cai_session_stream_context *)cai_alloc(NULL, sizeof(*stream_context));
-    if (stream_context == NULL) {
-      rc = cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate stream context");
-    } else {
-      stream_context->session = session;
-      stream_context->has_pending_items = has_pending_items;
-      if (has_pending_items) {
-        stream_context->pending_items = pending_items;
-        memset(&pending_items, 0, sizeof(pending_items));
-        has_pending_items = 0;
-      }
-    }
-  }
   if (rc == CAI_OK) {
-    if (session->agent->auto_compact_token_limit > 0LL) {
-      rc = cai_client_open_response_text_source_with_complete(
-          session->agent->client, params, cai_session_history_stream_complete,
-          stream_context, out, error);
-      if (rc == CAI_OK) {
-        stream_context = NULL;
-      }
-    } else {
-      rc = cai_client_open_response_text_source_with_complete(
-          session->agent->client, params, cai_session_stream_complete, session,
-          out, error);
-    }
+    rc = cai_client_open_response_text_source_with_complete(
+        session->agent->client, params, cai_session_stream_complete, session,
+        out, error);
   }
   cai_response_create_params_destroy(params);
-  if (stream_context != NULL) {
-    if (stream_context->has_pending_items) {
-      lonejson_spooled_cleanup(&stream_context->pending_items);
-    }
-    cai_free_mem(NULL, stream_context);
-  }
   if (has_pending_items) {
     lonejson_spooled_cleanup(&pending_items);
   }

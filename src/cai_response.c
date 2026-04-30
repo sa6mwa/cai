@@ -874,6 +874,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->text_format_strict = 0;
   params->max_output_tokens = 0;
   params->parallel_tool_calls = -1;
+  params->compact_threshold_tokens = 0LL;
   params->raw_input_json = NULL;
   params->has_raw_input_spooled = 0;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
@@ -1018,6 +1019,21 @@ int cai_response_create_params_set_parallel_tool_calls(
                          "parallel tool calls must be 0 or 1");
   }
   params->parallel_tool_calls = enabled;
+  return CAI_OK;
+}
+
+int cai_response_create_params_set_compact_threshold(
+    cai_response_create_params *params, long long compact_threshold_tokens,
+    cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (compact_threshold_tokens < 1000LL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compact threshold must be at least 1000 tokens");
+  }
+  params->compact_threshold_tokens = compact_threshold_tokens;
   return CAI_OK;
 }
 
@@ -1962,6 +1978,31 @@ cai_response_create_params_write_json(const cai_response_create_params *params,
     rc = cai_json_builder_field_bool(builder, "parallel_tool_calls",
                                      params->parallel_tool_calls, &need_comma,
                                      error);
+  }
+  if (rc == CAI_OK && params->compact_threshold_tokens > 0LL) {
+    char threshold[64];
+
+    snprintf(threshold, sizeof(threshold), "%lld",
+             params->compact_threshold_tokens);
+    if (need_comma) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(
+          builder,
+          "\"context_management\":[{\"type\":\"compaction\","
+          "\"compact_threshold\":",
+          error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, threshold, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "}]", error);
+    }
+    if (rc == CAI_OK) {
+      need_comma = 1;
+    }
   }
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(builder, ",", error);

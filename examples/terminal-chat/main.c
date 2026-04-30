@@ -77,7 +77,6 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
-  agent_config.auto_compact = 1;
   client = NULL;
   agent = NULL;
   session = NULL;

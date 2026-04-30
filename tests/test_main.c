@@ -158,8 +158,12 @@ static void test_model_capabilities(test_state *state) {
   expect_int(state, "model_compact_limit",
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
   cai_agent_config_init(&agent_config);
-  expect_int(state, "agent_config_auto_compact_default",
-             agent_config.auto_compact, 0L);
+  expect_int(state, "agent_config_disable_auto_compaction_default",
+             agent_config.disable_auto_compaction, 0L);
+  expect_int(state, "agent_config_compact_threshold_default",
+             agent_config.compact_threshold_tokens, 0L);
+  expect_int(state, "agent_config_compact_percent_default",
+             (long)agent_config.compact_threshold_percent, 80L);
   expect_int(state, "agent_config_compact_limit_default",
              agent_config.auto_compact_token_limit, 0L);
 }
@@ -455,7 +459,9 @@ static void test_tool_registry(test_state *state) {
 
 static void test_client_open(test_state *state) {
   cai_client_config config;
+  cai_agent_config agent_config;
   cai_client *client;
+  cai_agent *agent;
   struct pslog_logger *logger;
   cai_error error;
 
@@ -466,6 +472,7 @@ static void test_client_open(test_state *state) {
   config.base_url = "http://example.test/v1";
   config.logger = logger;
   client = NULL;
+  agent = NULL;
   expect_int(state, "client_open", cai_client_open(&config, &client, &error),
              CAI_OK);
   if (client == NULL) {
@@ -481,6 +488,19 @@ static void test_client_open(test_state *state) {
     expect_int(state, "client_logger_disabled", client->logger_disabled, 0);
     expect_int(state, "client_limit", (long)client->json_response_limit_bytes,
                (long)CAI_DEFAULT_JSON_RESPONSE_LIMIT);
+    cai_agent_config_init(&agent_config);
+    agent_config.model = "future-model";
+    expect_int(state, "agent_unknown_model_auto_compact",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    agent_config.disable_auto_compaction = 1;
+    expect_int(state, "agent_unknown_model_disabled_compact",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    cai_agent_destroy(agent);
+    agent = NULL;
   }
   cai_client_close(client);
   client = NULL;
@@ -574,6 +594,17 @@ static void test_response_json(test_state *state) {
       CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(
+      state, "params_set_bad_compact_threshold",
+      cai_response_create_params_set_compact_threshold(params, 999LL, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
+      state, "params_set_compact_threshold",
+      cai_response_create_params_set_compact_threshold(params, 320000LL,
+                                                       &error),
+      CAI_OK);
   expect_int(state, "params_set_text_format",
              cai_response_create_params_set_text_format_json_schema(
                  params, "answer", "Answer payload",
@@ -629,6 +660,11 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"parallel_tool_calls\":false") == NULL) {
       test_fail(state, "params_serialize",
                 "parallel tool calls missing from JSON");
+    }
+    if (strstr(json, "\"context_management\":[{\"type\":\"compaction\","
+                     "\"compact_threshold\":320000}]") == NULL) {
+      test_fail(state, "params_serialize",
+                "context management missing from JSON");
     }
     if (strstr(json, "\"text\":{\"format\":{\"type\":\"json_schema\"") ==
             NULL ||
@@ -1187,8 +1223,11 @@ static const char *mock_response_for_request(const char *request) {
         return stream_session_source_second_body;
       }
       if (strstr(request, "history stream second") != NULL &&
-          strstr(request, "history stream answer") != NULL &&
-          strstr(request, "previous_response_id") == NULL) {
+          strstr(request,
+                 "\"previous_response_id\":\"resp_stream_history_1\"") !=
+              NULL &&
+          strstr(request, "\"context_management\":[{\"type\":\"compaction\","
+                          "\"compact_threshold\":320000}]") != NULL) {
         return stream_history_second_body;
       }
       if (strstr(request, "history stream first") != NULL &&
@@ -1232,12 +1271,17 @@ static const char *mock_response_for_request(const char *request) {
             NULL &&
         strstr(request, "\"text\":{\"format\":{\"type\":\"json_schema\"") !=
             NULL &&
+        strstr(request, "\"context_management\":[{\"type\":\"compaction\","
+                        "\"compact_threshold\":320000}]") != NULL &&
         strstr(request, "\"parallel_tool_calls\":false") != NULL &&
         strstr(request, "previous_response_id") == NULL) {
       return session_first_body;
     }
     if (strstr(request, "session second") != NULL &&
         strstr(request, "\"previous_response_id\":\"resp_session_1\"") !=
+            NULL &&
+        strstr(request, "\"context_management\":[{\"type\":\"compaction\","
+                        "\"compact_threshold\":320000}]") !=
             NULL) {
       return session_second_body;
     }
@@ -1269,8 +1313,10 @@ static const char *mock_response_for_request(const char *request) {
       return compact_first_body;
     }
     if (strstr(request, "compact second") != NULL &&
-        strstr(request, "compacted summary") != NULL &&
-        strstr(request, "previous_response_id") == NULL) {
+        strstr(request, "\"previous_response_id\":\"resp_compact_1\"") !=
+            NULL &&
+        strstr(request, "\"context_management\":[{\"type\":\"compaction\","
+                        "\"compact_threshold\":320000}]") != NULL) {
       return compact_second_body;
     }
     return create_body;
@@ -2432,7 +2478,7 @@ static void test_agent_auto_compaction(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 3);
+    mock_openai_child(pipe_fds[1], 2);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -2452,8 +2498,6 @@ static void test_agent_auto_compaction(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
-  agent_config.auto_compact = 1;
-  agent_config.history_memory_limit = 16U;
   agent_config.history_memory_limit = 16U;
   client = NULL;
   agent = NULL;
@@ -2480,7 +2524,7 @@ static void test_agent_auto_compaction(test_state *state) {
              cai_session_history_spilled(session), 1L);
   expect_int(state, "agent_compact_usage",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
-  expect_int(state, "agent_compact_usage_total", usage.total_tokens, 120L);
+  expect_int(state, "agent_compact_usage_total", usage.total_tokens, 321000L);
   expect_int(state, "agent_compact_window",
              cai_session_context_window_tokens(session), 400000L);
   expect_int(state, "agent_compact_percent",
@@ -2745,7 +2789,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 4);
+    mock_openai_child(pipe_fds[1], 2);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -2761,7 +2805,6 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   cai_client_config_init(&config);
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
-  agent_config.auto_compact = 1;
   agent_config.history_memory_limit = 16U;
   config.api_key = "mock-key";
   config.base_url = base_url;
@@ -2795,7 +2838,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_history_first_value", writer.buffer, "hist1");
   expect_int(state, "stream_history_spilled",
-             cai_session_history_spilled(session), 1L);
+             cai_session_history_spilled(session), 0L);
   cai_sink_close(sink);
   sink = NULL;
 

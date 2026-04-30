@@ -26,6 +26,8 @@ example layers settle.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
 - Production SDK calls should choose a model explicitly.
+- Session auto-compaction is enabled by default and uses Responses
+  server-side compaction.
 - Examples and live development tests default to `gpt-5-nano`.
 
 ## OpenAI API Caveats
@@ -62,10 +64,13 @@ run well. The richer data lives in documentation and model comparison pages,
 not in a proper machine-readable registry.
 
 That is bad API design. Context windows and capability flags are not marketing
-copy; they are operational metadata. Without them, a client cannot reliably
-decide when to compact, cannot report context-window usage as a percentage,
-cannot validate whether a requested feature is supported, and cannot produce
-good local diagnostics before an API call fails remotely.
+copy; they are operational metadata. OpenAI does support server-side
+compaction through `context_management` and `compact_threshold`, but the
+threshold is an absolute token count, not a percentage. Without model context
+metadata, a client cannot choose a principled default threshold such as 80% of
+the context window, cannot report context-window usage as a percentage, cannot
+validate whether a requested feature is supported, and cannot produce good
+local diagnostics before an API call fails remotely.
 
 As a result, `cai` will treat model metadata as curated SDK data:
 
@@ -80,17 +85,16 @@ As a result, `cai` will treat model metadata as curated SDK data:
   context windows or feature discovery because the API does not return those
   facts.
 - Auto-compaction must require known context metadata or an explicit caller
-  threshold. It should not guess.
+  token threshold. It should not guess.
 
 In practice this means `cai` will likely need a reviewed generated metadata file
 built from official OpenAI documentation/model comparison data. That is
-unfortunate, but it is the only way to make auto-compaction, context usage
-reporting, and feature validation useful until OpenAI ships a proper model
-registry.
+unfortunate, but it is the only way to make default server-side
+auto-compaction, context usage reporting, and feature validation useful until
+OpenAI ships a proper model registry.
 
 Relevant OpenAI documentation:
 
 - <https://platform.openai.com/docs/api-reference/models/list>
 - <https://platform.openai.com/docs/models/compare>
 - <https://platform.openai.com/docs/api-reference/responses>
-

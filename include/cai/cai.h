@@ -84,6 +84,11 @@ typedef struct cai_agent_config {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  int disable_auto_compaction;
+  long long compact_threshold_tokens;
+  unsigned int compact_threshold_percent;
+  /* Deprecated compatibility fields; use disable_auto_compaction and
+     compact_threshold_tokens for new code. */
   int auto_compact;
   long long auto_compact_token_limit;
   size_t history_memory_limit;
@@ -204,6 +209,7 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
                             cai_error *error);
 int cai_session_open_text_source(cai_session *session, cai_source **out,
                                  cai_error *error);
+int cai_session_compact_experimental(cai_session *session, cai_error *error);
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);
 int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
@@ -291,6 +297,9 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
                                              cai_error *error);
 int cai_response_create_params_set_parallel_tool_calls(
     cai_response_create_params *params, int enabled, cai_error *error);
+int cai_response_create_params_set_compact_threshold(
+    cai_response_create_params *params, long long compact_threshold_tokens,
+    cai_error *error);
 int cai_response_create_params_set_text_format_json_object(
     cai_response_create_params *params, cai_error *error);
 int cai_response_create_params_set_text_format_json_schema(

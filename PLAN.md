@@ -37,6 +37,10 @@ application.
 - Development/live-test model: `gpt-5-nano`, unless the live environment
   rejects it. This is the default for examples and live tests because it is the
   cheapest currently intended development model.
+- Session auto-compaction defaults to enabled and uses Responses server-side
+  compaction by sending `context_management` with a resolved
+  `compact_threshold` token count. Callers opt out with
+  `disable_auto_compaction`.
 - Unit tests never hit OpenAI. Live integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
@@ -332,10 +336,13 @@ Metadata strategy:
 - A future generated metadata update step may scrape or ingest official model
   documentation/OpenAPI metadata, but generated output must be reviewed and
   committed. Runtime SDK startup should not depend on scraping docs.
-- Auto-compaction must only use automatic thresholds when a known context window
-  exists. If the caller enables auto-compaction with a model whose context
-  window is unknown, cai should return an actionable configuration error unless
-  the caller supplies an explicit token threshold.
+- Auto-compaction uses OpenAI server-side compaction on normal Responses create
+  requests. `compact_threshold` is an absolute token count, so cai resolves it
+  from `compact_threshold_tokens`, or from `compact_threshold_percent`
+  multiplied by known model context-window metadata. The default percentage is
+  80. If auto-compaction is enabled for a model whose context window is unknown,
+  cai should return an actionable configuration error unless the caller supplies
+  an explicit token threshold.
 
 ### Responses
 
@@ -674,13 +681,18 @@ Mirror liblockdc where practical:
 
 - Implement non-streamed Responses endpoints.
 - Implement Conversations endpoints.
-- Implement count/compact/list input items if current docs expose them.
+- Implement count/list input items if current docs expose them.
+- Keep standalone `/responses/compact` as experimental lower-level API
+  coverage; normal sessions should prefer server-side compaction through
+  `context_management`.
 - Add mock HTTP server path for deterministic integration tests.
 
 ### Milestone 3: agent/session DX
 
 - Implement `cai_agent` and `cai_session`.
 - Default session chain uses `previous_response_id`.
+- Default auto-compaction sends `context_management` with a resolved
+  `compact_threshold`.
 - Conversation-backed session mode is opt-in.
 - Support incremental session setup with text, image URLs, image sources, tool
   registries, and host-owned context pointers.
@@ -747,6 +759,9 @@ Resolved:
 - `cai_session` defaults to transparent `previous_response_id` chaining.
   Conversation-backed sessions are opt-in and should expose handles without
   forcing normal callers to manage IDs manually.
+- Auto-compaction defaults to enabled and uses server-side Responses
+  compaction. Standalone `/responses/compact` remains available only as an
+  experimental lower-level/manual path for now.
 - Live tests and examples default to `gpt-5-nano`.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead

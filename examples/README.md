@@ -43,8 +43,9 @@ cmake --build --preset debug --target cai_example_streaming_text
 ## Terminal Chat
 
 Run a small terminal chat agent that reads prompts from stdin, streams response
-tokens to stdout, keeps context through cai's history-backed session mode, and
-prints token usage plus context window percentage to stderr after each turn.
+tokens to stdout, keeps context through cai's `previous_response_id` session
+mode with server-side auto-compaction enabled by default, and prints token usage
+plus context window percentage to stderr after each turn.
 Exit with Ctrl-D at an empty prompt, `/quit`, or `/exit`.
 
 ```sh

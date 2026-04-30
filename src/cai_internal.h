@@ -40,6 +40,7 @@ struct cai_agent {
   int parallel_tool_calls;
   int auto_compact;
   long long auto_compact_token_limit;
+  unsigned int compact_threshold_percent;
   size_t history_memory_limit;
   char *history_spool_dir;
   cai_tool_registry *tools;
@@ -128,6 +129,7 @@ struct cai_response_create_params {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  long long compact_threshold_tokens;
   char *raw_input_json;
   lonejson_spooled raw_input_spooled;
   int has_raw_input_spooled;

@@ -110,8 +110,7 @@ static int run_compaction_recall(void) {
       "facts.";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
   agent_config.max_output_tokens = 512;
-  agent_config.auto_compact = 1;
-  agent_config.auto_compact_token_limit = 1LL;
+  agent_config.compact_threshold_tokens = 1000LL;
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc == CAI_OK) {
