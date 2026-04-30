@@ -106,6 +106,7 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->compact_threshold_percent = 80U;
   config->auto_compact = 0;
   config->auto_compact_token_limit = 0LL;
+  config->enable_local_history = 0;
   config->history_memory_limit = 128U * 1024U;
   config->history_spool_dir = NULL;
 }
@@ -173,6 +174,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   impl->max_output_tokens = config->max_output_tokens;
   impl->parallel_tool_calls = config->parallel_tool_calls;
   impl->auto_compact = config->disable_auto_compaction ? 0 : 1;
+  impl->local_history_enabled = config->enable_local_history ? 1 : 0;
   impl->compact_threshold_percent =
       config->compact_threshold_percent != 0U
           ? config->compact_threshold_percent
@@ -954,7 +956,7 @@ cai_session_prepare_history_params(cai_session *session,
   if (out_has_pending_items != NULL) {
     *out_has_pending_items = 0;
   }
-  if (CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit <= 0LL) {
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     return cai_session_add_pending_inputs(session, params, error);
   }
   memset(&pending_items, 0, sizeof(pending_items));
@@ -1042,13 +1044,18 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
   }
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "local history capture is disabled");
+  }
   rc = cai_history_to_array_items_spool(session, &history_items, &history_len,
                                         error);
   if (rc == CAI_OK) {
     has_history_items = 1;
   }
   if (rc == CAI_OK && history_len == 0U) {
-    rc = CAI_OK;
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session has no local history to compact");
     goto done;
   }
   if (rc == CAI_OK) {
@@ -1132,7 +1139,7 @@ static int cai_session_after_response(cai_session *session,
   int rc;
 
   rc = cai_session_remember_response(session, response, error);
-  if (rc != CAI_OK || CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit <= 0LL) {
+  if (rc != CAI_OK || !CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     return rc;
   }
   memset(&output_items, 0, sizeof(output_items));
@@ -1161,9 +1168,59 @@ static int cai_session_after_stream(cai_session *session,
                                     const char *response_id,
                                     const cai_token_usage *usage,
                                     cai_error *error) {
-  (void)pending_items;
-  (void)has_pending_items;
-  return cai_session_remember_stream(session, response_id, usage, error);
+  cai_response *response;
+  lonejson_spooled output_items;
+  size_t output_items_len;
+  int has_output_items;
+  int rc;
+
+  response = NULL;
+  memset(&output_items, 0, sizeof(output_items));
+  output_items_len = 0U;
+  has_output_items = 0;
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_session_remember_stream(session, response_id, usage, error);
+  }
+  rc = cai_session_remember_response_id(session, response_id, error);
+  if (rc == CAI_OK && !cai_token_usage_is_empty(usage)) {
+    CAI_SESSION_IMPL(session)->last_usage = *usage;
+    CAI_SESSION_IMPL(session)->has_last_usage = 1;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_retrieve_response(CAI_SESSION_AGENT_IMPL(session)->client,
+                                      response_id, &response, error);
+  }
+  if (rc == CAI_OK && cai_token_usage_is_empty(usage)) {
+    CAI_SESSION_IMPL(session)->last_usage.input_tokens =
+        cai_response_input_tokens(response);
+    CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens =
+        cai_response_input_cached_tokens(response);
+    CAI_SESSION_IMPL(session)->last_usage.output_tokens =
+        cai_response_output_tokens(response);
+    CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens =
+        cai_response_output_reasoning_tokens(response);
+    CAI_SESSION_IMPL(session)->last_usage.total_tokens =
+        cai_response_total_tokens(response);
+    CAI_SESSION_IMPL(session)->has_last_usage = 1;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_output_items_spool(response, &output_items,
+                                         &output_items_len, error);
+    if (rc == CAI_OK) {
+      has_output_items = 1;
+    }
+  }
+  if (rc == CAI_OK && has_pending_items) {
+    rc = cai_history_append_spooled(session, pending_items, error);
+  }
+  if (rc == CAI_OK && output_items_len > 0U) {
+    rc = cai_history_append_spooled(session, &output_items, error);
+  }
+  cai_response_destroy(response);
+  if (has_output_items) {
+    lonejson_spooled_cleanup(&output_items);
+  }
+  return rc;
 }
 
 static int cai_session_remember_response_id(cai_session *session,
@@ -1591,6 +1648,10 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
   *out = NULL;
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "local history capture is not supported for sources");
   }
   params = NULL;
   memset(&pending_items, 0, sizeof(pending_items));

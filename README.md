@@ -28,6 +28,9 @@ example layers settle.
 - Production SDK calls should choose a model explicitly.
 - Session auto-compaction is enabled by default and uses Responses
   server-side compaction.
+- Local spooled session history is opt-in with `enable_local_history`; default
+  sessions rely on OpenAI server-side context through `previous_response_id` or
+  Conversations.
 - Examples and integration development tests default to `gpt-5-nano`.
 
 ## Agent Instructions

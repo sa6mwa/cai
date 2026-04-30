@@ -41,6 +41,9 @@ application.
   compaction by sending `context_management` with a resolved
   `compact_threshold` token count. Callers opt out with
   `disable_auto_compaction`.
+- Local spooled session history is disabled by default. Callers opt in with
+  `enable_local_history` when they need experimental manual compaction,
+  session export, or offline history inspection.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
@@ -815,6 +818,8 @@ Resolved:
 - Auto-compaction defaults to enabled and uses server-side Responses
   compaction. Standalone `/responses/compact` remains available only as an
   experimental lower-level/manual path for now.
+- Local history capture is opt-in and independent of server-side
+  auto-compaction.
 - Integration tests and examples default to `gpt-5-nano`.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead

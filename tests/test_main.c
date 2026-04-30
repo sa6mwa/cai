@@ -181,6 +181,8 @@ static void test_model_capabilities(test_state *state) {
              (long)agent_config.compact_threshold_percent, 80L);
   expect_int(state, "agent_config_compact_limit_default",
              agent_config.auto_compact_token_limit, 0L);
+  expect_int(state, "agent_config_local_history_default",
+             agent_config.enable_local_history, 0L);
 }
 
 static void test_env_precedence(test_state *state) {
@@ -2663,6 +2665,7 @@ static void test_agent_auto_compaction(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.enable_local_history = 1;
   agent_config.history_memory_limit = 16U;
   client = NULL;
   agent = NULL;
@@ -3013,7 +3016,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 4);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -3029,6 +3032,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   cai_client_config_init(&config);
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.enable_local_history = 1;
   agent_config.history_memory_limit = 16U;
   config.api_key = "mock-key";
   config.base_url = base_url;
@@ -3062,7 +3066,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_history_first_value", writer.buffer, "hist1");
   expect_int(state, "stream_history_spilled",
-             cai_session_history_spilled(session), 0L);
+             cai_session_history_spilled(session), 1L);
   cai_sink_close(sink);
   sink = NULL;
 
@@ -3091,6 +3095,42 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   }
 }
 
+static void test_local_history_opt_in(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_error error;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  client_config.api_key = "mock-key";
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+
+  expect_int(state, "local_history_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "local_history_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "local_history_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "local_history_compact_disabled",
+             cai_session_compact_experimental(session, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
 int main(void) {
   test_state state;
 
@@ -3114,6 +3154,7 @@ int main(void) {
   test_conversations(&state);
   test_stream_response_text(&state);
   test_stream_history_preserves_pretty_json(&state);
+  test_local_history_opt_in(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;

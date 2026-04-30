@@ -42,6 +42,7 @@ typedef struct cai_agent_impl {
   int auto_compact;
   long long auto_compact_token_limit;
   unsigned int compact_threshold_percent;
+  int local_history_enabled;
   size_t history_memory_limit;
   char *history_spool_dir;
   cai_tool_registry *tools;

@@ -93,6 +93,7 @@ typedef struct cai_agent_config {
      compact_threshold_tokens for new code. */
   int auto_compact;
   long long auto_compact_token_limit;
+  int enable_local_history;
   size_t history_memory_limit;
   const char *history_spool_dir;
 } cai_agent_config;
