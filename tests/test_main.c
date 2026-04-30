@@ -1154,13 +1154,102 @@ static int mock_write_all(int fd, const char *data, size_t length) {
 }
 
 static int mock_read_request(int fd, char *request, size_t capacity) {
-  ssize_t nread;
+  size_t length;
+  char *headers_end;
 
-  nread = read(fd, request, capacity - 1U);
-  if (nread <= 0) {
+  length = 0U;
+  headers_end = NULL;
+  while (length + 1U < capacity && headers_end == NULL) {
+    ssize_t nread;
+
+    nread = read(fd, request + length, capacity - length - 1U);
+    if (nread <= 0) {
+      return -1;
+    }
+    length += (size_t)nread;
+    request[length] = '\0';
+    headers_end = strstr(request, "\r\n\r\n");
+  }
+  if (headers_end == NULL) {
     return -1;
   }
-  request[nread] = '\0';
+  if (strstr(request, "Transfer-Encoding: chunked") != NULL) {
+    char *cursor;
+
+    cursor = headers_end + 4;
+    for (;;) {
+      unsigned long chunk_len;
+      char *line_end;
+      char *chunk_data;
+      char *after_chunk;
+
+      line_end = strstr(cursor, "\r\n");
+      while (line_end == NULL && length + 1U < capacity) {
+        ssize_t nread;
+
+        nread = read(fd, request + length, capacity - length - 1U);
+        if (nread <= 0) {
+          return -1;
+        }
+        length += (size_t)nread;
+        request[length] = '\0';
+        line_end = strstr(cursor, "\r\n");
+      }
+      if (line_end == NULL) {
+        return -1;
+      }
+      chunk_len = strtoul(cursor, NULL, 16);
+      chunk_data = line_end + 2;
+      after_chunk = chunk_data + chunk_len + 2U;
+      while ((size_t)(after_chunk - request) > length &&
+             length + 1U < capacity) {
+        ssize_t nread;
+
+        nread = read(fd, request + length, capacity - length - 1U);
+        if (nread <= 0) {
+          return -1;
+        }
+        length += (size_t)nread;
+        request[length] = '\0';
+      }
+      if ((size_t)(after_chunk - request) > length) {
+        return -1;
+      }
+      if (chunk_len == 0UL) {
+        *cursor = '\0';
+        return 0;
+      }
+      memmove(cursor, chunk_data, (size_t)chunk_len);
+      cursor += chunk_len;
+      memmove(cursor, after_chunk, length - (size_t)(after_chunk - request));
+      length -= (size_t)(after_chunk - request) - chunk_len;
+      request[length] = '\0';
+    }
+  } else {
+    char *content_length;
+
+    content_length = strstr(request, "Content-Length:");
+    if (content_length != NULL) {
+      unsigned long body_len;
+      size_t header_len;
+
+      body_len = strtoul(content_length + 15, NULL, 10);
+      header_len = (size_t)(headers_end + 4 - request);
+      while (length < header_len + body_len && length + 1U < capacity) {
+        ssize_t nread;
+
+        nread = read(fd, request + length, capacity - length - 1U);
+        if (nread <= 0) {
+          return -1;
+        }
+        length += (size_t)nread;
+        request[length] = '\0';
+      }
+      if (length < header_len + body_len) {
+        return -1;
+      }
+    }
+  }
   return 0;
 }
 

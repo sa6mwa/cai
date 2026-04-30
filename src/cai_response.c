@@ -335,7 +335,7 @@ static lonejson_status cai_json_builder_lonejson_sink(void *user,
   cai_json_builder_lonejson_sink_state *state;
   const char *bytes;
   size_t offset;
-  size_t chunk;
+  size_t available;
   cai_error sink_error;
   int rc;
 
@@ -344,23 +344,33 @@ static lonejson_status cai_json_builder_lonejson_sink(void *user,
   bytes = (const char *)data;
   offset = 0U;
   if (state->skip > 0U) {
-    chunk = len < state->skip ? len : state->skip;
-    offset += chunk;
-    state->skip -= chunk;
+    available = len < state->skip ? len : state->skip;
+    offset += available;
+    state->skip -= available;
   }
   cai_error_init(&sink_error);
-  while (offset < len) {
-    if (state->hold_last) {
-      rc = cai_json_builder_append(state->builder, &state->last, 1U,
-                                   &sink_error);
-      if (rc != CAI_OK) {
-        cai_error_cleanup(&sink_error);
-        return LONEJSON_STATUS_ALLOCATION_FAILED;
-      }
+  available = len - offset;
+  if (available > 0U && state->hold_last) {
+    rc = cai_json_builder_append(state->builder, &state->last, 1U,
+                                 &sink_error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(&sink_error);
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
+    state->hold_last = 0;
+  }
+  if (available > 1U) {
+    rc = cai_json_builder_append(state->builder, bytes + offset,
+                                 available - 1U, &sink_error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(&sink_error);
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
+    offset += available - 1U;
+  }
+  if (offset < len) {
     state->last = bytes[offset];
     state->hold_last = 1;
-    offset++;
   }
   cai_error_cleanup(&sink_error);
   return LONEJSON_STATUS_OK;
@@ -2122,6 +2132,29 @@ int cai_response_create_params_spool_json(
     *out_len = builder.length;
   }
   return CAI_OK;
+}
+
+int cai_response_create_params_write_json_sink(
+    const cai_response_create_params *params, int stream, lonejson_sink_fn sink,
+    void *sink_user, lonejson_error *sink_error, size_t *out_len,
+    cai_error *error) {
+  cai_json_builder builder;
+  int rc;
+
+  if (sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "JSON sink is required");
+  }
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  builder.sink = sink;
+  builder.sink_user = sink_user;
+  builder.sink_error = sink_error;
+  rc = cai_response_create_params_write_json(params, &builder, stream, error);
+  if (out_len != NULL) {
+    *out_len = builder.length;
+  }
+  return rc;
 }
 
 static int cai_response_copy_spooled_string(lonejson_spooled *value,

@@ -3,8 +3,10 @@
 #include <curl/curl.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 typedef struct cai_stream_input_tokens_details_doc {
@@ -115,6 +117,18 @@ typedef struct cai_pipe_stream {
   int thread_started;
 } cai_pipe_stream;
 
+typedef struct cai_stream_response_params_upload {
+  const cai_response_create_params *params;
+  int stream;
+  int read_fd;
+  int write_fd;
+  int thread_started;
+  pthread_t thread;
+  int rc;
+  cai_error error;
+  lonejson_error json_error;
+} cai_stream_response_params_upload;
+
 static size_t cai_stream_spooled_read(char *ptr, size_t size, size_t nmemb,
                                       void *userdata) {
   lonejson_spooled *spool;
@@ -131,6 +145,175 @@ static size_t cai_stream_spooled_read(char *ptr, size_t size, size_t nmemb,
     return CURL_READFUNC_ABORT;
   }
   return result.bytes_read;
+}
+
+static ssize_t cai_stream_socket_write_no_sigpipe(int fd, const char *data,
+                                                  size_t len) {
+#ifdef MSG_NOSIGNAL
+  return send(fd, data, len, MSG_NOSIGNAL);
+#else
+  return write(fd, data, len);
+#endif
+}
+
+static lonejson_status cai_stream_response_params_upload_sink(
+    void *user, const void *data, size_t len, lonejson_error *error) {
+  cai_stream_response_params_upload *upload;
+  const char *bytes;
+  size_t offset;
+
+  upload = (cai_stream_response_params_upload *)user;
+  bytes = (const char *)data;
+  offset = 0U;
+  while (offset < len) {
+    ssize_t written;
+
+    written = cai_stream_socket_write_no_sigpipe(
+        upload->write_fd, bytes + offset, len - offset);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      if (error != NULL) {
+        error->code = LONEJSON_STATUS_IO_ERROR;
+        error->system_errno = errno;
+        snprintf(error->message, sizeof(error->message),
+                 "failed to stream request JSON");
+      }
+      return LONEJSON_STATUS_IO_ERROR;
+    }
+    if (written == 0) {
+      if (error != NULL) {
+        error->code = LONEJSON_STATUS_IO_ERROR;
+        snprintf(error->message, sizeof(error->message),
+                 "request JSON stream closed");
+      }
+      return LONEJSON_STATUS_IO_ERROR;
+    }
+    offset += (size_t)written;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_stream_count_sink(void *user, const void *data,
+                                             size_t len,
+                                             lonejson_error *error) {
+  size_t *count;
+
+  (void)data;
+  (void)error;
+  count = (size_t *)user;
+  *count += len;
+  return LONEJSON_STATUS_OK;
+}
+
+static void *cai_stream_response_params_upload_main(void *arg) {
+  cai_stream_response_params_upload *upload;
+
+  upload = (cai_stream_response_params_upload *)arg;
+  upload->rc = cai_response_create_params_write_json_sink(
+      upload->params, upload->stream, cai_stream_response_params_upload_sink,
+      upload, &upload->json_error, NULL, &upload->error);
+  if (upload->write_fd >= 0) {
+    close(upload->write_fd);
+    upload->write_fd = -1;
+  }
+  return NULL;
+}
+
+static int cai_stream_response_params_upload_start(
+    cai_stream_response_params_upload *upload,
+    const cai_response_create_params *params, int stream, cai_error *error) {
+  int fds[2];
+
+  memset(upload, 0, sizeof(*upload));
+  upload->params = params;
+  upload->stream = stream;
+  upload->read_fd = -1;
+  upload->write_fd = -1;
+  upload->rc = CAI_OK;
+  cai_error_init(&upload->error);
+  lonejson_error_init(&upload->json_error);
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to create request upload stream");
+  }
+#ifdef SO_NOSIGPIPE
+  {
+    int one;
+
+    one = 1;
+    (void)setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  }
+#endif
+  upload->read_fd = fds[0];
+  upload->write_fd = fds[1];
+  if (pthread_create(&upload->thread, NULL,
+                     cai_stream_response_params_upload_main, upload) != 0) {
+    close(upload->read_fd);
+    close(upload->write_fd);
+    upload->read_fd = -1;
+    upload->write_fd = -1;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to start request upload stream");
+  }
+  upload->thread_started = 1;
+  return CAI_OK;
+}
+
+static size_t cai_stream_response_params_upload_read(char *ptr, size_t size,
+                                                     size_t nmemb,
+                                                     void *userdata) {
+  cai_stream_response_params_upload *upload;
+  size_t capacity;
+
+  upload = (cai_stream_response_params_upload *)userdata;
+  capacity = size * nmemb;
+  if (upload == NULL || ptr == NULL || capacity == 0U ||
+      upload->read_fd < 0) {
+    return 0U;
+  }
+  for (;;) {
+    ssize_t got;
+
+    got = read(upload->read_fd, ptr, capacity);
+    if (got < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return CURL_READFUNC_ABORT;
+    }
+    return (size_t)got;
+  }
+}
+
+static int cai_stream_response_params_upload_finish(
+    cai_stream_response_params_upload *upload, cai_error *error) {
+  int rc;
+
+  if (upload->read_fd >= 0) {
+    close(upload->read_fd);
+    upload->read_fd = -1;
+  }
+  if (upload->write_fd >= 0) {
+    close(upload->write_fd);
+    upload->write_fd = -1;
+  }
+  if (upload->thread_started) {
+    pthread_join(upload->thread, NULL);
+    upload->thread_started = 0;
+  }
+  rc = upload->rc;
+  if (rc != CAI_OK && error != NULL) {
+    (void)cai_set_error_detail(
+        error, rc,
+        upload->error.message != NULL ? upload->error.message
+                                      : "failed to stream request JSON",
+        upload->error.detail != NULL ? upload->error.detail
+                                     : upload->json_error.message);
+  }
+  cai_error_cleanup(&upload->error);
+  return rc;
 }
 
 static void cai_stream_copy_usage(cai_token_usage *out,
@@ -704,6 +887,168 @@ int cai_client_stream_response_spooled_with_id(
   return CAI_OK;
 }
 
+static int cai_client_stream_response_params_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error) {
+  CURL *curl;
+  CURLcode curl_rc;
+  struct curl_slist *headers;
+  cai_sse_state state;
+  cai_stream_response_params_upload upload;
+  char *url;
+  long http_status;
+  int upload_started;
+  int rc;
+  size_t request_len;
+  lonejson_error json_error;
+
+  if (client == NULL || params == NULL || sinks == NULL ||
+      (sinks->output_text == NULL && sinks->reasoning_summary == NULL)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "client, params, and at least one stream sink are "
+                         "required");
+  }
+  url = NULL;
+  headers = NULL;
+  upload_started = 0;
+  if (out_response_id != NULL) {
+    *out_response_id = NULL;
+  }
+  if (out_usage != NULL) {
+    memset(out_usage, 0, sizeof(*out_usage));
+  }
+  state.sinks = *sinks;
+  state.out_response_id = out_response_id;
+  state.out_usage = out_usage;
+  state.body = NULL;
+  state.line = NULL;
+  state.body_length = 0U;
+  state.body_capacity = 0U;
+  state.length = 0U;
+  state.capacity = 0U;
+  state.failed = 0;
+  state.reasoning_summary_started = 0;
+  state.reasoning_summary_suffixed = 0;
+  state.output_text_started = 0;
+  state.output_text_suffixed = 0;
+  request_len = 0U;
+  lonejson_error_init(&json_error);
+  memset(&upload, 0, sizeof(upload));
+
+  rc = cai_response_create_params_write_json_sink(
+      params, 1, cai_stream_count_sink, &request_len, &json_error, NULL,
+      error);
+  if (rc == CAI_OK) {
+    rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
+                       CAI_CLIENT_IMPL(client)->base_url, "responses", &url,
+                       error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Content-Type: application/json", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Accept: text/event-stream", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Expect:", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_bearer_header(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
+                                    CAI_CLIENT_IMPL(client)->organization_id,
+                                    error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Project: ",
+                                    CAI_CLIENT_IMPL(client)->project_id,
+                                    error);
+  }
+  if (rc != CAI_OK) {
+    curl_slist_free_all(headers);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    return rc;
+  }
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    curl_slist_free_all(headers);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to initialize curl");
+  }
+  rc = cai_stream_response_params_upload_start(&upload, params, 1, error);
+  if (rc == CAI_OK) {
+    upload_started = 1;
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION,
+                     cai_stream_response_params_upload_read);
+    curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                     (curl_off_t)request_len);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_sse_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
+      curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
+                       CAI_CLIENT_IMPL(client)->timeout_ms);
+    }
+    if (CAI_CLIENT_IMPL(client)->http_2_disabled) {
+      curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
+                       (long)CURL_HTTP_VERSION_1_1);
+    } else {
+      curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
+                       (long)CURL_HTTP_VERSION_2TLS);
+    }
+    if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    curl_rc = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+  } else {
+    curl_rc = CURLE_OK;
+    http_status = 0L;
+  }
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+  cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+  cai_free_mem(NULL, state.line);
+  if (upload_started) {
+    int upload_rc;
+
+    upload_rc = cai_stream_response_params_upload_finish(&upload, error);
+    if (rc == CAI_OK && upload_rc != CAI_OK) {
+      rc = upload_rc;
+    }
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, state.body);
+    return rc;
+  }
+  if (curl_rc != CURLE_OK) {
+    cai_free_mem(NULL, state.body);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "streaming HTTP request failed",
+                                curl_easy_strerror(curl_rc));
+  }
+  if (state.failed) {
+    cai_free_mem(NULL, state.body);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "streaming response sink failed");
+  }
+  if (http_status < 200L || http_status >= 300L) {
+    rc = cai_set_openai_error(error, http_status,
+                              state.body != NULL ? state.body : "", NULL);
+    cai_free_mem(NULL, state.body);
+    return rc;
+  }
+  cai_free_mem(NULL, state.body);
+  return CAI_OK;
+}
+
 int cai_client_stream_response_text(cai_client *client,
                                     const cai_response_create_params *params,
                                     cai_sink *sink, cai_error *error) {
@@ -727,11 +1072,6 @@ int cai_client_stream_response_with_id(
     cai_client *client, const cai_response_create_params *params,
   const cai_stream_sinks *sinks, char **out_response_id,
   cai_token_usage *out_usage, cai_error *error) {
-  char *request_json;
-  char *grown;
-  size_t request_json_len;
-  int rc;
-
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
@@ -741,35 +1081,8 @@ int cai_client_stream_response_with_id(
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "params are required");
   }
-  request_json = NULL;
-  grown = NULL;
-  rc = cai_response_create_params_serialize_json(params, &request_json,
-                                                 &request_json_len, error);
-  if (rc == CAI_OK) {
-    if (request_json_len == 0U || request_json[request_json_len - 1U] != '}') {
-      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "failed to serialize streaming request JSON");
-    }
-  }
-  if (rc == CAI_OK) {
-    grown = (char *)cai_realloc_mem(NULL, request_json, request_json_len + 15U);
-    if (grown == NULL) {
-      rc = cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to grow streaming request JSON");
-    } else {
-      request_json = grown;
-      request_json[request_json_len - 1U] = ',';
-      memcpy(request_json + request_json_len, "\"stream\":true}", 14U);
-      request_json_len += 14U;
-      request_json[request_json_len] = '\0';
-    }
-  }
-  if (rc == CAI_OK) {
-    rc = cai_client_stream_response_json_with_id(
-        client, request_json, sinks, out_response_id, out_usage, error);
-  }
-  cai_free_mem(NULL, request_json);
-  return rc;
+  return cai_client_stream_response_params_with_id(
+      client, params, sinks, out_response_id, out_usage, error);
 }
 
 static int cai_pipe_sink_write(void *context, const void *bytes, size_t count,

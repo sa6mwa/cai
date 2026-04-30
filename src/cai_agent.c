@@ -1177,11 +1177,8 @@ static int cai_token_usage_is_empty(const cai_token_usage *usage) {
 int cai_session_compact_experimental(cai_session *session, cai_error *error) {
   cai_response_create_params *params;
   cai_response *response;
-  lonejson_spooled request_json;
   lonejson_spooled history_items;
-  size_t request_json_len;
   size_t history_len;
-  int has_request_json;
   int has_history_items;
   lonejson_spooled output_items;
   size_t output_items_len;
@@ -1193,11 +1190,8 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
 
   params = NULL;
   response = NULL;
-  memset(&request_json, 0, sizeof(request_json));
   memset(&history_items, 0, sizeof(history_items));
-  request_json_len = 0U;
   history_len = 0U;
-  has_request_json = 0;
   has_history_items = 0;
   memset(&output_items, 0, sizeof(output_items));
   output_items_len = 0U;
@@ -1240,16 +1234,9 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_spool_json(params, 0, &request_json,
-                                               &request_json_len, error);
-    if (rc == CAI_OK) {
-      has_request_json = 1;
-    }
-  }
-  if (rc == CAI_OK) {
-    rc = cai_http_json_request_spooled(
-        CAI_SESSION_AGENT_IMPL(session)->client, "POST", "responses/compact", &request_json,
-        request_json_len, &body, &http_status, &request_id, error);
+    rc = cai_http_response_params_request(
+        CAI_SESSION_AGENT_IMPL(session)->client, "responses/compact", params,
+        0, &body, &http_status, &request_id, error);
   }
   if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status, body, request_id);
@@ -1277,9 +1264,6 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
 done:
   cai_response_create_params_destroy(params);
   cai_response_destroy(response);
-  if (has_request_json) {
-    lonejson_spooled_cleanup(&request_json);
-  }
   if (has_history_items) {
     lonejson_spooled_cleanup(&history_items);
   }

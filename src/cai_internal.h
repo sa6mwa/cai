@@ -256,6 +256,10 @@ int cai_response_create_params_serialize_json(
 int cai_response_create_params_spool_json(
     const cai_response_create_params *params, int stream,
     lonejson_spooled *out, size_t *out_len, cai_error *error);
+int cai_response_create_params_write_json_sink(
+    const cai_response_create_params *params, int stream, lonejson_sink_fn sink,
+    void *sink_user, lonejson_error *sink_error, size_t *out_len,
+    cai_error *error);
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
     cai_error *error);
@@ -313,6 +317,10 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
                                   size_t request_json_len, char **out_json,
                                   long *out_http_status,
                                   char **out_request_id, cai_error *error);
+int cai_http_response_params_request(
+    cai_client *client, const char *path,
+    const cai_response_create_params *params, int stream, char **out_json,
+    long *out_http_status, char **out_request_id, cai_error *error);
 int cai_client_stream_response_text_json_with_id(
     cai_client *client, const char *request_json, cai_sink *sink,
     char **out_response_id, cai_token_usage *out_usage, cai_error *error);
