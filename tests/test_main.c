@@ -72,6 +72,34 @@ static void expect_str(test_state *state, const char *name, const char *actual,
   }
 }
 
+static int read_source_text(test_state *state, const char *name,
+                            cai_source *source, char *buffer,
+                            size_t capacity, cai_error *error) {
+  size_t total;
+  size_t nread;
+
+  if (capacity == 0U) {
+    test_fail(state, name, "buffer is empty");
+    return 0;
+  }
+  total = 0U;
+  for (;;) {
+    if (total + 1U >= capacity) {
+      test_fail(state, name, "source output too large");
+      buffer[capacity - 1U] = '\0';
+      return 0;
+    }
+    nread = cai_source_read(source, buffer + total, capacity - total - 1U,
+                            error);
+    if (nread == 0U) {
+      break;
+    }
+    total += nread;
+  }
+  buffer[total] = '\0';
+  return 1;
+}
+
 static void write_file_or_die(const char *path, const char *text) {
   FILE *fp;
 
@@ -2628,8 +2656,10 @@ static void test_agent_auto_compaction(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   cai_response *response;
+  cai_source *history_source;
   cai_token_usage usage;
   cai_error error;
+  char history_json[1024];
   double percent;
 
   if (pipe(pipe_fds) != 0) {
@@ -2671,6 +2701,7 @@ static void test_agent_auto_compaction(test_state *state) {
   agent = NULL;
   session = NULL;
   response = NULL;
+  history_source = NULL;
 
   expect_int(state, "agent_compact_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -2700,6 +2731,24 @@ static void test_agent_auto_compaction(test_state *state) {
   if (percent <= 0.0) {
     test_fail(state, "agent_compact_percent_value", "percent not positive");
   }
+  expect_int(state, "agent_compact_export_source",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "agent_compact_export_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    if (history_json[0] != '[' ||
+        history_json[strlen(history_json) - 1U] != ']' ||
+        strstr(history_json, "compact first") == NULL ||
+        strstr(history_json, "before compact") == NULL) {
+      test_fail(state, "agent_compact_export_value",
+                "exported history did not include expected items");
+    }
+  }
+  expect_int(state, "agent_compact_export_reset",
+             cai_source_reset(history_source, &error), CAI_OK);
+  cai_source_close(history_source);
+  history_source = NULL;
   cai_response_destroy(response);
   response = NULL;
   expect_int(state, "agent_compact_add_second",
@@ -2710,6 +2759,7 @@ static void test_agent_auto_compaction(test_state *state) {
   expect_str(state, "agent_compact_text_second",
              cai_response_output_text(response), "after compact");
   cai_response_destroy(response);
+  cai_source_close(history_source);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -3000,8 +3050,10 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   cai_session *session;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
+  cai_source *history_source;
   write_state writer;
   cai_error error;
+  char history_json[2048];
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "stream_history_mock", "pipe failed");
@@ -3042,6 +3094,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   agent = NULL;
   session = NULL;
   sink = NULL;
+  history_source = NULL;
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
 
@@ -3082,7 +3135,26 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   expect_int(state, "stream_history_second",
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_history_second_value", writer.buffer, "hist2");
+  expect_int(state, "stream_history_export_source",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "stream_history_export_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    if (history_json[0] != '[' ||
+        history_json[strlen(history_json) - 1U] != ']' ||
+        strstr(history_json, "history stream first") == NULL ||
+        strstr(history_json, "history stream answer") == NULL ||
+        strstr(history_json, "history stream second") == NULL ||
+        strstr(history_json, "history stream second answer") == NULL) {
+      test_fail(state, "stream_history_export_value",
+                "exported stream history did not include expected items");
+    }
+  }
+  cai_source_close(history_source);
+  history_source = NULL;
   cai_sink_close(sink);
+  cai_source_close(history_source);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -3101,6 +3173,7 @@ static void test_local_history_opt_in(test_state *state) {
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_source *history_source;
   cai_error error;
 
   cai_error_init(&error);
@@ -3111,6 +3184,7 @@ static void test_local_history_opt_in(test_state *state) {
   client = NULL;
   agent = NULL;
   session = NULL;
+  history_source = NULL;
 
   expect_int(state, "local_history_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -3124,7 +3198,14 @@ static void test_local_history_opt_in(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(state, "local_history_export_disabled",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
 
+  cai_source_close(history_source);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);

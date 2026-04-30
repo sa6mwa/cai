@@ -259,6 +259,8 @@ struct cai_session {
   int (*context_percent)(const cai_session *session, double *out,
                          cai_error *error);
   int (*history_spilled)(const cai_session *session);
+  int (*export_history_source)(cai_session *session, cai_source **out,
+                               cai_error *error);
   void (*close)(cai_session *session);
   void *impl;
 };
@@ -360,6 +362,8 @@ long long cai_session_auto_compact_token_limit(const cai_session *session);
 int cai_session_context_percent(const cai_session *session, double *out,
                                 cai_error *error);
 int cai_session_history_spilled(const cai_session *session);
+int cai_session_export_history_source(cai_session *session, cai_source **out,
+                                      cai_error *error);
 
 void cai_error_init(cai_error *error);
 void cai_error_cleanup(cai_error *error);

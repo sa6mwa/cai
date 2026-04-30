@@ -30,7 +30,9 @@ example layers settle.
   server-side compaction.
 - Local spooled session history is opt-in with `enable_local_history`; default
   sessions rely on OpenAI server-side context through `previous_response_id` or
-  Conversations.
+  Conversations. When enabled, `cai_session_export_history_source` streams the
+  captured history as a JSON array for manual compaction, export, or offline
+  inspection.
 - Examples and integration development tests default to `gpt-5-nano`.
 
 ## Agent Instructions

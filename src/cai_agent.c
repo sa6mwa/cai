@@ -85,6 +85,9 @@ static int cai_agent_context_percent(const cai_agent *agent, double *out,
                                      cai_error *error);
 static void cai_agent_init_methods(cai_agent *agent);
 static void cai_session_init_methods(cai_session *session);
+static int cai_history_to_array_spool(cai_session *session,
+                                      lonejson_spooled *out,
+                                      cai_error *error);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -942,6 +945,62 @@ static int cai_history_to_array_items_spool(cai_session *session,
   return CAI_OK;
 }
 
+static int cai_history_to_array_spool(cai_session *session,
+                                      lonejson_spooled *out,
+                                      cai_error *error) {
+  lonejson_spooled items;
+  cai_history_sink_context sink_context;
+  lonejson_error json_error;
+  size_t items_len;
+  int has_items;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history array spool output pointer is required");
+  }
+  memset(&items, 0, sizeof(items));
+  items_len = 0U;
+  has_items = 0;
+  cai_history_init_spooled(session, out);
+  rc = cai_history_append_bytes(out, "[", 1U, error);
+  if (rc == CAI_OK) {
+    rc = cai_history_to_array_items_spool(session, &items, &items_len, error);
+    if (rc == CAI_OK) {
+      has_items = 1;
+    }
+  }
+  if (rc == CAI_OK && items_len > 0U) {
+    sink_context.spool = out;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_rewind(&items, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind history items",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK && items_len > 0U) {
+    if (lonejson_spooled_write_to_sink(&items, cai_history_lonejson_sink,
+                                       &sink_context,
+                                       &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to copy history items",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_history_append_bytes(out, "]", 1U, error);
+  }
+  if (has_items) {
+    lonejson_spooled_cleanup(&items);
+  }
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(out);
+  }
+  return rc;
+}
+
 static int
 cai_session_prepare_history_params(cai_session *session,
                                    cai_response_create_params *params,
@@ -1753,6 +1812,40 @@ int cai_session_history_spilled(const cai_session *session) {
   return lonejson_spooled_spilled(&CAI_SESSION_IMPL(session)->history);
 }
 
+int cai_session_export_history_source(cai_session *session, cai_source **out,
+                                      cai_error *error) {
+  lonejson_spooled history_json;
+  int has_history_json;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history source output pointer is required");
+  }
+  *out = NULL;
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "local history capture is disabled");
+  }
+  memset(&history_json, 0, sizeof(history_json));
+  has_history_json = 0;
+  rc = cai_history_to_array_spool(session, &history_json, error);
+  if (rc == CAI_OK) {
+    has_history_json = 1;
+    rc = cai_source_from_spooled(&history_json, out, error);
+    if (rc == CAI_OK) {
+      has_history_json = 0;
+    }
+  }
+  if (has_history_json) {
+    lonejson_spooled_cleanup(&history_json);
+  }
+  return rc;
+}
+
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
@@ -1794,6 +1887,7 @@ static void cai_session_init_methods(cai_session *session) {
   session->auto_compact_token_limit = cai_session_auto_compact_token_limit;
   session->context_percent = cai_session_context_percent;
   session->history_spilled = cai_session_history_spilled;
+  session->export_history_source = cai_session_export_history_source;
   session->close = cai_session_destroy;
 }
 

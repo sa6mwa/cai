@@ -10,6 +10,57 @@ struct cai_sink {
   cai_sink_callbacks callbacks;
 };
 
+typedef struct cai_spooled_source_context {
+  lonejson_spooled spool;
+} cai_spooled_source_context;
+
+static size_t cai_spooled_source_read(void *context, void *buffer,
+                                      size_t count, cai_error *error) {
+  cai_spooled_source_context *source_context;
+  lonejson_read_result result;
+
+  source_context = (cai_spooled_source_context *)context;
+  if (source_context == NULL || buffer == NULL || count == 0U) {
+    return 0U;
+  }
+  result = lonejson_spooled_read(&source_context->spool,
+                                 (unsigned char *)buffer, count);
+  if (result.error_code != 0) {
+    cai_set_error(error, CAI_ERR_TRANSPORT, "failed to read spooled source");
+    return 0U;
+  }
+  return result.bytes_read;
+}
+
+static int cai_spooled_source_reset(void *context, cai_error *error) {
+  cai_spooled_source_context *source_context;
+  lonejson_error json_error;
+
+  source_context = (cai_spooled_source_context *)context;
+  if (source_context == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "spooled source is required");
+  }
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&source_context->spool, &json_error) ==
+      LONEJSON_STATUS_OK) {
+    return CAI_OK;
+  }
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to rewind spooled source",
+                              json_error.message);
+}
+
+static void cai_spooled_source_close(void *context) {
+  cai_spooled_source_context *source_context;
+
+  source_context = (cai_spooled_source_context *)context;
+  if (source_context == NULL) {
+    return;
+  }
+  lonejson_spooled_cleanup(&source_context->spool);
+  cai_free_mem(NULL, source_context);
+}
+
 static int cai_output_write_string(const char *value, cai_sink *sink,
                                    cai_error *error) {
   size_t length;
@@ -47,6 +98,42 @@ int cai_source_from_callbacks(const cai_source_callbacks *callbacks,
   source->callbacks = *callbacks;
   *out = source;
   return CAI_OK;
+}
+
+int cai_source_from_spooled(lonejson_spooled *spool, cai_source **out,
+                            cai_error *error) {
+  cai_spooled_source_context *context;
+  cai_source_callbacks callbacks;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "source output pointer is required");
+  }
+  *out = NULL;
+  if (spool == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "spool is required");
+  }
+  context = (cai_spooled_source_context *)cai_alloc(NULL, sizeof(*context));
+  if (context == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate spooled source");
+  }
+  context->spool = *spool;
+  memset(spool, 0, sizeof(*spool));
+  if (cai_spooled_source_reset(context, error) != CAI_OK) {
+    cai_spooled_source_close(context);
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  callbacks.read = cai_spooled_source_read;
+  callbacks.reset = cai_spooled_source_reset;
+  callbacks.close = cai_spooled_source_close;
+  callbacks.context = context;
+  rc = cai_source_from_callbacks(&callbacks, out, error);
+  if (rc != CAI_OK) {
+    cai_spooled_source_close(context);
+  }
+  return rc;
 }
 
 int cai_source_from_lc(struct lc_source *source, cai_source **out,

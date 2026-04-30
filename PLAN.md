@@ -43,7 +43,9 @@ application.
   `disable_auto_compaction`.
 - Local spooled session history is disabled by default. Callers opt in with
   `enable_local_history` when they need experimental manual compaction,
-  session export, or offline history inspection.
+  session export, or offline history inspection. Export is exposed as a
+  `cai_source` over a JSON array so callers can stream it instead of
+  materializing it.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
