@@ -188,10 +188,6 @@ if(CAI_BUILD_EXAMPLES)
       "${CAI_GENERATED_INCLUDE_DIR}")
     target_link_libraries(cai_example_${_cai_example} PRIVATE
       ${_cai_example_link_target})
-    if(_cai_example STREQUAL "mike_mind")
-      target_compile_definitions(cai_example_${_cai_example} PRIVATE
-        CAI_MIKE_MIND_DEFAULT_SKILL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../parallax/skills/mike-mind")
-    endif()
     cai_configure_c_target(cai_example_${_cai_example})
   endforeach()
 endif()

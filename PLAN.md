@@ -161,15 +161,16 @@ Required examples:
   `gpt-5-nano` for development.
 - `conversation-handles`: explicit conversation-handle construction and reuse
   without exposing callers to manual ID plumbing in normal flows.
-- `mike-mind`: heavy knowledge-base chatbot built from
-  `../parallax/skills/mike-mind/`.
+- `mike-mind`: heavy self-contained knowledge-base chatbot built from the full
+  Mike Mind skill corpus.
 
 The `mike-mind` example must be self-contained at runtime. It should not read
-from `../parallax`, require a file tool, or ask the model to inspect paths.
-Instead, the implementation should embed the full Mike Mind skill material into
-the prompt/corpus shipped with the example. "Full" here is intentional: this is
-meant to fill large context windows and exercise cai as a heavy knowledge-base
-chatbot, not to be a summary or small representative sample.
+external checkout paths, require a file tool, or ask the model to inspect
+paths. Instead, the implementation should embed the full Mike Mind skill
+material into the prompt/corpus shipped with the example. "Full" here is
+intentional: this is meant to fill large context windows and exercise cai as a
+heavy knowledge-base chatbot, not to be a summary or small representative
+sample.
 
 The generated Mike Mind prompt should:
 

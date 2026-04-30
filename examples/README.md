@@ -85,11 +85,10 @@ OPENAI_API_KEY=... ./build/debug/cai_example_terminal_chat
 
 ## Mike Mind
 
-Run a terminal chat agent seeded from the Mike Mind skill references. By default
-the example reads `../parallax/skills/mike-mind`; override that with
-`CAI_MIKE_MIND_SKILL_DIR` when running from another checkout layout. The agent
-sets a stable `prompt_cache_key` because the skill prompt is intentionally large
-and cacheable across runs.
+Run a terminal chat agent seeded from an embedded Mike Mind corpus. The example
+is self-contained at runtime and does not read external skill files. The agent
+sets a stable `prompt_cache_key` because the developer prompt is intentionally
+large and cacheable across runs.
 
 ```sh
 cmake --build --preset debug --target cai_example_mike_mind
