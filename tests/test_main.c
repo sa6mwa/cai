@@ -515,11 +515,14 @@ static void test_response_json(test_state *state) {
   strcat(response_json, "\"incomplete_details\":{\"reason\":");
   strcat(response_json, "\"max_output_tokens\"},\"conversation\":{\"id\":");
   strcat(response_json, "\"conv_123\"},\"output\":[{\"type\":\"message\",");
+  strcat(response_json, "\"id\":\"msg_1\",\"status\":\"completed\",");
+  strcat(response_json, "\"role\":\"assistant\",");
   strcat(response_json, "\"content\":[{\"type\":\"output_text\",");
   strcat(response_json, "\"text\":\"hello \"},{\"type\":\"output_text\",");
   strcat(response_json, "\"text\":\"world\"},{\"type\":\"refusal\",");
   strcat(response_json, "\"refusal\":\"cannot comply\"}]},{\"id\":\"fc_1\",");
-  strcat(response_json, "\"type\":\"function_call\",\"call_id\":\"call_1\",");
+  strcat(response_json, "\"type\":\"function_call\",\"status\":\"completed\",");
+  strcat(response_json, "\"call_id\":\"call_1\",");
   strcat(response_json, "\"name\":\"weather\",\"arguments\":");
   strcat(response_json, "\"{\\\"city\\\":\\\"Malmo\\\"}\"}],\"usage\":{");
   strcat(response_json, "\"input_tokens\":11,\"input_tokens_details\":{");
@@ -745,6 +748,20 @@ static void test_response_json(test_state *state) {
              3L);
   expect_int(state, "response_tool_count",
              (long)cai_response_tool_call_count(response), 1L);
+  expect_int(state, "response_output_item_count",
+             (long)cai_response_output_item_count(response), 2L);
+  expect_str(state, "response_output_item_id",
+             cai_response_output_item_id(response, 0U), "msg_1");
+  expect_str(state, "response_output_item_type",
+             cai_response_output_item_type(response, 0U), "message");
+  expect_str(state, "response_output_item_status",
+             cai_response_output_item_status(response, 0U), "completed");
+  expect_str(state, "response_output_item_role",
+             cai_response_output_item_role(response, 0U), "assistant");
+  expect_str(state, "response_output_item_call_id",
+             cai_response_output_item_call_id(response, 1U), "call_1");
+  expect_str(state, "response_output_item_name",
+             cai_response_output_item_name(response, 1U), "weather");
   expect_str(state, "response_tool_id", cai_response_tool_call_id(response, 0U),
              "call_1");
   expect_str(state, "response_tool_name",

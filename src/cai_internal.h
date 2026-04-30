@@ -147,6 +147,15 @@ typedef struct cai_response_tool_call {
   char *arguments;
 } cai_response_tool_call;
 
+typedef struct cai_response_output_item {
+  char *id;
+  char *type;
+  char *status;
+  char *role;
+  char *call_id;
+  char *name;
+} cai_response_output_item;
+
 struct cai_response {
   char *id;
   char *status;
@@ -168,6 +177,8 @@ struct cai_response {
   long long total_tokens;
   cai_response_tool_call *tool_calls;
   size_t tool_call_count;
+  cai_response_output_item *output_items;
+  size_t output_item_count;
 };
 
 struct cai_output {

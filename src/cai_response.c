@@ -30,6 +30,8 @@ typedef struct cai_response_content_doc {
 typedef struct cai_response_output_doc {
   char *id;
   char *type;
+  char *status;
+  char *role;
   char *call_id;
   char *name;
   char *arguments;
@@ -103,6 +105,8 @@ LONEJSON_MAP_DEFINE(cai_response_content_map, cai_response_content_doc,
 static const lonejson_field cai_response_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, status, "status"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, role, "role"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, call_id, "call_id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, arguments,
@@ -2056,6 +2060,48 @@ static int cai_response_copy_tool_calls(cai_response *response,
   return CAI_OK;
 }
 
+static int cai_response_copy_output_items(cai_response *response,
+                                          cai_response_doc *doc,
+                                          cai_error *error) {
+  cai_response_output_doc *outputs;
+  size_t i;
+
+  response->output_item_count = doc->output.count;
+  response->output_items = NULL;
+  if (response->output_item_count == 0U) {
+    return CAI_OK;
+  }
+  response->output_items = (cai_response_output_item *)cai_alloc(
+      NULL, response->output_item_count * sizeof(response->output_items[0]));
+  if (response->output_items == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate response output items");
+  }
+  memset(response->output_items, 0,
+         response->output_item_count * sizeof(response->output_items[0]));
+  outputs = (cai_response_output_doc *)doc->output.items;
+  for (i = 0U; i < doc->output.count; i++) {
+    response->output_items[i].id = cai_strdup(NULL, outputs[i].id);
+    response->output_items[i].type = cai_strdup(NULL, outputs[i].type);
+    response->output_items[i].status = cai_strdup(NULL, outputs[i].status);
+    response->output_items[i].role = cai_strdup(NULL, outputs[i].role);
+    response->output_items[i].call_id = cai_strdup(NULL, outputs[i].call_id);
+    response->output_items[i].name = cai_strdup(NULL, outputs[i].name);
+    if ((outputs[i].id != NULL && response->output_items[i].id == NULL) ||
+        (outputs[i].type != NULL && response->output_items[i].type == NULL) ||
+        (outputs[i].status != NULL &&
+         response->output_items[i].status == NULL) ||
+        (outputs[i].role != NULL && response->output_items[i].role == NULL) ||
+        (outputs[i].call_id != NULL &&
+         response->output_items[i].call_id == NULL) ||
+        (outputs[i].name != NULL && response->output_items[i].name == NULL)) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate response output item fields");
+    }
+  }
+  return CAI_OK;
+}
+
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error) {
   cai_response_doc doc;
@@ -2132,6 +2178,8 @@ int cai_response_parse_json(const char *json, cai_response **out,
   response->total_tokens = doc.usage.total_tokens;
   response->tool_calls = NULL;
   response->tool_call_count = 0U;
+  response->output_items = NULL;
+  response->output_item_count = 0U;
   if (response->id == NULL || response->status == NULL ||
       (doc.model != NULL && response->model == NULL) ||
       (doc.conversation.id != NULL && response->conversation_id == NULL) ||
@@ -2145,6 +2193,11 @@ int cai_response_parse_json(const char *json, cai_response **out,
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate parsed response");
+  }
+  if (cai_response_copy_output_items(response, &doc, error) != CAI_OK) {
+    cai_response_destroy(response);
+    lonejson_cleanup(&cai_response_map, &doc);
+    return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
   if (cai_response_copy_tool_calls(response, &doc, error) != CAI_OK) {
     cai_response_destroy(response);
@@ -2483,6 +2536,58 @@ const char *cai_response_tool_call_arguments(const cai_response *response,
   return response->tool_calls[index].arguments;
 }
 
+size_t cai_response_output_item_count(const cai_response *response) {
+  return response != NULL ? response->output_item_count : 0U;
+}
+
+const char *cai_response_output_item_id(const cai_response *response,
+                                        size_t index) {
+  if (response == NULL || index >= response->output_item_count) {
+    return NULL;
+  }
+  return response->output_items[index].id;
+}
+
+const char *cai_response_output_item_type(const cai_response *response,
+                                          size_t index) {
+  if (response == NULL || index >= response->output_item_count) {
+    return NULL;
+  }
+  return response->output_items[index].type;
+}
+
+const char *cai_response_output_item_status(const cai_response *response,
+                                            size_t index) {
+  if (response == NULL || index >= response->output_item_count) {
+    return NULL;
+  }
+  return response->output_items[index].status;
+}
+
+const char *cai_response_output_item_role(const cai_response *response,
+                                          size_t index) {
+  if (response == NULL || index >= response->output_item_count) {
+    return NULL;
+  }
+  return response->output_items[index].role;
+}
+
+const char *cai_response_output_item_call_id(const cai_response *response,
+                                             size_t index) {
+  if (response == NULL || index >= response->output_item_count) {
+    return NULL;
+  }
+  return response->output_items[index].call_id;
+}
+
+const char *cai_response_output_item_name(const cai_response *response,
+                                          size_t index) {
+  if (response == NULL || index >= response->output_item_count) {
+    return NULL;
+  }
+  return response->output_items[index].name;
+}
+
 void cai_response_destroy(cai_response *response) {
   size_t i;
 
@@ -2496,6 +2601,15 @@ void cai_response_destroy(cai_response *response) {
     cai_free_mem(NULL, response->tool_calls[i].arguments);
   }
   cai_free_mem(NULL, response->tool_calls);
+  for (i = 0U; i < response->output_item_count; i++) {
+    cai_free_mem(NULL, response->output_items[i].id);
+    cai_free_mem(NULL, response->output_items[i].type);
+    cai_free_mem(NULL, response->output_items[i].status);
+    cai_free_mem(NULL, response->output_items[i].role);
+    cai_free_mem(NULL, response->output_items[i].call_id);
+    cai_free_mem(NULL, response->output_items[i].name);
+  }
+  cai_free_mem(NULL, response->output_items);
   cai_free_mem(NULL, response->id);
   cai_free_mem(NULL, response->status);
   cai_free_mem(NULL, response->model);
