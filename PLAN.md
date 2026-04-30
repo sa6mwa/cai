@@ -695,8 +695,11 @@ Mirror liblockdc where practical:
 - Parse tool calls.
 - Run synchronous callbacks.
 - Submit `function_call_output`.
-- Add source-backed tool result API even if the first implementation internally
-  falls back to bounded buffering for unsupported OpenAI result shapes.
+- Add source-backed tool result API. Large tool outputs should be represented
+  with `lonejson_spooled` or source/sink plumbing and serialized back into the
+  session without materializing the whole value in memory. Bounded buffering is
+  only acceptable inside the normal chunk buffers of lonejson, curl, or the
+  transport layer.
 - Unit-test multi-tool and error paths.
 
 ### Milestone 5: SSE streaming
@@ -732,18 +735,31 @@ Mirror liblockdc where practical:
 - Verify archives, checksums, pkg-config, CMake package metadata, and LuaRock.
 - Add release verification tests modeled after liblockdc.
 
-## Open questions before the long implementation run
+## Resolved decisions and remaining questions
 
-1. Should `cai_client_config.api_key` override `.env`, as proposed here, or
-   should `.env` override even an explicit config field?
-2. Should strict model validation default to off, as proposed, so new OpenAI
-   model IDs work before cai is updated?
-3. Should `cai_session` default to `previous_response_id` chaining, with
-   OpenAI Conversation-backed sessions opt-in?
-4. Is the mock OpenAI server allowed to start as plain HTTP for tests, with TLS
+Resolved:
+
+- `.env` overrides the inherited process `OPENAI_API_KEY`. An explicit
+  `cai_client_config.api_key` still wins because it is a direct API call
+  argument, not ambient environment.
+- Strict model validation defaults to off. Unknown model strings are accepted,
+  while metadata helpers report unavailable local metadata.
+- `cai_session` defaults to transparent `previous_response_id` chaining.
+  Conversation-backed sessions are opt-in and should expose handles without
+  forcing normal callers to manage IDs manually.
+- Live tests and examples default to `gpt-5-nano`.
+- Streaming means actual streaming. Large history, tool output, generated JSON,
+  and final response data should use lonejson spooling/source/sink APIs instead
+  of faux streaming through full in-memory materialization.
+
+Remaining:
+
+1. Is the mock OpenAI server allowed to start as plain HTTP for tests, with TLS
    coverage handled by libcurl/OpenSSL dependency smoke tests later?
-5. Should Lua bindings wait until after the C agent/session API stabilizes, or
+2. Should Lua bindings wait until after the C agent/session API stabilizes, or
    should they track each milestone from the beginning?
+3. What exact public shape should model metadata expose for verified,
+   incomplete, and unknown capability data?
 
 ## Documentation sources checked
 
