@@ -178,6 +178,8 @@ int main(void) {
     rc = session->add_user_text(session, line, &error);
     if (rc == CAI_OK) {
       fputs("[reasoning] ", stderr);
+      fputs("\n\n[response] ", stdout);
+      fflush(stdout);
       rc = session->stream(session, &stream_sinks, &error);
       fputc('\n', stderr);
     }
