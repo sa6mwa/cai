@@ -53,6 +53,13 @@ cai_conversation_content_part_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, part->type);
   cai_free_mem(allocator, part->text);
   cai_free_mem(allocator, part->image_url);
+  cai_free_mem(allocator, part->file_id);
+  cai_free_mem(allocator, part->filename);
+  cai_free_mem(allocator, part->file_url);
+  if (part->has_file_data) {
+    lonejson_spooled_cleanup(&part->file_data);
+    part->has_file_data = 0;
+  }
   cai_free_mem(allocator, part->detail);
 }
 
@@ -588,10 +595,9 @@ int cai_conversation_items_params_add_text(
     return cai_set_error(error, CAI_ERR_INVALID, "text is required");
   }
   allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
   part.type = cai_strdup(allocator, "input_text");
   part.text = cai_strdup(allocator, text);
-  part.image_url = NULL;
-  part.detail = NULL;
   if (part.type == NULL || part.text == NULL) {
     cai_conversation_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
@@ -614,8 +620,8 @@ int cai_conversation_items_params_add_image_url(
     return cai_set_error(error, CAI_ERR_INVALID, "image URL is required");
   }
   allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
   part.type = cai_strdup(allocator, "input_image");
-  part.text = NULL;
   part.image_url = cai_strdup(allocator, url);
   part.detail = cai_strdup(allocator, detail);
   if (part.type == NULL || part.image_url == NULL ||
@@ -623,6 +629,122 @@ int cai_conversation_items_params_add_image_url(
     cai_conversation_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate image input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_conversation_items_params_add_image_file_id(
+    cai_conversation_items_params *params, const char *role,
+    const char *file_id, const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "image file id is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
+  part.type = cai_strdup(allocator, "input_image");
+  part.file_id = cai_strdup(allocator, file_id);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_id == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate image file input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_conversation_items_params_add_file_id(
+    cai_conversation_items_params *params, const char *role,
+    const char *file_id, const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file id is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
+  part.type = cai_strdup(allocator, "input_file");
+  part.file_id = cai_strdup(allocator, file_id);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_id == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_conversation_items_params_add_file_url(
+    cai_conversation_items_params *params, const char *role,
+    const char *file_url, const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_url == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file URL is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
+  part.type = cai_strdup(allocator, "input_file");
+  part.file_url = cai_strdup(allocator, file_url);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_url == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file URL input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_conversation_items_params_add_file_data_spooled(
+    cai_conversation_items_params *params, const char *role,
+    const char *filename, struct lonejson_spooled *file_data,
+    const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_data == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file data spool is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
+  part.type = cai_strdup(allocator, "input_file");
+  part.filename = cai_strdup(allocator, filename);
+  part.detail = cai_strdup(allocator, detail);
+  part.file_data = *file_data;
+  part.has_file_data = 1;
+  memset(file_data, 0, sizeof(*file_data));
+  if (part.type == NULL || (filename != NULL && part.filename == NULL) ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file data input");
   }
   rc = cai_conversation_items_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {

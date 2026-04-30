@@ -12,6 +12,7 @@ extern "C" {
 struct lc_source;
 struct lc_sink;
 struct lonejson_map;
+struct lonejson_spooled;
 struct pslog_logger;
 
 typedef struct cai_client cai_client;
@@ -303,6 +304,20 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
                                              const char *role, const char *url,
                                              const char *detail,
                                              cai_error *error);
+int cai_response_create_params_add_image_file_id(
+    cai_response_create_params *params, const char *role, const char *file_id,
+    const char *detail, cai_error *error);
+int cai_response_create_params_add_file_id(cai_response_create_params *params,
+                                           const char *role, const char *file_id,
+                                           const char *detail, cai_error *error);
+int cai_response_create_params_add_file_url(cai_response_create_params *params,
+                                            const char *role,
+                                            const char *file_url,
+                                            const char *detail,
+                                            cai_error *error);
+int cai_response_create_params_add_file_data_spooled(
+    cai_response_create_params *params, const char *role, const char *filename,
+    struct lonejson_spooled *file_data, const char *detail, cai_error *error);
 int cai_response_create_params_add_function_tool(
     cai_response_create_params *params, const char *name,
     const char *description, const char *parameters_json, int strict,
@@ -310,6 +325,19 @@ int cai_response_create_params_add_function_tool(
 int cai_response_create_params_add_function_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error);
+int cai_response_create_params_add_function_call_output_text(
+    cai_response_create_params *params, const char *call_id, const char *text,
+    cai_error *error);
+int cai_response_create_params_add_function_call_output_image_url(
+    cai_response_create_params *params, const char *call_id, const char *url,
+    const char *detail, cai_error *error);
+int cai_response_create_params_add_function_call_output_file_id(
+    cai_response_create_params *params, const char *call_id, const char *file_id,
+    const char *detail, cai_error *error);
+int cai_response_create_params_add_function_call_output_file_data_spooled(
+    cai_response_create_params *params, const char *call_id,
+    const char *filename, struct lonejson_spooled *file_data,
+    const char *detail, cai_error *error);
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,
                                cai_response **out, cai_error *error);
@@ -427,6 +455,19 @@ int cai_conversation_items_params_add_text(
     cai_error *error);
 int cai_conversation_items_params_add_image_url(
     cai_conversation_items_params *params, const char *role, const char *url,
+    const char *detail, cai_error *error);
+int cai_conversation_items_params_add_image_file_id(
+    cai_conversation_items_params *params, const char *role,
+    const char *file_id, const char *detail, cai_error *error);
+int cai_conversation_items_params_add_file_id(
+    cai_conversation_items_params *params, const char *role,
+    const char *file_id, const char *detail, cai_error *error);
+int cai_conversation_items_params_add_file_url(
+    cai_conversation_items_params *params, const char *role,
+    const char *file_url, const char *detail, cai_error *error);
+int cai_conversation_items_params_add_file_data_spooled(
+    cai_conversation_items_params *params, const char *role,
+    const char *filename, struct lonejson_spooled *file_data,
     const char *detail, cai_error *error);
 int cai_client_create_conversation_items(
     cai_client *client, const char *conversation_id,

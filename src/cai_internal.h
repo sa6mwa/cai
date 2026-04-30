@@ -88,6 +88,11 @@ struct cai_content_part {
   char *type;
   char *text;
   char *image_url;
+  char *file_id;
+  char *filename;
+  char *file_url;
+  lonejson_spooled file_data;
+  int has_file_data;
   char *detail;
 };
 

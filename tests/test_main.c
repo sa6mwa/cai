@@ -785,6 +785,8 @@ static void test_response_json(test_state *state) {
 static void test_response_spooled_request_fragments(test_state *state) {
   cai_response_create_params *params;
   lonejson_spooled raw_items;
+  lonejson_spooled file_data;
+  lonejson_spooled tool_file_data;
   lonejson_spooled request_json;
   lonejson_spooled output_items;
   cai_response *response;
@@ -826,6 +828,34 @@ static void test_response_spooled_request_fragments(test_state *state) {
              cai_response_create_params_add_text(params, "user", "next",
                                                  &error),
              CAI_OK);
+  lonejson_spooled_init(&file_data, NULL);
+  expect_int(state, "spooled_file_append",
+             lonejson_spooled_append(&file_data, "inline file text",
+                                     strlen("inline file text"), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "spooled_file_add",
+             cai_response_create_params_add_file_data_spooled(
+                 params, "user", "note.txt", &file_data, "low", &error),
+             CAI_OK);
+  expect_int(state, "spooled_file_id_add",
+             cai_response_create_params_add_file_id(params, "user",
+                                                    "file_input_123", "high",
+                                                    &error),
+             CAI_OK);
+  expect_int(state, "spooled_tool_text_add",
+             cai_response_create_params_add_function_call_output_text(
+                 params, "call_content_1", "tool text", &error),
+             CAI_OK);
+  lonejson_spooled_init(&tool_file_data, NULL);
+  expect_int(state, "spooled_tool_file_append",
+             lonejson_spooled_append(&tool_file_data, "tool file text",
+                                     strlen("tool file text"), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "spooled_tool_file_add",
+             cai_response_create_params_add_function_call_output_file_data_spooled(
+                 params, "call_content_2", "tool.txt", &tool_file_data, "low",
+                 &error),
+             CAI_OK);
   expect_int(state, "spooled_request_json",
              cai_response_create_params_spool_json(params, 0, &request_json,
                                                    &json_len, &error),
@@ -838,6 +868,13 @@ static void test_response_spooled_request_fragments(test_state *state) {
         strstr(json, "\"text\":\"remembered\"") == NULL ||
         strstr(json, "\"role\":\"user\"") == NULL ||
         strstr(json, "\"text\":\"next\"") == NULL ||
+        strstr(json, "\"filename\":\"note.txt\"") == NULL ||
+        strstr(json, "\"file_data\":\"inline file text\"") == NULL ||
+        strstr(json, "\"file_id\":\"file_input_123\"") == NULL ||
+        strstr(json, "\"output\":[{\"type\":\"input_text\",\"text\":\"tool text\"}]") ==
+            NULL ||
+        strstr(json, "\"filename\":\"tool.txt\"") == NULL ||
+        strstr(json, "\"file_data\":\"tool file text\"") == NULL ||
         strstr(json, "\"text\":\"remembered\"") >
             strstr(json, "\"text\":\"next\"")) {
       test_fail(state, "spooled_request_json", "request did not merge fragments");
@@ -1246,14 +1283,16 @@ static const char *mock_response_for_request(const char *request) {
       strstr(request, "\"metadata\":{\"tenant\":\"vectis\"}") != NULL) {
     return conversation_update_body;
   }
-  if (strstr(request, "POST /v1/conversations/conv_get/items HTTP/") != NULL &&
-      strstr(request, "\"items\":[") != NULL &&
-      strstr(request, "\"type\":\"input_text\"") != NULL &&
-      strstr(request, "\"text\":\"conversation item\"") != NULL &&
-      strstr(request, "\"type\":\"input_image\"") != NULL &&
-      strstr(request, "https://example.test/conv.png") != NULL) {
-    return conversation_items_create_body;
-  }
+	  if (strstr(request, "POST /v1/conversations/conv_get/items HTTP/") != NULL &&
+	      strstr(request, "\"items\":[") != NULL &&
+	      strstr(request, "\"type\":\"input_text\"") != NULL &&
+	      strstr(request, "\"text\":\"conversation item\"") != NULL &&
+	      strstr(request, "\"type\":\"input_image\"") != NULL &&
+	      strstr(request, "https://example.test/conv.png") != NULL &&
+	      strstr(request, "\"type\":\"input_file\"") != NULL &&
+	      strstr(request, "\"file_data\":\"conversation file text\"") != NULL) {
+	    return conversation_items_create_body;
+	  }
   if (strstr(request, "GET /v1/conversations/conv_get/items?") != NULL &&
       strstr(request, "limit=1") != NULL &&
       strstr(request, "order=desc") != NULL) {
@@ -1555,6 +1594,8 @@ static void test_conversations(test_state *state) {
   cai_conversation_item *item;
   cai_input_item_list *items;
   cai_conversation_items_params *item_params;
+  lonejson_spooled conversation_file_data;
+  lonejson_error json_error;
   cai_list_params list_params;
   cai_error error;
 
@@ -1639,6 +1680,19 @@ static void test_conversations(test_state *state) {
       cai_conversation_items_params_add_image_url(
           item_params, "user", "https://example.test/conv.png", "low", &error),
       CAI_OK);
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(&conversation_file_data, NULL);
+  expect_int(state, "conversation_items_file_append",
+             lonejson_spooled_append(&conversation_file_data,
+                                     "conversation file text",
+                                     strlen("conversation file text"),
+                                     &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "conversation_items_add_file",
+             cai_conversation_items_params_add_file_data_spooled(
+                 item_params, "user", "conv.txt", &conversation_file_data,
+                 "low", &error),
+             CAI_OK);
   expect_int(state, "conversation_create_items",
              cai_client_create_conversation_items_handle(
                  client, conversation_ref, item_params, &items, &error),

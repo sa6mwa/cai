@@ -193,6 +193,13 @@ static void cai_content_part_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, part->type);
   cai_free_mem(allocator, part->text);
   cai_free_mem(allocator, part->image_url);
+  cai_free_mem(allocator, part->file_id);
+  cai_free_mem(allocator, part->filename);
+  cai_free_mem(allocator, part->file_url);
+  if (part->has_file_data) {
+    lonejson_spooled_cleanup(&part->file_data);
+    part->has_file_data = 0;
+  }
   cai_free_mem(allocator, part->detail);
 }
 
@@ -990,6 +997,10 @@ static int cai_response_params_add_part(cai_response_create_params *params,
   return CAI_OK;
 }
 
+static void cai_content_part_zero(struct cai_content_part *part) {
+  memset(part, 0, sizeof(*part));
+}
+
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
                                         cai_error *error) {
@@ -999,11 +1010,10 @@ int cai_response_create_params_add_text(cai_response_create_params *params,
   if (text == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "text is required");
   }
-  part.type =
-      cai_strdup(params != NULL ? &params->allocator : NULL, "input_text");
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(params != NULL ? &params->allocator : NULL,
+                         "input_text");
   part.text = cai_strdup(params != NULL ? &params->allocator : NULL, text);
-  part.image_url = NULL;
-  part.detail = NULL;
   if (part.type == NULL || part.text == NULL) {
     cai_content_part_cleanup(params != NULL ? &params->allocator : NULL, &part);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
@@ -1027,8 +1037,8 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
     return cai_set_error(error, CAI_ERR_INVALID, "image URL is required");
   }
   allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
   part.type = cai_strdup(allocator, "input_image");
-  part.text = NULL;
   part.image_url = cai_strdup(allocator, url);
   part.detail = cai_strdup(allocator, detail);
   if (part.type == NULL || part.image_url == NULL ||
@@ -1036,6 +1046,124 @@ int cai_response_create_params_add_image_url(cai_response_create_params *params,
     cai_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate image input");
+  }
+  rc = cai_response_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_image_file_id(
+    cai_response_create_params *params, const char *role, const char *file_id,
+    const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "image file id is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_image");
+  part.file_id = cai_strdup(allocator, file_id);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_id == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate image file input");
+  }
+  rc = cai_response_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_file_id(cai_response_create_params *params,
+                                           const char *role, const char *file_id,
+                                           const char *detail,
+                                           cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file id is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_file");
+  part.file_id = cai_strdup(allocator, file_id);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_id == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file input");
+  }
+  rc = cai_response_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_file_url(cai_response_create_params *params,
+                                            const char *role,
+                                            const char *file_url,
+                                            const char *detail,
+                                            cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_url == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file URL is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_file");
+  part.file_url = cai_strdup(allocator, file_url);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_url == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file URL input");
+  }
+  rc = cai_response_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_file_data_spooled(
+    cai_response_create_params *params, const char *role, const char *filename,
+    struct lonejson_spooled *file_data, const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_data == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file data spool is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_file");
+  part.filename = cai_strdup(allocator, filename);
+  part.detail = cai_strdup(allocator, detail);
+  part.file_data = *file_data;
+  part.has_file_data = 1;
+  memset(file_data, 0, sizeof(*file_data));
+  if (part.type == NULL || (filename != NULL && part.filename == NULL) ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file data input");
   }
   rc = cai_response_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
@@ -1145,6 +1273,167 @@ int cai_response_create_params_add_function_call_output_spooled(
   return CAI_OK;
 }
 
+static int cai_response_params_add_function_output_part(
+    cai_response_create_params *params, const char *call_id,
+    struct cai_content_part *part, cai_error *error) {
+  struct cai_input_message *messages;
+  struct cai_input_message *message;
+  struct cai_content_part *parts;
+  int rc;
+
+  if (params == NULL || call_id == NULL || call_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "function call id is required");
+  }
+  rc = cai_object_array_grow(&params->allocator, &params->input,
+                             sizeof(struct cai_input_message), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  messages = (struct cai_input_message *)params->input.items;
+  message = &messages[params->input.count];
+  memset(message, 0, sizeof(*message));
+  message->kind = CAI_INPUT_FUNCTION_CALL_OUTPUT;
+  cai_object_array_init(&message->content, sizeof(struct cai_content_part));
+  message->call_id = cai_strdup(&params->allocator, call_id);
+  if (message->call_id == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function call output");
+  }
+  rc = cai_object_array_grow(&params->allocator, &message->content,
+                             sizeof(struct cai_content_part), error);
+  if (rc != CAI_OK) {
+    cai_input_message_cleanup(&params->allocator, message);
+    return rc;
+  }
+  parts = (struct cai_content_part *)message->content.items;
+  parts[0] = *part;
+  message->content.count = 1U;
+  params->input.count++;
+  return CAI_OK;
+}
+
+int cai_response_create_params_add_function_call_output_text(
+    cai_response_create_params *params, const char *call_id, const char *text,
+    cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "function output text is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_text");
+  part.text = cai_strdup(allocator, text);
+  if (part.type == NULL || part.text == NULL) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function output text");
+  }
+  rc = cai_response_params_add_function_output_part(params, call_id, &part,
+                                                    error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_function_call_output_image_url(
+    cai_response_create_params *params, const char *call_id, const char *url,
+    const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (url == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "function output image URL is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_image");
+  part.image_url = cai_strdup(allocator, url);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.image_url == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function output image");
+  }
+  rc = cai_response_params_add_function_output_part(params, call_id, &part,
+                                                    error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_function_call_output_file_id(
+    cai_response_create_params *params, const char *call_id, const char *file_id,
+    const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "function output file id is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_file");
+  part.file_id = cai_strdup(allocator, file_id);
+  part.detail = cai_strdup(allocator, detail);
+  if (part.type == NULL || part.file_id == NULL ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function output file");
+  }
+  rc = cai_response_params_add_function_output_part(params, call_id, &part,
+                                                    error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_response_create_params_add_function_call_output_file_data_spooled(
+    cai_response_create_params *params, const char *call_id,
+    const char *filename, struct lonejson_spooled *file_data,
+    const char *detail, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (file_data == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "function output file data spool is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  cai_content_part_zero(&part);
+  part.type = cai_strdup(allocator, "input_file");
+  part.filename = cai_strdup(allocator, filename);
+  part.detail = cai_strdup(allocator, detail);
+  part.file_data = *file_data;
+  part.has_file_data = 1;
+  memset(file_data, 0, sizeof(*file_data));
+  if (part.type == NULL || (filename != NULL && part.filename == NULL) ||
+      (detail != NULL && part.detail == NULL)) {
+    cai_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate function output file data");
+  }
+  rc = cai_response_params_add_function_output_part(params, call_id, &part,
+                                                    error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
 static int cai_serialize_function_tools_json(cai_json_builder *builder,
                                              const lonejson_object_array *array,
                                              cai_error *error) {
@@ -1199,14 +1488,83 @@ static int cai_serialize_function_tools_json(cai_json_builder *builder,
   return rc;
 }
 
+static int cai_serialize_content_parts_json(cai_json_builder *builder,
+                                            const lonejson_object_array *content,
+                                            cai_error *error) {
+  struct cai_content_part *parts;
+  size_t j;
+  int part_comma;
+  int rc;
+
+  rc = CAI_OK;
+  parts = (struct cai_content_part *)content->items;
+  for (j = 0U; rc == CAI_OK && j < content->count; j++) {
+    if (j > 0U) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    part_comma = 0;
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "{", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_field_string(builder, "type", parts[j].type,
+                                         &part_comma, error);
+    }
+    if (rc == CAI_OK && parts[j].text != NULL) {
+      rc = cai_json_builder_field_string(builder, "text", parts[j].text,
+                                         &part_comma, error);
+    }
+    if (rc == CAI_OK && parts[j].image_url != NULL) {
+      rc = cai_json_builder_field_string(
+          builder, "image_url", parts[j].image_url, &part_comma, error);
+    }
+    if (rc == CAI_OK && parts[j].file_id != NULL) {
+      rc = cai_json_builder_field_string(builder, "file_id", parts[j].file_id,
+                                         &part_comma, error);
+    }
+    if (rc == CAI_OK && parts[j].filename != NULL) {
+      rc = cai_json_builder_field_string(builder, "filename",
+                                         parts[j].filename, &part_comma, error);
+    }
+    if (rc == CAI_OK && parts[j].has_file_data) {
+      if (part_comma) {
+        rc = cai_json_builder_lit(builder, ",", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_string(builder, "file_data", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, ":", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_string_spooled(builder, &parts[j].file_data,
+                                             error);
+      }
+      if (rc == CAI_OK) {
+        part_comma = 1;
+      }
+    }
+    if (rc == CAI_OK && parts[j].file_url != NULL) {
+      rc = cai_json_builder_field_string(builder, "file_url",
+                                         parts[j].file_url, &part_comma,
+                                         error);
+    }
+    if (rc == CAI_OK && parts[j].detail != NULL) {
+      rc = cai_json_builder_field_string(builder, "detail", parts[j].detail,
+                                         &part_comma, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "}", error);
+    }
+  }
+  return rc;
+}
+
 static int cai_serialize_input_message_items_json(
     cai_json_builder *builder, const lonejson_object_array *input,
     cai_error *error) {
   struct cai_input_message *messages;
-  struct cai_content_part *parts;
   size_t i;
-  size_t j;
-  int part_comma;
   int rc;
 
   if (input == NULL) {
@@ -1244,7 +1602,16 @@ static int cai_serialize_input_message_items_json(
       if (rc == CAI_OK) {
         rc = cai_json_builder_lit(builder, ":", error);
       }
-      if (rc == CAI_OK && messages[i].has_output_spooled) {
+      if (rc == CAI_OK && messages[i].content.count > 0U) {
+        rc = cai_json_builder_lit(builder, "[", error);
+        if (rc == CAI_OK) {
+          rc = cai_serialize_content_parts_json(builder, &messages[i].content,
+                                                error);
+        }
+        if (rc == CAI_OK) {
+          rc = cai_json_builder_lit(builder, "]", error);
+        }
+      } else if (rc == CAI_OK && messages[i].has_output_spooled) {
         rc = cai_json_builder_string_spooled(builder,
                                              &messages[i].output_spooled,
                                              error);
@@ -1265,34 +1632,9 @@ static int cai_serialize_input_message_items_json(
     if (rc == CAI_OK) {
       rc = cai_json_builder_lit(builder, ",\"content\":[", error);
     }
-    parts = (struct cai_content_part *)messages[i].content.items;
-    for (j = 0U; rc == CAI_OK && j < messages[i].content.count; j++) {
-      if (j > 0U) {
-        rc = cai_json_builder_lit(builder, ",", error);
-      }
-      part_comma = 0;
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_lit(builder, "{", error);
-      }
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_field_string(builder, "type", parts[j].type,
-                                           &part_comma, error);
-      }
-      if (rc == CAI_OK && parts[j].text != NULL) {
-        rc = cai_json_builder_field_string(builder, "text", parts[j].text,
-                                           &part_comma, error);
-      }
-      if (rc == CAI_OK && parts[j].image_url != NULL) {
-        rc = cai_json_builder_field_string(
-            builder, "image_url", parts[j].image_url, &part_comma, error);
-      }
-      if (rc == CAI_OK && parts[j].detail != NULL) {
-        rc = cai_json_builder_field_string(builder, "detail", parts[j].detail,
-                                           &part_comma, error);
-      }
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_lit(builder, "}", error);
-      }
+    if (rc == CAI_OK) {
+      rc = cai_serialize_content_parts_json(builder, &messages[i].content,
+                                            error);
     }
     if (rc == CAI_OK) {
       rc = cai_json_builder_lit(builder, "]}", error);
