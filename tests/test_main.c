@@ -2848,11 +2848,15 @@ static void test_stream_response_text(test_state *state) {
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.output_text = sink;
   stream_sinks.reasoning_summary = reasoning_sink;
+  stream_sinks.reasoning_summary_prefix.text = "[r] ";
+  stream_sinks.reasoning_summary_suffix.text = "\n\n";
+  stream_sinks.output_text_prefix.text = "[o] ";
   expect_int(state, "stream_session_to_sink_second",
              session->stream(session, &stream_sinks, &error), CAI_OK);
-  expect_str(state, "stream_session_sink_value_second", writer.buffer, "two");
+  expect_str(state, "stream_session_sink_value_second", writer.buffer,
+             "[o] two");
   expect_str(state, "stream_session_reasoning_value_second",
-             reasoning_writer.buffer, "thinking");
+             reasoning_writer.buffer, "[r] thinking\n\n");
   expect_int(state, "stream_session_usage_second",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_session_usage_second_total", usage.total_tokens,

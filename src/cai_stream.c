@@ -93,6 +93,10 @@ typedef struct cai_sse_state {
   size_t length;
   size_t capacity;
   int failed;
+  int reasoning_summary_started;
+  int reasoning_summary_suffixed;
+  int output_text_started;
+  int output_text_suffixed;
 } cai_sse_state;
 
 typedef struct cai_pipe_stream {
@@ -166,11 +170,111 @@ static int cai_sse_line_reserve(cai_sse_state *state, size_t extra) {
   return CAI_OK;
 }
 
+static const char *cai_stream_affix_text(const cai_stream_affix *affix) {
+  if (affix == NULL) {
+    return NULL;
+  }
+  if (affix->callback != NULL) {
+    return affix->callback(affix->context);
+  }
+  return affix->text;
+}
+
+static int cai_stream_write_affix(cai_sink *sink,
+                                  const cai_stream_affix *affix) {
+  const char *text;
+  size_t length;
+
+  text = cai_stream_affix_text(affix);
+  if (sink == NULL || text == NULL || text[0] == '\0') {
+    return CAI_OK;
+  }
+  length = strlen(text);
+  return cai_sink_write(sink, text, length, NULL);
+}
+
+static int cai_sse_finish_reasoning(cai_sse_state *state) {
+  int rc;
+
+  if (!state->reasoning_summary_started || state->reasoning_summary_suffixed) {
+    return CAI_OK;
+  }
+  rc = cai_stream_write_affix(state->sinks.reasoning_summary,
+                              &state->sinks.reasoning_summary_suffix);
+  if (rc == CAI_OK) {
+    state->reasoning_summary_suffixed = 1;
+  }
+  return rc;
+}
+
+static int cai_sse_finish_output(cai_sse_state *state) {
+  int rc;
+
+  if (!state->output_text_started || state->output_text_suffixed) {
+    return CAI_OK;
+  }
+  rc = cai_stream_write_affix(state->sinks.output_text,
+                              &state->sinks.output_text_suffix);
+  if (rc == CAI_OK) {
+    state->output_text_suffixed = 1;
+  }
+  return rc;
+}
+
+static int cai_sse_write_reasoning_delta(cai_sse_state *state,
+                                         const char *delta) {
+  size_t length;
+  int rc;
+
+  if (state->sinks.reasoning_summary == NULL || delta == NULL) {
+    return CAI_OK;
+  }
+  length = strlen(delta);
+  if (length == 0U) {
+    return CAI_OK;
+  }
+  if (!state->reasoning_summary_started) {
+    rc = cai_stream_write_affix(state->sinks.reasoning_summary,
+                                &state->sinks.reasoning_summary_prefix);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    state->reasoning_summary_started = 1;
+  }
+  return cai_sink_write(state->sinks.reasoning_summary, delta, length, NULL);
+}
+
+static int cai_sse_write_output_delta(cai_sse_state *state,
+                                      const char *delta) {
+  size_t length;
+  int rc;
+
+  if (state->sinks.output_text == NULL || delta == NULL) {
+    return CAI_OK;
+  }
+  length = strlen(delta);
+  if (length == 0U) {
+    return CAI_OK;
+  }
+  rc = cai_sse_finish_reasoning(state);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!state->output_text_started) {
+    rc = cai_stream_write_affix(state->sinks.output_text,
+                                &state->sinks.output_text_prefix);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    state->output_text_started = 1;
+  }
+  return cai_sink_write(state->sinks.output_text, delta, length, NULL);
+}
+
 static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   cai_stream_delta_doc doc;
   lonejson_error json_error;
   lonejson_status status;
-  size_t length;
   int rc;
 
   (void)json_error;
@@ -189,20 +293,20 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   }
   rc = CAI_OK;
   if (doc.type != NULL && strcmp(doc.type, "response.output_text.delta") == 0 &&
-      doc.delta != NULL && state->sinks.output_text != NULL) {
-    length = strlen(doc.delta);
-    if (length > 0U) {
-      rc = cai_sink_write(state->sinks.output_text, doc.delta, length, NULL);
-    }
+      doc.delta != NULL) {
+    rc = cai_sse_write_output_delta(state, doc.delta);
   } else if (doc.type != NULL &&
              (strcmp(doc.type, "response.reasoning_summary_text.delta") == 0 ||
               strcmp(doc.type, "response.reasoning_summary.delta") == 0) &&
-             doc.delta != NULL && state->sinks.reasoning_summary != NULL) {
-    length = strlen(doc.delta);
-    if (length > 0U) {
-      rc = cai_sink_write(state->sinks.reasoning_summary, doc.delta, length,
-                          NULL);
-    }
+             doc.delta != NULL) {
+    rc = cai_sse_write_reasoning_delta(state, doc.delta);
+  } else if (doc.type != NULL &&
+             (strcmp(doc.type, "response.reasoning_summary_text.done") == 0 ||
+              strcmp(doc.type, "response.reasoning_summary.done") == 0)) {
+    rc = cai_sse_finish_reasoning(state);
+  } else if (doc.type != NULL &&
+             strcmp(doc.type, "response.output_text.done") == 0) {
+    rc = cai_sse_finish_output(state);
   }
   if (rc == CAI_OK && state->out_response_id != NULL &&
       *state->out_response_id == NULL && doc.response.id != NULL) {
@@ -211,9 +315,15 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
       rc = CAI_ERR_NOMEM;
     }
   }
-  if (rc == CAI_OK && state->out_usage != NULL && doc.type != NULL &&
+  if (rc == CAI_OK && doc.type != NULL &&
       strcmp(doc.type, "response.completed") == 0) {
-    cai_stream_copy_usage(state->out_usage, &doc.response.usage);
+    rc = cai_sse_finish_reasoning(state);
+    if (rc == CAI_OK) {
+      rc = cai_sse_finish_output(state);
+    }
+    if (rc == CAI_OK && state->out_usage != NULL) {
+      cai_stream_copy_usage(state->out_usage, &doc.response.usage);
+    }
   }
   lonejson_cleanup(&cai_stream_delta_map, &doc);
   return rc;
@@ -381,6 +491,10 @@ int cai_client_stream_response_spooled_with_id(
   state.length = 0U;
   state.capacity = 0U;
   state.failed = 0;
+  state.reasoning_summary_started = 0;
+  state.reasoning_summary_suffixed = 0;
+  state.output_text_started = 0;
+  state.output_text_suffixed = 0;
   rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator, CAI_CLIENT_IMPL(client)->base_url, "responses", &url,
                      error);
   if (rc == CAI_OK) {

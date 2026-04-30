@@ -477,8 +477,16 @@ cai_stream_sinks sinks;
 cai_stream_sinks_init(&sinks);
 sinks.reasoning_summary = reasoning_sink;
 sinks.output_text = answer_sink;
+sinks.reasoning_summary_prefix.text = "[reasoning] ";
+sinks.reasoning_summary_suffix.text = "\n\n";
+sinks.output_text_prefix.text = "[response] ";
 session->stream(session, &sinks, &error);
 ```
+
+Prefix/suffix affixes are optional and can be static strings or callbacks. They
+are emitted by the streaming facade around the first/last chunk of each channel,
+so examples and CLIs can format interleaved stream channels without custom sink
+state. When affixes are unset, `cai` forwards the model deltas unchanged.
 
 The agent/session facade intentionally exposes developer instructions and user
 inputs, not arbitrary role strings. OpenAI's current Responses guidance treats

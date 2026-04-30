@@ -149,9 +149,21 @@ typedef struct cai_sink_callbacks {
   void *context;
 } cai_sink_callbacks;
 
+typedef const char *(*cai_stream_affix_fn)(void *context);
+
+typedef struct cai_stream_affix {
+  const char *text;
+  cai_stream_affix_fn callback;
+  void *context;
+} cai_stream_affix;
+
 typedef struct cai_stream_sinks {
   cai_sink *reasoning_summary;
   cai_sink *output_text;
+  cai_stream_affix reasoning_summary_prefix;
+  cai_stream_affix reasoning_summary_suffix;
+  cai_stream_affix output_text_prefix;
+  cai_stream_affix output_text_suffix;
 } cai_stream_sinks;
 
 typedef int (*cai_tool_fn)(void *context, const void *params, void *result,
