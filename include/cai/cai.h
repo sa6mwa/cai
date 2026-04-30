@@ -149,10 +149,13 @@ typedef struct cai_sink_callbacks {
   void *context;
 } cai_sink_callbacks;
 
-typedef int (*cai_tool_lonejson_fn)(void *context, const void *params,
-                                    cai_sink *output, cai_error *error);
+typedef int (*cai_tool_fn)(void *context, const void *params, void *result,
+                           cai_error *error);
+typedef cai_tool_fn cai_tool_lonejson_fn;
 typedef int (*cai_tool_raw_fn)(void *context, const char *arguments_json,
                                cai_sink *output, cai_error *error);
+
+char *cai_tool_result_strdup(const char *value, cai_error *error);
 
 struct cai_client {
   int (*new_agent)(cai_client *client, const cai_agent_config *config,
@@ -165,16 +168,10 @@ struct cai_client {
 
 struct cai_agent {
   int (*register_tool)(cai_agent *agent, const char *name,
-                       const char *description, const struct lonejson_map *map,
-                       const char *schema_json, int strict,
-                       cai_tool_lonejson_fn callback, void *context,
-                       cai_error *error);
-  int (*register_tool_schema)(cai_agent *agent, const char *name,
-                              const char *description,
-                              const struct lonejson_map *map,
-                              const cai_tool_schema *schema,
-                              cai_tool_lonejson_fn callback, void *context,
-                              cai_error *error);
+                       const char *description,
+                       const struct lonejson_map *params_map,
+                       const struct lonejson_map *result_map,
+                       cai_tool_fn callback, void *context, cai_error *error);
   int (*register_raw_tool)(cai_agent *agent, const char *name,
                            const char *description, const char *schema_json,
                            int strict, cai_tool_raw_fn callback, void *context,
@@ -256,6 +253,8 @@ struct cai_tool_schema {
   int (*string_enum)(cai_tool_schema *schema, const char *name,
                      const char *description, const char *const *values,
                      size_t value_count, int required, cai_error *error);
+  int (*describe)(cai_tool_schema *schema, const char *name,
+                  const char *description, cai_error *error);
   int (*raw_property)(cai_tool_schema *schema, const char *name,
                       const char *description, const char *schema_json,
                       int required, cai_error *error);
@@ -276,22 +275,16 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
 void cai_agent_destroy(cai_agent *agent);
 int cai_agent_register_tool(cai_agent *agent, const char *name,
                             const char *description,
-                            const struct lonejson_map *map,
-                            const char *schema_json, int strict,
-                            cai_tool_lonejson_fn callback, void *context,
+                            const struct lonejson_map *params_map,
+                            const struct lonejson_map *result_map,
+                            cai_tool_fn callback, void *context,
                             cai_error *error);
-int cai_agent_register_tool_schema(cai_agent *agent, const char *name,
-                                   const char *description,
-                                   const struct lonejson_map *map,
-                                   const cai_tool_schema *schema,
-                                   cai_tool_lonejson_fn callback,
-                                   void *context, cai_error *error);
 int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
                                      const char *description,
-                                     const struct lonejson_map *map,
-                                     const char *schema_json, int strict,
-                                     cai_tool_lonejson_fn callback,
-                                     void *context, cai_error *error);
+                                     const struct lonejson_map *params_map,
+                                     const struct lonejson_map *result_map,
+                                     cai_tool_fn callback, void *context,
+                                     cai_error *error);
 int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
                                 const char *description,
                                 const char *schema_json, int strict,
@@ -383,8 +376,8 @@ int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);
 void cai_tool_registry_destroy(cai_tool_registry *registry);
 int cai_tool_registry_register_lonejson(
     cai_tool_registry *registry, const char *name, const char *description,
-    const struct lonejson_map *map, const char *schema_json, int strict,
-    cai_tool_lonejson_fn callback, void *context, cai_error *error);
+    const struct lonejson_map *params_map, const struct lonejson_map *result_map,
+    cai_tool_fn callback, void *context, cai_error *error);
 int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    const char *name, const char *description,
                                    const char *schema_json, int strict,
@@ -398,6 +391,8 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
                           cai_error *error);
 
 int cai_tool_schema_new(cai_tool_schema **out, cai_error *error);
+int cai_tool_schema_from_map(const struct lonejson_map *map,
+                             cai_tool_schema **out, cai_error *error);
 void cai_tool_schema_destroy(cai_tool_schema *schema);
 int cai_tool_schema_set_strict(cai_tool_schema *schema, int strict,
                                cai_error *error);
@@ -418,6 +413,8 @@ int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
                                     const char *const *values,
                                     size_t value_count, int required,
                                     cai_error *error);
+int cai_tool_schema_describe(cai_tool_schema *schema, const char *name,
+                             const char *description, cai_error *error);
 int cai_tool_schema_add_raw_property(cai_tool_schema *schema, const char *name,
                                      const char *description,
                                      const char *schema_json, int required,

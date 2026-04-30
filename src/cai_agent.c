@@ -264,36 +264,20 @@ void cai_agent_destroy(cai_agent *agent) {
 
 int cai_agent_register_tool(cai_agent *agent, const char *name,
                             const char *description,
-                            const lonejson_map *map,
-                            const char *schema_json, int strict,
-                            cai_tool_lonejson_fn callback, void *context,
+                            const lonejson_map *params_map,
+                            const lonejson_map *result_map,
+                            cai_tool_fn callback, void *context,
                             cai_error *error) {
-  return cai_agent_register_lonejson_tool(agent, name, description, map,
-                                          schema_json, strict, callback,
-                                          context, error);
-}
-
-int cai_agent_register_tool_schema(cai_agent *agent, const char *name,
-                                   const char *description,
-                                   const lonejson_map *map,
-                                   const cai_tool_schema *schema,
-                                   cai_tool_lonejson_fn callback,
-                                   void *context, cai_error *error) {
-  if (schema == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "tool schema is required");
-  }
-  return cai_agent_register_tool(agent, name, description, map,
-                                 cai_tool_schema_json(schema),
-                                 cai_tool_schema_strict(schema), callback,
-                                 context, error);
+  return cai_agent_register_lonejson_tool(agent, name, description, params_map,
+                                          result_map, callback, context, error);
 }
 
 int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
                                      const char *description,
-                                     const lonejson_map *map,
-                                     const char *schema_json, int strict,
-                                     cai_tool_lonejson_fn callback,
-                                     void *context, cai_error *error) {
+                                     const lonejson_map *params_map,
+                                     const lonejson_map *result_map,
+                                     cai_tool_fn callback, void *context,
+                                     cai_error *error) {
   cai_agent_impl *impl;
 
   if (agent == NULL) {
@@ -304,7 +288,7 @@ int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
     return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
   }
   return cai_tool_registry_register_lonejson(impl->tools, name, description,
-                                             map, schema_json, strict, callback,
+                                             params_map, result_map, callback,
                                              context, error);
 }
 
@@ -1688,7 +1672,6 @@ int cai_session_history_spilled(const cai_session *session) {
 
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
-  agent->register_tool_schema = cai_agent_register_tool_schema;
   agent->register_raw_tool = cai_agent_register_raw_tool;
   agent->new_session = cai_agent_new_session;
   agent->new_conversation_session = cai_agent_new_conversation_session;

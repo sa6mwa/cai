@@ -470,18 +470,17 @@ assistant turns transparently through those server-side state handles.
 Tool registration is agent-level:
 
 ```c
-cai_tool_schema_new(&schema, &error);
-schema->string(schema, "customer_id", "Customer id", 1, &error);
-schema->integer(schema, "limit", "Maximum rows", 0, &error);
-agent->register_tool_schema(agent, "lookup_customer", "Look up a customer.",
-                            &lookup_customer_map, schema, lookup_customer_cb,
-                            ctx, &error);
-schema->close(schema);
+agent->register_tool(agent, "lookup_customer", "Look up a customer.",
+                     &lookup_customer_params_map,
+                     &lookup_customer_result_map, lookup_customer_cb, ctx,
+                     &error);
 ```
 
-`register_tool` is the direct lonejson path when the caller already has schema
-JSON. `register_raw_tool` is the explicit escape hatch for dynamic JSON
-parameters.
+`register_tool` is the typed lonejson path. It derives JSON Schema from the
+parameter map and serializes the handler result through the result map. Required
+fields come from lonejson `_REQ` fields so the C decoder and OpenAI schema have
+one source of truth. `register_raw_tool` is the explicit escape hatch for
+dynamic JSON parameters.
 
 Multi-agent workflows should remain host-driven. `cai` should make it cheap to
 construct several agents and sessions, but it should not impose a graph runtime
@@ -501,31 +500,36 @@ First version supports synchronous local function tools:
 
 ```c
 typedef int (*cai_tool_fn)(void *context,
-                           const cai_tool_call *call,
-                           cai_tool_result *result,
+                           const void *params,
+                           void *result,
                            cai_error *error);
 
-int cai_tool_registry_add_function(cai_tool_registry *registry,
-                                   const char *name,
-                                   const char *description,
-                                   const char *json_schema,
-                                   cai_tool_fn callback,
-                                   void *context);
+int cai_tool_registry_register_lonejson(
+    cai_tool_registry *registry,
+    const char *name,
+    const char *description,
+    const struct lonejson_map *params_map,
+    const struct lonejson_map *result_map,
+    cai_tool_fn callback,
+    void *context,
+    cai_error *error);
 ```
 
 Tool execution loop:
 
 1. Send response request with registered function tool schemas.
 2. Parse completed response or stream events.
-3. For each function call, invoke the registered synchronous callback.
-4. Submit `function_call_output` items with matching `call_id`.
+3. For each function call, parse arguments into the parameter map and invoke
+   the registered synchronous callback.
+4. Serialize the result map as the `function_call_output` payload with the
+   matching `call_id`.
 5. Continue until the response completes without pending local tool calls or an
    error occurs.
 
 Initial result payload support:
 
-- Required: string output.
-- Early follow-up: content-array output for text/image/file tool outputs.
+- Required: lonejson-mapped JSON object output, including dynamic strings.
+- Early follow-up: source/spooled fields for large text/file-like tool outputs.
 - Required in the API design even if implemented after string output:
   source-backed tool output so a C or Lua callback can stream data generated
   from lockd, files, or downstream APIs.

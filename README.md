@@ -69,20 +69,44 @@ conversation sessions use OpenAI Conversations, so assistant turns are preserved
 through those handles instead of being manually appended by application code.
 
 Tools are agent capabilities. The default `register_tool` path is a typed
-lonejson callback; `register_raw_tool` is the JSON escape hatch. For schema DX,
-`cai_tool_schema` builds the JSON Schema while the lonejson map remains the C
-decoder for callback parameters:
+lonejson callback; `register_raw_tool` is the JSON escape hatch. The typed path
+uses a lonejson map for parameters and a second lonejson map for the result.
+JSON Schema is derived from the parameter map automatically, and `_REQ` fields
+become required schema fields:
 
 ```c
-cai_tool_schema_new(&schema, &error);
-schema->string(schema, "customer_id", "Customer id", 1, &error);
-schema->integer(schema, "limit", "Maximum rows", 0, &error);
+typedef struct lookup_customer_params {
+  char *customer_id;
+  long long limit;
+} lookup_customer_params;
 
-agent->register_tool_schema(agent, "lookup_customer", "Look up a customer.",
-                            &lookup_customer_map, schema, lookup_customer,
-                            ctx, &error);
+typedef struct lookup_customer_result {
+  char *summary;
+} lookup_customer_result;
 
-schema->close(schema);
+int lookup_customer(void *ctx, const void *params, void *result,
+                    cai_error *error) {
+  const lookup_customer_params *in = params;
+  lookup_customer_result *out = result;
+
+  out->summary = cai_tool_result_strdup("customer found", error);
+  return out->summary != NULL ? CAI_OK : CAI_ERR_NOMEM;
+}
+
+agent->register_tool(agent, "lookup_customer", "Look up a customer.",
+                     &lookup_customer_params_map,
+                     &lookup_customer_result_map, lookup_customer, ctx,
+                     &error);
+```
+
+`cai_tool_schema_from_map` can be used when callers want to inspect or enrich
+the generated schema. Metadata helpers such as `describe` update existing
+properties; they do not decide requiredness. Requiredness belongs in the
+lonejson field map so the C decoder and OpenAI schema cannot drift.
+
+```c
+cai_tool_schema_from_map(&lookup_customer_params_map, &schema, &error);
+schema->describe(schema, "customer_id", "Customer id", &error);
 ```
 
 ## OpenAI API Caveats

@@ -33,6 +33,10 @@ typedef struct tool_weather_args {
   long long days;
 } tool_weather_args;
 
+typedef struct tool_weather_result {
+  char *summary;
+} tool_weather_result;
+
 typedef struct raw_tool_state {
   char seen[64];
 } raw_tool_state;
@@ -41,6 +45,11 @@ static const lonejson_field tool_weather_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(tool_weather_args, city, "city"),
     LONEJSON_FIELD_I64(tool_weather_args, days, "days")};
 LONEJSON_MAP_DEFINE(tool_weather_map, tool_weather_args, tool_weather_fields);
+
+static const lonejson_field tool_weather_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(tool_weather_result, summary, "summary")};
+LONEJSON_MAP_DEFINE(tool_weather_result_map, tool_weather_result,
+                    tool_weather_result_fields);
 
 static void test_fail(test_state *state, const char *name, const char *msg) {
   state->failures++;
@@ -296,19 +305,24 @@ static void test_write_close(void *context) {
   state->closed = 1;
 }
 
-static int test_weather_tool(void *context, const void *params,
-                             cai_sink *output, cai_error *error) {
+static int test_weather_tool(void *context, const void *params, void *result,
+                             cai_error *error) {
   const tool_weather_args *args;
+  tool_weather_result *out;
   char text[64];
   int len;
 
   (void)context;
   args = (const tool_weather_args *)params;
+  out = (tool_weather_result *)result;
   len = snprintf(text, sizeof(text), "%s:%lld", args->city, args->days);
   if (len <= 0 || (size_t)len >= sizeof(text)) {
     return cai_set_error(error, CAI_ERR_INVALID, "weather output too large");
   }
-  return cai_sink_write(output, text, (size_t)len, error);
+  out->summary = cai_tool_result_strdup(text, error);
+  return out->summary != NULL ? CAI_OK
+                              : cai_set_error(error, CAI_ERR_NOMEM,
+                                              "failed to allocate result");
 }
 
 static int test_raw_tool(void *context, const char *arguments_json,
@@ -377,6 +391,7 @@ static void test_tool_registry(test_state *state) {
       "\"days\":{\"type\":\"integer\"}},\"required\":[\"city\"]}";
   cai_tool_registry *registry;
   cai_tool_schema *tool_schema;
+  cai_tool_schema *map_schema;
   cai_response_create_params *params;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -388,6 +403,7 @@ static void test_tool_registry(test_state *state) {
   cai_error_init(&error);
   registry = NULL;
   tool_schema = NULL;
+  map_schema = NULL;
   params = NULL;
   sink = NULL;
   json = NULL;
@@ -434,16 +450,28 @@ static void test_tool_registry(test_state *state) {
       cai_tool_schema_strict(tool_schema) != 1) {
     test_fail(state, "tool_schema_json", "schema builder JSON is incomplete");
   }
+  expect_int(state, "tool_schema_from_map",
+             cai_tool_schema_from_map(&tool_weather_map, &map_schema, &error),
+             CAI_OK);
+  if (cai_tool_schema_json(map_schema) == NULL ||
+      strstr(cai_tool_schema_json(map_schema), "\"city\":{\"type\":"
+                                             "\"string\"}") == NULL ||
+      strstr(cai_tool_schema_json(map_schema), "\"days\":{\"type\":"
+                                             "\"integer\"}") == NULL ||
+      strstr(cai_tool_schema_json(map_schema), "\"required\":[\"city\"]") ==
+          NULL) {
+    test_fail(state, "tool_schema_from_map_json",
+              "map-derived schema JSON is incomplete");
+  }
   expect_int(state, "tool_register_typed",
              cai_tool_registry_register_lonejson(
-                 registry, "weather", "Get weather", &tool_weather_map, schema,
-                 1, test_weather_tool, NULL, &error),
+                 registry, "weather", "Get weather", &tool_weather_map,
+                 &tool_weather_result_map, test_weather_tool, NULL, &error),
              CAI_OK);
   expect_int(state, "tool_register_schema",
              cai_tool_registry_register_lonejson(
                  registry, "forecast", "Get forecast", &tool_weather_map,
-                 tool_schema->json(tool_schema), tool_schema->strict(tool_schema),
-                 test_weather_tool, NULL, &error),
+                 &tool_weather_result_map, test_weather_tool, NULL, &error),
              CAI_OK);
   expect_int(state, "tool_register_raw",
              cai_tool_registry_register_raw(registry, "raw_echo",
@@ -457,7 +485,8 @@ static void test_tool_registry(test_state *state) {
                                    "{\"city\":\"Malmo\",\"days\":3}", sink,
                                    &error),
              CAI_OK);
-  expect_str(state, "tool_run_typed_output", writer.buffer, "Malmo:3");
+  expect_str(state, "tool_run_typed_output", writer.buffer,
+             "{\"summary\":\"Malmo:3\"}");
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(
@@ -502,6 +531,7 @@ static void test_tool_registry(test_state *state) {
 
   cai_response_create_params_destroy(params);
   cai_tool_schema_destroy(tool_schema);
+  cai_tool_schema_destroy(map_schema);
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
 }
@@ -2213,14 +2243,24 @@ static void test_agent_tool_declarations(test_state *state) {
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
   expect_int(state, "agent_tool_schema_new",
-             cai_tool_schema_new(&tool_schema, &error), CAI_OK);
-  expect_int(state, "agent_tool_schema_string",
-             tool_schema->string(tool_schema, "city", "City name", 1, &error),
+             cai_tool_schema_from_map(&tool_weather_map, &tool_schema, &error),
              CAI_OK);
+  expect_int(state, "agent_tool_schema_string",
+             tool_schema->describe(tool_schema, "city", "City name", &error),
+             CAI_OK);
+  if (cai_tool_schema_json(tool_schema) == NULL ||
+      strstr(cai_tool_schema_json(tool_schema),
+             "\"city\":{\"type\":\"string\",\"description\":\"City name\"}") ==
+          NULL ||
+      strstr(cai_tool_schema_json(tool_schema), "\"required\":[\"city\"]") ==
+          NULL) {
+    test_fail(state, "agent_tool_schema_describe",
+              "schema description enrichment is incomplete");
+  }
   expect_int(state, "agent_tool_register_schema",
-             agent->register_tool_schema(agent, "weather", "Get weather",
-                                         &tool_weather_map, tool_schema,
-                                         test_weather_tool, NULL, &error),
+             agent->register_tool(agent, "weather", "Get weather",
+                                  &tool_weather_map, &tool_weather_result_map,
+                                  test_weather_tool, NULL, &error),
              CAI_OK);
   expect_int(state, "agent_tool_register_raw",
              agent->register_raw_tool(agent, "raw_echo", "Echo raw JSON",
