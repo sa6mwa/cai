@@ -1231,6 +1231,15 @@ static const char *mock_response_for_request(const char *request) {
       "\"input_tokens\":20,\"input_tokens_details\":{\"cached_tokens\":8},"
       "\"output_tokens\":4,\"output_tokens_details\":{\"reasoning_tokens\":2},"
       "\"total_tokens\":24}}";
+  static const char stream_session_third_body[] =
+      "data: {\"type\":\"response.reasoning_summary_text.delta\","
+      "\"delta\":\"pondering\"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"three\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_session_3\",\"usage\":{\"input_tokens\":25,"
+      "\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens\":5,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":2},"
+      "\"total_tokens\":30}}}\n\n";
   static const char stream_session_source_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
@@ -1296,9 +1305,15 @@ static const char *mock_response_for_request(const char *request) {
               NULL) {
         return stream_session_second_body;
       }
-      if (strstr(request, "session source one") != NULL &&
+      if (strstr(request, "session stream three") != NULL &&
           strstr(request,
                  "\"previous_response_id\":\"resp_stream_session_2\"") !=
+              NULL) {
+        return stream_session_third_body;
+      }
+      if (strstr(request, "session source one") != NULL &&
+          strstr(request,
+                 "\"previous_response_id\":\"resp_stream_session_3\"") !=
               NULL) {
         return stream_session_source_first_body;
       }
@@ -2728,7 +2743,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 7);
+    mock_openai_child(pipe_fds[1], 8);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -2832,17 +2847,44 @@ static void test_stream_response_text(test_state *state) {
   writer.length = 0U;
   writer.closed = 0;
   writer.buffer[0] = '\0';
-  reasoning_writer.length = 0U;
-  reasoning_writer.closed = 0;
-  reasoning_writer.buffer[0] = '\0';
   expect_int(
       state, "stream_session_add_second",
       cai_session_add_user_text(session, "session stream two", &error),
       CAI_OK);
-  expect_int(state, "stream_session_sink_create_second",
+  expect_int(state, "stream_session_same_sink_create_second",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.reasoning_summary = sink;
+  stream_sinks.reasoning_summary_prefix.text = "[r] ";
+  stream_sinks.reasoning_summary_suffix.text = "\n\n";
+  stream_sinks.output_text_prefix.text = "[o] ";
+  expect_int(state, "stream_session_same_sink_second",
+             session->stream(session, &stream_sinks, &error), CAI_OK);
+  expect_str(state, "stream_session_same_sink_value_second", writer.buffer,
+             "[r] thinking\n\n[o] two");
+  expect_int(state, "stream_session_same_sink_usage_second",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_session_same_sink_usage_second_total",
+             usage.total_tokens, 24L);
+  expect_int(state, "stream_session_same_sink_usage_second_cached",
+             usage.input_cached_tokens, 8L);
+  cai_sink_close(sink);
+  sink = NULL;
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  reasoning_writer.length = 0U;
+  reasoning_writer.closed = 0;
+  reasoning_writer.buffer[0] = '\0';
+  expect_int(
+      state, "stream_session_add_third",
+      cai_session_add_user_text(session, "session stream three", &error),
+      CAI_OK);
+  expect_int(state, "stream_session_sink_create_third",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
   sink_callbacks.context = &reasoning_writer;
-  expect_int(state, "stream_session_reasoning_sink_create_second",
+  expect_int(state, "stream_session_reasoning_sink_create_third",
              cai_sink_from_callbacks(&sink_callbacks, &reasoning_sink, &error),
              CAI_OK);
   cai_stream_sinks_init(&stream_sinks);
@@ -2851,18 +2893,18 @@ static void test_stream_response_text(test_state *state) {
   stream_sinks.reasoning_summary_prefix.text = "[r] ";
   stream_sinks.reasoning_summary_suffix.text = "\n\n";
   stream_sinks.output_text_prefix.text = "[o] ";
-  expect_int(state, "stream_session_to_sink_second",
+  expect_int(state, "stream_session_to_sink_third",
              session->stream(session, &stream_sinks, &error), CAI_OK);
-  expect_str(state, "stream_session_sink_value_second", writer.buffer,
-             "[o] two");
-  expect_str(state, "stream_session_reasoning_value_second",
-             reasoning_writer.buffer, "[r] thinking\n\n");
-  expect_int(state, "stream_session_usage_second",
+  expect_str(state, "stream_session_sink_value_third", writer.buffer,
+             "[o] three");
+  expect_str(state, "stream_session_reasoning_value_third",
+             reasoning_writer.buffer, "[r] pondering\n\n");
+  expect_int(state, "stream_session_usage_third",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
-  expect_int(state, "stream_session_usage_second_total", usage.total_tokens,
-             24L);
-  expect_int(state, "stream_session_usage_second_cached",
-             usage.input_cached_tokens, 8L);
+  expect_int(state, "stream_session_usage_third_total", usage.total_tokens,
+             30L);
+  expect_int(state, "stream_session_usage_third_cached",
+             usage.input_cached_tokens, 10L);
   cai_sink_close(sink);
   sink = NULL;
   cai_sink_close(reasoning_sink);
