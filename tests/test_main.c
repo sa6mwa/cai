@@ -838,13 +838,13 @@ static void test_response_spooled_request_fragments(test_state *state) {
                                      strlen(raw_fragment), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "spooled_raw_set",
-             cai_response_create_params_set_raw_input_spooled(params, &raw_items,
-                                                              &error),
+             cai_response_create_params_set_raw_input_spooled(
+                 params, &raw_items, &error),
              CAI_OK);
-  expect_int(state, "spooled_typed_add",
-             cai_response_create_params_add_text(params, "user", "next",
-                                                 &error),
-             CAI_OK);
+  expect_int(
+      state, "spooled_typed_add",
+      cai_response_create_params_add_text(params, "user", "next", &error),
+      CAI_OK);
   lonejson_spooled_init(&file_data, NULL);
   expect_int(state, "spooled_file_append",
              lonejson_spooled_append(&file_data, "inline file text",
@@ -855,9 +855,8 @@ static void test_response_spooled_request_fragments(test_state *state) {
                  params, "user", "note.txt", &file_data, "low", &error),
              CAI_OK);
   expect_int(state, "spooled_file_id_add",
-             cai_response_create_params_add_file_id(params, "user",
-                                                    "file_input_123", "high",
-                                                    &error),
+             cai_response_create_params_add_file_id(
+                 params, "user", "file_input_123", "high", &error),
              CAI_OK);
   expect_int(state, "spooled_tool_text_add",
              cai_response_create_params_add_function_call_output_text(
@@ -868,11 +867,11 @@ static void test_response_spooled_request_fragments(test_state *state) {
              lonejson_spooled_append(&tool_file_data, "tool file text",
                                      strlen("tool file text"), &json_error),
              LONEJSON_STATUS_OK);
-  expect_int(state, "spooled_tool_file_add",
-             cai_response_create_params_add_function_call_output_file_data_spooled(
-                 params, "call_content_2", "tool.txt", &tool_file_data, "low",
-                 &error),
-             CAI_OK);
+  expect_int(
+      state, "spooled_tool_file_add",
+      cai_response_create_params_add_function_call_output_file_data_spooled(
+          params, "call_content_2", "tool.txt", &tool_file_data, "low", &error),
+      CAI_OK);
   expect_int(state, "spooled_request_json",
              cai_response_create_params_spool_json(params, 0, &request_json,
                                                    &json_len, &error),
@@ -888,13 +887,16 @@ static void test_response_spooled_request_fragments(test_state *state) {
         strstr(json, "\"filename\":\"note.txt\"") == NULL ||
         strstr(json, "\"file_data\":\"inline file text\"") == NULL ||
         strstr(json, "\"file_id\":\"file_input_123\"") == NULL ||
-        strstr(json, "\"output\":[{\"type\":\"input_text\",\"text\":\"tool text\"}]") ==
+        strstr(
+            json,
+            "\"output\":[{\"type\":\"input_text\",\"text\":\"tool text\"}]") ==
             NULL ||
         strstr(json, "\"filename\":\"tool.txt\"") == NULL ||
         strstr(json, "\"file_data\":\"tool file text\"") == NULL ||
         strstr(json, "\"text\":\"remembered\"") >
             strstr(json, "\"text\":\"next\"")) {
-      test_fail(state, "spooled_request_json", "request did not merge fragments");
+      test_fail(state, "spooled_request_json",
+                "request did not merge fragments");
     }
     expect_int(state, "spooled_request_len", (long)strlen(json),
                (long)json_len);
@@ -1300,16 +1302,16 @@ static const char *mock_response_for_request(const char *request) {
       strstr(request, "\"metadata\":{\"tenant\":\"vectis\"}") != NULL) {
     return conversation_update_body;
   }
-	  if (strstr(request, "POST /v1/conversations/conv_get/items HTTP/") != NULL &&
-	      strstr(request, "\"items\":[") != NULL &&
-	      strstr(request, "\"type\":\"input_text\"") != NULL &&
-	      strstr(request, "\"text\":\"conversation item\"") != NULL &&
-	      strstr(request, "\"type\":\"input_image\"") != NULL &&
-	      strstr(request, "https://example.test/conv.png") != NULL &&
-	      strstr(request, "\"type\":\"input_file\"") != NULL &&
-	      strstr(request, "\"file_data\":\"conversation file text\"") != NULL) {
-	    return conversation_items_create_body;
-	  }
+  if (strstr(request, "POST /v1/conversations/conv_get/items HTTP/") != NULL &&
+      strstr(request, "\"items\":[") != NULL &&
+      strstr(request, "\"type\":\"input_text\"") != NULL &&
+      strstr(request, "\"text\":\"conversation item\"") != NULL &&
+      strstr(request, "\"type\":\"input_image\"") != NULL &&
+      strstr(request, "https://example.test/conv.png") != NULL &&
+      strstr(request, "\"type\":\"input_file\"") != NULL &&
+      strstr(request, "\"file_data\":\"conversation file text\"") != NULL) {
+    return conversation_items_create_body;
+  }
   if (strstr(request, "GET /v1/conversations/conv_get/items?") != NULL &&
       strstr(request, "limit=1") != NULL &&
       strstr(request, "order=desc") != NULL) {
@@ -1398,6 +1400,64 @@ static void mock_openai_child(int pipe_fd, int request_count) {
   }
   close(server_fd);
   _exit(0);
+}
+
+static void test_response_large_text_parse(test_state *state) {
+  static const char prefix[] =
+      "{\"id\":\"resp_large\",\"status\":\"completed\",\"model\":\"gpt-5-"
+      "nano\","
+      "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"";
+  static const char suffix[] =
+      "\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,"
+      "\"total_tokens\":2}}";
+  cai_response *response;
+  cai_error error;
+  char *expected;
+  char *json;
+  const char *actual;
+  size_t text_len;
+  size_t json_len;
+  size_t i;
+
+  cai_error_init(&error);
+  response = NULL;
+  text_len = 128U * 1024U;
+  expected = (char *)malloc(text_len + 1U);
+  json_len = strlen(prefix) + text_len + strlen(suffix);
+  json = (char *)malloc(json_len + 1U);
+  if (expected == NULL || json == NULL) {
+    test_fail(state, "response_large_text_alloc", "allocation failed");
+    free(expected);
+    free(json);
+    cai_error_cleanup(&error);
+    return;
+  }
+  for (i = 0U; i < text_len; i++) {
+    expected[i] = (char)('a' + (i % 26U));
+  }
+  expected[text_len] = '\0';
+  memcpy(json, prefix, strlen(prefix));
+  memcpy(json + strlen(prefix), expected, text_len);
+  memcpy(json + strlen(prefix) + text_len, suffix, strlen(suffix) + 1U);
+
+  expect_int(state, "response_large_text_parse",
+             cai_response_parse_json(json, &response, &error), CAI_OK);
+  if (error.code != CAI_OK && error.message != NULL) {
+    test_fail(state, "response_large_text_message", error.message);
+  }
+  if (error.code != CAI_OK && error.detail != NULL) {
+    test_fail(state, "response_large_text_detail", error.detail);
+  }
+  actual = cai_response_output_text(response);
+  if (actual == NULL || strlen(actual) != text_len ||
+      memcmp(actual, expected, text_len) != 0) {
+    test_fail(state, "response_large_text_value", "large text mismatch");
+  }
+  cai_response_destroy(response);
+  free(expected);
+  free(json);
+  cai_error_cleanup(&error);
 }
 
 static void test_http_create_response(test_state *state) {
@@ -1699,12 +1759,11 @@ static void test_conversations(test_state *state) {
       CAI_OK);
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&conversation_file_data, NULL);
-  expect_int(state, "conversation_items_file_append",
-             lonejson_spooled_append(&conversation_file_data,
-                                     "conversation file text",
-                                     strlen("conversation file text"),
-                                     &json_error),
-             LONEJSON_STATUS_OK);
+  expect_int(
+      state, "conversation_items_file_append",
+      lonejson_spooled_append(&conversation_file_data, "conversation file text",
+                              strlen("conversation file text"), &json_error),
+      LONEJSON_STATUS_OK);
   expect_int(state, "conversation_items_add_file",
              cai_conversation_items_params_add_file_data_spooled(
                  item_params, "user", "conv.txt", &conversation_file_data,
@@ -2770,6 +2829,7 @@ int main(void) {
   test_client_open(&state);
   test_response_json(&state);
   test_response_spooled_request_fragments(&state);
+  test_response_large_text_parse(&state);
   test_http_create_response(&state);
   test_http_error_details(&state);
   test_agent_session(&state);
