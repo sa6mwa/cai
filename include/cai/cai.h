@@ -233,6 +233,10 @@ struct cai_session {
                           const cai_conversation *conversation,
                           cai_error *error);
   const char *(*conversation_id)(const cai_session *session);
+  int (*set_previous_response_id)(cai_session *session,
+                                  const char *response_id,
+                                  cai_error *error);
+  const char *(*previous_response_id)(const cai_session *session);
   int (*add_user_text)(cai_session *session, const char *text,
                        cai_error *error);
   int (*add_user_image_url)(cai_session *session, const char *url,
@@ -261,6 +265,8 @@ struct cai_session {
                          cai_error *error);
   int (*history_spilled)(const cai_session *session);
   int (*export_history_source)(cai_session *session, cai_source **out,
+                               cai_error *error);
+  int (*import_history_source)(cai_session *session, cai_source *source,
                                cai_error *error);
   void (*close)(cai_session *session);
   void *impl;
@@ -331,6 +337,10 @@ int cai_session_set_conversation(cai_session *session,
                                  const cai_conversation *conversation,
                                  cai_error *error);
 const char *cai_session_conversation_id(const cai_session *session);
+int cai_session_set_previous_response_id(cai_session *session,
+                                         const char *response_id,
+                                         cai_error *error);
+const char *cai_session_previous_response_id(const cai_session *session);
 int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error);
 int cai_session_add_user_image_url(cai_session *session, const char *url,
@@ -364,6 +374,8 @@ int cai_session_context_percent(const cai_session *session, double *out,
                                 cai_error *error);
 int cai_session_history_spilled(const cai_session *session);
 int cai_session_export_history_source(cai_session *session, cai_source **out,
+                                      cai_error *error);
+int cai_session_import_history_source(cai_session *session, cai_source *source,
                                       cai_error *error);
 
 void cai_error_init(cai_error *error);

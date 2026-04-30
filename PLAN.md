@@ -45,7 +45,13 @@ application.
   `enable_local_history` when they need experimental manual compaction,
   session export, or offline history inspection. Export is exposed as a
   `cai_source` over a JSON array so callers can stream it instead of
-  materializing it.
+  materializing it. Import accepts the same JSON array back into a
+  local-history-enabled session for host-owned replay/offline state.
+- Session resume is explicit: callers persist either the last
+  `previous_response_id` or an OpenAI Conversation ID and restore it into a new
+  session. That is the server-side continuation path; local history import is
+  not treated as model context unless a caller deliberately uses lower-level
+  replay/manual-compaction flows.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
@@ -60,10 +66,10 @@ application.
 
 ## Product shape
 
-`cai` should feel like a C SDK, not a transport wrapper. The API exposes opaque
-handles with free functions. That shape is easier to wrap from Vectis and Lua
-than embedding method tables in public structs, while still keeping ownership
-and state scoped to handles:
+`cai` should feel like a C SDK, not a transport wrapper. The API exposes
+handle structs with method-style function pointers plus equivalent free
+functions for wrapper friendliness. That keeps the common DX compact while
+still making ownership and state explicit:
 
 - `cai_client`: owns shared configuration, dependency handles, base URLs,
   auth, logger, allocator, and transport defaults.

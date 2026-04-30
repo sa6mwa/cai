@@ -32,7 +32,8 @@ example layers settle.
   sessions rely on OpenAI server-side context through `previous_response_id` or
   Conversations. When enabled, `cai_session_export_history_source` streams the
   captured history as a JSON array for manual compaction, export, or offline
-  inspection.
+  inspection, and `cai_session_import_history_source` can load that JSON array
+  back into a local-history-enabled session.
 - Examples and integration development tests default to `gpt-5-nano`.
 
 ## Agent Instructions
@@ -55,6 +56,16 @@ Agent-level calls lazily create a default session and reuse it for follow-up
 turns, so simple chat and workflow drivers get Responses context continuity
 without manually carrying a `cai_session`. Explicit sessions remain available
 for multi-session, conversation-handle, and advanced workflows.
+
+Process restart/resume has two separate pieces by design. To continue
+inference against OpenAI-held Responses context, persist either
+`cai_session_previous_response_id(session)` or
+`cai_session_conversation_id(session)` and restore it into a new session with
+`cai_session_set_previous_response_id` or `cai_session_set_conversation_id`.
+That is the actual server-side continuation handle. Opt-in local history
+export/import is for offline inspection, experimental manual compaction, and
+host-owned replay state; by itself it is not a substitute for the OpenAI
+continuation id.
 
 Set `prompt_cache_key` on `cai_agent_config` when an agent has a stable prompt
 prefix, large developer instructions, or stable tool schemas. cai sends it on

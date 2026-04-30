@@ -21,6 +21,10 @@ typedef struct cai_spooled_record_reader {
   int eof;
 } cai_spooled_record_reader;
 
+typedef struct cai_spooled_reader_context {
+  lonejson_spooled cursor;
+} cai_spooled_reader_context;
+
 enum {
   CAI_SESSION_INPUT_TEXT = 0,
   CAI_SESSION_INPUT_IMAGE = 1,
@@ -30,6 +34,9 @@ enum {
 static int cai_history_append_spooled(cai_session *session,
                                       const lonejson_spooled *json,
                                       cai_error *error);
+static int cai_history_append_array_record_spooled(cai_session *session,
+                                                   const lonejson_spooled *json,
+                                                   cai_error *error);
 static void cai_history_cleanup(cai_session *session);
 static int
 cai_session_prepare_history_params(cai_session *session,
@@ -600,6 +607,41 @@ static int cai_history_append_spooled(cai_session *session,
   return rc;
 }
 
+static int cai_history_append_array_record_spooled(cai_session *session,
+                                                   const lonejson_spooled *json,
+                                                   cai_error *error) {
+  cai_history_sink_context sink_context;
+  lonejson_error json_error;
+  char header[32];
+  size_t header_length;
+  int rc;
+
+  if (json == NULL || lonejson_spooled_size(json) == 0U) {
+    return CAI_OK;
+  }
+  snprintf(header, sizeof(header), "%lu\n",
+           (unsigned long)lonejson_spooled_size(json));
+  header_length = strlen(header);
+  rc = cai_history_append_bytes(&CAI_SESSION_IMPL(session)->history, header,
+                                header_length, error);
+  if (rc == CAI_OK) {
+    sink_context.spool = &CAI_SESSION_IMPL(session)->history;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_write_to_sink(json, cai_history_lonejson_sink,
+                                       &sink_context,
+                                       &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to copy history spool",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_history_append_bytes(&CAI_SESSION_IMPL(session)->history, "\n", 1U,
+                                  error);
+  }
+  return rc;
+}
+
 static void cai_history_reset(cai_session *session) {
   lonejson_spooled_reset(&CAI_SESSION_IMPL(session)->history);
 }
@@ -671,6 +713,42 @@ int cai_session_set_conversation(cai_session *session,
 
 const char *cai_session_conversation_id(const cai_session *session) {
   return session != NULL ? CAI_SESSION_IMPL(session)->conversation_id : NULL;
+}
+
+int cai_session_set_previous_response_id(cai_session *session,
+                                         const char *response_id,
+                                         cai_error *error) {
+  char *copy;
+  cai_allocator *allocator;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
+  copy = NULL;
+  if (response_id != NULL) {
+    if (response_id[0] == '\0') {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "previous response id must not be empty");
+    }
+    copy = cai_strdup(allocator, response_id);
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate previous response id");
+    }
+  }
+  cai_free_mem(allocator, CAI_SESSION_IMPL(session)->previous_response_id);
+  CAI_SESSION_IMPL(session)->previous_response_id = copy;
+  if (copy != NULL) {
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->conversation_id);
+    CAI_SESSION_IMPL(session)->conversation_id = NULL;
+  }
+  return CAI_OK;
+}
+
+const char *cai_session_previous_response_id(const cai_session *session) {
+  return session != NULL ? CAI_SESSION_IMPL(session)->previous_response_id
+                         : NULL;
 }
 
 static int cai_session_grow_inputs(cai_session *session, cai_error *error) {
@@ -1812,6 +1890,174 @@ int cai_session_history_spilled(const cai_session *session) {
   return lonejson_spooled_spilled(&CAI_SESSION_IMPL(session)->history);
 }
 
+static int cai_json_is_ws(unsigned char ch) {
+  return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
+}
+
+static lonejson_read_result cai_history_spooled_reader(void *user,
+                                                       unsigned char *buffer,
+                                                       size_t capacity) {
+  cai_spooled_reader_context *context;
+  lonejson_read_result result;
+
+  context = (cai_spooled_reader_context *)user;
+  if (context == NULL) {
+    result = lonejson_default_read_result();
+    result.eof = 1;
+    result.error_code = 1;
+    return result;
+  }
+  return lonejson_spooled_read(&context->cursor, buffer, capacity);
+}
+
+static int cai_history_source_to_array_spooled(cai_session *session,
+                                               cai_source *source,
+                                               lonejson_spooled *out,
+                                               cai_error *error) {
+  lonejson_spooled raw;
+  lonejson_spooled trimmed;
+  lonejson_error json_error;
+  cai_spooled_reader_context reader_context;
+  unsigned char buffer[4096];
+  size_t nread;
+  size_t i;
+  size_t pos;
+  size_t first_pos;
+  size_t last_pos;
+  size_t global_start;
+  size_t global_end;
+  size_t start;
+  size_t end;
+  unsigned char first_ch;
+  unsigned char last_ch;
+  lonejson_read_result chunk;
+  int have_nonspace;
+  int has_raw;
+  int has_trimmed;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history spool output pointer is required");
+  }
+  memset(&raw, 0, sizeof(raw));
+  memset(&trimmed, 0, sizeof(trimmed));
+  has_raw = 0;
+  has_trimmed = 0;
+  pos = 0U;
+  first_pos = 0U;
+  last_pos = 0U;
+  first_ch = 0U;
+  last_ch = 0U;
+  have_nonspace = 0;
+  rc = CAI_OK;
+  cai_history_init_spooled(session, &raw);
+  has_raw = 1;
+  for (;;) {
+    nread = cai_source_read(source, buffer, sizeof(buffer), error);
+    if (nread == 0U) {
+      break;
+    }
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_append(&raw, buffer, nread, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to append imported history",
+                                json_error.message);
+      goto done;
+    }
+    for (i = 0U; i < nread; i++) {
+      if (!cai_json_is_ws(buffer[i])) {
+        if (!have_nonspace) {
+          first_pos = pos + i;
+          first_ch = buffer[i];
+          have_nonspace = 1;
+        }
+        last_pos = pos + i;
+        last_ch = buffer[i];
+      }
+    }
+    pos += nread;
+  }
+  if (!have_nonspace) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "imported history JSON is empty");
+    goto done;
+  }
+  if (first_ch != '[' || last_ch != ']') {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "imported history must be a JSON array");
+    goto done;
+  }
+  reader_context.cursor = raw;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to rewind imported history",
+                              json_error.message);
+    goto done;
+  }
+  lonejson_error_init(&json_error);
+  if (lonejson_validate_reader(cai_history_spooled_reader, &reader_context,
+                               &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                              "imported history is not valid JSON",
+                              json_error.message);
+    goto done;
+  }
+  cai_history_init_spooled(session, &trimmed);
+  has_trimmed = 1;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&raw, &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to rewind imported history",
+                              json_error.message);
+    goto done;
+  }
+  pos = 0U;
+  for (;;) {
+    chunk = lonejson_spooled_read(&raw, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read imported history");
+      goto done;
+    }
+    if (chunk.bytes_read > 0U) {
+      global_start = pos;
+      global_end = pos + chunk.bytes_read - 1U;
+      if (!(global_end < first_pos || global_start > last_pos)) {
+        start = first_pos > global_start ? first_pos - global_start : 0U;
+        end = last_pos < global_end ? last_pos - global_start + 1U
+                                    : chunk.bytes_read;
+        lonejson_error_init(&json_error);
+        if (lonejson_spooled_append(&trimmed, buffer + start, end - start,
+                                    &json_error) != LONEJSON_STATUS_OK) {
+          rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to copy imported history",
+                                    json_error.message);
+          goto done;
+        }
+      }
+      pos += chunk.bytes_read;
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  *out = trimmed;
+  has_trimmed = 0;
+
+done:
+  if (has_raw) {
+    lonejson_spooled_cleanup(&raw);
+  }
+  if (has_trimmed) {
+    lonejson_spooled_cleanup(&trimmed);
+  }
+  return rc;
+}
+
 int cai_session_export_history_source(cai_session *session, cai_source **out,
                                       cai_error *error) {
   lonejson_spooled history_json;
@@ -1846,6 +2092,36 @@ int cai_session_export_history_source(cai_session *session, cai_source **out,
   return rc;
 }
 
+int cai_session_import_history_source(cai_session *session, cai_source *source,
+                                      cai_error *error) {
+  lonejson_spooled history_json;
+  int has_history_json;
+  int rc;
+
+  if (session == NULL || source == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and history source are required");
+  }
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "local history capture is disabled");
+  }
+  memset(&history_json, 0, sizeof(history_json));
+  has_history_json = 0;
+  rc = cai_history_source_to_array_spooled(session, source, &history_json,
+                                           error);
+  if (rc == CAI_OK) {
+    has_history_json = 1;
+    cai_history_reset(session);
+    rc = cai_history_append_array_record_spooled(session, &history_json,
+                                                 error);
+  }
+  if (has_history_json) {
+    lonejson_spooled_cleanup(&history_json);
+  }
+  return rc;
+}
+
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
@@ -1871,6 +2147,8 @@ static void cai_session_init_methods(cai_session *session) {
   session->set_conversation_id = cai_session_set_conversation_id;
   session->set_conversation = cai_session_set_conversation;
   session->conversation_id = cai_session_conversation_id;
+  session->set_previous_response_id = cai_session_set_previous_response_id;
+  session->previous_response_id = cai_session_previous_response_id;
   session->add_user_text = cai_session_add_user_text;
   session->add_user_image_url = cai_session_add_user_image_url;
   session->add_function_call_output = cai_session_add_function_call_output;
@@ -1888,6 +2166,7 @@ static void cai_session_init_methods(cai_session *session) {
   session->context_percent = cai_session_context_percent;
   session->history_spilled = cai_session_history_spilled;
   session->export_history_source = cai_session_export_history_source;
+  session->import_history_source = cai_session_import_history_source;
   session->close = cai_session_destroy;
 }
 

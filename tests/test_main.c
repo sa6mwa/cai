@@ -1226,6 +1226,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"second turn\"}]}]}";
+  static const char resumed_session_body[] =
+      "{\"id\":\"resp_resumed_session\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"resumed turn\"}]}]}";
   static const char session_third_body[] =
       "{\"id\":\"resp_session_3\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -1468,6 +1472,12 @@ static const char *mock_response_for_request(const char *request) {
                         "\"compact_threshold\":320000}]") !=
             NULL) {
       return session_second_body;
+    }
+    if (strstr(request, "resume from disk turn") != NULL &&
+        strstr(request,
+               "\"previous_response_id\":\"resp_saved_disk_1\"") != NULL &&
+        strstr(request, "conversation") == NULL) {
+      return resumed_session_body;
     }
     if (strstr(request, "incremental turn") != NULL &&
         strstr(request, "\"role\":\"user\"") != NULL &&
@@ -3214,6 +3224,8 @@ static void test_local_history_opt_in(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   cai_source *history_source;
+  cai_source_callbacks source_callbacks;
+  read_state history_reader;
   cai_error error;
 
   cai_error_init(&error);
@@ -3244,12 +3256,172 @@ static void test_local_history_opt_in(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  history_reader.text = "[]";
+  history_reader.offset = 0U;
+  history_reader.closed = 0;
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &history_reader;
+  expect_int(state, "local_history_import_source",
+             cai_source_from_callbacks(&source_callbacks, &history_source,
+                                       &error),
+             CAI_OK);
+  expect_int(state, "local_history_import_disabled",
+             cai_session_import_history_source(session, history_source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
 
   cai_source_close(history_source);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
+}
+
+static void test_session_resume_and_history_import(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_source_callbacks source_callbacks;
+  read_state history_reader;
+  cai_source *history_source;
+  cai_source *exported_source;
+  cai_error error;
+  char history_json[512];
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "resume_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "resume_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "resume_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.enable_local_history = 1;
+  agent_config.history_memory_limit = 16U;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+  exported_source = NULL;
+
+  expect_int(state, "resume_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "resume_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "resume_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "resume_set_conversation",
+             cai_session_set_conversation_id(session, "conv_imported", &error),
+             CAI_OK);
+  expect_str(state, "resume_conversation_id",
+             cai_session_conversation_id(session), "conv_imported");
+  expect_int(state, "resume_set_previous",
+             cai_session_set_previous_response_id(session, "resp_saved_disk_1",
+                                                  &error),
+             CAI_OK);
+  expect_str(state, "resume_previous_id",
+             cai_session_previous_response_id(session), "resp_saved_disk_1");
+  if (cai_session_conversation_id(session) != NULL) {
+    test_fail(state, "resume_previous_clears_conversation",
+              "conversation id was not cleared");
+  }
+
+  history_reader.text =
+      " \n[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":"
+      "\"input_text\",\"text\":\"imported prompt\"}]},{\"type\":\"message\","
+      "\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"imported answer\"}]}]\n";
+  history_reader.offset = 0U;
+  history_reader.closed = 0;
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &history_reader;
+  expect_int(state, "resume_history_source",
+             cai_source_from_callbacks(&source_callbacks, &history_source,
+                                       &error),
+             CAI_OK);
+  expect_int(state, "resume_import_history",
+             cai_session_import_history_source(session, history_source, &error),
+             CAI_OK);
+  expect_int(state, "resume_export_history",
+             cai_session_export_history_source(session, &exported_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "resume_export_read", exported_source,
+                       history_json, sizeof(history_json), &error)) {
+    if (history_json[0] != '[' ||
+        history_json[strlen(history_json) - 1U] != ']' ||
+        strstr(history_json, "imported prompt") == NULL ||
+        strstr(history_json, "imported answer") == NULL) {
+      test_fail(state, "resume_export_value",
+                "imported history did not round trip");
+    }
+  }
+
+  expect_int(state, "resume_add_turn",
+             cai_session_add_user_text(session, "resume from disk turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "resume_run",
+             cai_session_run(session, &response, &error), CAI_OK);
+  expect_str(state, "resume_text", cai_response_output_text(response),
+             "resumed turn");
+  expect_str(state, "resume_remembered_previous",
+             cai_session_previous_response_id(session), "resp_resumed_session");
+
+  cai_response_destroy(response);
+  cai_source_close(exported_source);
+  cai_source_close(history_source);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "resume_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "resume_mock", "mock child failed");
+  }
 }
 
 int main(void) {
@@ -3276,6 +3448,7 @@ int main(void) {
   test_stream_response_text(&state);
   test_stream_history_preserves_pretty_json(&state);
   test_local_history_opt_in(&state);
+  test_session_resume_and_history_import(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;
