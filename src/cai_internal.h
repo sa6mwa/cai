@@ -151,6 +151,8 @@ struct cai_response {
   char *error_code;
   char *error_message;
   char *incomplete_reason;
+  lonejson_spooled output_items_json;
+  int has_output_items_json;
   long long created_at;
   long long input_tokens;
   long long input_cached_tokens;
