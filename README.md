@@ -36,6 +36,7 @@ The preferred high-level API is method-style handles:
 
 ```c
 cai_client_open(&client_config, &client, &error);
+agent_config.prompt_cache_key = "my-app:assistant:v1";
 client->new_agent(client, &agent_config, &agent, &error);
 
 agent->add_user_text(agent, "Explain epoll in one paragraph.", &error);
@@ -49,6 +50,12 @@ Agent-level calls lazily create a default session and reuse it for follow-up
 turns, so simple chat and workflow drivers get Responses context continuity
 without manually carrying a `cai_session`. Explicit sessions remain available
 for multi-session, conversation-handle, and advanced workflows.
+
+Set `prompt_cache_key` on `cai_agent_config` when an agent has a stable prompt
+prefix, large developer instructions, or stable tool schemas. cai sends it on
+every Responses request created by that agent so OpenAI can bucket similar
+requests for prompt caching. The default is unset; cai does not generate random
+cache keys because that would fragment the cache.
 
 The high-level agent facade uses `developer_instructions`, matching the current
 Responses API guidance around application-provided behavior. OpenAI documents

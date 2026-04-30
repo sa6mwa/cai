@@ -865,6 +865,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->conversation_id = NULL;
   params->instructions = NULL;
   params->previous_response_id = NULL;
+  params->prompt_cache_key = NULL;
   params->reasoning_effort = NULL;
   params->reasoning_summary = NULL;
   params->text_format_type = NULL;
@@ -895,6 +896,7 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->conversation_id);
   cai_free_mem(&params->allocator, params->instructions);
   cai_free_mem(&params->allocator, params->previous_response_id);
+  cai_free_mem(&params->allocator, params->prompt_cache_key);
   cai_free_mem(&params->allocator, params->reasoning_effort);
   cai_free_mem(&params->allocator, params->reasoning_summary);
   cai_free_mem(&params->allocator, params->text_format_type);
@@ -972,6 +974,17 @@ int cai_response_create_params_set_conversation_id(
   }
   return cai_replace_string(&params->allocator, &params->conversation_id,
                             conversation_id, error);
+}
+
+int cai_response_create_params_set_prompt_cache_key(
+    cai_response_create_params *params, const char *prompt_cache_key,
+    cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  return cai_replace_string(&params->allocator, &params->prompt_cache_key,
+                            prompt_cache_key, error);
 }
 
 int cai_response_create_params_set_max_output_tokens(
@@ -1962,6 +1975,11 @@ cai_response_create_params_write_json(const cai_response_create_params *params,
   if (rc == CAI_OK && params->conversation_id != NULL) {
     rc = cai_json_builder_field_string(
         builder, "conversation", params->conversation_id, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->prompt_cache_key != NULL) {
+    rc = cai_json_builder_field_string(builder, "prompt_cache_key",
+                                       params->prompt_cache_key, &need_comma,
+                                       error);
   }
   if (rc == CAI_OK && params->max_output_tokens > 0) {
     rc = cai_json_builder_field_int(builder, "max_output_tokens",

@@ -85,6 +85,7 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.developer_instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
+  agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   client = NULL;
   agent = NULL;

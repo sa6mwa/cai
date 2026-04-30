@@ -218,6 +218,7 @@ int main(void) {
   }
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.developer_instructions = prompt.data;
+  agent_config.prompt_cache_key = "cai:example:mike-mind:v1";
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {

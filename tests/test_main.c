@@ -654,6 +654,10 @@ static void test_response_json(test_state *state) {
              cai_response_create_params_set_conversation_id(params, "conv_123",
                                                             &error),
              CAI_OK);
+  expect_int(state, "params_set_prompt_cache_key",
+             cai_response_create_params_set_prompt_cache_key(
+                 params, "cai:test:params:v1", &error),
+             CAI_OK);
   expect_int(
       state, "params_set_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, 128, &error),
@@ -726,6 +730,10 @@ static void test_response_json(test_state *state) {
     }
     if (strstr(json, "\"conversation\":\"conv_123\"") == NULL) {
       test_fail(state, "params_serialize", "conversation missing from JSON");
+    }
+    if (strstr(json, "\"prompt_cache_key\":\"cai:test:params:v1\"") == NULL) {
+      test_fail(state, "params_serialize",
+                "prompt cache key missing from JSON");
     }
     if (strstr(json, "\"max_output_tokens\":128") == NULL) {
       test_fail(state, "params_serialize",
@@ -1370,6 +1378,8 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "session first") != NULL &&
         strstr(request, "\"max_output_tokens\":64") != NULL &&
         strstr(request, "\"instructions\":\"answer tersely\"") != NULL &&
+        strstr(request, "\"prompt_cache_key\":\"cai:test:agent:v1\"") !=
+            NULL &&
         strstr(request,
                "\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"}") !=
             NULL &&
@@ -2036,6 +2046,7 @@ static void test_agent_session(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.developer_instructions = "answer tersely";
+  agent_config.prompt_cache_key = "cai:test:agent:v1";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   agent_config.text_format_name = "agent_answer";

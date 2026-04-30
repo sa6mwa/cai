@@ -77,6 +77,7 @@ typedef struct cai_client_config {
 typedef struct cai_agent_config {
   const char *model;
   const char *developer_instructions;
+  const char *prompt_cache_key;
   const char *reasoning_effort;
   const char *reasoning_summary;
   const char *text_format_name;
@@ -459,6 +460,9 @@ int cai_response_create_params_set_previous_response_id(
     cai_error *error);
 int cai_response_create_params_set_conversation_id(
     cai_response_create_params *params, const char *conversation_id,
+    cai_error *error);
+int cai_response_create_params_set_prompt_cache_key(
+    cai_response_create_params *params, const char *prompt_cache_key,
     cai_error *error);
 int cai_response_create_params_set_max_output_tokens(
     cai_response_create_params *params, int max_output_tokens,

@@ -50,9 +50,10 @@ Run a small terminal chat agent that reads prompts from stdin, streams response
 tokens to stdout, keeps context through cai's `previous_response_id` session
 mode with server-side auto-compaction enabled by default, renders reasoning
 summaries and responses in stream order on stdout when the API provides them,
-and prints token usage plus context window percentage and estimated cumulative
-USD cost to stderr after each turn. Cost is estimated locally from model pricing
-metadata and response usage;
+uses a stable `prompt_cache_key` for OpenAI prompt-cache bucketing, and prints
+token usage plus context window percentage and estimated cumulative USD cost to
+stderr after each turn. Cost is estimated locally from model pricing metadata
+and response usage;
 it is not a billing-grade invoice value. Exit with Ctrl-D at an empty prompt,
 `/quit`, or `/exit`. Use `/compact` to trigger the experimental manual
 compaction path for the current session.
@@ -66,7 +67,9 @@ OPENAI_API_KEY=... ./build/debug/cai_example_terminal_chat
 
 Run a terminal chat agent seeded from the Mike Mind skill references. By default
 the example reads `../parallax/skills/mike-mind`; override that with
-`CAI_MIKE_MIND_SKILL_DIR` when running from another checkout layout.
+`CAI_MIKE_MIND_SKILL_DIR` when running from another checkout layout. The agent
+sets a stable `prompt_cache_key` because the skill prompt is intentionally large
+and cacheable across runs.
 
 ```sh
 cmake --build --preset debug --target cai_example_mike_mind
