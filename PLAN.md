@@ -34,10 +34,9 @@ application.
 - Tool execution: synchronous local C callbacks only in the first version.
 - Default SDK model: no hidden default for production SDK calls. Callers must
   choose a model explicitly.
-- Development/live-test model: `gpt-5.4-nano`, unless the live environment
-  rejects it. OpenAI docs currently list it as supporting `v1/responses`,
-  `v1/realtime`, streaming, function calling, structured outputs, and image
-  input.
+- Development/live-test model: `gpt-5-nano`, unless the live environment
+  rejects it. This is the default for examples and live tests because it is the
+  cheapest currently intended development model.
 - Unit tests never hit OpenAI. Live integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
@@ -123,6 +122,48 @@ That example is intentionally approximate; the important point is the dataflow:
 the host owns the web request, JSON schema, lockd/curl side effects, and control
 flow, while `cai` owns OpenAI request/response mechanics and agent/session
 state.
+
+## Example applications
+
+Examples should be organized as one directory per example under `examples/`.
+They are part of the SDK's DX contract, not throwaway demos.
+
+Required examples:
+
+- `basic-response`: minimal non-streamed Responses call.
+- `streaming-text`: direct streaming text call with token-by-token terminal
+  output.
+- `terminal-chat`: interactive chat that transparently preserves Responses
+  turn context, prints usage metadata, supports `/quit`, `/exit`, and EOF, and
+  uses `gpt-5-nano` for development.
+- `conversation-handles`: explicit conversation-handle construction and reuse
+  without exposing callers to manual ID plumbing in normal flows.
+- `mike-mind`: heavy knowledge-base chatbot built from
+  `../parallax/skills/mike-mind/`.
+
+The `mike-mind` example must be self-contained at runtime. It should not read
+from `../parallax`, require a file tool, or ask the model to inspect paths.
+Instead, the implementation should embed the full Mike Mind skill material into
+the prompt/corpus shipped with the example. "Full" here is intentional: this is
+meant to fill large context windows and exercise cai as a heavy knowledge-base
+chatbot, not to be a summary or small representative sample.
+
+The generated Mike Mind prompt should:
+
+- include clear system/developer instructions inferred from `SKILL.md`,
+- append the complete referenced corpus needed by the skill,
+- tell the model to synthesize from the embedded corpus rather than behave like
+  a document lookup tool,
+- avoid runtime file references unless the answer is explicitly pointing a
+  human at public follow-up material,
+- keep the chatbot interface identical to normal session usage so large prompts,
+  auto-compaction, usage reporting, and streaming behavior are exercised through
+  public cai APIs.
+
+Implementation note: this can be a committed generated C include file or another
+repo-native artifact that CMake compiles into the example. If a generator is
+added, it should produce deterministic output and be documented, but the example
+binary must not depend on the external skill directory at runtime.
 
 ## Allocation and streaming policy
 
@@ -252,9 +293,9 @@ availability changes over time and users may need newly released IDs before a
 new `cai` release.
 
 ```c
-#define CAI_MODEL_GPT_5_4_NANO "gpt-5.4-nano"
-#define CAI_MODEL_GPT_5_4_MINI "gpt-5.4-mini"
-#define CAI_MODEL_GPT_5_4 "gpt-5.4"
+#define CAI_MODEL_GPT_5_NANO "gpt-5-nano"
+#define CAI_MODEL_GPT_5_MINI "gpt-5-mini"
+#define CAI_MODEL_GPT_5 "gpt-5"
 ```
 
 Plan:
@@ -264,11 +305,37 @@ Plan:
 - Annotate models with endpoint/tool capability metadata in generated or
   table-driven code: Responses, Realtime, streaming, function calling,
   structured output, image input, audio support, tool support.
+- Treat model metadata as explicitly sourced data, not guessed truth. The
+  OpenAI Models API exposes model availability and basic identity fields, but
+  it is not currently a complete capability registry for context windows,
+  endpoint support, tool support, max output tokens, or automatic compaction
+  thresholds.
+- Keep `cai` permissive for unknown model strings. Unknown models may be used,
+  but helpers should report that local metadata is unavailable.
 - Do not prevent callers from passing an arbitrary model string.
 - Provide `cai_model_info()` and `cai_model_supports()` helpers for local
   validation and better errors.
 - Treat unknown model strings as allowed by default, with optional strict
   validation mode.
+
+Metadata strategy:
+
+- The compiled metadata table is the SDK's fast local answer for DX, validation,
+  examples, and auto-compaction thresholds.
+- Every metadata row should carry enough information for cai to distinguish
+  verified metadata from unknown or incomplete metadata. This can be a flags
+  field, an enum, or separate helpers such as `cai_model_has_context_window()`.
+- Runtime model lookup should be optional and should only answer what the
+  OpenAI API actually exposes: whether a model is visible to the API key and
+  its basic model object fields. It should not pretend to discover missing
+  capability data if the platform does not return that data.
+- A future generated metadata update step may scrape or ingest official model
+  documentation/OpenAPI metadata, but generated output must be reviewed and
+  committed. Runtime SDK startup should not depend on scraping docs.
+- Auto-compaction must only use automatic thresholds when a known context window
+  exists. If the caller enables auto-compaction with a model whose context
+  window is unknown, cai should return an actionable configuration error unless
+  the caller supplies an explicit token threshold.
 
 ### Responses
 
@@ -358,7 +425,7 @@ The recommended DX should start here for normal users:
 ```c
 cai_agent_config agent_config;
 cai_agent_config_init(&agent_config);
-agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+agent_config.model = CAI_MODEL_GPT_5_NANO;
 agent_config.instructions = "You are concise.";
 
 cai_client_new_agent(client, &agent_config, &agent, &error);
@@ -557,7 +624,7 @@ CAI_ENABLE_LIVE_TESTS=1 make test-live
 Live tests:
 
 - Resolve API key through the same `.env` precedence rules as the SDK.
-- Use `CAI_TEST_MODEL` if set, otherwise `gpt-5.4-nano`.
+- Use `CAI_TEST_MODEL` if set, otherwise `gpt-5-nano`.
 - Keep prompts tiny and deterministic.
 - Never run from default `make test`.
 
@@ -686,4 +753,5 @@ Mirror liblockdc where practical:
 - OpenAI WebSocket Mode guide for Responses WebSocket behavior.
 - OpenAI Authentication reference for Bearer auth and optional organization /
   project headers.
-- OpenAI model docs for `gpt-5.4-nano` endpoint and feature compatibility.
+- OpenAI model docs and model comparison pages for endpoint and feature
+  compatibility.
