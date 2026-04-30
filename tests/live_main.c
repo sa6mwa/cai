@@ -14,7 +14,7 @@ int main(void) {
 
   model = getenv("CAI_TEST_MODEL");
   if (model == NULL || model[0] == '\0') {
-    model = CAI_MODEL_GPT_5_4_NANO;
+    model = CAI_MODEL_GPT_5_NANO;
   }
 
   cai_error_init(&error);

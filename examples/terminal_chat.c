@@ -74,7 +74,7 @@ int main(void) {
   cai_error_init(&error);
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
   agent_config.auto_compact = 1;

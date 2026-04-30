@@ -133,22 +133,28 @@ static void test_model_capabilities(test_state *state) {
   const cai_model_info *info;
   cai_agent_config agent_config;
 
-  info = cai_model_info_by_id(CAI_MODEL_GPT_5_4_NANO);
+  info = cai_model_info_by_id(CAI_MODEL_GPT_5_NANO);
   if (info == NULL) {
     test_fail(state, "model_capabilities", "model missing");
     return;
   }
-  expect_str(state, "model_capabilities", info->id, CAI_MODEL_GPT_5_4_NANO);
+  expect_str(state, "model_capabilities", info->id, CAI_MODEL_GPT_5_NANO);
   expect_int(
       state, "model_responses",
-      cai_model_supports(CAI_MODEL_GPT_5_4_NANO, CAI_MODEL_CAP_RESPONSES), 1L);
+      cai_model_supports(CAI_MODEL_GPT_5_NANO, CAI_MODEL_CAP_RESPONSES), 1L);
   expect_int(state, "model_realtime",
-             cai_model_supports(CAI_MODEL_GPT_5_4_NANO, CAI_MODEL_CAP_REALTIME),
+             cai_model_supports(CAI_MODEL_GPT_5_NANO, CAI_MODEL_CAP_REALTIME),
              1L);
   expect_int(state, "model_unknown",
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
   expect_int(state, "model_context",
-             cai_model_context_window_tokens(CAI_MODEL_GPT_5_4_NANO), 400000L);
+             cai_model_context_window_tokens(CAI_MODEL_GPT_5_NANO), 400000L);
+  expect_str(state, "model_default", CAI_MODEL_DEFAULT_RESPONSES,
+             CAI_MODEL_GPT_5_NANO);
+  expect_int(state, "model_gpt_4_1_context",
+             cai_model_context_window_tokens(CAI_MODEL_GPT_4_1), 1047576L);
+  expect_int(state, "model_gpt_5_5_context",
+             cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_compact_limit",
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
   cai_agent_config_init(&agent_config);
@@ -416,7 +422,7 @@ static void test_tool_registry(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "tool_params_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
   expect_int(
       state, "tool_params_input",
@@ -509,7 +515,7 @@ static void test_response_json(test_state *state) {
   size_t json_len;
 
   strcpy(response_json, "{\"id\":\"resp_123\",\"status\":\"completed\",");
-  strcat(response_json, "\"model\":\"gpt-5.4-nano\",\"created_at\":123,");
+  strcat(response_json, "\"model\":\"gpt-5-nano\",\"created_at\":123,");
   strcat(response_json, "\"error\":{\"code\":\"rate_limited\",");
   strcat(response_json, "\"message\":\"slow down\"},");
   strcat(response_json, "\"incomplete_details\":{\"reason\":");
@@ -539,7 +545,7 @@ static void test_response_json(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "params_set_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
   expect_int(
       state, "params_set_instructions",
@@ -605,7 +611,7 @@ static void test_response_json(test_state *state) {
   if (json == NULL) {
     test_fail(state, "params_serialize", "no JSON returned");
   } else {
-    if (strstr(json, "\"model\":\"gpt-5.4-nano\"") == NULL) {
+    if (strstr(json, "\"model\":\"gpt-5-nano\"") == NULL) {
       test_fail(state, "params_serialize", "model missing from JSON");
     }
     if (strstr(json, "\"conversation\":\"conv_123\"") == NULL) {
@@ -659,7 +665,7 @@ static void test_response_json(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "json_object_params_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
   expect_int(
       state, "json_object_params_format",
@@ -693,7 +699,7 @@ static void test_response_json(test_state *state) {
   expect_str(state, "response_status", cai_response_status(response),
              "completed");
   expect_str(state, "response_model", cai_response_model(response),
-             CAI_MODEL_GPT_5_4_NANO);
+             CAI_MODEL_GPT_5_NANO);
   expect_str(state, "response_conversation",
              cai_response_conversation_id(response), "conv_123");
   expect_int(state, "response_created_at",
@@ -829,7 +835,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "spooled_params_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&raw_items, NULL);
@@ -1518,7 +1524,7 @@ static void test_http_create_response(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "http_params_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
   expect_int(
       state, "http_params_input",
@@ -1874,7 +1880,7 @@ static void test_agent_session(test_state *state) {
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.instructions = "answer tersely";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
@@ -2065,7 +2071,7 @@ static void test_agent_tool_declarations(test_state *state) {
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -2154,7 +2160,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
   if (mkdtemp(spool_dir) == NULL) {
     test_fail(state, "agent_auto_spool", "mkdtemp failed");
@@ -2256,7 +2262,7 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
   run_options.max_tool_rounds = 0;
   client = NULL;
@@ -2346,7 +2352,7 @@ static void test_agent_tool_manual_step(test_state *state) {
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -2445,7 +2451,7 @@ static void test_agent_auto_compaction(test_state *state) {
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.auto_compact = 1;
   agent_config.history_memory_limit = 16U;
   agent_config.history_memory_limit = 16U;
@@ -2554,7 +2560,7 @@ static void test_stream_response_text(test_state *state) {
   snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
   cai_client_config_init(&config);
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   config.api_key = "mock-key";
   config.base_url = base_url;
   config.http_2_disabled = 1;
@@ -2578,7 +2584,7 @@ static void test_stream_response_text(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "stream_params_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
   expect_int(
       state, "stream_params_text",
@@ -2754,7 +2760,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
   cai_client_config_init(&config);
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.auto_compact = 1;
   agent_config.history_memory_limit = 16U;
   config.api_key = "mock-key";

@@ -8,7 +8,7 @@ static const char *example_model(void) {
 
   model = getenv("CAI_EXAMPLE_MODEL");
   if (model == NULL || model[0] == '\0') {
-    return CAI_MODEL_GPT_5_4_NANO;
+    return CAI_MODEL_GPT_5_NANO;
   }
   return model;
 }

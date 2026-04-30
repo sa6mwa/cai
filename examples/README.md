@@ -28,7 +28,7 @@ call:
 ```
 
 Set `CAI_EXAMPLE_MODEL` to override the example model. The default is
-`CAI_MODEL_GPT_5_4_NANO`.
+`CAI_MODEL_GPT_5_NANO`.
 
 ## Streaming Text
 
