@@ -371,6 +371,7 @@ static void test_source_sink(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_source *source;
   cai_source *copy_source;
+  cai_source *file_source;
   cai_sink *sink;
   cai_sink *file_sink;
   cai_error error;
@@ -388,6 +389,7 @@ static void test_source_sink(test_state *state) {
   source_callbacks.context = &reader;
   source = NULL;
   copy_source = NULL;
+  file_source = NULL;
   sink = NULL;
   file_sink = NULL;
   fp = NULL;
@@ -441,12 +443,22 @@ static void test_source_sink(test_state *state) {
                CAI_OK);
     fflush(fp);
     rewind(fp);
+    expect_int(state, "source_file_create",
+               cai_source_file(fp, 0, &file_source, &error), CAI_OK);
+    memset(copy_buffer, 0, sizeof(copy_buffer));
+    expect_int(state, "source_file_read",
+               (long)cai_source_read(file_source, copy_buffer, 4U, &error),
+               4L);
+    expect_str(state, "source_file_read_value", copy_buffer, "copy");
+    expect_int(state, "source_file_reset",
+               cai_source_reset(file_source, &error), CAI_OK);
     memset(copy_buffer, 0, sizeof(copy_buffer));
     if (fread(copy_buffer, 1U, sizeof(copy_buffer) - 1U, fp) == 0U) {
       test_fail(state, "source_copy_file_read", "no file output");
     }
     expect_str(state, "source_copy_file_value", copy_buffer, "copy-data");
   }
+  cai_source_close(file_source);
   cai_sink_close(file_sink);
   cai_source_close(copy_source);
   if (fp != NULL) {

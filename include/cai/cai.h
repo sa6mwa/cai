@@ -394,6 +394,8 @@ int cai_source_from_callbacks(const cai_source_callbacks *callbacks,
                               cai_source **out, cai_error *error);
 int cai_source_from_lc(struct lc_source *source, cai_source **out,
                        cai_error *error);
+int cai_source_file(FILE *fp, int close_file, cai_source **out,
+                    cai_error *error);
 size_t cai_source_read(cai_source *source, void *buffer, size_t count,
                        cai_error *error);
 int cai_source_reset(cai_source *source, cai_error *error);

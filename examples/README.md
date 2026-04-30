@@ -54,6 +54,17 @@ cmake --build --preset debug --target cai_example_history_export
 ./build/debug/cai_example_history_export
 ```
 
+## Session State
+
+Run one session turn, write a versioned session state JSON file, restore a new
+session from that file, and continue inference through the restored
+continuation handle:
+
+```sh
+cmake --build --preset debug --target cai_example_session_state
+./build/debug/cai_example_session_state /tmp/cai-session-state.json
+```
+
 ## Terminal Chat
 
 Run a small terminal chat agent that reads prompts from stdin, streams response

@@ -14,6 +14,11 @@ typedef struct cai_spooled_source_context {
   lonejson_spooled spool;
 } cai_spooled_source_context;
 
+typedef struct cai_file_source_context {
+  FILE *fp;
+  int close_file;
+} cai_file_source_context;
+
 typedef struct cai_file_sink_context {
   FILE *fp;
   int close_file;
@@ -63,6 +68,54 @@ static void cai_spooled_source_close(void *context) {
     return;
   }
   lonejson_spooled_cleanup(&source_context->spool);
+  cai_free_mem(NULL, source_context);
+}
+
+static size_t cai_file_source_read(void *context, void *buffer, size_t count,
+                                   cai_error *error) {
+  cai_file_source_context *source_context;
+
+  source_context = (cai_file_source_context *)context;
+  if (source_context == NULL || source_context->fp == NULL) {
+    cai_set_error(error, CAI_ERR_INVALID, "file source is closed");
+    return 0U;
+  }
+  if (buffer == NULL || count == 0U) {
+    return 0U;
+  }
+  count = fread(buffer, 1U, count, source_context->fp);
+  if (count == 0U && ferror(source_context->fp)) {
+    cai_set_error(error, CAI_ERR_TRANSPORT, "failed to read file source");
+  }
+  return count;
+}
+
+static int cai_file_source_reset(void *context, cai_error *error) {
+  cai_file_source_context *source_context;
+
+  source_context = (cai_file_source_context *)context;
+  if (source_context == NULL || source_context->fp == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file source is closed");
+  }
+  clearerr(source_context->fp);
+  if (fseek(source_context->fp, 0L, SEEK_SET) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to rewind file source");
+  }
+  return CAI_OK;
+}
+
+static void cai_file_source_close(void *context) {
+  cai_file_source_context *source_context;
+
+  source_context = (cai_file_source_context *)context;
+  if (source_context == NULL) {
+    return;
+  }
+  if (source_context->close_file && source_context->fp != NULL) {
+    fclose(source_context->fp);
+  }
+  source_context->fp = NULL;
   cai_free_mem(NULL, source_context);
 }
 
@@ -183,6 +236,37 @@ int cai_source_from_lc(struct lc_source *source, cai_source **out,
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "lc_source interop is not enabled in this build");
+}
+
+int cai_source_file(FILE *fp, int close_file, cai_source **out,
+                    cai_error *error) {
+  cai_file_source_context *context;
+  cai_source_callbacks callbacks;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "source output pointer is required");
+  }
+  *out = NULL;
+  if (fp == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file pointer is required");
+  }
+  context = (cai_file_source_context *)cai_alloc(NULL, sizeof(*context));
+  if (context == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate file source");
+  }
+  context->fp = fp;
+  context->close_file = close_file ? 1 : 0;
+  callbacks.read = cai_file_source_read;
+  callbacks.reset = cai_file_source_reset;
+  callbacks.close = cai_file_source_close;
+  callbacks.context = context;
+  rc = cai_source_from_callbacks(&callbacks, out, error);
+  if (rc != CAI_OK) {
+    cai_file_source_close(context);
+  }
+  return rc;
 }
 
 size_t cai_source_read(cai_source *source, void *buffer, size_t count,
