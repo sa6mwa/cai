@@ -77,7 +77,7 @@ int main(void) {
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
-  agent_config.instructions =
+  agent_config.developer_instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
   client = NULL;
   agent = NULL;
@@ -126,7 +126,7 @@ int main(void) {
       exit_code = 0;
       break;
     }
-    rc = cai_session_add_text(session, "user", line, &error);
+    rc = cai_session_add_user_text(session, line, &error);
     if (rc == CAI_OK) {
       rc = cai_session_stream_text(session, sink, &error);
     }

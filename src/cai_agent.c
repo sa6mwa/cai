@@ -64,7 +64,7 @@ void cai_agent_config_init(cai_agent_config *config) {
     return;
   }
   config->model = NULL;
-  config->instructions = NULL;
+  config->developer_instructions = NULL;
   config->reasoning_effort = NULL;
   config->reasoning_summary = NULL;
   config->text_format_name = NULL;
@@ -111,7 +111,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   }
   agent->client = client;
   agent->model = cai_strdup(&client->allocator, config->model);
-  agent->instructions = cai_strdup(&client->allocator, config->instructions);
+  agent->developer_instructions =
+      cai_strdup(&client->allocator, config->developer_instructions);
   agent->reasoning_effort =
       cai_strdup(&client->allocator, config->reasoning_effort);
   agent->reasoning_summary =
@@ -153,7 +154,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       cai_strdup(&client->allocator, config->history_spool_dir);
   agent->tools = NULL;
   if (agent->model == NULL ||
-      (config->instructions != NULL && agent->instructions == NULL) ||
+      (config->developer_instructions != NULL &&
+       agent->developer_instructions == NULL) ||
       (config->reasoning_effort != NULL && agent->reasoning_effort == NULL) ||
       (config->reasoning_summary != NULL && agent->reasoning_summary == NULL) ||
       (config->text_format_name != NULL && agent->text_format_name == NULL) ||
@@ -199,7 +201,7 @@ void cai_agent_destroy(cai_agent *agent) {
   }
   allocator = &agent->client->allocator;
   cai_free_mem(allocator, agent->model);
-  cai_free_mem(allocator, agent->instructions);
+  cai_free_mem(allocator, agent->developer_instructions);
   cai_free_mem(allocator, agent->reasoning_effort);
   cai_free_mem(allocator, agent->reasoning_summary);
   cai_free_mem(allocator, agent->text_format_name);
@@ -633,22 +635,21 @@ static int cai_session_add_input(cai_session *session, int kind,
   return CAI_OK;
 }
 
-int cai_session_add_text(cai_session *session, const char *role,
-                         const char *text, cai_error *error) {
+int cai_session_add_user_text(cai_session *session, const char *text,
+                              cai_error *error) {
   if (text == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "text is required");
   }
-  return cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, role, text,
+  return cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, "user", text,
                                NULL, NULL, NULL, NULL, error);
 }
 
-int cai_session_add_image_url(cai_session *session, const char *role,
-                              const char *url, const char *detail,
-                              cai_error *error) {
+int cai_session_add_user_image_url(cai_session *session, const char *url,
+                                   const char *detail, cai_error *error) {
   if (url == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "image URL is required");
   }
-  return cai_session_add_input(session, CAI_SESSION_INPUT_IMAGE, role, NULL,
+  return cai_session_add_input(session, CAI_SESSION_INPUT_IMAGE, "user", NULL,
                                url, detail, NULL, NULL, error);
 }
 
@@ -953,9 +954,9 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     rc = cai_response_create_params_set_model(params, session->agent->model,
                                               error);
   }
-  if (rc == CAI_OK && session->agent->instructions != NULL) {
+  if (rc == CAI_OK && session->agent->developer_instructions != NULL) {
     rc = cai_response_create_params_set_instructions(
-        params, session->agent->instructions, error);
+        params, session->agent->developer_instructions, error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_raw_input_spooled(params, &history_items,
@@ -1239,9 +1240,9 @@ static int cai_session_init_response_params(cai_session *session,
     rc = cai_response_create_params_set_model(params, session->agent->model,
                                               error);
   }
-  if (rc == CAI_OK && session->agent->instructions != NULL) {
+  if (rc == CAI_OK && session->agent->developer_instructions != NULL) {
     rc = cai_response_create_params_set_instructions(
-        params, session->agent->instructions, error);
+        params, session->agent->developer_instructions, error);
   }
   if (rc == CAI_OK && session->agent->max_output_tokens > 0) {
     rc = cai_response_create_params_set_max_output_tokens(
@@ -1504,7 +1505,7 @@ int cai_session_send_text(cai_session *session, const char *text,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and text are required");
   }
-  rc = cai_session_add_text(session, "user", text, error);
+  rc = cai_session_add_user_text(session, text, error);
   if (rc != CAI_OK) {
     return rc;
   }

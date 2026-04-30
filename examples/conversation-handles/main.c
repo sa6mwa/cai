@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
   agent_config.model = example_model();
-  agent_config.instructions =
+  agent_config.developer_instructions =
       "Answer briefly. You are running inside a C SDK conversation example.";
   client = NULL;
   agent = NULL;
@@ -75,10 +75,10 @@ int main(int argc, char **argv) {
         print_error("cai_agent_new_session_for_conversation", rc, &error);
     goto done;
   }
-  rc = cai_session_add_text(session, "user",
-                            "Say one short sentence about reusable "
-                            "conversation handles.",
-                            &error);
+  rc = cai_session_add_user_text(session,
+                                 "Say one short sentence about reusable "
+                                 "conversation handles.",
+                                 &error);
   if (rc == CAI_OK) {
     rc = cai_session_run_output(session, &output, &error);
   }

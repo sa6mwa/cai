@@ -30,6 +30,26 @@ example layers settle.
   server-side compaction.
 - Examples and live development tests default to `gpt-5-nano`.
 
+## Agent Instructions
+
+The high-level agent facade uses `developer_instructions`, matching the current
+Responses API guidance around application-provided behavior. OpenAI documents
+the top-level `instructions` field as high-level instructions that take
+priority over `input`, and shows it as roughly equivalent to a `developer`
+message. cai therefore treats these as developer instructions in its DX surface.
+
+The agent/session facade does not expose a normal `system` prompt layer. Root
+instructions are OpenAI/model policy and are not API-settable. The Responses
+wire format still has low-level message roles, but normal cai users should set
+`developer_instructions` on the agent and add user input with
+`cai_session_add_user_text` or `cai_session_add_user_image_url`.
+
+`assistant` is not an instruction surface. In the Responses API it represents
+model-generated messages, and it is mainly useful when manually reconstructing
+conversation history. cai's default sessions use `previous_response_id`, and
+conversation sessions use OpenAI Conversations, so assistant turns are preserved
+through those handles instead of being manually appended by application code.
+
 ## OpenAI API Caveats
 
 This SDK has to compensate for gaps in the OpenAI API contract. These are not

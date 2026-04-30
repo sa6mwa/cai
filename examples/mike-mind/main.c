@@ -146,7 +146,8 @@ static int build_mike_mind_prompt(prompt_buffer *buffer,
   if (!prompt_append(buffer,
                      "You are a cai example agent implementing the Mike Mind "
                      "skill. Use the embedded skill and reference material as "
-                     "your full system prompt. Answer as the skill instructs; "
+                     "your developer instructions and knowledge base. Answer "
+                     "as the skill instructs; "
                      "do not mention repository paths or source files unless "
                      "the user explicitly asks about implementation.\n")) {
     return 0;
@@ -218,7 +219,7 @@ int main(void) {
     goto done;
   }
   agent_config.model = CAI_MODEL_GPT_5_NANO;
-  agent_config.instructions = prompt.data;
+  agent_config.developer_instructions = prompt.data;
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
@@ -259,7 +260,7 @@ int main(void) {
       exit_code = 0;
       break;
     }
-    rc = cai_session_add_text(session, "user", line, &error);
+    rc = cai_session_add_user_text(session, line, &error);
     if (rc == CAI_OK) {
       rc = cai_session_stream_text(session, sink, &error);
     }

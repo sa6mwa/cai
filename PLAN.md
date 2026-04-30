@@ -113,8 +113,8 @@ static vectis_status handle_request(vectis_request *req,
 
   cai_client_new_agent(app->cai, &support_agent_config, &agent, &error);
   cai_agent_new_session(agent, &session, &error);
-  cai_session_add_text(session, "user", input.question, &error);
-  cai_session_add_image_source(session, "user", input.image, NULL, &error);
+  cai_session_add_user_text(session, input.question, &error);
+  cai_session_add_user_image_url(session, input.image_url, NULL, &error);
   cai_session_run_output(session, &output, &error);
   cai_output_as_lc_source(output, &source, &error);
 
@@ -154,7 +154,7 @@ chatbot, not to be a summary or small representative sample.
 
 The generated Mike Mind prompt should:
 
-- include clear system/developer instructions inferred from `SKILL.md`,
+- include clear developer instructions inferred from `SKILL.md`,
 - append the complete referenced corpus needed by the skill,
 - tell the model to synthesize from the embedded corpus rather than behave like
   a document lookup tool,
@@ -433,7 +433,7 @@ The recommended DX should start here for normal users:
 cai_agent_config agent_config;
 cai_agent_config_init(&agent_config);
 agent_config.model = CAI_MODEL_GPT_5_NANO;
-agent_config.instructions = "You are concise.";
+agent_config.developer_instructions = "You are concise.";
 
 cai_client_new_agent(client, &agent_config, &agent, &error);
 cai_agent_new_session(agent, &session, &error);
@@ -454,13 +454,20 @@ and streaming run output:
 
 ```c
 cai_agent_new_session(agent, &session, &error);
-cai_session_add_text(session, "system", system_prompt, &error);
-cai_session_add_text(session, "user", user_text, &error);
-cai_session_add_image_source(session, "user", image_source, "high", &error);
+cai_session_add_user_text(session, user_text, &error);
+cai_session_add_user_image_url(session, image_url, "high", &error);
 cai_session_register_tool(session, &tool, &error);
 cai_session_run_stream(session, &handler, &error);
 cai_session_run_output(session, &output, &error);
 ```
+
+The agent/session facade intentionally exposes developer instructions and user
+inputs, not arbitrary role strings. OpenAI's current Responses guidance treats
+`instructions` as high-level developer behavior and shows `developer` messages
+as the equivalent message-role form. `assistant` messages remain a low-level
+transport concept for manually replaying prior model output when callers are not
+using `previous_response_id` or Conversations. Normal cai sessions preserve
+assistant turns transparently through those server-side state handles.
 
 Multi-agent workflows should remain host-driven. `cai` should make it cheap to
 construct several agents and sessions, but it should not impose a graph runtime

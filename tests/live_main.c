@@ -166,7 +166,7 @@ static int run_e2e_session_regression(void) {
   limit_usd = live_spend_limit_usd();
 
   agent_config.model = model;
-  agent_config.instructions =
+  agent_config.developer_instructions =
       "You are a strict regression-test assistant. Remember the first secret "
       "and every turn secret. For every user turn, answer with one line using "
       "actual values only: TURN=number FIRST=value PREV=value CURRENT=value. "
@@ -279,7 +279,7 @@ static int run_compaction_recall(void) {
   response = NULL;
 
   agent_config.model = live_model();
-  agent_config.instructions =
+  agent_config.developer_instructions =
       "You are a deterministic recall test assistant. Store compact test "
       "facts exactly. When asked to recall them, answer with only the stored "
       "facts.";

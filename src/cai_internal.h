@@ -29,7 +29,7 @@ struct cai_client {
 struct cai_agent {
   cai_client *client;
   char *model;
-  char *instructions;
+  char *developer_instructions;
   char *reasoning_effort;
   char *reasoning_summary;
   char *text_format_name;

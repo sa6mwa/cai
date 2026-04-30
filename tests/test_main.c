@@ -1276,6 +1276,7 @@ static const char *mock_response_for_request(const char *request) {
     }
     if (strstr(request, "session first") != NULL &&
         strstr(request, "\"max_output_tokens\":64") != NULL &&
+        strstr(request, "\"instructions\":\"answer tersely\"") != NULL &&
         strstr(request,
                "\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"}") !=
             NULL &&
@@ -1296,7 +1297,7 @@ static const char *mock_response_for_request(const char *request) {
       return session_second_body;
     }
     if (strstr(request, "incremental turn") != NULL &&
-        strstr(request, "\"role\":\"developer\"") != NULL &&
+        strstr(request, "\"role\":\"user\"") != NULL &&
         strstr(request, "\"previous_response_id\":\"resp_session_2\"") !=
             NULL) {
       return session_third_body;
@@ -1941,7 +1942,7 @@ static void test_agent_session(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
-  agent_config.instructions = "answer tersely";
+  agent_config.developer_instructions = "answer tersely";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   agent_config.text_format_name = "agent_answer";
@@ -1986,12 +1987,8 @@ static void test_agent_session(test_state *state) {
              "second turn");
   cai_response_destroy(response);
   response = NULL;
-  expect_int(
-      state, "agent_add_developer",
-      cai_session_add_text(session, "developer", "internal note", &error),
-      CAI_OK);
   expect_int(state, "agent_add_user",
-             cai_session_add_text(session, "user", "incremental turn", &error),
+             cai_session_add_user_text(session, "incremental turn", &error),
              CAI_OK);
   expect_int(state, "agent_run", cai_session_run(session, &response, &error),
              CAI_OK);
@@ -2002,7 +1999,7 @@ static void test_agent_session(test_state *state) {
   cai_response_destroy(response);
   response = NULL;
   expect_int(state, "agent_add_image",
-             cai_session_add_image_url(session, "user",
+             cai_session_add_user_image_url(session,
                                        "https://example.test/session.png",
                                        "high", &error),
              CAI_OK);
@@ -2058,7 +2055,7 @@ static void test_agent_session(test_state *state) {
              cai_session_conversation_id(session), "conv_mock");
   expect_int(
       state, "agent_auto_conversation_add_text",
-      cai_session_add_text(session, "user", "auto conversation turn", &error),
+      cai_session_add_user_text(session, "auto conversation turn", &error),
       CAI_OK);
   expect_int(state, "agent_auto_conversation_turn",
              cai_session_run_output(session, &output, &error), CAI_OK);
@@ -2248,7 +2245,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   expect_int(state, "agent_auto_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "agent_auto_add",
-             cai_session_add_text(session, "user", "auto tool turn", &error),
+             cai_session_add_user_text(session, "auto tool turn", &error),
              CAI_OK);
   expect_int(state, "agent_auto_run",
              cai_session_run_auto(session, &run_options, &response, &error),
@@ -2344,7 +2341,7 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   expect_int(state, "agent_limit_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "agent_limit_add",
-             cai_session_add_text(session, "user", "auto tool turn", &error),
+             cai_session_add_user_text(session, "auto tool turn", &error),
              CAI_OK);
   expect_int(state, "agent_limit_run",
              cai_session_run_auto(session, &run_options, &response, &error),
@@ -2431,7 +2428,7 @@ static void test_agent_tool_manual_step(test_state *state) {
   expect_int(state, "agent_manual_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "agent_manual_add",
-             cai_session_add_text(session, "user", "manual tool turn", &error),
+             cai_session_add_user_text(session, "manual tool turn", &error),
              CAI_OK);
   expect_int(state, "agent_manual_run_first",
              cai_session_run(session, &response, &error), CAI_OK);
@@ -2528,7 +2525,7 @@ static void test_agent_auto_compaction(test_state *state) {
   expect_int(state, "agent_compact_auto_limit",
              cai_session_auto_compact_token_limit(session), 320000L);
   expect_int(state, "agent_compact_add",
-             cai_session_add_text(session, "user", "compact first", &error),
+             cai_session_add_user_text(session, "compact first", &error),
              CAI_OK);
   expect_int(state, "agent_compact_run",
              cai_session_run(session, &response, &error), CAI_OK);
@@ -2549,7 +2546,7 @@ static void test_agent_auto_compaction(test_state *state) {
   cai_response_destroy(response);
   response = NULL;
   expect_int(state, "agent_compact_add_second",
-             cai_session_add_text(session, "user", "compact second", &error),
+             cai_session_add_user_text(session, "compact second", &error),
              CAI_OK);
   expect_int(state, "agent_compact_run_second",
              cai_session_run(session, &response, &error), CAI_OK);
@@ -2685,7 +2682,7 @@ static void test_stream_response_text(test_state *state) {
   sink_callbacks.context = &writer;
   expect_int(
       state, "stream_session_add",
-      cai_session_add_text(session, "user", "session stream one", &error),
+      cai_session_add_user_text(session, "session stream one", &error),
       CAI_OK);
   expect_int(state, "stream_session_sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
@@ -2705,7 +2702,7 @@ static void test_stream_response_text(test_state *state) {
   writer.buffer[0] = '\0';
   expect_int(
       state, "stream_session_add_second",
-      cai_session_add_text(session, "user", "session stream two", &error),
+      cai_session_add_user_text(session, "session stream two", &error),
       CAI_OK);
   expect_int(state, "stream_session_sink_create_second",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
@@ -2723,7 +2720,7 @@ static void test_stream_response_text(test_state *state) {
 
   expect_int(
       state, "stream_session_source_add",
-      cai_session_add_text(session, "user", "session source one", &error),
+      cai_session_add_user_text(session, "session source one", &error),
       CAI_OK);
   expect_int(state, "stream_session_source_open",
              cai_session_open_text_source(session, &source, &error), CAI_OK);
@@ -2749,7 +2746,7 @@ static void test_stream_response_text(test_state *state) {
 
   expect_int(
       state, "stream_session_source_add_second",
-      cai_session_add_text(session, "user", "session source two", &error),
+      cai_session_add_user_text(session, "session source two", &error),
       CAI_OK);
   expect_int(state, "stream_session_source_open_second",
              cai_session_open_text_source(session, &source, &error), CAI_OK);
@@ -2850,7 +2847,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   sink_callbacks.context = &writer;
   expect_int(
       state, "stream_history_add",
-      cai_session_add_text(session, "user", "history stream first", &error),
+      cai_session_add_user_text(session, "history stream first", &error),
       CAI_OK);
   expect_int(state, "stream_history_sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
@@ -2867,7 +2864,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   writer.buffer[0] = '\0';
   expect_int(
       state, "stream_history_add_second",
-      cai_session_add_text(session, "user", "history stream second", &error),
+      cai_session_add_user_text(session, "history stream second", &error),
       CAI_OK);
   expect_int(state, "stream_history_sink_create_second",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
