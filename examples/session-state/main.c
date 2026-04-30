@@ -38,10 +38,7 @@ int main(int argc, char **argv) {
   cai_session *session;
   cai_session *restored;
   cai_response *response;
-  cai_source *state_source;
-  cai_sink *state_sink;
   cai_error error;
-  FILE *fp;
   int exit_code;
   int rc;
 
@@ -59,9 +56,6 @@ int main(int argc, char **argv) {
   session = NULL;
   restored = NULL;
   response = NULL;
-  state_source = NULL;
-  state_sink = NULL;
-  fp = NULL;
   exit_code = 1;
 
   rc = cai_client_open(&client_config, &client, &error);
@@ -91,31 +85,11 @@ int main(int argc, char **argv) {
   cai_response_destroy(response);
   response = NULL;
 
-  rc = session->export_state_source(session, &state_source, &error);
+  rc = session->save_state_path(session, path, &error);
   if (rc != CAI_OK) {
-    exit_code = print_error("cai_session_export_state_source", rc, &error);
+    exit_code = print_error("cai_session_save_state_path", rc, &error);
     goto done;
   }
-  fp = fopen(path, "wb");
-  if (fp == NULL) {
-    fprintf(stderr, "fopen for write failed: %s\n", path);
-    goto done;
-  }
-  rc = cai_sink_file(fp, 1, &state_sink, &error);
-  fp = NULL;
-  if (rc != CAI_OK) {
-    exit_code = print_error("cai_sink_file", rc, &error);
-    goto done;
-  }
-  rc = cai_source_copy_to_sink(state_source, state_sink, &error);
-  if (rc != CAI_OK) {
-    exit_code = print_error("cai_source_copy_to_sink", rc, &error);
-    goto done;
-  }
-  cai_sink_close(state_sink);
-  state_sink = NULL;
-  cai_source_close(state_source);
-  state_source = NULL;
   printf("saved: %s\n", path);
 
   rc = agent->new_session(agent, &restored, &error);
@@ -123,20 +97,9 @@ int main(int argc, char **argv) {
     exit_code = print_error("restored cai_agent_new_session", rc, &error);
     goto done;
   }
-  fp = fopen(path, "rb");
-  if (fp == NULL) {
-    fprintf(stderr, "fopen for read failed: %s\n", path);
-    goto done;
-  }
-  rc = cai_source_file(fp, 1, &state_source, &error);
-  fp = NULL;
+  rc = restored->load_state_path(restored, path, &error);
   if (rc != CAI_OK) {
-    exit_code = print_error("cai_source_file", rc, &error);
-    goto done;
-  }
-  rc = restored->import_state_source(restored, state_source, &error);
-  if (rc != CAI_OK) {
-    exit_code = print_error("cai_session_import_state_source", rc, &error);
+    exit_code = print_error("cai_session_load_state_path", rc, &error);
     goto done;
   }
   rc = restored->send_text(restored,
@@ -150,11 +113,6 @@ int main(int argc, char **argv) {
   exit_code = 0;
 
 done:
-  if (fp != NULL) {
-    fclose(fp);
-  }
-  cai_sink_close(state_sink);
-  cai_source_close(state_source);
   cai_response_destroy(response);
   if (restored != NULL) {
     restored->close(restored);

@@ -1045,7 +1045,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&raw_items, NULL);
   expect_int(state, "spooled_raw_append",
-             lonejson_spooled_append(&raw_items, raw_fragment,
+             cai_lonejson_spooled_append(&raw_items, raw_fragment,
                                      strlen(raw_fragment), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "spooled_raw_set",
@@ -1058,7 +1058,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
       CAI_OK);
   lonejson_spooled_init(&file_data, NULL);
   expect_int(state, "spooled_file_append",
-             lonejson_spooled_append(&file_data, "inline file text",
+             cai_lonejson_spooled_append(&file_data, "inline file text",
                                      strlen("inline file text"), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "spooled_file_add",
@@ -1075,7 +1075,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
              CAI_OK);
   lonejson_spooled_init(&tool_file_data, NULL);
   expect_int(state, "spooled_tool_file_append",
-             lonejson_spooled_append(&tool_file_data, "tool file text",
+             cai_lonejson_spooled_append(&tool_file_data, "tool file text",
                                      strlen("tool file text"), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(
@@ -2023,7 +2023,7 @@ static void test_conversations(test_state *state) {
   lonejson_spooled_init(&conversation_file_data, NULL);
   expect_int(
       state, "conversation_items_file_append",
-      lonejson_spooled_append(&conversation_file_data, "conversation file text",
+      cai_lonejson_spooled_append(&conversation_file_data, "conversation file text",
                               strlen("conversation file text"), &json_error),
       LONEJSON_STATUS_OK);
   expect_int(state, "conversation_items_add_file",
@@ -3305,6 +3305,7 @@ static void test_session_resume_and_history_import(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   cai_session *restored_session;
+  cai_session *path_session;
   cai_response *response;
   cai_source_callbacks source_callbacks;
   read_state history_reader;
@@ -3314,6 +3315,8 @@ static void test_session_resume_and_history_import(test_state *state) {
   cai_error error;
   char history_json[512];
   char state_json[1024];
+  char state_path[] = "/tmp/cai-session-state-test-XXXXXX";
+  int state_fd;
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "resume_mock", "pipe failed");
@@ -3354,10 +3357,19 @@ static void test_session_resume_and_history_import(test_state *state) {
   agent = NULL;
   session = NULL;
   restored_session = NULL;
+  path_session = NULL;
   response = NULL;
   history_source = NULL;
   exported_source = NULL;
   state_source = NULL;
+  state_fd = mkstemp(state_path);
+  if (state_fd < 0) {
+    test_fail(state, "resume_state_path", "mkstemp failed");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+  close(state_fd);
+  unlink(state_path);
 
   expect_int(state, "resume_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -3430,6 +3442,9 @@ static void test_session_resume_and_history_import(test_state *state) {
   }
   expect_int(state, "resume_state_reset",
              cai_source_reset(state_source, &error), CAI_OK);
+  expect_int(state, "resume_save_state_path",
+             cai_session_save_state_path(session, state_path, &error),
+             CAI_OK);
   expect_int(state, "resume_restored_session_new",
              cai_agent_new_session(agent, &restored_session, &error), CAI_OK);
   expect_int(state, "resume_import_state",
@@ -3452,6 +3467,27 @@ static void test_session_resume_and_history_import(test_state *state) {
                 "restored state did not import local history");
     }
   }
+  expect_int(state, "resume_path_session_new",
+             cai_agent_new_session(agent, &path_session, &error), CAI_OK);
+  expect_int(state, "resume_load_state_path",
+             cai_session_load_state_path(path_session, state_path, &error),
+             CAI_OK);
+  expect_str(state, "resume_path_previous",
+             cai_session_previous_response_id(path_session),
+             "resp_saved_disk_1");
+  cai_source_close(exported_source);
+  exported_source = NULL;
+  expect_int(state, "resume_path_export_history",
+             cai_session_export_history_source(path_session, &exported_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "resume_path_history_read", exported_source,
+                       history_json, sizeof(history_json), &error)) {
+    if (strstr(history_json, "imported prompt") == NULL) {
+      test_fail(state, "resume_path_history_value",
+                "path-loaded state did not import local history");
+    }
+  }
 
   expect_int(state, "resume_add_turn",
              cai_session_add_user_text(restored_session, "resume from disk turn",
@@ -3469,17 +3505,120 @@ static void test_session_resume_and_history_import(test_state *state) {
   cai_source_close(state_source);
   cai_source_close(exported_source);
   cai_source_close(history_source);
+  cai_session_destroy(path_session);
   cai_session_destroy(restored_session);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
+  unlink(state_path);
 
   if (waitpid(pid, &child_status, 0) != pid) {
     test_fail(state, "resume_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "resume_mock", "mock child failed");
   }
+}
+
+static void test_session_state_validation(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_session *restored;
+  cai_source_callbacks source_callbacks;
+  read_state reader;
+  cai_source *source;
+  cai_error error;
+  char state_json[512];
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  client_config.api_key = "mock-key";
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.enable_local_history = 0;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  restored = NULL;
+  source = NULL;
+
+  expect_int(state, "state_validation_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "state_validation_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "state_validation_set_conversation",
+             cai_session_set_conversation_id(session, "conv_saved_state",
+                                             &error),
+             CAI_OK);
+  expect_int(state, "state_validation_export",
+             cai_session_export_state_source(session, &source, &error),
+             CAI_OK);
+  if (read_source_text(state, "state_validation_read", source, state_json,
+                       sizeof(state_json), &error)) {
+    if (strstr(state_json, "\"conversation_id\":\"conv_saved_state\"") ==
+            NULL ||
+        strstr(state_json, "previous_response_id") != NULL ||
+        strstr(state_json, "history") != NULL) {
+      test_fail(state, "state_validation_value",
+                "conversation state envelope had wrong fields");
+    }
+  }
+  expect_int(state, "state_validation_reset",
+             cai_source_reset(source, &error), CAI_OK);
+  expect_int(state, "state_validation_restored_new",
+             cai_agent_new_session(agent, &restored, &error), CAI_OK);
+  expect_int(state, "state_validation_import",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_OK);
+  expect_str(state, "state_validation_restored_conversation",
+             cai_session_conversation_id(restored), "conv_saved_state");
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text =
+      "{\"version\":1,\"previous_response_id\":\"resp_a\","
+      "\"conversation_id\":\"conv_b\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &reader;
+  expect_int(state, "state_validation_invalid_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_invalid_both",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":2,\"previous_response_id\":\"resp_a\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_version_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_invalid_version",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  cai_source_close(source);
+  cai_session_destroy(restored);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
 }
 
 int main(void) {
@@ -3507,6 +3646,7 @@ int main(void) {
   test_stream_history_preserves_pretty_json(&state);
   test_local_history_opt_in(&state);
   test_session_resume_and_history_import(&state);
+  test_session_state_validation(&state);
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;

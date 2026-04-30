@@ -72,7 +72,9 @@ For applications that want one file/object to persist, use
 state envelope is versioned JSON and contains the active continuation handle
 plus local history when `enable_local_history` is on. Import restores the
 continuation handle in all sessions and restores local history only for
-local-history-enabled sessions.
+local-history-enabled sessions. `cai_session_save_state_path` and
+`cai_session_load_state_path` are the file-backed convenience helpers around
+the same source/sink state envelope.
 
 Set `prompt_cache_key` on `cai_agent_config` when an agent has a stable prompt
 prefix, large developer instructions, or stable tool schemas. cai sends it on
@@ -216,12 +218,18 @@ must be run explicitly:
 ```sh
 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 ```
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,
 the first-turn secret, and the previous-turn secret so the test fails if
 session continuity breaks.
+
+`CAI_INTEGRATION_STATE_RESTORE=1` runs a shorter save/restore regression: it
+teaches one exact key, saves the session state to disk, creates a fresh
+session, loads that state, and verifies the next API turn can recall the key
+through the restored continuation handle.
 
 The e2e path enforces a local estimated spend cap using actual token usage and
 compiled model pricing metadata. The default cap is `$0.02`; override it with:

@@ -483,7 +483,7 @@ static int cai_json_builder_raw_spooled(cai_json_builder *builder,
 static lonejson_status cai_spooled_lonejson_sink(void *user, const void *data,
                                                  size_t len,
                                                  lonejson_error *error) {
-  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+  return cai_lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
 }
 
 static int cai_json_builder_field_spooled(cai_json_builder *builder,
@@ -1405,7 +1405,7 @@ int cai_response_create_params_add_function_call_output(
   }
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&spooled, NULL);
-  if (lonejson_spooled_append(&spooled, output, strlen(output), &json_error) !=
+  if (cai_lonejson_spooled_append(&spooled, output, strlen(output), &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(&spooled);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -2675,7 +2675,7 @@ static int cai_spooled_array_items_spool(const lonejson_spooled *array_json,
         continue;
       }
       if (have_held) {
-        if (lonejson_spooled_append(out, &held, 1U, &json_error) !=
+        if (cai_lonejson_spooled_append(out, &held, 1U, &json_error) !=
             LONEJSON_STATUS_OK) {
           lonejson_spooled_cleanup(out);
           return cai_set_error_detail(error, CAI_ERR_TRANSPORT,

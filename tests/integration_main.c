@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
 
@@ -334,13 +335,145 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_state_restore_regression(void) {
+  static const char saved_secret[] = "state-restore-key-418";
+  cai_agent_config agent_config;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_session *restored;
+  cai_response *response;
+  cai_token_usage usage;
+  cai_error error;
+  const char *model;
+  const char *answer;
+  char state_path[] = "/tmp/cai-integration-state-XXXXXX";
+  double spent_usd;
+  double limit_usd;
+  int state_fd;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  restored = NULL;
+  response = NULL;
+  model = integration_model();
+  spent_usd = 0.0;
+  limit_usd = integration_spend_limit_usd();
+  state_fd = mkstemp(state_path);
+  if (state_fd < 0) {
+    fprintf(stderr, "failed to allocate state restore temp path\n");
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  close(state_fd);
+  unlink(state_path);
+
+  agent_config.model = model;
+  agent_config.developer_instructions =
+      "You are a strict state-restore regression assistant. Remember exact "
+      "keys. When asked to recall a key, answer with only the key.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 64;
+  agent_config.enable_local_history = 1;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_send_text(
+        session,
+        "Remember the exact state restore key: state-restore-key-418. "
+        "Reply with only ok.",
+        &response, &error);
+  }
+  if (rc == CAI_OK) {
+    memset(&usage, 0, sizeof(usage));
+    if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
+      spent_usd += usage_estimate_usd(model, &usage);
+    }
+  }
+  cai_response_destroy(response);
+  response = NULL;
+  if (rc == CAI_OK) {
+    rc = cai_session_save_state_path(session, state_path, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &restored, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_load_state_path(restored, state_path, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_send_text(
+        restored,
+        "Recall the exact state restore key I asked you to remember.",
+        &response, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("integration state restore", rc, &error);
+    goto done;
+  }
+  answer = cai_response_output_text(response);
+  if (answer == NULL || strstr(answer, saved_secret) == NULL) {
+    fprintf(stderr, "state restore answer did not preserve key:\n%s\n",
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  memset(&usage, 0, sizeof(usage));
+  if (cai_session_last_usage(restored, &usage, &error) == CAI_OK) {
+    spent_usd += usage_estimate_usd(model, &usage);
+    fprintf(stderr,
+            "[integration-state-restore] tokens=%lld cached=%lld "
+            "estimated_cost=$%.8f limit=$%.8f\n",
+            usage.total_tokens, usage.input_cached_tokens, spent_usd,
+            limit_usd);
+    if (spent_usd > limit_usd) {
+      fprintf(stderr,
+              "integration state restore estimated spend exceeded limit: "
+              "%.8f > %.8f\n",
+              spent_usd, limit_usd);
+      rc = CAI_ERR_INVALID;
+    }
+  } else {
+    print_error("integration state restore usage", error.code, &error);
+    rc = error.code != CAI_OK ? error.code : CAI_ERR_PROTOCOL;
+  }
+
+done:
+  unlink(state_path);
+  cai_response_destroy(response);
+  cai_session_destroy(restored);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 int main(void) {
   const char *compaction;
   const char *e2e;
+  const char *state_restore;
 
   e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
     return run_e2e_session_regression();
+  }
+  state_restore = getenv("CAI_INTEGRATION_STATE_RESTORE");
+  if (state_restore != NULL && state_restore[0] != '\0' &&
+      strcmp(state_restore, "0") != 0) {
+    return run_state_restore_regression();
   }
   compaction = getenv("CAI_INTEGRATION_COMPACTION");
   if (compaction != NULL && compaction[0] != '\0' &&

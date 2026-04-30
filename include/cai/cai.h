@@ -272,6 +272,10 @@ struct cai_session {
                              cai_error *error);
   int (*import_state_source)(cai_session *session, cai_source *source,
                              cai_error *error);
+  int (*save_state_path)(cai_session *session, const char *path,
+                         cai_error *error);
+  int (*load_state_path)(cai_session *session, const char *path,
+                         cai_error *error);
   void (*close)(cai_session *session);
   void *impl;
 };
@@ -385,6 +389,10 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
                                     cai_error *error);
 int cai_session_import_state_source(cai_session *session, cai_source *source,
                                     cai_error *error);
+int cai_session_save_state_path(cai_session *session, const char *path,
+                                cai_error *error);
+int cai_session_load_state_path(cai_session *session, const char *path,
+                                cai_error *error);
 
 void cai_error_init(cai_error *error);
 void cai_error_cleanup(cai_error *error);

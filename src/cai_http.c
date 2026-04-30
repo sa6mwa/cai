@@ -443,7 +443,7 @@ int cai_http_json_request(cai_client *client, const char *method,
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&spooled, NULL);
   len = strlen(request_json);
-  if (lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
+  if (cai_lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(&spooled);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,

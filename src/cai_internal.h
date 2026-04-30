@@ -288,6 +288,9 @@ int cai_conversation_item_parse_json(const char *json,
                                      cai_error *error);
 int cai_source_from_spooled(lonejson_spooled *spool, cai_source **out,
                             cai_error *error);
+lonejson_status cai_lonejson_spooled_append(lonejson_spooled *value,
+                                            const void *data, size_t len,
+                                            lonejson_error *error);
 int cai_build_url(const cai_allocator *allocator, const char *base_url,
                   const char *path, char **out, cai_error *error);
 int cai_append_list_query_params(const cai_allocator *allocator, char **path,
