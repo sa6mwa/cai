@@ -429,6 +429,45 @@ static int cai_json_builder_string_spooled(cai_json_builder *builder,
   return cai_json_builder_lonejson_sink_finish(&sink_state, error);
 }
 
+static int cai_json_builder_raw_spooled(cai_json_builder *builder,
+                                        const lonejson_spooled *value,
+                                        cai_error *error) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result chunk;
+  unsigned char buffer[4096];
+  int rc;
+
+  if (value == NULL) {
+    return CAI_OK;
+  }
+  cursor = *value;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind spooled JSON",
+                                json_error.message);
+  }
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read spooled JSON");
+    }
+    if (chunk.bytes_read > 0U) {
+      rc = cai_json_builder_append(builder, (const char *)buffer,
+                                   chunk.bytes_read, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  return CAI_OK;
+}
+
 static lonejson_status cai_spooled_lonejson_sink(void *user, const void *data,
                                                  size_t len,
                                                  lonejson_error *error) {
@@ -672,6 +711,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->max_output_tokens = 0;
   params->parallel_tool_calls = -1;
   params->raw_input_json = NULL;
+  params->has_raw_input_spooled = 0;
   cai_object_array_init(&params->input, sizeof(struct cai_input_message));
   cai_object_array_init(&params->tools, sizeof(struct cai_function_tool));
   *out = params;
@@ -697,6 +737,9 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->text_format_description);
   cai_free_mem(&params->allocator, params->text_format_schema_json);
   cai_free_mem(&params->allocator, params->raw_input_json);
+  if (params->has_raw_input_spooled) {
+    lonejson_spooled_cleanup(&params->raw_input_spooled);
+  }
   messages = (struct cai_input_message *)params->input.items;
   for (i = 0U; i < params->input.count; i++) {
     cai_input_message_cleanup(&params->allocator, &messages[i]);
@@ -821,8 +864,30 @@ int cai_response_create_params_set_raw_input_json(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
   }
+  if (params->has_raw_input_spooled) {
+    lonejson_spooled_cleanup(&params->raw_input_spooled);
+    params->has_raw_input_spooled = 0;
+  }
   return cai_replace_string(&params->allocator, &params->raw_input_json,
                             raw_input_json, error);
+}
+
+int cai_response_create_params_set_raw_input_spooled(
+    cai_response_create_params *params, lonejson_spooled *raw_input_json,
+    cai_error *error) {
+  if (params == NULL || raw_input_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params and raw input spool are required");
+  }
+  cai_free_mem(&params->allocator, params->raw_input_json);
+  params->raw_input_json = NULL;
+  if (params->has_raw_input_spooled) {
+    lonejson_spooled_cleanup(&params->raw_input_spooled);
+  }
+  params->raw_input_spooled = *raw_input_json;
+  params->has_raw_input_spooled = 1;
+  memset(raw_input_json, 0, sizeof(*raw_input_json));
+  return CAI_OK;
 }
 
 static int
@@ -1134,10 +1199,9 @@ static int cai_serialize_function_tools_json(cai_json_builder *builder,
   return rc;
 }
 
-int cai_serialize_input_messages_json(cai_json_builder *builder,
-                                      const char *field_name,
-                                      const lonejson_object_array *input,
-                                      cai_error *error) {
+static int cai_serialize_input_message_items_json(
+    cai_json_builder *builder, const lonejson_object_array *input,
+    cai_error *error) {
   struct cai_input_message *messages;
   struct cai_content_part *parts;
   size_t i;
@@ -1148,10 +1212,7 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
   if (input == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "input messages are required");
   }
-  rc = cai_json_builder_string(builder, field_name, error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(builder, ":[", error);
-  }
+  rc = CAI_OK;
   messages = (struct cai_input_message *)input->items;
   for (i = 0U; rc == CAI_OK && i < input->count; i++) {
     if (i > 0U) {
@@ -1237,6 +1298,22 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
       rc = cai_json_builder_lit(builder, "]}", error);
     }
   }
+  return rc;
+}
+
+int cai_serialize_input_messages_json(cai_json_builder *builder,
+                                      const char *field_name,
+                                      const lonejson_object_array *input,
+                                      cai_error *error) {
+  int rc;
+
+  rc = cai_json_builder_string(builder, field_name, error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, ":[", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_input_message_items_json(builder, input, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_json_builder_lit(builder, "]", error);
   }
@@ -1300,18 +1377,57 @@ int cai_response_params_input_items_json(
   return CAI_OK;
 }
 
+int cai_response_params_input_items_spool(
+    const cai_response_create_params *params, lonejson_spooled *out,
+    size_t *out_len, cai_error *error) {
+  cai_json_builder builder;
+  lonejson_error json_error;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input JSON spool output pointer is required");
+  }
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(out, NULL);
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  builder.sink = cai_spooled_lonejson_sink;
+  builder.sink_user = out;
+  builder.sink_error = &json_error;
+  rc = cai_serialize_input_message_items_json(&builder, &params->input, error);
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(out);
+    return rc;
+  }
+  if (out_len != NULL) {
+    *out_len = builder.length;
+  }
+  return CAI_OK;
+}
+
 static int cai_response_create_params_write_json(
     const cai_response_create_params *params, cai_json_builder *builder,
     int stream, cai_error *error) {
   int need_comma;
+  int has_raw_input;
   int rc;
 
   if (params == NULL || params->model == NULL ||
       (params->input.count == 0U &&
+       !params->has_raw_input_spooled &&
        (params->raw_input_json == NULL || params->raw_input_json[0] == '\0'))) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model and at least one input message are required");
   }
+  has_raw_input =
+      params->has_raw_input_spooled ||
+      (params->raw_input_json != NULL && params->raw_input_json[0] != '\0');
   need_comma = 0;
   rc = cai_json_builder_lit(builder, "{", error);
   if (rc == CAI_OK) {
@@ -1350,32 +1466,26 @@ static int cai_response_create_params_write_json(
   if (rc == CAI_OK && need_comma) {
     rc = cai_json_builder_lit(builder, ",", error);
   }
-  if (rc == CAI_OK && (params->raw_input_json == NULL ||
-                       params->raw_input_json[0] == '\0')) {
+  if (rc == CAI_OK && !has_raw_input) {
     rc = cai_serialize_input_messages_json(builder, "input", &params->input,
                                            error);
-  } else if (rc == CAI_OK && params->raw_input_json != NULL &&
-             params->raw_input_json[0] != '\0') {
-    char *items_json;
-
-    items_json = NULL;
+  } else if (rc == CAI_OK && has_raw_input) {
     rc = cai_json_builder_string(builder, "input", error);
     if (rc == CAI_OK) {
       rc = cai_json_builder_lit(builder, ":[", error);
     }
-    if (rc == CAI_OK) {
+    if (rc == CAI_OK && params->has_raw_input_spooled) {
+      rc = cai_json_builder_raw_spooled(builder, &params->raw_input_spooled,
+                                        error);
+    } else if (rc == CAI_OK) {
       rc = cai_json_builder_lit(builder, params->raw_input_json, error);
     }
     if (rc == CAI_OK && params->input.count > 0U) {
       rc = cai_json_builder_lit(builder, ",", error);
     }
     if (rc == CAI_OK && params->input.count > 0U) {
-      items_json = NULL;
-      rc = cai_response_params_input_items_json(params, &items_json, error);
-      if (rc == CAI_OK) {
-        rc = cai_json_builder_lit(builder, items_json, error);
-      }
-      cai_free_mem(NULL, items_json);
+      rc = cai_serialize_input_message_items_json(builder, &params->input,
+                                                  error);
     }
     if (rc == CAI_OK) {
       rc = cai_json_builder_lit(builder, "]", error);
@@ -1859,6 +1969,83 @@ static int cai_spooled_array_items_json(const lonejson_spooled *array_json,
   return CAI_OK;
 }
 
+static int cai_spooled_array_items_spool(const lonejson_spooled *array_json,
+                                         lonejson_spooled *out,
+                                         size_t *out_len, cai_error *error) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result chunk;
+  unsigned char buffer[4096];
+  unsigned char held;
+  size_t i;
+  size_t length;
+  int seen_first;
+  int have_held;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "array JSON spool output pointer is required");
+  }
+  if (array_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "array JSON is required");
+  }
+  cursor = *array_json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind output item JSON",
+                                json_error.message);
+  }
+  lonejson_spooled_init(out, NULL);
+  held = '\0';
+  length = 0U;
+  seen_first = 0;
+  have_held = 0;
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      lonejson_spooled_cleanup(out);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read output item JSON");
+    }
+    for (i = 0U; i < chunk.bytes_read; i++) {
+      if (!seen_first) {
+        if (buffer[i] != '[') {
+          lonejson_spooled_cleanup(out);
+          return cai_set_error(error, CAI_ERR_PROTOCOL,
+                               "response output JSON is not an array");
+        }
+        seen_first = 1;
+        continue;
+      }
+      if (have_held) {
+        if (lonejson_spooled_append(out, &held, 1U, &json_error) !=
+            LONEJSON_STATUS_OK) {
+          lonejson_spooled_cleanup(out);
+          return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                      "failed to spool output item JSON",
+                                      json_error.message);
+        }
+        length++;
+      }
+      held = buffer[i];
+      have_held = 1;
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  if (!seen_first || !have_held || held != ']') {
+    lonejson_spooled_cleanup(out);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "unterminated response output JSON array");
+  }
+  if (out_len != NULL) {
+    *out_len = length;
+  }
+  return CAI_OK;
+}
+
 int cai_response_output_items_json(const cai_response *response,
                                    char **out_json, cai_error *error) {
   if (response == NULL) {
@@ -1866,6 +2053,16 @@ int cai_response_output_items_json(const cai_response *response,
   }
   return cai_spooled_array_items_json(&response->output_items_json, out_json,
                                       error);
+}
+
+int cai_response_output_items_spool(const cai_response *response,
+                                    lonejson_spooled *out, size_t *out_len,
+                                    cai_error *error) {
+  if (response == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "response is required");
+  }
+  return cai_spooled_array_items_spool(&response->output_items_json, out,
+                                       out_len, error);
 }
 
 const char *cai_response_error_code(const cai_response *response) {

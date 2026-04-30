@@ -124,6 +124,8 @@ struct cai_response_create_params {
   int max_output_tokens;
   int parallel_tool_calls;
   char *raw_input_json;
+  lonejson_spooled raw_input_spooled;
+  int has_raw_input_spooled;
   lonejson_object_array input;
   lonejson_object_array tools;
 };
@@ -226,6 +228,9 @@ int cai_response_create_params_spool_json(
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
     cai_error *error);
+int cai_response_create_params_set_raw_input_spooled(
+    cai_response_create_params *params, lonejson_spooled *raw_input_json,
+    cai_error *error);
 void cai_response_create_params_clear_input(cai_response_create_params *params);
 int cai_response_create_params_add_function_call_output_spooled(
     cai_response_create_params *params, const char *call_id,
@@ -233,6 +238,12 @@ int cai_response_create_params_add_function_call_output_spooled(
 int cai_response_params_input_items_json(
     const cai_response_create_params *params, char **out_json,
     cai_error *error);
+int cai_response_params_input_items_spool(
+    const cai_response_create_params *params, lonejson_spooled *out,
+    size_t *out_len, cai_error *error);
+int cai_response_output_items_spool(const cai_response *response,
+                                    lonejson_spooled *out, size_t *out_len,
+                                    cai_error *error);
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error);
 int cai_response_output_items_json(const cai_response *response,

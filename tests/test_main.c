@@ -75,6 +75,60 @@ static void write_file_or_die(const char *path, const char *text) {
   fclose(fp);
 }
 
+static char *test_spooled_to_cstr(lonejson_spooled *spool) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result chunk;
+  unsigned char buffer[256];
+  char *out;
+  char *grown;
+  size_t length;
+  size_t capacity;
+
+  out = NULL;
+  length = 0U;
+  capacity = 0U;
+  cursor = *spool;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return NULL;
+  }
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      free(out);
+      return NULL;
+    }
+    if (length + chunk.bytes_read + 1U > capacity) {
+      capacity = capacity == 0U ? 512U : capacity * 2U;
+      while (capacity < length + chunk.bytes_read + 1U) {
+        capacity *= 2U;
+      }
+      grown = (char *)realloc(out, capacity);
+      if (grown == NULL) {
+        free(out);
+        return NULL;
+      }
+      out = grown;
+    }
+    if (chunk.bytes_read > 0U) {
+      memcpy(out + length, buffer, chunk.bytes_read);
+      length += chunk.bytes_read;
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  if (out == NULL) {
+    out = (char *)malloc(1U);
+    if (out == NULL) {
+      return NULL;
+    }
+  }
+  out[length] = '\0';
+  return out;
+}
+
 static void test_model_capabilities(test_state *state) {
   const cai_model_info *info;
   cai_agent_config agent_config;
@@ -724,6 +778,95 @@ static void test_response_json(test_state *state) {
   expect_str(state, "output_written_text", writer.buffer, "hello world");
   cai_sink_close(sink);
   cai_output_destroy(output);
+  cai_response_destroy(response);
+  cai_error_cleanup(&error);
+}
+
+static void test_response_spooled_request_fragments(test_state *state) {
+  cai_response_create_params *params;
+  lonejson_spooled raw_items;
+  lonejson_spooled request_json;
+  lonejson_spooled output_items;
+  cai_response *response;
+  cai_error error;
+  lonejson_error json_error;
+  char *json;
+  size_t json_len;
+
+  static const char raw_fragment[] =
+      "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"remembered\"}]}";
+  static const char response_json[] =
+      "{\"id\":\"resp_spooled_items\",\"status\":\"completed\",\"output\":["
+      "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"spooled\"}]}],\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}";
+
+  cai_error_init(&error);
+  params = NULL;
+  response = NULL;
+  json = NULL;
+  expect_int(state, "spooled_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "spooled_params_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_4_NANO, &error),
+             CAI_OK);
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(&raw_items, NULL);
+  expect_int(state, "spooled_raw_append",
+             lonejson_spooled_append(&raw_items, raw_fragment,
+                                     strlen(raw_fragment), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "spooled_raw_set",
+             cai_response_create_params_set_raw_input_spooled(params, &raw_items,
+                                                              &error),
+             CAI_OK);
+  expect_int(state, "spooled_typed_add",
+             cai_response_create_params_add_text(params, "user", "next",
+                                                 &error),
+             CAI_OK);
+  expect_int(state, "spooled_request_json",
+             cai_response_create_params_spool_json(params, 0, &request_json,
+                                                   &json_len, &error),
+             CAI_OK);
+  json = test_spooled_to_cstr(&request_json);
+  if (json == NULL) {
+    test_fail(state, "spooled_request_json", "failed to read request spool");
+  } else {
+    if (strstr(json, "\"input\":[{\"type\":\"message\"") == NULL ||
+        strstr(json, "\"text\":\"remembered\"") == NULL ||
+        strstr(json, "\"role\":\"user\"") == NULL ||
+        strstr(json, "\"text\":\"next\"") == NULL ||
+        strstr(json, "\"text\":\"remembered\"") >
+            strstr(json, "\"text\":\"next\"")) {
+      test_fail(state, "spooled_request_json", "request did not merge fragments");
+    }
+    expect_int(state, "spooled_request_len", (long)strlen(json),
+               (long)json_len);
+    free(json);
+  }
+  lonejson_spooled_cleanup(&request_json);
+  cai_response_create_params_destroy(params);
+
+  expect_int(state, "spooled_response_parse",
+             cai_response_parse_json(response_json, &response, &error), CAI_OK);
+  expect_int(state, "spooled_output_items",
+             cai_response_output_items_spool(response, &output_items, &json_len,
+                                             &error),
+             CAI_OK);
+  json = test_spooled_to_cstr(&output_items);
+  if (json == NULL) {
+    test_fail(state, "spooled_output_items", "failed to read output spool");
+  } else {
+    if (json[0] == '[' || strstr(json, "\"text\":\"spooled\"") == NULL) {
+      test_fail(state, "spooled_output_items",
+                "output items were not spooled as array items");
+    }
+    expect_int(state, "spooled_output_len", (long)strlen(json), (long)json_len);
+    free(json);
+  }
+  lonejson_spooled_cleanup(&output_items);
   cai_response_destroy(response);
   cai_error_cleanup(&error);
 }
@@ -2555,6 +2698,7 @@ int main(void) {
   test_tool_registry(&state);
   test_client_open(&state);
   test_response_json(&state);
+  test_response_spooled_request_fragments(&state);
   test_http_create_response(&state);
   test_http_error_details(&state);
   test_agent_session(&state);
