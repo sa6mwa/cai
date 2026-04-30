@@ -27,6 +27,20 @@ static int stdout_sink_write(void *context, const void *bytes, size_t count,
   return CAI_OK;
 }
 
+static int stderr_sink_write(void *context, const void *bytes, size_t count,
+                             cai_error *error) {
+  (void)context;
+  (void)error;
+  if (count == 0U) {
+    return CAI_OK;
+  }
+  if (fwrite(bytes, 1U, count, stderr) != count) {
+    return CAI_ERR_TRANSPORT;
+  }
+  fflush(stderr);
+  return CAI_OK;
+}
+
 static void trim_newline(char *line) {
   size_t length;
 
@@ -60,11 +74,14 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
 int main(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
-  cai_sink_callbacks sink_callbacks;
+  cai_sink_callbacks stdout_callbacks;
+  cai_sink_callbacks stderr_callbacks;
+  cai_stream_sinks stream_sinks;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
-  cai_sink *sink;
+  cai_sink *stdout_sink;
+  cai_sink *stderr_sink;
   cai_error error;
   cai_token_usage usage;
   double context_percent;
@@ -80,10 +97,12 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.developer_instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
+  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   client = NULL;
   agent = NULL;
   session = NULL;
-  sink = NULL;
+  stdout_sink = NULL;
+  stderr_sink = NULL;
   exit_code = 1;
   total_spent_usd = 0.0;
 
@@ -102,14 +121,25 @@ int main(void) {
     exit_code = print_error("cai_agent_new_session", rc, &error);
     goto done;
   }
-  sink_callbacks.write = stdout_sink_write;
-  sink_callbacks.close = NULL;
-  sink_callbacks.context = NULL;
-  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  stdout_callbacks.write = stdout_sink_write;
+  stdout_callbacks.close = NULL;
+  stdout_callbacks.context = NULL;
+  rc = cai_sink_from_callbacks(&stdout_callbacks, &stdout_sink, &error);
   if (rc != CAI_OK) {
-    exit_code = print_error("cai_sink_from_callbacks", rc, &error);
+    exit_code = print_error("cai_sink_from_callbacks(stdout)", rc, &error);
     goto done;
   }
+  stderr_callbacks.write = stderr_sink_write;
+  stderr_callbacks.close = NULL;
+  stderr_callbacks.context = NULL;
+  rc = cai_sink_from_callbacks(&stderr_callbacks, &stderr_sink, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_sink_from_callbacks(stderr)", rc, &error);
+    goto done;
+  }
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = stdout_sink;
+  stream_sinks.reasoning_summary = stderr_sink;
 
   for (;;) {
     fputs("> ", stdout);
@@ -147,11 +177,13 @@ int main(void) {
     }
     rc = session->add_user_text(session, line, &error);
     if (rc == CAI_OK) {
-      rc = session->stream_text(session, sink, &error);
+      fputs("[reasoning] ", stderr);
+      rc = session->stream(session, &stream_sinks, &error);
+      fputc('\n', stderr);
     }
     fputc('\n', stdout);
     if (rc != CAI_OK) {
-      exit_code = print_error("cai_session_stream_text", rc, &error);
+      exit_code = print_error("cai_session_stream", rc, &error);
       break;
     }
     if (session->last_usage(session, &usage, &error) == CAI_OK) {
@@ -174,7 +206,8 @@ int main(void) {
   }
 
 done:
-  cai_sink_close(sink);
+  cai_sink_close(stderr_sink);
+  cai_sink_close(stdout_sink);
   if (session != NULL) {
     session->close(session);
   }

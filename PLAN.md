@@ -468,6 +468,18 @@ session->stream_text(session, sink, &error);
 session->run_output(session, &output, &error);
 ```
 
+For multi-channel streaming, `stream_text` remains answer-text only. Callers
+that want reasoning summaries or later event channels should pass explicit
+sinks:
+
+```c
+cai_stream_sinks sinks;
+cai_stream_sinks_init(&sinks);
+sinks.reasoning_summary = reasoning_sink;
+sinks.output_text = answer_sink;
+session->stream(session, &sinks, &error);
+```
+
 The agent/session facade intentionally exposes developer instructions and user
 inputs, not arbitrary role strings. OpenAI's current Responses guidance treats
 `instructions` as high-level developer behavior and shows `developer` messages

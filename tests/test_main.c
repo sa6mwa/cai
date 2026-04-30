@@ -1219,6 +1219,8 @@ static const char *mock_response_for_request(const char *request) {
       "\"output_tokens_details\":{\"reasoning_tokens\":1},"
       "\"total_tokens\":13}}}\n\n";
   static const char stream_session_second_body[] =
+      "data: {\"type\":\"response.reasoning_summary_text.delta\","
+      "\"delta\":\"thinking\"}\n\n"
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_session_2\"}}\n\n";
@@ -2706,8 +2708,11 @@ static void test_stream_response_text(test_state *state) {
   cai_source *source;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
+  cai_sink *reasoning_sink;
+  cai_stream_sinks stream_sinks;
   cai_token_usage usage;
   write_state writer;
+  write_state reasoning_writer;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -2748,10 +2753,14 @@ static void test_stream_response_text(test_state *state) {
   session = NULL;
   params = NULL;
   sink = NULL;
+  reasoning_sink = NULL;
   source = NULL;
   writer.length = 0U;
   writer.closed = 0;
   writer.buffer[0] = '\0';
+  reasoning_writer.length = 0U;
+  reasoning_writer.closed = 0;
+  reasoning_writer.buffer[0] = '\0';
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -2823,15 +2832,27 @@ static void test_stream_response_text(test_state *state) {
   writer.length = 0U;
   writer.closed = 0;
   writer.buffer[0] = '\0';
+  reasoning_writer.length = 0U;
+  reasoning_writer.closed = 0;
+  reasoning_writer.buffer[0] = '\0';
   expect_int(
       state, "stream_session_add_second",
       cai_session_add_user_text(session, "session stream two", &error),
       CAI_OK);
   expect_int(state, "stream_session_sink_create_second",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  sink_callbacks.context = &reasoning_writer;
+  expect_int(state, "stream_session_reasoning_sink_create_second",
+             cai_sink_from_callbacks(&sink_callbacks, &reasoning_sink, &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.reasoning_summary = reasoning_sink;
   expect_int(state, "stream_session_to_sink_second",
-             cai_session_stream_text(session, sink, &error), CAI_OK);
+             session->stream(session, &stream_sinks, &error), CAI_OK);
   expect_str(state, "stream_session_sink_value_second", writer.buffer, "two");
+  expect_str(state, "stream_session_reasoning_value_second",
+             reasoning_writer.buffer, "thinking");
   expect_int(state, "stream_session_usage_second",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_session_usage_second_total", usage.total_tokens,
@@ -2840,6 +2861,9 @@ static void test_stream_response_text(test_state *state) {
              usage.input_cached_tokens, 8L);
   cai_sink_close(sink);
   sink = NULL;
+  cai_sink_close(reasoning_sink);
+  reasoning_sink = NULL;
+  sink_callbacks.context = &writer;
 
   expect_int(
       state, "stream_session_source_add",

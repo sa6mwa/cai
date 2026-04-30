@@ -71,6 +71,8 @@ static int cai_agent_run_auto(cai_agent *agent, const cai_run_options *options,
 static int cai_agent_run_auto_output(cai_agent *agent,
                                      const cai_run_options *options,
                                      cai_output **out, cai_error *error);
+static int cai_agent_stream(cai_agent *agent, const cai_stream_sinks *sinks,
+                            cai_error *error);
 static int cai_agent_stream_text(cai_agent *agent, cai_sink *sink,
                                  cai_error *error);
 static int cai_agent_open_text_source(cai_agent *agent, cai_source **out,
@@ -1512,8 +1514,8 @@ int cai_session_run_auto_output(cai_session *session,
   return rc;
 }
 
-int cai_session_stream_text(cai_session *session, cai_sink *sink,
-                            cai_error *error) {
+int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
+                       cai_error *error) {
   cai_response_create_params *params;
   char *response_id;
   lonejson_spooled pending_items;
@@ -1521,9 +1523,10 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
   cai_token_usage usage;
   int rc;
 
-  if (session == NULL || sink == NULL) {
+  if (session == NULL || sinks == NULL ||
+      (sinks->output_text == NULL && sinks->reasoning_summary == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session and sink are required");
+                         "session and at least one stream sink are required");
   }
   params = NULL;
   response_id = NULL;
@@ -1537,8 +1540,9 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
                                             error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_text_with_id(
-        CAI_SESSION_AGENT_IMPL(session)->client, params, sink, &response_id, &usage, error);
+    rc = cai_client_stream_response_with_id(
+        CAI_SESSION_AGENT_IMPL(session)->client, params, sinks, &response_id,
+        &usage, error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_after_stream(session, &pending_items, has_pending_items,
@@ -1553,6 +1557,15 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
     cai_session_clear_inputs(session);
   }
   return rc;
+}
+
+int cai_session_stream_text(cai_session *session, cai_sink *sink,
+                            cai_error *error) {
+  cai_stream_sinks sinks;
+
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  return cai_session_stream(session, &sinks, error);
 }
 
 int cai_session_open_text_source(cai_session *session, cai_source **out,
@@ -1682,6 +1695,7 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->run_output = cai_agent_run_output;
   agent->run_auto = cai_agent_run_auto;
   agent->run_auto_output = cai_agent_run_auto_output;
+  agent->stream = cai_agent_stream;
   agent->stream_text = cai_agent_stream_text;
   agent->open_text_source = cai_agent_open_text_source;
   agent->send_text = cai_agent_send_text;
@@ -1701,6 +1715,7 @@ static void cai_session_init_methods(cai_session *session) {
   session->run_output = cai_session_run_output;
   session->run_auto = cai_session_run_auto;
   session->run_auto_output = cai_session_run_auto_output;
+  session->stream = cai_session_stream;
   session->stream_text = cai_session_stream_text;
   session->open_text_source = cai_session_open_text_source;
   session->send_text = cai_session_send_text;
@@ -1814,6 +1829,15 @@ static int cai_agent_run_auto_output(cai_agent *agent,
 
 static int cai_agent_stream_text(cai_agent *agent, cai_sink *sink,
                                  cai_error *error) {
+  cai_stream_sinks sinks;
+
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  return cai_agent_stream(agent, &sinks, error);
+}
+
+static int cai_agent_stream(cai_agent *agent, const cai_stream_sinks *sinks,
+                            cai_error *error) {
   cai_session *session;
   int rc;
 
@@ -1821,7 +1845,7 @@ static int cai_agent_stream_text(cai_agent *agent, cai_sink *sink,
   if (rc != CAI_OK) {
     return rc;
   }
-  return cai_session_stream_text(session, sink, error);
+  return cai_session_stream(session, sinks, error);
 }
 
 static int cai_agent_open_text_source(cai_agent *agent, cai_source **out,

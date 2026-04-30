@@ -48,11 +48,12 @@ cmake --build --preset debug --target cai_example_streaming_text
 
 Run a small terminal chat agent that reads prompts from stdin, streams response
 tokens to stdout, keeps context through cai's `previous_response_id` session
-mode with server-side auto-compaction enabled by default, and prints token usage
-plus context window percentage and estimated cumulative USD cost to stderr after
-each turn. Cost is estimated locally from model pricing metadata and response
-usage; it is not a billing-grade invoice value. Exit with Ctrl-D at an empty
-prompt, `/quit`, or `/exit`. Use `/compact` to trigger the experimental manual
+mode with server-side auto-compaction enabled by default, streams reasoning
+summaries to stderr when the API provides them, and prints token usage plus
+context window percentage and estimated cumulative USD cost to stderr after each
+turn. Cost is estimated locally from model pricing metadata and response usage;
+it is not a billing-grade invoice value. Exit with Ctrl-D at an empty prompt,
+`/quit`, or `/exit`. Use `/compact` to trigger the experimental manual
 compaction path for the current session.
 
 ```sh

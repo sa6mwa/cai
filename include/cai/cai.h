@@ -149,6 +149,11 @@ typedef struct cai_sink_callbacks {
   void *context;
 } cai_sink_callbacks;
 
+typedef struct cai_stream_sinks {
+  cai_sink *reasoning_summary;
+  cai_sink *output_text;
+} cai_stream_sinks;
+
 typedef int (*cai_tool_fn)(void *context, const void *params, void *result,
                            cai_error *error);
 typedef cai_tool_fn cai_tool_lonejson_fn;
@@ -191,6 +196,8 @@ struct cai_agent {
                   cai_response **out, cai_error *error);
   int (*run_auto_output)(cai_agent *agent, const cai_run_options *options,
                          cai_output **out, cai_error *error);
+  int (*stream)(cai_agent *agent, const cai_stream_sinks *sinks,
+                cai_error *error);
   int (*stream_text)(cai_agent *agent, cai_sink *sink, cai_error *error);
   int (*open_text_source)(cai_agent *agent, cai_source **out,
                           cai_error *error);
@@ -224,6 +231,8 @@ struct cai_session {
   int (*run_auto_output)(cai_session *session,
                          const cai_run_options *options, cai_output **out,
                          cai_error *error);
+  int (*stream)(cai_session *session, const cai_stream_sinks *sinks,
+                cai_error *error);
   int (*stream_text)(cai_session *session, cai_sink *sink, cai_error *error);
   int (*open_text_source)(cai_session *session, cai_source **out,
                           cai_error *error);
@@ -321,6 +330,8 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
 int cai_session_run_auto_output(cai_session *session,
                                 const cai_run_options *options,
                                 cai_output **out, cai_error *error);
+int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
+                       cai_error *error);
 int cai_session_stream_text(cai_session *session, cai_sink *sink,
                             cai_error *error);
 int cai_session_open_text_source(cai_session *session, cai_source **out,
@@ -355,6 +366,7 @@ int cai_sink_from_lc(struct lc_sink *sink, cai_sink **out, cai_error *error);
 int cai_sink_write(cai_sink *sink, const void *bytes, size_t count,
                    cai_error *error);
 void cai_sink_close(cai_sink *sink);
+void cai_stream_sinks_init(cai_stream_sinks *sinks);
 
 int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
                             cai_error *error);

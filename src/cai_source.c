@@ -138,6 +138,13 @@ void cai_sink_close(cai_sink *sink) {
   cai_free_mem(NULL, sink);
 }
 
+void cai_stream_sinks_init(cai_stream_sinks *sinks) {
+  if (sinks == NULL) {
+    return;
+  }
+  memset(sinks, 0, sizeof(*sinks));
+}
+
 int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
                             cai_error *error) {
   (void)output;

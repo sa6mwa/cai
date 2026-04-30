@@ -83,7 +83,7 @@ LONEJSON_MAP_DEFINE(cai_stream_delta_map, cai_stream_delta_doc,
                     cai_stream_delta_fields);
 
 typedef struct cai_sse_state {
-  cai_sink *sink;
+  cai_stream_sinks sinks;
   char **out_response_id;
   cai_token_usage *out_usage;
   char *body;
@@ -189,10 +189,19 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   }
   rc = CAI_OK;
   if (doc.type != NULL && strcmp(doc.type, "response.output_text.delta") == 0 &&
-      doc.delta != NULL) {
+      doc.delta != NULL && state->sinks.output_text != NULL) {
     length = strlen(doc.delta);
     if (length > 0U) {
-      rc = cai_sink_write(state->sink, doc.delta, length, NULL);
+      rc = cai_sink_write(state->sinks.output_text, doc.delta, length, NULL);
+    }
+  } else if (doc.type != NULL &&
+             (strcmp(doc.type, "response.reasoning_summary_text.delta") == 0 ||
+              strcmp(doc.type, "response.reasoning_summary.delta") == 0) &&
+             doc.delta != NULL && state->sinks.reasoning_summary != NULL) {
+    length = strlen(doc.delta);
+    if (length > 0U) {
+      rc = cai_sink_write(state->sinks.reasoning_summary, doc.delta, length,
+                          NULL);
     }
   }
   if (rc == CAI_OK && state->out_response_id != NULL &&
@@ -285,6 +294,17 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
 int cai_client_stream_response_text_json_with_id(
     cai_client *client, const char *request_json, cai_sink *sink,
     char **out_response_id, cai_token_usage *out_usage, cai_error *error) {
+  cai_stream_sinks sinks;
+
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  return cai_client_stream_response_json_with_id(
+      client, request_json, &sinks, out_response_id, out_usage, error);
+}
+
+int cai_client_stream_response_json_with_id(
+    cai_client *client, const char *request_json, const cai_stream_sinks *sinks,
+    char **out_response_id, cai_token_usage *out_usage, cai_error *error) {
   lonejson_spooled spooled;
   lonejson_error json_error;
   size_t len;
@@ -303,8 +323,8 @@ int cai_client_stream_response_text_json_with_id(
                                 json_error.message);
   }
   {
-    int rc = cai_client_stream_response_text_spooled_with_id(
-        client, &spooled, len, sink, out_response_id, out_usage, error);
+    int rc = cai_client_stream_response_spooled_with_id(
+        client, &spooled, len, sinks, out_response_id, out_usage, error);
     lonejson_spooled_cleanup(&spooled);
     return rc;
   }
@@ -314,6 +334,19 @@ int cai_client_stream_response_text_spooled_with_id(
     cai_client *client, const lonejson_spooled *request_json,
     size_t request_json_len, cai_sink *sink, char **out_response_id,
     cai_token_usage *out_usage, cai_error *error) {
+  cai_stream_sinks sinks;
+
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  return cai_client_stream_response_spooled_with_id(
+      client, request_json, request_json_len, &sinks, out_response_id,
+      out_usage, error);
+}
+
+int cai_client_stream_response_spooled_with_id(
+    cai_client *client, const lonejson_spooled *request_json,
+    size_t request_json_len, const cai_stream_sinks *sinks,
+    char **out_response_id, cai_token_usage *out_usage, cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -324,9 +357,11 @@ int cai_client_stream_response_text_spooled_with_id(
   long http_status;
   int rc;
 
-  if (client == NULL || request_json == NULL || sink == NULL) {
+  if (client == NULL || request_json == NULL || sinks == NULL ||
+      (sinks->output_text == NULL && sinks->reasoning_summary == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "client, request JSON, and sink are required");
+                         "client, request JSON, and at least one stream sink "
+                         "are required");
   }
   url = NULL;
   headers = NULL;
@@ -336,7 +371,7 @@ int cai_client_stream_response_text_spooled_with_id(
   if (out_usage != NULL) {
     memset(out_usage, 0, sizeof(*out_usage));
   }
-  state.sink = sink;
+  state.sinks = *sinks;
   state.out_response_id = out_response_id;
   state.out_usage = out_usage;
   state.body = NULL;
@@ -446,6 +481,18 @@ int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
     cai_sink *sink, char **out_response_id, cai_token_usage *out_usage,
     cai_error *error) {
+  cai_stream_sinks sinks;
+
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  return cai_client_stream_response_with_id(client, params, &sinks,
+                                            out_response_id, out_usage, error);
+}
+
+int cai_client_stream_response_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error) {
   lonejson_spooled request_json;
   size_t request_json_len;
   int rc;
@@ -462,8 +509,8 @@ int cai_client_stream_response_text_with_id(
   rc = cai_response_create_params_spool_json(params, 1, &request_json,
                                              &request_json_len, error);
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_text_spooled_with_id(
-        client, &request_json, request_json_len, sink, out_response_id,
+    rc = cai_client_stream_response_spooled_with_id(
+        client, &request_json, request_json_len, sinks, out_response_id,
         out_usage, error);
     lonejson_spooled_cleanup(&request_json);
   }
