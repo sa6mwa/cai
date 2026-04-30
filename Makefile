@@ -6,13 +6,13 @@ ROOT := $(CURDIR)
 CMAKE := cmake
 CTEST := ctest
 
-.PHONY: help build build-debug test test-debug test-live asan test-asan format clean
+.PHONY: help build build-debug test test-debug test-integration asan test-asan format clean
 
 help:
 	@printf '%s\n' \
 		'make build        Configure and build the debug preset.' \
 		'make test         Build and run the debug unit tests.' \
-		'make test-live    Run opt-in live OpenAI tests when CAI_ENABLE_LIVE_TESTS=1.' \
+		'make test-integration  Run opt-in OpenAI API integration tests.' \
 		'make asan         Build and run the ASan/UBSan unit tests.' \
 		'make format       Run clang-format over repo C sources.' \
 		'make clean        Remove generated build outputs.'
@@ -28,14 +28,14 @@ test: test-debug
 test-debug: build-debug
 	$(CTEST) --preset debug
 
-test-live:
-	@if [[ "$${CAI_ENABLE_LIVE_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run live OpenAI tests without CAI_ENABLE_LIVE_TESTS=1'; \
+test-integration:
+	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
+		printf '%s\n' 'Refusing to run integration tests without CAI_ENABLE_INTEGRATION_TESTS=1'; \
 		exit 2; \
 	fi
-	$(CMAKE) --preset live
-	$(CMAKE) --build --preset live
-	$(CTEST) --preset live
+	$(CMAKE) --preset integration
+	$(CMAKE) --build --preset integration
+	$(CTEST) --preset integration
 
 asan:
 	$(CMAKE) --preset asan

@@ -16,7 +16,7 @@
         "CAI_BUILD_STATIC": "ON",
         "CAI_BUILD_SHARED": "ON",
         "CAI_BUILD_TESTS": "ON",
-        "CAI_BUILD_LIVE_TESTS": "OFF",
+        "CAI_BUILD_INTEGRATION_TESTS": "OFF",
         "CAI_ENABLE_COVERAGE": "OFF",
         "CAI_INSTALL": "ON"
       }
@@ -51,10 +51,10 @@
       }
     },
     {
-      "name": "live",
+      "name": "integration",
       "inherits": "debug",
       "cacheVariables": {
-        "CAI_BUILD_LIVE_TESTS": "ON"
+        "CAI_BUILD_INTEGRATION_TESTS": "ON"
       }
     }
   ],
@@ -76,8 +76,8 @@
       "configurePreset": "coverage"
     },
     {
-      "name": "live",
-      "configurePreset": "live"
+      "name": "integration",
+      "configurePreset": "integration"
     }
   ],
   "testPresets": [
@@ -110,11 +110,11 @@
       }
     },
     {
-      "name": "live",
-      "configurePreset": "live",
+      "name": "integration",
+      "configurePreset": "integration",
       "filter": {
         "include": {
-          "label": "live"
+          "label": "integration"
         }
       },
       "output": {

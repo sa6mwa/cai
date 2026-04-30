@@ -34,14 +34,14 @@ application.
 - Tool execution: synchronous local C callbacks only in the first version.
 - Default SDK model: no hidden default for production SDK calls. Callers must
   choose a model explicitly.
-- Development/live-test model: `gpt-5-nano`, unless the live environment
-  rejects it. This is the default for examples and live tests because it is the
-  cheapest currently intended development model.
+- Development/integration-test model: `gpt-5-nano`, unless the integration
+  environment rejects it. This is the default for examples and integration
+  tests because it is the cheapest currently intended development model.
 - Session auto-compaction defaults to enabled and uses Responses server-side
   compaction by sending `context_management` with a resolved
   `compact_threshold` token count. Callers opt out with
   `disable_auto_compaction`.
-- Unit tests never hit OpenAI. Live integration tests require explicit opt-in.
+- Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
   the inherited `OPENAI_API_KEY`.
@@ -674,15 +674,15 @@ The mock server can use POSIX sockets directly. TLS is not required for the
 first mock milestone if the SDK supports configurable `http://` base URLs for
 tests.
 
-### Live integration tests
+### Integration tests
 
-Live tests hit OpenAI only when explicitly enabled:
+Integration tests hit OpenAI only when explicitly enabled:
 
 ```sh
-CAI_ENABLE_LIVE_TESTS=1 make test-live
+CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration
 ```
 
-Live tests:
+Integration tests:
 
 - Resolve API key through the same `.env` precedence rules as the SDK.
 - Use `CAI_TEST_MODEL` if set, otherwise `gpt-5-nano`.
@@ -816,7 +816,7 @@ Resolved:
 - Auto-compaction defaults to enabled and uses server-side Responses
   compaction. Standalone `/responses/compact` remains available only as an
   experimental lower-level/manual path for now.
-- Live tests and examples default to `gpt-5-nano`.
+- Integration tests and examples default to `gpt-5-nano`.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead
   of faux streaming through full in-memory materialization.

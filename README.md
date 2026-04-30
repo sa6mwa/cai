@@ -28,7 +28,7 @@ example layers settle.
 - Production SDK calls should choose a model explicitly.
 - Session auto-compaction is enabled by default and uses Responses
   server-side compaction.
-- Examples and live development tests default to `gpt-5-nano`.
+- Examples and integration development tests default to `gpt-5-nano`.
 
 ## Agent Instructions
 
@@ -178,17 +178,17 @@ Relevant OpenAI documentation:
 - <https://platform.openai.com/docs/models/compare>
 - <https://platform.openai.com/docs/api-reference/responses>
 
-## Live Integration Tests
+## Integration Tests
 
-The default test suite is offline. Live tests intentionally spend API tokens and
+The default test suite is offline. Integration tests intentionally spend API tokens and
 must be run explicitly:
 
 ```sh
-build/live/cai_live_tests
-CAI_LIVE_E2E=1 build/live/cai_live_tests
+build/integration/cai_integration_tests
+CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 ```
 
-`CAI_LIVE_E2E=1` runs a 20-turn session regression against the real Responses
+`CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,
 the first-turn secret, and the previous-turn secret so the test fails if
 session continuity breaks.
@@ -197,10 +197,10 @@ The e2e path enforces a local estimated spend cap using actual token usage and
 compiled model pricing metadata. The default cap is `$0.02`; override it with:
 
 ```sh
-CAI_LIVE_SPEND_LIMIT_USD=0.05 CAI_LIVE_E2E=1 build/live/cai_live_tests
+CAI_INTEGRATION_SPEND_LIMIT_USD=0.05 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 ```
 
 OpenAI exposes organization-level Usage and Costs APIs, but those are not a
 simple per-secret-key spend-limit API and may require admin-scoped credentials.
-For the live regression gate, cai therefore treats local estimated spend as the
+For the integration regression gate, cai therefore treats local estimated spend as the
 hard stop and uses OpenAI billing/cost APIs only as future optional telemetry.

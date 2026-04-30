@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CAI_LIVE_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
+#define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -14,7 +14,7 @@ static void print_error(const char *operation, int rc, const cai_error *error) {
   }
 }
 
-static const char *live_model(void) {
+static const char *integration_model(void) {
   const char *model;
 
   model = getenv("CAI_TEST_MODEL");
@@ -33,7 +33,7 @@ static int run_basic_response(void) {
   cai_error error;
   int rc;
 
-  model = live_model();
+  model = integration_model();
   cai_error_init(&error);
   cai_client_config_init(&client_config);
   client = NULL;
@@ -57,12 +57,12 @@ static int run_basic_response(void) {
     rc = cai_client_create_response(client, params, &response, &error);
   }
   if (rc != CAI_OK) {
-    print_error("live response", rc, &error);
+    print_error("integration response", rc, &error);
     goto done;
   }
   if (cai_response_output_text(response) == NULL ||
       cai_response_output_text(response)[0] == '\0') {
-    fprintf(stderr, "live response had no output text\n");
+    fprintf(stderr, "integration response had no output text\n");
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
@@ -86,16 +86,16 @@ static int send_and_destroy(cai_session *session, const char *text,
   return rc;
 }
 
-static double live_spend_limit_usd(void) {
+static double integration_spend_limit_usd(void) {
   const char *value;
   double parsed;
 
-  value = getenv("CAI_LIVE_SPEND_LIMIT_USD");
+  value = getenv("CAI_INTEGRATION_SPEND_LIMIT_USD");
   if (value == NULL || value[0] == '\0') {
-    return CAI_LIVE_E2E_DEFAULT_SPEND_LIMIT_USD;
+    return CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD;
   }
   parsed = atof(value);
-  return parsed > 0.0 ? parsed : CAI_LIVE_E2E_DEFAULT_SPEND_LIMIT_USD;
+  return parsed > 0.0 ? parsed : CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD;
 }
 
 static double usage_estimate_usd(const char *model,
@@ -161,9 +161,9 @@ static int run_e2e_session_regression(void) {
   agent = NULL;
   session = NULL;
   response = NULL;
-  model = live_model();
+  model = integration_model();
   spent_usd = 0.0;
-  limit_usd = live_spend_limit_usd();
+  limit_usd = integration_spend_limit_usd();
 
   agent_config.model = model;
   agent_config.developer_instructions =
@@ -217,7 +217,7 @@ static int run_e2e_session_regression(void) {
         !answer_contains_previous_secret(answer, previous_secret) ||
         !answer_contains(answer, current_secret)) {
       fprintf(stderr,
-              "live e2e turn %d failed content check\nexpected: %s %s %s %s\n"
+              "integration e2e turn %d failed content check\nexpected: %s %s %s %s\n"
               "answer: %s\n",
               turn, expected_turn, expected_first, expected_previous,
               expected_current, answer != NULL ? answer : "(null)");
@@ -228,19 +228,19 @@ static int run_e2e_session_regression(void) {
     if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
       spent_usd += usage_estimate_usd(model, &usage);
       fprintf(stderr,
-              "[live-e2e] turn=%d tokens=%lld cached=%lld estimated_cost=$%.8f"
+              "[integration-e2e] turn=%d tokens=%lld cached=%lld estimated_cost=$%.8f"
               " limit=$%.8f\n",
               turn, usage.total_tokens, usage.input_cached_tokens, spent_usd,
               limit_usd);
       if (spent_usd > limit_usd) {
         fprintf(stderr,
-                "live e2e estimated spend exceeded limit: %.8f > %.8f\n",
+                "integration e2e estimated spend exceeded limit: %.8f > %.8f\n",
                 spent_usd, limit_usd);
         rc = CAI_ERR_INVALID;
         break;
       }
     } else {
-      print_error("live e2e usage", error.code, &error);
+      print_error("integration e2e usage", error.code, &error);
       rc = error.code != CAI_OK ? error.code : CAI_ERR_PROTOCOL;
       break;
     }
@@ -249,7 +249,7 @@ static int run_e2e_session_regression(void) {
   }
 
   if (rc != CAI_OK) {
-    print_error("live e2e session regression", rc, &error);
+    print_error("integration e2e session regression", rc, &error);
   }
   cai_response_destroy(response);
   cai_session_destroy(session);
@@ -278,7 +278,7 @@ static int run_compaction_recall(void) {
   session = NULL;
   response = NULL;
 
-  agent_config.model = live_model();
+  agent_config.model = integration_model();
   agent_config.developer_instructions =
       "You are a deterministic recall test assistant. Store compact test "
       "facts exactly. When asked to recall them, answer with only the stored "
@@ -313,7 +313,7 @@ static int run_compaction_recall(void) {
         &response, &error);
   }
   if (rc != CAI_OK) {
-    print_error("live compaction recall", rc, &error);
+    print_error("integration compaction recall", rc, &error);
     goto done;
   }
   answer = cai_response_output_text(response);
@@ -338,11 +338,11 @@ int main(void) {
   const char *compaction;
   const char *e2e;
 
-  e2e = getenv("CAI_LIVE_E2E");
+  e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
     return run_e2e_session_regression();
   }
-  compaction = getenv("CAI_LIVE_COMPACTION");
+  compaction = getenv("CAI_INTEGRATION_COMPACTION");
   if (compaction != NULL && compaction[0] != '\0' &&
       strcmp(compaction, "0") != 0) {
     return run_compaction_recall();
