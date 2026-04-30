@@ -895,6 +895,15 @@ static int cai_session_remember_response(cai_session *session,
   return rc;
 }
 
+static int cai_token_usage_is_empty(const cai_token_usage *usage) {
+  if (usage == NULL) {
+    return 1;
+  }
+  return usage->input_tokens == 0LL && usage->input_cached_tokens == 0LL &&
+         usage->output_tokens == 0LL &&
+         usage->output_reasoning_tokens == 0LL && usage->total_tokens == 0LL;
+}
+
 int cai_session_compact_experimental(cai_session *session, cai_error *error) {
   cai_response_create_params *params;
   cai_response *response;
@@ -1077,12 +1086,27 @@ static int cai_session_remember_stream(cai_session *session,
                                        const char *response_id,
                                        const cai_token_usage *usage,
                                        cai_error *error) {
+  cai_response *response;
   int rc;
 
   rc = cai_session_remember_response_id(session, response_id, error);
-  if (rc == CAI_OK && usage != NULL) {
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!cai_token_usage_is_empty(usage)) {
     session->last_usage = *usage;
     session->has_last_usage = 1;
+    return CAI_OK;
+  }
+  response = NULL;
+  rc = cai_client_retrieve_response(session->agent->client, response_id,
+                                    &response, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_remember_response(session, response, error);
+  }
+  cai_response_destroy(response);
+  if (rc != CAI_OK) {
+    session->has_last_usage = 0;
   }
   return rc;
 }

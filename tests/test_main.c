@@ -1142,10 +1142,14 @@ static const char *mock_response_for_request(const char *request) {
   static const char stream_session_second_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_session_2\",\"usage\":{\"input_tokens\":20,"
-      "\"input_tokens_details\":{\"cached_tokens\":8},\"output_tokens\":4,"
-      "\"output_tokens_details\":{\"reasoning_tokens\":2},"
-      "\"total_tokens\":24}}}\n\n";
+      "\"resp_stream_session_2\"}}\n\n";
+  static const char stream_session_second_retrieve_body[] =
+      "{\"id\":\"resp_stream_session_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"output_text\",\"text\":\"two\"}]}],\"usage\":{"
+      "\"input_tokens\":20,\"input_tokens_details\":{\"cached_tokens\":8},"
+      "\"output_tokens\":4,\"output_tokens_details\":{\"reasoning_tokens\":2},"
+      "\"total_tokens\":24}}";
   static const char stream_session_source_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
@@ -1327,6 +1331,10 @@ static const char *mock_response_for_request(const char *request) {
   if (strstr(request, "GET /v1/responses/resp_stream_history_1 HTTP/") !=
       NULL) {
     return stream_history_first_retrieve_body;
+  }
+  if (strstr(request, "GET /v1/responses/resp_stream_session_2 HTTP/") !=
+      NULL) {
+    return stream_session_second_retrieve_body;
   }
   if (strstr(request, "GET /v1/responses/resp_stream_history_2 HTTP/") !=
       NULL) {
@@ -2589,7 +2597,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 6);
+    mock_openai_child(pipe_fds[1], 7);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -2698,6 +2706,12 @@ static void test_stream_response_text(test_state *state) {
   expect_int(state, "stream_session_to_sink_second",
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_session_sink_value_second", writer.buffer, "two");
+  expect_int(state, "stream_session_usage_second",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_session_usage_second_total", usage.total_tokens,
+             24L);
+  expect_int(state, "stream_session_usage_second_cached",
+             usage.input_cached_tokens, 8L);
   cai_sink_close(sink);
   sink = NULL;
 
