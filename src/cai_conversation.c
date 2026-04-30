@@ -14,6 +14,13 @@ static const lonejson_field cai_conversation_fields[] = {
 LONEJSON_MAP_DEFINE(cai_conversation_map, cai_conversation_doc,
                     cai_conversation_fields);
 
+static lonejson_status cai_conversation_spooled_sink(void *user,
+                                                     const void *data,
+                                                     size_t len,
+                                                     lonejson_error *error) {
+  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+}
+
 static void cai_conversation_object_array_init(lonejson_object_array *array,
                                                size_t elem_size) {
   array->items = NULL;
@@ -753,27 +760,29 @@ int cai_conversation_items_params_add_file_data_spooled(
   return rc;
 }
 
-static int cai_conversation_items_params_serialize_json(
-    const cai_conversation_items_params *params, char **out_json,
-    cai_error *error) {
+static int cai_conversation_items_params_spool_json(
+    const cai_conversation_items_params *params, lonejson_spooled *out,
+    size_t *out_len, cai_error *error) {
   cai_json_builder builder;
+  lonejson_error json_error;
   int rc;
 
-  if (out_json == NULL) {
+  if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "JSON output pointer is required");
+                         "JSON spool output pointer is required");
   }
-  *out_json = NULL;
   if (params == NULL || params->items.count == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "at least one conversation item is required");
   }
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(out, NULL);
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
-  builder.sink = NULL;
-  builder.sink_user = NULL;
-  builder.sink_error = NULL;
+  builder.sink = cai_conversation_spooled_sink;
+  builder.sink_user = out;
+  builder.sink_error = &json_error;
   rc = cai_json_builder_lit(&builder, "{", error);
   if (rc == CAI_OK) {
     rc = cai_serialize_input_messages_json(&builder, "items", &params->items,
@@ -783,10 +792,12 @@ static int cai_conversation_items_params_serialize_json(
     rc = cai_json_builder_lit(&builder, "}", error);
   }
   if (rc != CAI_OK) {
-    cai_free_mem(NULL, builder.data);
+    lonejson_spooled_cleanup(out);
     return rc;
   }
-  *out_json = builder.data;
+  if (out_len != NULL) {
+    *out_len = builder.length;
+  }
   return CAI_OK;
 }
 
@@ -795,7 +806,9 @@ int cai_client_create_conversation_items(
     const cai_conversation_items_params *params, cai_input_item_list **out,
     cai_error *error) {
   char *path;
-  char *body;
+  lonejson_spooled body;
+  size_t body_len;
+  int has_body;
   char *json;
   char *request_id;
   long http_status;
@@ -807,23 +820,29 @@ int cai_client_create_conversation_items(
   }
   *out = NULL;
   path = NULL;
-  body = NULL;
+  memset(&body, 0, sizeof(body));
+  body_len = 0U;
+  has_body = 0;
   json = NULL;
   request_id = NULL;
-  rc = cai_conversation_items_params_serialize_json(params, &body, error);
+  rc = cai_conversation_items_params_spool_json(params, &body, &body_len,
+                                               error);
   if (rc != CAI_OK) {
     return rc;
   }
+  has_body = 1;
   rc = cai_build_conversation_path(client, conversation_id, "/items", &path,
                                    error);
   if (rc != CAI_OK) {
-    free(body);
+    lonejson_spooled_cleanup(&body);
     return rc;
   }
-  rc = cai_http_json_request(client, "POST", path, body, &json, &http_status,
-                             &request_id, error);
+  rc = cai_http_json_request_spooled(client, "POST", path, &body, body_len,
+                                     &json, &http_status, &request_id, error);
   cai_free_mem(client != NULL ? &client->allocator : NULL, path);
-  free(body);
+  if (has_body) {
+    lonejson_spooled_cleanup(&body);
+  }
   if (rc != CAI_OK) {
     return rc;
   }
