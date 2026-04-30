@@ -199,6 +199,9 @@ typedef struct cai_json_builder {
   char *data;
   size_t length;
   size_t capacity;
+  lonejson_sink_fn sink;
+  void *sink_user;
+  lonejson_error *sink_error;
 } cai_json_builder;
 
 int cai_json_builder_lit(cai_json_builder *builder, const char *text,
@@ -217,6 +220,9 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error);
+int cai_response_create_params_spool_json(
+    const cai_response_create_params *params, int stream,
+    lonejson_spooled *out, size_t *out_len, cai_error *error);
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
     cai_error *error);
@@ -254,9 +260,19 @@ int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
                           char **out_request_id, cai_error *error);
+int cai_http_json_request_spooled(cai_client *client, const char *method,
+                                  const char *path,
+                                  const lonejson_spooled *request_json,
+                                  size_t request_json_len, char **out_json,
+                                  long *out_http_status,
+                                  char **out_request_id, cai_error *error);
 int cai_client_stream_response_text_json_with_id(
     cai_client *client, const char *request_json, cai_sink *sink,
     char **out_response_id, cai_token_usage *out_usage, cai_error *error);
+int cai_client_stream_response_text_spooled_with_id(
+    cai_client *client, const lonejson_spooled *request_json,
+    size_t request_json_len, cai_sink *sink, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error);
 typedef int (*cai_stream_complete_fn)(void *context, const char *response_id,
                                       const cai_token_usage *usage);
 int cai_client_open_response_text_source_with_complete(

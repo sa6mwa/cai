@@ -291,6 +291,9 @@ int cai_client_update_conversation_metadata(cai_client *client,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
   path = NULL;
   rc = cai_json_builder_lit(&builder, "{\"metadata\":", error);
   if (rc == CAI_OK) {
@@ -646,6 +649,9 @@ static int cai_conversation_items_params_serialize_json(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
   rc = cai_json_builder_lit(&builder, "{", error);
   if (rc == CAI_OK) {
     rc = cai_serialize_input_messages_json(&builder, "items", &params->items,

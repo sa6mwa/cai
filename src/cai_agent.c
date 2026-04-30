@@ -743,6 +743,9 @@ static int cai_history_to_array_items(cai_session *session, char **out,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
   reader.cursor = session->history;
   reader.offset = 0U;
   reader.length = 0U;
@@ -876,6 +879,9 @@ cai_session_prepare_history_params(cai_session *session,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
   if (rc == CAI_OK) {
     rc = cai_json_builder_lit(&builder, history_items, error);
   }
@@ -925,8 +931,10 @@ static int cai_session_remember_response(cai_session *session,
 static int cai_session_compact(cai_session *session, cai_error *error) {
   cai_response_create_params *params;
   cai_response *response;
+  lonejson_spooled request_json;
+  size_t request_json_len;
+  int has_request_json;
   char *history_items;
-  char *request_json;
   char *body;
   char *request_id;
   char *output_items;
@@ -935,8 +943,10 @@ static int cai_session_compact(cai_session *session, cai_error *error) {
 
   params = NULL;
   response = NULL;
+  memset(&request_json, 0, sizeof(request_json));
+  request_json_len = 0U;
+  has_request_json = 0;
   history_items = NULL;
-  request_json = NULL;
   body = NULL;
   request_id = NULL;
   output_items = NULL;
@@ -958,13 +968,16 @@ static int cai_session_compact(cai_session *session, cai_error *error) {
     params->previous_response_id = NULL;
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_serialize_json(params, &request_json, NULL,
-                                                   error);
+    rc = cai_response_create_params_spool_json(params, 0, &request_json,
+                                               &request_json_len, error);
+    if (rc == CAI_OK) {
+      has_request_json = 1;
+    }
   }
   if (rc == CAI_OK) {
-    rc = cai_http_json_request(session->agent->client, "POST",
-                               "responses/compact", request_json, &body,
-                               &http_status, &request_id, error);
+    rc = cai_http_json_request_spooled(
+        session->agent->client, "POST", "responses/compact", &request_json,
+        request_json_len, &body, &http_status, &request_id, error);
   }
   if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status, body, request_id);
@@ -986,8 +999,10 @@ static int cai_session_compact(cai_session *session, cai_error *error) {
 done:
   cai_response_create_params_destroy(params);
   cai_response_destroy(response);
+  if (has_request_json) {
+    lonejson_spooled_cleanup(&request_json);
+  }
   cai_free_mem(&session->agent->client->allocator, history_items);
-  cai_free_mem(NULL, request_json);
   cai_free_mem(NULL, body);
   cai_free_mem(NULL, request_id);
   cai_free_mem(NULL, output_items);

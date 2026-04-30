@@ -280,6 +280,21 @@ int cai_json_builder_append(cai_json_builder *builder, const char *text,
   size_t new_capacity;
   char *grown;
 
+  if (builder->sink != NULL) {
+    lonejson_status status;
+
+    status = builder->sink(builder->sink_user, text, length,
+                           builder->sink_error);
+    if (status != LONEJSON_STATUS_OK) {
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to write JSON sink",
+                                  builder->sink_error != NULL
+                                      ? builder->sink_error->message
+                                      : NULL);
+    }
+    builder->length += length;
+    return CAI_OK;
+  }
   needed = builder->length + length + 1U;
   if (needed > builder->capacity) {
     new_capacity = builder->capacity == 0U ? 256U : builder->capacity;
@@ -1258,6 +1273,9 @@ int cai_response_params_input_items_json(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
   rc = cai_serialize_input_messages_json(&builder, "input", &params->input,
                                          error);
   if (rc != CAI_OK) {
@@ -1282,11 +1300,106 @@ int cai_response_params_input_items_json(
   return CAI_OK;
 }
 
+static int cai_response_create_params_write_json(
+    const cai_response_create_params *params, cai_json_builder *builder,
+    int stream, cai_error *error) {
+  int need_comma;
+  int rc;
+
+  if (params == NULL || params->model == NULL ||
+      (params->input.count == 0U &&
+       (params->raw_input_json == NULL || params->raw_input_json[0] == '\0'))) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "model and at least one input message are required");
+  }
+  need_comma = 0;
+  rc = cai_json_builder_lit(builder, "{", error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_field_string(builder, "model", params->model,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && params->instructions != NULL) {
+    rc = cai_json_builder_field_string(
+        builder, "instructions", params->instructions, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->previous_response_id != NULL) {
+    rc = cai_json_builder_field_string(builder, "previous_response_id",
+                                       params->previous_response_id,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && params->conversation_id != NULL) {
+    rc = cai_json_builder_field_string(
+        builder, "conversation", params->conversation_id, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->max_output_tokens > 0) {
+    rc = cai_json_builder_field_int(builder, "max_output_tokens",
+                                    params->max_output_tokens, &need_comma,
+                                    error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_reasoning_json(builder, params, &need_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_text_format_json(builder, params, &need_comma, error);
+  }
+  if (rc == CAI_OK && params->parallel_tool_calls >= 0) {
+    rc = cai_json_builder_field_bool(builder, "parallel_tool_calls",
+                                     params->parallel_tool_calls, &need_comma,
+                                     error);
+  }
+  if (rc == CAI_OK && need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+  }
+  if (rc == CAI_OK && (params->raw_input_json == NULL ||
+                       params->raw_input_json[0] == '\0')) {
+    rc = cai_serialize_input_messages_json(builder, "input", &params->input,
+                                           error);
+  } else if (rc == CAI_OK && params->raw_input_json != NULL &&
+             params->raw_input_json[0] != '\0') {
+    char *items_json;
+
+    items_json = NULL;
+    rc = cai_json_builder_string(builder, "input", error);
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, ":[", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, params->raw_input_json, error);
+    }
+    if (rc == CAI_OK && params->input.count > 0U) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (rc == CAI_OK && params->input.count > 0U) {
+      items_json = NULL;
+      rc = cai_response_params_input_items_json(params, &items_json, error);
+      if (rc == CAI_OK) {
+        rc = cai_json_builder_lit(builder, items_json, error);
+      }
+      cai_free_mem(NULL, items_json);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "]", error);
+    }
+  }
+  if (rc == CAI_OK && params->tools.count > 0U) {
+    rc = cai_json_builder_lit(builder, ",", error);
+  }
+  if (rc == CAI_OK && params->tools.count > 0U) {
+    rc = cai_serialize_function_tools_json(builder, &params->tools, error);
+  }
+  if (rc == CAI_OK && stream) {
+    rc = cai_json_builder_lit(builder, ",\"stream\":true", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "}", error);
+  }
+  return rc;
+}
+
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error) {
   cai_json_builder builder;
-  int need_comma;
   int rc;
 
   if (out_json == NULL) {
@@ -1294,87 +1407,13 @@ int cai_response_create_params_serialize_json(
                          "JSON output pointer is required");
   }
   *out_json = NULL;
-  if (params == NULL || params->model == NULL ||
-      (params->input.count == 0U &&
-       (params->raw_input_json == NULL || params->raw_input_json[0] == '\0'))) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "model and at least one input message are required");
-  }
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
-  need_comma = 0;
-  rc = cai_json_builder_lit(&builder, "{", error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_field_string(&builder, "model", params->model,
-                                       &need_comma, error);
-  }
-  if (rc == CAI_OK && params->instructions != NULL) {
-    rc = cai_json_builder_field_string(
-        &builder, "instructions", params->instructions, &need_comma, error);
-  }
-  if (rc == CAI_OK && params->previous_response_id != NULL) {
-    rc = cai_json_builder_field_string(&builder, "previous_response_id",
-                                       params->previous_response_id,
-                                       &need_comma, error);
-  }
-  if (rc == CAI_OK && params->conversation_id != NULL) {
-    rc = cai_json_builder_field_string(
-        &builder, "conversation", params->conversation_id, &need_comma, error);
-  }
-  if (rc == CAI_OK && params->max_output_tokens > 0) {
-    rc = cai_json_builder_field_int(&builder, "max_output_tokens",
-                                    params->max_output_tokens, &need_comma,
-                                    error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_serialize_reasoning_json(&builder, params, &need_comma, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_serialize_text_format_json(&builder, params, &need_comma, error);
-  }
-  if (rc == CAI_OK && params->parallel_tool_calls >= 0) {
-    rc = cai_json_builder_field_bool(&builder, "parallel_tool_calls",
-                                     params->parallel_tool_calls, &need_comma,
-                                     error);
-  }
-  if (rc == CAI_OK && need_comma) {
-    rc = cai_json_builder_lit(&builder, ",", error);
-  }
-  rc = cai_json_builder_string(&builder, "input", error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, ":[", error);
-  }
-  if (rc == CAI_OK && params->raw_input_json != NULL &&
-      params->raw_input_json[0] != '\0') {
-    rc = cai_json_builder_lit(&builder, params->raw_input_json, error);
-  }
-  if (rc == CAI_OK && params->raw_input_json != NULL &&
-      params->raw_input_json[0] != '\0' && params->input.count > 0U) {
-    rc = cai_json_builder_lit(&builder, ",", error);
-  }
-  if (rc == CAI_OK && params->input.count > 0U) {
-    char *items_json;
-
-    items_json = NULL;
-    rc = cai_response_params_input_items_json(params, &items_json, error);
-    if (rc == CAI_OK) {
-      rc = cai_json_builder_lit(&builder, items_json, error);
-    }
-    cai_free_mem(NULL, items_json);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "]", error);
-  }
-  if (rc == CAI_OK && params->tools.count > 0U) {
-    rc = cai_json_builder_lit(&builder, ",", error);
-  }
-  if (rc == CAI_OK && params->tools.count > 0U) {
-    rc = cai_serialize_function_tools_json(&builder, &params->tools, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "}", error);
-  }
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
+  rc = cai_response_create_params_write_json(params, &builder, 0, error);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, builder.data);
     return rc;
@@ -1383,6 +1422,36 @@ int cai_response_create_params_serialize_json(
     *out_len = builder.length;
   }
   *out_json = builder.data;
+  return CAI_OK;
+}
+
+int cai_response_create_params_spool_json(
+    const cai_response_create_params *params, int stream, lonejson_spooled *out,
+    size_t *out_len, cai_error *error) {
+  cai_json_builder builder;
+  lonejson_error json_error;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "JSON spool output pointer is required");
+  }
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(out, NULL);
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  builder.sink = cai_spooled_lonejson_sink;
+  builder.sink_user = out;
+  builder.sink_error = &json_error;
+  rc = cai_response_create_params_write_json(params, &builder, stream, error);
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(out);
+    return rc;
+  }
+  if (out_len != NULL) {
+    *out_len = builder.length;
+  }
   return CAI_OK;
 }
 
@@ -1737,6 +1806,9 @@ static int cai_spooled_array_items_json(const lonejson_spooled *array_json,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
   held = '\0';
   seen_first = 0;
   have_held = 0;

@@ -97,7 +97,9 @@ typedef struct cai_sse_state {
 
 typedef struct cai_pipe_stream {
   cai_client *client;
-  char *request_json;
+  lonejson_spooled request_json;
+  size_t request_json_len;
+  int has_request_json;
   char *response_id;
   cai_stream_complete_fn on_complete;
   void *complete_context;
@@ -109,39 +111,22 @@ typedef struct cai_pipe_stream {
   int thread_started;
 } cai_pipe_stream;
 
-static int cai_stream_request_json(const cai_response_create_params *params,
-                                   char **out, cai_error *error) {
-  char *json;
-  char *stream_json;
-  size_t length;
-  int rc;
+static size_t cai_stream_spooled_read(char *ptr, size_t size, size_t nmemb,
+                                      void *userdata) {
+  lonejson_spooled *spool;
+  lonejson_read_result result;
+  size_t capacity;
 
-  if (out == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "stream JSON output pointer is required");
+  spool = (lonejson_spooled *)userdata;
+  capacity = size * nmemb;
+  if (spool == NULL || ptr == NULL || capacity == 0U) {
+    return 0U;
   }
-  *out = NULL;
-  json = NULL;
-  rc = cai_response_create_params_serialize_json(params, &json, &length, error);
-  if (rc != CAI_OK) {
-    return rc;
+  result = lonejson_spooled_read(spool, (unsigned char *)ptr, capacity);
+  if (result.error_code != 0) {
+    return CURL_READFUNC_ABORT;
   }
-  if (length == 0U || json[length - 1U] != '}') {
-    free(json);
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "response request JSON is not an object");
-  }
-  stream_json = (char *)cai_alloc(NULL, length + 16U);
-  if (stream_json == NULL) {
-    free(json);
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate streaming request JSON");
-  }
-  memcpy(stream_json, json, length - 1U);
-  memcpy(stream_json + length - 1U, ",\"stream\":true}", 16U);
-  free(json);
-  *out = stream_json;
-  return CAI_OK;
+  return result.bytes_read;
 }
 
 static void cai_stream_copy_usage(cai_token_usage *out,
@@ -300,10 +285,41 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
 int cai_client_stream_response_text_json_with_id(
     cai_client *client, const char *request_json, cai_sink *sink,
     char **out_response_id, cai_token_usage *out_usage, cai_error *error) {
+  lonejson_spooled spooled;
+  lonejson_error json_error;
+  size_t len;
+
+  if (request_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "request JSON is required");
+  }
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(&spooled, NULL);
+  len = strlen(request_json);
+  if (lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_spooled_cleanup(&spooled);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to spool streaming request JSON",
+                                json_error.message);
+  }
+  {
+    int rc = cai_client_stream_response_text_spooled_with_id(
+        client, &spooled, len, sink, out_response_id, out_usage, error);
+    lonejson_spooled_cleanup(&spooled);
+    return rc;
+  }
+}
+
+int cai_client_stream_response_text_spooled_with_id(
+    cai_client *client, const lonejson_spooled *request_json,
+    size_t request_json_len, cai_sink *sink, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
   cai_sse_state state;
+  lonejson_spooled upload;
+  lonejson_error json_error;
   char *url;
   long http_status;
   int rc;
@@ -363,8 +379,20 @@ int cai_client_stream_response_text_json_with_id(
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_POST, 1L);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_json);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(request_json));
+  upload = *request_json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&upload, &json_error) != LONEJSON_STATUS_OK) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    cai_free_mem(&client->allocator, url);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind streaming request JSON",
+                                json_error.message);
+  }
+  curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_stream_spooled_read);
+  curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                   (curl_off_t)request_json_len);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_sse_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -418,7 +446,8 @@ int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
     cai_sink *sink, char **out_response_id, cai_token_usage *out_usage,
     cai_error *error) {
-  char *request_json;
+  lonejson_spooled request_json;
+  size_t request_json_len;
   int rc;
 
   if (out_response_id != NULL) {
@@ -427,16 +456,17 @@ int cai_client_stream_response_text_with_id(
   if (out_usage != NULL) {
     memset(out_usage, 0, sizeof(*out_usage));
   }
-  request_json = NULL;
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "params are required");
   }
-  rc = cai_stream_request_json(params, &request_json, error);
+  rc = cai_response_create_params_spool_json(params, 1, &request_json,
+                                             &request_json_len, error);
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_text_json_with_id(
-        client, request_json, sink, out_response_id, out_usage, error);
+    rc = cai_client_stream_response_text_spooled_with_id(
+        client, &request_json, request_json_len, sink, out_response_id,
+        out_usage, error);
+    lonejson_spooled_cleanup(&request_json);
   }
-  cai_free_mem(NULL, request_json);
   return rc;
 }
 
@@ -475,9 +505,9 @@ static void *cai_pipe_stream_main(void *arg) {
   callbacks.close = NULL;
   callbacks.context = &stream->write_fd;
   if (cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK) {
-    rc = cai_client_stream_response_text_json_with_id(
-        stream->client, stream->request_json, sink, &stream->response_id,
-        &stream->usage, &error);
+    rc = cai_client_stream_response_text_spooled_with_id(
+        stream->client, &stream->request_json, stream->request_json_len, sink,
+        &stream->response_id, &stream->usage, &error);
     if (rc == CAI_OK) {
       stream->has_usage = 1;
     }
@@ -527,7 +557,9 @@ static void cai_pipe_source_close(void *context) {
   if (stream->write_fd >= 0) {
     close(stream->write_fd);
   }
-  cai_free_mem(NULL, stream->request_json);
+  if (stream->has_request_json) {
+    lonejson_spooled_cleanup(&stream->request_json);
+  }
   cai_free_mem(NULL, stream->response_id);
   cai_free_mem(NULL, stream);
 }
@@ -569,7 +601,8 @@ int cai_client_open_response_text_source_with_complete(
                          "failed to allocate streaming source");
   }
   stream->client = client;
-  stream->request_json = NULL;
+  stream->has_request_json = 0;
+  stream->request_json_len = 0U;
   stream->response_id = NULL;
   stream->on_complete = on_complete;
   stream->complete_context = complete_context;
@@ -578,11 +611,13 @@ int cai_client_open_response_text_source_with_complete(
   stream->read_fd = fds[0];
   stream->write_fd = fds[1];
   stream->thread_started = 0;
-  rc = cai_stream_request_json(params, &stream->request_json, error);
+  rc = cai_response_create_params_spool_json(params, 1, &stream->request_json,
+                                             &stream->request_json_len, error);
   if (rc != CAI_OK) {
     cai_pipe_source_close(stream);
     return rc;
   }
+  stream->has_request_json = 1;
   if (pthread_create(&stream->thread, NULL, cai_pipe_stream_main, stream) !=
       0) {
     cai_pipe_source_close(stream);

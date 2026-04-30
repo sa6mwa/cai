@@ -12,6 +12,11 @@ typedef struct cai_http_buffer {
   size_t capacity;
 } cai_http_buffer;
 
+typedef struct cai_http_spooled_upload {
+  lonejson_spooled cursor;
+  int initialized;
+} cai_http_spooled_upload;
+
 typedef struct cai_api_error_body {
   char *message;
   char *type;
@@ -107,6 +112,25 @@ static size_t cai_http_header_write(char *ptr, size_t size, size_t nmemb,
   }
   *request_id = copy;
   return count;
+}
+
+static size_t cai_http_spooled_read(char *ptr, size_t size, size_t nmemb,
+                                    void *userdata) {
+  cai_http_spooled_upload *upload;
+  lonejson_read_result result;
+  size_t capacity;
+
+  upload = (cai_http_spooled_upload *)userdata;
+  capacity = size * nmemb;
+  if (upload == NULL || ptr == NULL || capacity == 0U) {
+    return 0U;
+  }
+  result =
+      lonejson_spooled_read(&upload->cursor, (unsigned char *)ptr, capacity);
+  if (result.error_code != 0) {
+    return CURL_READFUNC_ABORT;
+  }
+  return result.bytes_read;
 }
 
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
@@ -406,10 +430,46 @@ int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
                           char **out_request_id, cai_error *error) {
+  lonejson_spooled spooled;
+  lonejson_error json_error;
+  size_t len;
+
+  if (request_json == NULL) {
+    return cai_http_json_request_spooled(client, method, path, NULL, 0U,
+                                         out_json, out_http_status,
+                                         out_request_id, error);
+  }
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(&spooled, NULL);
+  len = strlen(request_json);
+  if (lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_spooled_cleanup(&spooled);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to spool request JSON",
+                                json_error.message);
+  }
+  {
+    int rc = cai_http_json_request_spooled(
+        client, method, path, &spooled, len, out_json, out_http_status,
+        out_request_id, error);
+    lonejson_spooled_cleanup(&spooled);
+    return rc;
+  }
+}
+
+int cai_http_json_request_spooled(cai_client *client, const char *method,
+                                  const char *path,
+                                  const lonejson_spooled *request_json,
+                                  size_t request_json_len, char **out_json,
+                                  long *out_http_status,
+                                  char **out_request_id, cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
   cai_http_buffer body;
+  cai_http_spooled_upload upload;
+  lonejson_error json_error;
   char *url;
   char *request_id;
   long http_status;
@@ -436,6 +496,7 @@ int cai_http_json_request(cai_client *client, const char *method,
   body.length = 0U;
   body.capacity = 0U;
   request_id = NULL;
+  upload.initialized = 0;
 
   rc = cai_build_url(&client->allocator, client->base_url, path, &url, error);
   if (rc != CAI_OK) {
@@ -475,8 +536,25 @@ int cai_http_json_request(cai_client *client, const char *method,
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
   }
   if (request_json != NULL) {
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_json);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(request_json));
+    upload.cursor = *request_json;
+    upload.initialized = 1;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_rewind(&upload.cursor, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      curl_easy_cleanup(curl);
+      curl_slist_free_all(headers);
+      cai_free_mem(&client->allocator, url);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to rewind request JSON",
+                                  json_error.message);
+    }
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_http_spooled_read);
+    curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                     (curl_off_t)request_json_len);
+    if (strcmp(method, "POST") != 0) {
+      curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+    }
   }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_http_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
@@ -573,22 +651,39 @@ static int cai_http_response_request(cai_client *client, const char *method,
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,
                                cai_response **out, cai_error *error) {
-  char *request_json;
+  lonejson_spooled request_json;
+  size_t request_json_len;
   int rc;
 
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
   }
-  request_json = NULL;
-  rc = cai_response_create_params_serialize_json(params, &request_json, NULL,
-                                                 error);
+  rc = cai_response_create_params_spool_json(params, 0, &request_json,
+                                             &request_json_len, error);
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_http_response_request(client, "POST", "responses", request_json,
-                                 CAI_HTTP_RESPONSE_PARSE, out, error);
-  free(request_json);
+  {
+    char *body;
+    char *request_id;
+    long http_status;
+
+    body = NULL;
+    request_id = NULL;
+    rc = cai_http_json_request_spooled(client, "POST", "responses",
+                                       &request_json, request_json_len, &body,
+                                       &http_status, &request_id, error);
+    if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
+      rc = cai_set_openai_error(error, http_status, body, request_id);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_response_parse_json(body != NULL ? body : "", out, error);
+    }
+    cai_free_mem(NULL, body);
+    cai_free_mem(NULL, request_id);
+  }
+  lonejson_spooled_cleanup(&request_json);
   return rc;
 }
 
