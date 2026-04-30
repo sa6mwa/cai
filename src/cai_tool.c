@@ -633,6 +633,8 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
     cai_free_mem(NULL, params);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate tool result");
   }
+  memset(params, 0, entry->params_map->struct_size);
+  memset(result, 0, entry->result_map->struct_size);
   lonejson_init(entry->params_map, params);
   lonejson_init(entry->result_map, result);
   status = lonejson_parse_cstr(entry->params_map, params, arguments_json, NULL,

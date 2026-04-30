@@ -2377,6 +2377,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
     return cai_set_error(error, CAI_ERR_INVALID, "response JSON is required");
   }
   have_output_items_json = 0;
+  memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_response_map, &doc);
   status =
       lonejson_parse_cstr(&cai_response_map, &doc, json, NULL, &json_error);

@@ -144,6 +144,7 @@ int cai_set_openai_error(cai_error *error, long http_status, const char *body,
 
   detail = body != NULL ? body : "";
   server_code = NULL;
+  memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_api_error_map, &doc);
   status =
       lonejson_parse_cstr(&cai_api_error_map, &doc, detail, NULL, &json_error);

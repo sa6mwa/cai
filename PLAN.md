@@ -52,6 +52,9 @@ application.
   session. That is the server-side continuation path; local history import is
   not treated as model context unless a caller deliberately uses lower-level
   replay/manual-compaction flows.
+- A versioned session state envelope is available as a `cai_source` so hosts can
+  persist one JSON document containing the active continuation handle and, when
+  enabled, local spooled history.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use

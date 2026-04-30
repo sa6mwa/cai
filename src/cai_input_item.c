@@ -93,6 +93,7 @@ int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "input item list JSON is required");
   }
+  memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_input_item_list_map, &doc);
   status = lonejson_parse_cstr(&cai_input_item_list_map, &doc, json, NULL,
                                &json_error);
@@ -151,6 +152,7 @@ int cai_conversation_item_parse_json(const char *json,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "conversation item JSON is required");
   }
+  memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_input_item_map, &doc);
   status =
       lonejson_parse_cstr(&cai_input_item_map, &doc, json, NULL, &json_error);

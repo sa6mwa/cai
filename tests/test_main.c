@@ -3292,13 +3292,16 @@ static void test_session_resume_and_history_import(test_state *state) {
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_session *restored_session;
   cai_response *response;
   cai_source_callbacks source_callbacks;
   read_state history_reader;
   cai_source *history_source;
   cai_source *exported_source;
+  cai_source *state_source;
   cai_error error;
   char history_json[512];
+  char state_json[1024];
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "resume_mock", "pipe failed");
@@ -3338,9 +3341,11 @@ static void test_session_resume_and_history_import(test_state *state) {
   client = NULL;
   agent = NULL;
   session = NULL;
+  restored_session = NULL;
   response = NULL;
   history_source = NULL;
   exported_source = NULL;
+  state_source = NULL;
 
   expect_int(state, "resume_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -3397,21 +3402,62 @@ static void test_session_resume_and_history_import(test_state *state) {
                 "imported history did not round trip");
     }
   }
+  expect_int(state, "resume_export_state",
+             cai_session_export_state_source(session, &state_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "resume_state_read", state_source, state_json,
+                       sizeof(state_json), &error)) {
+    if (strstr(state_json, "\"version\":1") == NULL ||
+        strstr(state_json,
+               "\"previous_response_id\":\"resp_saved_disk_1\"") == NULL ||
+        strstr(state_json, "\"history\":[") == NULL ||
+        strstr(state_json, "imported prompt") == NULL) {
+      test_fail(state, "resume_state_value",
+                "exported state did not include continuation and history");
+    }
+  }
+  expect_int(state, "resume_state_reset",
+             cai_source_reset(state_source, &error), CAI_OK);
+  expect_int(state, "resume_restored_session_new",
+             cai_agent_new_session(agent, &restored_session, &error), CAI_OK);
+  expect_int(state, "resume_import_state",
+             cai_session_import_state_source(restored_session, state_source,
+                                             &error),
+             CAI_OK);
+  expect_str(state, "resume_restored_previous",
+             cai_session_previous_response_id(restored_session),
+             "resp_saved_disk_1");
+  cai_source_close(exported_source);
+  exported_source = NULL;
+  expect_int(state, "resume_restored_export_history",
+             cai_session_export_history_source(restored_session,
+                                               &exported_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "resume_restored_history_read", exported_source,
+                       history_json, sizeof(history_json), &error)) {
+    if (strstr(history_json, "imported answer") == NULL) {
+      test_fail(state, "resume_restored_history_value",
+                "restored state did not import local history");
+    }
+  }
 
   expect_int(state, "resume_add_turn",
-             cai_session_add_user_text(session, "resume from disk turn",
+             cai_session_add_user_text(restored_session, "resume from disk turn",
                                        &error),
              CAI_OK);
   expect_int(state, "resume_run",
-             cai_session_run(session, &response, &error), CAI_OK);
+             cai_session_run(restored_session, &response, &error), CAI_OK);
   expect_str(state, "resume_text", cai_response_output_text(response),
              "resumed turn");
   expect_str(state, "resume_remembered_previous",
-             cai_session_previous_response_id(session), "resp_resumed_session");
+             cai_session_previous_response_id(restored_session),
+             "resp_resumed_session");
 
   cai_response_destroy(response);
+  cai_source_close(state_source);
   cai_source_close(exported_source);
   cai_source_close(history_source);
+  cai_session_destroy(restored_session);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);

@@ -67,6 +67,13 @@ export/import is for offline inspection, experimental manual compaction, and
 host-owned replay state; by itself it is not a substitute for the OpenAI
 continuation id.
 
+For applications that want one file/object to persist, use
+`cai_session_export_state_source` and `cai_session_import_state_source`. The
+state envelope is versioned JSON and contains the active continuation handle
+plus local history when `enable_local_history` is on. Import restores the
+continuation handle in all sessions and restores local history only for
+local-history-enabled sessions.
+
 Set `prompt_cache_key` on `cai_agent_config` when an agent has a stable prompt
 prefix, large developer instructions, or stable tool schemas. cai sends it on
 every Responses request created by that agent so OpenAI can bucket similar

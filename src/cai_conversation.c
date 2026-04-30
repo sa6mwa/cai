@@ -103,6 +103,7 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "conversation JSON is required");
   }
+  memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_conversation_map, &doc);
   status =
       lonejson_parse_cstr(&cai_conversation_map, &doc, json, NULL, &json_error);

@@ -286,6 +286,7 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   while (*data == ' ') {
     data++;
   }
+  memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_stream_delta_map, &doc);
   status =
       lonejson_parse_cstr(&cai_stream_delta_map, &doc, data, NULL, &json_error);

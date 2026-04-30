@@ -268,6 +268,10 @@ struct cai_session {
                                cai_error *error);
   int (*import_history_source)(cai_session *session, cai_source *source,
                                cai_error *error);
+  int (*export_state_source)(cai_session *session, cai_source **out,
+                             cai_error *error);
+  int (*import_state_source)(cai_session *session, cai_source *source,
+                             cai_error *error);
   void (*close)(cai_session *session);
   void *impl;
 };
@@ -377,6 +381,10 @@ int cai_session_export_history_source(cai_session *session, cai_source **out,
                                       cai_error *error);
 int cai_session_import_history_source(cai_session *session, cai_source *source,
                                       cai_error *error);
+int cai_session_export_state_source(cai_session *session, cai_source **out,
+                                    cai_error *error);
+int cai_session_import_state_source(cai_session *session, cai_source *source,
+                                    cai_error *error);
 
 void cai_error_init(cai_error *error);
 void cai_error_cleanup(cai_error *error);
