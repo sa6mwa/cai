@@ -24,20 +24,6 @@ static int print_error(const char *operation, int rc, const cai_error *error) {
   return 1;
 }
 
-static int stdout_sink_write(void *context, const void *bytes, size_t count,
-                             cai_error *error) {
-  (void)context;
-  (void)error;
-  if (count == 0U) {
-    return CAI_OK;
-  }
-  if (fwrite(bytes, 1U, count, stdout) != count) {
-    return CAI_ERR_TRANSPORT;
-  }
-  fflush(stdout);
-  return CAI_OK;
-}
-
 static void trim_newline(char *line) {
   size_t length;
 
@@ -82,7 +68,6 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
 int main(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
-  cai_sink_callbacks stdout_callbacks;
   cai_stream_sinks stream_sinks;
   cai_client *client;
   cai_agent *agent;
@@ -128,12 +113,9 @@ int main(void) {
     exit_code = print_error("cai_agent_new_session", rc, &error);
     goto done;
   }
-  stdout_callbacks.write = stdout_sink_write;
-  stdout_callbacks.close = NULL;
-  stdout_callbacks.context = NULL;
-  rc = cai_sink_from_callbacks(&stdout_callbacks, &stdout_sink, &error);
+  rc = cai_sink_stdout(&stdout_sink, &error);
   if (rc != CAI_OK) {
-    exit_code = print_error("cai_sink_from_callbacks(stdout)", rc, &error);
+    exit_code = print_error("cai_sink_stdout", rc, &error);
     goto done;
   }
   cai_stream_sinks_init(&stream_sinks);

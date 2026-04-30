@@ -14,6 +14,11 @@ typedef struct cai_spooled_source_context {
   lonejson_spooled spool;
 } cai_spooled_source_context;
 
+typedef struct cai_file_sink_context {
+  FILE *fp;
+  int close_file;
+} cai_file_sink_context;
+
 static size_t cai_spooled_source_read(void *context, void *buffer,
                                       size_t count, cai_error *error) {
   cai_spooled_source_context *source_context;
@@ -59,6 +64,40 @@ static void cai_spooled_source_close(void *context) {
   }
   lonejson_spooled_cleanup(&source_context->spool);
   cai_free_mem(NULL, source_context);
+}
+
+static int cai_file_sink_write(void *context, const void *bytes, size_t count,
+                               cai_error *error) {
+  cai_file_sink_context *sink_context;
+
+  sink_context = (cai_file_sink_context *)context;
+  if (sink_context == NULL || sink_context->fp == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file sink is closed");
+  }
+  if (count == 0U) {
+    return CAI_OK;
+  }
+  if (fwrite(bytes, 1U, count, sink_context->fp) != count) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to write file sink");
+  }
+  if (fflush(sink_context->fp) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to flush file sink");
+  }
+  return CAI_OK;
+}
+
+static void cai_file_sink_close(void *context) {
+  cai_file_sink_context *sink_context;
+
+  sink_context = (cai_file_sink_context *)context;
+  if (sink_context == NULL) {
+    return;
+  }
+  if (sink_context->close_file && sink_context->fp != NULL) {
+    fclose(sink_context->fp);
+  }
+  sink_context->fp = NULL;
+  cai_free_mem(NULL, sink_context);
 }
 
 static int cai_output_write_string(const char *value, cai_sink *sink,
@@ -176,6 +215,28 @@ void cai_source_close(cai_source *source) {
   cai_free_mem(NULL, source);
 }
 
+int cai_source_copy_to_sink(cai_source *source, cai_sink *sink,
+                            cai_error *error) {
+  char buffer[4096];
+  size_t nread;
+  int rc;
+
+  if (source == NULL || sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "source and sink are required");
+  }
+  for (;;) {
+    nread = cai_source_read(source, buffer, sizeof(buffer), error);
+    if (nread == 0U) {
+      return CAI_OK;
+    }
+    rc = cai_sink_write(sink, buffer, nread, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+}
+
 int cai_sink_from_callbacks(const cai_sink_callbacks *callbacks, cai_sink **out,
                             cai_error *error) {
   cai_sink *sink;
@@ -205,6 +266,43 @@ int cai_sink_from_lc(struct lc_sink *sink, cai_sink **out, cai_error *error) {
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "lc_sink interop is not enabled in this build");
+}
+
+int cai_sink_file(FILE *fp, int close_file, cai_sink **out, cai_error *error) {
+  cai_file_sink_context *context;
+  cai_sink_callbacks callbacks;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "sink output pointer is required");
+  }
+  *out = NULL;
+  if (fp == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file pointer is required");
+  }
+  context = (cai_file_sink_context *)cai_alloc(NULL, sizeof(*context));
+  if (context == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate file sink");
+  }
+  context->fp = fp;
+  context->close_file = close_file ? 1 : 0;
+  callbacks.write = cai_file_sink_write;
+  callbacks.close = cai_file_sink_close;
+  callbacks.context = context;
+  rc = cai_sink_from_callbacks(&callbacks, out, error);
+  if (rc != CAI_OK) {
+    cai_file_sink_close(context);
+  }
+  return rc;
+}
+
+int cai_sink_stdout(cai_sink **out, cai_error *error) {
+  return cai_sink_file(stdout, 0, out, error);
+}
+
+int cai_sink_stderr(cai_sink **out, cai_error *error) {
+  return cai_sink_file(stderr, 0, out, error);
 }
 
 int cai_sink_write(cai_sink *sink, const void *bytes, size_t count,

@@ -370,9 +370,13 @@ static void test_source_sink(test_state *state) {
   cai_source_callbacks source_callbacks;
   cai_sink_callbacks sink_callbacks;
   cai_source *source;
+  cai_source *copy_source;
   cai_sink *sink;
+  cai_sink *file_sink;
   cai_error error;
+  FILE *fp;
   char buffer[8];
+  char copy_buffer[16];
 
   cai_error_init(&error);
   reader.text = "abcdef";
@@ -383,6 +387,10 @@ static void test_source_sink(test_state *state) {
   source_callbacks.close = test_read_close;
   source_callbacks.context = &reader;
   source = NULL;
+  copy_source = NULL;
+  sink = NULL;
+  file_sink = NULL;
+  fp = NULL;
   expect_int(state, "source_create",
              cai_source_from_callbacks(&source_callbacks, &source, &error),
              CAI_OK);
@@ -411,7 +419,39 @@ static void test_source_sink(test_state *state) {
              CAI_OK);
   expect_str(state, "sink_write_value", writer.buffer, "xyz");
   cai_sink_close(sink);
+  sink = NULL;
   expect_int(state, "sink_closed", writer.closed, 1L);
+
+  reader.text = "copy-data";
+  reader.offset = 0U;
+  reader.closed = 0;
+  source_callbacks.context = &reader;
+  expect_int(state, "copy_source_create",
+             cai_source_from_callbacks(&source_callbacks, &copy_source,
+                                       &error),
+             CAI_OK);
+  fp = tmpfile();
+  if (fp == NULL) {
+    test_fail(state, "sink_file_tmpfile", "tmpfile failed");
+  } else {
+    expect_int(state, "sink_file_create",
+               cai_sink_file(fp, 0, &file_sink, &error), CAI_OK);
+    expect_int(state, "source_copy_to_file",
+               cai_source_copy_to_sink(copy_source, file_sink, &error),
+               CAI_OK);
+    fflush(fp);
+    rewind(fp);
+    memset(copy_buffer, 0, sizeof(copy_buffer));
+    if (fread(copy_buffer, 1U, sizeof(copy_buffer) - 1U, fp) == 0U) {
+      test_fail(state, "source_copy_file_read", "no file output");
+    }
+    expect_str(state, "source_copy_file_value", copy_buffer, "copy-data");
+  }
+  cai_sink_close(file_sink);
+  cai_source_close(copy_source);
+  if (fp != NULL) {
+    fclose(fp);
+  }
   cai_error_cleanup(&error);
 }
 

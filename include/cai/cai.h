@@ -4,6 +4,7 @@
 #include <cai/models.h>
 #include <cai/version.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -377,10 +378,15 @@ size_t cai_source_read(cai_source *source, void *buffer, size_t count,
                        cai_error *error);
 int cai_source_reset(cai_source *source, cai_error *error);
 void cai_source_close(cai_source *source);
+int cai_source_copy_to_sink(cai_source *source, cai_sink *sink,
+                            cai_error *error);
 
 int cai_sink_from_callbacks(const cai_sink_callbacks *callbacks, cai_sink **out,
                             cai_error *error);
 int cai_sink_from_lc(struct lc_sink *sink, cai_sink **out, cai_error *error);
+int cai_sink_file(FILE *fp, int close_file, cai_sink **out, cai_error *error);
+int cai_sink_stdout(cai_sink **out, cai_error *error);
+int cai_sink_stderr(cai_sink **out, cai_error *error);
 int cai_sink_write(cai_sink *sink, const void *bytes, size_t count,
                    cai_error *error);
 void cai_sink_close(cai_sink *sink);
