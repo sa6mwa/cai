@@ -171,6 +171,7 @@ if(CAI_BUILD_EXAMPLES)
   set(_cai_examples
     basic_response:basic-response
     conversation_handles:conversation-handles
+    history_export:history-export
     streaming_text:streaming-text
     terminal_chat:terminal-chat
     mike_mind:mike-mind)

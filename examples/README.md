@@ -44,6 +44,16 @@ cmake --build --preset debug --target cai_example_streaming_text
 ./build/debug/cai_example_streaming_text
 ```
 
+## History Export
+
+Run one non-streamed agent turn with opt-in local history capture, then stream
+the exported history JSON array to stdout through `cai_source_copy_to_sink`:
+
+```sh
+cmake --build --preset debug --target cai_example_history_export
+./build/debug/cai_example_history_export
+```
+
 ## Terminal Chat
 
 Run a small terminal chat agent that reads prompts from stdin, streams response
