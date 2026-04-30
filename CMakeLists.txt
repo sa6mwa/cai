@@ -168,15 +168,27 @@ if(CAI_BUILD_EXAMPLES)
   elseif(TARGET cai_shared)
     set(_cai_example_link_target cai_shared)
   endif()
-  foreach(_cai_example IN ITEMS basic_response conversation_handles
-                             streaming_text terminal_chat)
+  set(_cai_examples
+    basic_response:basic-response
+    conversation_handles:conversation-handles
+    streaming_text:streaming-text
+    terminal_chat:terminal-chat
+    mike_mind:mike-mind)
+  foreach(_cai_example_spec IN LISTS _cai_examples)
+    string(REPLACE ":" ";" _cai_example_parts "${_cai_example_spec}")
+    list(GET _cai_example_parts 0 _cai_example)
+    list(GET _cai_example_parts 1 _cai_example_dir)
     add_executable(cai_example_${_cai_example}
-      "examples/${_cai_example}.c")
+      "examples/${_cai_example_dir}/main.c")
     target_include_directories(cai_example_${_cai_example} PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}")
     target_link_libraries(cai_example_${_cai_example} PRIVATE
       ${_cai_example_link_target})
+    if(_cai_example STREQUAL "mike_mind")
+      target_compile_definitions(cai_example_${_cai_example} PRIVATE
+        CAI_MIKE_MIND_DEFAULT_SKILL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../parallax/skills/mike-mind")
+    endif()
     cai_configure_c_target(cai_example_${_cai_example})
   endforeach()
 endif()

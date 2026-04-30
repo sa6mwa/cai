@@ -51,3 +51,14 @@ Exit with Ctrl-D at an empty prompt, `/quit`, or `/exit`.
 cmake --build --preset debug --target cai_example_terminal_chat
 OPENAI_API_KEY=... ./build/debug/cai_example_terminal_chat
 ```
+
+## Mike Mind
+
+Run a terminal chat agent seeded from the Mike Mind skill references. By default
+the example reads `../parallax/skills/mike-mind`; override that with
+`CAI_MIKE_MIND_SKILL_DIR` when running from another checkout layout.
+
+```sh
+cmake --build --preset debug --target cai_example_mike_mind
+OPENAI_API_KEY=... ./build/debug/cai_example_mike_mind
+```
