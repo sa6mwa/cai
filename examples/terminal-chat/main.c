@@ -12,8 +12,8 @@
 #define CAI_ANSI_BOLD_WHITE "\033[1;37m"
 
 #define CAI_USAGE_LABEL                                                        \
-  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY "]"            \
-                CAI_ANSI_RESET
+  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY                 \
+                "]" CAI_ANSI_RESET
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -53,21 +53,22 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
                         int has_context_percent, double total_spent_usd) {
   if (has_context_percent) {
     fprintf(stderr,
-            CAI_USAGE_LABEL " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            CAI_USAGE_LABEL
+            " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
             " cached=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
             " output=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
             " reasoning=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
             " total=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
             " context=" CAI_ANSI_BOLD_WHITE "%.2f%%" CAI_ANSI_RESET
-            " estimated_cost=" CAI_ANSI_BOLD_WHITE "$%.8f" CAI_ANSI_RESET
-            "\n",
+            " estimated_cost=" CAI_ANSI_BOLD_WHITE "$%.8f" CAI_ANSI_RESET "\n",
             usage->input_tokens, usage->input_cached_tokens,
             usage->output_tokens, usage->output_reasoning_tokens,
             usage->total_tokens, context_percent, total_spent_usd);
     return;
   }
   fprintf(stderr,
-          CAI_USAGE_LABEL " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          CAI_USAGE_LABEL
+          " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
           " cached=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
           " output=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
           " reasoning=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
@@ -100,6 +101,7 @@ int main(void) {
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   agent_config.developer_instructions =
       "You are a concise terminal chat assistant. Answer plainly.";
   agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
@@ -167,15 +169,6 @@ int main(void) {
         strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
       exit_code = 0;
       break;
-    }
-    if (strcmp(line, "/compact") == 0) {
-      rc = cai_session_compact_experimental(session, &error);
-      if (rc != CAI_OK) {
-        exit_code = print_error("cai_session_compact_experimental", rc, &error);
-        break;
-      }
-      fputs("[compact] manual experimental compaction complete\n", stderr);
-      continue;
     }
     rc = session->add_user_text(session, line, &error);
     if (rc == CAI_OK) {

@@ -137,8 +137,7 @@ Required examples:
 - `streaming-text`: direct streaming text call with token-by-token terminal
   output.
 - `terminal-chat`: interactive chat that transparently preserves Responses
-  turn context, prints usage metadata, supports `/quit`, `/exit`, EOF, and an
-  experimental `/compact` command for manual compaction testing, and uses
+  turn context, prints usage metadata, supports `/quit`, `/exit`, EOF, and uses
   `gpt-5-nano` for development.
 - `conversation-handles`: explicit conversation-handle construction and reuse
   without exposing callers to manual ID plumbing in normal flows.

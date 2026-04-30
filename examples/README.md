@@ -55,8 +55,7 @@ token usage plus context window percentage and estimated cumulative USD cost to
 stderr after each turn. Cost is estimated locally from model pricing metadata
 and response usage;
 it is not a billing-grade invoice value. Exit with Ctrl-D at an empty prompt,
-`/quit`, or `/exit`. Use `/compact` to trigger the experimental manual
-compaction path for the current session.
+`/quit`, or `/exit`.
 
 ```sh
 cmake --build --preset debug --target cai_example_terminal_chat
