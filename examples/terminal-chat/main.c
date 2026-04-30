@@ -8,6 +8,11 @@
 #define CAI_ANSI_GRAY "\033[90m"
 #define CAI_ANSI_GREEN "\033[32m"
 #define CAI_ANSI_BRIGHT_CYAN "\033[96m"
+#define CAI_ANSI_YELLOW "\033[33m"
+
+#define CAI_USAGE_LABEL                                                        \
+  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY "]"            \
+                CAI_ANSI_RESET
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -47,7 +52,7 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
                         int has_context_percent, double total_spent_usd) {
   if (has_context_percent) {
     fprintf(stderr,
-            "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
+            CAI_USAGE_LABEL " input=%lld cached=%lld output=%lld reasoning=%lld "
             "total=%lld context=%.2f%% estimated_cost=$%.8f\n",
             usage->input_tokens, usage->input_cached_tokens,
             usage->output_tokens, usage->output_reasoning_tokens,
@@ -55,7 +60,7 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
     return;
   }
   fprintf(stderr,
-          "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
+          CAI_USAGE_LABEL " input=%lld cached=%lld output=%lld reasoning=%lld "
           "total=%lld context=n/a estimated_cost=$%.8f\n",
           usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
           usage->output_reasoning_tokens, usage->total_tokens, total_spent_usd);
@@ -121,7 +126,7 @@ int main(void) {
   stream_sinks.reasoning_summary = stdout_sink;
   stream_sinks.output_text = stdout_sink;
   stream_sinks.reasoning_summary_prefix.text = CAI_ANSI_GRAY
-      "[" CAI_ANSI_BRIGHT_CYAN "reasoning" CAI_ANSI_GRAY "] " CAI_ANSI_GRAY;
+      "[" CAI_ANSI_YELLOW "reasoning" CAI_ANSI_GRAY "] " CAI_ANSI_GRAY;
   stream_sinks.reasoning_summary_suffix.text = CAI_ANSI_RESET "\n\n";
   stream_sinks.output_text_prefix.text = CAI_ANSI_GRAY
       "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]" CAI_ANSI_RESET " ";
