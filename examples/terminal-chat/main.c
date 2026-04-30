@@ -8,7 +8,7 @@
 #define CAI_ANSI_GRAY "\033[90m"
 #define CAI_ANSI_GREEN "\033[32m"
 #define CAI_ANSI_BRIGHT_CYAN "\033[96m"
-#define CAI_ANSI_YELLOW "\033[33m"
+#define CAI_ANSI_BROWN "\033[38;5;130m"
 
 #define CAI_USAGE_LABEL                                                        \
   CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY "]"            \
@@ -126,7 +126,7 @@ int main(void) {
   stream_sinks.reasoning_summary = stdout_sink;
   stream_sinks.output_text = stdout_sink;
   stream_sinks.reasoning_summary_prefix.text = CAI_ANSI_GRAY
-      "[" CAI_ANSI_YELLOW "reasoning" CAI_ANSI_GRAY "] " CAI_ANSI_GRAY;
+      "[" CAI_ANSI_BROWN "reasoning" CAI_ANSI_GRAY "] " CAI_ANSI_GRAY;
   stream_sinks.reasoning_summary_suffix.text = CAI_ANSI_RESET "\n\n";
   stream_sinks.output_text_prefix.text = CAI_ANSI_GRAY
       "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]" CAI_ANSI_RESET " ";
