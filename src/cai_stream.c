@@ -203,6 +203,7 @@ static int cai_sse_finish_reasoning(cai_sse_state *state) {
                               &state->sinks.reasoning_summary_suffix);
   if (rc == CAI_OK) {
     state->reasoning_summary_suffixed = 1;
+    state->reasoning_summary_started = 0;
   }
   return rc;
 }
