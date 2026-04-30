@@ -19,13 +19,6 @@ typedef struct cai_json_builder_lonejson_sink_state {
   char last;
 } cai_json_builder_lonejson_sink_state;
 
-typedef struct cai_spooled_lonejson_wrapper_sink_state {
-  lonejson_spooled *spool;
-  size_t skip;
-  int hold_last;
-  char last;
-} cai_spooled_lonejson_wrapper_sink_state;
-
 enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
 
 typedef struct cai_response_content_doc {
@@ -42,6 +35,9 @@ typedef struct cai_response_output_doc {
   char *call_id;
   char *name;
   char *arguments;
+  char *created_by;
+  lonejson_spooled encrypted_content;
+  lonejson_object_array summary;
   lonejson_object_array content;
 } cai_response_output_doc;
 
@@ -78,6 +74,7 @@ typedef struct cai_response_conversation_doc {
 
 typedef struct cai_response_doc {
   char *id;
+  char *object;
   char *status;
   char *model;
   long long created_at;
@@ -87,10 +84,6 @@ typedef struct cai_response_doc {
   cai_response_usage_doc usage;
   lonejson_object_array output;
 } cai_response_doc;
-
-typedef struct cai_response_output_array_doc {
-  lonejson_object_array output;
-} cai_response_output_array_doc;
 
 static const lonejson_field cai_json_string_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_json_string_doc, value, "value")};
@@ -118,6 +111,14 @@ static const lonejson_field cai_response_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, arguments,
                                 "arguments"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, created_by,
+                                "created_by"),
+    LONEJSON_FIELD_STRING_STREAM(cai_response_output_doc, encrypted_content,
+                                 "encrypted_content"),
+    LONEJSON_FIELD_OBJECT_ARRAY(cai_response_output_doc, summary, "summary",
+                                cai_response_content_doc,
+                                &cai_response_content_map,
+                                LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_OBJECT_ARRAY(
         cai_response_output_doc, content, "content", cai_response_content_doc,
         &cai_response_content_map, LONEJSON_OVERFLOW_FAIL)};
@@ -174,6 +175,7 @@ LONEJSON_MAP_DEFINE(cai_response_conversation_map,
 
 static const lonejson_field cai_response_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, object, "object"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, status, "status"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, model, "model"),
     LONEJSON_FIELD_I64(cai_response_doc, created_at, "created_at"),
@@ -189,15 +191,6 @@ static const lonejson_field cai_response_fields[] = {
         cai_response_doc, output, "output", cai_response_output_doc,
         &cai_response_output_map, LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_response_map, cai_response_doc, cai_response_fields);
-
-static const lonejson_field cai_response_output_array_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(cai_response_output_array_doc, output, "output",
-                                cai_response_output_doc,
-                                &cai_response_output_map,
-                                LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(cai_response_output_array_map,
-                    cai_response_output_array_doc,
-                    cai_response_output_array_fields);
 
 static void cai_content_part_cleanup(const cai_allocator *allocator,
                                      struct cai_content_part *part) {
@@ -493,76 +486,32 @@ static lonejson_status cai_spooled_lonejson_sink(void *user, const void *data,
   return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
 }
 
-static lonejson_status
-cai_spooled_lonejson_wrapper_sink(void *user, const void *data, size_t len,
-                                  lonejson_error *error) {
-  cai_spooled_lonejson_wrapper_sink_state *state;
-  const char *bytes;
-  size_t offset;
-  size_t chunk;
-  lonejson_status status;
+static int cai_json_builder_field_spooled(cai_json_builder *builder,
+                                          const char *name,
+                                          const lonejson_spooled *value,
+                                          int *need_comma, cai_error *error) {
+  int rc;
 
-  state = (cai_spooled_lonejson_wrapper_sink_state *)user;
-  bytes = (const char *)data;
-  offset = 0U;
-  if (state->skip > 0U) {
-    chunk = len < state->skip ? len : state->skip;
-    offset += chunk;
-    state->skip -= chunk;
+  if (lonejson_spooled_size(value) == 0U) {
+    return CAI_OK;
   }
-  while (offset < len) {
-    if (state->hold_last) {
-      status = lonejson_spooled_append(state->spool, &state->last, 1U, error);
-      if (status != LONEJSON_STATUS_OK) {
-        return status;
-      }
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
     }
-    state->last = bytes[offset];
-    state->hold_last = 1;
-    offset++;
   }
-  return LONEJSON_STATUS_OK;
-}
-
-static int cai_spooled_lonejson_wrapper_sink_finish(
-    cai_spooled_lonejson_wrapper_sink_state *state, cai_error *error) {
-  if (state->skip != 0U || !state->hold_last || state->last != '}') {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "lonejson produced an unexpected output wrapper");
+  rc = cai_json_builder_string(builder, name, error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, ":", error);
   }
-  state->hold_last = 0;
-  return CAI_OK;
-}
-
-static int cai_capture_response_output_json(cai_response_doc *response_doc,
-                                            lonejson_spooled *out,
-                                            cai_error *error) {
-  cai_response_output_array_doc doc;
-  cai_spooled_lonejson_wrapper_sink_state sink_state;
-  lonejson_error json_error;
-  lonejson_status status;
-
-  lonejson_error_init(&json_error);
-  lonejson_spooled_init(out, NULL);
-  doc.output = response_doc->output;
-  sink_state.spool = out;
-  sink_state.skip = sizeof("{\"output\":") - 1U;
-  sink_state.hold_last = 0;
-  sink_state.last = '\0';
-  status = lonejson_serialize_sink(&cai_response_output_array_map, &doc,
-                                   cai_spooled_lonejson_wrapper_sink,
-                                   &sink_state, NULL, &json_error);
-  if (status != LONEJSON_STATUS_OK) {
-    lonejson_spooled_cleanup(out);
-    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to serialize response output JSON",
-                                json_error.message);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_string_spooled(builder, value, error);
   }
-  if (cai_spooled_lonejson_wrapper_sink_finish(&sink_state, error) != CAI_OK) {
-    lonejson_spooled_cleanup(out);
-    return error != NULL ? error->code : CAI_ERR_PROTOCOL;
+  if (rc == CAI_OK) {
+    *need_comma = 1;
   }
-  return CAI_OK;
+  return rc;
 }
 
 int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
@@ -639,6 +588,164 @@ static int cai_json_builder_field_bool(cai_json_builder *builder,
     *need_comma = 1;
   }
   return rc;
+}
+
+static int cai_serialize_content_array_json(cai_json_builder *builder,
+                                            const char *name,
+                                            const lonejson_object_array *array,
+                                            int emit_empty, int *need_comma,
+                                            cai_error *error) {
+  cai_response_content_doc *items;
+  size_t i;
+  int item_comma;
+  int rc;
+
+  if (array->count == 0U && !emit_empty) {
+    return CAI_OK;
+  }
+  if (*need_comma) {
+    rc = cai_json_builder_lit(builder, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_json_builder_string(builder, name, error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, ":[", error);
+  }
+  items = (cai_response_content_doc *)array->items;
+  for (i = 0U; rc == CAI_OK && i < array->count; i++) {
+    if (i > 0U) {
+      rc = cai_json_builder_lit(builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "{", error);
+    }
+    item_comma = 0;
+    if (rc == CAI_OK && items[i].type != NULL) {
+      rc = cai_json_builder_field_string(builder, "type", items[i].type,
+                                         &item_comma, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_field_spooled(builder, "text", &items[i].text,
+                                          &item_comma, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_field_spooled(builder, "refusal",
+                                          &items[i].refusal, &item_comma,
+                                          error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, "}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "]", error);
+  }
+  if (rc == CAI_OK) {
+    *need_comma = 1;
+  }
+  return rc;
+}
+
+static int cai_serialize_history_output_json(cai_json_builder *builder,
+                                             const cai_response_output_doc *item,
+                                             cai_error *error) {
+  int need_comma;
+  int rc;
+
+  need_comma = 0;
+  rc = cai_json_builder_lit(builder, "{", error);
+  if (rc == CAI_OK && item->type != NULL) {
+    rc = cai_json_builder_field_string(builder, "type", item->type,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && item->id != NULL) {
+    rc = cai_json_builder_field_string(builder, "id", item->id, &need_comma,
+                                       error);
+  }
+  if (rc == CAI_OK && item->type != NULL &&
+      strcmp(item->type, "message") == 0 && item->role != NULL) {
+    rc = cai_json_builder_field_string(builder, "role", item->role,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && item->call_id != NULL) {
+    rc = cai_json_builder_field_string(builder, "call_id", item->call_id,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && item->name != NULL) {
+    rc = cai_json_builder_field_string(builder, "name", item->name,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && item->arguments != NULL) {
+    rc = cai_json_builder_field_string(builder, "arguments", item->arguments,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK && item->created_by != NULL) {
+    rc = cai_json_builder_field_string(builder, "created_by", item->created_by,
+                                       &need_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_field_spooled(builder, "encrypted_content",
+                                        &item->encrypted_content, &need_comma,
+                                        error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_content_array_json(
+        builder, "summary", &item->summary,
+        item->type != NULL && strcmp(item->type, "reasoning") == 0,
+        &need_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_serialize_content_array_json(builder, "content", &item->content, 0,
+                                          &need_comma, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(builder, "}", error);
+  }
+  return rc;
+}
+
+static int cai_capture_response_output_json(cai_response_doc *response_doc,
+                                            lonejson_spooled *out,
+                                            cai_error *error) {
+  cai_response_output_doc *items;
+  cai_json_builder builder;
+  lonejson_error json_error;
+  size_t i;
+  int need_comma;
+  int rc;
+
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(out, NULL);
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  builder.sink = cai_spooled_lonejson_sink;
+  builder.sink_user = out;
+  builder.sink_error = &json_error;
+  rc = cai_json_builder_lit(&builder, "[", error);
+  need_comma = 0;
+  items = (cai_response_output_doc *)response_doc->output.items;
+  for (i = 0U; rc == CAI_OK && i < response_doc->output.count; i++) {
+    if (need_comma) {
+      rc = cai_json_builder_lit(&builder, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_serialize_history_output_json(&builder, &items[i], error);
+    }
+    if (rc == CAI_OK) {
+      need_comma = 1;
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, "]", error);
+  }
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(out);
+    return rc;
+  }
+  return CAI_OK;
 }
 
 static int
@@ -2220,7 +2327,9 @@ int cai_response_parse_json(const char *json, cai_response **out,
                                 "failed to parse response JSON",
                                 json_error.message);
   }
-  if (doc.id == NULL || doc.status == NULL) {
+  if (doc.id == NULL ||
+      (doc.status == NULL &&
+       (doc.object == NULL || strcmp(doc.object, "response.compaction") != 0))) {
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "response JSON is missing id or status");
@@ -2242,7 +2351,8 @@ int cai_response_parse_json(const char *json, cai_response **out,
   memset(response, 0, sizeof(*response));
   response->raw_json = NULL;
   response->id = cai_strdup(NULL, doc.id);
-  response->status = cai_strdup(NULL, doc.status);
+  response->status = cai_strdup(
+      NULL, doc.status != NULL ? doc.status : "completed");
   response->model = cai_strdup(NULL, doc.model);
   response->conversation_id = cai_strdup(NULL, doc.conversation.id);
   response->output_text = cai_response_collect_text(&doc, error);

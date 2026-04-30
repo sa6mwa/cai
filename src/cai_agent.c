@@ -15,24 +15,9 @@ typedef struct cai_session_stream_context {
   int has_pending_items;
 } cai_session_stream_context;
 
-typedef struct cai_history_json_doc {
-  lonejson_json_value value;
-} cai_history_json_doc;
-
 typedef struct cai_history_sink_context {
   lonejson_spooled *spool;
 } cai_history_sink_context;
-
-typedef struct cai_spooled_array_reader {
-  const char *prefix;
-  const char *suffix;
-  size_t prefix_length;
-  size_t suffix_length;
-  size_t prefix_offset;
-  size_t suffix_offset;
-  lonejson_spooled cursor;
-  int stage;
-} cai_spooled_array_reader;
 
 typedef struct cai_spooled_record_reader {
   lonejson_spooled cursor;
@@ -41,11 +26,6 @@ typedef struct cai_spooled_record_reader {
   size_t length;
   int eof;
 } cai_spooled_record_reader;
-
-static const lonejson_field cai_history_json_fields[] = {
-    LONEJSON_FIELD_JSON_VALUE_REQ(cai_history_json_doc, value, "value")};
-LONEJSON_MAP_DEFINE(cai_history_json_map, cai_history_json_doc,
-                    cai_history_json_fields);
 
 enum {
   CAI_SESSION_INPUT_TEXT = 0,
@@ -388,71 +368,6 @@ static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
   return LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
-static lonejson_read_result
-cai_spooled_array_reader_read(void *user, unsigned char *buffer,
-                              size_t capacity) {
-  cai_spooled_array_reader *reader;
-  lonejson_read_result result;
-  lonejson_read_result spool_result;
-  const char *bytes;
-  size_t available;
-  size_t copied;
-  size_t take;
-
-  reader = (cai_spooled_array_reader *)user;
-  result = lonejson_default_read_result();
-  copied = 0U;
-  while (copied < capacity) {
-    if (reader->stage == 0) {
-      available = reader->prefix_length - reader->prefix_offset;
-      if (available == 0U) {
-        reader->stage = 1;
-        continue;
-      }
-      take = available < (capacity - copied) ? available : (capacity - copied);
-      memcpy(buffer + copied, reader->prefix + reader->prefix_offset, take);
-      reader->prefix_offset += take;
-      copied += take;
-      continue;
-    }
-    if (reader->stage == 1) {
-      spool_result =
-          lonejson_spooled_read(&reader->cursor, buffer + copied,
-                                capacity - copied);
-      if (spool_result.error_code != 0) {
-        result.error_code = spool_result.error_code;
-        return result;
-      }
-      copied += spool_result.bytes_read;
-      if (!spool_result.eof || copied == capacity) {
-        break;
-      }
-      reader->stage = 2;
-      continue;
-    }
-    if (reader->stage == 2) {
-      available = reader->suffix_length - reader->suffix_offset;
-      if (available == 0U) {
-        reader->stage = 3;
-        continue;
-      }
-      bytes = reader->suffix;
-      take = available < (capacity - copied) ? available : (capacity - copied);
-      memcpy(buffer + copied, bytes + reader->suffix_offset, take);
-      reader->suffix_offset += take;
-      copied += take;
-      continue;
-    }
-    result.eof = 1;
-    break;
-  }
-  result.bytes_read = copied;
-  if (copied == 0U && reader->stage == 3) {
-    result.eof = 1;
-  }
-  return result;
-}
-
 static void cai_history_init_spooled(cai_session *session,
                                      lonejson_spooled *spool) {
   lonejson_spool_options options;
@@ -467,49 +382,53 @@ static void cai_history_init_spooled(cai_session *session,
 static int cai_history_capture_compact_array_spooled(
     cai_session *session, const lonejson_spooled *json, lonejson_spooled *item,
     cai_error *error) {
-  cai_history_json_doc doc;
-  cai_history_sink_context sink_context;
-  cai_spooled_array_reader reader;
-  lonejson_parse_options options;
+  lonejson_spooled cursor;
   lonejson_error json_error;
+  lonejson_read_result chunk;
+  unsigned char buffer[4096];
+  int rc;
 
   cai_history_init_spooled(session, item);
   if (json == NULL || lonejson_spooled_size(json) == 0U) {
     return CAI_OK;
   }
-  reader.prefix = "{\"value\":[";
-  reader.suffix = "]}";
-  reader.prefix_length = strlen(reader.prefix);
-  reader.suffix_length = strlen(reader.suffix);
-  reader.prefix_offset = 0U;
-  reader.suffix_offset = 0U;
-  reader.cursor = *json;
-  reader.stage = 0;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+  if (lonejson_spooled_append(item, "[", 1U, &json_error) !=
       LONEJSON_STATUS_OK) {
+    lonejson_spooled_cleanup(item);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to start JSON history spool",
+                                json_error.message);
+  }
+  cursor = *json;
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(item);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind JSON history spool",
                                 json_error.message);
   }
-  sink_context.spool = item;
-  lonejson_json_value_init(&doc.value);
-  options = lonejson_default_parse_options();
-  options.clear_destination = 0;
-  if (lonejson_json_value_set_parse_sink(&doc.value, cai_history_lonejson_sink,
-                                         &sink_context,
-                                         &json_error) != LONEJSON_STATUS_OK ||
-      lonejson_parse_reader(&cai_history_json_map, &doc,
-                            cai_spooled_array_reader_read, &reader, &options,
-                            &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&doc.value);
+  do {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      lonejson_spooled_cleanup(item);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read JSON history spool");
+    }
+    if (chunk.bytes_read > 0U) {
+      rc = cai_history_append_bytes(item, buffer, chunk.bytes_read, error);
+      if (rc != CAI_OK) {
+        lonejson_spooled_cleanup(item);
+        return rc;
+      }
+    }
+  } while (!chunk.eof);
+  if (lonejson_spooled_append(item, "]", 1U, &json_error) !=
+      LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(item);
-    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to validate JSON history item",
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to finish JSON history spool",
                                 json_error.message);
   }
-  lonejson_json_value_cleanup(&doc.value);
   return CAI_OK;
 }
 
@@ -1019,7 +938,15 @@ static int cai_session_compact(cai_session *session, cai_error *error) {
     goto done;
   }
   if (rc == CAI_OK) {
-    rc = cai_session_init_response_params(session, &params, error);
+    rc = cai_response_create_params_new(&params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_model(params, session->agent->model,
+                                              error);
+  }
+  if (rc == CAI_OK && session->agent->instructions != NULL) {
+    rc = cai_response_create_params_set_instructions(
+        params, session->agent->instructions, error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_raw_input_spooled(params, &history_items,
@@ -1027,11 +954,6 @@ static int cai_session_compact(cai_session *session, cai_error *error) {
     if (rc == CAI_OK) {
       has_history_items = 0;
     }
-  }
-  if (rc == CAI_OK) {
-    cai_response_create_params_clear_input(params);
-    cai_free_mem(&params->allocator, params->previous_response_id);
-    params->previous_response_id = NULL;
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_spool_json(params, 0, &request_json,
