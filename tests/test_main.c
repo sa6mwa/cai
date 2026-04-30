@@ -1221,6 +1221,9 @@ static const char *mock_response_for_request(const char *request) {
   static const char stream_session_second_body[] =
       "data: {\"type\":\"response.reasoning_summary_text.delta\","
       "\"delta\":\"thinking\"}\n\n"
+      "data: {\"type\":\"response.reasoning_summary_text.done\"}\n\n"
+      "data: {\"type\":\"response.reasoning_summary_text.delta\","
+      "\"delta\":\" again\"}\n\n"
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_session_2\"}}\n\n";
@@ -2862,7 +2865,7 @@ static void test_stream_response_text(test_state *state) {
   expect_int(state, "stream_session_same_sink_second",
              session->stream(session, &stream_sinks, &error), CAI_OK);
   expect_str(state, "stream_session_same_sink_value_second", writer.buffer,
-             "[r] thinking\n\n[o] two");
+             "[r] thinking\n\n again\n\n[o] two");
   expect_int(state, "stream_session_same_sink_usage_second",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_session_same_sink_usage_second_total",

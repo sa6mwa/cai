@@ -241,6 +241,7 @@ static int cai_sse_write_reasoning_delta(cai_sse_state *state,
     }
     state->reasoning_summary_started = 1;
   }
+  state->reasoning_summary_suffixed = 0;
   return cai_sink_write(state->sinks.reasoning_summary, delta, length, NULL);
 }
 
