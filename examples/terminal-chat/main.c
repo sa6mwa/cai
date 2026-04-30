@@ -4,6 +4,11 @@
 #include <string.h>
 #include <unistd.h>
 
+#define CAI_ANSI_RESET "\033[0m"
+#define CAI_ANSI_GRAY "\033[90m"
+#define CAI_ANSI_GREEN "\033[32m"
+#define CAI_ANSI_BRIGHT_CYAN "\033[96m"
+
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
           error->message != NULL ? error->message : cai_status_string(rc));
@@ -53,8 +58,7 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
           "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
           "total=%lld context=n/a estimated_cost=$%.8f\n",
           usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
-          usage->output_reasoning_tokens, usage->total_tokens,
-          total_spent_usd);
+          usage->output_reasoning_tokens, usage->total_tokens, total_spent_usd);
 }
 
 int main(void) {
@@ -115,9 +119,12 @@ int main(void) {
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.reasoning_summary = stdout_sink;
   stream_sinks.output_text = stdout_sink;
-  stream_sinks.reasoning_summary_prefix.text = "[reasoning] ";
-  stream_sinks.reasoning_summary_suffix.text = "\n\n";
-  stream_sinks.output_text_prefix.text = "[response] ";
+  stream_sinks.reasoning_summary_prefix.text = CAI_ANSI_GRAY
+      "[" CAI_ANSI_BRIGHT_CYAN "reasoning" CAI_ANSI_GRAY "] " CAI_ANSI_GRAY;
+  stream_sinks.reasoning_summary_suffix.text = CAI_ANSI_RESET "\n\n";
+  stream_sinks.output_text_prefix.text = CAI_ANSI_GRAY
+      "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]" CAI_ANSI_RESET " ";
+  stream_sinks.output_text_suffix.text = CAI_ANSI_RESET "\n";
 
   for (;;) {
     fputs("> ", stdout);
@@ -146,8 +153,7 @@ int main(void) {
     if (strcmp(line, "/compact") == 0) {
       rc = cai_session_compact_experimental(session, &error);
       if (rc != CAI_OK) {
-        exit_code = print_error("cai_session_compact_experimental", rc,
-                                &error);
+        exit_code = print_error("cai_session_compact_experimental", rc, &error);
         break;
       }
       fputs("[compact] manual experimental compaction complete\n", stderr);
