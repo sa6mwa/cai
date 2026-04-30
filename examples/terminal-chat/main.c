@@ -38,21 +38,22 @@ static void trim_newline(char *line) {
 }
 
 static void print_usage(const cai_token_usage *usage, double context_percent,
-                        int has_context_percent) {
+                        int has_context_percent, double total_spent_usd) {
   if (has_context_percent) {
     fprintf(stderr,
             "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
-            "total=%lld context=%.2f%%\n",
+            "total=%lld context=%.2f%% estimated_cost=$%.8f\n",
             usage->input_tokens, usage->input_cached_tokens,
             usage->output_tokens, usage->output_reasoning_tokens,
-            usage->total_tokens, context_percent);
+            usage->total_tokens, context_percent, total_spent_usd);
     return;
   }
   fprintf(stderr,
           "[usage] input=%lld cached=%lld output=%lld reasoning=%lld "
-          "total=%lld context=n/a\n",
+          "total=%lld context=n/a estimated_cost=$%.8f\n",
           usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
-          usage->output_reasoning_tokens, usage->total_tokens);
+          usage->output_reasoning_tokens, usage->total_tokens,
+          total_spent_usd);
 }
 
 int main(void) {
@@ -66,6 +67,7 @@ int main(void) {
   cai_error error;
   cai_token_usage usage;
   double context_percent;
+  double total_spent_usd;
   int has_context_percent;
   char line[4096];
   int exit_code;
@@ -82,6 +84,7 @@ int main(void) {
   session = NULL;
   sink = NULL;
   exit_code = 1;
+  total_spent_usd = 0.0;
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
@@ -133,6 +136,9 @@ int main(void) {
       break;
     }
     if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
+      total_spent_usd += cai_model_estimate_usage_usd(
+          agent_config.model, usage.input_tokens, usage.input_cached_tokens,
+          usage.output_tokens);
       context_percent = 0.0;
       has_context_percent = cai_session_context_percent(
                                 session, &context_percent, &error) == CAI_OK;
@@ -140,7 +146,8 @@ int main(void) {
         cai_error_cleanup(&error);
         cai_error_init(&error);
       }
-      print_usage(&usage, context_percent, has_context_percent);
+      print_usage(&usage, context_percent, has_context_percent,
+                  total_spent_usd);
     } else {
       cai_error_cleanup(&error);
       cai_error_init(&error);

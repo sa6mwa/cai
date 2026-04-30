@@ -157,6 +157,12 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_compact_limit",
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
+  if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL,
+                                   200000LL, 1000000LL) < 0.44 ||
+      cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL,
+                                   200000LL, 1000000LL) > 0.46) {
+    test_fail(state, "model_usage_usd", "unexpected gpt-5-nano cost estimate");
+  }
   cai_agent_config_init(&agent_config);
   expect_int(state, "agent_config_disable_auto_compaction_default",
              agent_config.disable_auto_compaction, 0L);

@@ -10,9 +10,14 @@
 #define CAI_MODEL_CAP_TEXT_AUDIO                                             \
   (CAI_MODEL_CAP_TEXT_REALTIME | CAI_MODEL_CAP_AUDIO_INPUT |                  \
    CAI_MODEL_CAP_AUDIO_OUTPUT)
+#define CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, input_price,      \
+                             cached_price, output_price)                      \
+  {model_id, caps, context_tokens, ((context_tokens) * 8LL) / 10LL,            \
+   input_price, cached_price, output_price}
 #define CAI_MODEL_ROW(model_id, caps, context_tokens)                         \
-  {model_id, caps, context_tokens, ((context_tokens) * 8LL) / 10LL}
-#define CAI_MODEL_ROW_UNKNOWN(model_id, caps) {model_id, caps, 0LL, 0LL}
+  CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, 0.0, 0.0, 0.0)
+#define CAI_MODEL_ROW_UNKNOWN(model_id, caps)                                  \
+  {model_id, caps, 0LL, 0LL, 0.0, 0.0, 0.0}
 
 static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_5, CAI_MODEL_CAP_TEXT, 1050000LL),
@@ -40,7 +45,8 @@ static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_1_MINI, CAI_MODEL_CAP_TEXT, 400000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_5, CAI_MODEL_CAP_TEXT_REALTIME, 400000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_MINI, CAI_MODEL_CAP_TEXT_REALTIME, 400000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_5_NANO, CAI_MODEL_CAP_TEXT_REALTIME, 400000LL),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_NANO, CAI_MODEL_CAP_TEXT_REALTIME,
+                         400000LL, 0.05, 0.005, 0.40),
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_2025_08_07, CAI_MODEL_CAP_TEXT_REALTIME,
                   400000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_MINI_2025_08_07,
@@ -152,7 +158,7 @@ static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11,
                           CAI_MODEL_CAP_TEXT),
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_CODEX_MINI_LATEST, CAI_MODEL_CAP_TEXT),
-    {NULL, 0U, 0LL, 0LL}};
+    {NULL, 0U, 0LL, 0LL, 0.0, 0.0, 0.0}};
 
 const cai_model_info *cai_model_info_by_id(const char *model_id) {
   size_t i;
@@ -190,4 +196,35 @@ long long cai_model_auto_compact_token_limit(const char *model_id) {
 
   info = cai_model_info_by_id(model_id);
   return info != NULL ? info->auto_compact_token_limit : 0LL;
+}
+
+double cai_model_estimate_usage_usd(const char *model_id,
+                                    long long input_tokens,
+                                    long long input_cached_tokens,
+                                    long long output_tokens) {
+  const cai_model_info *info;
+  long long uncached_input_tokens;
+
+  info = cai_model_info_by_id(model_id);
+  if (info == NULL || info->input_usd_per_million <= 0.0 ||
+      info->output_usd_per_million <= 0.0) {
+    return 0.0;
+  }
+  if (input_tokens < 0LL) {
+    input_tokens = 0LL;
+  }
+  if (input_cached_tokens < 0LL) {
+    input_cached_tokens = 0LL;
+  }
+  if (output_tokens < 0LL) {
+    output_tokens = 0LL;
+  }
+  if (input_cached_tokens > input_tokens) {
+    input_cached_tokens = input_tokens;
+  }
+  uncached_input_tokens = input_tokens - input_cached_tokens;
+  return ((double)uncached_input_tokens * info->input_usd_per_million +
+          (double)input_cached_tokens * info->cached_input_usd_per_million +
+          (double)output_tokens * info->output_usd_per_million) /
+         1000000.0;
 }
