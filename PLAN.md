@@ -111,11 +111,10 @@ static vectis_status handle_request(vectis_request *req,
 
   vectis_request_json_into(req, &my_input_map, &input);
 
-  cai_client_new_agent(app->cai, &support_agent_config, &agent, &error);
-  cai_agent_new_session(agent, &session, &error);
-  cai_session_add_user_text(session, input.question, &error);
-  cai_session_add_user_image_url(session, input.image_url, NULL, &error);
-  cai_session_run_output(session, &output, &error);
+  app->cai->new_agent(app->cai, &support_agent_config, &agent, &error);
+  agent->add_user_text(agent, input.question, &error);
+  agent->add_user_image_url(agent, input.image_url, NULL, &error);
+  agent->run_output(agent, &output, &error);
   cai_output_as_lc_source(output, &source, &error);
 
   return vectis_response_json_source(res, 200, source, &my_output_map);
@@ -435,16 +434,16 @@ cai_agent_config_init(&agent_config);
 agent_config.model = CAI_MODEL_GPT_5_NANO;
 agent_config.developer_instructions = "You are concise.";
 
-cai_client_new_agent(client, &agent_config, &agent, &error);
-cai_agent_new_session(agent, &session, &error);
-cai_session_send_text(session, "Explain epoll in one paragraph.", &response,
-                      &error);
+client->new_agent(client, &agent_config, &agent, &error);
+agent->send_text(agent, "Explain epoll in one paragraph.", &response, &error);
 ```
 
 Decision:
 
 - `cai_session` should use `previous_response_id` by default because it is the
   smallest state model and maps cleanly to Responses.
+- Agent-level calls should lazily create and reuse a default session, making
+  simple flows context-preserving without explicit session plumbing.
 - If a session is created with `use_conversation=1`, it should create or attach
   an OpenAI Conversation ID and send future turns through that conversation.
 - This keeps the default simple while preserving explicit conversation support.
@@ -453,12 +452,11 @@ For workflow-heavy hosts, the session facade should support incremental setup
 and streaming run output:
 
 ```c
-cai_agent_new_session(agent, &session, &error);
-cai_session_add_user_text(session, user_text, &error);
-cai_session_add_user_image_url(session, image_url, "high", &error);
-cai_session_register_tool(session, &tool, &error);
-cai_session_run_stream(session, &handler, &error);
-cai_session_run_output(session, &output, &error);
+agent->new_session(agent, &session, &error);
+session->add_user_text(session, user_text, &error);
+session->add_user_image_url(session, image_url, "high", &error);
+session->stream_text(session, sink, &error);
+session->run_output(session, &output, &error);
 ```
 
 The agent/session facade intentionally exposes developer instructions and user
@@ -468,6 +466,22 @@ as the equivalent message-role form. `assistant` messages remain a low-level
 transport concept for manually replaying prior model output when callers are not
 using `previous_response_id` or Conversations. Normal cai sessions preserve
 assistant turns transparently through those server-side state handles.
+
+Tool registration is agent-level:
+
+```c
+cai_tool_schema_new(&schema, &error);
+schema->string(schema, "customer_id", "Customer id", 1, &error);
+schema->integer(schema, "limit", "Maximum rows", 0, &error);
+agent->register_tool_schema(agent, "lookup_customer", "Look up a customer.",
+                            &lookup_customer_map, schema, lookup_customer_cb,
+                            ctx, &error);
+schema->close(schema);
+```
+
+`register_tool` is the direct lonejson path when the caller already has schema
+JSON. `register_raw_tool` is the explicit escape hatch for dynamic JSON
+parameters.
 
 Multi-agent workflows should remain host-driven. `cai` should make it cheap to
 construct several agents and sessions, but it should not impose a graph runtime

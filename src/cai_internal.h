@@ -12,7 +12,7 @@ struct curl_slist;
 #define CAI_DEFAULT_BASE_URL "https://api.openai.com/v1"
 #define CAI_DEFAULT_JSON_RESPONSE_LIMIT (1024UL * 1024UL)
 
-struct cai_client {
+typedef struct cai_client_impl {
   cai_allocator allocator;
   char *api_key;
   char *base_url;
@@ -24,9 +24,9 @@ struct cai_client {
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;
   int logger_disabled;
-};
+} cai_client_impl;
 
-struct cai_agent {
+typedef struct cai_agent_impl {
   cai_client *client;
   char *model;
   char *developer_instructions;
@@ -44,7 +44,8 @@ struct cai_agent {
   size_t history_memory_limit;
   char *history_spool_dir;
   cai_tool_registry *tools;
-};
+  cai_session *default_session;
+} cai_agent_impl;
 
 typedef struct cai_session_text_input {
   int kind;
@@ -56,7 +57,7 @@ typedef struct cai_session_text_input {
   char *output;
 } cai_session_input;
 
-struct cai_session {
+typedef struct cai_session_impl {
   cai_agent *agent;
   char *previous_response_id;
   char *conversation_id;
@@ -66,7 +67,16 @@ struct cai_session {
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
-};
+} cai_session_impl;
+
+#define CAI_CLIENT_IMPL(client) ((cai_client_impl *)((client)->impl))
+#define CAI_AGENT_IMPL(agent) ((cai_agent_impl *)((agent)->impl))
+#define CAI_SESSION_IMPL(session) ((cai_session_impl *)((session)->impl))
+#define CAI_SESSION_AGENT_IMPL(session) \
+  (CAI_AGENT_IMPL(CAI_SESSION_IMPL(session)->agent))
+#define CAI_SESSION_CLIENT(session) (CAI_SESSION_AGENT_IMPL(session)->client)
+#define CAI_SESSION_CLIENT_IMPL(session) \
+  (CAI_CLIENT_IMPL(CAI_SESSION_CLIENT(session)))
 
 void *cai_alloc(const cai_allocator *allocator, size_t size);
 void *cai_realloc_mem(const cai_allocator *allocator, void *ptr, size_t size);

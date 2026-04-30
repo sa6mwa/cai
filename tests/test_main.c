@@ -376,6 +376,7 @@ static void test_tool_registry(test_state *state) {
       "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},"
       "\"days\":{\"type\":\"integer\"}},\"required\":[\"city\"]}";
   cai_tool_registry *registry;
+  cai_tool_schema *tool_schema;
   cai_response_create_params *params;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -386,6 +387,7 @@ static void test_tool_registry(test_state *state) {
 
   cai_error_init(&error);
   registry = NULL;
+  tool_schema = NULL;
   params = NULL;
   sink = NULL;
   json = NULL;
@@ -399,10 +401,49 @@ static void test_tool_registry(test_state *state) {
 
   expect_int(state, "tool_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "tool_schema_new",
+             cai_tool_schema_new(&tool_schema, &error), CAI_OK);
+  if (tool_schema->string == NULL || tool_schema->integer == NULL ||
+      tool_schema->string_enum == NULL || tool_schema->json == NULL ||
+      tool_schema->close == NULL) {
+    test_fail(state, "tool_schema_methods",
+              "tool schema method facade not initialized");
+  }
+  expect_int(state, "tool_schema_city",
+             tool_schema->string(tool_schema, "city", "City name", 1, &error),
+             CAI_OK);
+  expect_int(state, "tool_schema_days",
+             tool_schema->integer(tool_schema, "days", "Number of days", 0,
+                                  &error),
+             CAI_OK);
+  {
+    const char *units[2];
+    units[0] = "metric";
+    units[1] = "imperial";
+    expect_int(state, "tool_schema_units",
+               tool_schema->string_enum(tool_schema, "units", "Unit system",
+                                        units, 2U, 0, &error),
+               CAI_OK);
+  }
+  if (cai_tool_schema_json(tool_schema) == NULL ||
+      strstr(cai_tool_schema_json(tool_schema), "\"city\"") == NULL ||
+      strstr(cai_tool_schema_json(tool_schema), "\"required\":[\"city\"]") ==
+          NULL ||
+      strstr(cai_tool_schema_json(tool_schema), "\"enum\":[\"metric\","
+                                                "\"imperial\"]") == NULL ||
+      cai_tool_schema_strict(tool_schema) != 1) {
+    test_fail(state, "tool_schema_json", "schema builder JSON is incomplete");
+  }
   expect_int(state, "tool_register_typed",
              cai_tool_registry_register_lonejson(
                  registry, "weather", "Get weather", &tool_weather_map, schema,
                  1, test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "tool_register_schema",
+             cai_tool_registry_register_lonejson(
+                 registry, "forecast", "Get forecast", &tool_weather_map,
+                 tool_schema->json(tool_schema), tool_schema->strict(tool_schema),
+                 test_weather_tool, NULL, &error),
              CAI_OK);
   expect_int(state, "tool_register_raw",
              cai_tool_registry_register_raw(registry, "raw_echo",
@@ -449,6 +490,7 @@ static void test_tool_registry(test_state *state) {
     test_fail(state, "tool_params_serialize", "no JSON returned");
   } else {
     if (strstr(json, "\"name\":\"weather\"") == NULL ||
+        strstr(json, "\"name\":\"forecast\"") == NULL ||
         strstr(json, "\"name\":\"raw_echo\"") == NULL ||
         strstr(json, "\"strict\":true") == NULL ||
         strstr(json, "\"strict\":false") == NULL) {
@@ -459,6 +501,7 @@ static void test_tool_registry(test_state *state) {
   }
 
   cai_response_create_params_destroy(params);
+  cai_tool_schema_destroy(tool_schema);
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
 }
@@ -484,15 +527,15 @@ static void test_client_open(test_state *state) {
   if (client == NULL) {
     test_fail(state, "client_open", "client not allocated");
   } else {
-    expect_str(state, "client_api_key", client->api_key, "test-key");
-    expect_str(state, "client_base_url", client->base_url,
+    expect_str(state, "client_api_key", CAI_CLIENT_IMPL(client)->api_key, "test-key");
+    expect_str(state, "client_base_url", CAI_CLIENT_IMPL(client)->base_url,
                "http://example.test/v1");
-    expect_int(state, "client_http_2_disabled", client->http_2_disabled, 0);
-    if (client->logger != logger) {
+    expect_int(state, "client_http_2_disabled", CAI_CLIENT_IMPL(client)->http_2_disabled, 0);
+    if (CAI_CLIENT_IMPL(client)->logger != logger) {
       test_fail(state, "client_logger", "borrowed logger not preserved");
     }
-    expect_int(state, "client_logger_disabled", client->logger_disabled, 0);
-    expect_int(state, "client_limit", (long)client->json_response_limit_bytes,
+    expect_int(state, "client_logger_disabled", CAI_CLIENT_IMPL(client)->logger_disabled, 0);
+    expect_int(state, "client_limit", (long)CAI_CLIENT_IMPL(client)->json_response_limit_bytes,
                (long)CAI_DEFAULT_JSON_RESPONSE_LIMIT);
     cai_agent_config_init(&agent_config);
     agent_config.model = "future-model";
@@ -516,11 +559,11 @@ static void test_client_open(test_state *state) {
   if (client == NULL) {
     test_fail(state, "client_open_logger_disabled", "client not allocated");
   } else {
-    if (client->logger != NULL) {
+    if (CAI_CLIENT_IMPL(client)->logger != NULL) {
       test_fail(state, "client_logger_disabled_null",
                 "disabled logger should not be retained");
     }
-    expect_int(state, "client_logger_disabled_flag", client->logger_disabled,
+    expect_int(state, "client_logger_disabled_flag", CAI_CLIENT_IMPL(client)->logger_disabled,
                1);
   }
   cai_client_close(client);
@@ -1922,7 +1965,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 7);
+    mock_openai_child(pipe_fds[1], 9);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -1966,10 +2009,37 @@ static void test_agent_session(test_state *state) {
   expect_int(state, "agent_new",
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
+  if (client->new_agent == NULL || client->close == NULL ||
+      agent->register_tool == NULL || agent->register_raw_tool == NULL ||
+      agent->add_user_text == NULL || agent->stream_text == NULL ||
+      agent->run_output == NULL || agent->new_session == NULL ||
+      agent->close == NULL) {
+    test_fail(state, "agent_methods", "method facade not initialized");
+  }
+  expect_int(
+      state, "agent_default_first",
+      agent->send_text(agent, "session first", &response, &error), CAI_OK);
+  expect_str(state, "agent_default_first_id", cai_response_id(response),
+             "resp_session_1");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(
+      state, "agent_default_second_add",
+      agent->add_user_text(agent, "session second", &error), CAI_OK);
+  expect_int(state, "agent_default_second_run",
+             agent->run(agent, &response, &error), CAI_OK);
+  expect_str(state, "agent_default_second_id", cai_response_id(response),
+             "resp_session_2");
+  cai_response_destroy(response);
+  response = NULL;
   expect_int(state, "agent_session_new",
-             cai_agent_new_session(agent, &session, &error), CAI_OK);
+             agent->new_session(agent, &session, &error), CAI_OK);
+  if (session->add_user_text == NULL || session->run == NULL ||
+      session->send_text == NULL || session->close == NULL) {
+    test_fail(state, "session_methods", "session facade not initialized");
+  }
   expect_int(state, "agent_first",
-             cai_session_send_text(session, "session first", &response, &error),
+             session->send_text(session, "session first", &response, &error),
              CAI_OK);
   expect_str(state, "agent_first_id", cai_response_id(response),
              "resp_session_1");
@@ -1979,7 +2049,7 @@ static void test_agent_session(test_state *state) {
   response = NULL;
   expect_int(
       state, "agent_second",
-      cai_session_send_text(session, "session second", &response, &error),
+      session->send_text(session, "session second", &response, &error),
       CAI_OK);
   expect_str(state, "agent_second_id", cai_response_id(response),
              "resp_session_2");
@@ -1988,9 +2058,9 @@ static void test_agent_session(test_state *state) {
   cai_response_destroy(response);
   response = NULL;
   expect_int(state, "agent_add_user",
-             cai_session_add_user_text(session, "incremental turn", &error),
+             session->add_user_text(session, "incremental turn", &error),
              CAI_OK);
-  expect_int(state, "agent_run", cai_session_run(session, &response, &error),
+  expect_int(state, "agent_run", session->run(session, &response, &error),
              CAI_OK);
   expect_str(state, "agent_third_id", cai_response_id(response),
              "resp_session_3");
@@ -1999,12 +2069,12 @@ static void test_agent_session(test_state *state) {
   cai_response_destroy(response);
   response = NULL;
   expect_int(state, "agent_add_image",
-             cai_session_add_user_image_url(session,
-                                       "https://example.test/session.png",
-                                       "high", &error),
+             session->add_user_image_url(session,
+                                         "https://example.test/session.png",
+                                         "high", &error),
              CAI_OK);
   expect_int(state, "agent_image_run",
-             cai_session_run(session, &response, &error), CAI_OK);
+             session->run(session, &response, &error), CAI_OK);
   expect_str(state, "agent_image_id", cai_response_id(response),
              "resp_session_img");
   expect_str(state, "agent_image_text", cai_response_output_text(response),
@@ -2015,13 +2085,13 @@ static void test_agent_session(test_state *state) {
              cai_conversation_from_id("conv_session", &conversation, &error),
              CAI_OK);
   expect_int(state, "agent_session_set_conversation",
-             cai_session_set_conversation(session, conversation, &error),
+             session->set_conversation(session, conversation, &error),
              CAI_OK);
   expect_str(state, "agent_session_conversation_id",
-             cai_session_conversation_id(session), "conv_session");
+             session->conversation_id(session), "conv_session");
   expect_int(
       state, "agent_conversation_turn",
-      cai_session_send_text(session, "conversation turn", &response, &error),
+      session->send_text(session, "conversation turn", &response, &error),
       CAI_OK);
   expect_str(state, "agent_conversation_response_id", cai_response_id(response),
              "resp_session_conv");
@@ -2030,7 +2100,7 @@ static void test_agent_session(test_state *state) {
   expect_str(state, "agent_conversation_text",
              cai_response_output_text(response), "conversation turn");
   cai_response_destroy(response);
-  cai_session_destroy(session);
+  session->close(session);
   session = NULL;
   response = NULL;
   cai_conversation_destroy(conversation);
@@ -2039,26 +2109,26 @@ static void test_agent_session(test_state *state) {
              cai_conversation_from_id("conv_session", &conversation, &error),
              CAI_OK);
   expect_int(state, "agent_existing_conversation_session",
-             cai_agent_new_session_for_conversation(agent, conversation,
-                                                    &session, &error),
+             agent->new_session_for_conversation(agent, conversation, &session,
+                                                 &error),
              CAI_OK);
   expect_str(state, "agent_existing_conversation_session_id",
-             cai_session_conversation_id(session), "conv_session");
-  cai_session_destroy(session);
+             session->conversation_id(session), "conv_session");
+  session->close(session);
   session = NULL;
   cai_conversation_destroy(conversation);
   conversation = NULL;
   expect_int(state, "agent_auto_conversation_session",
-             cai_agent_new_conversation_session(agent, &session, &error),
+             agent->new_conversation_session(agent, &session, &error),
              CAI_OK);
   expect_str(state, "agent_auto_conversation_id",
-             cai_session_conversation_id(session), "conv_mock");
+             session->conversation_id(session), "conv_mock");
   expect_int(
       state, "agent_auto_conversation_add_text",
-      cai_session_add_user_text(session, "auto conversation turn", &error),
+      session->add_user_text(session, "auto conversation turn", &error),
       CAI_OK);
   expect_int(state, "agent_auto_conversation_turn",
-             cai_session_run_output(session, &output, &error), CAI_OK);
+             session->run_output(session, &output, &error), CAI_OK);
   output_response = cai_output_response(output);
   expect_str(state, "agent_auto_conversation_response_id",
              cai_response_id(output_response), "resp_session_auto_conv");
@@ -2067,9 +2137,9 @@ static void test_agent_session(test_state *state) {
   expect_str(state, "agent_auto_conversation_text", cai_output_text(output),
              "auto conversation turn");
   cai_output_destroy(output);
-  cai_session_destroy(session);
-  cai_agent_destroy(agent);
-  cai_client_close(client);
+  session->close(session);
+  agent->close(agent);
+  client->close(client);
   cai_error_cleanup(&error);
 
   if (waitpid(pid, &child_status, 0) != pid) {
@@ -2092,6 +2162,7 @@ static void test_agent_tool_declarations(test_state *state) {
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_tool_schema *tool_schema;
   cai_response *response;
   raw_tool_state raw_state;
   cai_error error;
@@ -2132,6 +2203,7 @@ static void test_agent_tool_declarations(test_state *state) {
   client = NULL;
   agent = NULL;
   session = NULL;
+  tool_schema = NULL;
   response = NULL;
   raw_state.seen[0] = '\0';
 
@@ -2140,23 +2212,34 @@ static void test_agent_tool_declarations(test_state *state) {
   expect_int(state, "agent_tool_new",
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
-  expect_int(state, "agent_tool_register",
-             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
-                                         schema, 0, test_raw_tool, &raw_state,
-                                         &error),
+  expect_int(state, "agent_tool_schema_new",
+             cai_tool_schema_new(&tool_schema, &error), CAI_OK);
+  expect_int(state, "agent_tool_schema_string",
+             tool_schema->string(tool_schema, "city", "City name", 1, &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_register_schema",
+             agent->register_tool_schema(agent, "weather", "Get weather",
+                                         &tool_weather_map, tool_schema,
+                                         test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_register_raw",
+             agent->register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                      schema, 0, test_raw_tool, &raw_state,
+                                      &error),
              CAI_OK);
   expect_int(state, "agent_tool_session",
-             cai_agent_new_session(agent, &session, &error), CAI_OK);
+             agent->new_session(agent, &session, &error), CAI_OK);
   expect_int(
       state, "agent_tool_send",
-      cai_session_send_text(session, "agent tool turn", &response, &error),
+      session->send_text(session, "agent tool turn", &response, &error),
       CAI_OK);
   expect_str(state, "agent_tool_response", cai_response_output_text(response),
              "tool ready");
   cai_response_destroy(response);
-  cai_session_destroy(session);
-  cai_agent_destroy(agent);
-  cai_client_close(client);
+  tool_schema->close(tool_schema);
+  session->close(session);
+  agent->close(agent);
+  client->close(client);
   cai_error_cleanup(&error);
 
   if (waitpid(pid, &child_status, 0) != pid) {

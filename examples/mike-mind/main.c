@@ -191,7 +191,6 @@ int main(void) {
   cai_sink_callbacks sink_callbacks;
   cai_client *client;
   cai_agent *agent;
-  cai_session *session;
   cai_sink *sink;
   cai_error error;
   prompt_buffer prompt;
@@ -210,7 +209,6 @@ int main(void) {
   }
   client = NULL;
   agent = NULL;
-  session = NULL;
   sink = NULL;
   exit_code = 1;
 
@@ -226,14 +224,9 @@ int main(void) {
     exit_code = print_error("cai_client_open", rc, &error);
     goto done;
   }
-  rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  rc = client->new_agent(client, &agent_config, &agent, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_new_agent", rc, &error);
-    goto done;
-  }
-  rc = cai_agent_new_session(agent, &session, &error);
-  if (rc != CAI_OK) {
-    exit_code = print_error("cai_agent_new_session", rc, &error);
     goto done;
   }
   sink_callbacks.write = stdout_sink_write;
@@ -260,9 +253,9 @@ int main(void) {
       exit_code = 0;
       break;
     }
-    rc = cai_session_add_user_text(session, line, &error);
+    rc = agent->add_user_text(agent, line, &error);
     if (rc == CAI_OK) {
-      rc = cai_session_stream_text(session, sink, &error);
+      rc = agent->stream_text(agent, sink, &error);
     }
     fputc('\n', stdout);
     if (rc != CAI_OK) {
@@ -273,9 +266,12 @@ int main(void) {
 
 done:
   cai_sink_close(sink);
-  cai_session_destroy(session);
-  cai_agent_destroy(agent);
-  cai_client_close(client);
+  if (agent != NULL) {
+    agent->close(agent);
+  }
+  if (client != NULL) {
+    client->close(client);
+  }
   cai_error_cleanup(&error);
   free(prompt.data);
   return exit_code;

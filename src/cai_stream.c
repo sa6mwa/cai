@@ -346,7 +346,7 @@ int cai_client_stream_response_text_spooled_with_id(
   state.length = 0U;
   state.capacity = 0U;
   state.failed = 0;
-  rc = cai_build_url(&client->allocator, client->base_url, "responses", &url,
+  rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator, CAI_CLIENT_IMPL(client)->base_url, "responses", &url,
                      error);
   if (rc == CAI_OK) {
     rc = cai_append_header(&headers, "Content-Type: application/json", error);
@@ -359,21 +359,21 @@ int cai_client_stream_response_text_spooled_with_id(
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
-                                    client->organization_id, error);
+                                    CAI_CLIENT_IMPL(client)->organization_id, error);
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(
-        client, &headers, "OpenAI-Project: ", client->project_id, error);
+        client, &headers, "OpenAI-Project: ", CAI_CLIENT_IMPL(client)->project_id, error);
   }
   if (rc != CAI_OK) {
     curl_slist_free_all(headers);
-    cai_free_mem(&client->allocator, url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
     return rc;
   }
   curl = curl_easy_init();
   if (curl == NULL) {
     curl_slist_free_all(headers);
-    cai_free_mem(&client->allocator, url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
     return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to initialize curl");
   }
   curl_easy_setopt(curl, CURLOPT_URL, url);
@@ -384,7 +384,7 @@ int cai_client_stream_response_text_spooled_with_id(
   if (lonejson_spooled_rewind(&upload, &json_error) != LONEJSON_STATUS_OK) {
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
-    cai_free_mem(&client->allocator, url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind streaming request JSON",
                                 json_error.message);
@@ -396,15 +396,15 @@ int cai_client_stream_response_text_spooled_with_id(
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_sse_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  if (client->timeout_ms > 0L) {
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, client->timeout_ms);
+  if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, CAI_CLIENT_IMPL(client)->timeout_ms);
   }
-  if (client->http_2_disabled) {
+  if (CAI_CLIENT_IMPL(client)->http_2_disabled) {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
   } else {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_2TLS);
   }
-  if (client->insecure_skip_verify) {
+  if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
   }
@@ -412,7 +412,7 @@ int cai_client_stream_response_text_spooled_with_id(
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
-  cai_free_mem(&client->allocator, url);
+  cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
   cai_free_mem(NULL, state.line);
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, state.body);

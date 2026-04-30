@@ -4,6 +4,10 @@ These examples are built by default with `CAI_BUILD_EXAMPLES=ON`. They are live
 programs: running them requires either `OPENAI_API_KEY` in the environment or a
 repo-local `.env` file containing `OPENAI_API_KEY=...`.
 
+The agent-oriented examples use the method-style handle facade (`client->...`,
+`agent->...`, `session->...`). Raw Responses examples still use free functions
+because they demonstrate request construction close to the wire API.
+
 ## Basic Response
 
 ```sh

@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     exit_code = print_error("cai_client_open", rc, &error);
     goto done;
   }
-  rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  rc = client->new_agent(client, &agent_config, &agent, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_new_agent", rc, &error);
     goto done;
@@ -62,25 +62,25 @@ int main(int argc, char **argv) {
   if (argc > 1 && argv[1] != NULL && argv[1][0] != '\0') {
     rc = cai_conversation_from_id(argv[1], &conversation, &error);
   } else {
-    rc = cai_client_create_conversation(client, &conversation, &error);
+    rc = client->create_conversation(client, &conversation, &error);
   }
   if (rc != CAI_OK) {
     exit_code = print_error("conversation handle setup", rc, &error);
     goto done;
   }
-  rc = cai_agent_new_session_for_conversation(agent, conversation, &session,
-                                              &error);
+  rc = agent->new_session_for_conversation(agent, conversation, &session,
+                                           &error);
   if (rc != CAI_OK) {
     exit_code =
         print_error("cai_agent_new_session_for_conversation", rc, &error);
     goto done;
   }
-  rc = cai_session_add_user_text(session,
-                                 "Say one short sentence about reusable "
-                                 "conversation handles.",
-                                 &error);
+  rc = session->add_user_text(session,
+                              "Say one short sentence about reusable "
+                              "conversation handles.",
+                              &error);
   if (rc == CAI_OK) {
-    rc = cai_session_run_output(session, &output, &error);
+    rc = session->run_output(session, &output, &error);
   }
   if (rc != CAI_OK) {
     exit_code = print_error("cai_session_run_output", rc, &error);
@@ -103,10 +103,16 @@ int main(int argc, char **argv) {
 done:
   cai_input_item_list_destroy(items);
   cai_output_destroy(output);
-  cai_session_destroy(session);
+  if (session != NULL) {
+    session->close(session);
+  }
   cai_conversation_destroy(conversation);
-  cai_agent_destroy(agent);
-  cai_client_close(client);
+  if (agent != NULL) {
+    agent->close(agent);
+  }
+  if (client != NULL) {
+    client->close(client);
+  }
   cai_error_cleanup(&error);
   return exit_code;
 }

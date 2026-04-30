@@ -32,6 +32,24 @@ example layers settle.
 
 ## Agent Instructions
 
+The preferred high-level API is method-style handles:
+
+```c
+cai_client_open(&client_config, &client, &error);
+client->new_agent(client, &agent_config, &agent, &error);
+
+agent->add_user_text(agent, "Explain epoll in one paragraph.", &error);
+agent->stream_text(agent, sink, &error);
+
+agent->close(agent);
+client->close(client);
+```
+
+Agent-level calls lazily create a default session and reuse it for follow-up
+turns, so simple chat and workflow drivers get Responses context continuity
+without manually carrying a `cai_session`. Explicit sessions remain available
+for multi-session, conversation-handle, and advanced workflows.
+
 The high-level agent facade uses `developer_instructions`, matching the current
 Responses API guidance around application-provided behavior. OpenAI documents
 the top-level `instructions` field as high-level instructions that take
@@ -49,6 +67,23 @@ model-generated messages, and it is mainly useful when manually reconstructing
 conversation history. cai's default sessions use `previous_response_id`, and
 conversation sessions use OpenAI Conversations, so assistant turns are preserved
 through those handles instead of being manually appended by application code.
+
+Tools are agent capabilities. The default `register_tool` path is a typed
+lonejson callback; `register_raw_tool` is the JSON escape hatch. For schema DX,
+`cai_tool_schema` builds the JSON Schema while the lonejson map remains the C
+decoder for callback parameters:
+
+```c
+cai_tool_schema_new(&schema, &error);
+schema->string(schema, "customer_id", "Customer id", 1, &error);
+schema->integer(schema, "limit", "Maximum rows", 0, &error);
+
+agent->register_tool_schema(agent, "lookup_customer", "Look up a customer.",
+                            &lookup_customer_map, schema, lookup_customer,
+                            ctx, &error);
+
+schema->close(schema);
+```
 
 ## OpenAI API Caveats
 

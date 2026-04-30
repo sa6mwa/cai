@@ -58,6 +58,31 @@ static int cai_session_remember_stream(cai_session *session,
                                        const char *response_id,
                                        const cai_token_usage *usage,
                                        cai_error *error);
+static int cai_agent_add_user_text(cai_agent *agent, const char *text,
+                                   cai_error *error);
+static int cai_agent_add_user_image_url(cai_agent *agent, const char *url,
+                                        const char *detail, cai_error *error);
+static int cai_agent_run(cai_agent *agent, cai_response **out,
+                         cai_error *error);
+static int cai_agent_run_output(cai_agent *agent, cai_output **out,
+                                cai_error *error);
+static int cai_agent_run_auto(cai_agent *agent, const cai_run_options *options,
+                              cai_response **out, cai_error *error);
+static int cai_agent_run_auto_output(cai_agent *agent,
+                                     const cai_run_options *options,
+                                     cai_output **out, cai_error *error);
+static int cai_agent_stream_text(cai_agent *agent, cai_sink *sink,
+                                 cai_error *error);
+static int cai_agent_open_text_source(cai_agent *agent, cai_source **out,
+                                      cai_error *error);
+static int cai_agent_send_text(cai_agent *agent, const char *text,
+                               cai_response **out, cai_error *error);
+static int cai_agent_last_usage(const cai_agent *agent, cai_token_usage *out,
+                                cai_error *error);
+static int cai_agent_context_percent(const cai_agent *agent, double *out,
+                                     cai_error *error);
+static void cai_agent_init_methods(cai_agent *agent);
+static void cai_session_init_methods(cai_session *session);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -94,6 +119,8 @@ void cai_run_options_init(cai_run_options *options) {
 int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          cai_agent **out, cai_error *error) {
   cai_agent *agent;
+  cai_agent_impl *impl;
+  cai_client_impl *client_impl;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -105,87 +132,102 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client and agent model are required");
   }
-  agent = (cai_agent *)cai_alloc(&client->allocator, sizeof(*agent));
+  client_impl = CAI_CLIENT_IMPL(client);
+  if (client_impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
+  }
+  agent = (cai_agent *)cai_alloc(&client_impl->allocator, sizeof(*agent));
   if (agent == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
   }
-  agent->client = client;
-  agent->model = cai_strdup(&client->allocator, config->model);
-  agent->developer_instructions =
-      cai_strdup(&client->allocator, config->developer_instructions);
-  agent->reasoning_effort =
-      cai_strdup(&client->allocator, config->reasoning_effort);
-  agent->reasoning_summary =
-      cai_strdup(&client->allocator, config->reasoning_summary);
-  agent->text_format_name =
-      cai_strdup(&client->allocator, config->text_format_name);
-  agent->text_format_description =
-      cai_strdup(&client->allocator, config->text_format_description);
-  agent->text_format_schema_json =
-      cai_strdup(&client->allocator, config->text_format_schema_json);
-  agent->text_format_strict = config->text_format_strict;
-  agent->max_output_tokens = config->max_output_tokens;
-  agent->parallel_tool_calls = config->parallel_tool_calls;
-  agent->auto_compact = config->disable_auto_compaction ? 0 : 1;
-  agent->compact_threshold_percent =
+  memset(agent, 0, sizeof(*agent));
+  impl = (cai_agent_impl *)cai_alloc(&client_impl->allocator, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(&client_impl->allocator, agent);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate agent implementation");
+  }
+  memset(impl, 0, sizeof(*impl));
+  agent->impl = impl;
+  cai_agent_init_methods(agent);
+  impl->client = client;
+  impl->model = cai_strdup(&client_impl->allocator, config->model);
+  impl->developer_instructions =
+      cai_strdup(&client_impl->allocator, config->developer_instructions);
+  impl->reasoning_effort =
+      cai_strdup(&client_impl->allocator, config->reasoning_effort);
+  impl->reasoning_summary =
+      cai_strdup(&client_impl->allocator, config->reasoning_summary);
+  impl->text_format_name =
+      cai_strdup(&client_impl->allocator, config->text_format_name);
+  impl->text_format_description =
+      cai_strdup(&client_impl->allocator, config->text_format_description);
+  impl->text_format_schema_json =
+      cai_strdup(&client_impl->allocator, config->text_format_schema_json);
+  impl->text_format_strict = config->text_format_strict;
+  impl->max_output_tokens = config->max_output_tokens;
+  impl->parallel_tool_calls = config->parallel_tool_calls;
+  impl->auto_compact = config->disable_auto_compaction ? 0 : 1;
+  impl->compact_threshold_percent =
       config->compact_threshold_percent != 0U
           ? config->compact_threshold_percent
           : 80U;
   if (config->compact_threshold_tokens > 0LL) {
-    agent->auto_compact_token_limit = config->compact_threshold_tokens;
+    impl->auto_compact_token_limit = config->compact_threshold_tokens;
   } else if (config->auto_compact_token_limit > 0LL) {
-    agent->auto_compact_token_limit = config->auto_compact_token_limit;
-  } else if (agent->auto_compact) {
+    impl->auto_compact_token_limit = config->auto_compact_token_limit;
+  } else if (impl->auto_compact) {
     long long context_window;
 
-    context_window = cai_model_context_window_tokens(agent->model);
-    agent->auto_compact_token_limit =
+    context_window = cai_model_context_window_tokens(impl->model);
+    impl->auto_compact_token_limit =
         context_window > 0LL
-            ? (context_window * (long long)agent->compact_threshold_percent) /
+            ? (context_window * (long long)impl->compact_threshold_percent) /
                   100LL
             : 0LL;
   } else {
-    agent->auto_compact_token_limit = 0LL;
+    impl->auto_compact_token_limit = 0LL;
   }
-  agent->history_memory_limit = config->history_memory_limit != 0U
-                                    ? config->history_memory_limit
-                                    : 128U * 1024U;
-  agent->history_spool_dir =
-      cai_strdup(&client->allocator, config->history_spool_dir);
-  agent->tools = NULL;
-  if (agent->model == NULL ||
+  impl->history_memory_limit = config->history_memory_limit != 0U
+                                   ? config->history_memory_limit
+                                   : 128U * 1024U;
+  impl->history_spool_dir =
+      cai_strdup(&client_impl->allocator, config->history_spool_dir);
+  impl->tools = NULL;
+  impl->default_session = NULL;
+  if (impl->model == NULL ||
       (config->developer_instructions != NULL &&
-       agent->developer_instructions == NULL) ||
-      (config->reasoning_effort != NULL && agent->reasoning_effort == NULL) ||
-      (config->reasoning_summary != NULL && agent->reasoning_summary == NULL) ||
-      (config->text_format_name != NULL && agent->text_format_name == NULL) ||
+       impl->developer_instructions == NULL) ||
+      (config->reasoning_effort != NULL && impl->reasoning_effort == NULL) ||
+      (config->reasoning_summary != NULL && impl->reasoning_summary == NULL) ||
+      (config->text_format_name != NULL && impl->text_format_name == NULL) ||
       (config->text_format_description != NULL &&
-       agent->text_format_description == NULL) ||
+       impl->text_format_description == NULL) ||
       (config->text_format_schema_json != NULL &&
-       agent->text_format_schema_json == NULL) ||
-      (config->history_spool_dir != NULL && agent->history_spool_dir == NULL)) {
+       impl->text_format_schema_json == NULL) ||
+      (config->history_spool_dir != NULL && impl->history_spool_dir == NULL)) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
   }
-  if (agent->auto_compact && agent->auto_compact_token_limit <= 0LL) {
+  if (impl->auto_compact && impl->auto_compact_token_limit <= 0LL) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model has unknown context window; set "
                          "compact_threshold_tokens or disable auto compaction");
   }
-  if (agent->auto_compact && agent->compact_threshold_percent > 95U &&
+  if (impl->auto_compact && impl->compact_threshold_percent > 95U &&
       config->compact_threshold_tokens <= 0LL &&
       config->auto_compact_token_limit <= 0LL) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "compact threshold percent must be 1..95");
   }
-  if (agent->auto_compact && agent->auto_compact_token_limit < 1000LL) {
+  if (impl->auto_compact && impl->auto_compact_token_limit < 1000LL) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "compact threshold must be at least 1000 tokens");
   }
-  if (cai_tool_registry_new(&agent->tools, error) != CAI_OK) {
+  if (cai_tool_registry_new(&impl->tools, error) != CAI_OK) {
     cai_agent_destroy(agent);
     return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
@@ -195,21 +237,55 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
 
 void cai_agent_destroy(cai_agent *agent) {
   cai_allocator *allocator;
+  cai_agent_impl *impl;
 
   if (agent == NULL) {
     return;
   }
-  allocator = &agent->client->allocator;
-  cai_free_mem(allocator, agent->model);
-  cai_free_mem(allocator, agent->developer_instructions);
-  cai_free_mem(allocator, agent->reasoning_effort);
-  cai_free_mem(allocator, agent->reasoning_summary);
-  cai_free_mem(allocator, agent->text_format_name);
-  cai_free_mem(allocator, agent->text_format_description);
-  cai_free_mem(allocator, agent->text_format_schema_json);
-  cai_free_mem(allocator, agent->history_spool_dir);
-  cai_tool_registry_destroy(agent->tools);
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return;
+  }
+  allocator = &CAI_CLIENT_IMPL(impl->client)->allocator;
+  cai_session_destroy(impl->default_session);
+  cai_free_mem(allocator, impl->model);
+  cai_free_mem(allocator, impl->developer_instructions);
+  cai_free_mem(allocator, impl->reasoning_effort);
+  cai_free_mem(allocator, impl->reasoning_summary);
+  cai_free_mem(allocator, impl->text_format_name);
+  cai_free_mem(allocator, impl->text_format_description);
+  cai_free_mem(allocator, impl->text_format_schema_json);
+  cai_free_mem(allocator, impl->history_spool_dir);
+  cai_tool_registry_destroy(impl->tools);
+  cai_free_mem(allocator, impl);
+  agent->impl = NULL;
   cai_free_mem(allocator, agent);
+}
+
+int cai_agent_register_tool(cai_agent *agent, const char *name,
+                            const char *description,
+                            const lonejson_map *map,
+                            const char *schema_json, int strict,
+                            cai_tool_lonejson_fn callback, void *context,
+                            cai_error *error) {
+  return cai_agent_register_lonejson_tool(agent, name, description, map,
+                                          schema_json, strict, callback,
+                                          context, error);
+}
+
+int cai_agent_register_tool_schema(cai_agent *agent, const char *name,
+                                   const char *description,
+                                   const lonejson_map *map,
+                                   const cai_tool_schema *schema,
+                                   cai_tool_lonejson_fn callback,
+                                   void *context, cai_error *error) {
+  if (schema == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool schema is required");
+  }
+  return cai_agent_register_tool(agent, name, description, map,
+                                 cai_tool_schema_json(schema),
+                                 cai_tool_schema_strict(schema), callback,
+                                 context, error);
 }
 
 int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
@@ -218,10 +294,16 @@ int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
                                      const char *schema_json, int strict,
                                      cai_tool_lonejson_fn callback,
                                      void *context, cai_error *error) {
+  cai_agent_impl *impl;
+
   if (agent == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
   }
-  return cai_tool_registry_register_lonejson(agent->tools, name, description,
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return cai_tool_registry_register_lonejson(impl->tools, name, description,
                                              map, schema_json, strict, callback,
                                              context, error);
 }
@@ -231,10 +313,16 @@ int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
                                 const char *schema_json, int strict,
                                 cai_tool_raw_fn callback, void *context,
                                 cai_error *error) {
+  cai_agent_impl *impl;
+
   if (agent == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
   }
-  return cai_tool_registry_register_raw(agent->tools, name, description,
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return cai_tool_registry_register_raw(impl->tools, name, description,
                                         schema_json, strict, callback, context,
                                         error);
 }
@@ -242,6 +330,9 @@ int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error) {
   cai_session *session;
+  cai_session_impl *impl;
+  cai_agent_impl *agent_impl;
+  cai_client_impl *client_impl;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -251,28 +342,43 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   if (agent == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
   }
+  agent_impl = CAI_AGENT_IMPL(agent);
+  if (agent_impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  client_impl = CAI_CLIENT_IMPL(agent_impl->client);
   session =
-      (cai_session *)cai_alloc(&agent->client->allocator, sizeof(*session));
+      (cai_session *)cai_alloc(&client_impl->allocator, sizeof(*session));
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate session");
   }
-  session->agent = agent;
-  session->previous_response_id = NULL;
-  session->conversation_id = NULL;
-  memset(&session->last_usage, 0, sizeof(session->last_usage));
-  session->has_last_usage = 0;
+  memset(session, 0, sizeof(*session));
+  impl = (cai_session_impl *)cai_alloc(&client_impl->allocator, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(&client_impl->allocator, session);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate session implementation");
+  }
+  memset(impl, 0, sizeof(*impl));
+  session->impl = impl;
+  cai_session_init_methods(session);
+  impl->agent = agent;
+  impl->previous_response_id = NULL;
+  impl->conversation_id = NULL;
+  memset(&impl->last_usage, 0, sizeof(impl->last_usage));
+  impl->has_last_usage = 0;
   {
     lonejson_spool_options options;
 
     options = lonejson_default_spool_options();
-    options.memory_limit = agent->history_memory_limit;
+    options.memory_limit = agent_impl->history_memory_limit;
     options.max_bytes = 0U;
-    options.temp_dir = agent->history_spool_dir;
-    lonejson_spooled_init(&session->history, &options);
+    options.temp_dir = agent_impl->history_spool_dir;
+    lonejson_spooled_init(&impl->history, &options);
   }
-  session->inputs = NULL;
-  session->input_count = 0U;
-  session->input_capacity = 0U;
+  impl->inputs = NULL;
+  impl->input_count = 0U;
+  impl->input_capacity = 0U;
   *out = session;
   return CAI_OK;
 }
@@ -293,7 +399,7 @@ int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
   }
   conversation = NULL;
   session = NULL;
-  rc = cai_client_create_conversation(agent->client, &conversation, error);
+  rc = cai_client_create_conversation(CAI_AGENT_IMPL(agent)->client, &conversation, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -347,16 +453,16 @@ static void cai_session_clear_inputs(cai_session *session) {
   if (session == NULL) {
     return;
   }
-  allocator = &session->agent->client->allocator;
-  for (i = 0U; i < session->input_count; i++) {
-    cai_free_mem(allocator, session->inputs[i].role);
-    cai_free_mem(allocator, session->inputs[i].text);
-    cai_free_mem(allocator, session->inputs[i].image_url);
-    cai_free_mem(allocator, session->inputs[i].detail);
-    cai_free_mem(allocator, session->inputs[i].call_id);
-    cai_free_mem(allocator, session->inputs[i].output);
+  allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
+  for (i = 0U; i < CAI_SESSION_IMPL(session)->input_count; i++) {
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].role);
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].text);
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].image_url);
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].detail);
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].call_id);
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].output);
   }
-  session->input_count = 0U;
+  CAI_SESSION_IMPL(session)->input_count = 0U;
 }
 
 static int cai_history_append_bytes(lonejson_spooled *history,
@@ -395,9 +501,9 @@ static void cai_history_init_spooled(cai_session *session,
   lonejson_spool_options options;
 
   options = lonejson_default_spool_options();
-  options.memory_limit = session->agent->history_memory_limit;
+  options.memory_limit = CAI_SESSION_AGENT_IMPL(session)->history_memory_limit;
   options.max_bytes = 0U;
-  options.temp_dir = session->agent->history_spool_dir;
+  options.temp_dir = CAI_SESSION_AGENT_IMPL(session)->history_spool_dir;
   lonejson_spooled_init(spool, &options);
 }
 
@@ -478,10 +584,10 @@ static int cai_history_append_spooled(cai_session *session,
   snprintf(header, sizeof(header), "%lu\n",
            (unsigned long)lonejson_spooled_size(&item));
   header_length = strlen(header);
-  rc = cai_history_append_bytes(&session->history, header, header_length,
+  rc = cai_history_append_bytes(&CAI_SESSION_IMPL(session)->history, header, header_length,
                                 error);
   if (rc == CAI_OK) {
-    sink_context.spool = &session->history;
+    sink_context.spool = &CAI_SESSION_IMPL(session)->history;
     lonejson_error_init(&json_error);
     if (lonejson_spooled_write_to_sink(&item, cai_history_lonejson_sink,
                                        &sink_context,
@@ -492,34 +598,41 @@ static int cai_history_append_spooled(cai_session *session,
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_history_append_bytes(&session->history, "\n", 1U, error);
+    rc = cai_history_append_bytes(&CAI_SESSION_IMPL(session)->history, "\n", 1U, error);
   }
   lonejson_spooled_cleanup(&item);
   return rc;
 }
 
 static void cai_history_reset(cai_session *session) {
-  lonejson_spooled_reset(&session->history);
+  lonejson_spooled_reset(&CAI_SESSION_IMPL(session)->history);
 }
 
 static void cai_history_cleanup(cai_session *session) {
   if (session != NULL) {
-    lonejson_spooled_cleanup(&session->history);
+    lonejson_spooled_cleanup(&CAI_SESSION_IMPL(session)->history);
   }
 }
 
 void cai_session_destroy(cai_session *session) {
   cai_allocator *allocator;
+  cai_session_impl *impl;
 
   if (session == NULL) {
     return;
   }
-  allocator = &session->agent->client->allocator;
+  impl = CAI_SESSION_IMPL(session);
+  if (impl == NULL) {
+    return;
+  }
+  allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
   cai_session_clear_inputs(session);
   cai_history_cleanup(session);
-  cai_free_mem(allocator, session->inputs);
-  cai_free_mem(allocator, session->previous_response_id);
-  cai_free_mem(allocator, session->conversation_id);
+  cai_free_mem(allocator, impl->inputs);
+  cai_free_mem(allocator, impl->previous_response_id);
+  cai_free_mem(allocator, impl->conversation_id);
+  cai_free_mem(allocator, impl);
+  session->impl = NULL;
   cai_free_mem(allocator, session);
 }
 
@@ -532,7 +645,7 @@ int cai_session_set_conversation_id(cai_session *session,
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
   }
-  allocator = &session->agent->client->allocator;
+  allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
   copy = NULL;
   if (conversation_id != NULL) {
     copy = cai_strdup(allocator, conversation_id);
@@ -541,11 +654,11 @@ int cai_session_set_conversation_id(cai_session *session,
                            "failed to allocate conversation id");
     }
   }
-  cai_free_mem(allocator, session->conversation_id);
-  session->conversation_id = copy;
+  cai_free_mem(allocator, CAI_SESSION_IMPL(session)->conversation_id);
+  CAI_SESSION_IMPL(session)->conversation_id = copy;
   if (copy != NULL) {
-    cai_free_mem(allocator, session->previous_response_id);
-    session->previous_response_id = NULL;
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->previous_response_id);
+    CAI_SESSION_IMPL(session)->previous_response_id = NULL;
   }
   return CAI_OK;
 }
@@ -561,26 +674,26 @@ int cai_session_set_conversation(cai_session *session,
 }
 
 const char *cai_session_conversation_id(const cai_session *session) {
-  return session != NULL ? session->conversation_id : NULL;
+  return session != NULL ? CAI_SESSION_IMPL(session)->conversation_id : NULL;
 }
 
 static int cai_session_grow_inputs(cai_session *session, cai_error *error) {
   size_t new_capacity;
   void *grown;
 
-  if (session->input_count < session->input_capacity) {
+  if (CAI_SESSION_IMPL(session)->input_count < CAI_SESSION_IMPL(session)->input_capacity) {
     return CAI_OK;
   }
   new_capacity =
-      session->input_capacity == 0U ? 2U : session->input_capacity * 2U;
-  grown = cai_realloc_mem(&session->agent->client->allocator, session->inputs,
-                          new_capacity * sizeof(session->inputs[0]));
+      CAI_SESSION_IMPL(session)->input_capacity == 0U ? 2U : CAI_SESSION_IMPL(session)->input_capacity * 2U;
+  grown = cai_realloc_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, CAI_SESSION_IMPL(session)->inputs,
+                          new_capacity * sizeof(CAI_SESSION_IMPL(session)->inputs[0]));
   if (grown == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to grow session input list");
   }
-  session->inputs = (cai_session_input *)grown;
-  session->input_capacity = new_capacity;
+  CAI_SESSION_IMPL(session)->inputs = (cai_session_input *)grown;
+  CAI_SESSION_IMPL(session)->input_capacity = new_capacity;
   return CAI_OK;
 }
 
@@ -605,8 +718,8 @@ static int cai_session_add_input(cai_session *session, int kind,
   if (rc != CAI_OK) {
     return rc;
   }
-  allocator = &session->agent->client->allocator;
-  input = &session->inputs[session->input_count];
+  allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
+  input = &CAI_SESSION_IMPL(session)->inputs[CAI_SESSION_IMPL(session)->input_count];
   memset(input, 0, sizeof(*input));
   input->kind = kind;
   input->role = cai_strdup(allocator, role);
@@ -631,7 +744,7 @@ static int cai_session_add_input(cai_session *session, int kind,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate session input");
   }
-  session->input_count++;
+  CAI_SESSION_IMPL(session)->input_count++;
   return CAI_OK;
 }
 
@@ -671,18 +784,18 @@ static int cai_session_add_pending_inputs(cai_session *session,
   int rc;
 
   rc = CAI_OK;
-  for (i = 0U; rc == CAI_OK && i < session->input_count; i++) {
-    if (session->inputs[i].kind == CAI_SESSION_INPUT_IMAGE) {
+  for (i = 0U; rc == CAI_OK && i < CAI_SESSION_IMPL(session)->input_count; i++) {
+    if (CAI_SESSION_IMPL(session)->inputs[i].kind == CAI_SESSION_INPUT_IMAGE) {
       rc = cai_response_create_params_add_image_url(
-          params, session->inputs[i].role, session->inputs[i].image_url,
-          session->inputs[i].detail, error);
-    } else if (session->inputs[i].kind ==
+          params, CAI_SESSION_IMPL(session)->inputs[i].role, CAI_SESSION_IMPL(session)->inputs[i].image_url,
+          CAI_SESSION_IMPL(session)->inputs[i].detail, error);
+    } else if (CAI_SESSION_IMPL(session)->inputs[i].kind ==
                CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT) {
       rc = cai_response_create_params_add_function_call_output(
-          params, session->inputs[i].call_id, session->inputs[i].output, error);
+          params, CAI_SESSION_IMPL(session)->inputs[i].call_id, CAI_SESSION_IMPL(session)->inputs[i].output, error);
     } else {
-      rc = cai_response_create_params_add_text(params, session->inputs[i].role,
-                                               session->inputs[i].text, error);
+      rc = cai_response_create_params_add_text(params, CAI_SESSION_IMPL(session)->inputs[i].role,
+                                               CAI_SESSION_IMPL(session)->inputs[i].text, error);
     }
   }
   return rc;
@@ -733,7 +846,7 @@ static int cai_history_to_array_items_spool(cai_session *session,
                          "history spool output pointer is required");
   }
   cai_history_init_spooled(session, out);
-  reader.cursor = session->history;
+  reader.cursor = CAI_SESSION_IMPL(session)->history;
   reader.offset = 0U;
   reader.length = 0U;
   reader.eof = 0;
@@ -850,7 +963,7 @@ cai_session_prepare_history_params(cai_session *session,
   if (out_has_pending_items != NULL) {
     *out_has_pending_items = 0;
   }
-  if (session->agent->auto_compact_token_limit <= 0LL) {
+  if (CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit <= 0LL) {
     return cai_session_add_pending_inputs(session, params, error);
   }
   memset(&pending_items, 0, sizeof(pending_items));
@@ -884,14 +997,14 @@ static int cai_session_remember_response(cai_session *session,
   rc = cai_session_remember_response_id(session, cai_response_id(response),
                                         error);
   if (rc == CAI_OK && response != NULL) {
-    session->last_usage.input_tokens = cai_response_input_tokens(response);
-    session->last_usage.input_cached_tokens =
+    CAI_SESSION_IMPL(session)->last_usage.input_tokens = cai_response_input_tokens(response);
+    CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens =
         cai_response_input_cached_tokens(response);
-    session->last_usage.output_tokens = cai_response_output_tokens(response);
-    session->last_usage.output_reasoning_tokens =
+    CAI_SESSION_IMPL(session)->last_usage.output_tokens = cai_response_output_tokens(response);
+    CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens =
         cai_response_output_reasoning_tokens(response);
-    session->last_usage.total_tokens = cai_response_total_tokens(response);
-    session->has_last_usage = 1;
+    CAI_SESSION_IMPL(session)->last_usage.total_tokens = cai_response_total_tokens(response);
+    CAI_SESSION_IMPL(session)->has_last_usage = 1;
   }
   return rc;
 }
@@ -951,12 +1064,12 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     rc = cai_response_create_params_new(&params, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, session->agent->model,
+    rc = cai_response_create_params_set_model(params, CAI_SESSION_AGENT_IMPL(session)->model,
                                               error);
   }
-  if (rc == CAI_OK && session->agent->developer_instructions != NULL) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->developer_instructions != NULL) {
     rc = cai_response_create_params_set_instructions(
-        params, session->agent->developer_instructions, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->developer_instructions, error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_raw_input_spooled(params, &history_items,
@@ -974,7 +1087,7 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
   }
   if (rc == CAI_OK) {
     rc = cai_http_json_request_spooled(
-        session->agent->client, "POST", "responses/compact", &request_json,
+        CAI_SESSION_AGENT_IMPL(session)->client, "POST", "responses/compact", &request_json,
         request_json_len, &body, &http_status, &request_id, error);
   }
   if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
@@ -1028,7 +1141,7 @@ static int cai_session_after_response(cai_session *session,
   int rc;
 
   rc = cai_session_remember_response(session, response, error);
-  if (rc != CAI_OK || session->agent->auto_compact_token_limit <= 0LL) {
+  if (rc != CAI_OK || CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit <= 0LL) {
     return rc;
   }
   memset(&output_items, 0, sizeof(output_items));
@@ -1072,14 +1185,14 @@ static int cai_session_remember_response_id(cai_session *session,
                          "streaming response did not include a response id");
   }
   next_response_id =
-      cai_strdup(&session->agent->client->allocator, response_id);
+      cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator, response_id);
   if (next_response_id == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to remember previous response id");
   }
-  cai_free_mem(&session->agent->client->allocator,
-               session->previous_response_id);
-  session->previous_response_id = next_response_id;
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               CAI_SESSION_IMPL(session)->previous_response_id);
+  CAI_SESSION_IMPL(session)->previous_response_id = next_response_id;
   return CAI_OK;
 }
 
@@ -1095,19 +1208,19 @@ static int cai_session_remember_stream(cai_session *session,
     return rc;
   }
   if (!cai_token_usage_is_empty(usage)) {
-    session->last_usage = *usage;
-    session->has_last_usage = 1;
+    CAI_SESSION_IMPL(session)->last_usage = *usage;
+    CAI_SESSION_IMPL(session)->has_last_usage = 1;
     return CAI_OK;
   }
   response = NULL;
-  rc = cai_client_retrieve_response(session->agent->client, response_id,
+  rc = cai_client_retrieve_response(CAI_SESSION_AGENT_IMPL(session)->client, response_id,
                                     &response, error);
   if (rc == CAI_OK) {
     rc = cai_session_remember_response(session, response, error);
   }
   cai_response_destroy(response);
   if (rc != CAI_OK) {
-    session->has_last_usage = 0;
+    CAI_SESSION_IMPL(session)->has_last_usage = 0;
   }
   return rc;
 }
@@ -1126,7 +1239,7 @@ static int cai_session_create_response_from_params(
   int rc;
 
   response = NULL;
-  rc = cai_client_create_response(session->agent->client, params, &response,
+  rc = cai_client_create_response(CAI_SESSION_AGENT_IMPL(session)->client, params, &response,
                                   error);
   if (rc != CAI_OK) {
     cai_response_destroy(response);
@@ -1157,7 +1270,7 @@ int cai_session_run(cai_session *session, cai_response **out,
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
   }
-  if (session->input_count == 0U) {
+  if (CAI_SESSION_IMPL(session)->input_count == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session has no pending input");
   }
@@ -1237,49 +1350,49 @@ static int cai_session_init_response_params(cai_session *session,
   params = NULL;
   rc = cai_response_create_params_new(&params, error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, session->agent->model,
+    rc = cai_response_create_params_set_model(params, CAI_SESSION_AGENT_IMPL(session)->model,
                                               error);
   }
-  if (rc == CAI_OK && session->agent->developer_instructions != NULL) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->developer_instructions != NULL) {
     rc = cai_response_create_params_set_instructions(
-        params, session->agent->developer_instructions, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->developer_instructions, error);
   }
-  if (rc == CAI_OK && session->agent->max_output_tokens > 0) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->max_output_tokens > 0) {
     rc = cai_response_create_params_set_max_output_tokens(
-        params, session->agent->max_output_tokens, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->max_output_tokens, error);
   }
-  if (rc == CAI_OK && (session->agent->reasoning_effort != NULL ||
-                       session->agent->reasoning_summary != NULL)) {
+  if (rc == CAI_OK && (CAI_SESSION_AGENT_IMPL(session)->reasoning_effort != NULL ||
+                       CAI_SESSION_AGENT_IMPL(session)->reasoning_summary != NULL)) {
     rc = cai_response_create_params_set_reasoning(
-        params, session->agent->reasoning_effort,
-        session->agent->reasoning_summary, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->reasoning_effort,
+        CAI_SESSION_AGENT_IMPL(session)->reasoning_summary, error);
   }
-  if (rc == CAI_OK && session->agent->text_format_schema_json != NULL) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json != NULL) {
     rc = cai_response_create_params_set_text_format_json_schema(
-        params, session->agent->text_format_name,
-        session->agent->text_format_description,
-        session->agent->text_format_schema_json,
-        session->agent->text_format_strict, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->text_format_name,
+        CAI_SESSION_AGENT_IMPL(session)->text_format_description,
+        CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json,
+        CAI_SESSION_AGENT_IMPL(session)->text_format_strict, error);
   }
-  if (rc == CAI_OK && session->agent->parallel_tool_calls >= 0) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->parallel_tool_calls >= 0) {
     rc = cai_response_create_params_set_parallel_tool_calls(
-        params, session->agent->parallel_tool_calls, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->parallel_tool_calls, error);
   }
-  if (rc == CAI_OK && session->agent->auto_compact &&
-      session->agent->auto_compact_token_limit > 0LL) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->auto_compact &&
+      CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit > 0LL) {
     rc = cai_response_create_params_set_compact_threshold(
-        params, session->agent->auto_compact_token_limit, error);
+        params, CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit, error);
   }
-  if (rc == CAI_OK && session->conversation_id != NULL) {
+  if (rc == CAI_OK && CAI_SESSION_IMPL(session)->conversation_id != NULL) {
     rc = cai_response_create_params_set_conversation_id(
-        params, session->conversation_id, error);
+        params, CAI_SESSION_IMPL(session)->conversation_id, error);
   }
-  if (rc == CAI_OK && session->previous_response_id != NULL) {
+  if (rc == CAI_OK && CAI_SESSION_IMPL(session)->previous_response_id != NULL) {
     rc = cai_response_create_params_set_previous_response_id(
-        params, session->previous_response_id, error);
+        params, CAI_SESSION_IMPL(session)->previous_response_id, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_tool_registry_add_to_response_params(session->agent->tools, params,
+    rc = cai_tool_registry_add_to_response_params(CAI_SESSION_AGENT_IMPL(session)->tools, params,
                                                   error);
   }
   if (rc != CAI_OK) {
@@ -1318,7 +1431,7 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK) {
       rc = cai_tool_registry_run(
-          session->agent->tools, cai_response_tool_call_name(response, i),
+          CAI_SESSION_AGENT_IMPL(session)->tools, cai_response_tool_call_name(response, i),
           cai_response_tool_call_arguments(response, i), sink, error);
     }
     cai_sink_close(sink);
@@ -1333,7 +1446,7 @@ static int cai_session_run_tool_round(cai_session *session,
     cai_capture_cleanup(&capture);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(session->agent->client, params, out, error);
+    rc = cai_client_create_response(CAI_SESSION_AGENT_IMPL(session)->client, params, out, error);
   }
   cai_response_create_params_destroy(params);
   return rc;
@@ -1441,7 +1554,7 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
   }
   if (rc == CAI_OK) {
     rc = cai_client_stream_response_text_with_id(
-        session->agent->client, params, sink, &response_id, &usage, error);
+        CAI_SESSION_AGENT_IMPL(session)->client, params, sink, &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_after_stream(session, &pending_items, has_pending_items,
@@ -1484,7 +1597,7 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
   }
   if (rc == CAI_OK) {
     rc = cai_client_open_response_text_source_with_complete(
-        session->agent->client, params, cai_session_stream_complete, session,
+        CAI_SESSION_AGENT_IMPL(session)->client, params, cai_session_stream_complete, session,
         out, error);
   }
   cai_response_create_params_destroy(params);
@@ -1522,27 +1635,27 @@ int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and usage output are required");
   }
-  if (!session->has_last_usage) {
+  if (!CAI_SESSION_IMPL(session)->has_last_usage) {
     memset(out, 0, sizeof(*out));
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session has no completed response usage");
   }
-  *out = session->last_usage;
+  *out = CAI_SESSION_IMPL(session)->last_usage;
   return CAI_OK;
 }
 
 long long cai_session_context_window_tokens(const cai_session *session) {
-  if (session == NULL || session->agent == NULL) {
+  if (session == NULL || CAI_SESSION_IMPL(session)->agent == NULL) {
     return 0LL;
   }
-  return cai_model_context_window_tokens(session->agent->model);
+  return cai_model_context_window_tokens(CAI_SESSION_AGENT_IMPL(session)->model);
 }
 
 long long cai_session_auto_compact_token_limit(const cai_session *session) {
-  if (session == NULL || session->agent == NULL) {
+  if (session == NULL || CAI_SESSION_IMPL(session)->agent == NULL) {
     return 0LL;
   }
-  return session->agent->auto_compact_token_limit;
+  return CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit;
 }
 
 int cai_session_context_percent(const cai_session *session, double *out,
@@ -1553,7 +1666,7 @@ int cai_session_context_percent(const cai_session *session, double *out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and percent output are required");
   }
-  if (!session->has_last_usage) {
+  if (!CAI_SESSION_IMPL(session)->has_last_usage) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session has no completed response usage");
   }
@@ -1562,7 +1675,7 @@ int cai_session_context_percent(const cai_session *session, double *out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session model has unknown context window");
   }
-  *out = ((double)session->last_usage.total_tokens * 100.0) / (double)window;
+  *out = ((double)CAI_SESSION_IMPL(session)->last_usage.total_tokens * 100.0) / (double)window;
   return CAI_OK;
 }
 
@@ -1570,5 +1683,220 @@ int cai_session_history_spilled(const cai_session *session) {
   if (session == NULL) {
     return 0;
   }
-  return lonejson_spooled_spilled(&session->history);
+  return lonejson_spooled_spilled(&CAI_SESSION_IMPL(session)->history);
+}
+
+static void cai_agent_init_methods(cai_agent *agent) {
+  agent->register_tool = cai_agent_register_tool;
+  agent->register_tool_schema = cai_agent_register_tool_schema;
+  agent->register_raw_tool = cai_agent_register_raw_tool;
+  agent->new_session = cai_agent_new_session;
+  agent->new_conversation_session = cai_agent_new_conversation_session;
+  agent->new_session_for_conversation = cai_agent_new_session_for_conversation;
+  agent->add_user_text = cai_agent_add_user_text;
+  agent->add_user_image_url = cai_agent_add_user_image_url;
+  agent->run = cai_agent_run;
+  agent->run_output = cai_agent_run_output;
+  agent->run_auto = cai_agent_run_auto;
+  agent->run_auto_output = cai_agent_run_auto_output;
+  agent->stream_text = cai_agent_stream_text;
+  agent->open_text_source = cai_agent_open_text_source;
+  agent->send_text = cai_agent_send_text;
+  agent->last_usage = cai_agent_last_usage;
+  agent->context_percent = cai_agent_context_percent;
+  agent->close = cai_agent_destroy;
+}
+
+static void cai_session_init_methods(cai_session *session) {
+  session->set_conversation_id = cai_session_set_conversation_id;
+  session->set_conversation = cai_session_set_conversation;
+  session->conversation_id = cai_session_conversation_id;
+  session->add_user_text = cai_session_add_user_text;
+  session->add_user_image_url = cai_session_add_user_image_url;
+  session->add_function_call_output = cai_session_add_function_call_output;
+  session->run = cai_session_run;
+  session->run_output = cai_session_run_output;
+  session->run_auto = cai_session_run_auto;
+  session->run_auto_output = cai_session_run_auto_output;
+  session->stream_text = cai_session_stream_text;
+  session->open_text_source = cai_session_open_text_source;
+  session->send_text = cai_session_send_text;
+  session->last_usage = cai_session_last_usage;
+  session->context_window_tokens = cai_session_context_window_tokens;
+  session->auto_compact_token_limit = cai_session_auto_compact_token_limit;
+  session->context_percent = cai_session_context_percent;
+  session->history_spilled = cai_session_history_spilled;
+  session->close = cai_session_destroy;
+}
+
+static int cai_agent_default_session(cai_agent *agent, cai_session **out,
+                                     cai_error *error) {
+  cai_agent_impl *impl;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session output pointer is required");
+  }
+  *out = NULL;
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  if (impl->default_session == NULL) {
+    rc = cai_agent_new_session(agent, &impl->default_session, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  *out = impl->default_session;
+  return CAI_OK;
+}
+
+static int cai_agent_add_user_text(cai_agent *agent, const char *text,
+                                   cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_add_user_text(session, text, error);
+}
+
+static int cai_agent_add_user_image_url(cai_agent *agent, const char *url,
+                                        const char *detail, cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_add_user_image_url(session, url, detail, error);
+}
+
+static int cai_agent_run(cai_agent *agent, cai_response **out,
+                         cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_run(session, out, error);
+}
+
+static int cai_agent_run_output(cai_agent *agent, cai_output **out,
+                                cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_run_output(session, out, error);
+}
+
+static int cai_agent_run_auto(cai_agent *agent, const cai_run_options *options,
+                              cai_response **out, cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_run_auto(session, options, out, error);
+}
+
+static int cai_agent_run_auto_output(cai_agent *agent,
+                                     const cai_run_options *options,
+                                     cai_output **out, cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_run_auto_output(session, options, out, error);
+}
+
+static int cai_agent_stream_text(cai_agent *agent, cai_sink *sink,
+                                 cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_stream_text(session, sink, error);
+}
+
+static int cai_agent_open_text_source(cai_agent *agent, cai_source **out,
+                                      cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_open_text_source(session, out, error);
+}
+
+static int cai_agent_send_text(cai_agent *agent, const char *text,
+                               cai_response **out, cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_send_text(session, text, out, error);
+}
+
+static int cai_agent_last_usage(const cai_agent *agent, cai_token_usage *out,
+                                cai_error *error) {
+  const cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  if (impl->default_session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent has no default session usage");
+  }
+  return cai_session_last_usage(impl->default_session, out, error);
+}
+
+static int cai_agent_context_percent(const cai_agent *agent, double *out,
+                                     cai_error *error) {
+  const cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  if (impl->default_session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent has no default session usage");
+  }
+  return cai_session_context_percent(impl->default_session, out, error);
 }

@@ -1,5 +1,7 @@
 #include "cai_internal.h"
 
+#include <string.h>
+
 void cai_client_config_init(cai_client_config *config) {
   if (config == NULL) {
     return;
@@ -20,14 +22,14 @@ void cai_client_config_init(cai_client_config *config) {
   config->allocator.context = NULL;
 }
 
-static void cai_client_destroy_fields(cai_client *client) {
-  if (client == NULL) {
+static void cai_client_destroy_fields(cai_client_impl *impl) {
+  if (impl == NULL) {
     return;
   }
-  cai_free_mem(&client->allocator, client->api_key);
-  cai_free_mem(&client->allocator, client->base_url);
-  cai_free_mem(&client->allocator, client->organization_id);
-  cai_free_mem(&client->allocator, client->project_id);
+  cai_free_mem(&impl->allocator, impl->api_key);
+  cai_free_mem(&impl->allocator, impl->base_url);
+  cai_free_mem(&impl->allocator, impl->organization_id);
+  cai_free_mem(&impl->allocator, impl->project_id);
 }
 
 int cai_client_open(const cai_client_config *config, cai_client **out,
@@ -35,6 +37,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   cai_client_config defaults;
   const cai_client_config *effective;
   cai_client *client;
+  cai_client_impl *impl;
   int rc;
 
   if (out == NULL) {
@@ -52,59 +55,82 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   if (client == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate client");
   }
-  client->allocator = effective->allocator;
-  client->api_key = NULL;
-  client->base_url = NULL;
-  client->organization_id = NULL;
-  client->project_id = NULL;
-  client->timeout_ms = effective->timeout_ms;
-  client->http_2_disabled = effective->http_2_disabled;
-  client->insecure_skip_verify = effective->insecure_skip_verify;
-  client->json_response_limit_bytes = effective->json_response_limit_bytes;
-  client->logger = effective->logger_disabled ? NULL : effective->logger;
-  client->logger_disabled = effective->logger_disabled;
+  memset(client, 0, sizeof(*client));
+  impl = (cai_client_impl *)cai_alloc(&effective->allocator, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(&effective->allocator, client);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate client implementation");
+  }
+  memset(impl, 0, sizeof(*impl));
+  impl->allocator = effective->allocator;
+  impl->api_key = NULL;
+  impl->base_url = NULL;
+  impl->organization_id = NULL;
+  impl->project_id = NULL;
+  impl->timeout_ms = effective->timeout_ms;
+  impl->http_2_disabled = effective->http_2_disabled;
+  impl->insecure_skip_verify = effective->insecure_skip_verify;
+  impl->json_response_limit_bytes = effective->json_response_limit_bytes;
+  impl->logger = effective->logger_disabled ? NULL : effective->logger;
+  impl->logger_disabled = effective->logger_disabled;
 
-  if (client->json_response_limit_bytes == 0U) {
-    client->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
+  if (impl->json_response_limit_bytes == 0U) {
+    impl->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
   }
 
-  rc = cai_resolve_api_key(&client->allocator, effective->api_key,
-                           &client->api_key, error);
+  rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
+                           &impl->api_key, error);
   if (rc != CAI_OK) {
-    cai_free_mem(&client->allocator, client);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
     return rc;
   }
-  client->base_url = cai_strdup(&client->allocator, effective->base_url);
-  if (client->base_url == NULL) {
-    cai_client_destroy_fields(client);
-    cai_free_mem(&client->allocator, client);
+  impl->base_url = cai_strdup(&impl->allocator, effective->base_url);
+  if (impl->base_url == NULL) {
+    cai_client_destroy_fields(impl);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate base URL");
   }
-  client->organization_id =
-      cai_strdup(&client->allocator, effective->organization_id);
-  if (effective->organization_id != NULL && client->organization_id == NULL) {
-    cai_client_destroy_fields(client);
-    cai_free_mem(&client->allocator, client);
+  impl->organization_id =
+      cai_strdup(&impl->allocator, effective->organization_id);
+  if (effective->organization_id != NULL && impl->organization_id == NULL) {
+    cai_client_destroy_fields(impl);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate organization id");
   }
-  client->project_id = cai_strdup(&client->allocator, effective->project_id);
-  if (effective->project_id != NULL && client->project_id == NULL) {
-    cai_client_destroy_fields(client);
-    cai_free_mem(&client->allocator, client);
+  impl->project_id = cai_strdup(&impl->allocator, effective->project_id);
+  if (effective->project_id != NULL && impl->project_id == NULL) {
+    cai_client_destroy_fields(impl);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate project id");
   }
+  client->new_agent = cai_client_new_agent;
+  client->create_conversation = cai_client_create_conversation;
+  client->close = cai_client_close;
+  client->impl = impl;
   *out = client;
   return CAI_OK;
 }
 
 void cai_client_close(cai_client *client) {
   cai_allocator allocator;
+  cai_client_impl *impl;
 
   if (client == NULL) {
     return;
   }
-  allocator = client->allocator;
-  cai_client_destroy_fields(client);
+  impl = CAI_CLIENT_IMPL(client);
+  if (impl == NULL) {
+    return;
+  }
+  allocator = impl->allocator;
+  cai_client_destroy_fields(impl);
+  cai_free_mem(&allocator, impl);
+  client->impl = NULL;
   cai_free_mem(&allocator, client);
 }

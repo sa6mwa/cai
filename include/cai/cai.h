@@ -28,6 +28,7 @@ typedef struct cai_input_item_list cai_input_item_list;
 typedef struct cai_conversation_item cai_conversation_item;
 typedef struct cai_conversation_items_params cai_conversation_items_params;
 typedef struct cai_tool_registry cai_tool_registry;
+typedef struct cai_tool_schema cai_tool_schema;
 
 typedef enum cai_status {
   CAI_OK = 0,
@@ -153,6 +154,117 @@ typedef int (*cai_tool_lonejson_fn)(void *context, const void *params,
 typedef int (*cai_tool_raw_fn)(void *context, const char *arguments_json,
                                cai_sink *output, cai_error *error);
 
+struct cai_client {
+  int (*new_agent)(cai_client *client, const cai_agent_config *config,
+                   cai_agent **out, cai_error *error);
+  int (*create_conversation)(cai_client *client, cai_conversation **out,
+                             cai_error *error);
+  void (*close)(cai_client *client);
+  void *impl;
+};
+
+struct cai_agent {
+  int (*register_tool)(cai_agent *agent, const char *name,
+                       const char *description, const struct lonejson_map *map,
+                       const char *schema_json, int strict,
+                       cai_tool_lonejson_fn callback, void *context,
+                       cai_error *error);
+  int (*register_tool_schema)(cai_agent *agent, const char *name,
+                              const char *description,
+                              const struct lonejson_map *map,
+                              const cai_tool_schema *schema,
+                              cai_tool_lonejson_fn callback, void *context,
+                              cai_error *error);
+  int (*register_raw_tool)(cai_agent *agent, const char *name,
+                           const char *description, const char *schema_json,
+                           int strict, cai_tool_raw_fn callback, void *context,
+                           cai_error *error);
+  int (*new_session)(cai_agent *agent, cai_session **out, cai_error *error);
+  int (*new_conversation_session)(cai_agent *agent, cai_session **out,
+                                  cai_error *error);
+  int (*new_session_for_conversation)(cai_agent *agent,
+                                      const cai_conversation *conversation,
+                                      cai_session **out, cai_error *error);
+  int (*add_user_text)(cai_agent *agent, const char *text, cai_error *error);
+  int (*add_user_image_url)(cai_agent *agent, const char *url,
+                            const char *detail, cai_error *error);
+  int (*run)(cai_agent *agent, cai_response **out, cai_error *error);
+  int (*run_output)(cai_agent *agent, cai_output **out, cai_error *error);
+  int (*run_auto)(cai_agent *agent, const cai_run_options *options,
+                  cai_response **out, cai_error *error);
+  int (*run_auto_output)(cai_agent *agent, const cai_run_options *options,
+                         cai_output **out, cai_error *error);
+  int (*stream_text)(cai_agent *agent, cai_sink *sink, cai_error *error);
+  int (*open_text_source)(cai_agent *agent, cai_source **out,
+                          cai_error *error);
+  int (*send_text)(cai_agent *agent, const char *text, cai_response **out,
+                   cai_error *error);
+  int (*last_usage)(const cai_agent *agent, cai_token_usage *out,
+                    cai_error *error);
+  int (*context_percent)(const cai_agent *agent, double *out,
+                         cai_error *error);
+  void (*close)(cai_agent *agent);
+  void *impl;
+};
+
+struct cai_session {
+  int (*set_conversation_id)(cai_session *session, const char *conversation_id,
+                             cai_error *error);
+  int (*set_conversation)(cai_session *session,
+                          const cai_conversation *conversation,
+                          cai_error *error);
+  const char *(*conversation_id)(const cai_session *session);
+  int (*add_user_text)(cai_session *session, const char *text,
+                       cai_error *error);
+  int (*add_user_image_url)(cai_session *session, const char *url,
+                            const char *detail, cai_error *error);
+  int (*add_function_call_output)(cai_session *session, const char *call_id,
+                                  const char *output, cai_error *error);
+  int (*run)(cai_session *session, cai_response **out, cai_error *error);
+  int (*run_output)(cai_session *session, cai_output **out, cai_error *error);
+  int (*run_auto)(cai_session *session, const cai_run_options *options,
+                  cai_response **out, cai_error *error);
+  int (*run_auto_output)(cai_session *session,
+                         const cai_run_options *options, cai_output **out,
+                         cai_error *error);
+  int (*stream_text)(cai_session *session, cai_sink *sink, cai_error *error);
+  int (*open_text_source)(cai_session *session, cai_source **out,
+                          cai_error *error);
+  int (*send_text)(cai_session *session, const char *text, cai_response **out,
+                   cai_error *error);
+  int (*last_usage)(const cai_session *session, cai_token_usage *out,
+                    cai_error *error);
+  long long (*context_window_tokens)(const cai_session *session);
+  long long (*auto_compact_token_limit)(const cai_session *session);
+  int (*context_percent)(const cai_session *session, double *out,
+                         cai_error *error);
+  int (*history_spilled)(const cai_session *session);
+  void (*close)(cai_session *session);
+  void *impl;
+};
+
+struct cai_tool_schema {
+  int (*set_strict)(cai_tool_schema *schema, int strict, cai_error *error);
+  int (*string)(cai_tool_schema *schema, const char *name,
+                const char *description, int required, cai_error *error);
+  int (*integer)(cai_tool_schema *schema, const char *name,
+                 const char *description, int required, cai_error *error);
+  int (*number)(cai_tool_schema *schema, const char *name,
+                const char *description, int required, cai_error *error);
+  int (*boolean)(cai_tool_schema *schema, const char *name,
+                 const char *description, int required, cai_error *error);
+  int (*string_enum)(cai_tool_schema *schema, const char *name,
+                     const char *description, const char *const *values,
+                     size_t value_count, int required, cai_error *error);
+  int (*raw_property)(cai_tool_schema *schema, const char *name,
+                      const char *description, const char *schema_json,
+                      int required, cai_error *error);
+  const char *(*json)(const cai_tool_schema *schema);
+  int (*strict)(const cai_tool_schema *schema);
+  void (*close)(cai_tool_schema *schema);
+  void *impl;
+};
+
 void cai_client_config_init(cai_client_config *config);
 int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
@@ -162,6 +274,18 @@ void cai_agent_config_init(cai_agent_config *config);
 int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          cai_agent **out, cai_error *error);
 void cai_agent_destroy(cai_agent *agent);
+int cai_agent_register_tool(cai_agent *agent, const char *name,
+                            const char *description,
+                            const struct lonejson_map *map,
+                            const char *schema_json, int strict,
+                            cai_tool_lonejson_fn callback, void *context,
+                            cai_error *error);
+int cai_agent_register_tool_schema(cai_agent *agent, const char *name,
+                                   const char *description,
+                                   const struct lonejson_map *map,
+                                   const cai_tool_schema *schema,
+                                   cai_tool_lonejson_fn callback,
+                                   void *context, cai_error *error);
 int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
                                      const char *description,
                                      const struct lonejson_map *map,
@@ -272,6 +396,34 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
 int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
                           const char *arguments_json, cai_sink *output,
                           cai_error *error);
+
+int cai_tool_schema_new(cai_tool_schema **out, cai_error *error);
+void cai_tool_schema_destroy(cai_tool_schema *schema);
+int cai_tool_schema_set_strict(cai_tool_schema *schema, int strict,
+                               cai_error *error);
+int cai_tool_schema_add_string(cai_tool_schema *schema, const char *name,
+                               const char *description, int required,
+                               cai_error *error);
+int cai_tool_schema_add_integer(cai_tool_schema *schema, const char *name,
+                                const char *description, int required,
+                                cai_error *error);
+int cai_tool_schema_add_number(cai_tool_schema *schema, const char *name,
+                               const char *description, int required,
+                               cai_error *error);
+int cai_tool_schema_add_boolean(cai_tool_schema *schema, const char *name,
+                                const char *description, int required,
+                                cai_error *error);
+int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
+                                    const char *description,
+                                    const char *const *values,
+                                    size_t value_count, int required,
+                                    cai_error *error);
+int cai_tool_schema_add_raw_property(cai_tool_schema *schema, const char *name,
+                                     const char *description,
+                                     const char *schema_json, int required,
+                                     cai_error *error);
+const char *cai_tool_schema_json(const cai_tool_schema *schema);
+int cai_tool_schema_strict(const cai_tool_schema *schema);
 
 int cai_response_create_params_new(cai_response_create_params **out,
                                    cai_error *error);
