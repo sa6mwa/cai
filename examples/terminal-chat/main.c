@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -62,6 +63,7 @@ int main(void) {
   cai_sink_callbacks sink_callbacks;
   cai_client *client;
   cai_agent *agent;
+  cai_session *session;
   cai_sink *sink;
   cai_error error;
   cai_token_usage usage;
@@ -80,6 +82,7 @@ int main(void) {
       "You are a concise terminal chat assistant. Answer plainly.";
   client = NULL;
   agent = NULL;
+  session = NULL;
   sink = NULL;
   exit_code = 1;
   total_spent_usd = 0.0;
@@ -92,6 +95,11 @@ int main(void) {
   rc = client->new_agent(client, &agent_config, &agent, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_new_agent", rc, &error);
+    goto done;
+  }
+  rc = agent->new_session(agent, &session, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_agent_new_session", rc, &error);
     goto done;
   }
   sink_callbacks.write = stdout_sink_write;
@@ -107,6 +115,14 @@ int main(void) {
     fputs("> ", stdout);
     fflush(stdout);
     if (fgets(line, sizeof(line), stdin) == NULL) {
+      if (ferror(stdin)) {
+        fprintf(stderr, "stdin read failed\n");
+        exit_code = 1;
+        break;
+      }
+      if (isatty(STDIN_FILENO)) {
+        fputc('\n', stdout);
+      }
       exit_code = 0;
       break;
     }
@@ -119,22 +135,32 @@ int main(void) {
       exit_code = 0;
       break;
     }
-    rc = agent->add_user_text(agent, line, &error);
+    if (strcmp(line, "/compact") == 0) {
+      rc = cai_session_compact_experimental(session, &error);
+      if (rc != CAI_OK) {
+        exit_code = print_error("cai_session_compact_experimental", rc,
+                                &error);
+        break;
+      }
+      fputs("[compact] manual experimental compaction complete\n", stderr);
+      continue;
+    }
+    rc = session->add_user_text(session, line, &error);
     if (rc == CAI_OK) {
-      rc = agent->stream_text(agent, sink, &error);
+      rc = session->stream_text(session, sink, &error);
     }
     fputc('\n', stdout);
     if (rc != CAI_OK) {
       exit_code = print_error("cai_session_stream_text", rc, &error);
       break;
     }
-    if (agent->last_usage(agent, &usage, &error) == CAI_OK) {
+    if (session->last_usage(session, &usage, &error) == CAI_OK) {
       total_spent_usd += cai_model_estimate_usage_usd(
           agent_config.model, usage.input_tokens, usage.input_cached_tokens,
           usage.output_tokens);
       context_percent = 0.0;
       has_context_percent =
-          agent->context_percent(agent, &context_percent, &error) == CAI_OK;
+          session->context_percent(session, &context_percent, &error) == CAI_OK;
       if (!has_context_percent) {
         cai_error_cleanup(&error);
         cai_error_init(&error);
@@ -149,6 +175,9 @@ int main(void) {
 
 done:
   cai_sink_close(sink);
+  if (session != NULL) {
+    session->close(session);
+  }
   if (agent != NULL) {
     agent->close(agent);
   }

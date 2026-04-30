@@ -137,8 +137,9 @@ Required examples:
 - `streaming-text`: direct streaming text call with token-by-token terminal
   output.
 - `terminal-chat`: interactive chat that transparently preserves Responses
-  turn context, prints usage metadata, supports `/quit`, `/exit`, and EOF, and
-  uses `gpt-5-nano` for development.
+  turn context, prints usage metadata, supports `/quit`, `/exit`, EOF, and an
+  experimental `/compact` command for manual compaction testing, and uses
+  `gpt-5-nano` for development.
 - `conversation-handles`: explicit conversation-handle construction and reuse
   without exposing callers to manual ID plumbing in normal flows.
 - `mike-mind`: heavy knowledge-base chatbot built from
@@ -282,12 +283,20 @@ int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
                             cai_error *error);
 int cai_output_write_json(cai_output *output, const lonejson_map *map,
                           void *value, cai_error *error);
+int cai_sink_stdout(cai_sink **out, cai_error *error);
+int cai_sink_stderr(cai_sink **out, cai_error *error);
 ```
 
 The exact function names can change, but the boundary must exist. Vectis should
 be able to hand request bodies, image payloads, lockd state, and generated
 outputs across the cai boundary without converting everything through temporary
 heap strings.
+
+The stdout/stderr sink helpers are convenience APIs for pipe-style CLI usage,
+examples, and quick tools. They should behave like normal `cai_sink` instances
+backed by `FILE *` writes, report write errors through `cai_error`, and avoid
+forcing callers to define trivial sink callback structs just to stream tokens to
+the terminal.
 
 ### Models
 
