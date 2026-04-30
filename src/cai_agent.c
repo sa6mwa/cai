@@ -1,9 +1,9 @@
 #include "cai_internal.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 typedef struct cai_tool_output_capture {
   lonejson_spooled output;
@@ -19,9 +19,7 @@ typedef struct cai_history_json_doc {
 } cai_history_json_doc;
 
 typedef struct cai_history_sink_context {
-  const cai_allocator *allocator;
-  const char *spool_dir;
-  cai_history_spool *spool;
+  lonejson_spooled *spool;
 } cai_history_sink_context;
 
 typedef struct cai_segment_reader {
@@ -30,6 +28,14 @@ typedef struct cai_segment_reader {
   size_t index;
   size_t offset;
 } cai_segment_reader;
+
+typedef struct cai_spooled_record_reader {
+  lonejson_spooled cursor;
+  unsigned char buffer[4096];
+  size_t offset;
+  size_t length;
+  int eof;
+} cai_spooled_record_reader;
 
 static const lonejson_field cai_history_json_fields[] = {
     LONEJSON_FIELD_JSON_VALUE_REQ(cai_history_json_doc, value, "value")};
@@ -44,8 +50,6 @@ enum {
 
 static int cai_history_append(cai_session *session, const char *json,
                               cai_error *error);
-static int cai_history_materialize(const cai_session *session, char **out,
-                                   cai_error *error);
 static void cai_history_cleanup(cai_session *session);
 static int
 cai_session_prepare_history_params(cai_session *session,
@@ -245,13 +249,15 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   session->conversation_id = NULL;
   memset(&session->last_usage, 0, sizeof(session->last_usage));
   session->has_last_usage = 0;
-  session->history.memory = NULL;
-  session->history.path = NULL;
-  session->history.file = NULL;
-  session->history.length = 0U;
-  session->history.capacity = 0U;
-  session->history.memory_limit = agent->history_memory_limit;
-  session->history.spilled = 0;
+  {
+    lonejson_spool_options options;
+
+    options = lonejson_default_spool_options();
+    options.memory_limit = agent->history_memory_limit;
+    options.max_bytes = 0U;
+    options.temp_dir = agent->history_spool_dir;
+    lonejson_spooled_init(&session->history, &options);
+  }
   session->inputs = NULL;
   session->input_count = 0U;
   session->input_capacity = 0U;
@@ -341,122 +347,35 @@ static void cai_session_clear_inputs(cai_session *session) {
   session->input_count = 0U;
 }
 
-static int cai_history_open_spool_raw(const cai_allocator *allocator,
-                                      const char *spool_dir,
-                                      cai_history_spool *history,
-                                      cai_error *error) {
-  static const char suffix[] = "/cai-history-XXXXXX";
-  const char *dir;
-  size_t dir_len;
-  size_t suffix_len;
-  int fd;
-
-  if (history->file != NULL) {
-    return CAI_OK;
-  }
-  dir = spool_dir;
-  if (dir == NULL || dir[0] == '\0') {
-    dir = "/tmp";
-  }
-  dir_len = strlen(dir);
-  suffix_len = sizeof(suffix) - 1U;
-  history->path = (char *)cai_alloc(allocator, dir_len + suffix_len + 1U);
-  if (history->path == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate history spool path");
-  }
-  memcpy(history->path, dir, dir_len);
-  memcpy(history->path + dir_len, suffix, suffix_len);
-  history->path[dir_len + suffix_len] = '\0';
-  fd = mkstemp(history->path);
-  if (fd < 0) {
-    cai_free_mem(allocator, history->path);
-    history->path = NULL;
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to create history spool file");
-  }
-  history->file = fdopen(fd, "w+b");
-  if (history->file == NULL) {
-    close(fd);
-    unlink(history->path);
-    cai_free_mem(allocator, history->path);
-    history->path = NULL;
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open history spool file");
-  }
-  if (history->length > 0U && fwrite(history->memory, 1U, history->length,
-                                     history->file) != history->length) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to write history spool file");
-  }
-  cai_free_mem(allocator, history->memory);
-  history->memory = NULL;
-  history->capacity = 0U;
-  history->spilled = 1;
-  return CAI_OK;
-}
-
-static int cai_history_append_bytes(const cai_allocator *allocator,
-                                    const char *spool_dir,
-                                    cai_history_spool *history,
+static int cai_history_append_bytes(lonejson_spooled *history,
                                     const void *bytes, size_t length,
                                     cai_error *error) {
-  size_t needed;
-  size_t new_capacity;
-  char *grown;
+  lonejson_error json_error;
 
   if (length == 0U) {
     return CAI_OK;
   }
-  needed = history->length + length;
-  if (history->file == NULL && history->memory_limit > 0U &&
-      needed > history->memory_limit) {
-    if (cai_history_open_spool_raw(allocator, spool_dir, history, error) !=
-        CAI_OK) {
-      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
-    }
-  }
-  if (history->file != NULL) {
-    if (fwrite(bytes, 1U, length, history->file) != length) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to append history spool file");
-    }
-    history->length += length;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_append(history, bytes, length, &json_error) ==
+      LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
-  if (needed + 1U > history->capacity) {
-    new_capacity = history->capacity == 0U ? 1024U : history->capacity;
-    while (new_capacity < needed + 1U) {
-      new_capacity *= 2U;
-    }
-    grown = (char *)cai_realloc_mem(allocator, history->memory, new_capacity);
-    if (grown == NULL) {
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to grow history buffer");
-    }
-    history->memory = grown;
-    history->capacity = new_capacity;
-  }
-  memcpy(history->memory + history->length, bytes, length);
-  history->length += length;
-  history->memory[history->length] = '\0';
-  return CAI_OK;
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to append history spool",
+                              json_error.message);
 }
 
 static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
                                                  size_t len,
                                                  lonejson_error *error) {
   cai_history_sink_context *context;
-  cai_error sink_error;
-  int rc;
-
   (void)error;
   context = (cai_history_sink_context *)user;
-  cai_error_init(&sink_error);
-  rc = cai_history_append_bytes(context->allocator, context->spool_dir,
-                                context->spool, data, len, &sink_error);
-  cai_error_cleanup(&sink_error);
-  return rc == CAI_OK ? LONEJSON_STATUS_OK : LONEJSON_STATUS_CALLBACK_FAILED;
+  if (lonejson_spooled_append(context->spool, data, len, error) ==
+      LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_OK;
+  }
+  return LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
 static lonejson_read_result
@@ -490,27 +409,20 @@ cai_segment_reader_read(void *user, unsigned char *buffer, size_t capacity) {
   return result;
 }
 
-static void cai_history_spool_clear(const cai_allocator *allocator,
-                                    cai_history_spool *history) {
-  if (history->file != NULL) {
-    fclose(history->file);
-    history->file = NULL;
-  }
-  if (history->path != NULL) {
-    unlink(history->path);
-    cai_free_mem(allocator, history->path);
-    history->path = NULL;
-  }
-  cai_free_mem(allocator, history->memory);
-  history->memory = NULL;
-  history->length = 0U;
-  history->capacity = 0U;
-  history->spilled = 0;
+static void cai_history_init_spooled(cai_session *session,
+                                     lonejson_spooled *spool) {
+  lonejson_spool_options options;
+
+  options = lonejson_default_spool_options();
+  options.memory_limit = session->agent->history_memory_limit;
+  options.max_bytes = 0U;
+  options.temp_dir = session->agent->history_spool_dir;
+  lonejson_spooled_init(spool, &options);
 }
 
 static int cai_history_capture_compact_array(cai_session *session,
                                              const char *json,
-                                             cai_history_spool *item,
+                                             lonejson_spooled *item,
                                              cai_error *error) {
   cai_history_json_doc doc;
   cai_history_sink_context sink_context;
@@ -518,13 +430,7 @@ static int cai_history_capture_compact_array(cai_session *session,
   lonejson_parse_options options;
   lonejson_error json_error;
 
-  item->memory = NULL;
-  item->path = NULL;
-  item->file = NULL;
-  item->length = 0U;
-  item->capacity = 0U;
-  item->memory_limit = session->history.memory_limit;
-  item->spilled = 0;
+  cai_history_init_spooled(session, item);
   if (json == NULL || json[0] == '\0') {
     return CAI_OK;
   }
@@ -536,8 +442,6 @@ static int cai_history_capture_compact_array(cai_session *session,
   reader.lengths[2] = strlen(reader.segments[2]);
   reader.index = 0U;
   reader.offset = 0U;
-  sink_context.allocator = &session->agent->client->allocator;
-  sink_context.spool_dir = session->agent->history_spool_dir;
   sink_context.spool = item;
   lonejson_error_init(&json_error);
   lonejson_json_value_init(&doc.value);
@@ -550,7 +454,7 @@ static int cai_history_capture_compact_array(cai_session *session,
                             cai_segment_reader_read, &reader, &options,
                             &json_error) != LONEJSON_STATUS_OK) {
     lonejson_json_value_cleanup(&doc.value);
-    cai_history_spool_clear(&session->agent->client->allocator, item);
+    lonejson_spooled_cleanup(item);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to validate JSON history item",
                                 json_error.message);
@@ -559,44 +463,11 @@ static int cai_history_capture_compact_array(cai_session *session,
   return CAI_OK;
 }
 
-static int cai_history_copy_spool(const cai_allocator *allocator,
-                                  const char *spool_dir, cai_history_spool *dst,
-                                  cai_history_spool *src, cai_error *error) {
-  unsigned char buffer[4096];
-  size_t copied;
-  size_t chunk;
-
-  copied = 0U;
-  if (src->file != NULL &&
-      (fflush(src->file) != 0 || fseek(src->file, 0L, SEEK_SET) != 0)) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to rewind history item spool file");
-  }
-  while (copied < src->length) {
-    chunk = src->length - copied;
-    if (chunk > sizeof(buffer)) {
-      chunk = sizeof(buffer);
-    }
-    if (src->file != NULL) {
-      if (fread(buffer, 1U, chunk, src->file) != chunk) {
-        return cai_set_error(error, CAI_ERR_TRANSPORT,
-                             "failed to read history item spool file");
-      }
-    } else {
-      memcpy(buffer, src->memory + copied, chunk);
-    }
-    if (cai_history_append_bytes(allocator, spool_dir, dst, buffer, chunk,
-                                 error) != CAI_OK) {
-      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
-    }
-    copied += chunk;
-  }
-  return CAI_OK;
-}
-
 static int cai_history_append(cai_session *session, const char *json,
                               cai_error *error) {
-  cai_history_spool item;
+  lonejson_spooled item;
+  cai_history_sink_context sink_context;
+  lonejson_error json_error;
   char header[32];
   size_t header_length;
   int rc;
@@ -608,92 +479,40 @@ static int cai_history_append(cai_session *session, const char *json,
   if (rc != CAI_OK) {
     return rc;
   }
-  if (item.length == 0U) {
-    cai_history_spool_clear(&session->agent->client->allocator, &item);
+  if (lonejson_spooled_size(&item) == 0U) {
+    lonejson_spooled_cleanup(&item);
     return CAI_OK;
   }
-  snprintf(header, sizeof(header), "%lu\n", (unsigned long)item.length);
+  snprintf(header, sizeof(header), "%lu\n",
+           (unsigned long)lonejson_spooled_size(&item));
   header_length = strlen(header);
-  rc = cai_history_append_bytes(
-      &session->agent->client->allocator, session->agent->history_spool_dir,
-      &session->history, header, header_length, error);
+  rc = cai_history_append_bytes(&session->history, header, header_length,
+                                error);
   if (rc == CAI_OK) {
-    rc = cai_history_copy_spool(&session->agent->client->allocator,
-                                session->agent->history_spool_dir,
-                                &session->history, &item, error);
+    sink_context.spool = &session->history;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_write_to_sink(&item, cai_history_lonejson_sink,
+                                       &sink_context,
+                                       &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to copy history spool",
+                                json_error.message);
+    }
   }
   if (rc == CAI_OK) {
-    rc = cai_history_append_bytes(&session->agent->client->allocator,
-                                  session->agent->history_spool_dir,
-                                  &session->history, "\n", 1U, error);
+    rc = cai_history_append_bytes(&session->history, "\n", 1U, error);
   }
-  cai_history_spool_clear(&session->agent->client->allocator, &item);
+  lonejson_spooled_cleanup(&item);
   return rc;
 }
 
-static int cai_history_materialize(const cai_session *session, char **out,
-                                   cai_error *error) {
-  const cai_history_spool *history;
-  char *data;
-  size_t nread;
-
-  if (out == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "history output pointer is required");
-  }
-  *out = NULL;
-  history = &session->history;
-  data = (char *)cai_alloc(&session->agent->client->allocator,
-                           history->length + 1U);
-  if (data == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate history JSON");
-  }
-  if (history->file == NULL) {
-    if (history->length > 0U) {
-      memcpy(data, history->memory, history->length);
-    }
-  } else {
-    if (fflush(history->file) != 0 || fseek(history->file, 0L, SEEK_SET) != 0) {
-      cai_free_mem(&session->agent->client->allocator, data);
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to rewind history spool file");
-    }
-    nread = fread(data, 1U, history->length, history->file);
-    if (nread != history->length) {
-      cai_free_mem(&session->agent->client->allocator, data);
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read history spool file");
-    }
-  }
-  data[history->length] = '\0';
-  *out = data;
-  return CAI_OK;
-}
-
 static void cai_history_reset(cai_session *session) {
-  cai_history_spool *history;
-
-  history = &session->history;
-  if (history->file != NULL) {
-    fclose(history->file);
-    history->file = NULL;
-  }
-  if (history->path != NULL) {
-    unlink(history->path);
-    cai_free_mem(&session->agent->client->allocator, history->path);
-    history->path = NULL;
-  }
-  cai_free_mem(&session->agent->client->allocator, history->memory);
-  history->memory = NULL;
-  history->length = 0U;
-  history->capacity = 0U;
-  history->spilled = 0;
+  lonejson_spooled_reset(&session->history);
 }
 
 static void cai_history_cleanup(cai_session *session) {
   if (session != NULL) {
-    cai_history_reset(session);
+    lonejson_spooled_cleanup(&session->history);
   }
 }
 
@@ -878,60 +697,155 @@ static int cai_session_add_pending_inputs(cai_session *session,
   return rc;
 }
 
+static int cai_spooled_record_reader_next(cai_spooled_record_reader *reader,
+                                          unsigned char *out,
+                                          cai_error *error) {
+  lonejson_read_result chunk;
+
+  if (reader->offset >= reader->length) {
+    if (reader->eof) {
+      return 0;
+    }
+    chunk = lonejson_spooled_read(&reader->cursor, reader->buffer,
+                                  sizeof(reader->buffer));
+    if (chunk.error_code != 0) {
+      (void)cai_set_error(error, CAI_ERR_TRANSPORT,
+                          "failed to read history spool");
+      return -1;
+    }
+    reader->offset = 0U;
+    reader->length = chunk.bytes_read;
+    reader->eof = chunk.eof;
+    if (reader->length == 0U) {
+      return 0;
+    }
+  }
+  *out = reader->buffer[reader->offset];
+  reader->offset++;
+  return 1;
+}
+
 static int cai_history_to_array_items(cai_session *session, char **out,
                                       cai_error *error) {
-  char *history;
-  char *cursor;
-  char *writep;
+  cai_spooled_record_reader reader;
+  cai_json_builder builder;
   unsigned long item_length;
-  char *endptr;
+  unsigned long pos;
+  unsigned char ch;
   int need_comma;
   int rc;
 
-  history = NULL;
-  rc = cai_history_materialize(session, &history, error);
-  if (rc != CAI_OK) {
-    return rc;
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history output pointer is required");
   }
-  cursor = history;
-  writep = history;
-  need_comma = 0;
-  while (*cursor != '\0') {
-    while (*cursor == '\n' || *cursor == '\r') {
-      cursor++;
+  *out = NULL;
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  reader.cursor = session->history;
+  reader.offset = 0U;
+  reader.length = 0U;
+  reader.eof = 0;
+  {
+    lonejson_error json_error;
+
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to rewind history spool",
+                                  json_error.message);
     }
-    if (*cursor == '\0') {
+  }
+  need_comma = 0;
+  for (;;) {
+    rc = cai_spooled_record_reader_next(&reader, &ch, error);
+    if (rc < 0) {
+      cai_free_mem(NULL, builder.data);
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+    while (rc > 0 && (ch == '\n' || ch == '\r')) {
+      rc = cai_spooled_record_reader_next(&reader, &ch, error);
+      if (rc < 0) {
+        cai_free_mem(NULL, builder.data);
+        return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+      }
+    }
+    if (rc == 0) {
       break;
     }
-    item_length = strtoul(cursor, &endptr, 10);
-    if (endptr == cursor || *endptr != '\n') {
-      cai_free_mem(&session->agent->client->allocator, history);
+    if (ch < '0' || ch > '9') {
+      cai_free_mem(NULL, builder.data);
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "invalid history record length");
     }
-    cursor = endptr + 1;
-    if (need_comma) {
-      *writep = ',';
-      writep++;
+    item_length = 0UL;
+    do {
+      if (item_length > (ULONG_MAX / 10UL)) {
+        cai_free_mem(NULL, builder.data);
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "history record length overflow");
+      }
+      item_length = item_length * 10UL + (unsigned long)(ch - '0');
+      rc = cai_spooled_record_reader_next(&reader, &ch, error);
+      if (rc <= 0) {
+        cai_free_mem(NULL, builder.data);
+        return rc < 0 ? (error != NULL ? error->code : CAI_ERR_TRANSPORT)
+                      : cai_set_error(error, CAI_ERR_PROTOCOL,
+                                      "truncated history record length");
+      }
+    } while (ch >= '0' && ch <= '9');
+    if (ch != '\n') {
+      cai_free_mem(NULL, builder.data);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "invalid history record length");
     }
-    if (item_length < 2UL || cursor[0] != '[' ||
-        cursor[item_length - 1UL] != ']') {
-      cai_free_mem(&session->agent->client->allocator, history);
+    if (item_length < 2UL) {
+      cai_free_mem(NULL, builder.data);
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "invalid history record JSON array");
     }
-    if (item_length > 2UL) {
-      memcpy(writep, cursor + 1, (size_t)item_length - 2U);
-      writep += (size_t)item_length - 2U;
-      need_comma = 1;
-    }
-    cursor += (size_t)item_length;
-    if (*cursor == '\n') {
-      cursor++;
+    for (pos = 0UL; pos < item_length; pos++) {
+      rc = cai_spooled_record_reader_next(&reader, &ch, error);
+      if (rc <= 0) {
+        cai_free_mem(NULL, builder.data);
+        return rc < 0 ? (error != NULL ? error->code : CAI_ERR_TRANSPORT)
+                      : cai_set_error(error, CAI_ERR_PROTOCOL,
+                                      "truncated history record JSON array");
+      }
+      if ((pos == 0UL && ch != '[') ||
+          (pos == item_length - 1UL && ch != ']')) {
+        cai_free_mem(NULL, builder.data);
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "invalid history record JSON array");
+      }
+      if (pos > 0UL && pos < item_length - 1UL) {
+        if (!need_comma) {
+          need_comma = 1;
+        } else if (pos == 1UL) {
+          rc = cai_json_builder_append(&builder, ",", 1U, error);
+          if (rc != CAI_OK) {
+            cai_free_mem(NULL, builder.data);
+            return rc;
+          }
+        }
+        rc = cai_json_builder_append(&builder, (const char *)&ch, 1U, error);
+        if (rc != CAI_OK) {
+          cai_free_mem(NULL, builder.data);
+          return rc;
+        }
+      }
     }
   }
-  *writep = '\0';
-  *out = history;
+  if (builder.data == NULL) {
+    builder.data = cai_strdup(NULL, "");
+    if (builder.data == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate history items");
+    }
+  }
+  *out = builder.data;
   return CAI_OK;
 }
 
@@ -1670,5 +1584,5 @@ int cai_session_history_spilled(const cai_session *session) {
   if (session == NULL) {
     return 0;
   }
-  return session->history.spilled;
+  return lonejson_spooled_spilled(&session->history);
 }

@@ -264,8 +264,8 @@ static int cai_replace_string(const cai_allocator *allocator, char **slot,
   return CAI_OK;
 }
 
-static int cai_json_builder_append(cai_json_builder *builder, const char *text,
-                                   size_t length, cai_error *error) {
+int cai_json_builder_append(cai_json_builder *builder, const char *text,
+                            size_t length, cai_error *error) {
   size_t needed;
   size_t new_capacity;
   char *grown;

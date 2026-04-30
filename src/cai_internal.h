@@ -45,16 +45,6 @@ struct cai_agent {
   cai_tool_registry *tools;
 };
 
-typedef struct cai_history_spool {
-  char *memory;
-  char *path;
-  FILE *file;
-  size_t length;
-  size_t capacity;
-  size_t memory_limit;
-  int spilled;
-} cai_history_spool;
-
 typedef struct cai_session_text_input {
   int kind;
   char *role;
@@ -71,7 +61,7 @@ struct cai_session {
   char *conversation_id;
   cai_token_usage last_usage;
   int has_last_usage;
-  cai_history_spool history;
+  lonejson_spooled history;
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
@@ -211,6 +201,8 @@ typedef struct cai_json_builder {
 
 int cai_json_builder_lit(cai_json_builder *builder, const char *text,
                          cai_error *error);
+int cai_json_builder_append(cai_json_builder *builder, const char *text,
+                            size_t length, cai_error *error);
 int cai_json_builder_string(cai_json_builder *builder, const char *value,
                             cai_error *error);
 int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
