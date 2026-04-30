@@ -9,6 +9,7 @@
 #define CAI_ANSI_GREEN "\033[32m"
 #define CAI_ANSI_BRIGHT_CYAN "\033[96m"
 #define CAI_ANSI_MAGENTA "\033[35m"
+#define CAI_ANSI_BOLD_WHITE "\033[1;37m"
 
 #define CAI_USAGE_LABEL                                                        \
   CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY "]"            \
@@ -52,16 +53,27 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
                         int has_context_percent, double total_spent_usd) {
   if (has_context_percent) {
     fprintf(stderr,
-            CAI_USAGE_LABEL " input=%lld cached=%lld output=%lld reasoning=%lld "
-            "total=%lld context=%.2f%% estimated_cost=$%.8f\n",
+            CAI_USAGE_LABEL " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " cached=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " output=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " reasoning=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " total=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " context=" CAI_ANSI_BOLD_WHITE "%.2f%%" CAI_ANSI_RESET
+            " estimated_cost=" CAI_ANSI_BOLD_WHITE "$%.8f" CAI_ANSI_RESET
+            "\n",
             usage->input_tokens, usage->input_cached_tokens,
             usage->output_tokens, usage->output_reasoning_tokens,
             usage->total_tokens, context_percent, total_spent_usd);
     return;
   }
   fprintf(stderr,
-          CAI_USAGE_LABEL " input=%lld cached=%lld output=%lld reasoning=%lld "
-          "total=%lld context=n/a estimated_cost=$%.8f\n",
+          CAI_USAGE_LABEL " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " cached=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " output=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " reasoning=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " total=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " context=" CAI_ANSI_BOLD_WHITE "n/a" CAI_ANSI_RESET
+          " estimated_cost=" CAI_ANSI_BOLD_WHITE "$%.8f" CAI_ANSI_RESET "\n",
           usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
           usage->output_reasoning_tokens, usage->total_tokens, total_spent_usd);
 }
