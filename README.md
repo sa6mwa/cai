@@ -32,8 +32,16 @@ example layers settle.
 - CMake/Ninja/Make based build.
 - Installed builds export CMake package targets under `lib/cmake/cai` and a
   relocatable `cai.pc` pkg-config file.
-- `make release` builds/tests the release preset and writes
-  `dist/cai-<version>-<target>.tar.gz` plus SHA-256 sums.
+- `make release` builds/tests the release matrix and writes binary SDK
+  archives as `dist/cai-<version>-<target>.tar.gz`, a source archive as
+  `dist/cai-<version>.tar.gz`, and SHA-256 sums.
+- Binary SDK archives contain installed headers, CMake/pkg-config metadata,
+  `libcai.a`, and the versioned shared library with compatibility symlinks for
+  the target platform.
+- Release builds use the official `github.com/sa6mwa/liblockdc` SDK release
+  tarball for the selected target to provide libcurl and its native dependency
+  stack. The tarball URL and SHA-256 are pinned in CMake; sibling checkout
+  artifacts are not dependency inputs.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which

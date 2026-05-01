@@ -7,6 +7,7 @@ endif()
 
 find_program(CAI_SHA256SUM_BIN NAMES sha256sum shasum REQUIRED)
 file(GLOB artifacts LIST_DIRECTORIES false
+  "${CAI_DIST_DIR}/cai-${CAI_VERSION}.tar.gz"
   "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.tar.gz")
 if(NOT artifacts)
   message(FATAL_ERROR "no cai release archives found in ${CAI_DIST_DIR}")

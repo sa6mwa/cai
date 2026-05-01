@@ -774,8 +774,10 @@ Mirror liblockdc where practical:
 - Installed builds export CMake package metadata and a relocatable pkg-config
   file.
 - Direct pinned download of the official lonejson release header artifact.
-- Release/dependency provisioning for other native libraries should remain
-  explicit and reproducible; do not silently use sibling checkouts.
+- Release/dependency provisioning for libcurl and its native dependency stack
+  uses the official `github.com/sa6mwa/liblockdc` SDK release tarballs, pinned
+  by version and SHA-256 per target. Do not use sibling checkout artifacts as
+  cai inputs.
 - Release matrix:
   - `x86_64-linux-gnu`
   - `x86_64-linux-musl`
@@ -784,7 +786,15 @@ Mirror liblockdc where practical:
   - `aarch64-linux-gnu`
   - `aarch64-linux-musl`
   - `arm64-apple-darwin`
-- `make release` writes tarballs under `dist/`.
+- `make release` writes tarballs under `dist/`: one binary SDK archive per
+  release-matrix target plus one source archive, `cai-<version>.tar.gz`.
+- Binary SDK archives contain installed headers, CMake/pkg-config metadata,
+  `libcai.a`, and the versioned shared library plus target-platform symlinks
+  (`.so`, `.so.<major>` on Linux; `.dylib` install-name variants on Darwin).
+- The source archive follows the lonejson pattern: stage a clean
+  `cai-<version>/` tree from `RELEASE_MANIFEST` when present, otherwise from
+  `git ls-files`, write `VERSION`, and include that archive in release
+  checksums.
 - If HEAD has a `vX.Y.Z` tag, use that version for archive names and version
   macros.
 - Archives use `tar --owner=0 --group=0`.
@@ -940,12 +950,7 @@ Resolved:
 
 Remaining:
 
-1. Cross release presets need a reproducible libcurl dependency path. The
-   current machine has several cross compilers, but only host libcurl/pkg-config
-   metadata is available, so cross presets would be failing placeholders until
-   cai either provisions curl/nghttp2/zlib/ssl per target or consumes approved
-   release SDK artifacts.
-2. Should Lua bindings wait until after the C agent/session API stabilizes, or
+1. Should Lua bindings wait until after the C agent/session API stabilizes, or
    should they track each milestone from the beginning?
 
 ## Documentation sources checked

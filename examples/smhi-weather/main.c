@@ -452,6 +452,8 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
   (void)context;
   args = (const smhi_weather_args *)params;
   out = (smhi_weather_result *)result;
+  latitude = 0.0;
+  longitude = 0.0;
   rc = smhi_geocode_location(args->location, &latitude, &longitude, error);
   if (rc != CAI_OK) {
     return rc;

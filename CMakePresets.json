@@ -33,7 +33,61 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CAI_DIST_DIR": "${sourceDir}/dist"
+        "CAI_DIST_DIR": "${sourceDir}/dist",
+        "CAI_USE_LOCKDC_SDK": "ON",
+        "CAI_TARGET_ID": "x86_64-linux-gnu"
+      }
+    },
+    {
+      "name": "x86_64-linux-gnu-release",
+      "inherits": "release"
+    },
+    {
+      "name": "x86_64-linux-musl-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
+        "CAI_TARGET_ID": "x86_64-linux-musl"
+      }
+    },
+    {
+      "name": "aarch64-linux-gnu-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "aarch64-linux-gnu-gcc",
+        "CAI_TARGET_ID": "aarch64-linux-gnu"
+      }
+    },
+    {
+      "name": "aarch64-linux-musl-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/aarch64-linux-musl/bin/aarch64-linux-musl-gcc",
+        "CAI_TARGET_ID": "aarch64-linux-musl"
+      }
+    },
+    {
+      "name": "armhf-linux-gnu-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "arm-linux-gnueabihf-gcc",
+        "CAI_TARGET_ID": "armhf-linux-gnu"
+      }
+    },
+    {
+      "name": "armhf-linux-musl-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/arm-linux-musleabihf/bin/arm-linux-musleabihf-gcc",
+        "CAI_TARGET_ID": "armhf-linux-musl"
+      }
+    },
+    {
+      "name": "arm64-apple-darwin-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/arm64-apple-darwin.cmake",
+        "CAI_TARGET_ID": "arm64-apple-darwin"
       }
     },
     {
@@ -75,6 +129,34 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "x86_64-linux-gnu-release",
+      "configurePreset": "x86_64-linux-gnu-release"
+    },
+    {
+      "name": "x86_64-linux-musl-release",
+      "configurePreset": "x86_64-linux-musl-release"
+    },
+    {
+      "name": "aarch64-linux-gnu-release",
+      "configurePreset": "aarch64-linux-gnu-release"
+    },
+    {
+      "name": "aarch64-linux-musl-release",
+      "configurePreset": "aarch64-linux-musl-release"
+    },
+    {
+      "name": "armhf-linux-gnu-release",
+      "configurePreset": "armhf-linux-gnu-release"
+    },
+    {
+      "name": "armhf-linux-musl-release",
+      "configurePreset": "armhf-linux-musl-release"
+    },
+    {
+      "name": "arm64-apple-darwin-release",
+      "configurePreset": "arm64-apple-darwin-release"
     },
     {
       "name": "asan",

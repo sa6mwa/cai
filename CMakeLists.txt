@@ -10,9 +10,6 @@ include(CMakePackageConfigHelpers)
 include(CTest)
 include(GNUInstallDirs)
 
-find_package(CURL REQUIRED)
-find_package(Threads REQUIRED)
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CAI_BUILD_STATIC "Build the static cai library." ON)
@@ -23,12 +20,14 @@ option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
+option(CAI_USE_LOCKDC_SDK "Use official liblockdc SDK release tarball for native dependencies." OFF)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
     CACHE PATH "Downloaded third-party dependency cache.")
+set(CAI_LOCKDC_SDK_VERSION "0.4.0" CACHE STRING "Pinned liblockdc SDK release used for curl/native dependencies.")
 set(CAI_LONEJSON_VERSION "0.5.0")
 set(CAI_LONEJSON_SHA256
     "b91427a66b72cf0c8a4f4d3bddef5f7fbebfdaf332f50be30b4fb282442ccceb")
@@ -59,6 +58,82 @@ if(CAI_TARGET_ID STREQUAL "")
     set(CAI_TARGET_ID "${_cai_processor_lower}-${_cai_system_name_lower}")
   endif()
 endif()
+
+function(cai_lockdc_sdk_sha256 target_id out_var)
+  if(target_id STREQUAL "x86_64-linux-gnu")
+    set(_sha256 "7cef184a1ba9b9e2f23cd35a3b2fed7acef7b774d1565c2cdaec9e916dcb954c")
+  elseif(target_id STREQUAL "x86_64-linux-musl")
+    set(_sha256 "6a58fb967add059308ff5e6ade8cd01e7cb91443acb1c33068d037519c046ad5")
+  elseif(target_id STREQUAL "aarch64-linux-gnu")
+    set(_sha256 "2a515e6dcb925c80e03ef15f09606d3552b6139533c2e786d1f03aa99e4ebb16")
+  elseif(target_id STREQUAL "aarch64-linux-musl")
+    set(_sha256 "8df41475dc9e580d99c3e3c9b8289d65dd0fdd4295db75db0d236c36782c0bff")
+  elseif(target_id STREQUAL "armhf-linux-gnu")
+    set(_sha256 "f0729e0d318236724bbe99b5084a58a6e2756049af8a071a1355951aa2177985")
+  elseif(target_id STREQUAL "armhf-linux-musl")
+    set(_sha256 "6419768dce53a1a0e3f9054790d8fcbe2792520f2b79a9e2ef98ffa0b1a845b6")
+  elseif(target_id STREQUAL "arm64-apple-darwin")
+    set(_sha256 "8d591e7687b2bd98408d5122f19ff8c53bc68b4920f4a98ef1f1a66a67ca1042")
+  else()
+    message(FATAL_ERROR "No pinned liblockdc SDK checksum for target ${target_id}")
+  endif()
+  set(${out_var} "${_sha256}" PARENT_SCOPE)
+endfunction()
+
+if(CAI_USE_LOCKDC_SDK)
+  cai_lockdc_sdk_sha256("${CAI_TARGET_ID}" CAI_LOCKDC_SDK_SHA256)
+  set(CAI_LOCKDC_SDK_NAME "liblockdc-${CAI_LOCKDC_SDK_VERSION}-${CAI_TARGET_ID}")
+  set(CAI_LOCKDC_SDK_URL
+      "https://github.com/sa6mwa/liblockdc/releases/download/v${CAI_LOCKDC_SDK_VERSION}/${CAI_LOCKDC_SDK_NAME}.tar.gz")
+  set(CAI_LOCKDC_SDK_ARCHIVE "${CAI_DEPS_DIR}/${CAI_LOCKDC_SDK_NAME}.tar.gz")
+  set(CAI_LOCKDC_SDK_PREFIX "${CAI_DEPS_DIR}/${CAI_LOCKDC_SDK_NAME}")
+
+  file(MAKE_DIRECTORY "${CAI_DEPS_DIR}")
+  set(_cai_lockdc_download 1)
+  if(EXISTS "${CAI_LOCKDC_SDK_ARCHIVE}")
+    file(SHA256 "${CAI_LOCKDC_SDK_ARCHIVE}" _cai_lockdc_actual_sha256)
+    if(_cai_lockdc_actual_sha256 STREQUAL CAI_LOCKDC_SDK_SHA256)
+      set(_cai_lockdc_download 0)
+    endif()
+  endif()
+  if(_cai_lockdc_download)
+    message(STATUS "Downloading liblockdc SDK ${CAI_LOCKDC_SDK_VERSION} ${CAI_TARGET_ID} from ${CAI_LOCKDC_SDK_URL}")
+    file(DOWNLOAD
+      "${CAI_LOCKDC_SDK_URL}"
+      "${CAI_LOCKDC_SDK_ARCHIVE}"
+      EXPECTED_HASH "SHA256=${CAI_LOCKDC_SDK_SHA256}"
+      TLS_VERIFY ON
+      SHOW_PROGRESS)
+  endif()
+  if(NOT EXISTS "${CAI_LOCKDC_SDK_PREFIX}/include/curl/curl.h")
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E tar xzf "${CAI_LOCKDC_SDK_ARCHIVE}"
+      WORKING_DIRECTORY "${CAI_DEPS_DIR}"
+      RESULT_VARIABLE _cai_lockdc_extract_result)
+    if(NOT _cai_lockdc_extract_result EQUAL 0)
+      message(FATAL_ERROR "Failed to extract ${CAI_LOCKDC_SDK_ARCHIVE}")
+    endif()
+  endif()
+  if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
+    set(_cai_lockdc_curl_library "${CAI_LOCKDC_SDK_PREFIX}/lib/libcurl.dylib")
+  else()
+    set(_cai_lockdc_curl_library "${CAI_LOCKDC_SDK_PREFIX}/lib/libcurl.so")
+  endif()
+  set(CURL_INCLUDE_DIR "${CAI_LOCKDC_SDK_PREFIX}/include" CACHE PATH "curl include directory" FORCE)
+  set(CURL_LIBRARY "${_cai_lockdc_curl_library}" CACHE FILEPATH "curl library" FORCE)
+  set(CURL_LIBRARY_RELEASE "${_cai_lockdc_curl_library}" CACHE FILEPATH "curl release library" FORCE)
+  set(CMAKE_PREFIX_PATH "${CAI_LOCKDC_SDK_PREFIX};${CMAKE_PREFIX_PATH}")
+  list(APPEND CMAKE_INSTALL_RPATH "$ORIGIN")
+  list(APPEND CMAKE_BUILD_RPATH "${CAI_LOCKDC_SDK_PREFIX}/lib")
+endif()
+
+find_package(CURL REQUIRED)
+if(CAI_USE_LOCKDC_SDK AND TARGET CURL::libcurl)
+  set_target_properties(CURL::libcurl PROPERTIES
+    IMPORTED_LOCATION "${_cai_lockdc_curl_library}"
+    INTERFACE_INCLUDE_DIRECTORIES "${CAI_LOCKDC_SDK_PREFIX}/include")
+endif()
+find_package(Threads REQUIRED)
 
 function(cai_configure_c_target target)
   get_target_property(_cai_target_type ${target} TYPE)
@@ -261,6 +336,7 @@ if(CAI_BUILD_TESTS)
     "${CAI_GENERATED_INCLUDE_DIR}"
     "${CAI_LONEJSON_INCLUDE_DIR}"
     "${CAI_PSLOG_INCLUDE_DIR}"
+    ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(cai_tests PRIVATE cai_static)
   cai_configure_c_target(cai_tests)
@@ -280,7 +356,8 @@ if(CAI_BUILD_TESTS)
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"
       "${CAI_LONEJSON_INCLUDE_DIR}"
-      "${CAI_PSLOG_INCLUDE_DIR}")
+      "${CAI_PSLOG_INCLUDE_DIR}"
+      ${CURL_INCLUDE_DIRS})
     target_link_libraries(cai_integration_tests PRIVATE cai_static)
     cai_configure_c_target(cai_integration_tests)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)
@@ -301,7 +378,8 @@ if(CAI_BUILD_FUZZERS)
   target_include_directories(cai_tool_fuzz PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
-    "${CAI_LONEJSON_INCLUDE_DIR}")
+    "${CAI_LONEJSON_INCLUDE_DIR}"
+    ${CURL_INCLUDE_DIRS})
   target_link_libraries(cai_tool_fuzz PRIVATE cai_static)
   cai_configure_c_target(cai_tool_fuzz)
   target_compile_options(cai_tool_fuzz PRIVATE -fsanitize=address,undefined)
@@ -385,11 +463,18 @@ if(CAI_INSTALL)
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_archive.cmake"
     DEPENDS ${_cai_package_deps}
     VERBATIM)
+  add_custom_target(cai_package_source
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
+      "-DCAI_VERSION=${PROJECT_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_source.cmake"
+    VERBATIM)
   add_custom_target(cai_package_checksums
     COMMAND "${CMAKE_COMMAND}"
       "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
       "-DCAI_VERSION=${PROJECT_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_checksums.cmake"
-    DEPENDS cai_package_archive
+    DEPENDS cai_package_archive cai_package_source
     VERBATIM)
 endif()

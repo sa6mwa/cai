@@ -6,7 +6,7 @@ ROOT := $(CURDIR)
 CMAKE := cmake
 CTEST := ctest
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan package package-checksums release format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan package package-source package-source-smoke package-checksums release format clean
 
 help:
 	@printf '%s\n' \
@@ -17,6 +17,8 @@ help:
 		'make test-integration  Run opt-in OpenAI API integration tests.' \
 		'make asan         Build and run the ASan/UBSan unit tests.' \
 		'make package      Build release and write dist/cai-*.tar.gz.' \
+		'make package-source Build the source-only release tarball.' \
+		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
 		'make release      Build, test, package, and checksum release artifacts.' \
 		'make format       Run clang-format over repo C sources.' \
 		'make clean        Remove generated build outputs.'
@@ -28,8 +30,7 @@ build-debug:
 	$(CMAKE) --build --preset debug
 
 build-release:
-	$(CMAKE) --preset release
-	$(CMAKE) --build --preset release
+	bash ./scripts/build_release_matrix.sh
 
 test: test-debug
 
@@ -56,10 +57,17 @@ asan:
 test-asan: asan
 
 package: build-release
-	$(CMAKE) --build build/release --target cai_package_archive
+	bash ./scripts/package_release_matrix.sh
+
+package-source:
+	$(CMAKE) --preset x86_64-linux-gnu-release
+	$(CMAKE) --build --preset x86_64-linux-gnu-release --target cai_package_source
+
+package-source-smoke: package-source
+	bash ./scripts/test_release_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h).tar.gz"
 
 package-checksums: package
-	$(CMAKE) --build build/release --target cai_package_checksums
+	$(CMAKE) --build --preset x86_64-linux-gnu-release --target cai_package_checksums
 
 release: test-release package-checksums
 
