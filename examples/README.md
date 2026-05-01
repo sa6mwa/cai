@@ -77,6 +77,19 @@ cmake --build --preset debug --target cai_example_session_state
 ./build/debug/cai_example_session_state /tmp/cai-session-state.json
 ```
 
+## SMHI Weather Tool
+
+Run an agent with a typed lonejson tool that calls SMHI Open Data's public
+`snow1g` point forecast API for a location. The tool receives `location`,
+`latitude`, and `longitude`, fetches the nearest-gridpoint forecast, parses the
+JSON response through lonejson maps, and returns typed weather fields for the
+agent to summarize.
+
+```sh
+cmake --build --preset debug --target cai_example_smhi_weather
+OPENAI_API_KEY=... ./build/debug/cai_example_smhi_weather Stockholm 59.3293 18.0686
+```
+
 ## Terminal Chat
 
 Run a small terminal chat agent that reads prompts from stdin, streams response

@@ -40,6 +40,11 @@ typedef struct tool_weather_result {
   char *summary;
 } tool_weather_result;
 
+typedef struct tool_point_args {
+  double latitude;
+  double longitude;
+} tool_point_args;
+
 typedef struct tool_source_result {
   lonejson_source body;
   lonejson_spooled note;
@@ -62,6 +67,11 @@ static const lonejson_field tool_weather_result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(tool_weather_result, summary, "summary")};
 LONEJSON_MAP_DEFINE(tool_weather_result_map, tool_weather_result,
                     tool_weather_result_fields);
+
+static const lonejson_field tool_point_fields[] = {
+    LONEJSON_FIELD_F64_REQ(tool_point_args, latitude, "latitude"),
+    LONEJSON_FIELD_F64_REQ(tool_point_args, longitude, "longitude")};
+LONEJSON_MAP_DEFINE(tool_point_map, tool_point_args, tool_point_fields);
 
 static const lonejson_field tool_source_result_fields[] = {
     LONEJSON_FIELD_STRING_SOURCE_REQ(tool_source_result, body, "body"),
@@ -676,6 +686,21 @@ static void test_tool_registry(test_state *state) {
           NULL) {
     test_fail(state, "tool_schema_from_map_json",
               "map-derived schema JSON is incomplete");
+  }
+  tool_schema->close(map_schema);
+  map_schema = NULL;
+  expect_int(state, "tool_schema_point_map",
+             cai_tool_schema_from_map(&tool_point_map, &map_schema, &error),
+             CAI_OK);
+  if (cai_tool_schema_json(map_schema) == NULL ||
+      strstr(cai_tool_schema_json(map_schema), "\"latitude\":{\"type\":"
+                                             "\"number\"}") == NULL ||
+      strstr(cai_tool_schema_json(map_schema), "\"longitude\":{\"type\":"
+                                             "\"number\"}") == NULL ||
+      strstr(cai_tool_schema_json(map_schema),
+             "\"required\":[\"latitude\",\"longitude\"]") == NULL) {
+    test_fail(state, "tool_schema_point_map_json",
+              "required F64 map-derived schema JSON is incomplete");
   }
   expect_int(state, "tool_register_typed",
              cai_tool_registry_register_lonejson(

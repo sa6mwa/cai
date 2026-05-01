@@ -211,6 +211,7 @@ if(CAI_BUILD_EXAMPLES)
     history_export:history-export
     openrouter_response:openrouter-response
     session_state:session-state
+    smhi_weather:smhi-weather
     streaming_text:streaming-text
     terminal_chat:terminal-chat
     mike_mind:mike-mind)
@@ -222,9 +223,13 @@ if(CAI_BUILD_EXAMPLES)
       "examples/${_cai_example_dir}/main.c")
     target_include_directories(cai_example_${_cai_example} PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
-      "${CAI_GENERATED_INCLUDE_DIR}")
+      "${CAI_GENERATED_INCLUDE_DIR}"
+      "${CAI_LONEJSON_INCLUDE_DIR}")
     target_link_libraries(cai_example_${_cai_example} PRIVATE
       ${_cai_example_link_target})
+    if(_cai_example STREQUAL "smhi_weather")
+      target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl)
+    endif()
     cai_configure_c_target(cai_example_${_cai_example})
   endforeach()
 endif()
