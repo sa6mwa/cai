@@ -1,22 +1,24 @@
 # cai
 
 `cai` is a C89/POSIX SDK-style client for the OpenAI Responses API,
-Conversations, and Realtime WebSocket workflows.
+Conversations, and HTTP/SSE streaming workflows.
 
 The goal is a small, handle-oriented C API that fits systems such as Vectis:
 stream-first data flow, explicit ownership, predictable error handling, and
 good ergonomics for agentic workflows without forcing application code to build
 raw HTTP requests or hand-roll JSON.
 
-See [PLAN.md](PLAN.md) for the current implementation plan.
+See [PLAN.md](PLAN.md) for the current implementation plan and
+[ROADMAP.md](ROADMAP.md) for future features such as Realtime WebSocket.
 
 Responses WebSocket support is not treated as a normal implementation target
 until OpenAI publishes a stable public contract for it. OpenAI documents
-Responses HTTP/SSE streaming and Realtime WebSocket; Codex contains an internal
-Responses WebSocket transport using `wss://.../v1/responses` and
-`response.create` frames, but cai will not implement that as a default public
-SDK path while the contract is undocumented. If cai later adds it, it should be
-explicitly experimental and opt-in.
+Responses HTTP/SSE streaming; Codex contains an internal Responses WebSocket
+transport using `wss://.../v1/responses` and `response.create` frames, but cai
+will not implement that as a default public SDK path while the contract is
+undocumented. OpenAI Realtime WebSocket is documented, but cai has no Realtime
+facade yet and tracks that as a future feature. If cai later adds Responses
+WebSocket, it should be explicitly experimental and opt-in.
 
 ## Status
 
