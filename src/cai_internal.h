@@ -324,20 +324,6 @@ int cai_http_response_params_request(
     cai_client *client, const char *path,
     const cai_response_create_params *params, int stream, char **out_json,
     long *out_http_status, char **out_request_id, cai_error *error);
-int cai_client_stream_response_text_json_with_id(
-    cai_client *client, const char *request_json, cai_sink *sink,
-    char **out_response_id, cai_token_usage *out_usage, cai_error *error);
-int cai_client_stream_response_json_with_id(
-    cai_client *client, const char *request_json, const cai_stream_sinks *sinks,
-    char **out_response_id, cai_token_usage *out_usage, cai_error *error);
-int cai_client_stream_response_text_spooled_with_id(
-    cai_client *client, const lonejson_spooled *request_json,
-    size_t request_json_len, cai_sink *sink, char **out_response_id,
-    cai_token_usage *out_usage, cai_error *error);
-int cai_client_stream_response_spooled_with_id(
-    cai_client *client, const lonejson_spooled *request_json,
-    size_t request_json_len, const cai_stream_sinks *sinks,
-    char **out_response_id, cai_token_usage *out_usage, cai_error *error);
 typedef int (*cai_stream_complete_fn)(void *context, const char *response_id,
                                       const cai_token_usage *usage);
 int cai_client_open_response_text_source_with_complete(

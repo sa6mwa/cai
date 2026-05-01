@@ -400,10 +400,12 @@ int cai_response_create_params_set_conversation_id(
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,
                                cai_response **out, cai_error *error);
-int cai_client_stream_response(cai_client *client,
-                               const cai_response_create_params *params,
-                               const cai_stream_handler *handler,
-                               cai_error *error);
+int cai_client_stream_response_text(cai_client *client,
+                                    const cai_response_create_params *params,
+                                    cai_sink *sink, cai_error *error);
+int cai_client_open_response_text_source(
+    cai_client *client, const cai_response_create_params *params,
+    cai_source **out, cai_error *error);
 int cai_client_retrieve_response(cai_client *client, const char *response_id,
                                  cai_response **out, cai_error *error);
 int cai_client_delete_response(cai_client *client, const char *response_id,
@@ -425,10 +427,13 @@ Response helpers should cover common DX needs:
 
 Streaming alternatives must exist for the same output:
 
-- `cai_response_output_source()`
-- `cai_response_write_output_json()`
-- `cai_response_each_output_item()`
-- `cai_response_each_event()`
+- `cai_client_stream_response_text()`
+- `cai_client_open_response_text_source()`
+- session/agent multi-sink streaming via `cai_stream_sinks`
+
+The response streaming request path should be typed-first. Public callers
+should build `cai_response_create_params` through the typed API; raw JSON
+streaming entry points are deliberately not part of the public SDK surface.
 
 ### Conversations
 
