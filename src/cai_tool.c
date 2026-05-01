@@ -42,10 +42,22 @@ typedef struct cai_tool_schema_impl {
   int strict;
 } cai_tool_schema_impl;
 
+typedef struct cai_tool_typed_property_doc {
+  const char *type;
+  const char *description;
+} cai_tool_typed_property_doc;
+
 #define CAI_TOOL_SCHEMA_IMPL(schema) \
   ((cai_tool_schema_impl *)((schema)->impl))
 
 static void cai_tool_schema_init_methods(cai_tool_schema *schema);
+
+static const lonejson_field cai_tool_typed_property_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_tool_typed_property_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_tool_typed_property_doc,
+                                          description, "description")};
+LONEJSON_MAP_DEFINE(cai_tool_typed_property_map, cai_tool_typed_property_doc,
+                    cai_tool_typed_property_fields);
 
 static lonejson_status cai_lonejson_sink_write(void *user, const void *data,
                                                size_t len,
@@ -143,6 +155,28 @@ static int cai_tool_schema_replace(char **target, cai_json_builder *builder,
   return CAI_OK;
 }
 
+static int cai_tool_validate_json_value(const char *json, const char *message,
+                                        cai_error *error) {
+  lonejson_json_value value;
+  lonejson_error json_error;
+  int rc;
+
+  if (json == NULL || json[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, message);
+  }
+  lonejson_json_value_init(&value);
+  lonejson_error_init(&json_error);
+  if (lonejson_json_value_set_buffer(&value, json, strlen(json),
+                                     &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID, message,
+                              json_error.message);
+  } else {
+    rc = CAI_OK;
+  }
+  lonejson_json_value_cleanup(&value);
+  return rc;
+}
+
 static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
   cai_tool_schema_impl *impl;
   cai_json_builder builder;
@@ -210,6 +244,12 @@ static int cai_tool_schema_add_property_json(cai_tool_schema *schema,
                          "schema, property name, and property JSON are "
                          "required");
   }
+  rc = cai_tool_validate_json_value(property_json,
+                                    "property schema must be valid JSON",
+                                    error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   impl = CAI_TOOL_SCHEMA_IMPL(schema);
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "tool schema is closed");
@@ -251,33 +291,26 @@ static int cai_tool_schema_add_typed_property(cai_tool_schema *schema,
                                               const char *description,
                                               const char *type, int required,
                                               cai_error *error) {
-  cai_json_builder builder;
-  int need_comma;
+  cai_tool_typed_property_doc doc;
+  lonejson_error json_error;
+  char *json;
   int rc;
 
   if (type == NULL || type[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "property type is required");
   }
-  memset(&builder, 0, sizeof(builder));
-  need_comma = 0;
-  rc = cai_json_builder_lit(&builder, "{", error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_field_string(&builder, "type", type, &need_comma,
-                                       error);
+  doc.type = type;
+  doc.description = description;
+  lonejson_error_init(&json_error);
+  json = lonejson_serialize_alloc(&cai_tool_typed_property_map, &doc, NULL,
+                                  NULL, &json_error);
+  if (json == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize typed property schema",
+                                json_error.message);
   }
-  if (rc == CAI_OK && description != NULL) {
-    rc = cai_json_builder_field_string(&builder, "description", description,
-                                       &need_comma, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "}", error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_tool_schema_add_property_json(
-        schema, name, builder.data != NULL ? builder.data : "{}", required,
-        error);
-  }
-  cai_free_mem(NULL, builder.data);
+  rc = cai_tool_schema_add_property_json(schema, name, json, required, error);
+  cai_free_mem(NULL, json);
   return rc;
 }
 
@@ -930,6 +963,12 @@ int cai_tool_schema_add_raw_property(cai_tool_schema *schema, const char *name,
   if (schema_json == NULL || schema_json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "raw property schema JSON is required");
+  }
+  rc = cai_tool_validate_json_value(schema_json,
+                                    "raw property schema must be valid JSON",
+                                    error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   if (description == NULL) {
     return cai_tool_schema_add_property_json(schema, name, schema_json,

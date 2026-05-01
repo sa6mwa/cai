@@ -532,6 +532,12 @@ static void test_tool_registry(test_state *state) {
       cai_tool_schema_strict(tool_schema) != 1) {
     test_fail(state, "tool_schema_json", "schema builder JSON is incomplete");
   }
+  expect_int(state, "tool_schema_bad_raw_json",
+             tool_schema->raw_property(tool_schema, "bad", NULL,
+                                       "{\"type\":\"string\"", 0, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "tool_schema_from_map",
              cai_tool_schema_from_map(&tool_weather_map, &map_schema, &error),
              CAI_OK);
