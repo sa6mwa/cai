@@ -812,7 +812,8 @@ Mirror liblockdc where practical:
   field names. Lonejson fixed maps cannot currently stream dynamic object keys.
   Keep raw schema fragments validated through `lonejson_json_value`; replace
   this builder path when lonejson grows a dynamic object/property writer.
-- Unit-test multi-tool and error paths.
+- Unit tests cover single-tool, multi-tool, raw-tool, typed-tool, source-backed
+  typed-tool, tool error, and round-limit paths.
 
 ### Milestone 5: SSE streaming
 

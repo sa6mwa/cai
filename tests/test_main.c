@@ -413,6 +413,14 @@ static int test_raw_tool(void *context, const char *arguments_json,
   return cai_sink_write(output, arguments_json, strlen(arguments_json), error);
 }
 
+static int test_error_tool(void *context, const char *arguments_json,
+                           cai_sink *output, cai_error *error) {
+  (void)context;
+  (void)arguments_json;
+  (void)output;
+  return cai_set_error(error, CAI_ERR_INVALID, "tool failed deliberately");
+}
+
 static void test_source_sink(test_state *state) {
   read_state reader;
   write_state writer;
@@ -630,6 +638,11 @@ static void test_tool_registry(test_state *state) {
                                             "Echo raw JSON", schema, 0,
                                             test_raw_tool, &raw_state, &error),
              CAI_OK);
+  expect_int(state, "tool_register_error",
+             cai_tool_registry_register_raw(registry, "raw_error",
+                                            "Fail deliberately", schema, 0,
+                                            test_error_tool, NULL, &error),
+             CAI_OK);
   expect_int(state, "tool_sink",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
   expect_int(state, "tool_run_typed",
@@ -656,6 +669,12 @@ static void test_tool_registry(test_state *state) {
       CAI_OK);
   expect_str(state, "tool_run_raw_output", writer.buffer, "{\"x\":1}");
   expect_str(state, "tool_run_raw_seen", raw_state.seen, "{\"x\":1}");
+  expect_int(state, "tool_run_error",
+             cai_tool_registry_run(registry, "raw_error", "{\"x\":1}", sink,
+                                   &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   cai_sink_close(sink);
   sink = NULL;
 
@@ -1521,6 +1540,17 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_auto_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"auto done\"}]}]}";
+  static const char multi_tool_call_body[] =
+      "{\"id\":\"resp_multi_tool_1\",\"status\":\"completed\",\"output\":[{"
+      "\"id\":\"fc_multi_1\",\"type\":\"function_call\",\"call_id\":"
+      "\"call_multi_1\",\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":1}\""
+      "},{\"id\":\"fc_multi_2\",\"type\":\"function_call\",\"call_id\":"
+      "\"call_multi_2\",\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":2}\""
+      "}]}";
+  static const char multi_tool_done_body[] =
+      "{\"id\":\"resp_multi_tool_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"multi done\"}]}]}";
   static const char manual_tool_call_body[] =
       "{\"id\":\"resp_manual_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_manual_1\",\"type\":\"function_call\",\"call_id\":"
@@ -1684,12 +1714,25 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return auto_tool_call_body;
     }
+    if (strstr(request, "multi tool turn") != NULL &&
+        strstr(request, "\"name\":\"raw_echo\"") != NULL) {
+      return multi_tool_call_body;
+    }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
         strstr(request, "\"output\":\"{\\\"x\\\":1}\"") != NULL &&
         strstr(request, "\"previous_response_id\":\"resp_auto_tool_1\"") !=
             NULL) {
       return auto_tool_done_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_multi_1\"") != NULL &&
+        strstr(request, "\"output\":\"{\\\"x\\\":1}\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_multi_2\"") != NULL &&
+        strstr(request, "\"output\":\"{\\\"x\\\":2}\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_multi_tool_1\"") !=
+            NULL) {
+      return multi_tool_done_body;
     }
     if (strstr(request, "agent tool turn") != NULL &&
         strstr(request, "\"tools\":[") != NULL &&
@@ -2748,6 +2791,109 @@ static void test_agent_tool_auto_run(test_state *state) {
     test_fail(state, "agent_auto_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_auto_mock", "mock child failed");
+  }
+}
+
+static void test_agent_multi_tool_auto_run(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  char spool_dir[] = "/tmp/cai-multi-tool-spool-XXXXXX";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_multi_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_multi_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_multi_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  if (mkdtemp(spool_dir) == NULL) {
+    test_fail(state, "agent_multi_spool", "mkdtemp failed");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+  run_options.tool_output_memory_limit = 4U;
+  run_options.tool_spool_dir = spool_dir;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  raw_state.seen[0] = '\0';
+
+  expect_int(state, "agent_multi_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_multi_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_multi_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_multi_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_multi_add",
+             cai_session_add_user_text(session, "multi tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_multi_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_multi_response", cai_response_output_text(response),
+             "multi done");
+  expect_str(state, "agent_multi_seen", raw_state.seen, "{\"x\":2}");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (rmdir(spool_dir) != 0) {
+    test_fail(state, "agent_multi_spool", "spool dir not empty");
+  }
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_multi_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_multi_mock", "mock child failed");
   }
 }
 
@@ -3876,6 +4022,7 @@ int main(void) {
   test_agent_tool_manual_step(&state);
   test_agent_auto_compaction(&state);
   test_agent_tool_auto_run(&state);
+  test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
