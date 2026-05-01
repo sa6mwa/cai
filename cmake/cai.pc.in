@@ -1,0 +1,12 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: cai
+Description: C89/POSIX SDK client for the OpenAI Responses API
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lcai
+Libs.private: -pthread
+Requires.private: libcurl
+Cflags: -I${includedir}

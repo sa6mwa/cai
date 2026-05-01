@@ -6,6 +6,7 @@ include(CaiVersion)
 cai_detect_version(CAI_RESOLVED_VERSION)
 project(cai VERSION ${CAI_RESOLVED_VERSION} LANGUAGES C)
 
+include(CMakePackageConfigHelpers)
 include(CTest)
 include(GNUInstallDirs)
 
@@ -301,6 +302,22 @@ else()
 endif()
 
 if(CAI_INSTALL)
+  set(CAI_INSTALL_CMAKEDIR
+      "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
+      CACHE STRING "Install path for cai CMake package files.")
+  configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-config.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/cai-config.cmake"
+    INSTALL_DESTINATION "${CAI_INSTALL_CMAKEDIR}")
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/cai-config-version.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai.pc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"
+    @ONLY)
+
   install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
   install(DIRECTORY "${CAI_GENERATED_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
   if(TARGET cai_static)
@@ -315,4 +332,14 @@ if(CAI_INSTALL)
       LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
       RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
   endif()
+  install(EXPORT caiTargets
+    NAMESPACE cai::
+    FILE cai-targets.cmake
+    DESTINATION "${CAI_INSTALL_CMAKEDIR}")
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/cai-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/cai-config-version.cmake"
+    DESTINATION "${CAI_INSTALL_CMAKEDIR}")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
 endif()

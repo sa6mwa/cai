@@ -30,6 +30,8 @@ example layers settle.
 
 - C89 with POSIX features.
 - CMake/Ninja/Make based build.
+- Installed builds export CMake package targets under `lib/cmake/cai` and a
+  relocatable `cai.pc` pkg-config file.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which

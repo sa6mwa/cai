@@ -769,6 +769,8 @@ Mirror liblockdc where practical:
 
 - `CMakeLists.txt`, `CMakePresets.json`, and `Makefile` with familiar targets.
 - Host debug, ASan/UBSan, coverage, release, and cross presets.
+- Installed builds export CMake package metadata and a relocatable pkg-config
+  file.
 - Direct pinned download of the official lonejson release header artifact.
 - Release/dependency provisioning for other native libraries should remain
   explicit and reproducible; do not silently use sibling checkouts.
