@@ -2,11 +2,15 @@ prefix=${pcfiledir}/../..
 exec_prefix=${prefix}
 libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+lockdc_sdk_version=@CAI_LOCKDC_SDK_VERSION@
+lockdc_sdk_target=@CAI_TARGET_ID@
+lockdc_sdk_url=https://github.com/sa6mwa/liblockdc/releases/download/v@CAI_LOCKDC_SDK_VERSION@/liblockdc-@CAI_LOCKDC_SDK_VERSION@-@CAI_TARGET_ID@.tar.gz
+lockdc_sdk_sha256=@CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE@
 
 Name: cai
 Description: C89/POSIX SDK client for the OpenAI Responses API
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lcai
 Libs.private: -pthread
-Requires.private: libcurl
+Requires.private: lockdc
 Cflags: -I${includedir}

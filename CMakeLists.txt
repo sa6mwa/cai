@@ -127,6 +127,13 @@ if(CAI_USE_LOCKDC_SDK)
   list(APPEND CMAKE_BUILD_RPATH "${CAI_LOCKDC_SDK_PREFIX}/lib")
 endif()
 
+set(CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE "")
+if(CAI_USE_LOCKDC_SDK)
+  set(CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE "${CAI_LOCKDC_SDK_SHA256}")
+else()
+  cai_lockdc_sdk_sha256("${CAI_TARGET_ID}" CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE)
+endif()
+
 find_package(CURL REQUIRED)
 if(CAI_USE_LOCKDC_SDK AND TARGET CURL::libcurl)
   set_target_properties(CURL::libcurl PROPERTIES
@@ -286,11 +293,15 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
     target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
     target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
-    target_link_libraries(${_cai_target} PRIVATE CURL::libcurl)
-    target_link_libraries(${_cai_target} PRIVATE Threads::Threads)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()
+if(TARGET cai_shared)
+  target_link_libraries(cai_shared PRIVATE CURL::libcurl Threads::Threads)
+endif()
+if(TARGET cai_static)
+  target_link_libraries(cai_static INTERFACE $<INSTALL_INTERFACE:lockdc::static>)
+endif()
 
 if(CAI_BUILD_EXAMPLES)
   set(_cai_example_link_target "")
@@ -321,7 +332,10 @@ if(CAI_BUILD_EXAMPLES)
       "${CAI_LONEJSON_INCLUDE_DIR}")
     target_link_libraries(cai_example_${_cai_example} PRIVATE
       ${_cai_example_link_target})
-    if(_cai_example STREQUAL "smhi_weather")
+    if(_cai_example_link_target STREQUAL "cai_static")
+      target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl
+        Threads::Threads)
+    elseif(_cai_example STREQUAL "smhi_weather")
       target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl)
     endif()
     cai_configure_c_target(cai_example_${_cai_example})
@@ -338,7 +352,8 @@ if(CAI_BUILD_TESTS)
     "${CAI_PSLOG_INCLUDE_DIR}"
     ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  target_link_libraries(cai_tests PRIVATE cai_static)
+  target_link_libraries(cai_tests PRIVATE cai_static CURL::libcurl
+    Threads::Threads)
   cai_configure_c_target(cai_tests)
   add_test(NAME cai_tests COMMAND cai_tests)
 
@@ -347,6 +362,7 @@ if(CAI_BUILD_TESTS)
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         "-DCAI_VERSION=${PROJECT_VERSION}"
+        "-DCAI_LOCKDC_SDK_PREFIX=${CAI_LOCKDC_SDK_PREFIX}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
   endif()
 
@@ -358,7 +374,8 @@ if(CAI_BUILD_TESTS)
       "${CAI_LONEJSON_INCLUDE_DIR}"
       "${CAI_PSLOG_INCLUDE_DIR}"
       ${CURL_INCLUDE_DIRS})
-    target_link_libraries(cai_integration_tests PRIVATE cai_static)
+    target_link_libraries(cai_integration_tests PRIVATE cai_static CURL::libcurl
+      Threads::Threads)
     cai_configure_c_target(cai_integration_tests)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)
     set_tests_properties(cai_integration_tests PROPERTIES
@@ -380,7 +397,8 @@ if(CAI_BUILD_FUZZERS)
     "${CAI_GENERATED_INCLUDE_DIR}"
     "${CAI_LONEJSON_INCLUDE_DIR}"
     ${CURL_INCLUDE_DIRS})
-  target_link_libraries(cai_tool_fuzz PRIVATE cai_static)
+  target_link_libraries(cai_tool_fuzz PRIVATE cai_static CURL::libcurl
+    Threads::Threads)
   cai_configure_c_target(cai_tool_fuzz)
   target_compile_options(cai_tool_fuzz PRIVATE -fsanitize=address,undefined)
   target_link_options(cai_tool_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)

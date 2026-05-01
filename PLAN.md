@@ -778,6 +778,9 @@ Mirror liblockdc where practical:
   uses the official `github.com/sa6mwa/liblockdc` SDK release tarballs, pinned
   by version and SHA-256 per target. Do not use sibling checkout artifacts as
   cai inputs.
+- SDK archives do not vendor dependency headers. Installed CMake/pkg-config
+  metadata should point consumers at the official `lockdc` SDK/package, which
+  carries curl, lonejson, pslog, and the other native dependency headers/libs.
 - Release matrix:
   - `x86_64-linux-gnu`
   - `x86_64-linux-musl`

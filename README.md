@@ -43,6 +43,9 @@ example layers settle.
   tarball for the selected target to provide libcurl and its native dependency
   stack. The tarball URL and SHA-256 are pinned in CMake; sibling checkout
   artifacts are not dependency inputs.
+- Installed CMake and pkg-config metadata point downstream consumers at the
+  official `lockdc` SDK/package for dependency headers and link libraries.
+  `cai` archives do not vendor dependency headers.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
@@ -52,10 +55,13 @@ example layers settle.
   such as OpenRouter.
 - `lonejson` is the JSON layer. The build downloads the official
   `github.com/sa6mwa/lonejson` release `.h.gz` header artifact pinned by
-  version and SHA-256; it does not use a sibling checkout.
+  version and SHA-256; it does not use a sibling checkout. Release consumers
+  get the corresponding installed `lonejson.h` through the official
+  `liblockdc` SDK/package.
 - `pslog` is used for optional host-owned logging. The build downloads the
   official `github.com/sa6mwa/libpslog` release `.h.gz` header artifact pinned
-  by version and SHA-256.
+  by version and SHA-256. Release consumers get `pslog.h` through the official
+  `liblockdc` SDK/package.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
 - Non-streamed JSON responses are capped by `json_response_limit_bytes`
