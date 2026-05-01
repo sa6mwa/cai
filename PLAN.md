@@ -940,12 +940,13 @@ Resolved:
 
 Remaining:
 
-1. Is the mock OpenAI server allowed to start as plain HTTP for tests, with TLS
-   coverage handled by libcurl/OpenSSL dependency smoke tests later?
+1. Cross release presets need a reproducible libcurl dependency path. The
+   current machine has several cross compilers, but only host libcurl/pkg-config
+   metadata is available, so cross presets would be failing placeholders until
+   cai either provisions curl/nghttp2/zlib/ssl per target or consumes approved
+   release SDK artifacts.
 2. Should Lua bindings wait until after the C agent/session API stabilizes, or
    should they track each milestone from the beginning?
-3. What exact public shape should model metadata expose for verified,
-   incomplete, and unknown capability data?
 
 ## Documentation sources checked
 
