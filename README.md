@@ -295,6 +295,7 @@ CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
@@ -321,6 +322,10 @@ regression against OpenRouter using client-side history replay and
 `CAI_OPENROUTER_TOOL_TEST_MODEL` overrides the model. It verifies that the model
 calls the registered tool, the callback result reaches the assistant answer,
 and the next turn can recall that tool result through local history.
+
+`CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1` runs the same hostile tool-output
+regression as `CAI_INTEGRATION_TOOL_SECURITY=1`, but against OpenRouter with
+client-side history replay and the known working free tool-call model.
 
 `CAI_INTEGRATION_OPENROUTER_E2E=1` runs the same 20-turn continuity eval as
 `CAI_INTEGRATION_E2E=1`, but against OpenRouter using

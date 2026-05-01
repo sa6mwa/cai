@@ -860,7 +860,9 @@ Mirror liblockdc where practical:
   argument surfaces.
 - Integration coverage includes `CAI_INTEGRATION_TOOL_SECURITY=1`, which calls
   a real OpenAI model with a hostile tool result and asserts the assistant keeps
-  developer-instruction precedence.
+  developer-instruction precedence. `CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1`
+  runs the same attack class through OpenRouter's known working free tool-call
+  model with client-side history replay.
 
 ### Milestone 5: SSE streaming
 
