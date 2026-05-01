@@ -42,6 +42,10 @@ typedef struct tool_source_result {
   lonejson_spooled note;
 } tool_source_result;
 
+typedef struct parsed_output_doc {
+  char *answer;
+} parsed_output_doc;
+
 typedef struct raw_tool_state {
   char seen[64];
 } raw_tool_state;
@@ -61,6 +65,11 @@ static const lonejson_field tool_source_result_fields[] = {
     LONEJSON_FIELD_STRING_STREAM_REQ(tool_source_result, note, "note")};
 LONEJSON_MAP_DEFINE(tool_source_result_map, tool_source_result,
                     tool_source_result_fields);
+
+static const lonejson_field parsed_output_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(parsed_output_doc, answer, "answer")};
+LONEJSON_MAP_DEFINE(parsed_output_map, parsed_output_doc,
+                    parsed_output_fields);
 
 static void test_fail(test_state *state, const char *name, const char *msg) {
   state->failures++;
@@ -761,10 +770,15 @@ static void test_response_json(test_state *state) {
   cai_sink *sink;
   cai_error error;
   cai_token_usage usage;
+  parsed_output_doc parsed;
   write_state writer;
   char response_json[1024];
   char *json;
   size_t json_len;
+  static const char structured_response_json[] =
+      "{\"id\":\"resp_json\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"{\\\"answer\\\":\\\"structured\\\"}\"}]}]}";
 
   strcpy(response_json, "{\"id\":\"resp_123\",\"status\":\"completed\",");
   strcat(response_json, "\"model\":\"gpt-5-nano\",\"created_at\":123,");
@@ -1089,7 +1103,30 @@ static void test_response_json(test_state *state) {
   expect_int(state, "output_write_text",
              cai_output_write_text(output, sink, &error), CAI_OK);
   expect_str(state, "output_written_text", writer.buffer, "hello world");
+  memset(&parsed, 0, sizeof(parsed));
+  expect_int(state, "output_write_json_non_json",
+             cai_output_write_json(output, &parsed_output_map, &parsed,
+                                   &error),
+             CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   cai_sink_close(sink);
+  cai_output_destroy(output);
+  output = NULL;
+  expect_int(state, "structured_response_parse",
+             cai_response_parse_json(structured_response_json, &response,
+                                     &error),
+             CAI_OK);
+  expect_int(state, "structured_output_from_response",
+             cai_output_from_response(response, &output, &error), CAI_OK);
+  response = NULL;
+  memset(&parsed, 0, sizeof(parsed));
+  expect_int(state, "output_write_json",
+             cai_output_write_json(output, &parsed_output_map, &parsed,
+                                   &error),
+             CAI_OK);
+  expect_str(state, "output_write_json_value", parsed.answer, "structured");
+  lonejson_cleanup(&parsed_output_map, &parsed);
   cai_output_destroy(output);
   cai_response_destroy(response);
   cai_error_cleanup(&error);

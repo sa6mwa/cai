@@ -487,11 +487,26 @@ int cai_output_write_raw_json(const cai_output *output, cai_sink *sink,
 
 int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                           void *value, cai_error *error) {
-  (void)output;
-  (void)map;
-  (void)value;
-  return cai_set_error(error, CAI_ERR_INVALID,
-                       "cai_output is not implemented yet");
+  const char *text;
+  lonejson_error json_error;
+
+  if (output == NULL || map == NULL || value == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "output, lonejson map, and value are required");
+  }
+  text = cai_output_text(output);
+  if (text == NULL || text[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "output text does not contain JSON");
+  }
+  lonejson_error_init(&json_error);
+  if (lonejson_parse_cstr(map, value, text, NULL, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse output JSON",
+                                json_error.message);
+  }
+  return CAI_OK;
 }
 
 void cai_output_destroy(cai_output *output) {

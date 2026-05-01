@@ -320,6 +320,10 @@ be able to hand request bodies, image payloads, lockd state, and generated
 outputs across the cai boundary without converting everything through temporary
 heap strings.
 
+Current behavior: `cai_output_write_json` parses `cai_output_text(output)` into
+the supplied lonejson map/value pair. It is for structured-output text, not for
+parsing the full raw Responses object.
+
 The stdout/stderr sink helpers are convenience APIs for pipe-style CLI usage,
 examples, and quick tools. They should behave like normal `cai_sink` instances
 backed by `FILE *` writes, report write errors through `cai_error`, and avoid

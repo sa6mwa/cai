@@ -102,6 +102,10 @@ conversation history. cai's default sessions use `previous_response_id`, and
 conversation sessions use OpenAI Conversations, so assistant turns are preserved
 through those handles instead of being manually appended by application code.
 
+Structured output text can be decoded into a caller-owned lonejson struct with
+`cai_output_write_json`. The function parses `cai_output_text(output)` as JSON;
+it does not inspect arbitrary response metadata or raw response JSON.
+
 Tools are agent capabilities. The default `register_tool` path is a typed
 lonejson callback; `register_raw_tool` is the JSON escape hatch. The typed path
 uses a lonejson map for parameters and a second lonejson map for the result.
