@@ -605,6 +605,20 @@ static int test_raw_tool(void *context, const char *arguments_json,
   return cai_sink_write(output, arguments_json, strlen(arguments_json), error);
 }
 
+static int test_large_raw_tool(void *context, const char *arguments_json,
+                               cai_sink *output, cai_error *error) {
+  char payload[129];
+  size_t i;
+
+  (void)context;
+  (void)arguments_json;
+  for (i = 0U; i < sizeof(payload) - 1U; i++) {
+    payload[i] = 'x';
+  }
+  payload[sizeof(payload) - 1U] = '\0';
+  return cai_sink_write(output, payload, sizeof(payload) - 1U, error);
+}
+
 static int test_error_tool(void *context, const char *arguments_json,
                            cai_sink *output, cai_error *error) {
   (void)context;
@@ -1915,6 +1929,10 @@ static const char *mock_response_for_request(const char *request) {
       "\"id\":\"fc_auto_1\",\"type\":\"function_call\",\"call_id\":"
       "\"call_auto_1\",\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":1}\""
       "}]}";
+  static const char large_tool_call_body[] =
+      "{\"id\":\"resp_large_tool_1\",\"status\":\"completed\",\"output\":[{"
+      "\"id\":\"fc_large_1\",\"type\":\"function_call\",\"call_id\":"
+      "\"call_large_1\",\"name\":\"large_raw\",\"arguments\":\"{}\"}]}";
   static const char auto_tool_done_body[] =
       "{\"id\":\"resp_auto_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -2117,6 +2135,10 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "auto tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return auto_tool_call_body;
+    }
+    if (strstr(request, "large tool turn") != NULL &&
+        strstr(request, "\"name\":\"large_raw\"") != NULL) {
+      return large_tool_call_body;
     }
     if (strstr(request, "multi tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
@@ -3499,6 +3521,177 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   }
 }
 
+static void test_http_response_limit(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "http_limit_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "http_limit_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "http_limit_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  client_config.json_response_limit_bytes = 64U;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  expect_int(state, "http_limit_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "http_limit_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "http_limit_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "http_limit_add",
+             cai_session_add_user_text(session, "response limit turn", &error),
+             CAI_OK);
+  expect_int(state, "http_limit_run",
+             cai_session_run(session, &response, &error), CAI_ERR_TRANSPORT);
+  expect_str(state, "http_limit_error", error.message,
+             "HTTP response exceeded configured JSON response limit");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "http_limit_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "http_limit_mock", "mock child failed");
+  }
+}
+
+static void test_agent_tool_output_max_bytes(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_tool_max_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_tool_max_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_tool_max_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.tool_output_max_bytes = 16U;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  expect_int(state, "agent_tool_max_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_tool_max_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_max_register",
+             cai_agent_register_raw_tool(agent, "large_raw", "Large raw JSON",
+                                         schema, 0, test_large_raw_tool, NULL,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_max_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_tool_max_add",
+             cai_session_add_user_text(session, "large tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_max_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "agent_tool_max_error", error.message,
+             "failed to spool tool output");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_tool_max_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_tool_max_mock", "mock child failed");
+  }
+}
+
 static void test_agent_tool_manual_step(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   int pipe_fds[2];
@@ -4563,9 +4756,11 @@ int main(void) {
   test_agent_tool_declarations(&state);
   test_agent_tool_manual_step(&state);
   test_agent_auto_compaction(&state);
+  test_http_response_limit(&state);
   test_agent_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);
+  test_agent_tool_output_max_bytes(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
   test_stream_history_preserves_pretty_json(&state);

@@ -103,7 +103,10 @@ typedef struct cai_sse_state {
   size_t body_capacity;
   size_t length;
   size_t capacity;
+  size_t event_limit;
   int failed;
+  int failed_code;
+  const char *failed_message;
   int reasoning_summary_started;
   int reasoning_summary_suffixed;
   int output_text_started;
@@ -154,6 +157,11 @@ static int cai_sse_line_reserve(cai_sse_state *state, size_t extra) {
 
   if (state->length + extra + 1U <= state->capacity) {
     return CAI_OK;
+  }
+  if (state->event_limit > 0U &&
+      (extra > state->event_limit ||
+       state->length > state->event_limit - extra)) {
+    return CAI_ERR_PROTOCOL;
   }
   next_capacity = state->capacity == 0U ? 256U : state->capacity * 2U;
   while (next_capacity < state->length + extra + 1U) {
@@ -499,6 +507,7 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
   size_t capture;
   size_t needed;
   size_t new_capacity;
+  int reserve_rc;
   char *grown;
 
   state = (cai_sse_state *)user;
@@ -528,8 +537,14 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
     state->body[state->body_length] = '\0';
   }
   for (i = 0U; i < total; i++) {
-    if (cai_sse_line_reserve(state, 1U) != CAI_OK) {
+    reserve_rc = cai_sse_line_reserve(state, 1U);
+    if (reserve_rc != CAI_OK) {
       state->failed = 1;
+      state->failed_code = reserve_rc;
+      state->failed_message =
+          reserve_rc == CAI_ERR_PROTOCOL
+              ? "streaming SSE event exceeded configured limit"
+              : "failed to allocate streaming SSE buffer";
       return 0U;
     }
     state->line[state->length++] = bytes[i];
@@ -537,6 +552,8 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
     if (bytes[i] == '\n') {
       if (cai_sse_process_line(state) != CAI_OK) {
         state->failed = 1;
+        state->failed_code = CAI_ERR_TRANSPORT;
+        state->failed_message = "streaming response callback failed";
         return 0U;
       }
       state->length = 0U;
@@ -585,7 +602,10 @@ static int cai_client_stream_response_params_with_id(
   state.body_capacity = 0U;
   state.length = 0U;
   state.capacity = 0U;
+  state.event_limit = CAI_DEFAULT_SSE_EVENT_LIMIT;
   state.failed = 0;
+  state.failed_code = CAI_ERR_TRANSPORT;
+  state.failed_message = "streaming response sink failed";
   state.reasoning_summary_started = 0;
   state.reasoning_summary_suffixed = 0;
   state.output_text_started = 0;
@@ -675,14 +695,16 @@ static int cai_client_stream_response_params_with_id(
   }
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, state.body);
+    if (state.failed) {
+      return cai_set_error(error, state.failed_code, state.failed_message);
+    }
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "streaming HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
   if (state.failed) {
     cai_free_mem(NULL, state.body);
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "streaming response sink failed");
+    return cai_set_error(error, state.failed_code, state.failed_message);
   }
   if (http_status < 200L || http_status >= 300L) {
     rc = cai_set_openai_error(error, http_status,

@@ -45,6 +45,10 @@ example layers settle.
   by version and SHA-256.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
+- Non-streamed JSON responses are capped by `json_response_limit_bytes`
+  (default 1 MiB). Tool output can spill to disk with
+  `tool_output_memory_limit` and can be hard-capped per auto-run with
+  `tool_output_max_bytes`.
 - Production SDK calls should choose a model explicitly.
 - Session auto-compaction is enabled by default and uses Responses
   server-side compaction.
@@ -170,6 +174,10 @@ into their result struct instead of building a raw JSON string. Use
 `cai_tool_result_set_spooled` for lonejson spooled string/base64 fields; cai
 streams the resulting JSON into the tool output sink and then cleans up those
 handles.
+
+`cai_run_options.tool_output_max_bytes` is a total output cap for tool
+auto-runs. Leave it at zero for unlimited output, or set it when tool output is
+controlled by remote model decisions and should fail closed above a known size.
 
 `cai_tool_schema_from_map` can be used when callers want to inspect or enrich
 the generated schema. Metadata helpers such as `describe` update existing

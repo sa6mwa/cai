@@ -182,6 +182,7 @@ void cai_run_options_init(cai_run_options *options) {
   }
   options->max_tool_rounds = 4;
   options->tool_output_memory_limit = 1024U * 1024U;
+  options->tool_output_max_bytes = 0U;
   options->tool_spool_dir = NULL;
 }
 
@@ -1767,7 +1768,7 @@ static int cai_session_run_tool_round(cai_session *session,
   rc = cai_session_init_response_params(session, &params, error);
   spool_options = lonejson_default_spool_options();
   spool_options.memory_limit = options->tool_output_memory_limit;
-  spool_options.max_bytes = 0U;
+  spool_options.max_bytes = options->tool_output_max_bytes;
   spool_options.temp_dir = options->tool_spool_dir;
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
        i++) {

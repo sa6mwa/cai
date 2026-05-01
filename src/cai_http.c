@@ -10,6 +10,8 @@ typedef struct cai_http_buffer {
   char *data;
   size_t length;
   size_t capacity;
+  size_t limit;
+  int exceeded;
 } cai_http_buffer;
 
 typedef struct cai_http_spooled_upload {
@@ -52,7 +54,19 @@ static size_t cai_http_write(char *ptr, size_t size, size_t nmemb,
 
   buffer = (cai_http_buffer *)userdata;
   count = size * nmemb;
+  if (size != 0U && count / size != nmemb) {
+    return 0U;
+  }
+  if (buffer->limit > 0U &&
+      (buffer->length >= buffer->limit ||
+       count > buffer->limit - buffer->length)) {
+    buffer->exceeded = 1;
+    return 0U;
+  }
   needed = buffer->length + count + 1U;
+  if (needed < buffer->length || needed < count) {
+    return 0U;
+  }
   if (needed > buffer->capacity) {
     size_t new_capacity;
 
@@ -496,6 +510,8 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   body.data = NULL;
   body.length = 0U;
   body.capacity = 0U;
+  body.limit = CAI_CLIENT_IMPL(client)->json_response_limit_bytes;
+  body.exceeded = 0;
   request_id = NULL;
   upload.initialized = 0;
 
@@ -587,6 +603,11 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);
     cai_free_mem(NULL, request_id);
+    if (body.exceeded) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "HTTP response exceeded configured JSON response "
+                           "limit");
+    }
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "HTTP request transport failed",
                                 curl_easy_strerror(curl_rc));
@@ -684,6 +705,8 @@ int cai_http_response_params_request(cai_client *client, const char *path,
   body.data = NULL;
   body.length = 0U;
   body.capacity = 0U;
+  body.limit = CAI_CLIENT_IMPL(client)->json_response_limit_bytes;
+  body.exceeded = 0;
   request_id = NULL;
   upload = NULL;
 
@@ -776,6 +799,11 @@ int cai_http_response_params_request(cai_client *client, const char *path,
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);
     cai_free_mem(NULL, request_id);
+    if (body.exceeded) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "HTTP response exceeded configured JSON response "
+                           "limit");
+    }
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "HTTP request transport failed",
                                 curl_easy_strerror(curl_rc));

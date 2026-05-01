@@ -130,6 +130,7 @@ typedef struct cai_list_params {
 typedef struct cai_run_options {
   int max_tool_rounds;
   size_t tool_output_memory_limit;
+  size_t tool_output_max_bytes;
   const char *tool_spool_dir;
 } cai_run_options;
 

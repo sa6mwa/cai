@@ -929,6 +929,10 @@ Resolved:
   of faux streaming through full in-memory materialization.
 - cai uses native `lonejson_spooled_append` from the official lonejson release
   for append-heavy paths; no cai-side parser/rebuild shim should remain.
+- Non-streamed HTTP JSON response bodies must enforce
+  `json_response_limit_bytes`; streamed SSE event lines must have a bounded
+  per-event cap; tool auto-run output should expose both a memory spill
+  threshold and an optional total byte cap.
 
 Remaining:
 
