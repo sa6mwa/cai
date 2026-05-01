@@ -3,6 +3,7 @@
 
 #include <cai/cai.h>
 
+#include <curl/curl.h>
 #include <lonejson.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -25,6 +26,8 @@ typedef struct cai_client_impl {
   struct pslog_logger *logger;
   int logger_disabled;
 } cai_client_impl;
+
+typedef struct cai_response_request_upload cai_response_request_upload;
 
 typedef struct cai_agent_impl {
   cai_client *client;
@@ -266,6 +269,15 @@ int cai_response_create_params_write_json_sink(
     const cai_response_create_params *params, int stream, lonejson_sink_fn sink,
     void *sink_user, lonejson_error *sink_error, size_t *out_len,
     cai_error *error);
+int cai_response_request_upload_open(const cai_response_create_params *params,
+                                     int stream,
+                                     cai_response_request_upload **out,
+                                     cai_error *error);
+size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
+                                        void *userdata);
+curl_off_t cai_response_request_upload_size(
+    const cai_response_request_upload *upload);
+void cai_response_request_upload_close(cai_response_request_upload *upload);
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
     cai_error *error);

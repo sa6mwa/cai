@@ -61,6 +61,10 @@ application.
   state envelope for the common disk persistence path.
 - cai depends directly on the official lonejson release and uses
   `lonejson_spooled_append` for append-heavy history/tool-output paths.
+- Responses request uploads use lonejson's curl generator adapter. cai may do
+  a non-materializing length pass for HTTP compatibility, but the actual upload
+  path streams generated JSON directly from lonejson into libcurl and does not
+  stage a request JSON buffer.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use

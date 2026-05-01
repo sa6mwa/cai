@@ -155,6 +155,7 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<BUILD_INTERFACE:${CAI_GENERATED_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
+    target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
     target_link_libraries(${_cai_target} PRIVATE CURL::libcurl)
     target_link_libraries(${_cai_target} PRIVATE Threads::Threads)
     cai_configure_c_target(${_cai_target})
