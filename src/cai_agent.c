@@ -1,5 +1,7 @@
 #include "cai_internal.h"
 
+#include <pslog.h>
+
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,6 +126,9 @@ static void cai_session_init_methods(cai_session *session);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out,
                                       cai_error *error);
+static int cai_client_base_url_is_openrouter(const cai_client_impl *client);
+static void cai_agent_warn_openrouter_server_continuity(
+    const cai_client_impl *client);
 
 void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
@@ -140,6 +145,7 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->text_format_strict = 0;
   config->max_output_tokens = 0;
   config->parallel_tool_calls = -1;
+  config->session_continuity = CAI_SESSION_CONTINUITY_SERVER;
   config->disable_auto_compaction = 0;
   config->compact_threshold_tokens = 0LL;
   config->compact_threshold_percent = 80U;
@@ -148,6 +154,26 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->enable_local_history = 0;
   config->history_memory_limit = 128U * 1024U;
   config->history_spool_dir = NULL;
+}
+
+static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
+  return client != NULL && client->base_url != NULL &&
+         strstr(client->base_url, "openrouter.ai") != NULL;
+}
+
+static void cai_agent_warn_openrouter_server_continuity(
+    const cai_client_impl *client) {
+  if (client == NULL || client->logger == NULL ||
+      !cai_client_base_url_is_openrouter(client)) {
+    return;
+  }
+  client->logger->warnf(
+      client->logger,
+      "cai.openrouter.server_side_continuity",
+      "base_url=%s note=%s",
+      client->base_url,
+      "OpenRouter Responses beta is stateless; use client_history continuity "
+      "for multi-turn sessions");
 }
 
 void cai_run_options_init(cai_run_options *options) {
@@ -212,8 +238,33 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   impl->text_format_strict = config->text_format_strict;
   impl->max_output_tokens = config->max_output_tokens;
   impl->parallel_tool_calls = config->parallel_tool_calls;
+  if (config->session_continuity != CAI_SESSION_CONTINUITY_SERVER &&
+      config->session_continuity != CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
+      config->session_continuity != CAI_SESSION_CONTINUITY_AUTO) {
+    cai_agent_destroy(agent);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid session continuity mode");
+  }
+  if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO) {
+    impl->session_continuity = cai_client_base_url_is_openrouter(client_impl)
+                                   ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
+                                   : CAI_SESSION_CONTINUITY_SERVER;
+  } else {
+    impl->session_continuity = config->session_continuity;
+  }
+  if (config->session_continuity == CAI_SESSION_CONTINUITY_SERVER &&
+      cai_client_base_url_is_openrouter(client_impl)) {
+    cai_agent_warn_openrouter_server_continuity(client_impl);
+  }
   impl->auto_compact = config->disable_auto_compaction ? 0 : 1;
-  impl->local_history_enabled = config->enable_local_history ? 1 : 0;
+  if (impl->session_continuity == CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    impl->auto_compact = 0;
+  }
+  impl->local_history_enabled =
+      config->enable_local_history ||
+              impl->session_continuity == CAI_SESSION_CONTINUITY_CLIENT_HISTORY
+          ? 1
+          : 0;
   impl->compact_threshold_percent =
       config->compact_threshold_percent != 0U
           ? config->compact_threshold_percent
@@ -1114,16 +1165,107 @@ cai_session_prepare_history_params(cai_session *session,
                                    lonejson_spooled *out_pending_items,
                                    int *out_has_pending_items,
                                    cai_error *error) {
+  lonejson_error json_error;
+  lonejson_spooled history_items;
   lonejson_spooled pending_items;
+  lonejson_spooled replay_items;
+  cai_history_sink_context sink_context;
+  size_t history_len;
   size_t pending_len;
+  int has_history_items;
   int has_pending_items;
+  int has_replay_items;
   int rc;
 
   if (out_has_pending_items != NULL) {
     *out_has_pending_items = 0;
   }
-  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+  if (CAI_SESSION_AGENT_IMPL(session)->session_continuity !=
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
+      !CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     return cai_session_add_pending_inputs(session, params, error);
+  }
+  if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+      CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    memset(&history_items, 0, sizeof(history_items));
+    memset(&pending_items, 0, sizeof(pending_items));
+    memset(&replay_items, 0, sizeof(replay_items));
+    history_len = 0U;
+    pending_len = 0U;
+    has_history_items = 0;
+    has_pending_items = 0;
+    has_replay_items = 0;
+    lonejson_error_init(&json_error);
+    rc = cai_history_to_array_items_spool(session, &history_items,
+                                          &history_len, error);
+    if (rc == CAI_OK) {
+      has_history_items = 1;
+      rc = cai_session_add_pending_inputs(session, params, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_response_params_input_items_spool(params, &pending_items,
+                                                &pending_len, error);
+      if (rc == CAI_OK) {
+        has_pending_items = 1;
+      }
+    }
+    if (rc == CAI_OK) {
+      cai_history_init_spooled(session, &replay_items);
+      has_replay_items = 1;
+      if (history_len > 0U) {
+        sink_context.spool = &replay_items;
+        if (lonejson_spooled_write_to_sink(&history_items,
+                                           cai_history_lonejson_sink,
+                                           &sink_context,
+                                           &json_error) !=
+            LONEJSON_STATUS_OK) {
+          rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to copy history replay items",
+                                    json_error.message);
+        }
+      }
+      if (rc == CAI_OK && history_len > 0U && pending_len > 0U) {
+        rc = cai_history_append_bytes(&replay_items, ",", 1U, error);
+      }
+      if (rc == CAI_OK && pending_len > 0U) {
+        sink_context.spool = &replay_items;
+        if (lonejson_spooled_write_to_sink(&pending_items,
+                                           cai_history_lonejson_sink,
+                                           &sink_context,
+                                           &json_error) !=
+            LONEJSON_STATUS_OK) {
+          rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to copy pending replay items",
+                                    json_error.message);
+        }
+      }
+      if (rc == CAI_OK) {
+        rc = cai_response_create_params_set_raw_input_spooled(
+            params, &replay_items, error);
+        if (rc == CAI_OK) {
+          has_replay_items = 0;
+        }
+      }
+      if (rc == CAI_OK) {
+        cai_response_create_params_clear_input(params);
+      }
+    }
+    if (out_pending_items != NULL && out_has_pending_items != NULL &&
+        rc == CAI_OK) {
+      *out_pending_items = pending_items;
+      *out_has_pending_items = has_pending_items;
+      has_pending_items = 0;
+    }
+    if (has_replay_items) {
+      lonejson_spooled_cleanup(&replay_items);
+    }
+    if (has_pending_items) {
+      lonejson_spooled_cleanup(&pending_items);
+    }
+    if (has_history_items) {
+      lonejson_spooled_cleanup(&history_items);
+    }
+    return rc;
   }
   memset(&pending_items, 0, sizeof(pending_items));
   pending_len = 0U;
@@ -1589,7 +1731,10 @@ static int cai_session_init_response_params(cai_session *session,
     rc = cai_response_create_params_set_conversation_id(
         params, CAI_SESSION_IMPL(session)->conversation_id, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_IMPL(session)->conversation_id == NULL &&
+  if (rc == CAI_OK &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity !=
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
+      CAI_SESSION_IMPL(session)->conversation_id == NULL &&
       CAI_SESSION_IMPL(session)->previous_response_id != NULL) {
     rc = cai_response_create_params_set_previous_response_id(
         params, CAI_SESSION_IMPL(session)->previous_response_id, error);

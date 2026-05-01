@@ -42,6 +42,7 @@ typedef struct cai_agent_impl {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  int session_continuity;
   int auto_compact;
   long long auto_compact_token_limit;
   unsigned int compact_threshold_percent;
@@ -288,6 +289,7 @@ int cai_response_create_params_set_raw_input_json(
 int cai_response_create_params_set_raw_input_spooled(
     cai_response_create_params *params, lonejson_spooled *raw_input_json,
     cai_error *error);
+void cai_response_create_params_clear_input(cai_response_create_params *params);
 void cai_response_create_params_clear_input(cai_response_create_params *params);
 int cai_response_create_params_add_function_call_output_spooled(
     cai_response_create_params *params, const char *call_id,

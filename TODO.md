@@ -16,11 +16,10 @@ Implemented first slice:
   prompt/completion tokens, 256k context, and supporting Responses, reasoning,
   and tool calling.
 
-Remaining follow-up:
+Current OpenRouter boundary:
 
 - Do not claim OpenRouter parity for Conversations or server-side compaction
   semantics until those specific behaviors are documented or separately proven.
-- OpenRouter session continuity through `previous_response_id` needs a focused
-  follow-up. A live probe with the default free model did not preserve a
-  first-turn key on the second turn, so cai should treat OpenRouter as
-  basic `/responses` compatible only for now.
+- OpenRouter Responses beta is stateless, so cai uses client-side history
+  replay for multi-turn OpenRouter sessions. Server-side continuation remains
+  the cai default for OpenAI.

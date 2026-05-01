@@ -32,9 +32,15 @@ example layers settle.
 - `.env` overrides the inherited environment when present.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
   uses `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`.
+- Session continuity defaults to OpenAI-style server-side continuation.
+  Client-side history replay is available for stateless compatible providers
+  such as OpenRouter.
 - `lonejson` is the JSON layer. The build downloads the official
   `github.com/sa6mwa/lonejson` release `.h.gz` header artifact pinned by
   version and SHA-256; it does not use a sibling checkout.
+- `pslog` is used for optional host-owned logging. The build downloads the
+  official `github.com/sa6mwa/libpslog` release `.h.gz` header artifact pinned
+  by version and SHA-256.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
 - Production SDK calls should choose a model explicitly.
@@ -245,6 +251,7 @@ must be run explicitly:
 ```sh
 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 ```
@@ -253,6 +260,10 @@ CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 against OpenRouter using `OPENROUTER_API_KEY`, `https://openrouter.ai/api/v1`,
 and `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` unless
 `CAI_OPENROUTER_TEST_MODEL` overrides the model.
+
+`CAI_INTEGRATION_OPENROUTER_SESSION=1` runs a two-turn OpenRouter session
+continuity check using cai's client-side history replay mode. It does not test
+OpenAI Conversations or server-side compaction on OpenRouter.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,

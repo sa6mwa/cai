@@ -81,6 +81,10 @@ typedef struct cai_client_config {
   cai_allocator allocator;
 } cai_client_config;
 
+#define CAI_SESSION_CONTINUITY_SERVER 0
+#define CAI_SESSION_CONTINUITY_CLIENT_HISTORY 1
+#define CAI_SESSION_CONTINUITY_AUTO 2
+
 typedef struct cai_agent_config {
   const char *model;
   const char *developer_instructions;
@@ -93,6 +97,7 @@ typedef struct cai_agent_config {
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  int session_continuity;
   int disable_auto_compaction;
   long long compact_threshold_tokens;
   unsigned int compact_threshold_percent;

@@ -31,6 +31,11 @@ set(CAI_LONEJSON_SHA256
     "b91427a66b72cf0c8a4f4d3bddef5f7fbebfdaf332f50be30b4fb282442ccceb")
 set(CAI_LONEJSON_URL
     "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/lonejson-${CAI_LONEJSON_VERSION}.h.gz")
+set(CAI_PSLOG_VERSION "0.3.1")
+set(CAI_PSLOG_SHA256
+    "3fd34c48c7851692e7a851714c1af8b2fb880c2858b4c4c45c3424a45c77b094")
+set(CAI_PSLOG_URL
+    "https://github.com/sa6mwa/libpslog/releases/download/v${CAI_PSLOG_VERSION}/pslog-${CAI_PSLOG_VERSION}.h.gz")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -86,8 +91,13 @@ set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_ROOT}/include")
 set(CAI_LONEJSON_HEADER "${CAI_LONEJSON_INCLUDE_DIR}/lonejson.h")
 set(CAI_LONEJSON_ARCHIVE
     "${CAI_DEPS_DIR}/lonejson-${CAI_LONEJSON_VERSION}.h.gz")
+set(CAI_PSLOG_ROOT "${CAI_DEPS_DIR}/pslog-${CAI_PSLOG_VERSION}")
+set(CAI_PSLOG_INCLUDE_DIR "${CAI_PSLOG_ROOT}/include")
+set(CAI_PSLOG_HEADER "${CAI_PSLOG_INCLUDE_DIR}/pslog.h")
+set(CAI_PSLOG_ARCHIVE "${CAI_DEPS_DIR}/pslog-${CAI_PSLOG_VERSION}.h.gz")
 
-file(MAKE_DIRECTORY "${CAI_DEPS_DIR}" "${CAI_LONEJSON_INCLUDE_DIR}")
+file(MAKE_DIRECTORY "${CAI_DEPS_DIR}" "${CAI_LONEJSON_INCLUDE_DIR}"
+                    "${CAI_PSLOG_INCLUDE_DIR}")
 
 set(_cai_lonejson_download 1)
 if(EXISTS "${CAI_LONEJSON_ARCHIVE}")
@@ -112,6 +122,31 @@ execute_process(
   RESULT_VARIABLE _cai_lonejson_gzip_result)
 if(NOT _cai_lonejson_gzip_result EQUAL 0)
   message(FATAL_ERROR "Failed to decompress ${CAI_LONEJSON_ARCHIVE}")
+endif()
+
+set(_cai_pslog_download 1)
+if(EXISTS "${CAI_PSLOG_ARCHIVE}")
+  file(SHA256 "${CAI_PSLOG_ARCHIVE}" _cai_pslog_actual_sha256)
+  if(_cai_pslog_actual_sha256 STREQUAL CAI_PSLOG_SHA256)
+    set(_cai_pslog_download 0)
+  endif()
+endif()
+if(_cai_pslog_download)
+  message(STATUS "Downloading pslog ${CAI_PSLOG_VERSION} from ${CAI_PSLOG_URL}")
+  file(DOWNLOAD
+    "${CAI_PSLOG_URL}"
+    "${CAI_PSLOG_ARCHIVE}"
+    EXPECTED_HASH "SHA256=${CAI_PSLOG_SHA256}"
+    TLS_VERIFY ON
+    SHOW_PROGRESS)
+endif()
+
+execute_process(
+  COMMAND "${GZIP_EXECUTABLE}" -dc "${CAI_PSLOG_ARCHIVE}"
+  OUTPUT_FILE "${CAI_PSLOG_HEADER}"
+  RESULT_VARIABLE _cai_pslog_gzip_result)
+if(NOT _cai_pslog_gzip_result EQUAL 0)
+  message(FATAL_ERROR "Failed to decompress ${CAI_PSLOG_ARCHIVE}")
 endif()
 
 set(CAI_SOURCES
@@ -155,6 +190,7 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<BUILD_INTERFACE:${CAI_GENERATED_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
+    target_include_directories(${_cai_target} PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
     target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
     target_link_libraries(${_cai_target} PRIVATE CURL::libcurl)
     target_link_libraries(${_cai_target} PRIVATE Threads::Threads)
@@ -196,10 +232,11 @@ endif()
 if(CAI_BUILD_TESTS)
   enable_testing()
   add_executable(cai_tests tests/test_main.c)
-  target_include_directories(cai_tests PRIVATE
+    target_include_directories(cai_tests PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
     "${CAI_LONEJSON_INCLUDE_DIR}"
+    "${CAI_PSLOG_INCLUDE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(cai_tests PRIVATE cai_static)
   cai_configure_c_target(cai_tests)
@@ -210,7 +247,8 @@ if(CAI_BUILD_TESTS)
     target_include_directories(cai_integration_tests PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"
-      "${CAI_LONEJSON_INCLUDE_DIR}")
+      "${CAI_LONEJSON_INCLUDE_DIR}"
+      "${CAI_PSLOG_INCLUDE_DIR}")
     target_link_libraries(cai_integration_tests PRIVATE cai_static)
     cai_configure_c_target(cai_integration_tests)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)

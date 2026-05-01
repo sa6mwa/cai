@@ -84,6 +84,10 @@ application.
 - Provider-specific API key env vars follow the same rule when selected by
   config. `cai_client_config_use_openrouter()` selects `OPENROUTER_API_KEY`
   and `https://openrouter.ai/api/v1`.
+- Session continuity defaults to server-side continuation. Callers can opt into
+  client-side history replay for stateless Responses-compatible providers such
+  as OpenRouter. `CAI_SESSION_CONTINUITY_AUTO` may select that mode for known
+  stateless providers, but it is not the default.
 - Single-header distribution is not a primary goal. `cai` is too broad for a
   lonejson/libpslog-style single-header implementation to be the architectural
   center. Ship a normal library with installed headers; consider a declarations
@@ -283,6 +287,18 @@ typedef struct cai_client_config {
   int logger_disabled;
   cai_allocator allocator;
 } cai_client_config;
+
+#define CAI_SESSION_CONTINUITY_SERVER 0
+#define CAI_SESSION_CONTINUITY_CLIENT_HISTORY 1
+#define CAI_SESSION_CONTINUITY_AUTO 2
+
+typedef struct cai_agent_config {
+  const char *model;
+  const char *developer_instructions;
+  int session_continuity;           /* default SERVER */
+  int disable_auto_compaction;
+  /* ... */
+} cai_agent_config;
 
 void cai_client_config_init(cai_client_config *config);
 void cai_client_config_use_openrouter(cai_client_config *config);
@@ -898,8 +914,10 @@ Resolved:
   `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` as the first candidate:
   the OpenRouter model registry currently reports zero prompt/completion
   pricing, 256k context, Responses API availability, reasoning, and tool
-  calling support. Do not assume OpenAI-specific Conversations or server-side
-  compaction behavior on OpenRouter until integration tests prove it.
+  calling support. OpenRouter's Responses beta is stateless; use client-side
+  history replay for multi-turn OpenRouter sessions. Do not assume
+  OpenAI-specific Conversations or server-side compaction behavior on
+  OpenRouter until integration tests prove it.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead
   of faux streaming through full in-memory materialization.

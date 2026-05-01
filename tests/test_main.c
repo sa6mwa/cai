@@ -4,6 +4,8 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <pslog.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -118,6 +120,21 @@ static int read_source_text(test_state *state, const char *name,
   }
   buffer[total] = '\0';
   return 1;
+}
+
+static int g_test_warnf_count = 0;
+
+static void test_pslog_warnf(pslog_logger *log, const char *msg,
+                             const char *kvfmt, ...) {
+  va_list args;
+
+  (void)log;
+  (void)msg;
+  va_start(args, kvfmt);
+  va_end(args);
+  if (kvfmt != NULL) {
+    g_test_warnf_count++;
+  }
 }
 
 static void write_file_or_die(const char *path, const char *text) {
@@ -244,6 +261,8 @@ static void test_model_capabilities(test_state *state) {
              agent_config.compact_threshold_tokens, 0L);
   expect_int(state, "agent_config_compact_percent_default",
              (long)agent_config.compact_threshold_percent, 80L);
+  expect_int(state, "agent_config_continuity_default",
+             agent_config.session_continuity, CAI_SESSION_CONTINUITY_SERVER);
   expect_int(state, "agent_config_compact_limit_default",
              agent_config.auto_compact_token_limit, 0L);
   expect_int(state, "agent_config_local_history_default",
@@ -811,6 +830,33 @@ static void test_client_open(test_state *state) {
   }
   cai_client_close(client);
   client = NULL;
+  memset(&config, 0, sizeof(config));
+  cai_client_config_init(&config);
+  cai_client_config_use_openrouter(&config);
+  config.api_key = "test-key";
+  {
+    pslog_logger fake_logger;
+
+    memset(&fake_logger, 0, sizeof(fake_logger));
+    fake_logger.warnf = test_pslog_warnf;
+    config.logger = &fake_logger;
+    g_test_warnf_count = 0;
+    expect_int(state, "openrouter_warn_client_open",
+               cai_client_open(&config, &client, &error), CAI_OK);
+    cai_agent_config_init(&agent_config);
+    agent_config.model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
+    expect_int(state, "openrouter_server_continuity_warn_agent",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    expect_int(state, "openrouter_server_continuity_warn_count",
+               g_test_warnf_count, 1L);
+    cai_agent_destroy(agent);
+    agent = NULL;
+    cai_client_close(client);
+    client = NULL;
+  }
+  config.base_url = "http://example.test/v1";
+  config.logger = logger;
   config.logger_disabled = 1;
   expect_int(state, "client_open_logger_disabled",
              cai_client_open(&config, &client, &error), CAI_OK);
@@ -1537,6 +1583,14 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"second turn\"}]}]}";
+  static const char client_history_first_body[] =
+      "{\"id\":\"resp_client_history_1\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"client history first answer\"}]}]}";
+  static const char client_history_second_body[] =
+      "{\"id\":\"resp_client_history_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"client history second answer\"}]}]}";
   static const char resumed_session_body[] =
       "{\"id\":\"resp_resumed_session\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -1810,6 +1864,19 @@ static const char *mock_response_for_request(const char *request) {
                         "\"compact_threshold\":320000}]") !=
             NULL) {
       return session_second_body;
+    }
+    if (strstr(request, "client history second") != NULL &&
+        strstr(request, "client history first") != NULL &&
+        strstr(request, "client history first answer") != NULL &&
+        strstr(request, "previous_response_id") == NULL &&
+        strstr(request, "context_management") == NULL) {
+      return client_history_second_body;
+    }
+    if (strstr(request, "client history first") != NULL &&
+        strstr(request, "client history second") == NULL &&
+        strstr(request, "previous_response_id") == NULL &&
+        strstr(request, "context_management") == NULL) {
+      return client_history_first_body;
     }
     if (strstr(request, "resume from disk turn") != NULL &&
         strstr(request,
@@ -2625,6 +2692,96 @@ static void test_agent_session(test_state *state) {
     test_fail(state, "agent_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_mock", "mock child failed");
+  }
+}
+
+static void test_agent_client_history_continuity(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "client_history_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "client_history_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "client_history_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  expect_int(state, "client_history_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "client_history_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "client_history_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(
+      state, "client_history_first",
+      cai_session_send_text(session, "client history first", &response, &error),
+      CAI_OK);
+  expect_str(state, "client_history_first_id", cai_response_id(response),
+             "resp_client_history_1");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "client_history_second",
+             cai_session_send_text(session, "client history second", &response,
+                                   &error),
+             CAI_OK);
+  expect_str(state, "client_history_second_id", cai_response_id(response),
+             "resp_client_history_2");
+  expect_str(state, "client_history_second_text",
+             cai_response_output_text(response), "client history second answer");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "client_history_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "client_history_mock", "mock child failed");
   }
 }
 
@@ -4065,6 +4222,7 @@ int main(void) {
   test_http_create_response(&state);
   test_http_error_details(&state);
   test_agent_session(&state);
+  test_agent_client_history_continuity(&state);
   test_agent_tool_declarations(&state);
   test_agent_tool_manual_step(&state);
   test_agent_auto_compaction(&state);

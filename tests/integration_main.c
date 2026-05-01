@@ -155,6 +155,79 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_openrouter_session_regression(void) {
+  static const char secret[] = "openrouter-session-key-271";
+  cai_agent_config agent_config;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+  const char *answer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  cai_agent_config_init(&agent_config);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  answer = NULL;
+
+  agent_config.model = openrouter_integration_model();
+  agent_config.developer_instructions =
+      "You are a strict OpenRouter session regression assistant. Remember "
+      "exact keys. When asked to recall a key, answer with only the key.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
+  agent_config.max_output_tokens = 64;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_send_text(
+        session,
+        "Remember this exact OpenRouter session key: "
+        "openrouter-session-key-271. Reply with only ok.",
+        &response, &error);
+  }
+  cai_response_destroy(response);
+  response = NULL;
+  if (rc == CAI_OK) {
+    rc = cai_session_send_text(
+        session,
+        "Recall the exact OpenRouter session key I asked you to remember.",
+        &response, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter session regression", rc, &error);
+    goto done;
+  }
+  answer = cai_response_output_text(response);
+  if (answer == NULL || strstr(answer, secret) == NULL) {
+    fprintf(stderr, "openrouter session answer did not preserve key:\n%s\n",
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int send_and_destroy(cai_session *session, const char *text,
                             cai_error *error) {
   cai_response *response;
@@ -544,8 +617,14 @@ int main(void) {
   const char *compaction;
   const char *e2e;
   const char *openrouter;
+  const char *openrouter_session;
   const char *state_restore;
 
+  openrouter_session = getenv("CAI_INTEGRATION_OPENROUTER_SESSION");
+  if (openrouter_session != NULL && openrouter_session[0] != '\0' &&
+      strcmp(openrouter_session, "0") != 0) {
+    return run_openrouter_session_regression();
+  }
   openrouter = getenv("CAI_INTEGRATION_OPENROUTER");
   if (openrouter != NULL && openrouter[0] != '\0' &&
       strcmp(openrouter, "0") != 0) {
