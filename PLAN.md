@@ -184,33 +184,31 @@ Required examples:
   `gpt-5-nano` for development.
 - `conversation-handles`: explicit conversation-handle construction and reuse
   without exposing callers to manual ID plumbing in normal flows.
-- `mike-mind`: heavy self-contained knowledge-base chatbot built from the full
-  Mike Mind skill corpus.
+- `mike-mind`: standalone first-person Mike-style chatbot built from an
+  embedded cai prompt/profile.
 
 The `mike-mind` example must be self-contained at runtime. It should not read
-external checkout paths, require a file tool, or ask the model to inspect
-paths. Instead, the implementation should embed the full Mike Mind skill
-material into the prompt/corpus shipped with the example. "Full" here is
-intentional: this is meant to fill large context windows and exercise cai as a
-heavy knowledge-base chatbot, not to be a summary or small representative
-sample.
+external checkout paths, require a file tool, depend on a local prompt
+directory, or ask the model to inspect paths. The implementation embeds its
+developer prompt/profile in the example and exercises normal public cai session
+usage, streaming, auto-compaction, usage reporting, and prompt caching.
 
-The generated Mike Mind prompt should:
+The Mike Mind prompt should:
 
-- include clear developer instructions inferred from `SKILL.md`,
-- append the complete referenced corpus needed by the skill,
-- tell the model to synthesize from the embedded corpus rather than behave like
-  a document lookup tool,
-- avoid runtime file references unless the answer is explicitly pointing a
-  human at public follow-up material,
+- speak as Mike in first person by default,
+- synthesize from the embedded prompt/profile rather than behave like a
+  document lookup tool,
+- avoid runtime file references,
+- avoid invented resume/employer/date details that are not embedded,
 - keep the chatbot interface identical to normal session usage so large prompts,
   auto-compaction, usage reporting, and streaming behavior are exercised through
   public cai APIs.
 
-Implementation note: this can be a committed generated C include file or another
+Implementation note: this can be a committed C include file or another
 repo-native artifact that CMake compiles into the example. If a generator is
-added, it should produce deterministic output and be documented, but the example
-binary must not depend on the external skill directory at runtime.
+added later, it should produce deterministic output and be documented, but the
+example binary must not depend on any external checkout or runtime prompt
+directory.
 
 ## Allocation and streaming policy
 

@@ -97,10 +97,11 @@ OPENAI_API_KEY=... ./build/debug/cai_example_terminal_chat
 
 ## Mike Mind
 
-Run a terminal chat agent seeded from an embedded Mike Mind corpus. The example
-is self-contained at runtime and does not read external skill files. The agent
-sets a stable `prompt_cache_key` because the developer prompt is intentionally
-large and cacheable across runs.
+Run a terminal chat agent seeded from an embedded first-person Mike-style
+developer prompt. The example is self-contained at runtime, does not read
+external files, and uses `[reasoning]` plus `[mike]` stream labels. The agent
+sets a stable `prompt_cache_key` because the developer prompt is cacheable
+across runs.
 
 ```sh
 cmake --build --preset debug --target cai_example_mike_mind

@@ -3,6 +3,7 @@
 #include "mike_mind_prompt.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -67,6 +68,31 @@ static void print_usage(const cai_token_usage *usage, double context_percent,
           usage->output_reasoning_tokens, usage->total_tokens, total_spent_usd);
 }
 
+static char *build_developer_prompt(void) {
+  const char *const *part;
+  char *prompt;
+  char *cursor;
+  size_t length;
+  size_t part_length;
+
+  length = 0U;
+  for (part = cai_mike_mind_developer_prompt_parts; *part != NULL; part++) {
+    length += strlen(*part);
+  }
+  prompt = (char *)malloc(length + 1U);
+  if (prompt == NULL) {
+    return NULL;
+  }
+  cursor = prompt;
+  for (part = cai_mike_mind_developer_prompt_parts; *part != NULL; part++) {
+    part_length = strlen(*part);
+    memcpy(cursor, *part, part_length);
+    cursor += part_length;
+  }
+  *cursor = '\0';
+  return prompt;
+}
+
 int main(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
@@ -80,6 +106,7 @@ int main(void) {
   double context_percent;
   double total_spent_usd;
   int has_context_percent;
+  char *developer_prompt;
   char line[4096];
   int exit_code;
   int rc;
@@ -90,14 +117,21 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
-  agent_config.developer_instructions = cai_mike_mind_developer_prompt;
   agent_config.prompt_cache_key = "cai:example:mike-mind:v2";
+  developer_prompt = NULL;
   client = NULL;
   agent = NULL;
   session = NULL;
   stdout_sink = NULL;
   exit_code = 1;
   total_spent_usd = 0.0;
+
+  developer_prompt = build_developer_prompt();
+  if (developer_prompt == NULL) {
+    fprintf(stderr, "failed to allocate developer prompt\n");
+    goto done;
+  }
+  agent_config.developer_instructions = developer_prompt;
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
@@ -194,5 +228,6 @@ done:
     client->close(client);
   }
   cai_error_cleanup(&error);
+  free(developer_prompt);
   return exit_code;
 }

@@ -1,6 +1,7 @@
 #include <cai/cai.h>
 
 #include "cai_internal.h"
+#include "../examples/mike-mind/mike_mind_prompt.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -872,6 +873,28 @@ static void test_client_open(test_state *state) {
   }
   cai_client_close(client);
   cai_error_cleanup(&error);
+}
+
+static int mike_mind_prompt_contains(const char *needle) {
+  const char *const *part;
+
+  for (part = cai_mike_mind_developer_prompt_parts; *part != NULL; part++) {
+    if (strstr(*part, needle) != NULL) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void test_mike_mind_prompt_contract(test_state *state) {
+  if (!mike_mind_prompt_contains("Speak as Mike in first person")) {
+    test_fail(state, "mike_mind_prompt_first_person",
+              "prompt does not require first-person Mike voice");
+  }
+  if (!mike_mind_prompt_contains("Do not claim to read files")) {
+    test_fail(state, "mike_mind_prompt_no_files",
+              "prompt does not prohibit runtime file claims");
+  }
 }
 
 static void test_response_json(test_state *state) {
@@ -3562,6 +3585,9 @@ static void test_stream_response_text(test_state *state) {
              4L);
   expect_int(state, "stream_session_usage_reasoning",
              usage.output_reasoning_tokens, 1L);
+  expect_str(state, "stream_session_response_id",
+             cai_session_previous_response_id(session),
+             "resp_stream_session_1");
   cai_sink_close(sink);
   sink = NULL;
   writer.length = 0U;
@@ -4221,6 +4247,7 @@ int main(void) {
   test_source_sink(&state);
   test_tool_registry(&state);
   test_client_open(&state);
+  test_mike_mind_prompt_contract(&state);
   test_response_json(&state);
   test_response_spooled_request_fragments(&state);
   test_response_large_text_parse(&state);
