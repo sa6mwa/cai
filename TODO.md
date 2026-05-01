@@ -15,6 +15,9 @@ Implemented first slice:
 - OpenRouter registry data currently reports that model as zero-price for
   prompt/completion tokens, 256k context, and supporting Responses, reasoning,
   and tool calling.
+- `CAI_INTEGRATION_OPENROUTER_DOTENV=1` verifies the OpenRouter `.env` key
+  loading path by clearing the inherited `OPENROUTER_API_KEY` process envvar
+  before opening the client.
 
 Current OpenRouter boundary:
 

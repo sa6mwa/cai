@@ -155,6 +155,11 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_openrouter_dotenv_response(void) {
+  unsetenv(CAI_OPENROUTER_API_KEY_ENV);
+  return run_openrouter_basic_response();
+}
+
 static int run_openrouter_session_regression(void) {
   static const char secret[] = "openrouter-session-key-271";
   cai_agent_config agent_config;
@@ -617,9 +622,15 @@ int main(void) {
   const char *compaction;
   const char *e2e;
   const char *openrouter;
+  const char *openrouter_dotenv;
   const char *openrouter_session;
   const char *state_restore;
 
+  openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
+  if (openrouter_dotenv != NULL && openrouter_dotenv[0] != '\0' &&
+      strcmp(openrouter_dotenv, "0") != 0) {
+    return run_openrouter_dotenv_response();
+  }
   openrouter_session = getenv("CAI_INTEGRATION_OPENROUTER_SESSION");
   if (openrouter_session != NULL && openrouter_session[0] != '\0' &&
       strcmp(openrouter_session, "0") != 0) {

@@ -250,11 +250,17 @@ must be run explicitly:
 
 ```sh
 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 ```
+
+`CAI_INTEGRATION_OPENROUTER_DOTENV=1` clears any inherited
+`OPENROUTER_API_KEY` process environment variable before opening the client,
+then runs the OpenRouter Responses compatibility check. This verifies the cai
+`.env` loader path with `.env` containing `OPENROUTER_API_KEY=...`.
 
 `CAI_INTEGRATION_OPENROUTER=1` runs a basic Responses compatibility check
 against OpenRouter using `OPENROUTER_API_KEY`, `https://openrouter.ai/api/v1`,
