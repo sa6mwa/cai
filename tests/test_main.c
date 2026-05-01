@@ -1032,6 +1032,7 @@ static void test_response_json(test_state *state) {
 
 static void test_response_spooled_request_fragments(test_state *state) {
   cai_response_create_params *params;
+  cai_response_create_params *cloned_params;
   lonejson_spooled raw_items;
   lonejson_spooled file_data;
   lonejson_spooled tool_file_data;
@@ -1054,6 +1055,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
 
   cai_error_init(&error);
   params = NULL;
+  cloned_params = NULL;
   response = NULL;
   json = NULL;
   expect_int(state, "spooled_params_new",
@@ -1109,6 +1111,15 @@ static void test_response_spooled_request_fragments(test_state *state) {
       cai_response_create_params_add_function_call_output_file_data_spooled(
           params, "call_content_2", "tool.txt", &tool_file_data, "low", &error),
       CAI_OK);
+  expect_int(state, "spooled_params_clone",
+             cai_response_create_params_clone(params, &cloned_params, &error),
+             CAI_OK);
+  if (cloned_params == NULL) {
+    test_fail(state, "spooled_params_clone", "no cloned params returned");
+  }
+  cai_response_create_params_destroy(params);
+  params = cloned_params;
+  cloned_params = NULL;
   expect_int(state, "spooled_request_json",
              cai_response_create_params_spool_json(params, 0, &request_json,
                                                    &json_len, &error),
@@ -1140,6 +1151,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
     free(json);
   }
   lonejson_spooled_cleanup(&request_json);
+  cai_response_create_params_destroy(cloned_params);
   cai_response_create_params_destroy(params);
 
   expect_int(state, "spooled_response_parse",

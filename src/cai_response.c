@@ -1544,6 +1544,243 @@ int cai_response_create_params_add_function_tool(
   return CAI_OK;
 }
 
+static int cai_response_spooled_clone(const lonejson_spooled *src,
+                                      lonejson_spooled *dst,
+                                      cai_error *error) {
+  lonejson_error json_error;
+
+  memset(dst, 0, sizeof(*dst));
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(dst, NULL);
+  if (lonejson_spooled_write_to_sink(src, cai_spooled_lonejson_sink, dst,
+                                     &json_error) != LONEJSON_STATUS_OK) {
+    lonejson_spooled_cleanup(dst);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to clone spooled value",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int
+cai_response_content_part_clone(const cai_allocator *allocator,
+                                struct cai_content_part *dst,
+                                const struct cai_content_part *src,
+                                cai_error *error) {
+  int rc;
+
+  memset(dst, 0, sizeof(*dst));
+  dst->type = cai_strdup(allocator, src->type);
+  dst->text = cai_strdup(allocator, src->text);
+  dst->image_url = cai_strdup(allocator, src->image_url);
+  dst->file_id = cai_strdup(allocator, src->file_id);
+  dst->filename = cai_strdup(allocator, src->filename);
+  dst->file_url = cai_strdup(allocator, src->file_url);
+  dst->detail = cai_strdup(allocator, src->detail);
+  if ((src->type != NULL && dst->type == NULL) ||
+      (src->text != NULL && dst->text == NULL) ||
+      (src->image_url != NULL && dst->image_url == NULL) ||
+      (src->file_id != NULL && dst->file_id == NULL) ||
+      (src->filename != NULL && dst->filename == NULL) ||
+      (src->file_url != NULL && dst->file_url == NULL) ||
+      (src->detail != NULL && dst->detail == NULL)) {
+    cai_content_part_cleanup(allocator, dst);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to clone content part");
+  }
+  if (src->has_file_data) {
+    rc = cai_response_spooled_clone(&src->file_data, &dst->file_data, error);
+    if (rc != CAI_OK) {
+      cai_content_part_cleanup(allocator, dst);
+      return rc;
+    }
+    dst->has_file_data = 1;
+  }
+  return CAI_OK;
+}
+
+static int
+cai_response_input_message_clone(cai_response_create_params *dst_params,
+                                 struct cai_input_message *dst,
+                                 const struct cai_input_message *src,
+                                 cai_error *error) {
+  const cai_allocator *allocator;
+  struct cai_content_part *src_parts;
+  struct cai_content_part *dst_parts;
+  size_t i;
+  int rc;
+
+  allocator = &dst_params->allocator;
+  memset(dst, 0, sizeof(*dst));
+  dst->kind = src->kind;
+  dst->role = cai_strdup(allocator, src->role);
+  dst->call_id = cai_strdup(allocator, src->call_id);
+  dst->output = cai_strdup(allocator, src->output);
+  cai_object_array_init(&dst->content, sizeof(struct cai_content_part));
+  if ((src->role != NULL && dst->role == NULL) ||
+      (src->call_id != NULL && dst->call_id == NULL) ||
+      (src->output != NULL && dst->output == NULL)) {
+    cai_input_message_cleanup(allocator, dst);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to clone input message");
+  }
+  if (src->has_output_spooled) {
+    rc = cai_response_spooled_clone(&src->output_spooled,
+                                    &dst->output_spooled, error);
+    if (rc != CAI_OK) {
+      cai_input_message_cleanup(allocator, dst);
+      return rc;
+    }
+    dst->has_output_spooled = 1;
+  }
+  src_parts = (struct cai_content_part *)src->content.items;
+  for (i = 0U; i < src->content.count; i++) {
+    rc = cai_object_array_grow(allocator, &dst->content,
+                               sizeof(struct cai_content_part), error);
+    if (rc != CAI_OK) {
+      cai_input_message_cleanup(allocator, dst);
+      return rc;
+    }
+    dst_parts = (struct cai_content_part *)dst->content.items;
+    rc = cai_response_content_part_clone(allocator, &dst_parts[dst->content.count],
+                                         &src_parts[i], error);
+    if (rc != CAI_OK) {
+      cai_input_message_cleanup(allocator, dst);
+      return rc;
+    }
+    dst->content.count++;
+  }
+  return CAI_OK;
+}
+
+static int cai_response_function_tool_clone(const cai_allocator *allocator,
+                                            struct cai_function_tool *dst,
+                                            const struct cai_function_tool *src,
+                                            cai_error *error) {
+  memset(dst, 0, sizeof(*dst));
+  dst->name = cai_strdup(allocator, src->name);
+  dst->description = cai_strdup(allocator, src->description);
+  dst->parameters_json = cai_strdup(allocator, src->parameters_json);
+  dst->strict = src->strict;
+  if ((src->name != NULL && dst->name == NULL) ||
+      (src->description != NULL && dst->description == NULL) ||
+      (src->parameters_json != NULL && dst->parameters_json == NULL)) {
+    cai_function_tool_cleanup(allocator, dst);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to clone function tool");
+  }
+  return CAI_OK;
+}
+
+int cai_response_create_params_clone(const cai_response_create_params *params,
+                                     cai_response_create_params **out,
+                                     cai_error *error) {
+  cai_response_create_params *clone;
+  struct cai_input_message *src_messages;
+  struct cai_input_message *dst_messages;
+  struct cai_function_tool *src_tools;
+  struct cai_function_tool *dst_tools;
+  size_t i;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params output pointer is required");
+  }
+  *out = NULL;
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  rc = cai_response_create_params_new(&clone, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_response_create_params_set_model(clone, params->model, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_conversation_id(
+        clone, params->conversation_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_instructions(clone,
+                                                     params->instructions,
+                                                     error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_previous_response_id(
+        clone, params->previous_response_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_prompt_cache_key(
+        clone, params->prompt_cache_key, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_reasoning(
+        clone, params->reasoning_effort, params->reasoning_summary, error);
+  }
+  if (rc == CAI_OK && params->text_format_type != NULL) {
+    if (strcmp(params->text_format_type, "json_schema") == 0) {
+      rc = cai_response_create_params_set_text_format_json_schema(
+          clone, params->text_format_name, params->text_format_description,
+          params->text_format_schema_json, params->text_format_strict, error);
+    } else if (strcmp(params->text_format_type, "json_object") == 0) {
+      rc = cai_response_create_params_set_text_format_json_object(clone, error);
+    } else {
+      rc = cai_response_params_set_text_format_type(
+          clone, params->text_format_type, error);
+    }
+  }
+  if (rc == CAI_OK) {
+    clone->max_output_tokens = params->max_output_tokens;
+    clone->parallel_tool_calls = params->parallel_tool_calls;
+    clone->compact_threshold_tokens = params->compact_threshold_tokens;
+  }
+  if (rc == CAI_OK && params->raw_input_json != NULL) {
+    rc = cai_response_create_params_set_raw_input_json(
+        clone, params->raw_input_json, error);
+  }
+  if (rc == CAI_OK && params->has_raw_input_spooled) {
+    rc = cai_response_spooled_clone(&params->raw_input_spooled,
+                                    &clone->raw_input_spooled, error);
+    if (rc == CAI_OK) {
+      clone->has_raw_input_spooled = 1;
+    }
+  }
+  src_messages = (struct cai_input_message *)params->input.items;
+  for (i = 0U; rc == CAI_OK && i < params->input.count; i++) {
+    rc = cai_object_array_grow(&clone->allocator, &clone->input,
+                               sizeof(struct cai_input_message), error);
+    if (rc == CAI_OK) {
+      dst_messages = (struct cai_input_message *)clone->input.items;
+      rc = cai_response_input_message_clone(
+          clone, &dst_messages[clone->input.count], &src_messages[i], error);
+      if (rc == CAI_OK) {
+        clone->input.count++;
+      }
+    }
+  }
+  src_tools = (struct cai_function_tool *)params->tools.items;
+  for (i = 0U; rc == CAI_OK && i < params->tools.count; i++) {
+    rc = cai_object_array_grow(&clone->allocator, &clone->tools,
+                               sizeof(struct cai_function_tool), error);
+    if (rc == CAI_OK) {
+      dst_tools = (struct cai_function_tool *)clone->tools.items;
+      rc = cai_response_function_tool_clone(&clone->allocator,
+                                            &dst_tools[clone->tools.count],
+                                            &src_tools[i], error);
+      if (rc == CAI_OK) {
+        clone->tools.count++;
+      }
+    }
+  }
+  if (rc != CAI_OK) {
+    cai_response_create_params_destroy(clone);
+    return rc;
+  }
+  *out = clone;
+  return CAI_OK;
+}
+
 int cai_response_create_params_add_function_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error) {

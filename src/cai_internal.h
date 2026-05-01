@@ -259,6 +259,9 @@ int cai_response_create_params_serialize_json(
 int cai_response_create_params_spool_json(
     const cai_response_create_params *params, int stream,
     lonejson_spooled *out, size_t *out_len, cai_error *error);
+int cai_response_create_params_clone(const cai_response_create_params *params,
+                                     cai_response_create_params **out,
+                                     cai_error *error);
 int cai_response_create_params_write_json_sink(
     const cai_response_create_params *params, int stream, lonejson_sink_fn sink,
     void *sink_user, lonejson_error *sink_error, size_t *out_len,

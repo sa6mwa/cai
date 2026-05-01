@@ -105,9 +105,6 @@ typedef struct cai_pipe_stream {
   cai_client *client;
   cai_response_create_params *params;
   int has_params;
-  lonejson_spooled request_json;
-  size_t request_json_len;
-  int has_request_json;
   char *response_id;
   cai_stream_complete_fn on_complete;
   void *complete_context;
@@ -1128,15 +1125,9 @@ static void *cai_pipe_stream_main(void *arg) {
   callbacks.close = NULL;
   callbacks.context = &stream->write_fd;
   if (cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK) {
-    if (stream->has_params) {
-      rc = cai_client_stream_response_text_with_id(
-          stream->client, stream->params, sink, &stream->response_id,
-          &stream->usage, &error);
-    } else {
-      rc = cai_client_stream_response_text_spooled_with_id(
-          stream->client, &stream->request_json, stream->request_json_len, sink,
-          &stream->response_id, &stream->usage, &error);
-    }
+    rc = cai_client_stream_response_text_with_id(
+        stream->client, stream->params, sink, &stream->response_id,
+        &stream->usage, &error);
     if (rc == CAI_OK) {
       stream->has_usage = 1;
     }
@@ -1185,9 +1176,6 @@ static void cai_pipe_source_close(void *context) {
   }
   if (stream->write_fd >= 0) {
     close(stream->write_fd);
-  }
-  if (stream->has_request_json) {
-    lonejson_spooled_cleanup(&stream->request_json);
   }
   if (stream->has_params) {
     cai_response_create_params_destroy(stream->params);
@@ -1252,8 +1240,6 @@ static int cai_client_open_response_text_source_common(
   stream->client = client;
   stream->params = NULL;
   stream->has_params = 0;
-  stream->has_request_json = 0;
-  stream->request_json_len = 0U;
   stream->response_id = NULL;
   stream->on_complete = on_complete;
   stream->complete_context = complete_context;
@@ -1267,13 +1253,12 @@ static int cai_client_open_response_text_source_common(
     stream->has_params = 1;
     rc = CAI_OK;
   } else {
-    rc = cai_response_create_params_spool_json(
-        params, 1, &stream->request_json, &stream->request_json_len, error);
+    rc = cai_response_create_params_clone(params, &stream->params, error);
     if (rc != CAI_OK) {
       cai_pipe_source_close(stream);
       return rc;
     }
-    stream->has_request_json = 1;
+    stream->has_params = 1;
   }
   if (pthread_create(&stream->thread, NULL, cai_pipe_stream_main, stream) !=
       0) {
