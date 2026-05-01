@@ -668,9 +668,92 @@ Realtime WebSocket:
 
 - Separate `cai_realtime_session` facade, because Realtime has different
   models, event types, audio behavior, and session lifecycle.
-- First Realtime milestone should support text in/text out and synchronous
-  function calls.
-- Audio streaming can follow after the text/tool path is stable.
+- Connect to the documented Realtime WebSocket endpoint:
+  `wss://api.openai.com/v1/realtime?model=...`, using the same API-key,
+  `.env`, timeout, logger, and base-URL configuration principles as
+  `cai_client`.
+- Treat Realtime as event-native, not as a thin wrapper over Responses. The
+  server sends `session.created` after connect; callers update configuration
+  with `session.update`; user text is added with `conversation.item.create`;
+  model generation is started with `response.create`; text streams through
+  `response.output_text.delta`; completion is reported through
+  `response.output_text.done` and `response.done`.
+- First Realtime milestone supports text in/text out and synchronous local
+  function tools only. Audio, SIP, WebRTC, browser ephemeral-key flows, and MCP
+  tools are deferred.
+- The first text path should be low-level enough to expose Realtime events and
+  high-level enough to provide a simple blocking helper:
+
+```c
+typedef struct cai_realtime_session cai_realtime_session;
+typedef struct cai_realtime_config cai_realtime_config;
+typedef struct cai_realtime_event cai_realtime_event;
+
+typedef int (*cai_realtime_event_fn)(void *context,
+                                     const cai_realtime_event *event,
+                                     cai_error *error);
+
+typedef struct cai_realtime_handler {
+  cai_realtime_event_fn on_event;
+  void *context;
+} cai_realtime_handler;
+
+typedef struct cai_realtime_config {
+  const char *model;                  /* default gpt-realtime */
+  const char *instructions;           /* session.update instructions */
+  const char *voice;                  /* ignored for text-only milestone */
+  int text_only;                      /* default 1 in first milestone */
+  int max_output_tokens;
+  cai_tool_registry *tools;           /* borrowed */
+} cai_realtime_config;
+
+int cai_client_open_realtime(cai_client *client,
+                             const cai_realtime_config *config,
+                             cai_realtime_session **out,
+                             cai_error *error);
+int cai_realtime_session_update(cai_realtime_session *session,
+                                const cai_realtime_config *config,
+                                cai_error *error);
+int cai_realtime_send_text(cai_realtime_session *session,
+                           const char *text,
+                           cai_error *error);
+int cai_realtime_create_response(cai_realtime_session *session,
+                                 cai_error *error);
+int cai_realtime_run(cai_realtime_session *session,
+                     const cai_realtime_handler *handler,
+                     cai_error *error);
+int cai_realtime_send_text_response(cai_realtime_session *session,
+                                    const char *text,
+                                    cai_sink *output_text,
+                                    cai_error *error);
+void cai_realtime_close(cai_realtime_session *session);
+```
+
+- `cai_realtime_send_text_response()` is the first DX helper: it sends one
+  user text item, emits `response.create`, streams output text to the sink, runs
+  synchronous local tools if the model emits function calls, and returns after
+  the response reaches a terminal status.
+- `cai_realtime_run()` is the lower-level event pump. It should parse known
+  event types into typed fields and preserve the full event JSON as an escape
+  hatch. Unknown event types should be surfaced, not treated as fatal protocol
+  errors.
+- Realtime function tools reuse `cai_tool_registry` and the same lonejson
+  schema/result maps as Responses tools. For a tool call, cai accumulates
+  streamed function-call arguments into a spooled buffer, parses them through
+  the registered parameter map when the call is complete, serializes the result
+  map as a `function_call_output` conversation item, and emits another
+  `response.create` if needed.
+- Request and event JSON should use lonejson maps/parsers. Large text, function
+  arguments, function outputs, and future audio chunks must use spooled/source
+  paths; do not introduce a materialized WebSocket event buffer beyond the
+  transport frame payload required by the WebSocket library.
+- Realtime model metadata belongs in the normal model table. Seed at least
+  `CAI_MODEL_GPT_REALTIME` as `"gpt-realtime"` and the dated GA model from the
+  official model page. Mark Realtime text/audio input/output capabilities
+  separately from Responses capabilities.
+- Audio streaming can follow after the text/tool path is stable. The audio
+  milestone should add explicit PCM/base64 source and sink helpers rather than
+  overloading text APIs.
 
 ## Internal architecture
 
@@ -873,10 +956,39 @@ Mirror liblockdc where practical:
 
 ### Milestone 7: Realtime WebSocket
 
-- Implement Realtime text/tool subset.
-- Keep Realtime facade separate from Responses sessions.
-- Add audio-aware type placeholders but avoid full audio streaming until text
-  and tool behavior is solid.
+- Add a minimal WebSocket transport wrapper for server-side Realtime
+  connections, authenticated through the existing client config.
+- Implement `cai_realtime_session` as a separate handle from Responses
+  sessions.
+- Implement text-only session setup: connect, wait for `session.created`, send
+  `session.update` with instructions/tools/text modality, and expose
+  `session.updated`.
+- Implement user text turns with `conversation.item.create` plus
+  `response.create`.
+- Parse and surface at least:
+  - `session.created`
+  - `session.updated`
+  - `conversation.item.created`
+  - `conversation.item.done`
+  - `response.created`
+  - `response.output_item.added`
+  - `response.output_text.delta`
+  - `response.output_text.done`
+  - function-call argument delta/done events
+  - `response.output_item.done`
+  - `response.done`
+  - `error`
+- Add `cai_realtime_send_text_response()` convenience helper that streams text
+  output to a `cai_sink` and returns at `response.done`.
+- Reuse the existing typed `cai_tool_registry` for synchronous local function
+  tools. Tool-call arguments and tool outputs must use spooled/source paths
+  where they can grow.
+- Add offline unit tests for event parsing, request-event serialization,
+  unknown event pass-through, text-delta sink behavior, and tool-call loop
+  state.
+- Add a C mock WebSocket server before adding live Realtime integration tests.
+- Defer audio streaming, browser ephemeral-key/WebRTC, SIP, and MCP tool
+  support until the text/tool path is verified.
 
 ### Milestone 8: Lua binding
 
@@ -936,6 +1048,16 @@ Remaining:
 - OpenAI Responses API reference, including Responses and Conversations
   endpoint navigation.
 - OpenAI Streaming guide for semantic Responses events.
+- OpenAI Realtime WebSocket guide for server-side WebSocket connection,
+  Bearer authentication, and JSON client/server event flow.
+- OpenAI Realtime conversations guide for session lifecycle, `session.created`,
+  `session.update`, Realtime session/conversation/response concepts, and the
+  documented 60-minute session duration.
+- OpenAI Realtime API reference for client events, server events,
+  `conversation.item.create`, `response.create`, text delta/done events,
+  function-call items, `function_call_output`, and `response.done`.
+- OpenAI `gpt-realtime` model page for the GA Realtime model, text/audio
+  input/output support, context-window metadata, and model ID baseline.
 - Official OpenAI docs checked for Responses WebSocket behavior did not expose
   a stable Responses WebSocket contract. The documented Responses streaming
   path is HTTP/SSE. The documented WebSocket API surface found is Realtime.
