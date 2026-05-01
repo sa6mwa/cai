@@ -26,13 +26,11 @@ set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
     CACHE PATH "Downloaded third-party dependency cache.")
-set(CAI_LONEJSON_VERSION "0.4.1" CACHE STRING "lonejson release version to download.")
+set(CAI_LONEJSON_VERSION "0.5.0")
 set(CAI_LONEJSON_SHA256
-    "e96d160e54e9132b62cebeb349358b1b2ccf4ba00283ee3c96dab1a8512d3d45"
-    CACHE STRING "Expected SHA-256 for the compressed lonejson release header.")
+    "b91427a66b72cf0c8a4f4d3bddef5f7fbebfdaf332f50be30b4fb282442ccceb")
 set(CAI_LONEJSON_URL
-    "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/lonejson-${CAI_LONEJSON_VERSION}.h.gz"
-    CACHE STRING "lonejson release header archive URL.")
+    "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/lonejson-${CAI_LONEJSON_VERSION}.h.gz")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -132,11 +130,6 @@ set(CAI_SOURCES
   src/cai_source.c
   src/cai_stream.c
   src/cai_tool.c)
-
-if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-  set_source_files_properties(src/cai_lonejson_impl.c PROPERTIES
-    COMPILE_OPTIONS "-Wno-error;-Wno-cast-qual;-Wno-shadow")
-endif()
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
