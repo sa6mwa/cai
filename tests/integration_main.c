@@ -1,5 +1,7 @@
 #include <cai/cai.h>
 
+#include <lonejson.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +35,73 @@ static const char *openrouter_integration_model(void) {
     model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
   }
   return model;
+}
+
+static const char *openrouter_tool_integration_model(void) {
+  const char *model;
+
+  model = getenv("CAI_OPENROUTER_TOOL_TEST_MODEL");
+  if (model == NULL || model[0] == '\0') {
+    model = CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE;
+  }
+  return model;
+}
+
+typedef struct integration_lookup_args {
+  char *city;
+  char *code;
+} integration_lookup_args;
+
+typedef struct integration_lookup_result {
+  char *report;
+  char *city;
+  char *code;
+} integration_lookup_result;
+
+typedef struct integration_lookup_state {
+  int called;
+} integration_lookup_state;
+
+static const lonejson_field integration_lookup_arg_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, city, "city"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, code, "code")};
+LONEJSON_MAP_DEFINE(integration_lookup_arg_map, integration_lookup_args,
+                    integration_lookup_arg_fields);
+
+static const lonejson_field integration_lookup_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_result, report,
+                                    "report"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_result, city, "city"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_result, code, "code")};
+LONEJSON_MAP_DEFINE(integration_lookup_result_map, integration_lookup_result,
+                    integration_lookup_result_fields);
+
+static int integration_lookup_tool(void *context, const void *params,
+                                   void *result, cai_error *error) {
+  const integration_lookup_args *args;
+  integration_lookup_result *out;
+  integration_lookup_state *state;
+
+  args = (const integration_lookup_args *)params;
+  out = (integration_lookup_result *)result;
+  state = (integration_lookup_state *)context;
+  if (state != NULL) {
+    state->called = 1;
+  }
+  out->report =
+      cai_tool_result_strdup("TOOL_MARKER=openrouter-tool-verified", error);
+  if (out->report == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  out->city = cai_tool_result_strdup(args->city, error);
+  if (out->city == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  out->code = cai_tool_result_strdup(args->code, error);
+  if (out->code == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  return CAI_OK;
 }
 
 static int run_basic_response(void) {
@@ -226,6 +295,117 @@ static int run_openrouter_session_regression(void) {
 
 done:
   cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_openrouter_tool_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_output *output;
+  cai_response *response;
+  cai_error error;
+  integration_lookup_state tool_state;
+  const char *answer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  output = NULL;
+  response = NULL;
+  answer = NULL;
+  memset(&tool_state, 0, sizeof(tool_state));
+
+  agent_config.model = openrouter_tool_integration_model();
+  fprintf(stderr, "[integration-openrouter-tool] model=%s\n",
+          agent_config.model);
+  agent_config.developer_instructions =
+      "You are a strict OpenRouter tool regression assistant. When the user "
+      "asks for an integration lookup, call integration_lookup exactly once. "
+      "After the tool result, answer with only the tool report marker, city, "
+      "and code. When asked to recall the code later, answer with only the "
+      "code.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
+  agent_config.max_output_tokens = 96;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  run_options.max_tool_rounds = 2;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_tool(
+        agent, "integration_lookup",
+        "Return a deterministic integration-test marker for a city and code.",
+        &integration_lookup_arg_map, &integration_lookup_result_map,
+        integration_lookup_tool, &tool_state, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "Perform an integration lookup for city=Gothenburg and "
+        "code=openrouter-tool-code-913. You must call the tool.",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_run_auto_output(session, &run_options, &output, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter tool regression", rc, &error);
+    goto done;
+  }
+  answer = cai_output_text(output);
+  if (tool_state.called == 0 ||
+      answer == NULL ||
+      strstr(answer, "openrouter-tool-verified") == NULL ||
+      strstr(answer, "Gothenburg") == NULL ||
+      strstr(answer, "openrouter-tool-code-913") == NULL) {
+    fprintf(stderr,
+            "openrouter tool answer failed check; called=%d answer:\n%s\n",
+            tool_state.called, answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  cai_output_destroy(output);
+  output = NULL;
+
+  rc = cai_session_send_text(
+      session,
+      "Recall the exact code value from the previous integration lookup.",
+      &response, &error);
+  if (rc != CAI_OK) {
+    print_error("openrouter tool continuation", rc, &error);
+    goto done;
+  }
+  answer = cai_response_output_text(response);
+  if (answer == NULL || strstr(answer, "openrouter-tool-code-913") == NULL) {
+    fprintf(stderr,
+            "openrouter tool continuation did not preserve code:\n%s\n",
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_response_destroy(response);
+  cai_output_destroy(output);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -648,6 +828,7 @@ int main(void) {
   const char *openrouter_dotenv;
   const char *openrouter_e2e;
   const char *openrouter_session;
+  const char *openrouter_tool;
   const char *state_restore;
 
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
@@ -664,6 +845,11 @@ int main(void) {
   if (openrouter_session != NULL && openrouter_session[0] != '\0' &&
       strcmp(openrouter_session, "0") != 0) {
     return run_openrouter_session_regression();
+  }
+  openrouter_tool = getenv("CAI_INTEGRATION_OPENROUTER_TOOL");
+  if (openrouter_tool != NULL && openrouter_tool[0] != '\0' &&
+      strcmp(openrouter_tool, "0") != 0) {
+    return run_openrouter_tool_regression();
   }
   openrouter = getenv("CAI_INTEGRATION_OPENROUTER");
   if (openrouter != NULL && openrouter[0] != '\0' &&

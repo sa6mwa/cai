@@ -113,6 +113,9 @@ extern "C" {
 
 #define CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE \
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+#define CAI_OPENROUTER_MODEL_FREE_ROUTER "openrouter/free"
+#define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE                       \
+  "poolside/laguna-xs.2:free"
 
 #define CAI_MODEL_DEFAULT_RESPONSES CAI_MODEL_GPT_5_NANO
 #define CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES                              \

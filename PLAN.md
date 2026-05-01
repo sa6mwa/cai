@@ -901,10 +901,14 @@ Resolved:
   `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` as the first candidate:
   the OpenRouter model registry currently reports zero prompt/completion
   pricing, 256k context, Responses API availability, reasoning, and tool
-  calling support. OpenRouter's Responses beta is stateless; use client-side
-  history replay for multi-turn OpenRouter sessions. Do not assume
-  OpenAI-specific Conversations or server-side compaction behavior on
-  OpenRouter until integration tests prove it.
+  calling support. For OpenRouter tool-calling integration, use
+  `poolside/laguna-xs.2:free`; the `openrouter/free` router advertises
+  feature-filtering for tool calls, but can still route to a free model that
+  reasons about calling the tool without emitting a function call. OpenRouter's
+  Responses beta is stateless; use client-side history replay for multi-turn
+  OpenRouter sessions. Do not assume OpenAI-specific Conversations or
+  server-side compaction behavior on OpenRouter until integration tests prove
+  it.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead
   of faux streaming through full in-memory materialization.
