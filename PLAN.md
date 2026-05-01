@@ -20,8 +20,11 @@ application.
 ## Current decisions
 
 - Language and platform: C89 with POSIX features, built with CMake/Ninja/Make.
-- Dependency source: develop against the liblockdc SDK tarballs, reusing their
-  curl, OpenSSL, nghttp2, lonejson, and pslog artifacts.
+- Dependency source: cai consumes lonejson directly from the official
+  `github.com/sa6mwa/lonejson` release `.h.gz` asset, pinned by version and
+  SHA-256 in CMake. Do not use a sibling lonejson checkout as an implicit
+  dependency. Other native dependencies should come from the normal platform or
+  cai release provisioning path.
 - JSON: all API JSON construction/parsing goes through lonejson.
 - Logging: pslog is accepted as a borrowed host-owned logger in client config,
   with `logger_disabled` as the zero-default opt-out.
@@ -715,7 +718,9 @@ Mirror liblockdc where practical:
 
 - `CMakeLists.txt`, `CMakePresets.json`, and `Makefile` with familiar targets.
 - Host debug, ASan/UBSan, coverage, release, and cross presets.
-- Dependency provisioning from liblockdc SDK tarballs.
+- Direct pinned download of the official lonejson release header artifact.
+- Release/dependency provisioning for other native libraries should remain
+  explicit and reproducible; do not silently use sibling checkouts.
 - Release matrix:
   - `x86_64-linux-gnu`
   - `x86_64-linux-musl`
@@ -737,7 +742,8 @@ Mirror liblockdc where practical:
 
 - Add CMake/Makefile/scripts based on liblockdc conventions.
 - Add public header skeleton, version header generation, pkg-config metadata.
-- Add dependency fetch/use logic for liblockdc SDK tarballs.
+- Add dependency fetch/use logic for the official lonejson release `.h.gz`
+  artifact and keep it pinned by checksum.
 - Add C89 compile flags and clang-format.
 - Add minimal tests for build metadata and public header C-only inclusion.
 

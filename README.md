@@ -22,7 +22,9 @@ example layers settle.
 - CMake/Ninja/Make based build.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
-- `lonejson` is the JSON layer.
+- `lonejson` is the JSON layer. The build downloads the official
+  `github.com/sa6mwa/lonejson` release `.h.gz` header artifact pinned by
+  version and SHA-256; it does not use a sibling checkout.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
 - Production SDK calls should choose a model explicitly.

@@ -24,10 +24,15 @@ option(CAI_INSTALL "Enable install rules." ON)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
-set(CAI_EXTERNAL_ROOT "${CMAKE_SOURCE_DIR}/.cache/deps/host-debug"
-    CACHE PATH "Provisioned third-party dependency root.")
-set(CAI_LONEJSON_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../lonejson"
-    CACHE PATH "Development lonejson checkout used until SDK dependency provisioning lands.")
+set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
+    CACHE PATH "Downloaded third-party dependency cache.")
+set(CAI_LONEJSON_VERSION "0.4.1" CACHE STRING "lonejson release version to download.")
+set(CAI_LONEJSON_SHA256
+    "e96d160e54e9132b62cebeb349358b1b2ccf4ba00283ee3c96dab1a8512d3d45"
+    CACHE STRING "Expected SHA-256 for the compressed lonejson release header.")
+set(CAI_LONEJSON_URL
+    "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/lonejson-${CAI_LONEJSON_VERSION}.h.gz"
+    CACHE STRING "lonejson release header archive URL.")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -76,36 +81,39 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
-set(CAI_LONEJSON_INCLUDE_DIR "")
-if(EXISTS "${CAI_EXTERNAL_ROOT}/include/lonejson.h")
-  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_EXTERNAL_ROOT}/include")
-  find_library(CAI_LONEJSON_LIBRARY NAMES lonejson PATHS "${CAI_EXTERNAL_ROOT}/lib" NO_DEFAULT_PATH)
-elseif(EXISTS "${CAI_LONEJSON_SOURCE_DIR}/include/lonejson.h")
-  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_SOURCE_DIR}/include")
-  add_library(cai_lonejson STATIC "${CAI_LONEJSON_SOURCE_DIR}/src/lonejson.c")
-  target_include_directories(cai_lonejson PUBLIC "${CAI_LONEJSON_SOURCE_DIR}/include")
-  set_target_properties(cai_lonejson PROPERTIES
-    C_STANDARD 90
-    C_STANDARD_REQUIRED ON
-    C_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON)
-  target_compile_definitions(cai_lonejson PRIVATE
-    _POSIX_C_SOURCE=200809L
-    _ISOC99_SOURCE=1)
-  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(cai_lonejson PRIVATE
-      -std=c89
-      -Wall
-      -Wextra
-      -Wpedantic
-      -Wno-long-long)
+find_program(GZIP_EXECUTABLE gzip REQUIRED)
+
+set(CAI_LONEJSON_ROOT "${CAI_DEPS_DIR}/lonejson-${CAI_LONEJSON_VERSION}")
+set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_ROOT}/include")
+set(CAI_LONEJSON_HEADER "${CAI_LONEJSON_INCLUDE_DIR}/lonejson.h")
+set(CAI_LONEJSON_ARCHIVE
+    "${CAI_DEPS_DIR}/lonejson-${CAI_LONEJSON_VERSION}.h.gz")
+
+file(MAKE_DIRECTORY "${CAI_DEPS_DIR}" "${CAI_LONEJSON_INCLUDE_DIR}")
+
+set(_cai_lonejson_download 1)
+if(EXISTS "${CAI_LONEJSON_ARCHIVE}")
+  file(SHA256 "${CAI_LONEJSON_ARCHIVE}" _cai_lonejson_actual_sha256)
+  if(_cai_lonejson_actual_sha256 STREQUAL CAI_LONEJSON_SHA256)
+    set(_cai_lonejson_download 0)
   endif()
 endif()
+if(_cai_lonejson_download)
+  message(STATUS "Downloading lonejson ${CAI_LONEJSON_VERSION} from ${CAI_LONEJSON_URL}")
+  file(DOWNLOAD
+    "${CAI_LONEJSON_URL}"
+    "${CAI_LONEJSON_ARCHIVE}"
+    EXPECTED_HASH "SHA256=${CAI_LONEJSON_SHA256}"
+    TLS_VERIFY ON
+    SHOW_PROGRESS)
+endif()
 
-if(CAI_LONEJSON_INCLUDE_DIR STREQUAL "")
-  message(FATAL_ERROR
-    "lonejson is required. Provision ${CAI_EXTERNAL_ROOT}/include/lonejson.h "
-    "or set CAI_LONEJSON_SOURCE_DIR to a lonejson checkout.")
+execute_process(
+  COMMAND "${GZIP_EXECUTABLE}" -dc "${CAI_LONEJSON_ARCHIVE}"
+  OUTPUT_FILE "${CAI_LONEJSON_HEADER}"
+  RESULT_VARIABLE _cai_lonejson_gzip_result)
+if(NOT _cai_lonejson_gzip_result EQUAL 0)
+  message(FATAL_ERROR "Failed to decompress ${CAI_LONEJSON_ARCHIVE}")
 endif()
 
 set(CAI_SOURCES
@@ -118,11 +126,17 @@ set(CAI_SOURCES
   src/cai_http.c
   src/cai_input_item.c
   src/cai_lonejson.c
+  src/cai_lonejson_impl.c
   src/cai_models.c
   src/cai_response.c
   src/cai_source.c
   src/cai_stream.c
   src/cai_tool.c)
+
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+  set_source_files_properties(src/cai_lonejson_impl.c PROPERTIES
+    COMPILE_OPTIONS "-Wno-error;-Wno-cast-qual;-Wno-shadow")
+endif()
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
@@ -149,13 +163,6 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<BUILD_INTERFACE:${CAI_GENERATED_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
-    if(TARGET cai_lonejson)
-      target_link_libraries(${_cai_target} PRIVATE cai_lonejson)
-    elseif(CAI_LONEJSON_LIBRARY)
-      target_link_libraries(${_cai_target} PRIVATE "${CAI_LONEJSON_LIBRARY}")
-    else()
-      target_link_libraries(${_cai_target} PRIVATE lonejson)
-    endif()
     target_link_libraries(${_cai_target} PRIVATE CURL::libcurl)
     target_link_libraries(${_cai_target} PRIVATE Threads::Threads)
     cai_configure_c_target(${_cai_target})
