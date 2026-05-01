@@ -445,6 +445,10 @@ if(CAI_INSTALL)
     DESTINATION "${CAI_INSTALL_CMAKEDIR}")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+  install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai")
 
   set(_cai_package_deps "")
   if(TARGET cai_static)

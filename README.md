@@ -37,7 +37,8 @@ example layers settle.
   `dist/cai-<version>.tar.gz`, and SHA-256 sums.
 - Binary SDK archives contain installed headers, CMake/pkg-config metadata,
   `libcai.a`, and the versioned shared library with compatibility symlinks for
-  the target platform.
+  the target platform. They also include `README.md` and `LICENSE` under
+  `share/doc/libcai/`.
 - Release builds use the official `github.com/sa6mwa/liblockdc` SDK release
   tarball for the selected target to provide libcurl and its native dependency
   stack. The tarball URL and SHA-256 are pinned in CMake; sibling checkout

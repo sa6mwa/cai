@@ -790,7 +790,8 @@ Mirror liblockdc where practical:
   release-matrix target plus one source archive, `cai-<version>.tar.gz`.
 - Binary SDK archives contain installed headers, CMake/pkg-config metadata,
   `libcai.a`, and the versioned shared library plus target-platform symlinks
-  (`.so`, `.so.<major>` on Linux; `.dylib` install-name variants on Darwin).
+  (`.so`, `.so.<major>` on Linux; `.dylib` install-name variants on Darwin),
+  with `README.md` and `LICENSE` installed under `share/doc/libcai/`.
 - The source archive follows the lonejson pattern: stage a clean
   `cai-<version>/` tree from `RELEASE_MANIFEST` when present, otherwise from
   `git ls-files`, write `VERSION`, and include that archive in release
