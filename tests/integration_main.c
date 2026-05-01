@@ -25,6 +25,16 @@ static const char *integration_model(void) {
   return model;
 }
 
+static const char *openrouter_integration_model(void) {
+  const char *model;
+
+  model = getenv("CAI_OPENROUTER_TEST_MODEL");
+  if (model == NULL || model[0] == '\0') {
+    model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
+  }
+  return model;
+}
+
 static int run_basic_response(void) {
   const char *model;
   cai_client_config client_config;
@@ -64,6 +74,71 @@ static int run_basic_response(void) {
   if (cai_response_output_text(response) == NULL ||
       cai_response_output_text(response)[0] == '\0') {
     fprintf(stderr, "integration response had no output text\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_response_destroy(response);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_openrouter_basic_response(void) {
+  const char *model;
+  cai_client_config client_config;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_client *client;
+  cai_error error;
+  const char *answer;
+  int rc;
+
+  model = openrouter_integration_model();
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  client = NULL;
+  params = NULL;
+  response = NULL;
+  answer = NULL;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("openrouter client open", rc, &error);
+    goto done;
+  }
+  rc = cai_response_create_params_new(&params, &error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_model(params, model, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_instructions(
+        params,
+        "You are a strict API compatibility test. Reply with exactly the "
+        "requested marker and no other text.",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_max_output_tokens(params, 32, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_text(
+        params, "user", "Reply with exactly: openrouter-pong-314", &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_create_response(client, params, &response, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter integration response", rc, &error);
+    goto done;
+  }
+  answer = cai_response_output_text(response);
+  if (answer == NULL || strstr(answer, "openrouter-pong-314") == NULL) {
+    fprintf(stderr, "openrouter response failed marker check:\n%s\n",
+            answer != NULL ? answer : "(null)");
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
@@ -464,8 +539,14 @@ done:
 int main(void) {
   const char *compaction;
   const char *e2e;
+  const char *openrouter;
   const char *state_restore;
 
+  openrouter = getenv("CAI_INTEGRATION_OPENROUTER");
+  if (openrouter != NULL && openrouter[0] != '\0' &&
+      strcmp(openrouter, "0") != 0) {
+    return run_openrouter_basic_response();
+  }
   e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
     return run_e2e_session_regression();

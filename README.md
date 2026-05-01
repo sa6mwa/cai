@@ -244,9 +244,15 @@ must be run explicitly:
 
 ```sh
 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 ```
+
+`CAI_INTEGRATION_OPENROUTER=1` runs a basic Responses compatibility check
+against OpenRouter using `OPENROUTER_API_KEY`, `https://openrouter.ai/api/v1`,
+and `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` unless
+`CAI_OPENROUTER_TEST_MODEL` overrides the model.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,

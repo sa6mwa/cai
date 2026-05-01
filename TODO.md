@@ -18,6 +18,5 @@ Implemented first slice:
 
 Remaining follow-up:
 
-- Add explicit OpenRouter integration tests before claiming parity for
+- Run explicit OpenRouter integration tests before claiming parity for
   Conversations or server-side compaction semantics.
-
