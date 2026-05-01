@@ -18,6 +18,9 @@ Implemented first slice:
 - `CAI_INTEGRATION_OPENROUTER_DOTENV=1` verifies the OpenRouter `.env` key
   loading path by clearing the inherited `OPENROUTER_API_KEY` process envvar
   before opening the client.
+- `CAI_INTEGRATION_OPENROUTER_E2E=1` runs the same 20-turn continuity eval as
+  the OpenAI e2e path, using OpenRouter's default free Responses model and
+  cai's client-side history replay mode.
 
 Current OpenRouter boundary:
 

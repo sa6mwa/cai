@@ -1585,12 +1585,14 @@ static const char *mock_response_for_request(const char *request) {
       "\"second turn\"}]}]}";
   static const char client_history_first_body[] =
       "{\"id\":\"resp_client_history_1\",\"status\":\"completed\",\"output\":[{"
-      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
-      "\"client history first answer\"}]}]}";
+      "\"id\":\"msg_client_history_1\",\"type\":\"message\","
+      "\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"output_text\",\"text\":\"client history first answer\"}]}]}";
   static const char client_history_second_body[] =
       "{\"id\":\"resp_client_history_2\",\"status\":\"completed\",\"output\":[{"
-      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
-      "\"client history second answer\"}]}]}";
+      "\"id\":\"msg_client_history_2\",\"type\":\"message\","
+      "\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"output_text\",\"text\":\"client history second answer\"}]}]}";
   static const char resumed_session_body[] =
       "{\"id\":\"resp_resumed_session\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -1868,6 +1870,9 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "client history second") != NULL &&
         strstr(request, "client history first") != NULL &&
         strstr(request, "client history first answer") != NULL &&
+        strstr(request, "\"id\":\"msg_client_history_1\"") != NULL &&
+        strstr(request, "\"status\":\"completed\"") != NULL &&
+        strstr(request, "\"role\":\"assistant\"") != NULL &&
         strstr(request, "previous_response_id") == NULL &&
         strstr(request, "context_management") == NULL) {
       return client_history_second_body;

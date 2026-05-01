@@ -161,6 +161,7 @@ typedef struct cai_request_input_items_doc {
 typedef struct cai_history_output_doc {
   const char *type;
   const char *id;
+  const char *status;
   const char *role;
   const char *call_id;
   const char *name;
@@ -321,6 +322,8 @@ static const lonejson_field cai_history_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, type,
                                           "type"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, status,
+                                          "status"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, role,
                                           "role"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, call_id,
@@ -1119,6 +1122,7 @@ static int cai_build_history_output_docs(cai_response_doc *response_doc,
   for (i = 0U; i < response_doc->output.count; i++) {
     docs[i].type = items[i].type;
     docs[i].id = items[i].id;
+    docs[i].status = items[i].status;
     if (items[i].type != NULL && strcmp(items[i].type, "message") == 0) {
       docs[i].role = items[i].role;
     }

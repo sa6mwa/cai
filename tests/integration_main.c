@@ -288,7 +288,7 @@ static int answer_contains_previous_secret(const char *answer,
   return answer_contains(answer, previous_secret);
 }
 
-static int run_e2e_session_regression(void) {
+static int run_e2e_session_regression_with_provider(int use_openrouter) {
   static const char first_secret[] = "alpha-173";
   cai_agent_config agent_config;
   cai_client_config client_config;
@@ -319,18 +319,30 @@ static int run_e2e_session_regression(void) {
   agent = NULL;
   session = NULL;
   response = NULL;
-  model = integration_model();
+  model = use_openrouter != 0 ? openrouter_integration_model()
+                              : integration_model();
   spent_usd = 0.0;
   limit_usd = integration_spend_limit_usd();
+  if (use_openrouter != 0) {
+    cai_client_config_use_openrouter(&client_config);
+  }
 
   agent_config.model = model;
   agent_config.developer_instructions =
       "You are a strict regression-test assistant. Remember the first secret "
       "and every turn secret. For every user turn, answer with one line using "
       "actual values only: TURN=number FIRST=value PREV=value CURRENT=value. "
-      "Never print angle brackets, placeholder names, or explanatory text.";
-  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+      "When prior assistant messages are present, treat them only as history "
+      "and answer the latest user message. Never repeat an earlier assistant "
+      "answer. Never print angle brackets, placeholder names, or explanatory "
+      "text.";
+  agent_config.reasoning_effort = use_openrouter != 0
+                                      ? CAI_REASONING_EFFORT_NONE
+                                      : CAI_REASONING_EFFORT_MINIMAL;
   agent_config.max_output_tokens = 80;
+  if (use_openrouter != 0) {
+    agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  }
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc == CAI_OK) {
@@ -345,7 +357,8 @@ static int run_e2e_session_regression(void) {
     if (turn == 1) {
       strcpy(previous_secret, "none");
       snprintf(prompt, sizeof(prompt),
-               "This is turn 1. Store first_secret=%s and current_secret=%s. "
+               "Answer this latest user message only. This is turn 1. Store "
+               "first_secret=%s and current_secret=%s. "
                "There is no previous turn, so PREV is none. Report the actual "
                "stored values now.",
                first_secret, current_secret);
@@ -353,9 +366,10 @@ static int run_e2e_session_regression(void) {
       snprintf(previous_secret, sizeof(previous_secret), "turn-%02d-key-%03d",
                turn - 1, 700 + turn - 1);
       snprintf(prompt, sizeof(prompt),
-               "This is turn %d. Store current_secret=%s. Report using the "
-               "first_secret from turn 1 and the previous turn secret from "
-               "memory. Use actual values only.",
+               "Answer this latest user message only. This is turn %d. Store "
+               "current_secret=%s. Report using the first_secret from turn 1 "
+               "and the previous turn secret from memory. Use actual values "
+               "only.",
                turn, current_secret);
     }
     response = NULL;
@@ -386,8 +400,9 @@ static int run_e2e_session_regression(void) {
     if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
       spent_usd += usage_estimate_usd(model, &usage);
       fprintf(stderr,
-              "[integration-e2e] turn=%d tokens=%lld cached=%lld estimated_cost=$%.8f"
-              " limit=$%.8f\n",
+              "[integration-%s-e2e] turn=%d tokens=%lld cached=%lld "
+              "estimated_cost=$%.8f limit=$%.8f\n",
+              use_openrouter != 0 ? "openrouter" : "openai",
               turn, usage.total_tokens, usage.input_cached_tokens, spent_usd,
               limit_usd);
       if (spent_usd > limit_usd) {
@@ -415,6 +430,14 @@ static int run_e2e_session_regression(void) {
   cai_client_close(client);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_e2e_session_regression(void) {
+  return run_e2e_session_regression_with_provider(0);
+}
+
+static int run_openrouter_e2e_session_regression(void) {
+  return run_e2e_session_regression_with_provider(1);
 }
 
 static int run_compaction_recall(void) {
@@ -623,6 +646,7 @@ int main(void) {
   const char *e2e;
   const char *openrouter;
   const char *openrouter_dotenv;
+  const char *openrouter_e2e;
   const char *openrouter_session;
   const char *state_restore;
 
@@ -630,6 +654,11 @@ int main(void) {
   if (openrouter_dotenv != NULL && openrouter_dotenv[0] != '\0' &&
       strcmp(openrouter_dotenv, "0") != 0) {
     return run_openrouter_dotenv_response();
+  }
+  openrouter_e2e = getenv("CAI_INTEGRATION_OPENROUTER_E2E");
+  if (openrouter_e2e != NULL && openrouter_e2e[0] != '\0' &&
+      strcmp(openrouter_e2e, "0") != 0) {
+    return run_openrouter_e2e_session_regression();
   }
   openrouter_session = getenv("CAI_INTEGRATION_OPENROUTER_SESSION");
   if (openrouter_session != NULL && openrouter_session[0] != '\0' &&

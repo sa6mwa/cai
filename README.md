@@ -253,6 +253,7 @@ build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 ```
@@ -270,6 +271,11 @@ and `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` unless
 `CAI_INTEGRATION_OPENROUTER_SESSION=1` runs a two-turn OpenRouter session
 continuity check using cai's client-side history replay mode. It does not test
 OpenAI Conversations or server-side compaction on OpenRouter.
+
+`CAI_INTEGRATION_OPENROUTER_E2E=1` runs the same 20-turn continuity eval as
+`CAI_INTEGRATION_E2E=1`, but against OpenRouter using
+`CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
+mode.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,
