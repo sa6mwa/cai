@@ -199,6 +199,22 @@ cmake --build --preset fuzz --target cai_tool_fuzz
 build/fuzz/cai_tool_fuzz
 ```
 
+The ASAN preset is part of the local quality gate:
+
+```sh
+cmake --build --preset asan --target cai_tests
+ctest --preset asan --output-on-failure
+```
+
+One historical ASAN failure looked like a lonejson crash in
+`lonejson__owned_malloc`, but the root cause was cai's custom zeroing allocator
+returning storage that was only aligned after a `size_t` header. lonejson wraps
+custom allocator results in its own owned-allocation header, which needs
+maximal C object alignment. cai's allocator header is now explicitly
+over-aligned with pointer, integer, floating, and `long double` members. See
+`stash/lonejson-custom-allocator-alignment-cr.md` for the matching lonejson
+contract/documentation request.
+
 ## OpenAI API Caveats
 
 This SDK has to compensate for gaps in the OpenAI API contract. These are not

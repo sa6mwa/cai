@@ -19,8 +19,15 @@ typedef struct cai_json_builder_lonejson_sink_state {
   char last;
 } cai_json_builder_lonejson_sink_state;
 
-typedef struct cai_zero_alloc_header {
-  size_t size;
+typedef union cai_zero_alloc_header {
+  struct {
+    size_t size;
+  } meta;
+  void *align_ptr;
+  long align_long;
+  long long align_long_long;
+  double align_double;
+  long double align_long_double;
 } cai_zero_alloc_header;
 
 enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
@@ -582,7 +589,7 @@ static void *cai_zero_malloc(void *ctx, size_t size) {
   if (header == NULL) {
     return NULL;
   }
-  header->size = size;
+  header->meta.size = size;
   return (void *)(header + 1);
 }
 
@@ -596,7 +603,7 @@ static void *cai_zero_realloc(void *ctx, void *ptr, size_t size) {
     return cai_zero_malloc(ctx, size);
   }
   header = ((cai_zero_alloc_header *)ptr) - 1;
-  old_size = header->size;
+  old_size = header->meta.size;
   next = (cai_zero_alloc_header *)realloc(header, sizeof(*next) + size);
   if (next == NULL) {
     return NULL;
@@ -604,7 +611,7 @@ static void *cai_zero_realloc(void *ctx, void *ptr, size_t size) {
   if (size > old_size) {
     memset(((unsigned char *)(next + 1)) + old_size, 0, size - old_size);
   }
-  next->size = size;
+  next->meta.size = size;
   return (void *)(next + 1);
 }
 
