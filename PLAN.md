@@ -2,7 +2,7 @@
 
 This document turns `SPEC.md` into an implementation plan for `cai`, a C89
 SDK-style OpenAI API client focused on the Responses API, Conversations, and
-both Responses and Realtime WebSocket workflows.
+Realtime WebSocket workflows.
 
 The goal is not to expose libcurl, raw JSON, or transport primitives as the
 main user experience. The public API should be a small, handle-oriented C SDK
@@ -30,8 +30,12 @@ application.
   with `logger_disabled` as the zero-default opt-out.
 - API coverage target: full OpenAI Responses API surface, including newer
   Conversations endpoints.
-- WebSocket coverage target: both Responses WebSocket mode and Realtime
-  WebSocket.
+- WebSocket coverage target: Realtime WebSocket is a normal API target.
+  Responses WebSocket is not a normal implementation target until OpenAI
+  publishes a stable public contract for it. Codex has an internal
+  `wss://.../v1/responses` transport using `response.create` frames and
+  Responses-style streaming events, but cai should treat that path as
+  undocumented and therefore experimental/opt-in only if implemented later.
 - MCP: not part of the first implementation, except that the C SDK design must
   not paint us into a corner for later MCP support.
 - Tool execution: synchronous local C callbacks only in the first version.
@@ -617,13 +621,25 @@ typedef struct cai_stream_handler {
 } cai_stream_handler;
 ```
 
+Responses streaming:
+
+- Use documented HTTP `POST /v1/responses` with `stream=true` as the normal
+  Responses streaming path.
+- Parse documented Responses streaming events from SSE.
+- Keep the parser transport-neutral enough that an experimental Responses
+  WebSocket transport could share it later, but do not implement or expose that
+  WebSocket path as a normal SDK feature without official OpenAI docs.
+
 Responses WebSocket mode:
 
-- Connect to `wss://api.openai.com/v1/responses`.
-- Send `response.create` events whose payload mirrors Responses create, except
-  transport-only fields such as `stream` and `background`.
-- Support `previous_response_id` continuation and incremental input.
-- Support `generate=false` warmup after the core path works.
+- Status: deferred/experimental, not a default milestone.
+- Evidence: Codex uses `wss://.../v1/responses`, sends JSON WebSocket messages
+  tagged as `response.create`, adds `OpenAI-Beta:
+  responses_websockets=2026-02-06` for its v2 path, and reuses Responses
+  streaming event shapes. That is useful prior art, not a documented cai
+  contract.
+- If implemented later, it must be explicit opt-in, have HTTP/SSE fallback, and
+  be documented as unstable.
 
 Realtime WebSocket:
 
@@ -704,7 +720,8 @@ Add a repo-local mock OpenAI service written in C:
   - `GET /v1/responses/{id}/input_items`
   - conversation CRUD and item endpoints
   - SSE streaming responses
-  - Responses WebSocket mode
+  - documented Responses SSE streaming
+  - optional experimental Responses WebSocket only if explicitly implemented
   - Realtime WebSocket text/tool subset
 - No extra implementation-language dependency for the mock server.
 
@@ -822,12 +839,14 @@ Mirror liblockdc where practical:
 - Surface callback API.
 - Support streaming tool-call arguments.
 
-### Milestone 6: Responses WebSocket mode
+### Milestone 6: Responses transport hardening
 
-- Implement WebSocket connect/send/receive for `wss://.../v1/responses`.
-- Reuse event parser and tool loop.
-- Support incremental input with `previous_response_id`.
-- Add mock WebSocket tests.
+- Complete documented Responses HTTP/SSE behavior.
+- Keep event parsing reusable across transports.
+- Do not implement Responses WebSocket as a standard milestone unless OpenAI
+  publishes a public contract. If we deliberately choose the Codex-compatible
+  path later, add it as experimental opt-in with mock WebSocket tests and
+  HTTP/SSE fallback.
 
 ### Milestone 7: Realtime WebSocket
 
@@ -886,7 +905,13 @@ Remaining:
 - OpenAI Responses API reference, including Responses and Conversations
   endpoint navigation.
 - OpenAI Streaming guide for semantic Responses events.
-- OpenAI WebSocket Mode guide for Responses WebSocket behavior.
+- Official OpenAI docs checked for Responses WebSocket behavior did not expose
+  a stable Responses WebSocket contract. The documented Responses streaming
+  path is HTTP/SSE. The documented WebSocket API surface found is Realtime.
+- Codex source checked for prior art: `codex-rs/codex-api/src/endpoint/
+  responses_websocket.rs`, `codex-rs/core/tests/suite/agent_websocket.rs`,
+  `codex-rs/core/tests/suite/client_websockets.rs`, and
+  `codex-rs/core/tests/suite/websocket_fallback.rs`.
 - OpenAI Authentication reference for Bearer auth and optional organization /
   project headers.
 - OpenAI model docs and model comparison pages for endpoint and feature
