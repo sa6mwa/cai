@@ -181,6 +181,24 @@ cai_tool_schema_from_map(&lookup_customer_params_map, &schema, &error);
 schema->describe(schema, "customer_id", "Customer id", &error);
 ```
 
+Tool arguments and tool results are hostile boundaries. The typed tool path
+validates argument JSON before callbacks run, rejects unknown fields against the
+lonejson map, relies on lonejson for required/type/duplicate-key failures, and
+serializes callback results as JSON values instead of raw text concatenation.
+This prevents common prompt-injection payloads from smuggling extra fields into
+typed callbacks or escaping JSON string boundaries on the way back to the
+model. `register_raw_tool` deliberately bypasses the typed result API; cai
+still validates that raw arguments are JSON before invoking the callback, but
+raw tools remain an expert escape hatch.
+
+Security fuzzing is available as an opt-in Clang/libFuzzer build:
+
+```sh
+cmake --fresh --preset fuzz
+cmake --build --preset fuzz --target cai_tool_fuzz
+build/fuzz/cai_tool_fuzz
+```
+
 ## OpenAI API Caveats
 
 This SDK has to compensate for gaps in the OpenAI API contract. These are not

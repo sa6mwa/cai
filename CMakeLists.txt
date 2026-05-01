@@ -19,6 +19,7 @@ option(CAI_BUILD_SHARED "Build the shared cai library." ON)
 option(CAI_BUILD_TESTS "Build cai unit tests." ON)
 option(CAI_BUILD_INTEGRATION_TESTS "Build integration tests that hit OpenAI when run." OFF)
 option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
+option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
 
@@ -261,6 +262,24 @@ if(CAI_BUILD_TESTS)
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
+endif()
+
+if(CAI_BUILD_FUZZERS)
+  if(NOT TARGET cai_static)
+    message(FATAL_ERROR "CAI_BUILD_FUZZERS requires CAI_BUILD_STATIC=ON.")
+  endif()
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "CAI_BUILD_FUZZERS currently requires Clang/libFuzzer.")
+  endif()
+  add_executable(cai_tool_fuzz tests/tool_fuzz.c)
+  target_include_directories(cai_tool_fuzz PRIVATE
+    "${CAI_PUBLIC_INCLUDE_DIR}"
+    "${CAI_GENERATED_INCLUDE_DIR}"
+    "${CAI_LONEJSON_INCLUDE_DIR}")
+  target_link_libraries(cai_tool_fuzz PRIVATE cai_static)
+  cai_configure_c_target(cai_tool_fuzz)
+  target_compile_options(cai_tool_fuzz PRIVATE -fsanitize=address,undefined)
+  target_link_options(cai_tool_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)

@@ -42,13 +42,34 @@ typedef struct cai_tool_schema_impl {
   int strict;
 } cai_tool_schema_impl;
 
+typedef enum cai_tool_json_container_kind {
+  CAI_TOOL_JSON_OBJECT = 1,
+  CAI_TOOL_JSON_ARRAY = 2
+} cai_tool_json_container_kind;
+
+typedef struct cai_tool_argument_frame {
+  cai_tool_json_container_kind kind;
+  const lonejson_map *map;
+  const lonejson_map *array_item_map;
+  const lonejson_field *pending_field;
+} cai_tool_argument_frame;
+
+typedef struct cai_tool_argument_validator {
+  const lonejson_map *root_map;
+  cai_tool_argument_frame frames[64];
+  size_t depth;
+  char *key;
+  size_t key_length;
+  size_t key_capacity;
+  int collecting_key;
+} cai_tool_argument_validator;
+
 typedef struct cai_tool_typed_property_doc {
   const char *type;
   const char *description;
 } cai_tool_typed_property_doc;
 
-#define CAI_TOOL_SCHEMA_IMPL(schema) \
-  ((cai_tool_schema_impl *)((schema)->impl))
+#define CAI_TOOL_SCHEMA_IMPL(schema) ((cai_tool_schema_impl *)((schema)->impl))
 
 static void cai_tool_schema_init_methods(cai_tool_schema *schema);
 
@@ -89,8 +110,8 @@ static void cai_tool_entry_cleanup(cai_tool_entry *entry) {
   memset(entry, 0, sizeof(*entry));
 }
 
-static int cai_tool_schema_append_comma(cai_json_builder *builder,
-                                        size_t count, cai_error *error) {
+static int cai_tool_schema_append_comma(cai_json_builder *builder, size_t count,
+                                        cai_error *error) {
   if (count == 0U) {
     return CAI_OK;
   }
@@ -121,8 +142,7 @@ cai_tool_schema_find_property(cai_tool_schema_impl *impl, const char *name) {
   return NULL;
 }
 
-static int cai_tool_schema_grow(cai_tool_schema_impl *impl,
-                                cai_error *error) {
+static int cai_tool_schema_grow(cai_tool_schema_impl *impl, cai_error *error) {
   size_t new_capacity;
   void *grown;
 
@@ -148,7 +168,8 @@ static int cai_tool_schema_replace(char **target, cai_json_builder *builder,
 
   copy = cai_strdup(NULL, builder->data != NULL ? builder->data : "");
   if (copy == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate schema JSON");
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate schema JSON");
   }
   cai_free_mem(NULL, *target);
   *target = copy;
@@ -166,14 +187,295 @@ static int cai_tool_validate_json_value(const char *json, const char *message,
   }
   lonejson_json_value_init(&value);
   lonejson_error_init(&json_error);
-  if (lonejson_json_value_set_buffer(&value, json, strlen(json),
-                                     &json_error) != LONEJSON_STATUS_OK) {
+  if (lonejson_json_value_set_buffer(&value, json, strlen(json), &json_error) !=
+      LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_INVALID, message,
                               json_error.message);
   } else {
     rc = CAI_OK;
   }
   lonejson_json_value_cleanup(&value);
+  return rc;
+}
+
+static const lonejson_field *cai_tool_map_find_field(const lonejson_map *map,
+                                                     const char *key,
+                                                     size_t key_length) {
+  size_t i;
+
+  if (map == NULL || key == NULL) {
+    return NULL;
+  }
+  for (i = 0U; i < map->field_count; i++) {
+    if (map->fields[i].json_key_len == key_length &&
+        memcmp(map->fields[i].json_key, key, key_length) == 0) {
+      return &map->fields[i];
+    }
+  }
+  return NULL;
+}
+
+static int cai_tool_field_is_scalar(const lonejson_field *field) {
+  if (field == NULL) {
+    return 0;
+  }
+  switch (field->kind) {
+  case LONEJSON_FIELD_KIND_STRING:
+  case LONEJSON_FIELD_KIND_STRING_STREAM:
+  case LONEJSON_FIELD_KIND_BASE64_STREAM:
+  case LONEJSON_FIELD_KIND_STRING_SOURCE:
+  case LONEJSON_FIELD_KIND_BASE64_SOURCE:
+  case LONEJSON_FIELD_KIND_JSON_VALUE:
+  case LONEJSON_FIELD_KIND_I64:
+  case LONEJSON_FIELD_KIND_U64:
+  case LONEJSON_FIELD_KIND_F64:
+  case LONEJSON_FIELD_KIND_BOOL:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static lonejson_status cai_tool_argument_validator_error(lonejson_error *error,
+                                                         const char *message) {
+  if (error != NULL) {
+    snprintf(error->message, sizeof(error->message), "%s", message);
+  }
+  return LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static cai_tool_argument_frame *
+cai_tool_argument_validator_current(cai_tool_argument_validator *validator) {
+  if (validator == NULL || validator->depth == 0U) {
+    return NULL;
+  }
+  return &validator->frames[validator->depth - 1U];
+}
+
+static void cai_tool_argument_validator_consume_scalar(
+    cai_tool_argument_validator *validator) {
+  cai_tool_argument_frame *frame;
+
+  frame = cai_tool_argument_validator_current(validator);
+  if (frame != NULL && frame->kind == CAI_TOOL_JSON_OBJECT &&
+      cai_tool_field_is_scalar(frame->pending_field)) {
+    frame->pending_field = NULL;
+  }
+}
+
+static lonejson_status cai_tool_argument_object_begin(void *user,
+                                                      lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+  cai_tool_argument_frame *parent;
+  cai_tool_argument_frame *frame;
+  const lonejson_map *map;
+
+  validator = (cai_tool_argument_validator *)user;
+  if (validator->depth >=
+      sizeof(validator->frames) / sizeof(validator->frames[0])) {
+    return cai_tool_argument_validator_error(error,
+                                             "tool arguments are too deep");
+  }
+  map = NULL;
+  if (validator->depth == 0U) {
+    map = validator->root_map;
+  } else {
+    parent = cai_tool_argument_validator_current(validator);
+    if (parent != NULL && parent->kind == CAI_TOOL_JSON_OBJECT &&
+        parent->pending_field != NULL &&
+        parent->pending_field->kind == LONEJSON_FIELD_KIND_OBJECT) {
+      map = parent->pending_field->submap;
+      parent->pending_field = NULL;
+    } else if (parent != NULL && parent->kind == CAI_TOOL_JSON_ARRAY) {
+      map = parent->array_item_map;
+    }
+  }
+  frame = &validator->frames[validator->depth];
+  memset(frame, 0, sizeof(*frame));
+  frame->kind = CAI_TOOL_JSON_OBJECT;
+  frame->map = map;
+  validator->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_object_end(void *user,
+                                                    lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+  cai_tool_argument_frame *frame;
+
+  (void)error;
+  validator = (cai_tool_argument_validator *)user;
+  frame = cai_tool_argument_validator_current(validator);
+  if (frame != NULL && frame->kind == CAI_TOOL_JSON_OBJECT) {
+    validator->depth--;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_array_begin(void *user,
+                                                     lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+  cai_tool_argument_frame *parent;
+  cai_tool_argument_frame *frame;
+  const lonejson_map *array_item_map;
+
+  validator = (cai_tool_argument_validator *)user;
+  if (validator->depth >=
+      sizeof(validator->frames) / sizeof(validator->frames[0])) {
+    return cai_tool_argument_validator_error(error,
+                                             "tool arguments are too deep");
+  }
+  array_item_map = NULL;
+  parent = cai_tool_argument_validator_current(validator);
+  if (parent != NULL && parent->kind == CAI_TOOL_JSON_OBJECT &&
+      parent->pending_field != NULL) {
+    if (parent->pending_field->kind == LONEJSON_FIELD_KIND_OBJECT_ARRAY) {
+      array_item_map = parent->pending_field->submap;
+    }
+    parent->pending_field = NULL;
+  }
+  frame = &validator->frames[validator->depth];
+  memset(frame, 0, sizeof(*frame));
+  frame->kind = CAI_TOOL_JSON_ARRAY;
+  frame->array_item_map = array_item_map;
+  validator->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_array_end(void *user,
+                                                   lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+  cai_tool_argument_frame *frame;
+
+  (void)error;
+  validator = (cai_tool_argument_validator *)user;
+  frame = cai_tool_argument_validator_current(validator);
+  if (frame != NULL && frame->kind == CAI_TOOL_JSON_ARRAY) {
+    validator->depth--;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_key_begin(void *user,
+                                                   lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+
+  (void)error;
+  validator = (cai_tool_argument_validator *)user;
+  validator->collecting_key = 1;
+  validator->key_length = 0U;
+  if (validator->key != NULL) {
+    validator->key[0] = '\0';
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_key_chunk(void *user, const char *data,
+                                                   size_t len,
+                                                   lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+  char *grown;
+  size_t required;
+  size_t capacity;
+
+  validator = (cai_tool_argument_validator *)user;
+  if (!validator->collecting_key || data == NULL) {
+    return LONEJSON_STATUS_OK;
+  }
+  required = validator->key_length + len + 1U;
+  if (required > validator->key_capacity) {
+    capacity = validator->key_capacity == 0U ? 64U : validator->key_capacity;
+    while (capacity < required) {
+      capacity *= 2U;
+    }
+    grown = (char *)cai_realloc_mem(NULL, validator->key, capacity);
+    if (grown == NULL) {
+      return cai_tool_argument_validator_error(error,
+                                               "failed to allocate JSON key");
+    }
+    validator->key = grown;
+    validator->key_capacity = capacity;
+  }
+  memcpy(validator->key + validator->key_length, data, len);
+  validator->key_length += len;
+  validator->key[validator->key_length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_key_end(void *user,
+                                                 lonejson_error *error) {
+  cai_tool_argument_validator *validator;
+  cai_tool_argument_frame *frame;
+  const lonejson_field *field;
+
+  validator = (cai_tool_argument_validator *)user;
+  validator->collecting_key = 0;
+  frame = cai_tool_argument_validator_current(validator);
+  if (frame == NULL || frame->kind != CAI_TOOL_JSON_OBJECT ||
+      frame->map == NULL) {
+    return LONEJSON_STATUS_OK;
+  }
+  field = cai_tool_map_find_field(frame->map, validator->key,
+                                  validator->key_length);
+  if (field == NULL) {
+    return cai_tool_argument_validator_error(
+        error, "tool arguments contain an unknown field");
+  }
+  frame->pending_field = field;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_scalar_event(void *user,
+                                                      lonejson_error *error) {
+  (void)error;
+  cai_tool_argument_validator_consume_scalar(
+      (cai_tool_argument_validator *)user);
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_tool_argument_bool_event(void *user, int value,
+                                                    lonejson_error *error) {
+  (void)value;
+  return cai_tool_argument_scalar_event(user, error);
+}
+
+static int cai_tool_validate_arguments_shape(const lonejson_map *map,
+                                             const char *json,
+                                             cai_error *error) {
+  cai_tool_argument_validator validator;
+  lonejson_value_visitor visitor;
+  lonejson_value_limits limits;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  memset(&validator, 0, sizeof(validator));
+  validator.root_map = map;
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_tool_argument_object_begin;
+  visitor.object_end = cai_tool_argument_object_end;
+  visitor.object_key_begin = cai_tool_argument_key_begin;
+  visitor.object_key_chunk = cai_tool_argument_key_chunk;
+  visitor.object_key_end = cai_tool_argument_key_end;
+  visitor.array_begin = cai_tool_argument_array_begin;
+  visitor.array_end = cai_tool_argument_array_end;
+  visitor.string_begin = cai_tool_argument_scalar_event;
+  visitor.number_begin = cai_tool_argument_scalar_event;
+  visitor.boolean_value = cai_tool_argument_bool_event;
+  visitor.null_value = cai_tool_argument_scalar_event;
+  limits = lonejson_default_value_limits();
+  limits.max_key_bytes = 4096U;
+  lonejson_error_init(&json_error);
+  status = lonejson_visit_value_cstr(json, &visitor, &validator, &limits,
+                                     &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                              "tool arguments failed validation",
+                              json_error.message);
+  } else {
+    rc = CAI_OK;
+  }
+  cai_free_mem(NULL, validator.key);
   return rc;
 }
 
@@ -187,7 +489,7 @@ static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
   impl = CAI_TOOL_SCHEMA_IMPL(schema);
   memset(&builder, 0, sizeof(builder));
   rc = cai_json_builder_lit(&builder, "{\"type\":\"object\",\"properties\":{",
-                             error);
+                            error);
   for (i = 0U; rc == CAI_OK && i < impl->property_count; i++) {
     rc = cai_tool_schema_append_comma(&builder, i, error);
     if (rc == CAI_OK) {
@@ -218,8 +520,8 @@ static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(
-        &builder, "],\"additionalProperties\":false}", error);
+    rc = cai_json_builder_lit(&builder, "],\"additionalProperties\":false}",
+                              error);
   }
   if (rc == CAI_OK) {
     rc = cai_tool_schema_replace(&impl->schema_json, &builder, error);
@@ -244,9 +546,8 @@ static int cai_tool_schema_add_property_json(cai_tool_schema *schema,
                          "schema, property name, and property JSON are "
                          "required");
   }
-  rc = cai_tool_validate_json_value(property_json,
-                                    "property schema must be valid JSON",
-                                    error);
+  rc = cai_tool_validate_json_value(
+      property_json, "property schema must be valid JSON", error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -345,8 +646,8 @@ static int cai_tool_schema_add_field(cai_tool_schema *schema,
   required = (field->flags & LONEJSON_FIELD_REQUIRED) != 0U;
   type = cai_tool_json_type_for_field(field);
   if (type != NULL) {
-    return cai_tool_schema_add_typed_property(
-        schema, field->json_key, NULL, type, required, error);
+    return cai_tool_schema_add_typed_property(schema, field->json_key, NULL,
+                                              type, required, error);
   }
   if (field->kind == LONEJSON_FIELD_KIND_OBJECT) {
     cai_tool_schema *nested;
@@ -390,8 +691,8 @@ static int cai_tool_schema_add_field(cai_tool_schema *schema,
     nested = NULL;
     rc = cai_tool_schema_from_map(field->submap, &nested, error);
     if (rc == CAI_OK) {
-      rc = cai_json_builder_lit(&builder, "{\"type\":\"array\",\"items\":",
-                                 error);
+      rc = cai_json_builder_lit(&builder,
+                                "{\"type\":\"array\",\"items\":", error);
     }
     if (rc == CAI_OK) {
       rc = cai_json_builder_lit(&builder, cai_tool_schema_json(nested), error);
@@ -461,8 +762,8 @@ static void cai_tool_result_cleanup_plain(const lonejson_map *map,
   }
 }
 
-static const lonejson_field *cai_tool_result_find_field(
-    const lonejson_map *map, const char *field_name) {
+static const lonejson_field *
+cai_tool_result_find_field(const lonejson_map *map, const char *field_name) {
   size_t i;
 
   if (map == NULL || field_name == NULL || field_name[0] == '\0') {
@@ -521,8 +822,8 @@ int cai_tool_result_set_source_path(const lonejson_map *result_map,
 }
 
 int cai_tool_result_set_spooled(const lonejson_map *result_map, void *result,
-                                const char *field_name,
-                                lonejson_spooled *spool, cai_error *error) {
+                                const char *field_name, lonejson_spooled *spool,
+                                cai_error *error) {
   const lonejson_field *field;
   lonejson_spooled *target;
 
@@ -541,8 +842,7 @@ int cai_tool_result_set_spooled(const lonejson_map *result_map, void *result,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "tool result field is not a spooled field");
   }
-  target =
-      (lonejson_spooled *)((unsigned char *)result + field->struct_offset);
+  target = (lonejson_spooled *)((unsigned char *)result + field->struct_offset);
   lonejson_spooled_cleanup(target);
   *target = *spool;
   memset(spool, 0, sizeof(*spool));
@@ -742,7 +1042,17 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
     return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
   }
   if (entry->kind == CAI_TOOL_RAW) {
+    rc = cai_tool_validate_json_value(
+        arguments_json, "tool arguments must be valid JSON", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
     return entry->raw_callback(entry->context, arguments_json, output, error);
+  }
+  rc = cai_tool_validate_arguments_shape(entry->params_map, arguments_json,
+                                         error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   params = cai_alloc(NULL, entry->params_map->struct_size);
   if (params == NULL) {
@@ -752,12 +1062,14 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
   result = cai_alloc(NULL, entry->result_map->struct_size);
   if (result == NULL) {
     cai_free_mem(NULL, params);
-    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate tool result");
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate tool result");
   }
   memset(params, 0, entry->params_map->struct_size);
   memset(result, 0, entry->result_map->struct_size);
   lonejson_init(entry->params_map, params);
   lonejson_init(entry->result_map, result);
+  lonejson_error_init(&json_error);
   status = lonejson_parse_cstr(entry->params_map, params, arguments_json, NULL,
                                &json_error);
   if (status != LONEJSON_STATUS_OK) {
@@ -914,8 +1226,8 @@ int cai_tool_schema_add_string(cai_tool_schema *schema, const char *name,
 int cai_tool_schema_add_integer(cai_tool_schema *schema, const char *name,
                                 const char *description, int required,
                                 cai_error *error) {
-  return cai_tool_schema_add_typed_property(
-      schema, name, description, "integer", required, error);
+  return cai_tool_schema_add_typed_property(schema, name, description,
+                                            "integer", required, error);
 }
 
 int cai_tool_schema_add_number(cai_tool_schema *schema, const char *name,
@@ -928,8 +1240,8 @@ int cai_tool_schema_add_number(cai_tool_schema *schema, const char *name,
 int cai_tool_schema_add_boolean(cai_tool_schema *schema, const char *name,
                                 const char *description, int required,
                                 cai_error *error) {
-  return cai_tool_schema_add_typed_property(
-      schema, name, description, "boolean", required, error);
+  return cai_tool_schema_add_typed_property(schema, name, description,
+                                            "boolean", required, error);
 }
 
 int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
@@ -950,8 +1262,8 @@ int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
   need_comma = 0;
   rc = cai_json_builder_lit(&builder, "{", error);
   if (rc == CAI_OK) {
-    rc = cai_json_builder_field_string(&builder, "type", "string",
-                                       &need_comma, error);
+    rc = cai_json_builder_field_string(&builder, "type", "string", &need_comma,
+                                       error);
   }
   if (rc == CAI_OK && description != NULL) {
     rc = cai_json_builder_field_string(&builder, "description", description,
@@ -1052,9 +1364,8 @@ int cai_tool_schema_add_raw_property(cai_tool_schema *schema, const char *name,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "raw property schema JSON is required");
   }
-  rc = cai_tool_validate_json_value(schema_json,
-                                    "raw property schema must be valid JSON",
-                                    error);
+  rc = cai_tool_validate_json_value(
+      schema_json, "raw property schema must be valid JSON", error);
   if (rc != CAI_OK) {
     return rc;
   }

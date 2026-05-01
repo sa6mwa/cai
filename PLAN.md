@@ -850,6 +850,11 @@ Mirror liblockdc where practical:
   this builder path when lonejson grows a dynamic object/property writer.
 - Unit tests cover single-tool, multi-tool, raw-tool, typed-tool, source-backed
   typed-tool, tool error, and round-limit paths.
+- Tool argument hardening is present for typed tools: argument JSON is validated
+  before callbacks run, unknown object fields are rejected against the lonejson
+  map, duplicate keys remain rejected by lonejson parse defaults, and raw tools
+  receive only syntactically valid JSON. A Clang/libFuzzer harness
+  (`cai_tool_fuzz`) exercises typed and raw tool argument surfaces.
 
 ### Milestone 5: SSE streaming
 

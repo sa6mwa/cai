@@ -44,6 +44,15 @@
       }
     },
     {
+      "name": "fuzz",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_FUZZERS": "ON",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer"
+      }
+    },
+    {
       "name": "coverage",
       "inherits": "debug",
       "cacheVariables": {
@@ -70,6 +79,10 @@
     {
       "name": "asan",
       "configurePreset": "asan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
     },
     {
       "name": "coverage",
