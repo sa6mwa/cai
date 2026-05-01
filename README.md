@@ -296,6 +296,7 @@ CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 ```
@@ -325,6 +326,12 @@ and the next turn can recall that tool result through local history.
 `CAI_INTEGRATION_E2E=1`, but against OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
 mode.
+
+`CAI_INTEGRATION_TOOL_SECURITY=1` runs a real OpenAI tool-output injection
+regression. The registered tool returns text that looks like JSON role/system
+messages and direct instructions to override the developer prompt. The test
+passes only if the model treats that output as untrusted tool data and returns
+the expected safe marker.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,

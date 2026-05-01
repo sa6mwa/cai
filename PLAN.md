@@ -852,9 +852,15 @@ Mirror liblockdc where practical:
   typed-tool, tool error, and round-limit paths.
 - Tool argument hardening is present for typed tools: argument JSON is validated
   before callbacks run, unknown object fields are rejected against the lonejson
-  map, duplicate keys remain rejected by lonejson parse defaults, and raw tools
-  receive only syntactically valid JSON. A Clang/libFuzzer harness
-  (`cai_tool_fuzz`) exercises typed and raw tool argument surfaces.
+  map, including nested objects and object-array elements, duplicate keys remain
+  rejected by lonejson parse defaults, and raw tools receive only syntactically
+  valid JSON. Tool output and tool-call ids have regression coverage proving
+  role/system-shaped payloads remain escaped data in `function_call_output`. A
+  Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
+  argument surfaces.
+- Integration coverage includes `CAI_INTEGRATION_TOOL_SECURITY=1`, which calls
+  a real OpenAI model with a hostile tool result and asserts the assistant keeps
+  developer-instruction precedence.
 
 ### Milestone 5: SSE streaming
 
