@@ -155,13 +155,13 @@ static int cai_sse_line_reserve(cai_sse_state *state, size_t extra) {
   char *grown;
   size_t next_capacity;
 
-  if (state->length + extra + 1U <= state->capacity) {
-    return CAI_OK;
-  }
   if (state->event_limit > 0U &&
       (extra > state->event_limit ||
        state->length > state->event_limit - extra)) {
     return CAI_ERR_PROTOCOL;
+  }
+  if (state->length + extra + 1U <= state->capacity) {
+    return CAI_OK;
   }
   next_capacity = state->capacity == 0U ? 256U : state->capacity * 2U;
   while (next_capacity < state->length + extra + 1U) {

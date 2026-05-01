@@ -1824,6 +1824,28 @@ static int mock_write_json_response(int fd, const char *body) {
   return mock_write_status_json_response(fd, 200, "OK", NULL, body);
 }
 
+static int mock_write_oversized_sse_response(int fd) {
+  static const char header[] =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n";
+  static const char prefix[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"";
+  char chunk[1024];
+  size_t i;
+
+  if (mock_write_all(fd, header, sizeof(header) - 1U) != 0 ||
+      mock_write_all(fd, prefix, sizeof(prefix) - 1U) != 0) {
+    return -1;
+  }
+  memset(chunk, 'x', sizeof(chunk));
+  for (i = 0U; i < 300U; i++) {
+    if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 static const char *mock_response_for_request(const char *request) {
   static const char create_body[] =
       "{\"id\":\"resp_mock\",\"status\":\"completed\",\"output\":[{\"type\":"
@@ -2367,6 +2389,13 @@ static void mock_openai_child(int pipe_fd, int request_count) {
               "{\"error\":{\"message\":\"model is required\",\"type\":"
               "\"invalid_request_error\",\"code\":\"missing_required_"
               "parameter\"}}") != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
+    if (strstr(request, "oversized stream event turn") != NULL) {
+      if (mock_write_oversized_sse_response(client_fd) != 0) {
         _exit(10);
       }
       close(client_fd);
@@ -4213,6 +4242,95 @@ static void test_stream_response_text(test_state *state) {
   }
 }
 
+static void test_stream_sse_event_limit(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  write_state writer;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_limit_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_limit_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_limit_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_limit_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_limit_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_limit_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_limit_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_limit_add",
+             cai_session_add_user_text(session, "oversized stream event turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_limit_run",
+             cai_session_stream_text(session, sink, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "stream_limit_error", error.message,
+             "streaming SSE event exceeded configured limit");
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_limit_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_limit_mock", "mock child failed");
+  }
+}
+
 static void test_stream_history_preserves_pretty_json(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -4763,6 +4881,7 @@ int main(void) {
   test_agent_tool_output_max_bytes(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
+  test_stream_sse_event_limit(&state);
   test_stream_history_preserves_pretty_json(&state);
   test_local_history_opt_in(&state);
   test_session_resume_and_history_import(&state);
