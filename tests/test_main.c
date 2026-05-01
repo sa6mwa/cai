@@ -1049,6 +1049,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
       "\"output_text\",\"text\":\"remembered\"}]}";
   static const char response_json[] =
       "{\"id\":\"resp_spooled_items\",\"status\":\"completed\",\"output\":["
+      "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[]},"
       "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
       "\"output_text\",\"text\":\"spooled\"}]}],\"usage\":{\"input_tokens\":1,"
       "\"output_tokens\":1,\"total_tokens\":2}}";
@@ -1164,7 +1165,10 @@ static void test_response_spooled_request_fragments(test_state *state) {
   if (json == NULL) {
     test_fail(state, "spooled_output_items", "failed to read output spool");
   } else {
-    if (json[0] == '[' || strstr(json, "\"text\":\"spooled\"") == NULL) {
+    if (json[0] == '[' || strstr(json, "\"summary\":[]") == NULL ||
+        strstr(json, "\"text\":\"spooled\"") == NULL ||
+        strstr(json, "\"status\":null") != NULL ||
+        strstr(json, "\"role\":null") != NULL) {
       test_fail(state, "spooled_output_items",
                 "output items were not spooled as array items");
     }
