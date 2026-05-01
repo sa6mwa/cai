@@ -30,6 +30,8 @@ example layers settle.
 - CMake/Ninja/Make based build.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
+- OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
+  uses `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`.
 - `lonejson` is the JSON layer. The build downloads the official
   `github.com/sa6mwa/lonejson` release `.h.gz` header artifact pinned by
   version and SHA-256; it does not use a sibling checkout.
@@ -45,6 +47,10 @@ example layers settle.
   inspection, and `cai_session_import_history_source` can load that JSON array
   back into a local-history-enabled session.
 - Examples and integration development tests default to `gpt-5-nano`.
+- OpenRouter development can use
+  `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`, currently
+  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, based on OpenRouter's
+  registry metadata.
 
 ## Agent Instructions
 

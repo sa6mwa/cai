@@ -7,6 +7,7 @@ void cai_client_config_init(cai_client_config *config) {
     return;
   }
   config->api_key = NULL;
+  config->api_key_env = CAI_OPENAI_API_KEY_ENV;
   config->base_url = CAI_DEFAULT_BASE_URL;
   config->organization_id = NULL;
   config->project_id = NULL;
@@ -20,6 +21,16 @@ void cai_client_config_init(cai_client_config *config) {
   config->allocator.realloc_fn = NULL;
   config->allocator.free_fn = NULL;
   config->allocator.context = NULL;
+}
+
+void cai_client_config_use_openrouter(cai_client_config *config) {
+  if (config == NULL) {
+    return;
+  }
+  config->api_key_env = CAI_OPENROUTER_API_KEY_ENV;
+  config->base_url = CAI_OPENROUTER_BASE_URL;
+  config->organization_id = NULL;
+  config->project_id = NULL;
 }
 
 static void cai_client_destroy_fields(cai_client_impl *impl) {
@@ -80,7 +91,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   }
 
   rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
-                           &impl->api_key, error);
+                           effective->api_key_env, &impl->api_key, error);
   if (rc != CAI_OK) {
     cai_free_mem(&impl->allocator, impl);
     cai_free_mem(&effective->allocator, client);

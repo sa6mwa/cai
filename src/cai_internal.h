@@ -10,7 +10,7 @@
 
 struct curl_slist;
 
-#define CAI_DEFAULT_BASE_URL "https://api.openai.com/v1"
+#define CAI_DEFAULT_BASE_URL CAI_OPENAI_BASE_URL
 #define CAI_DEFAULT_JSON_RESPONSE_LIMIT (1024UL * 1024UL)
 
 typedef struct cai_client_impl {
@@ -98,7 +98,8 @@ int cai_set_error_http(cai_error *error, int code, long http_status,
                        const char *server_code, const char *request_id);
 
 int cai_resolve_api_key(const cai_allocator *allocator,
-                        const char *explicit_key, char **out, cai_error *error);
+                        const char *explicit_key, const char *env_name,
+                        char **out, cai_error *error);
 
 struct cai_content_part {
   char *type;

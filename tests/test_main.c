@@ -214,6 +214,23 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_compact_limit",
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
+  expect_str(state, "openrouter_model_default",
+             CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES,
+             CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE);
+  expect_int(state, "openrouter_nemotron_context",
+             cai_model_context_window_tokens(
+                 CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE),
+             256000L);
+  expect_int(state, "openrouter_nemotron_tools",
+             cai_model_supports(
+                 CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,
+                 CAI_MODEL_CAP_FUNCTION_CALLING),
+             1L);
+  expect_int(state, "openrouter_nemotron_not_structured",
+             cai_model_supports(
+                 CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,
+                 CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
+             0L);
   if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL,
                                    200000LL, 1000000LL) < 0.44 ||
       cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL,
@@ -256,7 +273,7 @@ static void test_env_precedence(test_state *state) {
   setenv("OPENAI_API_KEY", "env-key", 1);
   key = NULL;
   expect_int(state, "env_fallback",
-             cai_resolve_api_key(NULL, NULL, &key, &error), CAI_OK);
+             cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_OK);
   expect_str(state, "env_fallback_value", key, "env-key");
   cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
@@ -264,7 +281,7 @@ static void test_env_precedence(test_state *state) {
   write_file_or_die(".env", "OPENAI_API_KEY=dotenv-key\n");
   key = NULL;
   expect_int(state, "dotenv_override",
-             cai_resolve_api_key(NULL, NULL, &key, &error), CAI_OK);
+             cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_OK);
   expect_str(state, "dotenv_override_value", key, "dotenv-key");
   cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
@@ -272,7 +289,7 @@ static void test_env_precedence(test_state *state) {
   write_file_or_die(".env", "export OPENAI_API_KEY = \"quoted-key\" \n");
   key = NULL;
   expect_int(state, "dotenv_quoted",
-             cai_resolve_api_key(NULL, NULL, &key, &error), CAI_OK);
+             cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_OK);
   expect_str(state, "dotenv_quoted_value", key, "quoted-key");
   cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
@@ -280,7 +297,7 @@ static void test_env_precedence(test_state *state) {
   write_file_or_die(".env", "OPENAI_API_KEY=dotenv-key\n");
   key = NULL;
   expect_int(state, "explicit_override",
-             cai_resolve_api_key(NULL, "explicit-key", &key, &error), CAI_OK);
+             cai_resolve_api_key(NULL, "explicit-key", NULL, &key, &error), CAI_OK);
   expect_str(state, "explicit_override_value", key, "explicit-key");
   cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
@@ -288,11 +305,34 @@ static void test_env_precedence(test_state *state) {
   write_file_or_die(".env", "OTHER=value\n");
   key = NULL;
   expect_int(state, "dotenv_missing_key",
-             cai_resolve_api_key(NULL, NULL, &key, &error), CAI_ERR_INVALID);
+             cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_ERR_INVALID);
   if (key != NULL) {
     test_fail(state, "dotenv_missing_key", "unexpected key allocated");
     cai_free_mem(NULL, key);
   }
+  cai_error_cleanup(&error);
+
+  unlink(".env");
+  setenv("OPENROUTER_API_KEY", "openrouter-env-key", 1);
+  key = NULL;
+  expect_int(state, "openrouter_env_fallback",
+             cai_resolve_api_key(NULL, NULL, CAI_OPENROUTER_API_KEY_ENV, &key,
+                                 &error),
+             CAI_OK);
+  expect_str(state, "openrouter_env_fallback_value", key,
+             "openrouter-env-key");
+  cai_free_mem(NULL, key);
+  cai_error_cleanup(&error);
+
+  write_file_or_die(".env", "OPENROUTER_API_KEY=openrouter-dotenv-key\n");
+  key = NULL;
+  expect_int(state, "openrouter_dotenv_override",
+             cai_resolve_api_key(NULL, NULL, CAI_OPENROUTER_API_KEY_ENV, &key,
+                                 &error),
+             CAI_OK);
+  expect_str(state, "openrouter_dotenv_override_value", key,
+             "openrouter-dotenv-key");
+  cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
 
   if (chdir(original_cwd) != 0) {
@@ -727,6 +767,13 @@ static void test_client_open(test_state *state) {
 
   cai_error_init(&error);
   cai_client_config_init(&config);
+  expect_str(state, "client_config_api_key_env_default", config.api_key_env,
+             CAI_OPENAI_API_KEY_ENV);
+  cai_client_config_use_openrouter(&config);
+  expect_str(state, "client_config_openrouter_env", config.api_key_env,
+             CAI_OPENROUTER_API_KEY_ENV);
+  expect_str(state, "client_config_openrouter_base", config.base_url,
+             CAI_OPENROUTER_BASE_URL);
   logger = (struct pslog_logger *)(void *)&state->failures;
   config.api_key = "test-key";
   config.base_url = "http://example.test/v1";

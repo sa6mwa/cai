@@ -61,8 +61,14 @@ typedef struct cai_allocator {
   void *context;
 } cai_allocator;
 
+#define CAI_OPENAI_BASE_URL "https://api.openai.com/v1"
+#define CAI_OPENROUTER_BASE_URL "https://openrouter.ai/api/v1"
+#define CAI_OPENAI_API_KEY_ENV "OPENAI_API_KEY"
+#define CAI_OPENROUTER_API_KEY_ENV "OPENROUTER_API_KEY"
+
 typedef struct cai_client_config {
   const char *api_key;
+  const char *api_key_env;
   const char *base_url;
   const char *organization_id;
   const char *project_id;
@@ -312,6 +318,7 @@ struct cai_tool_schema {
 };
 
 void cai_client_config_init(cai_client_config *config);
+void cai_client_config_use_openrouter(cai_client_config *config);
 int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
 void cai_client_close(cai_client *client);

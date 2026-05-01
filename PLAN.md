@@ -30,6 +30,10 @@ application.
   with `logger_disabled` as the zero-default opt-out.
 - API coverage target: full OpenAI Responses API surface, including newer
   Conversations endpoints.
+- Provider compatibility target: OpenAI is the primary provider. OpenRouter is
+  supported as an OpenAI-compatible Responses provider through
+  `https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY`, and curated model
+  metadata where OpenRouter exposes machine-readable registry data.
 - WebSocket coverage target: Realtime WebSocket is a normal API target.
   Responses WebSocket is not a normal implementation target until OpenAI
   publishes a stable public contract for it. Codex has an internal
@@ -77,6 +81,9 @@ application.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
   the inherited `OPENAI_API_KEY`.
+- Provider-specific API key env vars follow the same rule when selected by
+  config. `cai_client_config_use_openrouter()` selects `OPENROUTER_API_KEY`
+  and `https://openrouter.ai/api/v1`.
 - Single-header distribution is not a primary goal. `cai` is too broad for a
   lonejson/libpslog-style single-header implementation to be the architectural
   center. Ship a normal library with installed headers; consider a declarations
@@ -264,6 +271,7 @@ typedef enum cai_status {
 ```c
 typedef struct cai_client_config {
   const char *api_key;              /* optional; env/.env fallback */
+  const char *api_key_env;          /* default OPENAI_API_KEY */
   const char *base_url;             /* default https://api.openai.com/v1 */
   const char *organization_id;      /* optional OpenAI-Organization */
   const char *project_id;           /* optional OpenAI-Project */
@@ -277,6 +285,7 @@ typedef struct cai_client_config {
 } cai_client_config;
 
 void cai_client_config_init(cai_client_config *config);
+void cai_client_config_use_openrouter(cai_client_config *config);
 int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
 void cai_client_close(cai_client *client);
@@ -885,6 +894,12 @@ Resolved:
 - Local history capture is opt-in and independent of server-side
   auto-compaction.
 - Integration tests and examples default to `gpt-5-nano`.
+- OpenRouter examples/tests should use
+  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` as the first candidate:
+  the OpenRouter model registry currently reports zero prompt/completion
+  pricing, 256k context, Responses API availability, reasoning, and tool
+  calling support. Do not assume OpenAI-specific Conversations or server-side
+  compaction behavior on OpenRouter until integration tests prove it.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead
   of faux streaming through full in-memory materialization.

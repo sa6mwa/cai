@@ -10,6 +10,10 @@
 #define CAI_MODEL_CAP_TEXT_AUDIO                                             \
   (CAI_MODEL_CAP_TEXT_REALTIME | CAI_MODEL_CAP_AUDIO_INPUT |                  \
    CAI_MODEL_CAP_AUDIO_OUTPUT)
+#define CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT                                 \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                        \
+   CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_IMAGE_INPUT |               \
+   CAI_MODEL_CAP_AUDIO_INPUT)
 #define CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, input_price,      \
                              cached_price, output_price)                      \
   {model_id, caps, context_tokens, ((context_tokens) * 8LL) / 10LL,            \
@@ -158,6 +162,9 @@ static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11,
                           CAI_MODEL_CAP_TEXT),
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_CODEX_MINI_LATEST, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_PRICED(
+        CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,
+        CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT, 256000LL, 0.0, 0.0, 0.0),
     {NULL, 0U, 0LL, 0LL, 0.0, 0.0, 0.0}};
 
 const cai_model_info *cai_model_info_by_id(const char *model_id) {

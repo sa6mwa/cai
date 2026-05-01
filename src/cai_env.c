@@ -21,8 +21,8 @@ static size_t cai_trimmed_length(const char *text, size_t length) {
   return length;
 }
 
-static int cai_key_matches(const char *line, const char **value_start) {
-  static const char key[] = "OPENAI_API_KEY";
+static int cai_key_matches(const char *line, const char *key,
+                           const char **value_start) {
   const char *cursor;
   size_t key_len;
 
@@ -33,7 +33,7 @@ static int cai_key_matches(const char *line, const char **value_start) {
   if (strncmp(cursor, "export", 6U) == 0 && isspace((unsigned char)cursor[6])) {
     cursor = cai_skip_space(cursor + 6);
   }
-  key_len = sizeof(key) - 1U;
+  key_len = strlen(key);
   if (strncmp(cursor, key, key_len) != 0) {
     return 0;
   }
@@ -48,7 +48,7 @@ static int cai_key_matches(const char *line, const char **value_start) {
   return 1;
 }
 
-static int cai_parse_env_value(const cai_allocator *allocator,
+static int cai_parse_env_value(const cai_allocator *allocator, const char *key,
                                const char *value_start, char **out,
                                cai_error *error) {
   const char *cursor;
@@ -72,19 +72,23 @@ static int cai_parse_env_value(const cai_allocator *allocator,
     length = cai_trimmed_length(value_start, (size_t)(cursor - value_start));
   }
   if (length == 0U) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "OPENAI_API_KEY in .env is empty");
+    char message[128];
+
+    snprintf(message, sizeof(message), "%s in .env is empty", key);
+    return cai_set_error(error, CAI_ERR_INVALID, message);
   }
   *out = cai_strndup(allocator, value_start, length);
   if (*out == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate OPENAI_API_KEY");
+    char message[128];
+
+    snprintf(message, sizeof(message), "failed to allocate %s", key);
+    return cai_set_error(error, CAI_ERR_NOMEM, message);
   }
   return CAI_OK;
 }
 
 static int cai_load_dotenv_api_key(const cai_allocator *allocator, char **out,
-                                   cai_error *error) {
+                                   const char *env_name, cai_error *error) {
   FILE *fp;
   char line[CAI_ENV_LINE_LIMIT];
   const char *value_start;
@@ -94,20 +98,26 @@ static int cai_load_dotenv_api_key(const cai_allocator *allocator, char **out,
     return CAI_ERR_CANCELLED;
   }
   while (fgets(line, sizeof(line), fp) != NULL) {
-    if (cai_key_matches(line, &value_start)) {
+    if (cai_key_matches(line, env_name, &value_start)) {
       fclose(fp);
-      return cai_parse_env_value(allocator, value_start, out, error);
+      return cai_parse_env_value(allocator, env_name, value_start, out, error);
     }
   }
   fclose(fp);
-  return cai_set_error(error, CAI_ERR_INVALID,
-                       ".env exists but OPENAI_API_KEY is not set");
+  {
+    char message[160];
+
+    snprintf(message, sizeof(message), ".env exists but %s is not set",
+             env_name);
+    return cai_set_error(error, CAI_ERR_INVALID, message);
+  }
 }
 
 int cai_resolve_api_key(const cai_allocator *allocator,
-                        const char *explicit_key, char **out,
-                        cai_error *error) {
+                        const char *explicit_key, const char *env_name,
+                        char **out, cai_error *error) {
   const char *env_key;
+  const char *key_name;
   int rc;
 
   if (out == NULL) {
@@ -123,19 +133,25 @@ int cai_resolve_api_key(const cai_allocator *allocator,
     }
     return CAI_OK;
   }
-  rc = cai_load_dotenv_api_key(allocator, out, error);
+  key_name = env_name != NULL && env_name[0] != '\0' ? env_name
+                                                     : CAI_OPENAI_API_KEY_ENV;
+  rc = cai_load_dotenv_api_key(allocator, out, key_name, error);
   if (rc != CAI_ERR_CANCELLED) {
     return rc;
   }
-  env_key = getenv("OPENAI_API_KEY");
+  env_key = getenv(key_name);
   if (env_key == NULL || env_key[0] == '\0') {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "OPENAI_API_KEY is not configured");
+    char message[128];
+
+    snprintf(message, sizeof(message), "%s is not configured", key_name);
+    return cai_set_error(error, CAI_ERR_INVALID, message);
   }
   *out = cai_strdup(allocator, env_key);
   if (*out == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate OPENAI_API_KEY");
+    char message[128];
+
+    snprintf(message, sizeof(message), "failed to allocate %s", key_name);
+    return cai_set_error(error, CAI_ERR_NOMEM, message);
   }
   return CAI_OK;
 }
