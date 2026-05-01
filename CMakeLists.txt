@@ -173,6 +173,7 @@ if(CAI_BUILD_EXAMPLES)
     basic_response:basic-response
     conversation_handles:conversation-handles
     history_export:history-export
+    openrouter_response:openrouter-response
     session_state:session-state
     streaming_text:streaming-text
     terminal_chat:terminal-chat

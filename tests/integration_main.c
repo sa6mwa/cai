@@ -125,6 +125,10 @@ static int run_openrouter_basic_response(void) {
     rc = cai_response_create_params_set_max_output_tokens(params, 32, &error);
   }
   if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_reasoning(
+        params, CAI_REASONING_EFFORT_NONE, NULL, &error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_response_create_params_add_text(
         params, "user", "Reply with exactly: openrouter-pong-314", &error);
   }

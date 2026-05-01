@@ -15,6 +15,18 @@ cmake --build --preset debug --target cai_example_basic_response
 ./build/debug/cai_example_basic_response
 ```
 
+## OpenRouter Response
+
+Run the same Responses-style request through OpenRouter. This example uses
+`OPENROUTER_API_KEY`, `https://openrouter.ai/api/v1`, and
+`CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`. Set `CAI_OPENROUTER_EXAMPLE_MODEL` to
+override the model.
+
+```sh
+cmake --build --preset debug --target cai_example_openrouter_response
+OPENROUTER_API_KEY=... ./build/debug/cai_example_openrouter_response
+```
+
 ## Conversation Handles
 
 Create a conversation handle transparently and run a session against it:
