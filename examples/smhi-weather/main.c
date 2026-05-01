@@ -14,8 +14,8 @@
   "cloud_area_fraction,precipitation_amount,"                                \
   "predominant_precipitation_type_at_surface,symbol_code"
 
-#define NOMINATIM_SEARCH_URL                                                   \
-  "https://nominatim.openstreetmap.org/search?q=%s&format=geocodejson&limit=1"
+#define OPEN_METEO_GEOCODING_URL                                               \
+  "https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&format=json"
 
 typedef struct smhi_weather_args {
   char *location;
@@ -82,13 +82,16 @@ typedef struct smhi_forecast_doc {
   lonejson_object_array time_series;
 } smhi_forecast_doc;
 
-typedef struct nominatim_feature_doc {
-  smhi_geometry_doc geometry;
-} nominatim_feature_doc;
+typedef struct open_meteo_location_doc {
+  double latitude;
+  int has_latitude;
+  double longitude;
+  int has_longitude;
+} open_meteo_location_doc;
 
-typedef struct nominatim_doc {
-  lonejson_object_array features;
-} nominatim_doc;
+typedef struct open_meteo_geocoding_doc {
+  lonejson_object_array results;
+} open_meteo_geocoding_doc;
 
 typedef struct smhi_spool_reader {
   lonejson_spooled cursor;
@@ -183,16 +186,21 @@ static const lonejson_field smhi_forecast_fields[] = {
 LONEJSON_MAP_DEFINE(smhi_forecast_map, smhi_forecast_doc,
                     smhi_forecast_fields);
 
-static const lonejson_field nominatim_feature_fields[] = {
-    LONEJSON_FIELD_OBJECT(nominatim_feature_doc, geometry, "geometry",
-                          &smhi_geometry_map)};
-LONEJSON_MAP_DEFINE(nominatim_feature_map, nominatim_feature_doc,
-                    nominatim_feature_fields);
+static const lonejson_field open_meteo_location_fields[] = {
+    LONEJSON_FIELD_F64_PRESENT(open_meteo_location_doc, latitude, has_latitude,
+                               "latitude"),
+    LONEJSON_FIELD_F64_PRESENT(open_meteo_location_doc, longitude,
+                               has_longitude, "longitude")};
+LONEJSON_MAP_DEFINE(open_meteo_location_map, open_meteo_location_doc,
+                    open_meteo_location_fields);
 
-static const lonejson_field nominatim_fields[] = {LONEJSON_FIELD_OBJECT_ARRAY(
-    nominatim_doc, features, "features", nominatim_feature_doc,
-    &nominatim_feature_map, LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(nominatim_map, nominatim_doc, nominatim_fields);
+static const lonejson_field open_meteo_geocoding_fields[] = {
+    LONEJSON_FIELD_OBJECT_ARRAY(open_meteo_geocoding_doc, results, "results",
+                                open_meteo_location_doc,
+                                &open_meteo_location_map,
+                                LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(open_meteo_geocoding_map, open_meteo_geocoding_doc,
+                    open_meteo_geocoding_fields);
 
 static const char *example_model(void) {
   const char *model;
@@ -353,8 +361,8 @@ static int smhi_geocode_location(const char *location, double *latitude,
   char *escaped;
   char url[1024];
   lonejson_spooled body;
-  nominatim_doc doc;
-  nominatim_feature_doc *feature;
+  open_meteo_geocoding_doc doc;
+  open_meteo_location_doc *resolved;
   smhi_spool_reader reader;
   lonejson_error json_error;
   int rc;
@@ -374,50 +382,53 @@ static int smhi_geocode_location(const char *location, double *latitude,
     return smhi_set_error(error, CAI_ERR_NOMEM,
                           "failed to encode location", NULL);
   }
-  snprintf(url, sizeof(url), NOMINATIM_SEARCH_URL, escaped);
+  snprintf(url, sizeof(url), OPEN_METEO_GEOCODING_URL, escaped);
   curl_free(escaped);
   curl_easy_cleanup(curl);
-  rc = smhi_fetch_url(url, "Nominatim geocoding request failed", &body, error);
+  rc = smhi_fetch_url(url, "Open-Meteo geocoding request failed", &body,
+                      error);
   if (rc != CAI_OK) {
     return rc;
   }
 
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(&nominatim_map, &doc);
+  lonejson_init(&open_meteo_geocoding_map, &doc);
   reader.cursor = body;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&nominatim_map, &doc);
+    lonejson_cleanup(&open_meteo_geocoding_map, &doc);
     lonejson_spooled_cleanup(&body);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
-                          "failed to rewind Nominatim response",
+                          "failed to rewind Open-Meteo geocoding response",
                           json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (lonejson_parse_reader(&nominatim_map, &doc, smhi_spool_read, &reader,
-                            NULL, &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&nominatim_map, &doc);
+  if (lonejson_parse_reader(&open_meteo_geocoding_map, &doc, smhi_spool_read,
+                            &reader, NULL, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&open_meteo_geocoding_map, &doc);
     lonejson_spooled_cleanup(&body);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
-                          "failed to parse Nominatim response JSON",
+                          "failed to parse Open-Meteo geocoding response JSON",
                           json_error.message);
   }
   lonejson_spooled_cleanup(&body);
-  if (doc.features.count == 0U) {
-    lonejson_cleanup(&nominatim_map, &doc);
+  if (doc.results.count == 0U) {
+    lonejson_cleanup(&open_meteo_geocoding_map, &doc);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
-                          "Nominatim did not resolve the location", NULL);
+                          "Open-Meteo did not resolve the location", NULL);
   }
-  feature = (nominatim_feature_doc *)doc.features.items;
-  if (feature[0].geometry.coordinates.count < 2U) {
-    lonejson_cleanup(&nominatim_map, &doc);
+  resolved = (open_meteo_location_doc *)doc.results.items;
+  if (!resolved[0].has_latitude || !resolved[0].has_longitude) {
+    lonejson_cleanup(&open_meteo_geocoding_map, &doc);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
-                          "Nominatim result did not contain coordinates", NULL);
+                          "Open-Meteo result did not contain coordinates",
+                          NULL);
   }
-  *longitude = feature[0].geometry.coordinates.items[0];
-  *latitude = feature[0].geometry.coordinates.items[1];
-  lonejson_cleanup(&nominatim_map, &doc);
+  *latitude = resolved[0].latitude;
+  *longitude = resolved[0].longitude;
+  lonejson_cleanup(&open_meteo_geocoding_map, &doc);
   return CAI_OK;
 }
 
@@ -463,8 +474,8 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
   first = (smhi_forecast_time_doc *)forecast.time_series.items;
   rc = smhi_copy_result_string(
       &out->source,
-      "SMHI Open Data snow1g point forecast; location resolved by "
-      "OpenStreetMap Nominatim",
+      "SMHI Open Data snow1g point forecast; location resolved by Open-Meteo "
+      "Geocoding API",
       error);
   if (rc == CAI_OK) {
     rc = smhi_copy_result_string(&out->location, args->location, error);
