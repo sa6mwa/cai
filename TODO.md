@@ -18,5 +18,9 @@ Implemented first slice:
 
 Remaining follow-up:
 
-- Run explicit OpenRouter integration tests before claiming parity for
-  Conversations or server-side compaction semantics.
+- Do not claim OpenRouter parity for Conversations or server-side compaction
+  semantics until those specific behaviors are documented or separately proven.
+- OpenRouter session continuity through `previous_response_id` needs a focused
+  follow-up. A live probe with the default free model did not preserve a
+  first-turn key on the second turn, so cai should treat OpenRouter as
+  basic `/responses` compatible only for now.
