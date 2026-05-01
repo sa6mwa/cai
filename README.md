@@ -199,6 +199,12 @@ cmake --build --preset fuzz --target cai_tool_fuzz
 build/fuzz/cai_tool_fuzz
 ```
 
+Streaming callers that need function-call arguments can attach callbacks to
+`cai_stream_sinks.function_call_arguments_delta` and
+`cai_stream_sinks.function_call_arguments_done`. `stream_text` remains text-only;
+the callback surface is for callers that want to observe streamed tool-call
+argument deltas directly and decide their own orchestration policy.
+
 The ASAN preset is part of the local quality gate:
 
 ```sh

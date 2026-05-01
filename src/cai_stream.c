@@ -34,6 +34,11 @@ typedef struct cai_stream_response_doc {
 typedef struct cai_stream_delta_doc {
   char *type;
   char *delta;
+  char *item_id;
+  long long output_index;
+  char *call_id;
+  char *name;
+  char *arguments;
   cai_stream_response_doc response;
 } cai_stream_delta_doc;
 
@@ -78,6 +83,11 @@ LONEJSON_MAP_DEFINE(cai_stream_response_map, cai_stream_response_doc,
 static const lonejson_field cai_stream_delta_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, type, "type"),
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, delta, "delta"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, item_id, "item_id"),
+    LONEJSON_FIELD_I64(cai_stream_delta_doc, output_index, "output_index"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, call_id, "call_id"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, arguments, "arguments"),
     LONEJSON_FIELD_OBJECT(cai_stream_delta_doc, response, "response",
                           &cai_stream_response_map)};
 LONEJSON_MAP_DEFINE(cai_stream_delta_map, cai_stream_delta_doc,
@@ -261,6 +271,27 @@ static int cai_sse_write_output_delta(cai_sse_state *state,
   return cai_sink_write(state->sinks.output_text, delta, length, NULL);
 }
 
+static int cai_sse_emit_function_call_delta(cai_sse_state *state,
+                                            const cai_stream_delta_doc *doc) {
+  if (state->sinks.function_call_arguments_delta == NULL ||
+      doc->delta == NULL) {
+    return CAI_OK;
+  }
+  return state->sinks.function_call_arguments_delta(
+      state->sinks.function_call_context, doc->item_id,
+      (int)doc->output_index, doc->delta, NULL);
+}
+
+static int cai_sse_emit_function_call_done(cai_sse_state *state,
+                                           const cai_stream_delta_doc *doc) {
+  if (state->sinks.function_call_arguments_done == NULL) {
+    return CAI_OK;
+  }
+  return state->sinks.function_call_arguments_done(
+      state->sinks.function_call_context, doc->item_id,
+      (int)doc->output_index, doc->call_id, doc->name, doc->arguments, NULL);
+}
+
 static const char *cai_sse_json_object_end(const char *start) {
   const char *cursor;
   int depth;
@@ -415,6 +446,12 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   } else if (doc.type != NULL &&
              strcmp(doc.type, "response.output_text.done") == 0) {
     rc = cai_sse_finish_output(state);
+  } else if (doc.type != NULL &&
+             strcmp(doc.type, "response.function_call_arguments.delta") == 0) {
+    rc = cai_sse_emit_function_call_delta(state, &doc);
+  } else if (doc.type != NULL &&
+             strcmp(doc.type, "response.function_call_arguments.done") == 0) {
+    rc = cai_sse_emit_function_call_done(state, &doc);
   }
   if (rc == CAI_OK && state->out_response_id != NULL &&
       *state->out_response_id == NULL && doc.response.id != NULL) {
@@ -523,10 +560,12 @@ static int cai_client_stream_response_params_with_id(
   int rc;
 
   if (client == NULL || params == NULL || sinks == NULL ||
-      (sinks->output_text == NULL && sinks->reasoning_summary == NULL)) {
+      (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
+       sinks->function_call_arguments_delta == NULL &&
+       sinks->function_call_arguments_done == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "client, params, and at least one stream sink are "
-                         "required");
+                         "client, params, and at least one stream sink or "
+                         "callback are required");
   }
   url = NULL;
   headers = NULL;

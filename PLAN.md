@@ -869,7 +869,9 @@ Mirror liblockdc where practical:
 - Implement `stream=true` HTTP streaming.
 - Parse semantic Responses events.
 - Surface callback API.
-- Support streaming tool-call arguments.
+- Support streaming tool-call arguments. Implemented as semantic callbacks on
+  `cai_stream_sinks` for `response.function_call_arguments.delta` and
+  `response.function_call_arguments.done`; `stream_text` remains text-only.
 
 ### Milestone 6: Responses transport hardening
 

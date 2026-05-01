@@ -31,6 +31,17 @@ typedef struct write_state {
   int closed;
 } write_state;
 
+typedef struct stream_tool_state {
+  char delta[64];
+  char item_id[32];
+  char call_id[32];
+  char name[32];
+  char arguments[64];
+  int output_index;
+  int delta_count;
+  int done_count;
+} stream_tool_state;
+
 typedef struct tool_weather_args {
   char *city;
   long long days;
@@ -447,6 +458,47 @@ static void test_write_close(void *context) {
 
   state = (write_state *)context;
   state->closed = 1;
+}
+
+static int test_stream_tool_delta(void *context, const char *item_id,
+                                  int output_index, const char *delta,
+                                  cai_error *error) {
+  stream_tool_state *state;
+
+  (void)error;
+  state = (stream_tool_state *)context;
+  state->delta_count++;
+  snprintf(state->item_id, sizeof(state->item_id), "%s",
+           item_id != NULL ? item_id : "");
+  state->output_index = output_index;
+  if (delta != NULL &&
+      state->delta_count == 1) {
+    snprintf(state->delta, sizeof(state->delta), "%s", delta);
+  } else if (delta != NULL) {
+    strncat(state->delta, delta,
+            sizeof(state->delta) - strlen(state->delta) - 1U);
+  }
+  return CAI_OK;
+}
+
+static int test_stream_tool_done(void *context, const char *item_id,
+                                 int output_index, const char *call_id,
+                                 const char *name, const char *arguments,
+                                 cai_error *error) {
+  stream_tool_state *state;
+
+  (void)error;
+  state = (stream_tool_state *)context;
+  state->done_count++;
+  snprintf(state->item_id, sizeof(state->item_id), "%s",
+           item_id != NULL ? item_id : "");
+  state->output_index = output_index;
+  snprintf(state->call_id, sizeof(state->call_id), "%s",
+           call_id != NULL ? call_id : "");
+  snprintf(state->name, sizeof(state->name), "%s", name != NULL ? name : "");
+  snprintf(state->arguments, sizeof(state->arguments), "%s",
+           arguments != NULL ? arguments : "");
+  return CAI_OK;
 }
 
 static int test_weather_tool(void *context, const void *params, void *result,
@@ -1954,6 +2006,7 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_history_2\",\"usage\":{\"input_tokens\":20,"
       "\"output_tokens\":3,\"total_tokens\":23}}}\n\n";
+  static char stream_tool_body[768];
   static const char stream_history_first_retrieve_body[] =
       "{\n"
       "  \"id\": \"resp_stream_history_1\",\n"
@@ -2023,6 +2076,30 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "history stream first") != NULL &&
           strstr(request, "previous_response_id") == NULL) {
         return stream_history_first_body;
+      }
+      if (strstr(request, "stream tool call turn") != NULL) {
+        if (stream_tool_body[0] == '\0') {
+          strcpy(stream_tool_body,
+                 "data: {\"type\":\"response.function_call_arguments.delta\","
+                 "\"item_id\":\"fc_stream_1\",\"output_index\":0,");
+          strcat(stream_tool_body, "\"delta\":\"{\\\"city\\\":\"}\n\n");
+          strcat(stream_tool_body,
+                 "data: {\"type\":\"response.function_call_arguments.delta\","
+                 "\"item_id\":\"fc_stream_1\",\"output_index\":0,");
+          strcat(stream_tool_body, "\"delta\":\"\\\"Gothenburg\\\"}\"}\n\n");
+          strcat(stream_tool_body,
+                 "data: {\"type\":\"response.function_call_arguments.done\","
+                 "\"item_id\":\"fc_stream_1\",\"output_index\":0,");
+          strcat(stream_tool_body,
+                 "\"call_id\":\"call_stream_1\",\"name\":\"weather\",");
+          strcat(stream_tool_body,
+                 "\"arguments\":\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}\n\n");
+          strcat(stream_tool_body,
+                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+                 "\"resp_stream_tool_1\",\"usage\":{\"input_tokens\":9,"
+                 "\"output_tokens\":1,\"total_tokens\":10}}}\n\n");
+        }
+        return stream_tool_body;
       }
       return stream_body;
     }
@@ -3672,6 +3749,7 @@ static void test_stream_response_text(test_state *state) {
   cai_token_usage usage;
   write_state writer;
   write_state reasoning_writer;
+  stream_tool_state tool_stream;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -3687,7 +3765,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 8);
+    mock_openai_child(pipe_fds[1], 9);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -3720,6 +3798,7 @@ static void test_stream_response_text(test_state *state) {
   reasoning_writer.length = 0U;
   reasoning_writer.closed = 0;
   reasoning_writer.buffer[0] = '\0';
+  memset(&tool_stream, 0, sizeof(tool_stream));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -3903,6 +3982,31 @@ static void test_stream_response_text(test_state *state) {
   expect_str(state, "stream_session_source_value_second", read_buffer, "src2");
   cai_source_close(source);
   source = NULL;
+
+  expect_int(
+      state, "stream_session_tool_add",
+      cai_session_add_user_text(session, "stream tool call turn", &error),
+      CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.function_call_arguments_delta = test_stream_tool_delta;
+  stream_sinks.function_call_arguments_done = test_stream_tool_done;
+  stream_sinks.function_call_context = &tool_stream;
+  expect_int(state, "stream_session_tool_callbacks",
+             session->stream(session, &stream_sinks, &error), CAI_OK);
+  expect_int(state, "stream_session_tool_delta_count",
+             tool_stream.delta_count, 2L);
+  expect_int(state, "stream_session_tool_done_count", tool_stream.done_count,
+             1L);
+  expect_str(state, "stream_session_tool_item", tool_stream.item_id,
+             "fc_stream_1");
+  expect_str(state, "stream_session_tool_call_id", tool_stream.call_id,
+             "call_stream_1");
+  expect_str(state, "stream_session_tool_name", tool_stream.name, "weather");
+  expect_str(state, "stream_session_tool_delta", tool_stream.delta,
+             "{\"city\":\"Gothenburg\"}");
+  expect_str(state, "stream_session_tool_arguments", tool_stream.arguments,
+             "{\"city\":\"Gothenburg\"}");
+
   cai_response_create_params_destroy(params);
   cai_session_destroy(session);
   cai_agent_destroy(agent);

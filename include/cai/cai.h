@@ -164,6 +164,18 @@ typedef struct cai_sink_callbacks {
 } cai_sink_callbacks;
 
 typedef const char *(*cai_stream_affix_fn)(void *context);
+typedef int (*cai_stream_function_call_delta_fn)(void *context,
+                                                 const char *item_id,
+                                                 int output_index,
+                                                 const char *delta,
+                                                 cai_error *error);
+typedef int (*cai_stream_function_call_done_fn)(void *context,
+                                                const char *item_id,
+                                                int output_index,
+                                                const char *call_id,
+                                                const char *name,
+                                                const char *arguments,
+                                                cai_error *error);
 
 typedef struct cai_stream_affix {
   const char *text;
@@ -178,6 +190,9 @@ typedef struct cai_stream_sinks {
   cai_stream_affix reasoning_summary_suffix;
   cai_stream_affix output_text_prefix;
   cai_stream_affix output_text_suffix;
+  cai_stream_function_call_delta_fn function_call_arguments_delta;
+  cai_stream_function_call_done_fn function_call_arguments_done;
+  void *function_call_context;
 } cai_stream_sinks;
 
 typedef int (*cai_tool_fn)(void *context, const void *params, void *result,

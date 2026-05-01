@@ -1886,9 +1886,12 @@ int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
   int rc;
 
   if (session == NULL || sinks == NULL ||
-      (sinks->output_text == NULL && sinks->reasoning_summary == NULL)) {
+      (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
+       sinks->function_call_arguments_delta == NULL &&
+       sinks->function_call_arguments_done == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session and at least one stream sink are required");
+                         "session and at least one stream sink or callback are "
+                         "required");
   }
   params = NULL;
   response_id = NULL;
