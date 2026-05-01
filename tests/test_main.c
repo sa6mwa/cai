@@ -776,6 +776,13 @@ static void test_response_json(test_state *state) {
       cai_response_create_params_set_compact_threshold(params, 320000LL,
                                                        &error),
       CAI_OK);
+  expect_int(state, "params_set_bad_text_format_schema",
+             cai_response_create_params_set_text_format_json_schema(
+                 params, "broken", "Broken", "{\"type\":\"object\"", 1,
+                 &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_set_text_format",
              cai_response_create_params_set_text_format_json_schema(
                  params, "answer", "Answer payload",
@@ -799,6 +806,13 @@ static void test_response_json(test_state *state) {
       cai_response_create_params_add_image_url(
           params, "user", "https://example.test/image.png", "high", &error),
       CAI_OK);
+  expect_int(state, "params_add_bad_tool_schema",
+             cai_response_create_params_add_function_tool(
+                 params, "bad_tool", "Bad", "{\"type\":\"object\"", 1,
+                 &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_add_tool",
              cai_response_create_params_add_function_tool(
                  params, "get_weather", "Get weather",
@@ -1048,6 +1062,12 @@ static void test_response_spooled_request_fragments(test_state *state) {
              cai_response_create_params_set_model(
                  params, CAI_MODEL_GPT_5_NANO, &error),
              CAI_OK);
+  expect_int(state, "spooled_bad_raw_set",
+             cai_response_create_params_set_raw_input_json(
+                 params, "{\"type\":\"message\"", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&raw_items, NULL);
   expect_int(state, "spooled_raw_append",

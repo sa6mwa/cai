@@ -384,6 +384,32 @@ static lonejson_allocator cai_zero_allocator(void) {
   return allocator;
 }
 
+static int cai_response_validate_json_value(const char *json,
+                                            const char *message,
+                                            cai_error *error) {
+  lonejson_json_value value;
+  lonejson_error json_error;
+  int rc;
+
+  if (json == NULL) {
+    return CAI_OK;
+  }
+  if (json[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, message);
+  }
+  lonejson_json_value_init(&value);
+  lonejson_error_init(&json_error);
+  if (lonejson_json_value_set_buffer(&value, json, strlen(json),
+                                     &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID, message,
+                              json_error.message);
+  } else {
+    rc = CAI_OK;
+  }
+  lonejson_json_value_cleanup(&value);
+  return rc;
+}
+
 static void cai_content_part_cleanup(const cai_allocator *allocator,
                                      struct cai_content_part *part) {
   if (part == NULL) {
@@ -1166,6 +1192,12 @@ int cai_response_create_params_set_raw_input_json(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
   }
+  if (raw_input_json != NULL &&
+      cai_response_validate_json_value(raw_input_json,
+                                       "raw input must be valid JSON",
+                                       error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
   if (params->has_raw_input_spooled) {
     lonejson_spooled_cleanup(&params->raw_input_spooled);
     params->has_raw_input_spooled = 0;
@@ -1230,6 +1262,11 @@ int cai_response_create_params_set_text_format_json_schema(
       schema_json == NULL || schema_json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "text format name and schema are required");
+  }
+  rc = cai_response_validate_json_value(
+      schema_json, "text format schema must be valid JSON", error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   rc = cai_response_params_set_text_format_type(params, "json_schema", error);
   if (rc == CAI_OK) {
@@ -1477,6 +1514,12 @@ int cai_response_create_params_add_function_tool(
 
   if (params == NULL || name == NULL || name[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "tool name is required");
+  }
+  rc = cai_response_validate_json_value(
+      parameters_json != NULL ? parameters_json : "{}",
+      "function tool parameters must be valid JSON", error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   rc = cai_object_array_grow(&params->allocator, &params->tools,
                              sizeof(struct cai_function_tool), error);
