@@ -2387,13 +2387,14 @@ static int cai_spooled_copy_range(const lonejson_spooled *src,
 }
 
 static int cai_spool_wrapped_input_items(cai_request_input_item_doc *items,
-                                         size_t count, lonejson_spooled *out,
+                                         size_t count, int full_array,
+                                         lonejson_spooled *out,
                                          size_t *out_len, cai_error *error) {
-  static const size_t prefix_len = sizeof("{\"items\":[") - 1U;
-  static const size_t suffix_len = sizeof("]}") - 1U;
   cai_request_input_items_doc doc;
   lonejson_spooled wrapped;
   lonejson_error json_error;
+  size_t prefix_len;
+  size_t suffix_len;
   size_t wrapped_len;
   int rc;
 
@@ -2413,6 +2414,9 @@ static int cai_spool_wrapped_input_items(cai_request_input_item_doc *items,
                                 "failed to serialize input items JSON",
                                 json_error.message);
   }
+  prefix_len = full_array ? sizeof("{\"items\":") - 1U
+                          : sizeof("{\"items\":[") - 1U;
+  suffix_len = full_array ? sizeof("}") - 1U : sizeof("]}") - 1U;
   wrapped_len = lonejson_spooled_size(&wrapped);
   if (wrapped_len < prefix_len + suffix_len) {
     lonejson_spooled_cleanup(&wrapped);
@@ -2656,7 +2660,28 @@ static int cai_spool_request_input_items(
   count = 0U;
   rc = cai_build_request_input_item_docs(input, &docs, &count, error);
   if (rc == CAI_OK) {
-    rc = cai_spool_wrapped_input_items(docs, count, out, out_len, error);
+    rc = cai_spool_wrapped_input_items(docs, count, 0, out, out_len, error);
+  }
+  cai_request_input_item_docs_cleanup(docs, count);
+  return rc;
+}
+
+int cai_input_messages_spool_json_array(const lonejson_object_array *input,
+                                        lonejson_spooled *out,
+                                        size_t *out_len, cai_error *error) {
+  cai_request_input_item_doc *docs;
+  size_t count;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input JSON array spool output pointer is required");
+  }
+  docs = NULL;
+  count = 0U;
+  rc = cai_build_request_input_item_docs(input, &docs, &count, error);
+  if (rc == CAI_OK) {
+    rc = cai_spool_wrapped_input_items(docs, count, 1, out, out_len, error);
   }
   cai_request_input_item_docs_cleanup(docs, count);
   return rc;

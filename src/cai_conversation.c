@@ -860,7 +860,6 @@ static int cai_conversation_items_params_spool_json(
   cai_conversation_items_request_doc doc;
   cai_conversation_spooled_reader_context reader_context;
   lonejson_spooled items;
-  cai_json_builder builder;
   lonejson_error json_error;
   int has_items;
   int rc;
@@ -877,24 +876,9 @@ static int cai_conversation_items_params_spool_json(
   memset(&items, 0, sizeof(items));
   memset(&reader_context, 0, sizeof(reader_context));
   has_items = 0;
-  lonejson_error_init(&json_error);
-  lonejson_spooled_init(&items, NULL);
-  has_items = 1;
-  builder.data = NULL;
-  builder.length = 0U;
-  builder.capacity = 0U;
-  builder.sink = cai_conversation_spooled_sink;
-  builder.sink_user = &items;
-  builder.sink_error = &json_error;
-  rc = cai_json_builder_lit(&builder, "[", error);
+  rc = cai_input_messages_spool_json_array(&params->items, &items, NULL, error);
   if (rc == CAI_OK) {
-    rc = cai_serialize_input_message_items_json(&builder, &params->items,
-                                                error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "]", error);
-  }
-  if (rc == CAI_OK) {
+    has_items = 1;
     reader_context.cursor = items;
     lonejson_error_init(&json_error);
     if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=

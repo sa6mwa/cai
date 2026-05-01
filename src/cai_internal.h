@@ -256,6 +256,9 @@ int cai_serialize_input_messages_json(cai_json_builder *builder,
                                       const char *field_name,
                                       const lonejson_object_array *messages,
                                       cai_error *error);
+int cai_input_messages_spool_json_array(const lonejson_object_array *messages,
+                                        lonejson_spooled *out,
+                                        size_t *out_len, cai_error *error);
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error);
