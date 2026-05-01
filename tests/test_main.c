@@ -37,6 +37,11 @@ typedef struct tool_weather_result {
   char *summary;
 } tool_weather_result;
 
+typedef struct tool_source_result {
+  lonejson_source body;
+  lonejson_spooled note;
+} tool_source_result;
+
 typedef struct raw_tool_state {
   char seen[64];
 } raw_tool_state;
@@ -50,6 +55,12 @@ static const lonejson_field tool_weather_result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(tool_weather_result, summary, "summary")};
 LONEJSON_MAP_DEFINE(tool_weather_result_map, tool_weather_result,
                     tool_weather_result_fields);
+
+static const lonejson_field tool_source_result_fields[] = {
+    LONEJSON_FIELD_STRING_SOURCE_REQ(tool_source_result, body, "body"),
+    LONEJSON_FIELD_STRING_STREAM_REQ(tool_source_result, note, "note")};
+LONEJSON_MAP_DEFINE(tool_source_result_map, tool_source_result,
+                    tool_source_result_fields);
 
 static void test_fail(test_state *state, const char *name, const char *msg) {
   state->failures++;
@@ -355,6 +366,35 @@ static int test_weather_tool(void *context, const void *params, void *result,
                                               "failed to allocate result");
 }
 
+static int test_source_tool(void *context, const void *params, void *result,
+                            cai_error *error) {
+  lonejson_spooled note;
+  lonejson_error json_error;
+  int rc;
+
+  (void)params;
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(&note, NULL);
+  if (lonejson_spooled_append(&note, "spooled note",
+                              strlen("spooled note"), &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_spooled_cleanup(&note);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to create tool result spool",
+                                json_error.message);
+  }
+  rc = cai_tool_result_set_source_path(&tool_source_result_map, result, "body",
+                                       (const char *)context, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_result_set_spooled(&tool_source_result_map, result, "note",
+                                     &note, error);
+  }
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(&note);
+  }
+  return rc;
+}
+
 static int test_raw_tool(void *context, const char *arguments_json,
                          cai_sink *output, cai_error *error) {
   raw_tool_state *state;
@@ -481,6 +521,8 @@ static void test_tool_registry(test_state *state) {
   raw_tool_state raw_state;
   cai_error error;
   char *json;
+  char source_path[] = "/tmp/cai-tool-source-XXXXXX";
+  int source_fd;
 
   cai_error_init(&error);
   registry = NULL;
@@ -496,6 +538,13 @@ static void test_tool_registry(test_state *state) {
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
+  source_fd = mkstemp(source_path);
+  if (source_fd < 0) {
+    test_fail(state, "tool_source_path", "mkstemp failed");
+    return;
+  }
+  close(source_fd);
+  write_file_or_die(source_path, "source body");
 
   expect_int(state, "tool_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
@@ -561,6 +610,12 @@ static void test_tool_registry(test_state *state) {
                  registry, "forecast", "Get forecast", &tool_weather_map,
                  &tool_weather_result_map, test_weather_tool, NULL, &error),
              CAI_OK);
+  expect_int(state, "tool_register_source",
+             cai_tool_registry_register_lonejson(
+                 registry, "source_result", "Return source backed data",
+                 &tool_weather_map, &tool_source_result_map, test_source_tool,
+                 source_path, &error),
+             CAI_OK);
   expect_int(state, "tool_register_raw",
              cai_tool_registry_register_raw(registry, "raw_echo",
                                             "Echo raw JSON", schema, 0,
@@ -575,6 +630,15 @@ static void test_tool_registry(test_state *state) {
              CAI_OK);
   expect_str(state, "tool_run_typed_output", writer.buffer,
              "{\"summary\":\"Malmo:3\"}");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "tool_run_source",
+             cai_tool_registry_run(registry, "source_result",
+                                   "{\"city\":\"Malmo\",\"days\":3}", sink,
+                                   &error),
+             CAI_OK);
+  expect_str(state, "tool_run_source_output", writer.buffer,
+             "{\"body\":\"source body\",\"note\":\"spooled note\"}");
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(
@@ -622,6 +686,7 @@ static void test_tool_registry(test_state *state) {
   cai_tool_schema_destroy(map_schema);
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
+  unlink(source_path);
 }
 
 static void test_client_open(test_state *state) {

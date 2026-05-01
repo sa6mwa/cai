@@ -176,6 +176,13 @@ typedef int (*cai_tool_raw_fn)(void *context, const char *arguments_json,
                                cai_sink *output, cai_error *error);
 
 char *cai_tool_result_strdup(const char *value, cai_error *error);
+int cai_tool_result_set_source_path(const struct lonejson_map *result_map,
+                                    void *result, const char *field_name,
+                                    const char *path, cai_error *error);
+int cai_tool_result_set_spooled(const struct lonejson_map *result_map,
+                                void *result, const char *field_name,
+                                struct lonejson_spooled *spool,
+                                cai_error *error);
 
 struct cai_client {
   int (*new_agent)(cai_client *client, const cai_agent_config *config,

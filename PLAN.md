@@ -590,11 +590,12 @@ Tool execution loop:
 
 Initial result payload support:
 
-- Required: lonejson-mapped JSON object output, including dynamic strings.
-- Early follow-up: source/spooled fields for large text/file-like tool outputs.
-- Required in the API design even if implemented after string output:
-  source-backed tool output so a C or Lua callback can stream data generated
-  from lockd, files, or downstream APIs.
+- Implemented: lonejson-mapped JSON object output, including dynamic strings.
+- Implemented: source/spooled helpers for large text/file-like tool outputs.
+  `cai_tool_result_set_source_path` targets lonejson source fields and
+  `cai_tool_result_set_spooled` moves a `lonejson_spooled` into a result field;
+  cai serializes those fields through lonejson and cleans them up after the
+  callback output is written.
 
 ### Streaming and WebSockets
 
@@ -797,7 +798,7 @@ Mirror liblockdc where practical:
 - Parse tool calls.
 - Run synchronous callbacks.
 - Submit `function_call_output`.
-- Add source-backed tool result API. Large tool outputs should be represented
+- Source-backed tool result API is present. Large tool outputs should be represented
   with `lonejson_spooled` or source/sink plumbing and serialized back into the
   session without materializing the whole value in memory. Bounded buffering is
   only acceptable inside the normal chunk buffers of lonejson, curl, or the

@@ -133,6 +133,13 @@ agent->register_tool(agent, "lookup_customer", "Look up a customer.",
                      &error);
 ```
 
+For large typed tool results, callbacks can put source-backed or spooled fields
+into their result struct instead of building a raw JSON string. Use
+`cai_tool_result_set_source_path` for lonejson source fields and
+`cai_tool_result_set_spooled` for lonejson spooled string/base64 fields; cai
+streams the resulting JSON into the tool output sink and then cleans up those
+handles.
+
 `cai_tool_schema_from_map` can be used when callers want to inspect or enrich
 the generated schema. Metadata helpers such as `describe` update existing
 properties; they do not decide requiredness. Requiredness belongs in the

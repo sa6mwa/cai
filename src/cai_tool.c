@@ -444,10 +444,36 @@ static void cai_tool_result_cleanup_plain(const lonejson_map *map,
     case LONEJSON_FIELD_KIND_OBJECT:
       cai_tool_result_cleanup_plain(field->submap, ptr);
       break;
+    case LONEJSON_FIELD_KIND_STRING_STREAM:
+    case LONEJSON_FIELD_KIND_BASE64_STREAM:
+      lonejson_spooled_cleanup((lonejson_spooled *)ptr);
+      break;
+    case LONEJSON_FIELD_KIND_STRING_SOURCE:
+    case LONEJSON_FIELD_KIND_BASE64_SOURCE:
+      lonejson_source_cleanup((lonejson_source *)ptr);
+      break;
+    case LONEJSON_FIELD_KIND_JSON_VALUE:
+      lonejson_json_value_cleanup((lonejson_json_value *)ptr);
+      break;
     default:
       break;
     }
   }
+}
+
+static const lonejson_field *cai_tool_result_find_field(
+    const lonejson_map *map, const char *field_name) {
+  size_t i;
+
+  if (map == NULL || field_name == NULL || field_name[0] == '\0') {
+    return NULL;
+  }
+  for (i = 0U; i < map->field_count; i++) {
+    if (strcmp(map->fields[i].json_key, field_name) == 0) {
+      return &map->fields[i];
+    }
+  }
+  return NULL;
 }
 
 char *cai_tool_result_strdup(const char *value, cai_error *error) {
@@ -459,6 +485,68 @@ char *cai_tool_result_strdup(const char *value, cai_error *error) {
                         "failed to allocate tool result string");
   }
   return copy;
+}
+
+int cai_tool_result_set_source_path(const lonejson_map *result_map,
+                                    void *result, const char *field_name,
+                                    const char *path, cai_error *error) {
+  const lonejson_field *field;
+  lonejson_source *source;
+  lonejson_error json_error;
+
+  if (result == NULL || path == NULL || path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result, field name, and source path are "
+                         "required");
+  }
+  field = cai_tool_result_find_field(result_map, field_name);
+  if (field == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result field is not registered");
+  }
+  if (field->kind != LONEJSON_FIELD_KIND_STRING_SOURCE &&
+      field->kind != LONEJSON_FIELD_KIND_BASE64_SOURCE) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result field is not a source field");
+  }
+  source = (lonejson_source *)((unsigned char *)result + field->struct_offset);
+  lonejson_error_init(&json_error);
+  if (lonejson_source_set_path(source, path, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to set tool result source path",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+int cai_tool_result_set_spooled(const lonejson_map *result_map, void *result,
+                                const char *field_name,
+                                lonejson_spooled *spool, cai_error *error) {
+  const lonejson_field *field;
+  lonejson_spooled *target;
+
+  if (result == NULL || spool == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result, field name, and spooled value are "
+                         "required");
+  }
+  field = cai_tool_result_find_field(result_map, field_name);
+  if (field == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result field is not registered");
+  }
+  if (field->kind != LONEJSON_FIELD_KIND_STRING_STREAM &&
+      field->kind != LONEJSON_FIELD_KIND_BASE64_STREAM) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result field is not a spooled field");
+  }
+  target =
+      (lonejson_spooled *)((unsigned char *)result + field->struct_offset);
+  lonejson_spooled_cleanup(target);
+  *target = *spool;
+  memset(spool, 0, sizeof(*spool));
+  return CAI_OK;
 }
 
 static cai_tool_entry *cai_tool_registry_find(cai_tool_registry *registry,
