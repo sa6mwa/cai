@@ -123,7 +123,6 @@ set(CAI_SOURCES
   src/cai_error.c
   src/cai_http.c
   src/cai_input_item.c
-  src/cai_lonejson.c
   src/cai_lonejson_impl.c
   src/cai_models.c
   src/cai_response.c

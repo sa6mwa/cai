@@ -18,7 +18,7 @@ static lonejson_status cai_conversation_spooled_sink(void *user,
                                                      const void *data,
                                                      size_t len,
                                                      lonejson_error *error) {
-  return cai_lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
 }
 
 static void cai_conversation_object_array_init(lonejson_object_array *array,

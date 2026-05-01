@@ -59,11 +59,8 @@ application.
   persist one JSON document containing the active continuation handle and, when
   enabled, local spooled history. File-backed save/load helpers wrap the same
   state envelope for the common disk persistence path.
-- Until lonejson exposes a public `lonejson_spooled_append` API, cai uses a
-  compatibility helper that rebuilds spooled values through lonejson's public
-  streaming parser. This is intentionally temporary: once the upstream append
-  API lands through the normal lonejson release path, replace the helper and
-  route large append-heavy history/tool-output paths through the native append.
+- cai depends directly on the official lonejson release and uses
+  `lonejson_spooled_append` for append-heavy history/tool-output paths.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
@@ -848,11 +845,8 @@ Resolved:
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead
   of faux streaming through full in-memory materialization.
-- cai currently carries a public-API-only compatibility shim for append-style
-  construction of `lonejson_spooled` values. It preserves the SDK behavior
-  against today's lonejson surface but is slower than the desired native
-  append. Replace it with `lonejson_spooled_append` once that API is available
-  from an official lonejson dependency release.
+- cai uses native `lonejson_spooled_append` from the official lonejson release
+  for append-heavy paths; no cai-side parser/rebuild shim should remain.
 
 Remaining:
 

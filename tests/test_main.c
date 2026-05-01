@@ -1045,7 +1045,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&raw_items, NULL);
   expect_int(state, "spooled_raw_append",
-             cai_lonejson_spooled_append(&raw_items, raw_fragment,
+             lonejson_spooled_append(&raw_items, raw_fragment,
                                      strlen(raw_fragment), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "spooled_raw_set",
@@ -1058,7 +1058,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
       CAI_OK);
   lonejson_spooled_init(&file_data, NULL);
   expect_int(state, "spooled_file_append",
-             cai_lonejson_spooled_append(&file_data, "inline file text",
+             lonejson_spooled_append(&file_data, "inline file text",
                                      strlen("inline file text"), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "spooled_file_add",
@@ -1075,7 +1075,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
              CAI_OK);
   lonejson_spooled_init(&tool_file_data, NULL);
   expect_int(state, "spooled_tool_file_append",
-             cai_lonejson_spooled_append(&tool_file_data, "tool file text",
+             lonejson_spooled_append(&tool_file_data, "tool file text",
                                      strlen("tool file text"), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(
@@ -2115,7 +2115,7 @@ static void test_conversations(test_state *state) {
   lonejson_spooled_init(&conversation_file_data, NULL);
   expect_int(
       state, "conversation_items_file_append",
-      cai_lonejson_spooled_append(&conversation_file_data, "conversation file text",
+      lonejson_spooled_append(&conversation_file_data, "conversation file text",
                               strlen("conversation file text"), &json_error),
       LONEJSON_STATUS_OK);
   expect_int(state, "conversation_items_add_file",

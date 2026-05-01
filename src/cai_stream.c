@@ -728,7 +728,7 @@ int cai_client_stream_response_json_with_id(
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&spooled, NULL);
   len = strlen(request_json);
-  if (cai_lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
+  if (lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(&spooled);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,

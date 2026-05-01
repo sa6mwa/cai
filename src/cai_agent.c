@@ -503,7 +503,7 @@ static int cai_history_append_bytes(lonejson_spooled *history,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (cai_lonejson_spooled_append(history, bytes, length, &json_error) ==
+  if (lonejson_spooled_append(history, bytes, length, &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
@@ -518,7 +518,7 @@ static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
   cai_history_sink_context *context;
   (void)error;
   context = (cai_history_sink_context *)user;
-  if (cai_lonejson_spooled_append(context->spool, data, len, error) ==
+  if (lonejson_spooled_append(context->spool, data, len, error) ==
       LONEJSON_STATUS_OK) {
     return LONEJSON_STATUS_OK;
   }
@@ -550,7 +550,7 @@ static int cai_history_capture_compact_array_spooled(
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (cai_lonejson_spooled_append(item, "[", 1U, &json_error) !=
+  if (lonejson_spooled_append(item, "[", 1U, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(item);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -579,7 +579,7 @@ static int cai_history_capture_compact_array_spooled(
       }
     }
   } while (!chunk.eof);
-  if (cai_lonejson_spooled_append(item, "]", 1U, &json_error) !=
+  if (lonejson_spooled_append(item, "]", 1U, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(item);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -1520,7 +1520,7 @@ static int cai_capture_tool_output(void *context, const void *bytes,
 
   capture = (cai_tool_output_capture *)context;
   lonejson_error_init(&json_error);
-  if (cai_lonejson_spooled_append(&capture->output, bytes, count, &json_error) ==
+  if (lonejson_spooled_append(&capture->output, bytes, count, &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
@@ -1910,7 +1910,7 @@ static lonejson_status cai_state_spooled_sink(void *user, const void *data,
   if (spool == NULL) {
     return LONEJSON_STATUS_CALLBACK_FAILED;
   }
-  return cai_lonejson_spooled_append(spool, data, len, error);
+  return lonejson_spooled_append(spool, data, len, error);
 }
 
 static int cai_json_builder_raw_spooled_value(cai_json_builder *builder,
@@ -2099,7 +2099,7 @@ static int cai_history_source_to_array_spooled(cai_session *session,
       break;
     }
     lonejson_error_init(&json_error);
-    if (cai_lonejson_spooled_append(&raw, buffer, nread, &json_error) !=
+    if (lonejson_spooled_append(&raw, buffer, nread, &json_error) !=
         LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to append imported history",
@@ -2171,7 +2171,7 @@ static int cai_history_source_to_array_spooled(cai_session *session,
         end = last_pos < global_end ? last_pos - global_start + 1U
                                     : chunk.bytes_read;
         lonejson_error_init(&json_error);
-        if (cai_lonejson_spooled_append(&trimmed, buffer + start, end - start,
+        if (lonejson_spooled_append(&trimmed, buffer + start, end - start,
                                     &json_error) != LONEJSON_STATUS_OK) {
           rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                     "failed to copy imported history",

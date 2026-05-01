@@ -19,6 +19,10 @@ typedef struct cai_json_builder_lonejson_sink_state {
   char last;
 } cai_json_builder_lonejson_sink_state;
 
+typedef struct cai_zero_alloc_header {
+  size_t size;
+} cai_zero_alloc_header;
+
 enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
 
 typedef struct cai_response_content_doc {
@@ -191,6 +195,61 @@ static const lonejson_field cai_response_fields[] = {
         cai_response_doc, output, "output", cai_response_output_doc,
         &cai_response_output_map, LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_response_map, cai_response_doc, cai_response_fields);
+
+static void *cai_zero_malloc(void *ctx, size_t size) {
+  cai_zero_alloc_header *header;
+
+  (void)ctx;
+  header = (cai_zero_alloc_header *)calloc(1U, sizeof(*header) + size);
+  if (header == NULL) {
+    return NULL;
+  }
+  header->size = size;
+  return (void *)(header + 1);
+}
+
+static void *cai_zero_realloc(void *ctx, void *ptr, size_t size) {
+  cai_zero_alloc_header *header;
+  cai_zero_alloc_header *next;
+  size_t old_size;
+
+  (void)ctx;
+  if (ptr == NULL) {
+    return cai_zero_malloc(ctx, size);
+  }
+  header = ((cai_zero_alloc_header *)ptr) - 1;
+  old_size = header->size;
+  next = (cai_zero_alloc_header *)realloc(header, sizeof(*next) + size);
+  if (next == NULL) {
+    return NULL;
+  }
+  if (size > old_size) {
+    memset(((unsigned char *)(next + 1)) + old_size, 0, size - old_size);
+  }
+  next->size = size;
+  return (void *)(next + 1);
+}
+
+static void cai_zero_free(void *ctx, void *ptr) {
+  cai_zero_alloc_header *header;
+
+  (void)ctx;
+  if (ptr == NULL) {
+    return;
+  }
+  header = ((cai_zero_alloc_header *)ptr) - 1;
+  free(header);
+}
+
+static lonejson_allocator cai_zero_allocator(void) {
+  lonejson_allocator allocator;
+
+  memset(&allocator, 0, sizeof(allocator));
+  allocator.malloc_fn = cai_zero_malloc;
+  allocator.realloc_fn = cai_zero_realloc;
+  allocator.free_fn = cai_zero_free;
+  return allocator;
+}
 
 static void cai_content_part_cleanup(const cai_allocator *allocator,
                                      struct cai_content_part *part) {
@@ -493,7 +552,7 @@ static int cai_json_builder_raw_spooled(cai_json_builder *builder,
 static lonejson_status cai_spooled_lonejson_sink(void *user, const void *data,
                                                  size_t len,
                                                  lonejson_error *error) {
-  return cai_lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
 }
 
 static int cai_json_builder_field_spooled(cai_json_builder *builder,
@@ -1415,7 +1474,7 @@ int cai_response_create_params_add_function_call_output(
   }
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&spooled, NULL);
-  if (cai_lonejson_spooled_append(&spooled, output, strlen(output), &json_error) !=
+  if (lonejson_spooled_append(&spooled, output, strlen(output), &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_spooled_cleanup(&spooled);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -2396,7 +2455,9 @@ int cai_response_parse_json(const char *json, cai_response **out,
   cai_response_doc doc;
   cai_response *response;
   lonejson_spooled output_items_json;
+  lonejson_allocator zero_allocator;
   lonejson_error json_error;
+  lonejson_parse_options parse_options;
   lonejson_status status;
   int refusal_present;
   int have_output_items_json;
@@ -2412,8 +2473,11 @@ int cai_response_parse_json(const char *json, cai_response **out,
   have_output_items_json = 0;
   memset(&doc, 0, sizeof(doc));
   lonejson_init(&cai_response_map, &doc);
-  status =
-      lonejson_parse_cstr(&cai_response_map, &doc, json, NULL, &json_error);
+  zero_allocator = cai_zero_allocator();
+  parse_options = lonejson_default_parse_options();
+  parse_options.allocator = &zero_allocator;
+  status = lonejson_parse_cstr(&cai_response_map, &doc, json, &parse_options,
+                               &json_error);
   if (status != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_response_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -2708,7 +2772,7 @@ static int cai_spooled_array_items_spool(const lonejson_spooled *array_json,
         continue;
       }
       if (have_held) {
-        if (cai_lonejson_spooled_append(out, &held, 1U, &json_error) !=
+        if (lonejson_spooled_append(out, &held, 1U, &json_error) !=
             LONEJSON_STATUS_OK) {
           lonejson_spooled_cleanup(out);
           return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
