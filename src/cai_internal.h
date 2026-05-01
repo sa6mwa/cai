@@ -246,6 +246,9 @@ int cai_json_builder_string(cai_json_builder *builder, const char *value,
 int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
                                   const char *value, int *need_comma,
                                   cai_error *error);
+int cai_serialize_input_message_items_json(cai_json_builder *builder,
+                                           const lonejson_object_array *input,
+                                           cai_error *error);
 int cai_serialize_input_messages_json(cai_json_builder *builder,
                                       const char *field_name,
                                       const lonejson_object_array *messages,

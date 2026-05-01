@@ -12,6 +12,14 @@ typedef struct cai_conversation_metadata_doc {
   lonejson_json_value metadata;
 } cai_conversation_metadata_doc;
 
+typedef struct cai_conversation_items_request_doc {
+  lonejson_json_value items;
+} cai_conversation_items_request_doc;
+
+typedef struct cai_conversation_spooled_reader_context {
+  lonejson_spooled cursor;
+} cai_conversation_spooled_reader_context;
+
 static const lonejson_field cai_conversation_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_conversation_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_conversation_doc, object, "object")};
@@ -25,11 +33,34 @@ LONEJSON_MAP_DEFINE(cai_conversation_metadata_map,
                     cai_conversation_metadata_doc,
                     cai_conversation_metadata_fields);
 
+static const lonejson_field cai_conversation_items_request_fields[] = {
+    LONEJSON_FIELD_JSON_VALUE_REQ(cai_conversation_items_request_doc, items,
+                                  "items")};
+LONEJSON_MAP_DEFINE(cai_conversation_items_request_map,
+                    cai_conversation_items_request_doc,
+                    cai_conversation_items_request_fields);
+
 static lonejson_status cai_conversation_spooled_sink(void *user,
                                                      const void *data,
                                                      size_t len,
                                                      lonejson_error *error) {
   return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+}
+
+static lonejson_read_result
+cai_conversation_spooled_reader(void *user, unsigned char *buffer,
+                                size_t capacity) {
+  cai_conversation_spooled_reader_context *context;
+  lonejson_read_result result;
+
+  context = (cai_conversation_spooled_reader_context *)user;
+  if (context == NULL) {
+    result = lonejson_default_read_result();
+    result.eof = 1;
+    result.error_code = 1;
+    return result;
+  }
+  return lonejson_spooled_read(&context->cursor, buffer, capacity);
 }
 
 static void cai_conversation_object_array_init(lonejson_object_array *array,
@@ -826,8 +857,12 @@ int cai_conversation_items_params_add_file_data_spooled(
 static int cai_conversation_items_params_spool_json(
     const cai_conversation_items_params *params, lonejson_spooled *out,
     size_t *out_len, cai_error *error) {
+  cai_conversation_items_request_doc doc;
+  cai_conversation_spooled_reader_context reader_context;
+  lonejson_spooled items;
   cai_json_builder builder;
   lonejson_error json_error;
+  int has_items;
   int rc;
 
   if (out == NULL) {
@@ -838,29 +873,73 @@ static int cai_conversation_items_params_spool_json(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "at least one conversation item is required");
   }
+  memset(&doc, 0, sizeof(doc));
+  memset(&items, 0, sizeof(items));
+  memset(&reader_context, 0, sizeof(reader_context));
+  has_items = 0;
   lonejson_error_init(&json_error);
-  lonejson_spooled_init(out, NULL);
+  lonejson_spooled_init(&items, NULL);
+  has_items = 1;
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
   builder.sink = cai_conversation_spooled_sink;
-  builder.sink_user = out;
+  builder.sink_user = &items;
   builder.sink_error = &json_error;
-  rc = cai_json_builder_lit(&builder, "{", error);
+  rc = cai_json_builder_lit(&builder, "[", error);
   if (rc == CAI_OK) {
-    rc = cai_serialize_input_messages_json(&builder, "items", &params->items,
-                                           error);
+    rc = cai_serialize_input_message_items_json(&builder, &params->items,
+                                                error);
   }
   if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "}", error);
+    rc = cai_json_builder_lit(&builder, "]", error);
+  }
+  if (rc == CAI_OK) {
+    reader_context.cursor = items;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind conversation items JSON",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK) {
+    lonejson_json_value_init(&doc.items);
+    lonejson_error_init(&json_error);
+    if (lonejson_json_value_set_reader(&doc.items,
+                                       cai_conversation_spooled_reader,
+                                       &reader_context,
+                                       &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to prepare conversation items JSON",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK) {
+    lonejson_spooled_init(out, NULL);
+    lonejson_error_init(&json_error);
+    if (lonejson_serialize_sink(&cai_conversation_items_request_map, &doc,
+                                cai_conversation_spooled_sink, out, NULL,
+                                &json_error) != LONEJSON_STATUS_OK) {
+      lonejson_spooled_cleanup(out);
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize conversation items JSON",
+                                json_error.message);
+    }
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(out);
+    if (has_items) {
+      lonejson_spooled_cleanup(&items);
+    }
+    lonejson_json_value_cleanup(&doc.items);
     return rc;
   }
   if (out_len != NULL) {
-    *out_len = builder.length;
+    *out_len = lonejson_spooled_size(out);
   }
+  lonejson_spooled_cleanup(&items);
+  lonejson_json_value_cleanup(&doc.items);
   return CAI_OK;
 }
 

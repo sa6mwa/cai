@@ -1854,10 +1854,9 @@ cai_serialize_content_parts_json(cai_json_builder *builder,
   return rc;
 }
 
-static int
-cai_serialize_input_message_items_json(cai_json_builder *builder,
-                                       const lonejson_object_array *input,
-                                       cai_error *error) {
+int cai_serialize_input_message_items_json(cai_json_builder *builder,
+                                           const lonejson_object_array *input,
+                                           cai_error *error) {
   struct cai_input_message *messages;
   size_t i;
   int rc;
