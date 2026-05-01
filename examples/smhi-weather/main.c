@@ -554,7 +554,7 @@ int main(int argc, char **argv) {
   int rc;
   int exit_code;
 
-  location = argc > 1 ? argv[1] : "Stockholm";
+  location = argc > 1 ? argv[1] : "Gothenburg";
   build_prompt(prompt, sizeof(prompt), location);
 
   cai_error_init(&error);

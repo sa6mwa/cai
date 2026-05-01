@@ -87,7 +87,7 @@ summarize.
 
 ```sh
 cmake --build --preset debug --target cai_example_smhi_weather
-OPENAI_API_KEY=... ./build/debug/cai_example_smhi_weather Stockholm
+OPENAI_API_KEY=... ./build/debug/cai_example_smhi_weather Gothenburg
 ```
 
 ## Terminal Chat
