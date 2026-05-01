@@ -8,11 +8,22 @@ typedef struct cai_conversation_doc {
   char *object;
 } cai_conversation_doc;
 
+typedef struct cai_conversation_metadata_doc {
+  lonejson_json_value metadata;
+} cai_conversation_metadata_doc;
+
 static const lonejson_field cai_conversation_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_conversation_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_conversation_doc, object, "object")};
 LONEJSON_MAP_DEFINE(cai_conversation_map, cai_conversation_doc,
                     cai_conversation_fields);
+
+static const lonejson_field cai_conversation_metadata_fields[] = {
+    LONEJSON_FIELD_JSON_VALUE_REQ(cai_conversation_metadata_doc, metadata,
+                                  "metadata")};
+LONEJSON_MAP_DEFINE(cai_conversation_metadata_map,
+                    cai_conversation_metadata_doc,
+                    cai_conversation_metadata_fields);
 
 static lonejson_status cai_conversation_spooled_sink(void *user,
                                                      const void *data,
@@ -257,6 +268,37 @@ static int cai_conversation_request(cai_client *client, const char *method,
   return rc;
 }
 
+static int cai_conversation_request_spooled(cai_client *client,
+                                            const char *method,
+                                            const char *path,
+                                            const lonejson_spooled *body,
+                                            size_t body_len,
+                                            cai_conversation **out,
+                                            cai_error *error) {
+  char *json;
+  char *request_id;
+  long http_status;
+  int rc;
+
+  json = NULL;
+  request_id = NULL;
+  rc = cai_http_json_request_spooled(client, method, path, body, body_len,
+                                     &json, &http_status, &request_id, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (http_status < 200L || http_status >= 300L) {
+    rc = cai_set_openai_error(error, http_status, json, request_id);
+    free(json);
+    free(request_id);
+    return rc;
+  }
+  free(request_id);
+  rc = cai_conversation_parse_json(json, out, error);
+  free(json);
+  return rc;
+}
+
 int cai_client_create_conversation(cai_client *client, cai_conversation **out,
                                    cai_error *error) {
   return cai_conversation_request(client, "POST", "conversations", "{}", out,
@@ -292,9 +334,12 @@ int cai_client_update_conversation_metadata(cai_client *client,
                                             const char *metadata_json,
                                             cai_conversation **out,
                                             cai_error *error) {
-  cai_json_builder builder;
+  cai_conversation_metadata_doc doc;
+  lonejson_spooled body;
+  lonejson_error json_error;
   const char *metadata;
   char *path;
+  int has_body;
   int rc;
 
   if (out == NULL) {
@@ -303,30 +348,47 @@ int cai_client_update_conversation_metadata(cai_client *client,
   }
   *out = NULL;
   metadata = metadata_json != NULL ? metadata_json : "{}";
-  builder.data = NULL;
-  builder.length = 0U;
-  builder.capacity = 0U;
-  builder.sink = NULL;
-  builder.sink_user = NULL;
-  builder.sink_error = NULL;
+  memset(&doc, 0, sizeof(doc));
+  lonejson_json_value_init(&doc.metadata);
+  memset(&body, 0, sizeof(body));
+  has_body = 0;
   path = NULL;
-  rc = cai_json_builder_lit(&builder, "{\"metadata\":", error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, metadata, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(&builder, "}", error);
+  lonejson_error_init(&json_error);
+  if (lonejson_json_value_set_buffer(&doc.metadata, metadata,
+                                     strlen(metadata),
+                                     &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                              "conversation metadata must be valid JSON",
+                              json_error.message);
+  } else {
+    rc = CAI_OK;
   }
   if (rc == CAI_OK) {
     rc = cai_build_conversation_path(client, conversation_id, NULL, &path,
                                      error);
   }
   if (rc == CAI_OK) {
-    rc = cai_conversation_request(client, "POST", path, builder.data, out,
-                                  error);
+    lonejson_spooled_init(&body, NULL);
+    has_body = 1;
+    lonejson_error_init(&json_error);
+    if (lonejson_serialize_sink(&cai_conversation_metadata_map, &doc,
+                                cai_conversation_spooled_sink, &body, NULL,
+                                &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize conversation metadata",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_conversation_request_spooled(client, "POST", path, &body,
+                                          lonejson_spooled_size(&body), out,
+                                          error);
   }
   cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
-  cai_free_mem(NULL, builder.data);
+  if (has_body) {
+    lonejson_spooled_cleanup(&body);
+  }
+  lonejson_json_value_cleanup(&doc.metadata);
   return rc;
 }
 
