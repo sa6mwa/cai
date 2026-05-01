@@ -802,6 +802,11 @@ Mirror liblockdc where practical:
   session without materializing the whole value in memory. Bounded buffering is
   only acceptable inside the normal chunk buffers of lonejson, curl, or the
   transport layer.
+- Current boundary: tool JSON Schema generation still uses cai's small internal
+  JSON builder because schema `properties` is a dynamic object keyed by caller
+  field names. Lonejson fixed maps cannot currently stream dynamic object keys.
+  Keep raw schema fragments validated through `lonejson_json_value`; replace
+  this builder path when lonejson grows a dynamic object/property writer.
 - Unit-test multi-tool and error paths.
 
 ### Milestone 5: SSE streaming
