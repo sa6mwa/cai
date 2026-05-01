@@ -32,6 +32,8 @@ example layers settle.
 - CMake/Ninja/Make based build.
 - Installed builds export CMake package targets under `lib/cmake/cai` and a
   relocatable `cai.pc` pkg-config file.
+- `make release` builds/tests the release preset and writes
+  `dist/cai-<version>-<target>.tar.gz` plus SHA-256 sums.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which

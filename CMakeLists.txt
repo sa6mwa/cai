@@ -26,6 +26,7 @@ option(CAI_INSTALL "Enable install rules." ON)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
+set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
     CACHE PATH "Downloaded third-party dependency cache.")
 set(CAI_LONEJSON_VERSION "0.5.0")
@@ -41,6 +42,22 @@ set(CAI_PSLOG_URL
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
+endif()
+
+if(CAI_TARGET_ID STREQUAL "")
+  string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_system_name_lower)
+  string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _cai_processor_lower)
+  if(_cai_system_name_lower STREQUAL "linux" AND
+     (_cai_processor_lower STREQUAL "x86_64" OR
+      _cai_processor_lower STREQUAL "amd64"))
+    set(CAI_TARGET_ID "x86_64-linux-gnu")
+  elseif(_cai_system_name_lower STREQUAL "darwin" AND
+         (_cai_processor_lower STREQUAL "arm64" OR
+          _cai_processor_lower STREQUAL "aarch64"))
+    set(CAI_TARGET_ID "arm64-apple-darwin")
+  else()
+    set(CAI_TARGET_ID "${_cai_processor_lower}-${_cai_system_name_lower}")
+  endif()
 endif()
 
 function(cai_configure_c_target target)
@@ -249,6 +266,14 @@ if(CAI_BUILD_TESTS)
   cai_configure_c_target(cai_tests)
   add_test(NAME cai_tests COMMAND cai_tests)
 
+  if(CAI_INSTALL)
+    add_test(NAME cai_install_metadata_test
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCAI_VERSION=${PROJECT_VERSION}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
+  endif()
+
   if(CAI_BUILD_INTEGRATION_TESTS)
     add_executable(cai_integration_tests tests/integration_main.c)
     target_include_directories(cai_integration_tests PRIVATE
@@ -342,4 +367,29 @@ if(CAI_INSTALL)
     DESTINATION "${CAI_INSTALL_CMAKEDIR}")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+
+  set(_cai_package_deps "")
+  if(TARGET cai_static)
+    list(APPEND _cai_package_deps cai_static)
+  endif()
+  if(TARGET cai_shared)
+    list(APPEND _cai_package_deps cai_shared)
+  endif()
+  add_custom_target(cai_package_archive
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
+      "-DCAI_VERSION=${PROJECT_VERSION}"
+      "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_archive.cmake"
+    DEPENDS ${_cai_package_deps}
+    VERBATIM)
+  add_custom_target(cai_package_checksums
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
+      "-DCAI_VERSION=${PROJECT_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_checksums.cmake"
+    DEPENDS cai_package_archive
+    VERBATIM)
 endif()
