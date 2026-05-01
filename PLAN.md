@@ -65,6 +65,10 @@ application.
   a non-materializing length pass for HTTP compatibility, but the actual upload
   path streams generated JSON directly from lonejson into libcurl and does not
   stage a request JSON buffer.
+- Responses and Conversations typed input-item serialization normalizes the C
+  input structs through lonejson maps. Large file/tool output fields remain
+  spooled and are inserted as `json_value` readers; array/object framing glue is
+  the only remaining hand-written JSON at that boundary.
 - Unit tests never hit OpenAI. Integration tests require explicit opt-in.
 - `.env` loading precedence: if `.env` exists, load `OPENAI_API_KEY` from it
   and let it override the process environment. If `.env` does not exist, use
