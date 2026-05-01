@@ -14,10 +14,11 @@
   "cloud_area_fraction,precipitation_amount,"                                \
   "predominant_precipitation_type_at_surface,symbol_code"
 
+#define NOMINATIM_SEARCH_URL                                                   \
+  "https://nominatim.openstreetmap.org/search?q=%s&format=geocodejson&limit=1"
+
 typedef struct smhi_weather_args {
   char *location;
-  double latitude;
-  double longitude;
 } smhi_weather_args;
 
 typedef struct smhi_weather_result {
@@ -81,14 +82,20 @@ typedef struct smhi_forecast_doc {
   lonejson_object_array time_series;
 } smhi_forecast_doc;
 
+typedef struct nominatim_feature_doc {
+  smhi_geometry_doc geometry;
+} nominatim_feature_doc;
+
+typedef struct nominatim_doc {
+  lonejson_object_array features;
+} nominatim_doc;
+
 typedef struct smhi_spool_reader {
   lonejson_spooled cursor;
 } smhi_spool_reader;
 
 static const lonejson_field smhi_weather_arg_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_REQ(smhi_weather_args, location, "location"),
-    LONEJSON_FIELD_F64_REQ(smhi_weather_args, latitude, "latitude"),
-    LONEJSON_FIELD_F64_REQ(smhi_weather_args, longitude, "longitude")};
+    LONEJSON_FIELD_STRING_ALLOC_REQ(smhi_weather_args, location, "location")};
 LONEJSON_MAP_DEFINE(smhi_weather_args_map, smhi_weather_args,
                     smhi_weather_arg_fields);
 
@@ -176,6 +183,17 @@ static const lonejson_field smhi_forecast_fields[] = {
 LONEJSON_MAP_DEFINE(smhi_forecast_map, smhi_forecast_doc,
                     smhi_forecast_fields);
 
+static const lonejson_field nominatim_feature_fields[] = {
+    LONEJSON_FIELD_OBJECT(nominatim_feature_doc, geometry, "geometry",
+                          &smhi_geometry_map)};
+LONEJSON_MAP_DEFINE(nominatim_feature_map, nominatim_feature_doc,
+                    nominatim_feature_fields);
+
+static const lonejson_field nominatim_fields[] = {LONEJSON_FIELD_OBJECT_ARRAY(
+    nominatim_doc, features, "features", nominatim_feature_doc,
+    &nominatim_feature_map, LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(nominatim_map, nominatim_doc, nominatim_fields);
+
 static const char *example_model(void) {
   const char *model;
 
@@ -244,21 +262,13 @@ static size_t smhi_write_spool(char *ptr, size_t size, size_t nmemb,
   return len;
 }
 
-static int smhi_fetch_forecast(double latitude, double longitude,
-                               lonejson_spooled *out, cai_error *error) {
+static int smhi_fetch_url(const char *url, const char *label,
+                          lonejson_spooled *out, cai_error *error) {
   CURL *curl;
   CURLcode code;
-  char url[512];
   long http_status;
   int rc;
 
-  if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 ||
-      longitude > 180.0) {
-    return smhi_set_error(error, CAI_ERR_INVALID,
-                          "latitude or longitude is outside valid bounds",
-                          NULL);
-  }
-  snprintf(url, sizeof(url), SMHI_FORECAST_URL, longitude, latitude);
   lonejson_spooled_init(out, NULL);
   curl = curl_easy_init();
   if (curl == NULL) {
@@ -278,16 +288,29 @@ static int smhi_fetch_forecast(double latitude, double longitude,
   curl_easy_cleanup(curl);
   if (code != CURLE_OK) {
     lonejson_spooled_cleanup(out);
-    return smhi_set_error(error, CAI_ERR_TRANSPORT, "SMHI request failed",
+    return smhi_set_error(error, CAI_ERR_TRANSPORT, label,
                           curl_easy_strerror(code));
   }
   if (http_status < 200L || http_status >= 300L) {
     lonejson_spooled_cleanup(out);
-    return smhi_set_error(error, CAI_ERR_SERVER,
-                          "SMHI returned a non-success HTTP status", NULL);
+    return smhi_set_error(error, CAI_ERR_SERVER, label, NULL);
   }
   rc = CAI_OK;
   return rc;
+}
+
+static int smhi_fetch_forecast(double latitude, double longitude,
+                               lonejson_spooled *out, cai_error *error) {
+  char url[512];
+
+  if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 ||
+      longitude > 180.0) {
+    return smhi_set_error(error, CAI_ERR_INVALID,
+                          "latitude or longitude is outside valid bounds",
+                          NULL);
+  }
+  snprintf(url, sizeof(url), SMHI_FORECAST_URL, longitude, latitude);
+  return smhi_fetch_url(url, "SMHI request failed", out, error);
 }
 
 static lonejson_read_result smhi_spool_read(void *user, unsigned char *buffer,
@@ -324,6 +347,80 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
   return CAI_OK;
 }
 
+static int smhi_geocode_location(const char *location, double *latitude,
+                                 double *longitude, cai_error *error) {
+  CURL *curl;
+  char *escaped;
+  char url[1024];
+  lonejson_spooled body;
+  nominatim_doc doc;
+  nominatim_feature_doc *feature;
+  smhi_spool_reader reader;
+  lonejson_error json_error;
+  int rc;
+
+  if (location == NULL || location[0] == '\0') {
+    return smhi_set_error(error, CAI_ERR_INVALID, "location is required",
+                          NULL);
+  }
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    return smhi_set_error(error, CAI_ERR_TRANSPORT,
+                          "failed to initialize curl", NULL);
+  }
+  escaped = curl_easy_escape(curl, location, 0);
+  if (escaped == NULL) {
+    curl_easy_cleanup(curl);
+    return smhi_set_error(error, CAI_ERR_NOMEM,
+                          "failed to encode location", NULL);
+  }
+  snprintf(url, sizeof(url), NOMINATIM_SEARCH_URL, escaped);
+  curl_free(escaped);
+  curl_easy_cleanup(curl);
+  rc = smhi_fetch_url(url, "Nominatim geocoding request failed", &body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+
+  memset(&doc, 0, sizeof(doc));
+  lonejson_init(&nominatim_map, &doc);
+  reader.cursor = body;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&nominatim_map, &doc);
+    lonejson_spooled_cleanup(&body);
+    return smhi_set_error(error, CAI_ERR_PROTOCOL,
+                          "failed to rewind Nominatim response",
+                          json_error.message);
+  }
+  lonejson_error_init(&json_error);
+  if (lonejson_parse_reader(&nominatim_map, &doc, smhi_spool_read, &reader,
+                            NULL, &json_error) != LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&nominatim_map, &doc);
+    lonejson_spooled_cleanup(&body);
+    return smhi_set_error(error, CAI_ERR_PROTOCOL,
+                          "failed to parse Nominatim response JSON",
+                          json_error.message);
+  }
+  lonejson_spooled_cleanup(&body);
+  if (doc.features.count == 0U) {
+    lonejson_cleanup(&nominatim_map, &doc);
+    return smhi_set_error(error, CAI_ERR_PROTOCOL,
+                          "Nominatim did not resolve the location", NULL);
+  }
+  feature = (nominatim_feature_doc *)doc.features.items;
+  if (feature[0].geometry.coordinates.count < 2U) {
+    lonejson_cleanup(&nominatim_map, &doc);
+    return smhi_set_error(error, CAI_ERR_PROTOCOL,
+                          "Nominatim result did not contain coordinates", NULL);
+  }
+  *longitude = feature[0].geometry.coordinates.items[0];
+  *latitude = feature[0].geometry.coordinates.items[1];
+  lonejson_cleanup(&nominatim_map, &doc);
+  return CAI_OK;
+}
+
 static int smhi_copy_result_string(char **target, const char *value,
                                    cai_error *error) {
   *target = cai_tool_result_strdup(value != NULL ? value : "", error);
@@ -337,12 +434,18 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
   smhi_forecast_doc forecast;
   smhi_forecast_time_doc *first;
   lonejson_spooled body;
+  double latitude;
+  double longitude;
   int rc;
 
   (void)context;
   args = (const smhi_weather_args *)params;
   out = (smhi_weather_result *)result;
-  rc = smhi_fetch_forecast(args->latitude, args->longitude, &body, error);
+  rc = smhi_geocode_location(args->location, &latitude, &longitude, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = smhi_fetch_forecast(latitude, longitude, &body, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -358,9 +461,11 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
         "SMHI response did not contain a forecast timeSeries", NULL);
   }
   first = (smhi_forecast_time_doc *)forecast.time_series.items;
-  rc = smhi_copy_result_string(&out->source, "SMHI Open Data snow1g point "
-                                            "forecast",
-                               error);
+  rc = smhi_copy_result_string(
+      &out->source,
+      "SMHI Open Data snow1g point forecast; location resolved by "
+      "OpenStreetMap Nominatim",
+      error);
   if (rc == CAI_OK) {
     rc = smhi_copy_result_string(&out->location, args->location, error);
   }
@@ -418,18 +523,15 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
   return CAI_OK;
 }
 
-static void build_prompt(char *buffer, size_t capacity, const char *location,
-                         const char *lat, const char *lon) {
+static void build_prompt(char *buffer, size_t capacity, const char *location) {
   snprintf(buffer, capacity,
-           "Get the current SMHI forecast for %s using latitude %s and "
-           "longitude %s. Mention that the data source is SMHI.",
-           location, lat, lon);
+           "Get the current SMHI forecast for %s. Mention that the weather "
+           "data source is SMHI.",
+           location);
 }
 
 int main(int argc, char **argv) {
   const char *location;
-  const char *lat;
-  const char *lon;
   char prompt[512];
   cai_client_config client_config;
   cai_agent_config agent_config;
@@ -442,9 +544,7 @@ int main(int argc, char **argv) {
   int exit_code;
 
   location = argc > 1 ? argv[1] : "Stockholm";
-  lat = argc > 2 ? argv[2] : "59.3293";
-  lon = argc > 3 ? argv[3] : "18.0686";
-  build_prompt(prompt, sizeof(prompt), location, lat, lon);
+  build_prompt(prompt, sizeof(prompt), location);
 
   cai_error_init(&error);
   cai_client_config_init(&client_config);
@@ -481,7 +581,8 @@ int main(int argc, char **argv) {
   rc = agent->register_tool(
       agent, "smhi_weather",
       "Fetch the nearest-gridpoint weather forecast from SMHI Open Data for a "
-      "location with latitude and longitude.",
+      "location name. The tool resolves the location to coordinates before "
+      "calling SMHI.",
       &smhi_weather_args_map, &smhi_weather_result_map, smhi_weather_tool, NULL,
       &error);
   if (rc != CAI_OK) {
