@@ -1814,9 +1814,12 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
                                             error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_open_response_text_source_with_complete(
+    rc = cai_client_open_response_text_source_take_params(
         CAI_SESSION_AGENT_IMPL(session)->client, params, cai_session_stream_complete, session,
         out, error);
+    if (rc == CAI_OK) {
+      params = NULL;
+    }
   }
   cai_response_create_params_destroy(params);
   if (has_pending_items) {

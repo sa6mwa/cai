@@ -338,6 +338,10 @@ int cai_client_open_response_text_source_with_complete(
     cai_client *client, const cai_response_create_params *params,
     cai_stream_complete_fn on_complete, void *complete_context,
     cai_source **out, cai_error *error);
+int cai_client_open_response_text_source_take_params(
+    cai_client *client, cai_response_create_params *params,
+    cai_stream_complete_fn on_complete, void *complete_context,
+    cai_source **out, cai_error *error);
 int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
     cai_sink *sink, char **out_response_id, cai_token_usage *out_usage,
