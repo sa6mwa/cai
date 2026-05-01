@@ -383,6 +383,8 @@ Plan:
   it is not currently a complete capability registry for context windows,
   endpoint support, tool support, max output tokens, or automatic compaction
   thresholds.
+- Expose metadata status flags so callers can distinguish verified rows from
+  incomplete, inferred, deprecated, or provider-specific metadata.
 - Keep `cai` permissive for unknown model strings. Unknown models may be used,
   but helpers should report that local metadata is unavailable.
 - Do not prevent callers from passing an arbitrary model string.

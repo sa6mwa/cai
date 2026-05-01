@@ -14,14 +14,19 @@
   (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                        \
    CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_IMAGE_INPUT |               \
    CAI_MODEL_CAP_AUDIO_INPUT)
+#define CAI_MODEL_ROW_META_PRICED(model_id, caps, flags, context_tokens,       \
+                                  input_price, cached_price, output_price)     \
+  {model_id, caps, flags, context_tokens, ((context_tokens) * 8LL) / 10LL,     \
+   input_price, cached_price, output_price}
 #define CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, input_price,      \
                              cached_price, output_price)                      \
-  {model_id, caps, context_tokens, ((context_tokens) * 8LL) / 10LL,            \
-   input_price, cached_price, output_price}
+  CAI_MODEL_ROW_META_PRICED(model_id, caps, CAI_MODEL_META_VERIFIED,           \
+                            context_tokens, input_price, cached_price,         \
+                            output_price)
 #define CAI_MODEL_ROW(model_id, caps, context_tokens)                         \
   CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, 0.0, 0.0, 0.0)
 #define CAI_MODEL_ROW_UNKNOWN(model_id, caps)                                  \
-  {model_id, caps, 0LL, 0LL, 0.0, 0.0, 0.0}
+  {model_id, caps, CAI_MODEL_META_INCOMPLETE, 0LL, 0LL, 0.0, 0.0, 0.0}
 
 static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_5, CAI_MODEL_CAP_TEXT, 1050000LL),
@@ -162,10 +167,12 @@ static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11,
                           CAI_MODEL_CAP_TEXT),
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_CODEX_MINI_LATEST, CAI_MODEL_CAP_TEXT),
-    CAI_MODEL_ROW_PRICED(
+    CAI_MODEL_ROW_META_PRICED(
         CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,
-        CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT, 256000LL, 0.0, 0.0, 0.0),
-    {NULL, 0U, 0LL, 0LL, 0.0, 0.0, 0.0}};
+        CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT,
+        CAI_MODEL_META_VERIFIED | CAI_MODEL_META_PROVIDER_OPENROUTER, 256000LL,
+        0.0, 0.0, 0.0),
+    {NULL, 0U, 0U, 0LL, 0LL, 0.0, 0.0, 0.0}};
 
 const cai_model_info *cai_model_info_by_id(const char *model_id) {
   size_t i;
@@ -189,6 +196,13 @@ int cai_model_supports(const char *model_id, unsigned int capability) {
     return 0;
   }
   return (info->capabilities & capability) == capability;
+}
+
+unsigned int cai_model_metadata_flags(const char *model_id) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  return info != NULL ? info->metadata_flags : 0U;
 }
 
 long long cai_model_context_window_tokens(const char *model_id) {

@@ -269,6 +269,14 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
   expect_int(state, "model_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_NANO), 400000L);
+  expect_int(state, "model_metadata_verified",
+             (long)(cai_model_metadata_flags(CAI_MODEL_GPT_5_NANO) &
+                    CAI_MODEL_META_VERIFIED),
+             CAI_MODEL_META_VERIFIED);
+  expect_int(state, "model_metadata_incomplete",
+             (long)(cai_model_metadata_flags(CAI_MODEL_GPT_5_PRO) &
+                    CAI_MODEL_META_INCOMPLETE),
+             CAI_MODEL_META_INCOMPLETE);
   expect_str(state, "model_default", CAI_MODEL_DEFAULT_RESPONSES,
              CAI_MODEL_GPT_5_NANO);
   expect_int(state, "model_gpt_4_1_context",
@@ -284,6 +292,11 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(
                  CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE),
              256000L);
+  expect_int(state, "openrouter_nemotron_provider",
+             (long)(cai_model_metadata_flags(
+                        CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE) &
+                    CAI_MODEL_META_PROVIDER_OPENROUTER),
+             CAI_MODEL_META_PROVIDER_OPENROUTER);
   expect_int(state, "openrouter_nemotron_tools",
              cai_model_supports(
                  CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,

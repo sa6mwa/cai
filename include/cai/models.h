@@ -130,9 +130,16 @@ extern "C" {
 #define CAI_MODEL_CAP_AUDIO_INPUT 0x0040u
 #define CAI_MODEL_CAP_AUDIO_OUTPUT 0x0080u
 
+#define CAI_MODEL_META_VERIFIED 0x0001u
+#define CAI_MODEL_META_INCOMPLETE 0x0002u
+#define CAI_MODEL_META_INFERRED 0x0004u
+#define CAI_MODEL_META_DEPRECATED 0x0008u
+#define CAI_MODEL_META_PROVIDER_OPENROUTER 0x0010u
+
 typedef struct cai_model_info {
   const char *id;
   unsigned int capabilities;
+  unsigned int metadata_flags;
   long long context_window_tokens;
   long long auto_compact_token_limit;
   double input_usd_per_million;
@@ -142,6 +149,7 @@ typedef struct cai_model_info {
 
 const cai_model_info *cai_model_info_by_id(const char *model_id);
 int cai_model_supports(const char *model_id, unsigned int capability);
+unsigned int cai_model_metadata_flags(const char *model_id);
 long long cai_model_context_window_tokens(const char *model_id);
 long long cai_model_auto_compact_token_limit(const char *model_id);
 double cai_model_estimate_usage_usd(const char *model_id,

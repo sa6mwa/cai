@@ -282,8 +282,8 @@ As a result, `cai` will treat model metadata as curated SDK data:
   before `cai` is updated.
 - Known models get a compiled metadata table with capability flags and context
   limits plus pricing metadata where pricing has been explicitly entered.
-- Metadata rows must distinguish verified, incomplete, inferred, deprecated,
-  and unknown data.
+- Metadata rows expose flags for verified, incomplete, inferred, deprecated,
+  and provider-specific data.
 - Runtime `/v1/models/{model}` checks may be used for availability, but not for
   context windows or feature discovery because the API does not return those
   facts.
