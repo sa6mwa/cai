@@ -623,6 +623,29 @@ Tool execution loop:
 5. Continue until the response completes without pending local tool calls or an
    error occurs.
 
+### Tool presets (constructor-style registration)
+
+Add higher-level preset constructors so callers can register common tools via a
+single call rather than hand-writing `lonejson` maps.
+
+- Add a SearXNG preset first:
+  - API: `cai_agent_register_searxng_tool(...)` (or equivalent free function),
+    taking a config struct.
+  - Config fields:
+    - required `base_url` endpoint,
+    - optional `search_path` (default `/search`),
+    - optional `query_param` (default `q`),
+    - optional `format` (default `json`),
+    - optional `timeout_ms` and request tuning.
+  - Preset registers schema and callback in one call:
+    - input: `query` only.
+    - output: deterministic fields like `query`, `title`, `url`, `snippet`,
+      plus optional result metadata.
+  - Transport is internal to cai; no API key required by default.
+- Preserve existing `register_tool(...)` and `register_raw_tool(...)` behavior as
+  first-class, non-deprecated paths.
+- Preset constructors are additive quality-of-life APIs, not a registry redesign.
+
 Initial result payload support:
 
 - Implemented: lonejson-mapped JSON object output, including dynamic strings.
@@ -764,6 +787,11 @@ Integration tests:
 - Use `CAI_TEST_MODEL` if set, otherwise `gpt-5-nano`.
 - Keep prompts tiny and deterministic.
 - Never run from default `make test`.
+- Add `CAI_INTEGRATION_SEARXNG_TOOL=1` for local preset integration coverage.
+- Add `CAI_SEARXNG_BASE_URL` plus optional `CAI_SEARXNG_SEARCH_PATH` and
+  `CAI_SEARXNG_TIMEOUT_MS` integration config.
+- Run this integration path against a repo-provided `docker-compose.yaml` for
+  self-hosted SearXNG; do not require external API keys.
 
 ## Build and release plan
 
@@ -884,6 +912,16 @@ Mirror liblockdc where practical:
   role/system-shaped payloads remain escaped data in `function_call_output`. A
   Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
   argument surfaces.
+- Add constructor-style tool presets, starting with a SearXNG preset:
+  - add config-driven `cai_agent_register_searxng_tool(...)` that wires schema
+    and callback together.
+  - preset input/result contracts are typed and stable (`query`, plus output
+    fields like `title`, `url`, `snippet`, and `summary`/`marker` metadata as
+    needed).
+  - include no-auth local endpoint support suitable for docker-compose-based test
+    backends.
+- Add integration coverage for `CAI_INTEGRATION_SEARXNG_TOOL=1`, using a local
+  self-hosted SearXNG URL from `CAI_SEARXNG_BASE_URL`.
 - Integration coverage includes `CAI_INTEGRATION_TOOL_SECURITY=1`, which calls
   a real OpenAI model with a hostile tool result and asserts the assistant keeps
   developer-instruction precedence. `CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1`
