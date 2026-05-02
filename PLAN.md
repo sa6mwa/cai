@@ -781,6 +781,14 @@ Mirror liblockdc where practical:
 - SDK archives do not vendor dependency headers. Installed CMake/pkg-config
   metadata should point consumers at the official `lockdc` SDK/package, which
   carries curl, lonejson, pslog, and the other native dependency headers/libs.
+- `CAI_DEPENDENCY_MODE=lockdc` is the default. `host` uses explicitly
+  installed host dependencies for curl, lonejson, and pslog. `auto` may select
+  host only when every required host dependency is discoverable; otherwise it
+  falls back to `lockdc`.
+- cai must link against external `liblonejson` rather than compiling a private
+  `LONEJSON_IMPLEMENTATION` unit. This avoids duplicate lonejson/pslog copies
+  and version drift inside host processes such as Vectis that already link
+  liblockdc.
 - Release matrix:
   - `x86_64-linux-gnu`
   - `x86_64-linux-musl`

@@ -20,13 +20,16 @@ option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
-option(CAI_USE_LOCKDC_SDK "Use official liblockdc SDK release tarball for native dependencies." OFF)
+option(CAI_USE_LOCKDC_SDK "Deprecated alias for CAI_DEPENDENCY_MODE=lockdc." OFF)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
     CACHE PATH "Downloaded third-party dependency cache.")
+set(CAI_DEPENDENCY_MODE "lockdc" CACHE STRING
+    "Dependency mode: lockdc, host, or auto.")
+set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS lockdc host auto)
 set(CAI_LOCKDC_SDK_VERSION "0.4.0" CACHE STRING "Pinned liblockdc SDK release used for curl/native dependencies.")
 set(CAI_LONEJSON_VERSION "0.5.0")
 set(CAI_LONEJSON_SHA256
@@ -41,6 +44,17 @@ set(CAI_PSLOG_URL
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
+endif()
+
+if(CAI_USE_LOCKDC_SDK)
+  set(CAI_DEPENDENCY_MODE "lockdc" CACHE STRING
+      "Dependency mode: lockdc, host, or auto." FORCE)
+endif()
+if(NOT CAI_DEPENDENCY_MODE STREQUAL "lockdc" AND
+   NOT CAI_DEPENDENCY_MODE STREQUAL "host" AND
+   NOT CAI_DEPENDENCY_MODE STREQUAL "auto")
+  message(FATAL_ERROR
+    "CAI_DEPENDENCY_MODE must be one of: lockdc, host, auto.")
 endif()
 
 if(CAI_TARGET_ID STREQUAL "")
@@ -80,7 +94,21 @@ function(cai_lockdc_sdk_sha256 target_id out_var)
   set(${out_var} "${_sha256}" PARENT_SCOPE)
 endfunction()
 
-if(CAI_USE_LOCKDC_SDK)
+set(CAI_RESOLVED_DEPENDENCY_MODE "${CAI_DEPENDENCY_MODE}")
+if(CAI_DEPENDENCY_MODE STREQUAL "auto")
+  find_path(_cai_auto_lonejson_include lonejson.h)
+  find_path(_cai_auto_pslog_include pslog.h)
+  find_package(CURL QUIET)
+  if(CURL_FOUND AND _cai_auto_lonejson_include AND _cai_auto_pslog_include)
+    set(CAI_RESOLVED_DEPENDENCY_MODE "host")
+  else()
+    set(CAI_RESOLVED_DEPENDENCY_MODE "lockdc")
+  endif()
+  unset(_cai_auto_lonejson_include CACHE)
+  unset(_cai_auto_pslog_include CACHE)
+endif()
+
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
   cai_lockdc_sdk_sha256("${CAI_TARGET_ID}" CAI_LOCKDC_SDK_SHA256)
   set(CAI_LOCKDC_SDK_NAME "liblockdc-${CAI_LOCKDC_SDK_VERSION}-${CAI_TARGET_ID}")
   set(CAI_LOCKDC_SDK_URL
@@ -128,14 +156,14 @@ if(CAI_USE_LOCKDC_SDK)
 endif()
 
 set(CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE "")
-if(CAI_USE_LOCKDC_SDK)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
   set(CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE "${CAI_LOCKDC_SDK_SHA256}")
 else()
   cai_lockdc_sdk_sha256("${CAI_TARGET_ID}" CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE)
 endif()
 
 find_package(CURL REQUIRED)
-if(CAI_USE_LOCKDC_SDK AND TARGET CURL::libcurl)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc" AND TARGET CURL::libcurl)
   set_target_properties(CURL::libcurl PROPERTIES
     IMPORTED_LOCATION "${_cai_lockdc_curl_library}"
     INTERFACE_INCLUDE_DIRECTORIES "${CAI_LOCKDC_SDK_PREFIX}/include")
@@ -185,69 +213,34 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
-find_program(GZIP_EXECUTABLE gzip REQUIRED)
-
-set(CAI_LONEJSON_ROOT "${CAI_DEPS_DIR}/lonejson-${CAI_LONEJSON_VERSION}")
-set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_ROOT}/include")
-set(CAI_LONEJSON_HEADER "${CAI_LONEJSON_INCLUDE_DIR}/lonejson.h")
-set(CAI_LONEJSON_ARCHIVE
-    "${CAI_DEPS_DIR}/lonejson-${CAI_LONEJSON_VERSION}.h.gz")
-set(CAI_PSLOG_ROOT "${CAI_DEPS_DIR}/pslog-${CAI_PSLOG_VERSION}")
-set(CAI_PSLOG_INCLUDE_DIR "${CAI_PSLOG_ROOT}/include")
-set(CAI_PSLOG_HEADER "${CAI_PSLOG_INCLUDE_DIR}/pslog.h")
-set(CAI_PSLOG_ARCHIVE "${CAI_DEPS_DIR}/pslog-${CAI_PSLOG_VERSION}.h.gz")
-
-file(MAKE_DIRECTORY "${CAI_DEPS_DIR}" "${CAI_LONEJSON_INCLUDE_DIR}"
-                    "${CAI_PSLOG_INCLUDE_DIR}")
-
-set(_cai_lonejson_download 1)
-if(EXISTS "${CAI_LONEJSON_ARCHIVE}")
-  file(SHA256 "${CAI_LONEJSON_ARCHIVE}" _cai_lonejson_actual_sha256)
-  if(_cai_lonejson_actual_sha256 STREQUAL CAI_LONEJSON_SHA256)
-    set(_cai_lonejson_download 0)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
+  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LOCKDC_SDK_PREFIX}/include")
+  set(CAI_PSLOG_INCLUDE_DIR "${CAI_LOCKDC_SDK_PREFIX}/include")
+  if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
+    set(CAI_LONEJSON_LIBRARY "${CAI_LOCKDC_SDK_PREFIX}/lib/liblonejson.dylib")
+  else()
+    set(CAI_LONEJSON_LIBRARY "${CAI_LOCKDC_SDK_PREFIX}/lib/liblonejson.so")
   endif()
+else()
+  find_path(CAI_LONEJSON_INCLUDE_DIR lonejson.h)
+  find_path(CAI_PSLOG_INCLUDE_DIR pslog.h)
+  find_library(CAI_LONEJSON_LIBRARY NAMES lonejson)
 endif()
-if(_cai_lonejson_download)
-  message(STATUS "Downloading lonejson ${CAI_LONEJSON_VERSION} from ${CAI_LONEJSON_URL}")
-  file(DOWNLOAD
-    "${CAI_LONEJSON_URL}"
-    "${CAI_LONEJSON_ARCHIVE}"
-    EXPECTED_HASH "SHA256=${CAI_LONEJSON_SHA256}"
-    TLS_VERIFY ON
-    SHOW_PROGRESS)
+if(NOT CAI_LONEJSON_INCLUDE_DIR OR
+   NOT EXISTS "${CAI_LONEJSON_INCLUDE_DIR}/lonejson.h")
+  message(FATAL_ERROR
+    "Failed to find lonejson.h. Use CAI_DEPENDENCY_MODE=lockdc or set "
+    "CAI_LONEJSON_INCLUDE_DIR to an official installed lonejson include path.")
 endif()
-
-execute_process(
-  COMMAND "${GZIP_EXECUTABLE}" -dc "${CAI_LONEJSON_ARCHIVE}"
-  OUTPUT_FILE "${CAI_LONEJSON_HEADER}"
-  RESULT_VARIABLE _cai_lonejson_gzip_result)
-if(NOT _cai_lonejson_gzip_result EQUAL 0)
-  message(FATAL_ERROR "Failed to decompress ${CAI_LONEJSON_ARCHIVE}")
+if(NOT CAI_PSLOG_INCLUDE_DIR OR NOT EXISTS "${CAI_PSLOG_INCLUDE_DIR}/pslog.h")
+  message(FATAL_ERROR
+    "Failed to find pslog.h. Use CAI_DEPENDENCY_MODE=lockdc or set "
+    "CAI_PSLOG_INCLUDE_DIR to an official installed pslog include path.")
 endif()
-
-set(_cai_pslog_download 1)
-if(EXISTS "${CAI_PSLOG_ARCHIVE}")
-  file(SHA256 "${CAI_PSLOG_ARCHIVE}" _cai_pslog_actual_sha256)
-  if(_cai_pslog_actual_sha256 STREQUAL CAI_PSLOG_SHA256)
-    set(_cai_pslog_download 0)
-  endif()
-endif()
-if(_cai_pslog_download)
-  message(STATUS "Downloading pslog ${CAI_PSLOG_VERSION} from ${CAI_PSLOG_URL}")
-  file(DOWNLOAD
-    "${CAI_PSLOG_URL}"
-    "${CAI_PSLOG_ARCHIVE}"
-    EXPECTED_HASH "SHA256=${CAI_PSLOG_SHA256}"
-    TLS_VERIFY ON
-    SHOW_PROGRESS)
-endif()
-
-execute_process(
-  COMMAND "${GZIP_EXECUTABLE}" -dc "${CAI_PSLOG_ARCHIVE}"
-  OUTPUT_FILE "${CAI_PSLOG_HEADER}"
-  RESULT_VARIABLE _cai_pslog_gzip_result)
-if(NOT _cai_pslog_gzip_result EQUAL 0)
-  message(FATAL_ERROR "Failed to decompress ${CAI_PSLOG_ARCHIVE}")
+if(NOT CAI_LONEJSON_LIBRARY)
+  message(FATAL_ERROR
+    "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=lockdc or set "
+    "CAI_LONEJSON_LIBRARY to an official installed lonejson library.")
 endif()
 
 set(CAI_SOURCES
@@ -259,7 +252,6 @@ set(CAI_SOURCES
   src/cai_error.c
   src/cai_http.c
   src/cai_input_item.c
-  src/cai_lonejson_impl.c
   src/cai_models.c
   src/cai_response.c
   src/cai_source.c
@@ -297,10 +289,18 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
   endif()
 endforeach()
 if(TARGET cai_shared)
-  target_link_libraries(cai_shared PRIVATE CURL::libcurl Threads::Threads)
+  target_link_libraries(cai_shared PRIVATE CURL::libcurl Threads::Threads
+    "${CAI_LONEJSON_LIBRARY}")
 endif()
 if(TARGET cai_static)
-  target_link_libraries(cai_static INTERFACE $<INSTALL_INTERFACE:lockdc::static>)
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
+    target_link_libraries(cai_static INTERFACE
+      $<INSTALL_INTERFACE:lockdc::static>)
+  else()
+    target_link_libraries(cai_static INTERFACE
+      $<INSTALL_INTERFACE:CURL::libcurl>
+      $<INSTALL_INTERFACE:Threads::Threads>)
+  endif()
 endif()
 
 if(CAI_BUILD_EXAMPLES)
@@ -334,7 +334,7 @@ if(CAI_BUILD_EXAMPLES)
       ${_cai_example_link_target})
     if(_cai_example_link_target STREQUAL "cai_static")
       target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl
-        Threads::Threads)
+        Threads::Threads "${CAI_LONEJSON_LIBRARY}")
     elseif(_cai_example STREQUAL "smhi_weather")
       target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl)
     endif()
@@ -353,7 +353,7 @@ if(CAI_BUILD_TESTS)
     ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(cai_tests PRIVATE cai_static CURL::libcurl
-    Threads::Threads)
+    Threads::Threads "${CAI_LONEJSON_LIBRARY}")
   cai_configure_c_target(cai_tests)
   add_test(NAME cai_tests COMMAND cai_tests)
 
@@ -363,6 +363,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         "-DCAI_VERSION=${PROJECT_VERSION}"
         "-DCAI_LOCKDC_SDK_PREFIX=${CAI_LOCKDC_SDK_PREFIX}"
+        "-DCAI_RESOLVED_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
   endif()
 
@@ -375,7 +376,7 @@ if(CAI_BUILD_TESTS)
       "${CAI_PSLOG_INCLUDE_DIR}"
       ${CURL_INCLUDE_DIRS})
     target_link_libraries(cai_integration_tests PRIVATE cai_static CURL::libcurl
-      Threads::Threads)
+      Threads::Threads "${CAI_LONEJSON_LIBRARY}")
     cai_configure_c_target(cai_integration_tests)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)
     set_tests_properties(cai_integration_tests PROPERTIES
@@ -398,7 +399,7 @@ if(CAI_BUILD_FUZZERS)
     "${CAI_LONEJSON_INCLUDE_DIR}"
     ${CURL_INCLUDE_DIRS})
   target_link_libraries(cai_tool_fuzz PRIVATE cai_static CURL::libcurl
-    Threads::Threads)
+    Threads::Threads "${CAI_LONEJSON_LIBRARY}")
   cai_configure_c_target(cai_tool_fuzz)
   target_compile_options(cai_tool_fuzz PRIVATE -fsanitize=address,undefined)
   target_link_options(cai_tool_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
@@ -426,6 +427,23 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
+    set(CAI_PACKAGE_REQUIRES_PRIVATE "lockdc")
+    set(CAI_PC_DEPENDENCY_CFLAGS "")
+    set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "")
+    set(CAI_CONFIG_LONEJSON_INCLUDE_HINT "")
+    set(CAI_CONFIG_PSLOG_INCLUDE_HINT "")
+    set(CAI_CONFIG_LONEJSON_LIBRARY_HINT "")
+  else()
+    set(CAI_PACKAGE_REQUIRES_PRIVATE "libcurl")
+    get_filename_component(CAI_CONFIG_LONEJSON_LIBRARY_HINT
+      "${CAI_LONEJSON_LIBRARY}" DIRECTORY)
+    set(CAI_PC_DEPENDENCY_CFLAGS
+      "-I${CAI_LONEJSON_INCLUDE_DIR} -I${CAI_PSLOG_INCLUDE_DIR}")
+    set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "${CAI_LONEJSON_LIBRARY}")
+    set(CAI_CONFIG_LONEJSON_INCLUDE_HINT "${CAI_LONEJSON_INCLUDE_DIR}")
+    set(CAI_CONFIG_PSLOG_INCLUDE_HINT "${CAI_PSLOG_INCLUDE_DIR}")
+  endif()
   configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-config.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config.cmake"

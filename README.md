@@ -39,12 +39,18 @@ example layers settle.
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under
   `share/doc/libcai/`.
-- Release builds use the official `github.com/sa6mwa/liblockdc` SDK release
-  tarball for the selected target to provide libcurl and its native dependency
-  stack. The tarball URL and SHA-256 are pinned in CMake; sibling checkout
-  artifacts are not dependency inputs.
-- Installed CMake and pkg-config metadata point downstream consumers at the
-  official `lockdc` SDK/package for dependency headers and link libraries.
+- Dependency mode defaults to `lockdc`: the build uses the official
+  `github.com/sa6mwa/liblockdc` SDK release tarball for the selected target to
+  provide curl, lonejson, pslog, and the native dependency stack. The tarball
+  URL and SHA-256 are pinned in CMake; sibling checkout artifacts are not
+  dependency inputs.
+- `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
+  libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. `auto` chooses host
+  only when all required host pieces are discoverable, otherwise it falls back
+  to `lockdc`.
+- Installed CMake and pkg-config metadata preserve that dependency mode.
+  `lockdc` mode points downstream consumers at the official `lockdc`
+  SDK/package; `host` mode records the resolved host include/library paths.
   `cai` archives do not vendor dependency headers.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
@@ -53,15 +59,11 @@ example layers settle.
 - Session continuity defaults to OpenAI-style server-side continuation.
   Client-side history replay is available for stateless compatible providers
   such as OpenRouter.
-- `lonejson` is the JSON layer. The build downloads the official
-  `github.com/sa6mwa/lonejson` release `.h.gz` header artifact pinned by
-  version and SHA-256; it does not use a sibling checkout. Release consumers
-  get the corresponding installed `lonejson.h` through the official
-  `liblockdc` SDK/package.
-- `pslog` is used for optional host-owned logging. The build downloads the
-  official `github.com/sa6mwa/libpslog` release `.h.gz` header artifact pinned
-  by version and SHA-256. Release consumers get `pslog.h` through the official
-  `liblockdc` SDK/package.
+- `lonejson` is the JSON layer and is linked as an external library, not
+  compiled into cai. That keeps cai compatible with host applications such as
+  Vectis that already use the liblockdc-provided lonejson.
+- `pslog` is used as an external public header dependency for optional
+  host-owned logging.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
 - Non-streamed JSON responses are capped by `json_response_limit_bytes`
