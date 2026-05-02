@@ -16,6 +16,9 @@ endif()
 
 find_program(CAI_TAR_BIN NAMES tar REQUIRED)
 find_program(CAI_GZIP_BIN NAMES gzip REQUIRED)
+if(NOT DEFINED CAI_STRIP_BIN OR CAI_STRIP_BIN STREQUAL "")
+  find_program(CAI_STRIP_BIN NAMES strip)
+endif()
 
 set(package_name "cai-${CAI_VERSION}-${CAI_TARGET_ID}")
 set(stage_root "${CAI_BINARY_DIR}/package-stage")
@@ -32,6 +35,40 @@ execute_process(
 if(NOT install_result EQUAL 0)
   message(FATAL_ERROR "failed to install cai package staging tree")
 endif()
+
+function(cai_strip_file path primary_flag)
+  if(NOT CAI_STRIP_BIN OR IS_SYMLINK "${path}" OR NOT EXISTS "${path}")
+    return()
+  endif()
+  execute_process(
+    COMMAND "${CAI_STRIP_BIN}" "${primary_flag}" "${path}"
+    RESULT_VARIABLE strip_result
+    ERROR_QUIET)
+  if(strip_result EQUAL 0)
+    return()
+  endif()
+  execute_process(
+    COMMAND "${CAI_STRIP_BIN}" -S "${path}"
+    RESULT_VARIABLE strip_result
+    ERROR_QUIET)
+  if(NOT strip_result EQUAL 0)
+    message(FATAL_ERROR "failed to strip ${path} with ${CAI_STRIP_BIN}")
+  endif()
+endfunction()
+
+file(GLOB package_libraries
+  "${package_root}/lib/libcai.a"
+  "${package_root}/lib/libcai.so*"
+  "${package_root}/lib/libcai.*.dylib")
+foreach(package_library IN LISTS package_libraries)
+  if(package_library MATCHES "\\.a$")
+    if(NOT CAI_TARGET_ID MATCHES "darwin")
+      cai_strip_file("${package_library}" "--strip-debug")
+    endif()
+  else()
+    cai_strip_file("${package_library}" "--strip-unneeded")
+  endif()
+endforeach()
 
 file(REMOVE "${archive_base}" "${archive_path}")
 execute_process(

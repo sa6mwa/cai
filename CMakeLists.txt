@@ -500,6 +500,7 @@ if(CAI_INSTALL)
       "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
       "-DCAI_VERSION=${PROJECT_VERSION}"
       "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+      "-DCAI_STRIP_BIN=${CMAKE_STRIP}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_archive.cmake"
     DEPENDS ${_cai_package_deps}
     VERBATIM)
