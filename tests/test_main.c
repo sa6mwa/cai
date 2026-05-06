@@ -2014,13 +2014,21 @@ static const char *mock_response_for_request(const char *request) {
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"manual done\"}]}]}";
   static const char stream_body[] =
-      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n"
-      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n"
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_stream_raw\",\"usage\":{\"input_tokens\":1,"
-      "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":2,"
-      "\"output_tokens_details\":{\"reasoning_tokens\":0},"
-      "\"total_tokens\":3}}}\n\n";
+      "event: response.output_text.delta\r\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\r\n"
+      "\r\n"
+      "event: response.output_text.delta\r\n"
+      "data: {\"type\":\"response.output_text.delta\",\r\n"
+      "data: \"delta\":\"lo\"}\r\n"
+      "\r\n"
+      "event: response.completed\r\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\r\n"
+      "data: \"resp_stream_raw\",\"usage\":{\"input_tokens\":1,\r\n"
+      "data: \"input_tokens_details\":{\"cached_tokens\":0},"
+      "\"output_tokens\":2,\r\n"
+      "data: \"output_tokens_details\":{\"reasoning_tokens\":0},\r\n"
+      "data: \"total_tokens\":3}}}\r\n"
+      "\r\n";
   static const char stream_session_first_body[] =
       "data: {\"type\":\"response.created\",\"response\":{\"id\":"
       "\"resp_stream_session_1\",\"usage\":null,\"instructions\":\"large "
@@ -2030,7 +2038,7 @@ static const char *mock_response_for_request(const char *request) {
       "\"input_tokens\":10,"
       "\"input_tokens_details\":{\"cached_tokens\":4},\"output_tokens\":3,"
       "\"output_tokens_details\":{\"reasoning_tokens\":1},"
-      "\"total_tokens\":13}}}\n\n";
+      "\"total_tokens\":13}}}";
   static const char stream_session_second_body[] =
       "data: {\"type\":\"response.reasoning_summary_text.delta\","
       "\"delta\":\"thinking\"}\n\n"

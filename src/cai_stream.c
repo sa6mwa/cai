@@ -97,12 +97,13 @@ typedef struct cai_sse_state {
   cai_stream_sinks sinks;
   char **out_response_id;
   cai_token_usage *out_usage;
+  lonejson_sse *sse;
   char *body;
-  char *line;
+  char *event_data;
   size_t body_length;
   size_t body_capacity;
-  size_t length;
-  size_t capacity;
+  size_t event_data_length;
+  size_t event_data_capacity;
   size_t event_limit;
   int failed;
   int failed_code;
@@ -131,8 +132,8 @@ typedef struct cai_pipe_stream {
 static int cai_client_open_response_text_source_common(
     cai_client *client, const cai_response_create_params *params,
     cai_response_create_params *owned_params,
-    cai_stream_complete_fn on_complete, void *complete_context,
-    cai_source **out, cai_error *error);
+    cai_stream_complete_fn on_complete, void *complete_context, cai_source **out,
+    cai_error *error);
 
 static void cai_stream_copy_usage(cai_token_usage *out,
                                   const cai_stream_usage_doc *usage) {
@@ -151,28 +152,29 @@ static void cai_stream_copy_usage(cai_token_usage *out,
   out->total_tokens = usage->total_tokens;
 }
 
-static int cai_sse_line_reserve(cai_sse_state *state, size_t extra) {
+static int cai_sse_event_data_reserve(cai_sse_state *state, size_t extra) {
   char *grown;
   size_t next_capacity;
 
   if (state->event_limit > 0U &&
       (extra > state->event_limit ||
-       state->length > state->event_limit - extra)) {
+       state->event_data_length > state->event_limit - extra)) {
     return CAI_ERR_PROTOCOL;
   }
-  if (state->length + extra + 1U <= state->capacity) {
+  if (state->event_data_length + extra + 1U <= state->event_data_capacity) {
     return CAI_OK;
   }
-  next_capacity = state->capacity == 0U ? 256U : state->capacity * 2U;
-  while (next_capacity < state->length + extra + 1U) {
+  next_capacity =
+      state->event_data_capacity == 0U ? 256U : state->event_data_capacity * 2U;
+  while (next_capacity < state->event_data_length + extra + 1U) {
     next_capacity *= 2U;
   }
-  grown = (char *)cai_realloc_mem(NULL, state->line, next_capacity);
+  grown = (char *)cai_realloc_mem(NULL, state->event_data, next_capacity);
   if (grown == NULL) {
     return CAI_ERR_NOMEM;
   }
-  state->line = grown;
-  state->capacity = next_capacity;
+  state->event_data = grown;
+  state->event_data_capacity = next_capacity;
   return CAI_OK;
 }
 
@@ -482,33 +484,105 @@ static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
   return rc;
 }
 
-static int cai_sse_process_line(cai_sse_state *state) {
-  char *line;
-  size_t length;
+static lonejson_status cai_sse_begin_event(void *user,
+                                           const lonejson_sse_event *event,
+                                           lonejson_error *error) {
+  cai_sse_state *state;
 
-  line = state->line;
-  length = state->length;
-  while (length > 0U &&
-         (line[length - 1U] == '\r' || line[length - 1U] == '\n')) {
-    line[length - 1U] = '\0';
-    length--;
+  (void)event;
+  (void)error;
+  state = (cai_sse_state *)user;
+  state->event_data_length = 0U;
+  if (state->event_data != NULL) {
+    state->event_data[0] = '\0';
   }
-  if (strncmp(line, "data:", 5U) == 0) {
-    return cai_sse_emit_data(state, line + 5);
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_sse_data_chunk(void *user, const void *bytes,
+                                          size_t len, lonejson_error *error) {
+  cai_sse_state *state;
+  int rc;
+
+  (void)error;
+  state = (cai_sse_state *)user;
+  rc = cai_sse_event_data_reserve(state, len);
+  if (rc == CAI_ERR_NOMEM) {
+    state->failed = 1;
+    state->failed_code = CAI_ERR_NOMEM;
+    state->failed_message = "failed to allocate streaming SSE buffer";
+    return LONEJSON_STATUS_ALLOCATION_FAILED;
   }
-  return CAI_OK;
+  if (rc != CAI_OK) {
+    state->failed = 1;
+    state->failed_code = CAI_ERR_PROTOCOL;
+    state->failed_message = "streaming SSE event exceeded configured limit";
+    return LONEJSON_STATUS_OVERFLOW;
+  }
+  if (len != 0U) {
+    memcpy(state->event_data + state->event_data_length, bytes, len);
+    state->event_data_length += len;
+  }
+  state->event_data[state->event_data_length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_sse_end_event(void *user,
+                                         const lonejson_sse_event *event,
+                                         lonejson_error *error) {
+  cai_sse_state *state;
+  int rc;
+
+  (void)event;
+  (void)error;
+  state = (cai_sse_state *)user;
+  rc = cai_sse_emit_data(state, state->event_data);
+  if (rc == CAI_ERR_NOMEM) {
+    state->failed = 1;
+    state->failed_code = CAI_ERR_NOMEM;
+    state->failed_message = "failed to allocate streaming SSE buffer";
+    return LONEJSON_STATUS_ALLOCATION_FAILED;
+  }
+  if (rc != CAI_OK) {
+    state->failed = 1;
+    state->failed_code = rc;
+    state->failed_message = "streaming response callback failed";
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static int cai_sse_status_to_code(lonejson_status status) {
+  if (status == LONEJSON_STATUS_ALLOCATION_FAILED) {
+    return CAI_ERR_NOMEM;
+  }
+  if (status == LONEJSON_STATUS_OVERFLOW) {
+    return CAI_ERR_PROTOCOL;
+  }
+  return CAI_ERR_TRANSPORT;
+}
+
+static const char *cai_sse_status_to_message(lonejson_status status) {
+  if (status == LONEJSON_STATUS_ALLOCATION_FAILED) {
+    return "failed to allocate streaming SSE buffer";
+  }
+  if (status == LONEJSON_STATUS_OVERFLOW) {
+    return "streaming SSE event exceeded configured limit";
+  }
+  return "streaming response callback failed";
 }
 
 static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
   cai_sse_state *state;
   const char *bytes;
   size_t total;
-  size_t i;
   size_t capture;
   size_t needed;
   size_t new_capacity;
-  int reserve_rc;
   char *grown;
+  lonejson_sse_handler handler;
+  lonejson_error sse_error;
+  lonejson_status status;
 
   state = (cai_sse_state *)user;
   bytes = (const char *)ptr;
@@ -527,6 +601,8 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
       grown = (char *)cai_realloc_mem(NULL, state->body, new_capacity);
       if (grown == NULL) {
         state->failed = 1;
+        state->failed_code = CAI_ERR_NOMEM;
+        state->failed_message = "failed to allocate streaming response buffer";
         return 0U;
       }
       state->body = grown;
@@ -536,29 +612,19 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
     state->body_length += capture;
     state->body[state->body_length] = '\0';
   }
-  for (i = 0U; i < total; i++) {
-    reserve_rc = cai_sse_line_reserve(state, 1U);
-    if (reserve_rc != CAI_OK) {
+  handler.begin_event = cai_sse_begin_event;
+  handler.data_chunk = cai_sse_data_chunk;
+  handler.end_event = cai_sse_end_event;
+  memset(&sse_error, 0, sizeof(sse_error));
+  status = lonejson_sse_push(state->sse, bytes, total, &handler, state,
+                             &sse_error);
+  if (status != LONEJSON_STATUS_OK) {
+    if (!state->failed) {
       state->failed = 1;
-      state->failed_code = reserve_rc;
-      state->failed_message =
-          reserve_rc == CAI_ERR_PROTOCOL
-              ? "streaming SSE event exceeded configured limit"
-              : "failed to allocate streaming SSE buffer";
-      return 0U;
+      state->failed_code = cai_sse_status_to_code(status);
+      state->failed_message = cai_sse_status_to_message(status);
     }
-    state->line[state->length++] = bytes[i];
-    state->line[state->length] = '\0';
-    if (bytes[i] == '\n') {
-      if (cai_sse_process_line(state) != CAI_OK) {
-        state->failed = 1;
-        state->failed_code = CAI_ERR_TRANSPORT;
-        state->failed_message = "streaming response callback failed";
-        return 0U;
-      }
-      state->length = 0U;
-      state->line[0] = '\0';
-    }
+    return 0U;
   }
   return total;
 }
@@ -575,6 +641,10 @@ static int cai_client_stream_response_params_with_id(
   char *url;
   long http_status;
   int rc;
+  lonejson_sse_options sse_options;
+  lonejson_error sse_error;
+  lonejson_sse_handler sse_handler;
+  lonejson_status sse_status;
 
   if (client == NULL || params == NULL || sinks == NULL ||
       (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
@@ -593,15 +663,21 @@ static int cai_client_stream_response_params_with_id(
   if (out_usage != NULL) {
     memset(out_usage, 0, sizeof(*out_usage));
   }
+  sse_options = lonejson_default_sse_options();
+  sse_options.max_line_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
+  sse_options.max_event_data_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
+  sse_options.max_buffered_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
+  memset(&sse_error, 0, sizeof(sse_error));
   state.sinks = *sinks;
   state.out_response_id = out_response_id;
   state.out_usage = out_usage;
+  state.sse = lonejson_sse_open(&sse_options, &sse_error);
   state.body = NULL;
-  state.line = NULL;
+  state.event_data = NULL;
   state.body_length = 0U;
   state.body_capacity = 0U;
-  state.length = 0U;
-  state.capacity = 0U;
+  state.event_data_length = 0U;
+  state.event_data_capacity = 0U;
   state.event_limit = CAI_DEFAULT_SSE_EVENT_LIMIT;
   state.failed = 0;
   state.failed_code = CAI_ERR_TRANSPORT;
@@ -610,6 +686,10 @@ static int cai_client_stream_response_params_with_id(
   state.reasoning_summary_suffixed = 0;
   state.output_text_started = 0;
   state.output_text_suffixed = 0;
+  if (state.sse == NULL) {
+    return cai_set_error(error, cai_sse_status_to_code(sse_error.code),
+                         cai_sse_status_to_message(sse_error.code));
+  }
 
   rc = cai_response_request_upload_open(params, 1, &upload, error);
   if (rc == CAI_OK) {
@@ -642,6 +722,7 @@ static int cai_client_stream_response_params_with_id(
   if (rc != CAI_OK) {
     curl_slist_free_all(headers);
     cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    lonejson_sse_close(state.sse);
     return rc;
   }
   curl = curl_easy_init();
@@ -649,6 +730,7 @@ static int cai_client_stream_response_params_with_id(
     curl_slist_free_all(headers);
     cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
     cai_response_request_upload_close(upload);
+    lonejson_sse_close(state.sse);
     return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to initialize curl");
   }
   if (rc == CAI_OK) {
@@ -685,9 +767,25 @@ static int cai_client_stream_response_params_with_id(
     http_status = 0L;
   }
   curl_easy_cleanup(curl);
+  if (curl_rc == CURLE_OK && !state.failed) {
+    sse_handler.begin_event = cai_sse_begin_event;
+    sse_handler.data_chunk = cai_sse_data_chunk;
+    sse_handler.end_event = cai_sse_end_event;
+    memset(&sse_error, 0, sizeof(sse_error));
+    sse_status = lonejson_sse_finish(state.sse, &sse_handler, &state,
+                                     &sse_error);
+    if (sse_status != LONEJSON_STATUS_OK) {
+      if (!state.failed) {
+        state.failed = 1;
+        state.failed_code = cai_sse_status_to_code(sse_status);
+        state.failed_message = cai_sse_status_to_message(sse_status);
+      }
+    }
+  }
   curl_slist_free_all(headers);
   cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
-  cai_free_mem(NULL, state.line);
+  lonejson_sse_close(state.sse);
+  cai_free_mem(NULL, state.event_data);
   cai_response_request_upload_close(upload);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, state.body);
