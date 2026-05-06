@@ -18,6 +18,6 @@ else
 fi
 
 for preset in "${presets[@]}"; do
-  cmake --preset "$preset"
+  cmake --fresh --preset "$preset"
   cmake --build --preset "$preset"
 done
