@@ -287,7 +287,7 @@ static void test_model_capabilities(test_state *state) {
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
   expect_str(state, "openrouter_model_default",
              CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES,
-             CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE);
+             CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE);
   expect_int(state, "openrouter_nemotron_context",
              cai_model_context_window_tokens(
                  CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE),
@@ -306,6 +306,18 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports(
                  CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,
                  CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
+             0L);
+  expect_int(state, "openrouter_poolside_context",
+             cai_model_context_window_tokens(
+                 CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE),
+             131072L);
+  expect_int(state, "openrouter_poolside_tools",
+             cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE,
+                                CAI_MODEL_CAP_FUNCTION_CALLING),
+             1L);
+  expect_int(state, "openrouter_poolside_not_structured",
+             cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE,
+                                CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
              0L);
   if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL,
                                    200000LL, 1000000LL) < 0.44 ||
@@ -909,6 +921,15 @@ static void test_tool_registry(test_state *state) {
                                    &error),
              CAI_OK);
   expect_str(state, "tool_run_typed_output", writer.buffer,
+             "{\"summary\":\"Malmo:3\"}");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "tool_run_typed_spaced_json",
+             cai_tool_registry_run(registry, "weather",
+                                   "{\"city\": \"Malmo\", \"days\": 3}", sink,
+                                   &error),
+             CAI_OK);
+  expect_str(state, "tool_run_typed_spaced_json_output", writer.buffer,
              "{\"summary\":\"Malmo:3\"}");
   writer.buffer[0] = '\0';
   writer.length = 0U;

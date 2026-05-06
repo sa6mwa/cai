@@ -82,8 +82,9 @@ example layers settle.
 - Examples and integration development tests default to `gpt-5-nano`.
 - OpenRouter development can use
   `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`, currently
-  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, based on OpenRouter's
-  registry metadata.
+  `poolside/laguna-xs.2:free`, because it passes cai's Responses
+  compatibility, tool-calling, and client-side continuity integration
+  regressions.
 - OpenRouter tool-calling integration uses
   `CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE` by default. The
   `openrouter/free` router advertises feature filtering for tool calls, but in

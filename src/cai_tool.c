@@ -198,6 +198,27 @@ static int cai_tool_validate_json_value(const char *json, const char *message,
   return rc;
 }
 
+static lonejson_status cai_tool_compact_json_sink(void *user, const void *data,
+                                                  size_t len,
+                                                  lonejson_error *json_error) {
+  cai_json_builder *builder;
+  cai_error error;
+
+  builder = (cai_json_builder *)user;
+  cai_error_init(&error);
+  if (cai_json_builder_append(builder, (const char *)data, len, &error) ==
+      CAI_OK) {
+    cai_error_cleanup(&error);
+    return LONEJSON_STATUS_OK;
+  }
+  if (json_error != NULL) {
+    snprintf(json_error->message, sizeof(json_error->message), "%s",
+             error.message != NULL ? error.message : "JSON compact failed");
+  }
+  cai_error_cleanup(&error);
+  return LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
 static const lonejson_field *cai_tool_map_find_field(const lonejson_map *map,
                                                      const char *key,
                                                      size_t key_length) {
@@ -442,12 +463,31 @@ static lonejson_status cai_tool_argument_bool_event(void *user, int value,
 static int cai_tool_validate_arguments_shape(const lonejson_map *map,
                                              const char *json,
                                              cai_error *error) {
+  cai_json_builder compact;
   cai_tool_argument_validator validator;
+  lonejson_json_value value;
   lonejson_value_visitor visitor;
   lonejson_value_limits limits;
   lonejson_error json_error;
   lonejson_status status;
   int rc;
+
+  memset(&compact, 0, sizeof(compact));
+  lonejson_json_value_init(&value);
+  lonejson_error_init(&json_error);
+  status = lonejson_json_value_set_buffer(&value, json, strlen(json),
+                                          &json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_json_value_write_to_sink(
+        &value, cai_tool_compact_json_sink, &compact, &json_error);
+  }
+  if (status != LONEJSON_STATUS_OK) {
+    lonejson_json_value_cleanup(&value);
+    cai_free_mem(NULL, compact.data);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "tool arguments failed validation",
+                                json_error.message);
+  }
 
   memset(&validator, 0, sizeof(validator));
   validator.root_map = map;
@@ -466,8 +506,8 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
   limits = lonejson_default_value_limits();
   limits.max_key_bytes = 4096U;
   lonejson_error_init(&json_error);
-  status = lonejson_visit_value_cstr(json, &visitor, &validator, &limits,
-                                     &json_error);
+  status = lonejson_visit_value_buffer(compact.data, compact.length, &visitor,
+                                       &validator, &limits, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                               "tool arguments failed validation",
@@ -476,6 +516,8 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
     rc = CAI_OK;
   }
   cai_free_mem(NULL, validator.key);
+  lonejson_json_value_cleanup(&value);
+  cai_free_mem(NULL, compact.data);
   return rc;
 }
 
