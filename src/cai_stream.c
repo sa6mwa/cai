@@ -98,13 +98,12 @@ typedef struct cai_sse_state {
   char **out_response_id;
   cai_token_usage *out_usage;
   lonejson_sse *sse;
+  cai_stream_delta_doc doc;
+  lonejson_parse_options parse_options;
+  lonejson_sse_json_options json_options;
   char *body;
-  char *event_data;
   size_t body_length;
   size_t body_capacity;
-  size_t event_data_length;
-  size_t event_data_capacity;
-  size_t event_limit;
   int failed;
   int failed_code;
   const char *failed_message;
@@ -150,32 +149,6 @@ static void cai_stream_copy_usage(cai_token_usage *out,
           ? usage->output_reasoning_tokens
           : usage->output_tokens_details.reasoning_tokens;
   out->total_tokens = usage->total_tokens;
-}
-
-static int cai_sse_event_data_reserve(cai_sse_state *state, size_t extra) {
-  char *grown;
-  size_t next_capacity;
-
-  if (state->event_limit > 0U &&
-      (extra > state->event_limit ||
-       state->event_data_length > state->event_limit - extra)) {
-    return CAI_ERR_PROTOCOL;
-  }
-  if (state->event_data_length + extra + 1U <= state->event_data_capacity) {
-    return CAI_OK;
-  }
-  next_capacity =
-      state->event_data_capacity == 0U ? 256U : state->event_data_capacity * 2U;
-  while (next_capacity < state->event_data_length + extra + 1U) {
-    next_capacity *= 2U;
-  }
-  grown = (char *)cai_realloc_mem(NULL, state->event_data, next_capacity);
-  if (grown == NULL) {
-    return CAI_ERR_NOMEM;
-  }
-  state->event_data = grown;
-  state->event_data_capacity = next_capacity;
-  return CAI_OK;
 }
 
 static const char *cai_stream_affix_text(const cai_stream_affix *affix) {
@@ -302,241 +275,72 @@ static int cai_sse_emit_function_call_done(cai_sse_state *state,
       (int)doc->output_index, doc->call_id, doc->name, doc->arguments, NULL);
 }
 
-static const char *cai_sse_json_object_end(const char *start) {
-  const char *cursor;
-  int depth;
-  int in_string;
-  int escaped;
-
-  if (start == NULL || *start != '{') {
-    return NULL;
-  }
-  cursor = start;
-  depth = 0;
-  in_string = 0;
-  escaped = 0;
-  while (*cursor != '\0') {
-    if (in_string) {
-      if (escaped) {
-        escaped = 0;
-      } else if (*cursor == '\\') {
-        escaped = 1;
-      } else if (*cursor == '"') {
-        in_string = 0;
-      }
-    } else if (*cursor == '"') {
-      in_string = 1;
-    } else if (*cursor == '{') {
-      depth++;
-    } else if (*cursor == '}') {
-      depth--;
-      if (depth == 0) {
-        return cursor + 1;
-      }
-    }
-    cursor++;
-  }
-  return NULL;
-}
-
-static int cai_sse_extract_usage(cai_sse_state *state, const char *data) {
-  cai_stream_usage_doc usage;
-  lonejson_error json_error;
-  lonejson_status status;
-  const char *usage_key;
-  const char *start;
-  const char *end;
-  char *json;
-
-  if (state->out_usage == NULL || data == NULL ||
-      strstr(data, "\"type\":\"response.completed\"") == NULL) {
-    return CAI_OK;
-  }
-  usage_key = strstr(data, "\"usage\"");
-  start = usage_key != NULL ? strchr(usage_key, ':') : NULL;
-  if (start == NULL) {
-    return CAI_OK;
-  }
-  start++;
-  while (*start == ' ' || *start == '\t') {
-    start++;
-  }
-  if (*start != '{') {
-    return CAI_OK;
-  }
-  end = cai_sse_json_object_end(start);
-  if (end == NULL) {
-    return CAI_OK;
-  }
-  json = cai_strndup(NULL, start, (size_t)(end - start));
-  if (json == NULL) {
-    return CAI_ERR_NOMEM;
-  }
-  memset(&usage, 0, sizeof(usage));
-  lonejson_init(&cai_stream_usage_map, &usage);
-  status =
-      lonejson_parse_cstr(&cai_stream_usage_map, &usage, json, NULL,
-                          &json_error);
-  cai_free_mem(NULL, json);
-  if (status == LONEJSON_STATUS_OK) {
-    cai_stream_copy_usage(state->out_usage, &usage);
-  }
-  lonejson_cleanup(&cai_stream_usage_map, &usage);
-  return CAI_OK;
-}
-
-static int cai_sse_emit_data(cai_sse_state *state, const char *data) {
-  cai_stream_delta_doc doc;
-  lonejson_error json_error;
-  lonejson_status status;
+static int cai_sse_emit_doc(cai_sse_state *state,
+                            const cai_stream_delta_doc *doc) {
   int rc;
 
-  (void)json_error;
-  if (data == NULL || data[0] == '\0') {
-    return CAI_OK;
-  }
-  while (*data == ' ') {
-    data++;
-  }
-  if (state->out_response_id != NULL && *state->out_response_id == NULL) {
-    const char *response;
-    const char *id;
-    const char *start;
-    const char *end;
-
-    response = strstr(data, "\"response\"");
-    id = response != NULL ? strstr(response, "\"id\"") : NULL;
-    start = id != NULL ? strchr(id, ':') : NULL;
-    if (start != NULL) {
-      start++;
-      while (*start == ' ' || *start == '\t') {
-        start++;
-      }
-    }
-    if (start != NULL && *start == '"') {
-      start++;
-      end = start;
-      while (*end != '\0' && *end != '"' && *end != '\\') {
-        end++;
-      }
-      if (*end == '"') {
-        *state->out_response_id = cai_strndup(NULL, start,
-                                              (size_t)(end - start));
-        if (*state->out_response_id == NULL) {
-          return CAI_ERR_NOMEM;
-        }
-      }
-    }
-  }
-  rc = cai_sse_extract_usage(state, data);
-  if (rc != CAI_OK) {
-    return rc;
-  }
-  memset(&doc, 0, sizeof(doc));
-  lonejson_init(&cai_stream_delta_map, &doc);
-  status =
-      lonejson_parse_cstr(&cai_stream_delta_map, &doc, data, NULL, &json_error);
-  if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_stream_delta_map, &doc);
+  if (doc == NULL) {
     return CAI_OK;
   }
   rc = CAI_OK;
-  if (doc.type != NULL && strcmp(doc.type, "response.output_text.delta") == 0 &&
-      doc.delta != NULL) {
-    rc = cai_sse_write_output_delta(state, doc.delta);
-  } else if (doc.type != NULL &&
-             (strcmp(doc.type, "response.reasoning_summary_text.delta") == 0 ||
-              strcmp(doc.type, "response.reasoning_summary.delta") == 0) &&
-             doc.delta != NULL) {
-    rc = cai_sse_write_reasoning_delta(state, doc.delta);
-  } else if (doc.type != NULL &&
-             (strcmp(doc.type, "response.reasoning_summary_text.done") == 0 ||
-              strcmp(doc.type, "response.reasoning_summary.done") == 0)) {
+  if (doc->type != NULL &&
+      strcmp(doc->type, "response.output_text.delta") == 0 &&
+      doc->delta != NULL) {
+    rc = cai_sse_write_output_delta(state, doc->delta);
+  } else if (doc->type != NULL &&
+             (strcmp(doc->type, "response.reasoning_summary_text.delta") ==
+                  0 ||
+              strcmp(doc->type, "response.reasoning_summary.delta") == 0) &&
+             doc->delta != NULL) {
+    rc = cai_sse_write_reasoning_delta(state, doc->delta);
+  } else if (doc->type != NULL &&
+             (strcmp(doc->type, "response.reasoning_summary_text.done") == 0 ||
+              strcmp(doc->type, "response.reasoning_summary.done") == 0)) {
     rc = cai_sse_finish_reasoning(state);
-  } else if (doc.type != NULL &&
-             strcmp(doc.type, "response.output_text.done") == 0) {
+  } else if (doc->type != NULL &&
+             strcmp(doc->type, "response.output_text.done") == 0) {
     rc = cai_sse_finish_output(state);
-  } else if (doc.type != NULL &&
-             strcmp(doc.type, "response.function_call_arguments.delta") == 0) {
-    rc = cai_sse_emit_function_call_delta(state, &doc);
-  } else if (doc.type != NULL &&
-             strcmp(doc.type, "response.function_call_arguments.done") == 0) {
-    rc = cai_sse_emit_function_call_done(state, &doc);
+  } else if (doc->type != NULL &&
+             strcmp(doc->type, "response.function_call_arguments.delta") == 0) {
+    rc = cai_sse_emit_function_call_delta(state, doc);
+  } else if (doc->type != NULL &&
+             strcmp(doc->type, "response.function_call_arguments.done") == 0) {
+    rc = cai_sse_emit_function_call_done(state, doc);
   }
   if (rc == CAI_OK && state->out_response_id != NULL &&
-      *state->out_response_id == NULL && doc.response.id != NULL) {
-    *state->out_response_id = cai_strdup(NULL, doc.response.id);
+      *state->out_response_id == NULL && doc->response.id != NULL) {
+    *state->out_response_id = cai_strdup(NULL, doc->response.id);
     if (*state->out_response_id == NULL) {
       rc = CAI_ERR_NOMEM;
     }
   }
-  if (rc == CAI_OK && doc.type != NULL &&
-      strcmp(doc.type, "response.completed") == 0) {
+  if (rc == CAI_OK && doc->type != NULL &&
+      strcmp(doc->type, "response.completed") == 0) {
     rc = cai_sse_finish_reasoning(state);
     if (rc == CAI_OK) {
       rc = cai_sse_finish_output(state);
     }
     if (rc == CAI_OK && state->out_usage != NULL) {
-      cai_stream_copy_usage(state->out_usage, &doc.response.usage);
+      cai_stream_copy_usage(state->out_usage, &doc->response.usage);
     }
   }
-  lonejson_cleanup(&cai_stream_delta_map, &doc);
   return rc;
 }
 
-static lonejson_status cai_sse_begin_event(void *user,
-                                           const lonejson_sse_event *event,
-                                           lonejson_error *error) {
+static lonejson_status cai_sse_json_event(void *user,
+                                          const lonejson_sse_event *event,
+                                          void *dst, lonejson_error *error) {
   cai_sse_state *state;
-
-  (void)event;
-  (void)error;
-  state = (cai_sse_state *)user;
-  state->event_data_length = 0U;
-  if (state->event_data != NULL) {
-    state->event_data[0] = '\0';
-  }
-  return LONEJSON_STATUS_OK;
-}
-
-static lonejson_status cai_sse_data_chunk(void *user, const void *bytes,
-                                          size_t len, lonejson_error *error) {
-  cai_sse_state *state;
-  int rc;
-
-  (void)error;
-  state = (cai_sse_state *)user;
-  rc = cai_sse_event_data_reserve(state, len);
-  if (rc == CAI_ERR_NOMEM) {
-    state->failed = 1;
-    state->failed_code = CAI_ERR_NOMEM;
-    state->failed_message = "failed to allocate streaming SSE buffer";
-    return LONEJSON_STATUS_ALLOCATION_FAILED;
-  }
-  if (rc != CAI_OK) {
-    state->failed = 1;
-    state->failed_code = CAI_ERR_PROTOCOL;
-    state->failed_message = "streaming SSE event exceeded configured limit";
-    return LONEJSON_STATUS_OVERFLOW;
-  }
-  if (len != 0U) {
-    memcpy(state->event_data + state->event_data_length, bytes, len);
-    state->event_data_length += len;
-  }
-  state->event_data[state->event_data_length] = '\0';
-  return LONEJSON_STATUS_OK;
-}
-
-static lonejson_status cai_sse_end_event(void *user,
-                                         const lonejson_sse_event *event,
-                                         lonejson_error *error) {
-  cai_sse_state *state;
+  cai_stream_delta_doc *doc;
   int rc;
 
   (void)event;
   (void)error;
   state = (cai_sse_state *)user;
-  rc = cai_sse_emit_data(state, state->event_data);
+  doc = (cai_stream_delta_doc *)dst;
+  rc = cai_sse_emit_doc(state, doc);
+  lonejson_cleanup(&cai_stream_delta_map, doc);
+  memset(doc, 0, sizeof(*doc));
   if (rc == CAI_ERR_NOMEM) {
     state->failed = 1;
     state->failed_code = CAI_ERR_NOMEM;
@@ -559,6 +363,11 @@ static int cai_sse_status_to_code(lonejson_status status) {
   if (status == LONEJSON_STATUS_OVERFLOW) {
     return CAI_ERR_PROTOCOL;
   }
+  if (status == LONEJSON_STATUS_INVALID_JSON ||
+      status == LONEJSON_STATUS_TYPE_MISMATCH ||
+      status == LONEJSON_STATUS_MISSING_REQUIRED_FIELD) {
+    return CAI_ERR_PROTOCOL;
+  }
   return CAI_ERR_TRANSPORT;
 }
 
@@ -568,6 +377,11 @@ static const char *cai_sse_status_to_message(lonejson_status status) {
   }
   if (status == LONEJSON_STATUS_OVERFLOW) {
     return "streaming SSE event exceeded configured limit";
+  }
+  if (status == LONEJSON_STATUS_INVALID_JSON ||
+      status == LONEJSON_STATUS_TYPE_MISMATCH ||
+      status == LONEJSON_STATUS_MISSING_REQUIRED_FIELD) {
+    return "failed to parse streaming SSE JSON";
   }
   return "streaming response callback failed";
 }
@@ -580,7 +394,6 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
   size_t needed;
   size_t new_capacity;
   char *grown;
-  lonejson_sse_handler handler;
   lonejson_error sse_error;
   lonejson_status status;
 
@@ -612,12 +425,11 @@ static size_t cai_sse_write(void *ptr, size_t size, size_t nmemb, void *user) {
     state->body_length += capture;
     state->body[state->body_length] = '\0';
   }
-  handler.begin_event = cai_sse_begin_event;
-  handler.data_chunk = cai_sse_data_chunk;
-  handler.end_event = cai_sse_end_event;
   memset(&sse_error, 0, sizeof(sse_error));
-  status = lonejson_sse_push(state->sse, bytes, total, &handler, state,
-                             &sse_error);
+  status = lonejson_sse_push_json(state->sse, &cai_stream_delta_map,
+                                  &state->doc, bytes, total,
+                                  &state->json_options, cai_sse_json_event,
+                                  state, &sse_error);
   if (status != LONEJSON_STATUS_OK) {
     if (!state->failed) {
       state->failed = 1;
@@ -643,7 +455,6 @@ static int cai_client_stream_response_params_with_id(
   int rc;
   lonejson_sse_options sse_options;
   lonejson_error sse_error;
-  lonejson_sse_handler sse_handler;
   lonejson_status sse_status;
 
   if (client == NULL || params == NULL || sinks == NULL ||
@@ -672,13 +483,14 @@ static int cai_client_stream_response_params_with_id(
   state.out_response_id = out_response_id;
   state.out_usage = out_usage;
   state.sse = lonejson_sse_open(&sse_options, &sse_error);
+  memset(&state.doc, 0, sizeof(state.doc));
+  lonejson_init(&cai_stream_delta_map, &state.doc);
+  state.parse_options = lonejson_default_parse_options();
+  memset(&state.json_options, 0, sizeof(state.json_options));
+  state.json_options.parse_options = &state.parse_options;
   state.body = NULL;
-  state.event_data = NULL;
   state.body_length = 0U;
   state.body_capacity = 0U;
-  state.event_data_length = 0U;
-  state.event_data_capacity = 0U;
-  state.event_limit = CAI_DEFAULT_SSE_EVENT_LIMIT;
   state.failed = 0;
   state.failed_code = CAI_ERR_TRANSPORT;
   state.failed_message = "streaming response sink failed";
@@ -687,8 +499,10 @@ static int cai_client_stream_response_params_with_id(
   state.output_text_started = 0;
   state.output_text_suffixed = 0;
   if (state.sse == NULL) {
-    return cai_set_error(error, cai_sse_status_to_code(sse_error.code),
-                         cai_sse_status_to_message(sse_error.code));
+    rc = cai_set_error(error, cai_sse_status_to_code(sse_error.code),
+                       cai_sse_status_to_message(sse_error.code));
+    lonejson_cleanup(&cai_stream_delta_map, &state.doc);
+    return rc;
   }
 
   rc = cai_response_request_upload_open(params, 1, &upload, error);
@@ -723,6 +537,7 @@ static int cai_client_stream_response_params_with_id(
     curl_slist_free_all(headers);
     cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
     lonejson_sse_close(state.sse);
+    lonejson_cleanup(&cai_stream_delta_map, &state.doc);
     return rc;
   }
   curl = curl_easy_init();
@@ -731,6 +546,7 @@ static int cai_client_stream_response_params_with_id(
     cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
     cai_response_request_upload_close(upload);
     lonejson_sse_close(state.sse);
+    lonejson_cleanup(&cai_stream_delta_map, &state.doc);
     return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to initialize curl");
   }
   if (rc == CAI_OK) {
@@ -768,12 +584,10 @@ static int cai_client_stream_response_params_with_id(
   }
   curl_easy_cleanup(curl);
   if (curl_rc == CURLE_OK && !state.failed) {
-    sse_handler.begin_event = cai_sse_begin_event;
-    sse_handler.data_chunk = cai_sse_data_chunk;
-    sse_handler.end_event = cai_sse_end_event;
     memset(&sse_error, 0, sizeof(sse_error));
-    sse_status = lonejson_sse_finish(state.sse, &sse_handler, &state,
-                                     &sse_error);
+    sse_status = lonejson_sse_finish_json(
+        state.sse, &cai_stream_delta_map, &state.doc, &state.json_options,
+        cai_sse_json_event, &state, &sse_error);
     if (sse_status != LONEJSON_STATUS_OK) {
       if (!state.failed) {
         state.failed = 1;
@@ -785,7 +599,7 @@ static int cai_client_stream_response_params_with_id(
   curl_slist_free_all(headers);
   cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
   lonejson_sse_close(state.sse);
-  cai_free_mem(NULL, state.event_data);
+  lonejson_cleanup(&cai_stream_delta_map, &state.doc);
   cai_response_request_upload_close(upload);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, state.body);
