@@ -337,6 +337,20 @@ port with `CAI_SEARXNG_PORT` and query a different running instance with
 `CAI_SEARXNG_BASE_URL`. The local config enables SearXNG JSON output so cai can
 consume `/search?format=json`.
 
+Automated smoke tests intentionally use an explicit upstream engine instead of
+SearXNG's default fanout. The default `make searxng-test` engine is
+`wikipedia`, which keeps the local test away from commercial search UI scraping
+paths such as Google/Startpage. Manual local experimentation can still override
+the engine:
+
+```sh
+CAI_SEARXNG_TEST_ENGINE=brave make searxng-test
+```
+
+Future cai web-search tool tests should keep this rule: use explicit engines,
+and prefer documented API-backed engines such as SearXNG's `braveapi`,
+Mojeek, or Marginalia when credentials are configured.
+
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and

@@ -8,7 +8,8 @@ CTEST := ctest
 COMPOSE_FILE := docker-compose.yaml
 COMPOSE := $(shell if command -v nerdctl >/dev/null 2>&1; then printf 'nerdctl compose'; elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then printf 'docker compose'; else printf ''; fi)
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
-CAI_SEARXNG_TEST_QUERY ?= openai responses api
+CAI_SEARXNG_TEST_ENGINE ?= wikipedia
+CAI_SEARXNG_TEST_QUERY ?= OpenAI
 
 .PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan package package-source package-source-smoke package-checksums release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
@@ -113,11 +114,13 @@ searxng-logs: compose-check
 
 searxng-test:
 	@url="$${CAI_SEARXNG_BASE_URL:-$(CAI_SEARXNG_BASE_URL)}/search"; \
+	engine="$${CAI_SEARXNG_TEST_ENGINE:-$(CAI_SEARXNG_TEST_ENGINE)}"; \
 	query="$${CAI_SEARXNG_TEST_QUERY:-$(CAI_SEARXNG_TEST_QUERY)}"; \
-	printf 'GET %s?q=%s&format=json\n' "$$url" "$$query"; \
+	printf 'GET %s?q=%s&format=json&engines=%s\n' "$$url" "$$query" "$$engine"; \
 	curl -fsS --get "$$url" \
 		--data-urlencode "q=$$query" \
 		--data-urlencode "format=json" \
+		--data-urlencode "engines=$$engine" \
 		--data-urlencode "safesearch=0" \
 		--data-urlencode "language=en" | head -c "$${CAI_SEARXNG_TEST_BYTES:-2000}"; \
 	printf '\n'
