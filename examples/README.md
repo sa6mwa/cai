@@ -90,18 +90,34 @@ cmake --build --preset debug --target cai_example_smhi_weather
 OPENAI_API_KEY=... ./build/debug/cai_example_smhi_weather Gothenburg
 ```
 
+## SearXNG Search Tool
+
+Run an agent with the built-in SearXNG search preset. Start the local SearXNG
+service first with `make searxng-up`. The example leaves `config.engine` unset
+by default so the SearXNG instance uses its configured search engines. Set
+`CAI_SEARXNG_ENGINE` to force a specific engine.
+
+```sh
+cmake --build --preset debug --target cai_example_searxng_search
+OPENAI_API_KEY=... ./build/debug/cai_example_searxng_search "OpenAI Responses API"
+CAI_SEARXNG_ENGINE=wikipedia OPENAI_API_KEY=... ./build/debug/cai_example_searxng_search "OpenAI"
+```
+
 ## Terminal Chat
 
-Run a small terminal chat agent that reads prompts from stdin, streams response
-tokens to stdout, keeps context through cai's `previous_response_id` session
-mode with server-side auto-compaction enabled by default, renders reasoning
-summaries and responses in stream order on stdout when the API provides them,
-uses a stable `prompt_cache_key` for OpenAI prompt-cache bucketing, and prints
-token usage plus context window percentage and estimated cumulative USD cost to
-stderr after each turn. Cost is estimated locally from model pricing metadata
-and response usage;
-it is not a billing-grade invoice value. Exit with Ctrl-D at an empty prompt,
-`/quit`, or `/exit`.
+Run a small terminal chat agent that reads prompts from stdin, keeps context
+through cai's `previous_response_id` session mode with server-side
+auto-compaction enabled by default, uses a stable `prompt_cache_key` for OpenAI
+prompt-cache bucketing, and prints token usage plus context window percentage
+and estimated cumulative USD cost to stderr after each turn. Cost is estimated
+locally from model pricing metadata and response usage; it is not a
+billing-grade invoice value. The chat agent registers the SearXNG search preset
+and can call it when it needs current or external information; start local
+SearXNG with `make searxng-up`. Tool calls are printed with `[tool]` input and
+output lines so search activity is visible while a turn is running. Because
+local tool orchestration currently uses the synchronous auto-run path, this
+example prints each completed assistant answer rather than token-streaming
+tool-enabled turns. Exit with Ctrl-D at an empty prompt, `/quit`, or `/exit`.
 
 ```sh
 cmake --build --preset debug --target cai_example_terminal_chat

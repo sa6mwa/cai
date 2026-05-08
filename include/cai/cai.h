@@ -121,6 +121,21 @@ typedef struct cai_agent_config {
 #define CAI_REASONING_SUMMARY_CONCISE "concise"
 #define CAI_REASONING_SUMMARY_DETAILED "detailed"
 
+#define CAI_TOOL_EVENT_START 1
+#define CAI_TOOL_EVENT_OUTPUT 2
+#define CAI_TOOL_EVENT_ERROR 3
+
+typedef struct cai_tool_event {
+  int type;
+  const char *name;
+  const char *arguments_json;
+  const struct lonejson_spooled *output_json;
+  const cai_error *tool_error;
+} cai_tool_event;
+
+typedef int (*cai_tool_event_fn)(void *context, const cai_tool_event *event,
+                                 cai_error *error);
+
 typedef struct cai_list_params {
   const char *after;
   int limit;
@@ -132,6 +147,8 @@ typedef struct cai_run_options {
   size_t tool_output_memory_limit;
   size_t tool_output_max_bytes;
   const char *tool_spool_dir;
+  cai_tool_event_fn tool_event;
+  void *tool_event_context;
 } cai_run_options;
 
 typedef struct cai_token_usage {
@@ -472,6 +489,8 @@ int cai_output_write_raw_json(const cai_output *output, cai_sink *sink,
 int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                           void *value, cai_error *error);
 void cai_output_destroy(cai_output *output);
+int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
+                                cai_error *error);
 
 int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);
 void cai_tool_registry_destroy(cai_tool_registry *registry);

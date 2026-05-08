@@ -317,6 +317,7 @@ if(CAI_BUILD_EXAMPLES)
     conversation_handles:conversation-handles
     history_export:history-export
     openrouter_response:openrouter-response
+    searxng_search:searxng-search
     session_state:session-state
     smhi_weather:smhi-weather
     streaming_text:streaming-text

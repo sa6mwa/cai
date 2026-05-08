@@ -15,6 +15,11 @@ typedef struct cai_history_sink_context {
   lonejson_spooled *spool;
 } cai_history_sink_context;
 
+typedef struct cai_lonejson_cai_sink_context {
+  cai_sink *sink;
+  cai_error *error;
+} cai_lonejson_cai_sink_context;
+
 typedef struct cai_spooled_record_reader {
   lonejson_spooled cursor;
   unsigned char buffer[4096];
@@ -184,6 +189,8 @@ void cai_run_options_init(cai_run_options *options) {
   options->tool_output_memory_limit = 1024U * 1024U;
   options->tool_output_max_bytes = 0U;
   options->tool_spool_dir = NULL;
+  options->tool_event = NULL;
+  options->tool_event_context = NULL;
 }
 
 int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
@@ -578,6 +585,47 @@ static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
     return LONEJSON_STATUS_OK;
   }
   return LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static lonejson_status cai_lonejson_write_cai_sink(void *user,
+                                                   const void *data,
+                                                   size_t len,
+                                                   lonejson_error *error) {
+  cai_lonejson_cai_sink_context *context;
+  int rc;
+
+  (void)error;
+  context = (cai_lonejson_cai_sink_context *)user;
+  if (context == NULL || context->sink == NULL) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  rc = cai_sink_write(context->sink, data, len, context->error);
+  return rc == CAI_OK ? LONEJSON_STATUS_OK : LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
+                                cai_error *error) {
+  cai_lonejson_cai_sink_context context;
+  lonejson_error json_error;
+
+  if (event == NULL || event->output_json == NULL || sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool event output and sink are required");
+  }
+  context.sink = sink;
+  context.error = error;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_write_to_sink(event->output_json,
+                                     cai_lonejson_write_cai_sink, &context,
+                                     &json_error) == LONEJSON_STATUS_OK) {
+    return CAI_OK;
+  }
+  if (error != NULL && error->message != NULL) {
+    return error->code;
+  }
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to write tool event output",
+                              json_error.message);
 }
 
 static void cai_history_init_spooled(cai_session *session,
@@ -1772,6 +1820,18 @@ static int cai_session_run_tool_round(cai_session *session,
   spool_options.temp_dir = options->tool_spool_dir;
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
        i++) {
+    cai_tool_event event;
+
+    memset(&event, 0, sizeof(event));
+    event.name = cai_response_tool_call_name(response, i);
+    event.arguments_json = cai_response_tool_call_arguments(response, i);
+    if (options->tool_event != NULL) {
+      event.type = CAI_TOOL_EVENT_START;
+      rc = options->tool_event(options->tool_event_context, &event, error);
+    }
+    if (rc != CAI_OK) {
+      break;
+    }
     lonejson_spooled_init(&capture.output, &spool_options);
     callbacks.write = cai_capture_tool_output;
     callbacks.close = NULL;
@@ -1784,6 +1844,18 @@ static int cai_session_run_tool_round(cai_session *session,
           cai_response_tool_call_arguments(response, i), sink, error);
     }
     cai_sink_close(sink);
+    if (options->tool_event != NULL) {
+      int tool_rc;
+
+      tool_rc = rc;
+      event.type = rc == CAI_OK ? CAI_TOOL_EVENT_OUTPUT : CAI_TOOL_EVENT_ERROR;
+      event.output_json = rc == CAI_OK ? &capture.output : NULL;
+      event.tool_error = rc == CAI_OK ? NULL : error;
+      rc = options->tool_event(options->tool_event_context, &event, error);
+      if (tool_rc != CAI_OK && rc == CAI_OK) {
+        rc = tool_rc;
+      }
+    }
     if (rc == CAI_OK) {
       rc = cai_response_create_params_add_function_call_output_spooled(
           params, cai_response_tool_call_id(response, i), &capture.output,

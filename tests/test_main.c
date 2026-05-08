@@ -79,6 +79,14 @@ typedef struct raw_tool_state {
   char seen[64];
 } raw_tool_state;
 
+typedef struct tool_event_state {
+  int starts;
+  int outputs;
+  char name[32];
+  char arguments[64];
+  char output[64];
+} tool_event_state;
+
 typedef struct counting_tool_state {
   int called;
 } counting_tool_state;
@@ -629,6 +637,47 @@ static int test_raw_tool(void *context, const char *arguments_json,
   state = (raw_tool_state *)context;
   snprintf(state->seen, sizeof(state->seen), "%s", arguments_json);
   return cai_sink_write(output, arguments_json, strlen(arguments_json), error);
+}
+
+static int test_tool_event(void *context, const cai_tool_event *event,
+                           cai_error *error) {
+  tool_event_state *state;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  int rc;
+
+  (void)error;
+  state = (tool_event_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_START) {
+    state->starts++;
+    snprintf(state->name, sizeof(state->name), "%s",
+             event->name != NULL ? event->name : "");
+    snprintf(state->arguments, sizeof(state->arguments), "%s",
+             event->arguments_json != NULL ? event->arguments_json : "");
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+    state->outputs++;
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    writer.closed = 0;
+    callbacks.write = test_write;
+    callbacks.close = test_write_close;
+    callbacks.context = &writer;
+    sink = NULL;
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+    if (rc == CAI_OK) {
+      rc = cai_tool_event_write_output(event, sink, error);
+    }
+    cai_sink_close(sink);
+    snprintf(state->output, sizeof(state->output), "%s", writer.buffer);
+    return rc;
+  }
+  return CAI_OK;
 }
 
 static int test_large_raw_tool(void *context, const char *arguments_json,
@@ -3394,6 +3443,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_session *session;
   cai_response *response;
   raw_tool_state raw_state;
+  tool_event_state event_state;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -3437,11 +3487,14 @@ static void test_agent_tool_auto_run(test_state *state) {
   }
   run_options.tool_output_memory_limit = 4U;
   run_options.tool_spool_dir = spool_dir;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
   client = NULL;
   agent = NULL;
   session = NULL;
   response = NULL;
   raw_state.seen[0] = '\0';
+  memset(&event_state, 0, sizeof(event_state));
 
   expect_int(state, "agent_auto_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -3464,6 +3517,13 @@ static void test_agent_tool_auto_run(test_state *state) {
   expect_str(state, "agent_auto_response", cai_response_output_text(response),
              "auto done");
   expect_str(state, "agent_auto_seen", raw_state.seen, "{\"x\":1}");
+  expect_int(state, "agent_auto_tool_event_starts", event_state.starts, 1L);
+  expect_int(state, "agent_auto_tool_event_outputs", event_state.outputs, 1L);
+  expect_str(state, "agent_auto_tool_event_name", event_state.name, "raw_echo");
+  expect_str(state, "agent_auto_tool_event_arguments", event_state.arguments,
+             "{\"x\":1}");
+  expect_str(state, "agent_auto_tool_event_output", event_state.output,
+             "{\"x\":1}");
   cai_response_destroy(response);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
