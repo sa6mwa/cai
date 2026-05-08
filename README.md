@@ -319,6 +319,24 @@ Relevant OpenAI documentation:
 - <https://platform.openai.com/docs/models/compare>
 - <https://platform.openai.com/docs/api-reference/responses>
 
+## Local SearXNG
+
+cai includes a local SearXNG compose service for developing and testing the
+future web-search tool preset. The Makefile prefers `nerdctl compose` and falls
+back to `docker compose` when nerdctl is not installed.
+
+```sh
+make searxng-up
+make searxng-wait
+make searxng-test
+make searxng-down
+```
+
+The service listens on `http://127.0.0.1:8888` by default. Override the host
+port with `CAI_SEARXNG_PORT` and query a different running instance with
+`CAI_SEARXNG_BASE_URL`. The local config enables SearXNG JSON output so cai can
+consume `/search?format=json`.
+
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and

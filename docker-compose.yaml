@@ -1,0 +1,12 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: cai-searxng
+    restart: unless-stopped
+    ports:
+      - "${CAI_SEARXNG_PORT:-8888}:8080"
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:${CAI_SEARXNG_PORT:-8888}/"
+      SEARXNG_SECRET: "${CAI_SEARXNG_SECRET:-cai-local-searxng-secret}"
+    volumes:
+      - ./compose/searxng/settings.yml:/etc/searxng/settings.yml:ro
