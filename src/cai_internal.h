@@ -361,6 +361,11 @@ int cai_client_stream_response_with_id(
     cai_client *client, const cai_response_create_params *params,
     const cai_stream_sinks *sinks, char **out_response_id,
     cai_token_usage *out_usage, cai_error *error);
+int cai_tool_registry_register_lonejson_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const lonejson_map *params_map, const lonejson_map *result_map,
+    cai_tool_fn callback, void *context, void (*context_cleanup)(void *context),
+    cai_error *error);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,

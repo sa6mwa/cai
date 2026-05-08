@@ -911,13 +911,16 @@ Mirror liblockdc where practical:
   Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
   argument surfaces.
 - Implemented constructor-style SearXNG preset:
-  - `cai_agent_register_searxng_tool(...)` and
-    `agent->register_searxng_tool(...)` wire schema and callback together.
+  - `cai_agent_register_searxng_tool(...)` in `<cai/tools/searxng.h>` wires
+    schema and callback together without adding preset-specific members to the
+    core agent handle.
   - preset input/result contracts are typed and stable: input `query`; output
     `query`, `engine`, `title`, `url`, `snippet`, `source`, `result_count`,
     and `infobox_count`.
   - includes no-auth local endpoint support suitable for the
     docker-compose-based SearXNG backend.
+  - omits the `engines` query parameter by default so the configured SearXNG
+    instance decides; tests set `wikipedia` explicitly.
 - Implemented integration coverage for `CAI_INTEGRATION_SEARXNG_TOOL=1`, using
   a local self-hosted SearXNG URL from `CAI_SEARXNG_BASE_URL`.
 - Integration coverage includes `CAI_INTEGRATION_TOOL_SECURITY=1`, which calls

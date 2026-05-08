@@ -2630,7 +2630,6 @@ int cai_session_load_state_path(cai_session *session, const char *path,
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
-  agent->register_searxng_tool = cai_agent_register_searxng_tool;
   agent->new_session = cai_agent_new_session;
   agent->new_conversation_session = cai_agent_new_conversation_session;
   agent->new_session_for_conversation = cai_agent_new_session_for_conversation;

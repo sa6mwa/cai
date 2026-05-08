@@ -351,14 +351,15 @@ Future cai web-search tool tests should keep this rule: use explicit engines,
 and prefer documented API-backed engines such as SearXNG's `braveapi`,
 Mojeek, or Marginalia when credentials are configured.
 
-Agents can register the built-in SearXNG search preset with
-`cai_agent_register_searxng_tool` or the method-style
-`agent->register_searxng_tool(...)`. The preset registers a typed lonejson tool
-named `searxng_search` by default. Its input is `query`; its output is a
-compact typed result containing `query`, `engine`, `title`, `url`, `snippet`,
-`source`, `result_count`, and `infobox_count`. The callback fetches SearXNG
-JSON into bounded/spillable `lonejson_spooled` storage before parsing the
-stable fields.
+Agents can register the opt-in SearXNG search preset by including
+`<cai/tools/searxng.h>` and calling `cai_agent_register_searxng_tool`. The
+preset registers a typed lonejson tool named `searxng_search` by default. Its
+input is `query`; its output is a compact typed result containing `query`,
+`engine`, `title`, `url`, `snippet`, `source`, `result_count`, and
+`infobox_count`. The callback fetches SearXNG JSON into bounded/spillable
+`lonejson_spooled` storage before parsing the stable fields. When
+`config.engine` is unset, cai does not send `engines=...`; the SearXNG instance
+uses its configured defaults.
 
 ## Integration Tests
 

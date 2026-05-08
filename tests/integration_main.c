@@ -1,4 +1,5 @@
 #include <cai/cai.h>
+#include <cai/tools/searxng.h>
 
 #include <lonejson.h>
 
@@ -600,7 +601,7 @@ static int run_searxng_tool_regression(void) {
     base_url = CAI_SEARXNG_DEFAULT_BASE_URL;
   }
   searxng_config.base_url = base_url;
-  searxng_config.engine = CAI_SEARXNG_DEFAULT_ENGINE;
+  searxng_config.engine = "wikipedia";
   searxng_config.response_memory_limit = 16U * 1024U;
   searxng_config.response_max_bytes = 1024U * 1024U;
 
@@ -642,7 +643,7 @@ static int run_searxng_tool_regression(void) {
   answer = cai_output_text(output);
   if (answer == NULL || strstr(answer, "SEARXNG_TOOL_OK") == NULL ||
       strstr(answer, "OpenAI") == NULL ||
-      strstr(answer, "engine=wikipedia") == NULL) {
+      strstr(answer, "wikipedia") == NULL) {
     fprintf(stderr, "searxng tool answer failed check:\n%s\n",
             answer != NULL ? answer : "(null)");
     rc = CAI_ERR_PROTOCOL;

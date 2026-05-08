@@ -1,4 +1,5 @@
 #include <cai/cai.h>
+#include <cai/tools/searxng.h>
 
 #include "cai_internal.h"
 #include "../examples/mike-mind/mike_mind_prompt.h"
@@ -2527,7 +2528,7 @@ static void mock_searxng_child(int pipe_fd) {
   if (strstr(request, "GET /search?") == NULL ||
       strstr(request, "q=OpenAI") == NULL ||
       strstr(request, "format=json") == NULL ||
-      strstr(request, "engines=wikipedia") == NULL) {
+      strstr(request, "engines=") != NULL) {
     _exit(9);
   }
   if (mock_write_json_response(client_fd, body) != 0) {
@@ -3580,7 +3581,7 @@ static void test_agent_searxng_tool_auto_run(test_state *state) {
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
   expect_int(state, "agent_searxng_register",
-             agent->register_searxng_tool(agent, &searxng_config, &error),
+             cai_agent_register_searxng_tool(agent, &searxng_config, &error),
              CAI_OK);
   expect_int(state, "agent_searxng_session",
              agent->new_session(agent, &session, &error), CAI_OK);

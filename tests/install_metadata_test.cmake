@@ -17,6 +17,7 @@ endif()
 set(required_files
   "${prefix}/include/cai/cai.h"
   "${prefix}/include/cai/models.h"
+  "${prefix}/include/cai/tools/searxng.h"
   "${prefix}/include/cai/version.h"
   "${prefix}/lib/cmake/cai/cai-config.cmake"
   "${prefix}/lib/cmake/cai/cai-config-version.cmake"
