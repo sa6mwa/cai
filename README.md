@@ -9,16 +9,15 @@ good ergonomics for agentic workflows without forcing application code to build
 raw HTTP requests or hand-roll JSON.
 
 See [PLAN.md](PLAN.md) for the current implementation plan and
-[ROADMAP.md](ROADMAP.md) for future features such as Realtime WebSocket.
+[ROADMAP.md](ROADMAP.md) for future WebSocket work.
 
-Responses WebSocket support is not treated as a normal implementation target
-until OpenAI publishes a stable public contract for it. OpenAI documents
-Responses HTTP/SSE streaming; Codex contains an internal Responses WebSocket
-transport using `wss://.../v1/responses` and `response.create` frames, but cai
-will not implement that as a default public SDK path while the contract is
-undocumented. OpenAI Realtime WebSocket is documented, but cai has no Realtime
-facade yet and tracks that as a future feature. If cai later adds Responses
-WebSocket, it should be explicitly experimental and opt-in.
+OpenAI documents both Responses WebSocket mode and Realtime WebSocket, but cai
+does not implement either yet. Responses WebSocket is a transport option for
+long-running Responses workflows; Realtime WebSocket is a separate Realtime API
+surface for low-latency text/audio sessions. Both are parked in
+[ROADMAP.md](ROADMAP.md) until cai has an explicit WebSocket transport slice,
+a C mock WebSocket test server, and clear DX separate from the current HTTP/SSE
+Responses path.
 
 ## Status
 

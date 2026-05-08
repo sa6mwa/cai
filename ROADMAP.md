@@ -116,12 +116,27 @@ Official OpenAI docs checked:
 
 ## Future: Responses WebSocket
 
-Status: future experimental possibility, not implemented.
+Status: documented future feature, not implemented.
 
-Official OpenAI docs checked so far did not expose a public Responses WebSocket
-contract. Codex contains internal prior art for `wss://.../v1/responses` with
-`response.create` frames and a beta header, but cai should not expose that as a
-normal API feature unless OpenAI publishes a stable public contract.
+OpenAI now documents Responses WebSocket mode as a persistent connection to
+`/v1/responses` for long-running, tool-call-heavy workflows. Each turn sends
+only new input items plus `previous_response_id`, so it is still Responses
+state/continuation semantics, not the Realtime API.
 
-If implemented later, Responses WebSocket must be explicit opt-in, documented as
-unstable, and have HTTP/SSE fallback.
+Initial future scope:
+
+- Choose a WebSocket transport compatible with the cai release matrix.
+- Share semantic Responses event parsing with the existing HTTP/SSE path.
+- Keep HTTP/SSE as the default transport and fallback.
+- Add a C mock WebSocket server before live API-backed tests.
+- Support text/reasoning deltas and function-call argument events first.
+- Preserve true streaming: curl/WebSocket frame buffers and lonejson chunk
+  buffers are fine; full response/event materialization is not.
+- Keep the public DX explicit while the feature settles, for example a
+  `cai_response_transport_websocket` or session config knob rather than silent
+  transport switching.
+
+Official OpenAI docs checked:
+
+- <https://developers.openai.com/api/docs/guides/websocket-mode>
+- <https://developers.openai.com/api/docs/guides/streaming-responses>

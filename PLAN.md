@@ -35,14 +35,13 @@ application.
   supported as an OpenAI-compatible Responses provider through
   `https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY`, and curated model
   metadata where OpenRouter exposes machine-readable registry data.
-- WebSocket coverage target: Realtime WebSocket is a documented OpenAI API, but
-  no cai Realtime facade is implemented yet; track it as a future feature in
-  [ROADMAP.md](ROADMAP.md). Responses WebSocket is not a normal implementation
-  target until OpenAI
-  publishes a stable public contract for it. Codex has an internal
-  `wss://.../v1/responses` transport using `response.create` frames and
-  Responses-style streaming events, but cai should treat that path as
-  undocumented and therefore experimental/opt-in only if implemented later.
+- WebSocket coverage target: OpenAI documents both Responses WebSocket mode and
+  Realtime WebSocket, but neither is part of the active cai implementation.
+  Responses WebSocket is a persistent transport for Responses workflows.
+  Realtime WebSocket is a separate Realtime API surface with a different
+  session/event lifecycle and text/audio use case. Track both in
+  [ROADMAP.md](ROADMAP.md) until cai has a deliberate WebSocket transport
+  slice, C mock WebSocket coverage, and stable DX.
 - MCP: not part of the first implementation, except that the C SDK design must
   not paint us into a corner for later MCP support.
 - Tool execution: synchronous local C callbacks only in the first version.
@@ -677,19 +676,18 @@ Responses streaming:
   Responses streaming path.
 - Parse documented Responses streaming events from SSE.
 - Keep the parser transport-neutral enough that an experimental Responses
-  WebSocket transport could share it later, but do not implement or expose that
-  WebSocket path as a normal SDK feature without official OpenAI docs.
+  WebSocket transport could share it later, but keep HTTP/SSE as cai's current
+  implemented Responses streaming path.
 
 Responses WebSocket mode:
 
-- Status: deferred/experimental, not a default milestone.
-- Evidence: Codex uses `wss://.../v1/responses`, sends JSON WebSocket messages
-  tagged as `response.create`, adds `OpenAI-Beta:
-  responses_websockets=2026-02-06` for its v2 path, and reuses Responses
-  streaming event shapes. That is useful prior art, not a documented cai
-  contract.
-- If implemented later, it must be explicit opt-in, have HTTP/SSE fallback, and
-  be documented as unstable.
+- Status: documented by OpenAI, but parked; not an active milestone.
+- OpenAI describes it as a persistent connection to `/v1/responses` for
+  long-running, tool-call-heavy workflows where each turn sends new input items
+  plus `previous_response_id`.
+- If implemented later, it must be explicit opt-in at first, share the semantic
+  Responses event path with HTTP/SSE where possible, have HTTP/SSE fallback, and
+  be covered by a repo-local C mock WebSocket server before live tests.
 
 Realtime WebSocket is documented by OpenAI, but no cai Realtime facade is
 implemented yet. Treat it as a future feature tracked in [ROADMAP.md](ROADMAP.md),
@@ -941,10 +939,9 @@ Mirror liblockdc where practical:
 
 - Complete documented Responses HTTP/SSE behavior.
 - Keep event parsing reusable across transports.
-- Do not implement Responses WebSocket as a standard milestone unless OpenAI
-  publishes a public contract. If we deliberately choose the Codex-compatible
-  path later, add it as experimental opt-in with mock WebSocket tests and
-  HTTP/SSE fallback.
+- Responses WebSocket is now documented, but still remains outside the current
+  hardening milestone. Promote it only as a deliberate WebSocket transport
+  slice with mock WebSocket tests, explicit DX, and HTTP/SSE fallback.
 
 ### Milestone 7: Lua binding
 
@@ -976,18 +973,18 @@ Resolved:
 - Local history capture is opt-in and independent of server-side
   auto-compaction.
 - Integration tests and examples default to `gpt-5-nano`.
-- OpenRouter examples/tests should use
-  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` as the first candidate:
-  the OpenRouter model registry currently reports zero prompt/completion
-  pricing, 256k context, Responses API availability, reasoning, and tool
-  calling support. For OpenRouter tool-calling integration, use
-  `poolside/laguna-xs.2:free`; the `openrouter/free` router advertises
-  feature-filtering for tool calls, but can still route to a free model that
-  reasons about calling the tool without emitting a function call. OpenRouter's
-  Responses beta is stateless; use client-side history replay for multi-turn
-  OpenRouter sessions. Do not assume OpenAI-specific Conversations or
-  server-side compaction behavior on OpenRouter until integration tests prove
-  it.
+- OpenRouter examples/tests should use `poolside/laguna-xs.2:free` through
+  `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`. It passes cai's Responses
+  compatibility, tool-calling, tool-security, and 20-turn client-history e2e
+  regressions. `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` remains
+  enumerated, but it is not the go-to e2e model because it failed cai's
+  continuity regression by repeating the first response on the second turn.
+  The `openrouter/free` router advertises feature-filtering for tool calls, but
+  can still route to a free model that reasons about calling the tool without
+  emitting a function call. OpenRouter's Responses beta is stateless; use
+  client-side history replay for multi-turn OpenRouter sessions. Do not assume
+  OpenAI-specific Conversations or server-side compaction behavior on OpenRouter
+  until integration tests prove it.
 - Streaming means actual streaming. Large history, tool output, generated JSON,
   and final response data should use lonejson spooling/source/sink APIs instead
   of faux streaming through full in-memory materialization.
@@ -1018,9 +1015,8 @@ Remaining:
   function-call items, `function_call_output`, and `response.done`.
 - OpenAI `gpt-realtime` model page for the GA Realtime model, text/audio
   input/output support, context-window metadata, and model ID baseline.
-- Official OpenAI docs checked for Responses WebSocket behavior did not expose
-  a stable Responses WebSocket contract. The documented Responses streaming
-  path is HTTP/SSE. The documented WebSocket API surface found is Realtime.
+- OpenAI Responses WebSocket mode guide for persistent `/v1/responses`
+  connections with incremental input items and `previous_response_id`.
 - Codex source checked for prior art: `codex-rs/codex-api/src/endpoint/
   responses_websocket.rs`, `codex-rs/core/tests/suite/agent_websocket.rs`,
   `codex-rs/core/tests/suite/client_websockets.rs`, and

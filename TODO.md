@@ -5,6 +5,8 @@ Additions to [PLAN.md](PLAN.md)
 - [x] Support openrouter.ai, we have OPENROUTER_API_KEY for https://openrouter.ai/api/v1
 - [x] Find the cheapest model supporting the responses API via openrouter.ai
 - [x] Investigate if this model via openrouter supports the responses API: https://openrouter.ai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+- [x] Switch the OpenRouter go-to e2e model to the free model that actually
+  passes cai continuity and tool-calling regressions.
 
 Implemented first slice:
 
@@ -25,6 +27,7 @@ Implemented first slice:
 - `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` remains enumerated, but
   it is not the default because it failed the 20-turn continuity e2e by
   repeating the first response on the second turn.
+- `poolside/laguna-xs.2:free` is the go-to OpenRouter model for e2e testing.
 
 Current OpenRouter boundary:
 
