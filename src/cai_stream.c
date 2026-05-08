@@ -31,6 +31,14 @@ typedef struct cai_stream_response_doc {
   cai_stream_usage_doc usage;
 } cai_stream_response_doc;
 
+typedef struct cai_stream_output_item_doc {
+  char *id;
+  char *type;
+  char *call_id;
+  char *name;
+  char *arguments;
+} cai_stream_output_item_doc;
+
 typedef struct cai_stream_delta_doc {
   char *type;
   char *delta;
@@ -39,6 +47,7 @@ typedef struct cai_stream_delta_doc {
   char *call_id;
   char *name;
   char *arguments;
+  cai_stream_output_item_doc item;
   cai_stream_response_doc response;
 } cai_stream_delta_doc;
 
@@ -80,6 +89,16 @@ static const lonejson_field cai_stream_response_fields[] = {
 LONEJSON_MAP_DEFINE(cai_stream_response_map, cai_stream_response_doc,
                     cai_stream_response_fields);
 
+static const lonejson_field cai_stream_output_item_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_output_item_doc, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_output_item_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_output_item_doc, call_id, "call_id"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_output_item_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_stream_output_item_doc, arguments,
+                                "arguments")};
+LONEJSON_MAP_DEFINE(cai_stream_output_item_map, cai_stream_output_item_doc,
+                    cai_stream_output_item_fields);
+
 static const lonejson_field cai_stream_delta_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, type, "type"),
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, delta, "delta"),
@@ -88,6 +107,8 @@ static const lonejson_field cai_stream_delta_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, call_id, "call_id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, arguments, "arguments"),
+    LONEJSON_FIELD_OBJECT(cai_stream_delta_doc, item, "item",
+                          &cai_stream_output_item_map),
     LONEJSON_FIELD_OBJECT(cai_stream_delta_doc, response, "response",
                           &cai_stream_response_map)};
 LONEJSON_MAP_DEFINE(cai_stream_delta_map, cai_stream_delta_doc,
@@ -304,8 +325,25 @@ static int cai_sse_emit_doc(cai_sse_state *state,
              strcmp(doc->type, "response.function_call_arguments.delta") == 0) {
     rc = cai_sse_emit_function_call_delta(state, doc);
   } else if (doc->type != NULL &&
-             strcmp(doc->type, "response.function_call_arguments.done") == 0) {
+             strcmp(doc->type, "response.function_call_arguments.done") == 0 &&
+             doc->call_id != NULL && doc->name != NULL &&
+             doc->arguments != NULL) {
     rc = cai_sse_emit_function_call_done(state, doc);
+  } else if (doc->type != NULL &&
+             strcmp(doc->type, "response.output_item.done") == 0 &&
+             doc->item.type != NULL &&
+             strcmp(doc->item.type, "function_call") == 0 &&
+             doc->item.call_id != NULL && doc->item.name != NULL &&
+             doc->item.arguments != NULL) {
+    cai_stream_delta_doc item_doc;
+
+    memset(&item_doc, 0, sizeof(item_doc));
+    item_doc.item_id = doc->item.id;
+    item_doc.output_index = doc->output_index;
+    item_doc.call_id = doc->item.call_id;
+    item_doc.name = doc->item.name;
+    item_doc.arguments = doc->item.arguments;
+    rc = cai_sse_emit_function_call_done(state, &item_doc);
   }
   if (rc == CAI_OK && state->out_response_id != NULL &&
       *state->out_response_id == NULL && doc->response.id != NULL) {

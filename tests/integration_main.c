@@ -76,6 +76,11 @@ typedef struct integration_attack_state {
   int called;
 } integration_attack_state;
 
+typedef struct integration_tool_event_state {
+  int starts;
+  int outputs;
+} integration_tool_event_state;
+
 static const lonejson_field integration_lookup_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, city, "city"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, code, "code")};
@@ -152,6 +157,23 @@ static int integration_attack_tool(void *context, const void *params,
   out->verdict = cai_tool_result_strdup("SAFE_TOOL_DATA_HANDLED", error);
   if (out->verdict == NULL) {
     return CAI_ERR_NOMEM;
+  }
+  return CAI_OK;
+}
+
+static int integration_tool_event(void *context, const cai_tool_event *event,
+                                  cai_error *error) {
+  integration_tool_event_state *state;
+
+  (void)error;
+  state = (integration_tool_event_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_START) {
+    state->starts++;
+  } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+    state->outputs++;
   }
   return CAI_OK;
 }
@@ -659,6 +681,123 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_searxng_stream_tool_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_searxng_tool_config searxng_config;
+  cai_stream_sinks stream_sinks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  integration_tool_event_state event_state;
+  const char *base_url;
+  FILE *fp;
+  char answer[512];
+  size_t nread;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&searxng_config, 0, sizeof(searxng_config));
+  memset(&event_state, 0, sizeof(event_state));
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  fp = NULL;
+  answer[0] = '\0';
+
+  base_url = getenv("CAI_SEARXNG_BASE_URL");
+  if (base_url == NULL || base_url[0] == '\0') {
+    base_url = CAI_SEARXNG_DEFAULT_BASE_URL;
+  }
+  searxng_config.base_url = base_url;
+  searxng_config.engine = "wikipedia";
+  searxng_config.response_memory_limit = 16U * 1024U;
+  searxng_config.response_max_bytes = 1024U * 1024U;
+
+  agent_config.model = integration_model();
+  fprintf(stderr, "[integration-searxng-stream-tool] model=%s searxng=%s\n",
+          agent_config.model, base_url);
+  agent_config.developer_instructions =
+      "You are a strict streaming SearXNG regression assistant. When the user "
+      "asks for a SearXNG lookup, call searxng_search exactly once. After the "
+      "tool result, answer with exactly: SEARXNG_STREAM_TOOL_OK title=<title> "
+      "source=<source> engine=<engine>. Use the tool result fields.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 96;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_tool_event;
+  run_options.tool_event_context = &event_state;
+
+  fp = tmpfile();
+  if (fp == NULL) {
+    fprintf(stderr, "tmpfile failed\n");
+    rc = CAI_ERR_TRANSPORT;
+    goto done;
+  }
+  rc = cai_sink_file(fp, 0, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_searxng_tool(agent, &searxng_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "Perform a streaming SearXNG lookup for query=OpenAI. You must call "
+        "the tool.",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    stream_sinks.output_text = sink;
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("searxng stream tool regression", rc, &error);
+    goto done;
+  }
+  fflush(fp);
+  rewind(fp);
+  nread = fread(answer, 1U, sizeof(answer) - 1U, fp);
+  answer[nread] = '\0';
+  if (event_state.starts != 1 || event_state.outputs != 1 ||
+      strstr(answer, "SEARXNG_STREAM_TOOL_OK") == NULL ||
+      strstr(answer, "OpenAI") == NULL ||
+      strstr(answer, "wikipedia") == NULL) {
+    fprintf(stderr,
+            "searxng stream tool answer failed check; starts=%d outputs=%d "
+            "answer:\n%s\n",
+            event_state.starts, event_state.outputs, answer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_sink_close(sink);
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int send_and_destroy(cai_session *session, const char *text,
                             cai_error *error) {
   cai_response *response;
@@ -1077,6 +1216,7 @@ int main(void) {
   const char *openrouter_tool;
   const char *openrouter_tool_security;
   const char *searxng_tool;
+  const char *searxng_stream_tool;
   const char *state_restore;
   const char *tool_security;
 
@@ -1120,6 +1260,11 @@ int main(void) {
   if (searxng_tool != NULL && searxng_tool[0] != '\0' &&
       strcmp(searxng_tool, "0") != 0) {
     return run_searxng_tool_regression();
+  }
+  searxng_stream_tool = getenv("CAI_INTEGRATION_SEARXNG_STREAM_TOOL");
+  if (searxng_stream_tool != NULL && searxng_stream_tool[0] != '\0' &&
+      strcmp(searxng_stream_tool, "0") != 0) {
+    return run_searxng_stream_tool_regression();
   }
   e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {

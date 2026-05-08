@@ -262,6 +262,8 @@ struct cai_agent {
                   cai_response **out, cai_error *error);
   int (*run_auto_output)(cai_agent *agent, const cai_run_options *options,
                          cai_output **out, cai_error *error);
+  int (*stream_auto)(cai_agent *agent, const cai_run_options *options,
+                     const cai_stream_sinks *sinks, cai_error *error);
   int (*stream)(cai_agent *agent, const cai_stream_sinks *sinks,
                 cai_error *error);
   int (*stream_text)(cai_agent *agent, cai_sink *sink, cai_error *error);
@@ -301,6 +303,8 @@ struct cai_session {
   int (*run_auto_output)(cai_session *session,
                          const cai_run_options *options, cai_output **out,
                          cai_error *error);
+  int (*stream_auto)(cai_session *session, const cai_run_options *options,
+                     const cai_stream_sinks *sinks, cai_error *error);
   int (*stream)(cai_session *session, const cai_stream_sinks *sinks,
                 cai_error *error);
   int (*stream_text)(cai_session *session, cai_sink *sink, cai_error *error);
@@ -417,6 +421,8 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
 int cai_session_run_auto_output(cai_session *session,
                                 const cai_run_options *options,
                                 cai_output **out, cai_error *error);
+int cai_session_stream_auto(cai_session *session, const cai_run_options *options,
+                            const cai_stream_sinks *sinks, cai_error *error);
 int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
                        cai_error *error);
 int cai_session_stream_text(cai_session *session, cai_sink *sink,

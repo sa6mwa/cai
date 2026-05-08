@@ -10,6 +10,7 @@
 #define CAI_ANSI_GRAY "\033[90m"
 #define CAI_ANSI_GREEN "\033[32m"
 #define CAI_ANSI_BRIGHT_CYAN "\033[96m"
+#define CAI_ANSI_MAGENTA "\033[35m"
 #define CAI_ANSI_BOLD_WHITE "\033[1;37m"
 
 #define CAI_USAGE_LABEL                                                        \
@@ -22,6 +23,10 @@
 #define CAI_TOOL_LABEL                                                         \
   CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "tool" CAI_ANSI_GRAY "]"              \
                 CAI_ANSI_RESET
+#define CAI_REASONING_PREFIX                                                   \
+  CAI_ANSI_GRAY "[" CAI_ANSI_MAGENTA "reasoning" CAI_ANSI_GRAY "] "            \
+                CAI_ANSI_GRAY
+#define CAI_REASONING_SUFFIX CAI_ANSI_RESET "\n\n"
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -136,10 +141,10 @@ int main(void) {
   cai_client_config client_config;
   cai_run_options run_options;
   cai_searxng_tool_config searxng_config;
+  cai_stream_sinks stream_sinks;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
-  cai_output *output;
   cai_sink *stdout_sink;
   terminal_tool_trace tool_trace;
   cai_error error;
@@ -171,7 +176,6 @@ int main(void) {
   client = NULL;
   agent = NULL;
   session = NULL;
-  output = NULL;
   stdout_sink = NULL;
   tool_trace.fp = stdout;
   tool_trace.sink = NULL;
@@ -206,6 +210,13 @@ int main(void) {
   tool_trace.sink = stdout_sink;
   run_options.tool_event = print_tool_event;
   run_options.tool_event_context = &tool_trace;
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.reasoning_summary = stdout_sink;
+  stream_sinks.output_text = stdout_sink;
+  stream_sinks.reasoning_summary_prefix.text = CAI_REASONING_PREFIX;
+  stream_sinks.reasoning_summary_suffix.text = CAI_REASONING_SUFFIX;
+  stream_sinks.output_text_prefix.text = CAI_RESPONSE_PREFIX;
+  stream_sinks.output_text_suffix.text = CAI_RESPONSE_SUFFIX;
 
   for (;;) {
     fputs("> ", stdout);
@@ -233,21 +244,12 @@ int main(void) {
     }
     rc = session->add_user_text(session, line, &error);
     if (rc == CAI_OK) {
-      cai_output_destroy(output);
-      output = NULL;
-      rc = session->run_auto_output(session, &run_options, &output, &error);
-    }
-    if (rc == CAI_OK) {
-      fputs(CAI_RESPONSE_PREFIX, stdout);
-      fflush(stdout);
-      rc = cai_output_write_text(output, stdout_sink, &error);
-      fputs(CAI_RESPONSE_SUFFIX, stdout);
-      fflush(stdout);
+      rc = session->stream_auto(session, &run_options, &stream_sinks, &error);
     }
     fputc('\n', stdout);
     fflush(stdout);
     if (rc != CAI_OK) {
-      exit_code = print_error("cai_session_run_auto_output", rc, &error);
+      exit_code = print_error("cai_session_stream_auto", rc, &error);
       break;
     }
     if (session->last_usage(session, &usage, &error) == CAI_OK) {
@@ -270,7 +272,6 @@ int main(void) {
   }
 
 done:
-  cai_output_destroy(output);
   cai_sink_close(stdout_sink);
   if (session != NULL) {
     session->close(session);

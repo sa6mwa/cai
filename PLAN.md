@@ -97,6 +97,10 @@ application.
 - Streaming and low-allocation operation are design requirements, not
   afterthoughts. Convenience helpers may allocate, but route-handler and worker
   workflows must have streaming alternatives.
+- Tool-aware agent execution must exist on the streaming path. `run_auto_output`
+  is a convenience/materialized path; interactive agents and worker pipelines
+  should prefer `stream_auto` so reasoning summaries, response text, and tool
+  activity are observable while the turn is still running.
 
 ## Product shape
 

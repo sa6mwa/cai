@@ -2147,7 +2147,21 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_history_2\",\"usage\":{\"input_tokens\":20,"
       "\"output_tokens\":3,\"total_tokens\":23}}}\n\n";
-  static char stream_tool_body[768];
+  static char stream_tool_body[1024];
+  static const char stream_large_tool_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_stream_large_1\",\"type\":\"function_call\","
+      "\"call_id\":\"call_stream_large_1\",\"name\":\"large_raw\","
+      "\"arguments\":\"{}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_large_tool_1\",\"usage\":{\"input_tokens\":9,"
+      "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_tool_done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stream \"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"tool done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_tool_2\",\"usage\":{\"input_tokens\":19,"
+      "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
   static const char stream_history_first_retrieve_body[] =
       "{\n"
       "  \"id\": \"resp_stream_history_1\",\n"
@@ -2232,15 +2246,29 @@ static const char *mock_response_for_request(const char *request) {
                  "data: {\"type\":\"response.function_call_arguments.done\","
                  "\"item_id\":\"fc_stream_1\",\"output_index\":0,");
           strcat(stream_tool_body,
-                 "\"call_id\":\"call_stream_1\",\"name\":\"weather\",");
-          strcat(stream_tool_body,
                  "\"arguments\":\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}\n\n");
+          strcat(stream_tool_body,
+                 "data: {\"type\":\"response.output_item.done\","
+                 "\"output_index\":0,\"item\":{\"id\":\"fc_stream_1\","
+                 "\"type\":\"function_call\",\"call_id\":\"call_stream_1\","
+                 "\"name\":\"weather\",\"arguments\":"
+                 "\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}}\n\n");
           strcat(stream_tool_body,
                  "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
                  "\"resp_stream_tool_1\",\"usage\":{\"input_tokens\":9,"
                  "\"output_tokens\":1,\"total_tokens\":10}}}\n\n");
         }
         return stream_tool_body;
+      }
+      if (strstr(request, "stream large tool turn") != NULL) {
+        return stream_large_tool_body;
+      }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_1\"") != NULL &&
+          strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
+          strstr(request, "\"previous_response_id\":\"resp_stream_tool_1\"") !=
+              NULL) {
+        return stream_tool_done_body;
       }
       return stream_body;
     }
@@ -4558,6 +4586,314 @@ static void test_stream_response_text(test_state *state) {
   }
 }
 
+static void test_session_stream_auto_tool_run(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  stream_tool_state tool_stream;
+  tool_event_state event_state;
+  cai_token_usage usage;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_auto_tool_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_auto_tool_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_auto_tool_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&tool_stream, 0, sizeof(tool_stream));
+  memset(&event_state, 0, sizeof(event_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_auto_tool_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_auto_tool_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_tool_register",
+             cai_agent_register_tool(agent, "weather", "Get weather",
+                                     &tool_weather_map,
+                                     &tool_weather_result_map,
+                                     test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_tool_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_auto_tool_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.function_call_arguments_delta = test_stream_tool_delta;
+  stream_sinks.function_call_arguments_done = test_stream_tool_done;
+  stream_sinks.function_call_context = &tool_stream;
+  expect_int(state, "stream_auto_tool_add",
+             cai_session_add_user_text(session, "stream tool call turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_tool_run",
+             cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error),
+             CAI_OK);
+  expect_str(state, "stream_auto_tool_output", writer.buffer,
+             "stream tool done");
+  expect_str(state, "stream_auto_tool_previous",
+             cai_session_previous_response_id(session), "resp_stream_tool_2");
+  expect_int(state, "stream_auto_tool_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_auto_tool_usage_total", usage.total_tokens, 22L);
+  expect_int(state, "stream_auto_tool_delta_count", tool_stream.delta_count,
+             2L);
+  expect_int(state, "stream_auto_tool_done_count", tool_stream.done_count, 1L);
+  expect_str(state, "stream_auto_tool_arguments", tool_stream.arguments,
+             "{\"city\":\"Gothenburg\"}");
+  expect_int(state, "stream_auto_tool_event_starts", event_state.starts, 1L);
+  expect_int(state, "stream_auto_tool_event_outputs", event_state.outputs, 1L);
+  expect_str(state, "stream_auto_tool_event_name", event_state.name,
+             "weather");
+  expect_str(state, "stream_auto_tool_event_output", event_state.output,
+             "{\"summary\":\"Gothenburg:0\"}");
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_auto_tool_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_auto_tool_mock", "mock child failed");
+  }
+}
+
+static void test_session_stream_auto_round_limit(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_stream_sinks stream_sinks;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_auto_limit_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_auto_limit_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_auto_limit_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 0;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+
+  expect_int(state, "stream_auto_limit_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_auto_limit_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_limit_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  expect_int(state, "stream_auto_limit_add",
+             cai_session_add_user_text(session, "stream tool call turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_limit_run",
+             cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error),
+             CAI_ERR_CANCELLED);
+  expect_str(state, "stream_auto_limit_error", error.message,
+             "tool auto-run exhausted max tool rounds");
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_auto_limit_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_auto_limit_mock", "mock child failed");
+  }
+}
+
+static void test_session_stream_auto_tool_output_max_bytes(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_stream_sinks stream_sinks;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_auto_max_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_auto_max_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_auto_max_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.tool_output_max_bytes = 16U;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+
+  expect_int(state, "stream_auto_max_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_auto_max_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_max_register",
+             cai_agent_register_raw_tool(agent, "large_raw", "Large raw JSON",
+                                         schema, 0, test_large_raw_tool, NULL,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_max_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  expect_int(state, "stream_auto_max_add",
+             cai_session_add_user_text(session, "stream large tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_max_run",
+             cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "stream_auto_max_error", error.message,
+             "failed to spool tool output");
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_auto_max_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_auto_max_mock", "mock child failed");
+  }
+}
+
 static void test_stream_sse_event_limit(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -5198,6 +5534,9 @@ int main(void) {
   test_agent_tool_output_max_bytes(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
+  test_session_stream_auto_tool_run(&state);
+  test_session_stream_auto_round_limit(&state);
+  test_session_stream_auto_tool_output_max_bytes(&state);
   test_stream_sse_event_limit(&state);
   test_stream_history_preserves_pretty_json(&state);
   test_local_history_opt_in(&state);

@@ -107,17 +107,16 @@ CAI_SEARXNG_ENGINE=wikipedia OPENAI_API_KEY=... ./build/debug/cai_example_searxn
 
 Run a small terminal chat agent that reads prompts from stdin, keeps context
 through cai's `previous_response_id` session mode with server-side
-auto-compaction enabled by default, uses a stable `prompt_cache_key` for OpenAI
-prompt-cache bucketing, and prints token usage plus context window percentage
-and estimated cumulative USD cost to stderr after each turn. Cost is estimated
-locally from model pricing metadata and response usage; it is not a
-billing-grade invoice value. The chat agent registers the SearXNG search preset
-and can call it when it needs current or external information; start local
-SearXNG with `make searxng-up`. Tool calls are printed with `[tool]` input and
-output lines so search activity is visible while a turn is running. Because
-local tool orchestration currently uses the synchronous auto-run path, this
-example prints each completed assistant answer rather than token-streaming
-tool-enabled turns. Exit with Ctrl-D at an empty prompt, `/quit`, or `/exit`.
+auto-compaction enabled by default, streams reasoning summaries and response
+tokens to stdout, uses a stable `prompt_cache_key` for OpenAI prompt-cache
+bucketing, and prints token usage plus context window percentage and estimated
+cumulative USD cost to stderr after each turn. Cost is estimated locally from
+model pricing metadata and response usage; it is not a billing-grade invoice
+value. The chat agent registers the SearXNG search preset and can call it when
+it needs current or external information; start local SearXNG with
+`make searxng-up`. Tool calls are printed with `[tool]` input and output lines
+so search activity is visible while a turn is running. Exit with Ctrl-D at an
+empty prompt, `/quit`, or `/exit`.
 
 ```sh
 cmake --build --preset debug --target cai_example_terminal_chat
