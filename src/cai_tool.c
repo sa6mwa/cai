@@ -20,6 +20,7 @@ typedef struct cai_tool_entry {
   cai_tool_fn lonejson_callback;
   cai_tool_raw_fn raw_callback;
   void *context;
+  void (*context_cleanup)(void *context);
 } cai_tool_entry;
 
 struct cai_tool_registry {
@@ -69,6 +70,53 @@ typedef struct cai_tool_typed_property_doc {
   const char *description;
 } cai_tool_typed_property_doc;
 
+typedef struct cai_searxng_context {
+  char *base_url;
+  char *search_path;
+  char *engine;
+  char *language;
+  long timeout_ms;
+  size_t response_memory_limit;
+  size_t response_max_bytes;
+  char *response_spool_dir;
+} cai_searxng_context;
+
+typedef struct cai_searxng_args {
+  char *query;
+} cai_searxng_args;
+
+typedef struct cai_searxng_result {
+  char *query;
+  char *engine;
+  char *title;
+  char *url;
+  char *snippet;
+  char *source;
+  long long result_count;
+  long long infobox_count;
+} cai_searxng_result;
+
+typedef struct cai_searxng_item_doc {
+  char *url;
+  char *title;
+  char *content;
+  char *engine;
+  char *infobox;
+  char *id;
+} cai_searxng_item_doc;
+
+typedef struct cai_searxng_response_doc {
+  char *query;
+  long long number_of_results;
+  int has_number_of_results;
+  lonejson_object_array results;
+  lonejson_object_array infoboxes;
+} cai_searxng_response_doc;
+
+typedef struct cai_searxng_spool_reader {
+  lonejson_spooled cursor;
+} cai_searxng_spool_reader;
+
 #define CAI_TOOL_SCHEMA_IMPL(schema) ((cai_tool_schema_impl *)((schema)->impl))
 
 static void cai_tool_schema_init_methods(cai_tool_schema *schema);
@@ -79,6 +127,50 @@ static const lonejson_field cai_tool_typed_property_fields[] = {
                                           description, "description")};
 LONEJSON_MAP_DEFINE(cai_tool_typed_property_map, cai_tool_typed_property_doc,
                     cai_tool_typed_property_fields);
+
+static const lonejson_field cai_searxng_arg_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_args, query, "query")};
+LONEJSON_MAP_DEFINE(cai_searxng_args_map, cai_searxng_args,
+                    cai_searxng_arg_fields);
+
+static const lonejson_field cai_searxng_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_result, query, "query"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_result, engine, "engine"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_result, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_result, url, "url"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_result, snippet, "snippet"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_searxng_result, source, "source"),
+    LONEJSON_FIELD_I64_REQ(cai_searxng_result, result_count, "result_count"),
+    LONEJSON_FIELD_I64_REQ(cai_searxng_result, infobox_count, "infobox_count")};
+LONEJSON_MAP_DEFINE(cai_searxng_result_map, cai_searxng_result,
+                    cai_searxng_result_fields);
+
+static const lonejson_field cai_searxng_item_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_item_doc, url, "url"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_item_doc, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_item_doc, content,
+                                          "content"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_item_doc, engine,
+                                          "engine"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_item_doc, infobox,
+                                          "infobox"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_item_doc, id, "id")};
+LONEJSON_MAP_DEFINE(cai_searxng_item_map, cai_searxng_item_doc,
+                    cai_searxng_item_fields);
+
+static const lonejson_field cai_searxng_response_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_searxng_response_doc, query,
+                                          "query"),
+    LONEJSON_FIELD_I64_PRESENT(cai_searxng_response_doc, number_of_results,
+                               has_number_of_results, "number_of_results"),
+    LONEJSON_FIELD_OBJECT_ARRAY(cai_searxng_response_doc, results, "results",
+                                cai_searxng_item_doc, &cai_searxng_item_map,
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_OBJECT_ARRAY(cai_searxng_response_doc, infoboxes,
+                                "infoboxes", cai_searxng_item_doc,
+                                &cai_searxng_item_map, LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_searxng_response_map, cai_searxng_response_doc,
+                    cai_searxng_response_fields);
 
 static lonejson_status cai_lonejson_sink_write(void *user, const void *data,
                                                size_t len,
@@ -107,6 +199,9 @@ static void cai_tool_entry_cleanup(cai_tool_entry *entry) {
   cai_free_mem(NULL, entry->name);
   cai_free_mem(NULL, entry->description);
   cai_free_mem(NULL, entry->schema_json);
+  if (entry->context_cleanup != NULL) {
+    entry->context_cleanup(entry->context);
+  }
   memset(entry, 0, sizeof(*entry));
 }
 
@@ -475,8 +570,8 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
   memset(&compact, 0, sizeof(compact));
   lonejson_json_value_init(&value);
   lonejson_error_init(&json_error);
-  status = lonejson_json_value_set_buffer(&value, json, strlen(json),
-                                          &json_error);
+  status =
+      lonejson_json_value_set_buffer(&value, json, strlen(json), &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_json_value_write_to_sink(
         &value, cai_tool_compact_json_sink, &compact, &json_error);
@@ -930,7 +1025,7 @@ static int cai_tool_registry_register_common(
     const char *schema_json, int strict, cai_tool_kind kind,
     const lonejson_map *params_map, const lonejson_map *result_map,
     cai_tool_fn lonejson_callback, cai_tool_raw_fn raw_callback, void *context,
-    cai_error *error) {
+    void (*context_cleanup)(void *context), cai_error *error) {
   cai_tool_entry *entry;
   int rc;
 
@@ -970,7 +1065,6 @@ static int cai_tool_registry_register_common(
   entry->result_map = result_map;
   entry->lonejson_callback = lonejson_callback;
   entry->raw_callback = raw_callback;
-  entry->context = context;
   if (entry->name == NULL ||
       (description != NULL && entry->description == NULL) ||
       entry->schema_json == NULL) {
@@ -978,6 +1072,8 @@ static int cai_tool_registry_register_common(
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate tool registration");
   }
+  entry->context = context;
+  entry->context_cleanup = context_cleanup;
   registry->count++;
   return CAI_OK;
 }
@@ -1028,7 +1124,7 @@ int cai_tool_registry_register_lonejson(
     rc = cai_tool_registry_register_common(
         registry, name, description, cai_tool_schema_json(schema),
         cai_tool_schema_strict(schema), CAI_TOOL_LONEJSON, params_map,
-        result_map, callback, NULL, context, error);
+        result_map, callback, NULL, context, NULL, error);
   }
   cai_tool_schema_destroy(schema);
   return rc;
@@ -1041,7 +1137,427 @@ int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    cai_error *error) {
   return cai_tool_registry_register_common(
       registry, name, description, schema_json, strict, CAI_TOOL_RAW, NULL,
-      NULL, NULL, callback, context, error);
+      NULL, NULL, callback, context, NULL, error);
+}
+
+static void cai_searxng_context_cleanup(void *context) {
+  cai_searxng_context *ctx;
+
+  ctx = (cai_searxng_context *)context;
+  if (ctx == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, ctx->base_url);
+  cai_free_mem(NULL, ctx->search_path);
+  cai_free_mem(NULL, ctx->engine);
+  cai_free_mem(NULL, ctx->language);
+  cai_free_mem(NULL, ctx->response_spool_dir);
+  cai_free_mem(NULL, ctx);
+}
+
+static const char *cai_searxng_default_string(const char *value,
+                                              const char *fallback) {
+  return value != NULL && value[0] != '\0' ? value : fallback;
+}
+
+static int cai_searxng_context_copy_string(char **out, const char *value,
+                                           cai_error *error) {
+  *out = cai_strdup(NULL, value);
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate SearXNG tool config");
+  }
+  return CAI_OK;
+}
+
+static int cai_searxng_context_new(const cai_searxng_tool_config *config,
+                                   cai_searxng_context **out,
+                                   cai_error *error) {
+  const char *base_url;
+  const char *search_path;
+  const char *engine;
+  const char *language;
+  cai_searxng_context *ctx;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "SearXNG context output pointer is required");
+  }
+  *out = NULL;
+  base_url = cai_searxng_default_string(
+      config != NULL ? config->base_url : NULL, CAI_SEARXNG_DEFAULT_BASE_URL);
+  search_path =
+      cai_searxng_default_string(config != NULL ? config->search_path : NULL,
+                                 CAI_SEARXNG_DEFAULT_SEARCH_PATH);
+  engine = cai_searxng_default_string(config != NULL ? config->engine : NULL,
+                                      CAI_SEARXNG_DEFAULT_ENGINE);
+  language = cai_searxng_default_string(
+      config != NULL ? config->language : NULL, "en");
+  ctx = (cai_searxng_context *)cai_alloc(NULL, sizeof(*ctx));
+  if (ctx == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate SearXNG tool context");
+  }
+  memset(ctx, 0, sizeof(*ctx));
+  rc = cai_searxng_context_copy_string(&ctx->base_url, base_url, error);
+  if (rc == CAI_OK) {
+    rc = cai_searxng_context_copy_string(&ctx->search_path, search_path, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_context_copy_string(&ctx->engine, engine, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_context_copy_string(&ctx->language, language, error);
+  }
+  if (rc == CAI_OK && config != NULL && config->response_spool_dir != NULL &&
+      config->response_spool_dir[0] != '\0') {
+    rc = cai_searxng_context_copy_string(&ctx->response_spool_dir,
+                                         config->response_spool_dir, error);
+  }
+  if (rc != CAI_OK) {
+    cai_searxng_context_cleanup(ctx);
+    return rc;
+  }
+  ctx->timeout_ms =
+      config != NULL && config->timeout_ms > 0L ? config->timeout_ms : 10000L;
+  ctx->response_memory_limit =
+      config != NULL && config->response_memory_limit != 0U
+          ? config->response_memory_limit
+          : 128U * 1024U;
+  ctx->response_max_bytes = config != NULL && config->response_max_bytes != 0U
+                                ? config->response_max_bytes
+                                : 1024U * 1024U;
+  *out = ctx;
+  return CAI_OK;
+}
+
+static int cai_searxng_append_url_part(cai_json_builder *url,
+                                       const char *base_url,
+                                       const char *search_path,
+                                       cai_error *error) {
+  size_t base_len;
+  int rc;
+
+  base_len = strlen(base_url);
+  rc = cai_json_builder_lit(url, base_url, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (base_len > 0U && base_url[base_len - 1U] == '/' &&
+      search_path[0] == '/') {
+    return cai_json_builder_lit(url, search_path + 1, error);
+  }
+  if ((base_len == 0U || base_url[base_len - 1U] != '/') &&
+      search_path[0] != '/') {
+    rc = cai_json_builder_lit(url, "/", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  return cai_json_builder_lit(url, search_path, error);
+}
+
+static int cai_searxng_append_query_param(CURL *curl, cai_json_builder *url,
+                                          const char *name, const char *value,
+                                          int *need_amp, cai_error *error) {
+  char *escaped;
+  int rc;
+
+  escaped = curl_easy_escape(curl, value != NULL ? value : "", 0);
+  if (escaped == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to URL-encode SearXNG query parameter");
+  }
+  rc = cai_json_builder_lit(url, *need_amp ? "&" : "?", error);
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(url, name, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(url, "=", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(url, escaped, error);
+  }
+  curl_free(escaped);
+  *need_amp = 1;
+  return rc;
+}
+
+static int cai_searxng_build_url(CURL *curl, const cai_searxng_context *ctx,
+                                 const char *query, char **out,
+                                 cai_error *error) {
+  cai_json_builder url;
+  int need_amp;
+  int rc;
+
+  memset(&url, 0, sizeof(url));
+  need_amp = 0;
+  rc =
+      cai_searxng_append_url_part(&url, ctx->base_url, ctx->search_path, error);
+  if (rc == CAI_OK) {
+    rc = cai_searxng_append_query_param(curl, &url, "q", query, &need_amp,
+                                        error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_append_query_param(curl, &url, "format", "json", &need_amp,
+                                        error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_append_query_param(curl, &url, "engines", ctx->engine,
+                                        &need_amp, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_append_query_param(curl, &url, "language", ctx->language,
+                                        &need_amp, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_append_query_param(curl, &url, "safesearch", "0",
+                                        &need_amp, error);
+  }
+  if (rc == CAI_OK) {
+    *out = url.data;
+    return CAI_OK;
+  }
+  cai_free_mem(NULL, url.data);
+  return rc;
+}
+
+static size_t cai_searxng_write_spool(char *ptr, size_t size, size_t nmemb,
+                                      void *userdata) {
+  lonejson_spooled *spool;
+  lonejson_error json_error;
+  size_t len;
+
+  spool = (lonejson_spooled *)userdata;
+  len = size * nmemb;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_append(spool, ptr, len, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return 0U;
+  }
+  return len;
+}
+
+static int cai_searxng_fetch(const cai_searxng_context *ctx, const char *query,
+                             lonejson_spooled *out, cai_error *error) {
+  CURL *curl;
+  CURLcode code;
+  long http_status;
+  char *url;
+  lonejson_spool_options spool_options;
+  int rc;
+
+  url = NULL;
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize curl for SearXNG");
+  }
+  rc = cai_searxng_build_url(curl, ctx, query, &url, error);
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    return rc;
+  }
+  spool_options = lonejson_default_spool_options();
+  spool_options.memory_limit = ctx->response_memory_limit;
+  spool_options.max_bytes = ctx->response_max_bytes;
+  spool_options.temp_dir = ctx->response_spool_dir;
+  lonejson_spooled_init(out, &spool_options);
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_searxng_write_spool);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "cai-searxng-tool/1");
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, ctx->timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+  code = curl_easy_perform(curl);
+  http_status = 0L;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+  curl_easy_cleanup(curl);
+  cai_free_mem(NULL, url);
+  if (code != CURLE_OK) {
+    lonejson_spooled_cleanup(out);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "SearXNG request failed",
+                                curl_easy_strerror(code));
+  }
+  if (http_status < 200L || http_status >= 300L) {
+    lonejson_spooled_cleanup(out);
+    return cai_set_error_http(error, CAI_ERR_SERVER, http_status,
+                              "SearXNG request failed", NULL, NULL, NULL);
+  }
+  return CAI_OK;
+}
+
+static lonejson_read_result
+cai_searxng_spool_read(void *user, unsigned char *buffer, size_t capacity) {
+  cai_searxng_spool_reader *reader;
+
+  reader = (cai_searxng_spool_reader *)user;
+  return lonejson_spooled_read(&reader->cursor, buffer, capacity);
+}
+
+static int cai_searxng_parse(lonejson_spooled *json,
+                             cai_searxng_response_doc *doc, cai_error *error) {
+  cai_searxng_spool_reader reader;
+  lonejson_error json_error;
+
+  memset(doc, 0, sizeof(*doc));
+  lonejson_init(&cai_searxng_response_map, doc);
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&cai_searxng_response_map, doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind SearXNG response",
+                                json_error.message);
+  }
+  lonejson_error_init(&json_error);
+  if (lonejson_parse_reader(&cai_searxng_response_map, doc,
+                            cai_searxng_spool_read, &reader, NULL,
+                            &json_error) != LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&cai_searxng_response_map, doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse SearXNG response JSON",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int cai_searxng_result_copy(char **target, const char *value,
+                                   cai_error *error) {
+  *target = cai_tool_result_strdup(value != NULL ? value : "", error);
+  return *target != NULL ? CAI_OK : CAI_ERR_NOMEM;
+}
+
+static int cai_searxng_fill_result(const cai_searxng_context *ctx,
+                                   const cai_searxng_args *args,
+                                   const cai_searxng_response_doc *doc,
+                                   cai_searxng_result *out, cai_error *error) {
+  cai_searxng_item_doc *item;
+  const char *title;
+  const char *url;
+  const char *snippet;
+  const char *source;
+  int rc;
+
+  item = NULL;
+  if (doc->results.count > 0U) {
+    item = (cai_searxng_item_doc *)doc->results.items;
+    title = item[0].title;
+    url = item[0].url;
+    snippet = item[0].content;
+    source = "result";
+  } else if (doc->infoboxes.count > 0U) {
+    item = (cai_searxng_item_doc *)doc->infoboxes.items;
+    title = item[0].infobox != NULL ? item[0].infobox : item[0].title;
+    url = item[0].id != NULL ? item[0].id : item[0].url;
+    snippet = item[0].content;
+    source = "infobox";
+  } else {
+    title = "";
+    url = "";
+    snippet = "";
+    source = "none";
+  }
+  rc = cai_searxng_result_copy(
+      &out->query, doc->query != NULL ? doc->query : args->query, error);
+  if (rc == CAI_OK) {
+    rc = cai_searxng_result_copy(&out->engine, ctx->engine, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_result_copy(&out->title, title, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_result_copy(&out->url, url, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_result_copy(&out->snippet, snippet, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_searxng_result_copy(&out->source, source, error);
+  }
+  out->result_count = (long long)doc->results.count;
+  out->infobox_count = (long long)doc->infoboxes.count;
+  return rc;
+}
+
+static int cai_searxng_tool_callback(void *context, const void *params,
+                                     void *result, cai_error *error) {
+  const cai_searxng_context *ctx;
+  const cai_searxng_args *args;
+  cai_searxng_result *out;
+  cai_searxng_response_doc doc;
+  lonejson_spooled body;
+  int rc;
+
+  ctx = (const cai_searxng_context *)context;
+  args = (const cai_searxng_args *)params;
+  out = (cai_searxng_result *)result;
+  if (ctx == NULL || args == NULL || args->query == NULL ||
+      args->query[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "SearXNG query is required");
+  }
+  rc = cai_searxng_fetch(ctx, args->query, &body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_searxng_parse(&body, &doc, error);
+  lonejson_spooled_cleanup(&body);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_searxng_fill_result(ctx, args, &doc, out, error);
+  lonejson_cleanup(&cai_searxng_response_map, &doc);
+  return rc;
+}
+
+int cai_agent_register_searxng_tool(cai_agent *agent,
+                                    const cai_searxng_tool_config *config,
+                                    cai_error *error) {
+  const char *name;
+  const char *description;
+  cai_searxng_context *ctx;
+  cai_agent_impl *impl;
+  cai_tool_schema *schema;
+  int rc;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  name = cai_searxng_default_string(config != NULL ? config->name : NULL,
+                                    "searxng_search");
+  description = cai_searxng_default_string(
+      config != NULL ? config->description : NULL,
+      "Search through the configured SearXNG endpoint using the fixed "
+      "configured engine.");
+  rc = cai_searxng_context_new(config, &ctx, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  schema = NULL;
+  rc = cai_tool_schema_from_map(&cai_searxng_args_map, &schema, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_schema_describe(schema, "query", "Search query", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_common(
+        impl->tools, name, description, cai_tool_schema_json(schema),
+        cai_tool_schema_strict(schema), CAI_TOOL_LONEJSON,
+        &cai_searxng_args_map, &cai_searxng_result_map,
+        cai_searxng_tool_callback, NULL, ctx, cai_searxng_context_cleanup,
+        error);
+  }
+  cai_tool_schema_destroy(schema);
+  if (rc != CAI_OK) {
+    cai_searxng_context_cleanup(ctx);
+  }
+  return rc;
 }
 
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,

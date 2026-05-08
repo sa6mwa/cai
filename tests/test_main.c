@@ -2004,6 +2004,15 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_multi_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"multi done\"}]}]}";
+  static const char searxng_tool_call_body[] =
+      "{\"id\":\"resp_searxng_tool_1\",\"status\":\"completed\",\"output\":[{"
+      "\"id\":\"fc_searxng_1\",\"type\":\"function_call\",\"call_id\":"
+      "\"call_searxng_1\",\"name\":\"searxng_search\",\"arguments\":"
+      "\"{\\\"query\\\":\\\"OpenAI\\\"}\"}]}";
+  static const char searxng_tool_done_body[] =
+      "{\"id\":\"resp_searxng_tool_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"searxng done\"}]}]}";
   static const char manual_tool_call_body[] =
       "{\"id\":\"resp_manual_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_manual_1\",\"type\":\"function_call\",\"call_id\":"
@@ -2208,6 +2217,11 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return multi_tool_call_body;
     }
+    if (strstr(request, "searxng tool turn") != NULL &&
+        strstr(request, "\"name\":\"searxng_search\"") != NULL &&
+        strstr(request, "\"query\"") != NULL) {
+      return searxng_tool_call_body;
+    }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
         strstr(request, "\"output\":\"{\\\"x\\\":1}\"") != NULL &&
@@ -2223,6 +2237,15 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_multi_tool_1\"") !=
             NULL) {
       return multi_tool_done_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_searxng_1\"") != NULL &&
+        strstr(request, "\\\"engine\\\":\\\"wikipedia\\\"") != NULL &&
+        strstr(request, "\\\"title\\\":\\\"OpenAI\\\"") != NULL &&
+        strstr(request, "\\\"source\\\":\\\"infobox\\\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_searxng_tool_1\"") !=
+            NULL) {
+      return searxng_tool_done_body;
     }
     if (strstr(request, "agent tool turn") != NULL &&
         strstr(request, "\"tools\":[") != NULL &&
@@ -2452,6 +2475,65 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     }
     close(client_fd);
   }
+  close(server_fd);
+  _exit(0);
+}
+
+static void mock_searxng_child(int pipe_fd) {
+  static const char body[] =
+      "{\"query\":\"OpenAI\",\"number_of_results\":0,\"results\":[],"
+      "\"infoboxes\":[{\"infobox\":\"OpenAI\","
+      "\"id\":\"https://en.wikipedia.org/wiki/OpenAI\","
+      "\"content\":\"OpenAI is an artificial intelligence research "
+      "organization.\",\"engine\":\"wikipedia\"}],"
+      "\"unresponsive_engines\":[]}";
+  char request[2048];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0) {
+    _exit(4);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  client_fd = accept(server_fd, NULL, NULL);
+  if (client_fd < 0) {
+    _exit(7);
+  }
+  if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+    _exit(8);
+  }
+  if (strstr(request, "GET /search?") == NULL ||
+      strstr(request, "q=OpenAI") == NULL ||
+      strstr(request, "format=json") == NULL ||
+      strstr(request, "engines=wikipedia") == NULL) {
+    _exit(9);
+  }
+  if (mock_write_json_response(client_fd, body) != 0) {
+    _exit(10);
+  }
+  close(client_fd);
   close(server_fd);
   _exit(0);
 }
@@ -3394,6 +3476,137 @@ static void test_agent_tool_auto_run(test_state *state) {
     test_fail(state, "agent_auto_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_auto_mock", "mock child failed");
+  }
+}
+
+static void test_agent_searxng_tool_auto_run(test_state *state) {
+  int openai_pipe[2];
+  int searxng_pipe[2];
+  pid_t openai_pid;
+  pid_t searxng_pid;
+  int openai_port;
+  int searxng_port;
+  ssize_t nread;
+  int child_status;
+  char openai_base_url[128];
+  char searxng_base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_searxng_tool_config searxng_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  if (pipe(openai_pipe) != 0) {
+    test_fail(state, "agent_searxng_openai_mock", "pipe failed");
+    return;
+  }
+  openai_pid = fork();
+  if (openai_pid < 0) {
+    test_fail(state, "agent_searxng_openai_mock", "fork failed");
+    close(openai_pipe[0]);
+    close(openai_pipe[1]);
+    return;
+  }
+  if (openai_pid == 0) {
+    close(openai_pipe[0]);
+    mock_openai_child(openai_pipe[1], 2);
+  }
+  close(openai_pipe[1]);
+  nread = read(openai_pipe[0], &openai_port, sizeof(openai_port));
+  close(openai_pipe[0]);
+  if (nread != (ssize_t)sizeof(openai_port)) {
+    test_fail(state, "agent_searxng_openai_mock",
+              "failed to read mock port");
+    waitpid(openai_pid, &child_status, 0);
+    return;
+  }
+
+  if (pipe(searxng_pipe) != 0) {
+    test_fail(state, "agent_searxng_mock", "pipe failed");
+    waitpid(openai_pid, &child_status, 0);
+    return;
+  }
+  searxng_pid = fork();
+  if (searxng_pid < 0) {
+    test_fail(state, "agent_searxng_mock", "fork failed");
+    close(searxng_pipe[0]);
+    close(searxng_pipe[1]);
+    waitpid(openai_pid, &child_status, 0);
+    return;
+  }
+  if (searxng_pid == 0) {
+    close(searxng_pipe[0]);
+    mock_searxng_child(searxng_pipe[1]);
+  }
+  close(searxng_pipe[1]);
+  nread = read(searxng_pipe[0], &searxng_port, sizeof(searxng_port));
+  close(searxng_pipe[0]);
+  if (nread != (ssize_t)sizeof(searxng_port)) {
+    test_fail(state, "agent_searxng_mock", "failed to read mock port");
+    waitpid(openai_pid, &child_status, 0);
+    waitpid(searxng_pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(openai_base_url, sizeof(openai_base_url),
+           "http://127.0.0.1:%d/v1", openai_port);
+  snprintf(searxng_base_url, sizeof(searxng_base_url),
+           "http://127.0.0.1:%d", searxng_port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = openai_base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  memset(&searxng_config, 0, sizeof(searxng_config));
+  searxng_config.base_url = searxng_base_url;
+  searxng_config.response_memory_limit = 16U;
+  searxng_config.response_max_bytes = 4096U;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  expect_int(state, "agent_searxng_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_searxng_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_searxng_register",
+             agent->register_searxng_tool(agent, &searxng_config, &error),
+             CAI_OK);
+  expect_int(state, "agent_searxng_session",
+             agent->new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_searxng_add",
+             session->add_user_text(session, "searxng tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_searxng_run",
+             session->run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_searxng_response",
+             cai_response_output_text(response), "searxng done");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(openai_pid, &child_status, 0) != openai_pid) {
+    test_fail(state, "agent_searxng_openai_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_searxng_openai_mock", "mock child failed");
+  }
+  if (waitpid(searxng_pid, &child_status, 0) != searxng_pid) {
+    test_fail(state, "agent_searxng_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_searxng_mock", "mock child failed");
   }
 }
 
@@ -4918,6 +5131,7 @@ int main(void) {
   test_agent_auto_compaction(&state);
   test_http_response_limit(&state);
   test_agent_tool_auto_run(&state);
+  test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);
   test_agent_tool_output_max_bytes(&state);

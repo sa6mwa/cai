@@ -910,16 +910,16 @@ Mirror liblockdc where practical:
   role/system-shaped payloads remain escaped data in `function_call_output`. A
   Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
   argument surfaces.
-- Add constructor-style tool presets, starting with a SearXNG preset:
-  - add config-driven `cai_agent_register_searxng_tool(...)` that wires schema
-    and callback together.
-  - preset input/result contracts are typed and stable (`query`, plus output
-    fields like `title`, `url`, `snippet`, and `summary`/`marker` metadata as
-    needed).
-  - include no-auth local endpoint support suitable for docker-compose-based test
-    backends.
-- Add integration coverage for `CAI_INTEGRATION_SEARXNG_TOOL=1`, using a local
-  self-hosted SearXNG URL from `CAI_SEARXNG_BASE_URL`.
+- Implemented constructor-style SearXNG preset:
+  - `cai_agent_register_searxng_tool(...)` and
+    `agent->register_searxng_tool(...)` wire schema and callback together.
+  - preset input/result contracts are typed and stable: input `query`; output
+    `query`, `engine`, `title`, `url`, `snippet`, `source`, `result_count`,
+    and `infobox_count`.
+  - includes no-auth local endpoint support suitable for the
+    docker-compose-based SearXNG backend.
+- Implemented integration coverage for `CAI_INTEGRATION_SEARXNG_TOOL=1`, using
+  a local self-hosted SearXNG URL from `CAI_SEARXNG_BASE_URL`.
 - Integration coverage includes `CAI_INTEGRATION_TOOL_SECURITY=1`, which calls
   a real OpenAI model with a hostile tool result and asserts the assistant keeps
   developer-instruction precedence. `CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1`

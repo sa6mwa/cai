@@ -351,6 +351,15 @@ Future cai web-search tool tests should keep this rule: use explicit engines,
 and prefer documented API-backed engines such as SearXNG's `braveapi`,
 Mojeek, or Marginalia when credentials are configured.
 
+Agents can register the built-in SearXNG search preset with
+`cai_agent_register_searxng_tool` or the method-style
+`agent->register_searxng_tool(...)`. The preset registers a typed lonejson tool
+named `searxng_search` by default. Its input is `query`; its output is a
+compact typed result containing `query`, `engine`, `title`, `url`, `snippet`,
+`source`, `result_count`, and `infobox_count`. The callback fetches SearXNG
+JSON into bounded/spillable `lonejson_spooled` storage before parsing the
+stable fields.
+
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and
@@ -364,6 +373,7 @@ CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
@@ -398,6 +408,11 @@ client-side history replay and the known working free tool-call model.
 `CAI_INTEGRATION_E2E=1`, but against OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
 mode.
+
+`CAI_INTEGRATION_SEARXNG_TOOL=1` runs a real OpenAI tool-calling regression
+against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the
+explicit `wikipedia` engine. Start it with `make searxng-up` before running
+the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
 
 `CAI_INTEGRATION_TOOL_SECURITY=1` runs a real OpenAI tool-output injection
 regression. The registered tool returns text that looks like JSON role/system

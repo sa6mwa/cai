@@ -570,6 +570,94 @@ static int run_openrouter_tool_security_regression(void) {
   return run_tool_security_regression_with_provider(1);
 }
 
+static int run_searxng_tool_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_searxng_tool_config searxng_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_output *output;
+  cai_error error;
+  const char *base_url;
+  const char *answer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  memset(&searxng_config, 0, sizeof(searxng_config));
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  output = NULL;
+  answer = NULL;
+
+  base_url = getenv("CAI_SEARXNG_BASE_URL");
+  if (base_url == NULL || base_url[0] == '\0') {
+    base_url = CAI_SEARXNG_DEFAULT_BASE_URL;
+  }
+  searxng_config.base_url = base_url;
+  searxng_config.engine = CAI_SEARXNG_DEFAULT_ENGINE;
+  searxng_config.response_memory_limit = 16U * 1024U;
+  searxng_config.response_max_bytes = 1024U * 1024U;
+
+  agent_config.model = integration_model();
+  fprintf(stderr, "[integration-searxng-tool] model=%s searxng=%s\n",
+          agent_config.model, base_url);
+  agent_config.developer_instructions =
+      "You are a strict SearXNG tool regression assistant. When the user asks "
+      "for a SearXNG lookup, call searxng_search exactly once. After the tool "
+      "result, answer with exactly: SEARXNG_TOOL_OK title=<title> "
+      "source=<source> engine=<engine>. Use the tool result fields.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 96;
+  run_options.max_tool_rounds = 2;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_searxng_tool(agent, &searxng_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "Perform a SearXNG lookup for query=OpenAI. You must call the tool.",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_run_auto_output(session, &run_options, &output, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("searxng tool regression", rc, &error);
+    goto done;
+  }
+  answer = cai_output_text(output);
+  if (answer == NULL || strstr(answer, "SEARXNG_TOOL_OK") == NULL ||
+      strstr(answer, "OpenAI") == NULL ||
+      strstr(answer, "engine=wikipedia") == NULL) {
+    fprintf(stderr, "searxng tool answer failed check:\n%s\n",
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_output_destroy(output);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int send_and_destroy(cai_session *session, const char *text,
                             cai_error *error) {
   cai_response *response;
@@ -987,6 +1075,7 @@ int main(void) {
   const char *openrouter_session;
   const char *openrouter_tool;
   const char *openrouter_tool_security;
+  const char *searxng_tool;
   const char *state_restore;
   const char *tool_security;
 
@@ -1025,6 +1114,11 @@ int main(void) {
   if (tool_security != NULL && tool_security[0] != '\0' &&
       strcmp(tool_security, "0") != 0) {
     return run_tool_security_regression();
+  }
+  searxng_tool = getenv("CAI_INTEGRATION_SEARXNG_TOOL");
+  if (searxng_tool != NULL && searxng_tool[0] != '\0' &&
+      strcmp(searxng_tool, "0") != 0) {
+    return run_searxng_tool_regression();
   }
   e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
