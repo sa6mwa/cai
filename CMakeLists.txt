@@ -374,6 +374,10 @@ if(CAI_BUILD_TESTS)
   cai_configure_c_target(cai_mcp_http_smoke)
   add_test(NAME cai_mcp_http_smoke
     COMMAND cai_mcp_http_smoke $<TARGET_FILE:cai_mcp_http_server>)
+  add_test(NAME cai_mcp_inspector_e2e
+    COMMAND /bin/sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_inspector_e2e.sh"
+      $<TARGET_FILE:cai_mcp_http_server>)
 
   if(CAI_INSTALL)
     add_test(NAME cai_install_metadata_test

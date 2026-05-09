@@ -53,7 +53,7 @@ before implementing that slice.
   - Keep it plain HTTP with no authentication.
   - Keep MCP origin validation enabled.
 
-- [ ] Add MCP compliance/e2e coverage using the official MCP Inspector CLI.
+- [x] Add MCP compliance/e2e coverage using the official MCP Inspector CLI.
   - Prefer the official `@modelcontextprotocol/inspector` CLI against the test
     server's Streamable HTTP endpoint.
   - Cover at minimum `initialize`, `tools/list`, and `tools/call`.
