@@ -435,6 +435,18 @@ input is `query`; its output is a compact typed result containing `query`,
 `config.engine` is unset, cai does not send `engines=...`; the SearXNG instance
 uses its configured defaults.
 
+Agents or registries can register the reverse-geocoding preset by including
+`<cai/tools/revgeo.h>` and calling `cai_agent_register_revgeo_tool` or
+`cai_tool_registry_register_revgeo_tool`. The default tool name is
+`reverse_geocode`. Its required input is `latitude` and `longitude`; its typed
+output contains `provider`, `label`, `city`, `municipality`, `region`,
+`country`, `country_code`, `latitude`, and `longitude`. The default provider is
+Nominatim at `https://nominatim.openstreetmap.org/reverse`, with a configurable
+base URL, path, language, zoom, user agent, timeout, and bounded/spillable
+response storage. Public Nominatim usage requires polite request volume and a
+descriptive user agent; production deployments that need higher volume should
+configure their own provider endpoint.
+
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and
@@ -499,6 +511,11 @@ mode.
 against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the
 explicit `wikipedia` engine. Start it with `make searxng-up` before running
 the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
+
+`CAI_INTEGRATION_REVGEO_PROVIDER=1` runs the reverse-geocoding preset directly
+against the default provider and asserts known Gothenburg coordinates resolve
+to Sweden/SE with a recognizable Gothenburg label or city. This does not spend
+OpenAI tokens, but it does call the public geocoding service.
 
 `CAI_INTEGRATION_TOOL_SECURITY=1` runs a real OpenAI tool-output injection
 regression. The registered tool returns text that looks like JSON role/system

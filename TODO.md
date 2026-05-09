@@ -62,7 +62,7 @@ before implementing that slice.
   - If the Inspector CLI path is brittle in CI/local containers, evaluate the
     official MCP TypeScript SDK client as the fallback conformance client.
 
-- [ ] Add a production reverse-geolocation tool preset.
+- [x] Add a production reverse-geolocation tool preset.
   - Public header: `include/cai/tools/revgeo.h`.
   - Implementation: `src/tools/revgeo.c`.
   - Register as a normal cai typed tool; MCP exposure remains just a registry

@@ -1,5 +1,6 @@
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 
 #include "cai_internal.h"
@@ -3542,6 +3543,97 @@ static void mock_searxng_child(int pipe_fd) {
   _exit(0);
 }
 
+static void mock_revgeo_child(int pipe_fd, int mode) {
+  static const char success_body[] =
+      "{\"place_id\":1,\"lat\":\"57.70887000\",\"lon\":\"11.97456000\","
+      "\"display_name\":\"Goteborg, Vastra Gotaland, Sweden\","
+      "\"address\":{\"city\":\"Goteborg\",\"municipality\":\"Goteborg\","
+      "\"state\":\"Vastra Gotaland\",\"country\":\"Sweden\","
+      "\"country_code\":\"se\"}}";
+  static const char partial_body[] =
+      "{\"place_id\":2,\"display_name\":\"Unknown place\",\"address\":{}}";
+  static const char malformed_body[] = "{\"display_name\":";
+  char request[2048];
+  char large_body[2048];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  size_t i;
+
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0) {
+    _exit(4);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  client_fd = accept(server_fd, NULL, NULL);
+  if (client_fd < 0) {
+    _exit(7);
+  }
+  if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+    _exit(8);
+  }
+  if (strstr(request, "GET /reverse?") == NULL ||
+      strstr(request, "format=jsonv2") == NULL ||
+      strstr(request, "lat=57.70887000") == NULL ||
+      strstr(request, "lon=11.97456000") == NULL ||
+      strstr(request, "addressdetails=1") == NULL ||
+      strstr(request, "zoom=10") == NULL ||
+      strstr(request, "User-Agent: cai-test-revgeo/1") == NULL) {
+    _exit(9);
+  }
+  if (mode == 1) {
+    if (mock_write_json_response(client_fd, partial_body) != 0) {
+      _exit(10);
+    }
+  } else if (mode == 2) {
+    if (mock_write_status_json_response(client_fd, 500, "Internal Server Error",
+                                        NULL, "{\"error\":\"broken\"}") != 0) {
+      _exit(10);
+    }
+  } else if (mode == 3) {
+    if (mock_write_json_response(client_fd, malformed_body) != 0) {
+      _exit(10);
+    }
+  } else if (mode == 4) {
+    large_body[0] = '{';
+    large_body[1] = '"';
+    for (i = 2U; i < sizeof(large_body) - 3U; i++) {
+      large_body[i] = 'x';
+    }
+    large_body[sizeof(large_body) - 3U] = '"';
+    large_body[sizeof(large_body) - 2U] = '}';
+    large_body[sizeof(large_body) - 1U] = '\0';
+    mock_write_json_response(client_fd, large_body);
+  } else {
+    if (mock_write_json_response(client_fd, success_body) != 0) {
+      _exit(10);
+    }
+  }
+  close(client_fd);
+  close(server_fd);
+  _exit(0);
+}
+
 static void test_response_large_text_parse(test_state *state) {
   static const char prefix[] =
       "{\"id\":\"resp_large\",\"status\":\"completed\",\"model\":\"gpt-5-"
@@ -4623,6 +4715,174 @@ static void test_agent_searxng_tool_auto_run(test_state *state) {
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_searxng_mock", "mock child failed");
   }
+}
+
+static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
+                                size_t max_bytes, int expected_rc,
+                                write_state *writer, cai_error *error) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  int child_status;
+  ssize_t nread;
+  char base_url[128];
+  cai_revgeo_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return CAI_ERR_TRANSPORT;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return CAI_ERR_TRANSPORT;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_revgeo_child(pipe_fds[1], mode);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, name, "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return CAI_ERR_TRANSPORT;
+  }
+
+  registry = NULL;
+  sink = NULL;
+  writer->buffer[0] = '\0';
+  writer->length = 0U;
+  writer->closed = 0;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", port);
+  memset(&config, 0, sizeof(config));
+  config.base_url = base_url;
+  config.user_agent = "cai-test-revgeo/1";
+  config.response_memory_limit = 16U;
+  config.response_max_bytes = max_bytes != 0U ? max_bytes : 4096U;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = writer;
+
+  rc = cai_tool_registry_new(&registry, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_revgeo_tool(registry, &config, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(
+        registry, "reverse_geocode",
+        "{\"latitude\":57.70887,\"longitude\":11.97456}", sink, error);
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  expect_int(state, name, rc, expected_rc);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, name, "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, name, "mock child failed");
+  }
+  return rc;
+}
+
+static void test_revgeo_tool(test_state *state) {
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  cai_error_init(&error);
+  registry = NULL;
+  sink = NULL;
+
+  run_mock_revgeo_tool(state, "revgeo_success", 0, 0U, CAI_OK, &writer,
+                       &error);
+  if (strstr(writer.buffer, "\"provider\":\"nominatim\"") == NULL ||
+      strstr(writer.buffer, "\"city\":\"Goteborg\"") == NULL ||
+      strstr(writer.buffer, "\"municipality\":\"Goteborg\"") == NULL ||
+      strstr(writer.buffer, "\"region\":\"Vastra Gotaland\"") == NULL ||
+      strstr(writer.buffer, "\"country\":\"Sweden\"") == NULL ||
+      strstr(writer.buffer, "\"country_code\":\"se\"") == NULL ||
+      strstr(writer.buffer, "\"latitude\":57.708") == NULL ||
+      strstr(writer.buffer, "\"longitude\":11.97456") == NULL) {
+    test_fail(state, "revgeo_success_body",
+              "reverse-geocoding result missing expected fields");
+  }
+  expect_valid_json(state, "revgeo_success_json", writer.buffer);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_mock_revgeo_tool(state, "revgeo_partial", 1, 0U, CAI_OK, &writer,
+                       &error);
+  if (strstr(writer.buffer, "\"label\":\"Unknown place\"") == NULL ||
+      strstr(writer.buffer, "\"city\":\"\"") == NULL ||
+      strstr(writer.buffer, "\"country_code\":\"\"") == NULL) {
+    test_fail(state, "revgeo_partial_body",
+              "partial reverse-geocoding response was not normalized");
+  }
+  expect_valid_json(state, "revgeo_partial_json", writer.buffer);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  expect_int(state, "revgeo_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "revgeo_registry_register",
+             cai_tool_registry_register_revgeo_tool(registry, NULL, &error),
+             CAI_OK);
+  if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"latitude\"") ==
+          NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"longitude\"") ==
+          NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "\"required\":[\"latitude\",\"longitude\"]") == NULL) {
+    test_fail(state, "revgeo_schema", "schema missing coordinate requirements");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  writer.closed = 0;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "revgeo_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "revgeo_bad_latitude",
+             cai_tool_registry_run(
+                 registry, "reverse_geocode",
+                 "{\"latitude\":91.0,\"longitude\":11.97456}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_sink_close(sink);
+  sink = NULL;
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_mock_revgeo_tool(state, "revgeo_server_error", 2, 0U, CAI_ERR_SERVER,
+                       &writer, &error);
+  expect_int(state, "revgeo_server_error_status", error.http_status, 500L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_mock_revgeo_tool(state, "revgeo_malformed", 3, 0U, CAI_ERR_PROTOCOL,
+                       &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_mock_revgeo_tool(state, "revgeo_response_limit", 4, 64U,
+                       CAI_ERR_TRANSPORT, &writer, &error);
+  cai_error_cleanup(&error);
 }
 
 static void test_agent_multi_tool_auto_run(test_state *state) {
@@ -7544,6 +7804,7 @@ int main(void) {
   test_agent_auto_compaction(&state);
   test_http_response_limit(&state);
   test_agent_tool_auto_run(&state);
+  test_revgeo_tool(&state);
   test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);

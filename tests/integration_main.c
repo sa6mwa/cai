@@ -1,4 +1,5 @@
 #include <cai/cai.h>
+#include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 
 #include <lonejson.h>
@@ -834,6 +835,61 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_revgeo_provider_regression(void) {
+  cai_revgeo_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_error error;
+  integration_write_state writer;
+  int rc;
+
+  cai_error_init(&error);
+  memset(&config, 0, sizeof(config));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  config.response_memory_limit = 16U * 1024U;
+  config.response_max_bytes = 512U * 1024U;
+  callbacks.write = integration_write;
+  callbacks.close = NULL;
+  callbacks.context = &writer;
+
+  fprintf(stderr, "[integration-revgeo] provider=%s\n",
+          CAI_REVGEO_DEFAULT_BASE_URL);
+  rc = cai_tool_registry_new(&registry, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_revgeo_tool(registry, &config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(
+        registry, "reverse_geocode",
+        "{\"latitude\":57.70887,\"longitude\":11.97456}", sink, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("revgeo provider regression", rc, &error);
+    goto done;
+  }
+  if (strstr(writer.buffer, "\"country_code\":\"se\"") == NULL ||
+      strstr(writer.buffer, "\"country\":\"Sweden\"") == NULL ||
+      (strstr(writer.buffer, "Gothenburg") == NULL &&
+       strstr(writer.buffer, "Goteborg") == NULL)) {
+    fprintf(stderr, "revgeo provider answer failed check:\n%s\n",
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_openrouter_stream_history_regression(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
@@ -1474,6 +1530,7 @@ int main(void) {
   const char *searxng_tool;
   const char *searxng_stream_tool;
   const char *state_restore;
+  const char *revgeo_provider;
   const char *tool_security;
 
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
@@ -1533,6 +1590,11 @@ int main(void) {
   if (searxng_stream_tool != NULL && searxng_stream_tool[0] != '\0' &&
       strcmp(searxng_stream_tool, "0") != 0) {
     return run_searxng_stream_tool_regression();
+  }
+  revgeo_provider = getenv("CAI_INTEGRATION_REVGEO_PROVIDER");
+  if (revgeo_provider != NULL && revgeo_provider[0] != '\0' &&
+      strcmp(revgeo_provider, "0") != 0) {
+    return run_revgeo_provider_regression();
   }
   e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
