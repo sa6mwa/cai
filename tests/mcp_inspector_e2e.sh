@@ -17,6 +17,8 @@ fifo=$tmpdir/port.fifo
 list_out=$tmpdir/tools-list.json
 call_out=$tmpdir/tools-call.json
 server_pid=
+runtime=
+image=${CAI_MCP_INSPECTOR_IMAGE:-ghcr.io/modelcontextprotocol/inspector:latest}
 
 cleanup() {
   if [ -n "$server_pid" ]; then
@@ -27,8 +29,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "npx is required for CAI_MCP_INSPECTOR_E2E=1" >&2
+if command -v nerdctl >/dev/null 2>&1; then
+  runtime=nerdctl
+elif command -v docker >/dev/null 2>&1; then
+  runtime=docker
+else
+  echo "nerdctl or docker is required for CAI_MCP_INSPECTOR_E2E=1" >&2
   exit 1
 fi
 
@@ -45,13 +51,18 @@ fi
 
 url="http://127.0.0.1:$port/mcp"
 
-npx -y @modelcontextprotocol/inspector --cli "$url" --transport http \
+run_inspector() {
+  "$runtime" run --rm --network host --entrypoint node "$image" \
+    /app/cli/build/index.js "$@"
+}
+
+run_inspector "$url" --transport http \
   --method tools/list >"$list_out"
 
 grep '"name": "echo_message"' "$list_out" >/dev/null
 grep '"inputSchema"' "$list_out" >/dev/null
 
-npx -y @modelcontextprotocol/inspector --cli "$url" --transport http \
+run_inspector "$url" --transport http \
   --method tools/call --tool-name echo_message \
   --tool-arg message=inspector-ok >"$call_out"
 

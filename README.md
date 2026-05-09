@@ -280,15 +280,17 @@ tests. Headers are parsed in memory, while request bodies remain socket-backed
 `cai_source` streams pulled by the MCP handler.
 
 An opt-in MCP Inspector e2e test validates the same server through the official
-Inspector CLI:
+Inspector container image:
 
 ```sh
 CAI_MCP_INSPECTOR_E2E=1 ctest --preset debug -R cai_mcp_inspector_e2e --output-on-failure
 ```
 
-The test uses `npx -y @modelcontextprotocol/inspector` and covers
-`tools/list` and `tools/call` over Streamable HTTP. It is skipped by default so
-normal local test runs do not depend on Node/npm or network package resolution.
+The test uses `ghcr.io/modelcontextprotocol/inspector:latest` through
+`nerdctl run` or `docker run` and covers `tools/list` and `tools/call` over
+Streamable HTTP. It is skipped by default so normal local test runs do not
+depend on container image availability. Override the image with
+`CAI_MCP_INSPECTOR_IMAGE`.
 
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
