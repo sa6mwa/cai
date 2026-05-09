@@ -834,6 +834,107 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_openrouter_stream_history_regression(void) {
+  cai_agent_config agent_config;
+  cai_client_config client_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_response *response;
+  cai_error error;
+  integration_write_state writer;
+  const char *answer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_stream_sinks_init(&stream_sinks);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  response = NULL;
+  answer = NULL;
+  memset(&writer, 0, sizeof(writer));
+
+  agent_config.model = openrouter_tool_integration_model();
+  fprintf(stderr, "[integration-openrouter-stream-history] model=%s\n",
+          agent_config.model);
+  agent_config.developer_instructions =
+      "You are a strict OpenRouter streaming history regression assistant. "
+      "When asked to emit the marker, answer with exactly: "
+      "OPENROUTER_STREAM_HISTORY_OK phrase=streamed-history-memory-842. "
+      "When asked to recall the phrase later, answer with only the phrase.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
+  agent_config.max_output_tokens = 96;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session, "Emit the streaming history marker now.", &error);
+  }
+  if (rc == CAI_OK) {
+    stream_sinks.output_text = sink;
+    rc = cai_session_stream(session, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter stream history regression", rc, &error);
+    goto done;
+  }
+  if (strstr(writer.buffer, "OPENROUTER_STREAM_HISTORY_OK") == NULL ||
+      strstr(writer.buffer, "streamed-history-memory-842") == NULL) {
+    fprintf(stderr,
+            "openrouter stream history first answer failed check:\n%s\n",
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  rc = cai_session_send_text(
+      session, "Recall only the phrase value from your previous answer.",
+      &response, &error);
+  if (rc != CAI_OK) {
+    print_error("openrouter stream history continuation", rc, &error);
+    goto done;
+  }
+  answer = cai_response_output_text(response);
+  if (answer == NULL ||
+      strstr(answer, "streamed-history-memory-842") == NULL) {
+    fprintf(stderr,
+            "openrouter stream history continuation did not preserve "
+            "streamed assistant text:\n%s\n",
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_response_destroy(response);
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_searxng_stream_tool_regression(void) {
   cai_agent_config agent_config;
   cai_run_options run_options;
@@ -1367,6 +1468,7 @@ int main(void) {
   const char *openrouter_e2e;
   const char *openrouter_session;
   const char *openrouter_tool;
+  const char *openrouter_stream_history;
   const char *openrouter_stream_tool;
   const char *openrouter_tool_security;
   const char *searxng_tool;
@@ -1398,6 +1500,13 @@ int main(void) {
   if (openrouter_stream_tool != NULL && openrouter_stream_tool[0] != '\0' &&
       strcmp(openrouter_stream_tool, "0") != 0) {
     return run_openrouter_stream_tool_regression();
+  }
+  openrouter_stream_history =
+      getenv("CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY");
+  if (openrouter_stream_history != NULL &&
+      openrouter_stream_history[0] != '\0' &&
+      strcmp(openrouter_stream_history, "0") != 0) {
+    return run_openrouter_stream_history_regression();
   }
   openrouter_tool_security = getenv("CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY");
   if (openrouter_tool_security != NULL &&

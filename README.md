@@ -375,6 +375,7 @@ CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_STREAM_TOOL=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
@@ -408,6 +409,10 @@ and the next turn can recall that tool result through local history.
 tool-calling regression through `cai_session_stream_auto`, validating streamed
 tool execution, tool event callbacks, and client-side history replay after the
 streaming tool turn.
+
+`CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1` runs a no-tool OpenRouter
+streaming regression that verifies streamed assistant text is captured into
+cai's client-side history and can be recalled on the next non-streaming turn.
 
 `CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1` runs the same hostile tool-output
 regression as `CAI_INTEGRATION_TOOL_SECURITY=1`, but against OpenRouter with

@@ -43,6 +43,13 @@ typedef struct stream_tool_state {
   int done_count;
 } stream_tool_state;
 
+typedef struct stream_output_state {
+  char delta[128];
+  char item_id[32];
+  int output_index;
+  int delta_count;
+} stream_output_state;
+
 typedef struct tool_weather_args {
   char *city;
   long long days;
@@ -539,6 +546,27 @@ static int test_stream_tool_done(void *context, const char *item_id,
   return CAI_OK;
 }
 
+static int test_stream_output_delta(void *context, const char *item_id,
+                                    int output_index, const char *delta,
+                                    cai_error *error) {
+  stream_output_state *state;
+
+  (void)error;
+  state = (stream_output_state *)context;
+  state->delta_count++;
+  snprintf(state->item_id, sizeof(state->item_id), "%s",
+           item_id != NULL ? item_id : "");
+  state->output_index = output_index;
+  if (delta != NULL &&
+      state->delta_count == 1) {
+    snprintf(state->delta, sizeof(state->delta), "%s", delta);
+  } else if (delta != NULL) {
+    strncat(state->delta, delta,
+            sizeof(state->delta) - strlen(state->delta) - 1U);
+  }
+  return CAI_OK;
+}
+
 static int test_weather_tool(void *context, const void *params, void *result,
                              cai_error *error) {
   const tool_weather_args *args;
@@ -703,6 +731,23 @@ static int test_failing_stream_tool_done(void *context, const char *item_id,
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "function call done callback failed");
+}
+
+static int test_failing_stream_output_delta(void *context, const char *item_id,
+                                            int output_index,
+                                            const char *delta,
+                                            cai_error *error) {
+  failing_callback_state *state;
+
+  (void)item_id;
+  (void)output_index;
+  (void)delta;
+  (void)error;
+  state = (failing_callback_state *)context;
+  if (state != NULL) {
+    state->calls++;
+  }
+  return CAI_ERR_INVALID;
 }
 
 static int test_large_raw_tool(void *context, const char *arguments_json,
@@ -2331,6 +2376,14 @@ static const char *mock_response_for_request(const char *request) {
           strcat(stream_openrouter_metadata_body, "data: [DONE]\n\n");
         }
         return stream_openrouter_metadata_body;
+      }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_1\"") != NULL &&
+          strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
+          strstr(request, "stream tool call turn") != NULL &&
+          strstr(request, "\"type\":\"function_call\"") != NULL &&
+          strstr(request, "previous_response_id") == NULL) {
+        return stream_tool_done_body;
       }
       if (strstr(request, "stream tool call turn") != NULL) {
         if (stream_tool_body[0] == '\0') {
@@ -4502,6 +4555,7 @@ static void test_stream_response_text(test_state *state) {
   write_state writer;
   write_state reasoning_writer;
   stream_tool_state tool_stream;
+  stream_output_state output_stream;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -4517,7 +4571,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 9);
+    mock_openai_child(pipe_fds[1], 10);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -4551,6 +4605,7 @@ static void test_stream_response_text(test_state *state) {
   reasoning_writer.closed = 0;
   reasoning_writer.buffer[0] = '\0';
   memset(&tool_stream, 0, sizeof(tool_stream));
+  memset(&output_stream, 0, sizeof(output_stream));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -4573,6 +4628,27 @@ static void test_stream_response_text(test_state *state) {
              cai_client_stream_response_text(client, params, sink, &error),
              CAI_OK);
   expect_str(state, "stream_sink_value", writer.buffer, "hello");
+  cai_sink_close(sink);
+  sink = NULL;
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_sink_create_delta",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.output_text_prefix.text = "[o] ";
+  stream_sinks.output_text_suffix.text = "\n";
+  stream_sinks.output_text_delta = test_stream_output_delta;
+  stream_sinks.output_text_context = &output_stream;
+  expect_int(state, "stream_output_delta_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_output_delta_sink", writer.buffer, "[o] hello\n");
+  expect_str(state, "stream_output_delta_raw", output_stream.delta, "hello");
+  expect_int(state, "stream_output_delta_count", output_stream.delta_count,
+             2L);
   cai_sink_close(sink);
   sink = NULL;
 
@@ -4773,6 +4849,101 @@ static void test_stream_response_text(test_state *state) {
   }
 }
 
+static void test_stream_output_delta_failure(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  failing_callback_state fail_state;
+  cai_token_usage usage;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_output_fail_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_output_fail_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_output_fail_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  params = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&fail_state, 0, sizeof(fail_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_output_fail_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_output_fail_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_output_fail_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_NANO, &error),
+             CAI_OK);
+  expect_int(state, "stream_output_fail_text",
+             cai_response_create_params_add_text(params, "user",
+                                                 "stream fail", &error),
+             CAI_OK);
+  expect_int(state, "stream_output_fail_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.output_text_delta = test_failing_stream_output_delta;
+  stream_sinks.output_text_context = &fail_state;
+  expect_int(state, "stream_output_fail_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, &usage, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "stream_output_fail_calls", fail_state.calls, 1L);
+  expect_str(state, "stream_output_fail_empty", writer.buffer, "");
+
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_output_fail_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_output_fail_mock", "mock child failed");
+  }
+}
+
 static void test_session_stream_auto_tool_run(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -4923,6 +5094,7 @@ static void test_session_stream_auto_reasoning_tool_response(
   cai_stream_sinks stream_sinks;
   write_state output_writer;
   write_state reasoning_writer;
+  stream_output_state output_delta_state;
   tool_event_state event_state;
   cai_token_usage usage;
   cai_error error;
@@ -4971,6 +5143,7 @@ static void test_session_stream_auto_reasoning_tool_response(
   reasoning_sink = NULL;
   memset(&output_writer, 0, sizeof(output_writer));
   memset(&reasoning_writer, 0, sizeof(reasoning_writer));
+  memset(&output_delta_state, 0, sizeof(output_delta_state));
   memset(&event_state, 0, sizeof(event_state));
 
   expect_int(state, "stream_auto_reason_client_open",
@@ -4999,6 +5172,8 @@ static void test_session_stream_auto_reasoning_tool_response(
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.output_text = output_sink;
   stream_sinks.output_text_prefix.text = "[o] ";
+  stream_sinks.output_text_delta = test_stream_output_delta;
+  stream_sinks.output_text_context = &output_delta_state;
   stream_sinks.reasoning_summary = reasoning_sink;
   stream_sinks.reasoning_summary_prefix.text = "[r] ";
   stream_sinks.reasoning_summary_suffix.text = "\n";
@@ -5012,6 +5187,10 @@ static void test_session_stream_auto_reasoning_tool_response(
              CAI_OK);
   expect_str(state, "stream_auto_reason_output", output_writer.buffer,
              "[o] final answer");
+  expect_str(state, "stream_auto_reason_output_delta",
+             output_delta_state.delta, "final answer");
+  expect_int(state, "stream_auto_reason_output_delta_count",
+             output_delta_state.delta_count, 2L);
   expect_str(state, "stream_auto_reasoning", reasoning_writer.buffer,
              "[r] before\n[r] after\n");
   expect_int(state, "stream_auto_reason_event_starts", event_state.starts, 1L);
@@ -5882,6 +6061,146 @@ static void test_stream_client_history_captures_output(test_state *state) {
   }
 }
 
+static void test_stream_client_history_tool_order(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_source *history_source;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  tool_event_state event_state;
+  cai_error error;
+  char history_json[4096];
+  char *user_pos;
+  char *call_pos;
+  char *output_pos;
+  char *assistant_pos;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_client_history_tool_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_client_history_tool_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_client_history_tool_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  history_source = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&event_state, 0, sizeof(event_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_client_history_tool_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_client_history_tool_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_tool_register",
+             cai_agent_register_tool(agent, "weather", "Get weather",
+                                     &tool_weather_map,
+                                     &tool_weather_result_map,
+                                     test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_tool_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_client_history_tool_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_client_history_tool_add",
+             cai_session_add_user_text(session, "stream tool call turn",
+                                       &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  expect_int(state, "stream_client_history_tool_run",
+             cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error),
+             CAI_OK);
+  expect_str(state, "stream_client_history_tool_answer", writer.buffer,
+             "stream tool done");
+  expect_int(state, "stream_client_history_tool_event_starts",
+             event_state.starts, 1L);
+  expect_int(state, "stream_client_history_tool_event_outputs",
+             event_state.outputs, 1L);
+  expect_int(state, "stream_client_history_tool_export",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "stream_client_history_tool_read",
+                       history_source, history_json, sizeof(history_json),
+                       &error)) {
+    user_pos = strstr(history_json, "stream tool call turn");
+    call_pos = strstr(history_json, "\"type\":\"function_call\"");
+    output_pos = strstr(history_json, "\"type\":\"function_call_output\"");
+    assistant_pos = strstr(history_json, "stream tool done");
+    if (user_pos == NULL || call_pos == NULL || output_pos == NULL ||
+        assistant_pos == NULL || !(user_pos < call_pos) ||
+        !(call_pos < output_pos) || !(output_pos < assistant_pos)) {
+      test_fail(state, "stream_client_history_tool_order",
+                "client history did not preserve streamed tool order");
+    }
+  }
+
+  cai_source_close(history_source);
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_client_history_tool_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_client_history_tool_mock", "mock child failed");
+  }
+}
+
 static void test_local_history_opt_in(test_state *state) {
   cai_client_config client_config;
   cai_agent_config agent_config;
@@ -6411,6 +6730,7 @@ int main(void) {
   test_agent_tool_output_max_bytes(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
+  test_stream_output_delta_failure(&state);
   test_stream_openrouter_metadata_events(&state);
   test_session_stream_auto_tool_run(&state);
   test_session_stream_auto_reasoning_tool_response(&state);
@@ -6422,6 +6742,7 @@ int main(void) {
   test_stream_sse_event_limit(&state);
   test_stream_history_preserves_pretty_json(&state);
   test_stream_client_history_captures_output(&state);
+  test_stream_client_history_tool_order(&state);
   test_local_history_opt_in(&state);
   test_session_resume_and_history_import(&state);
   test_session_state_validation(&state);
