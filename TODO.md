@@ -42,7 +42,7 @@ Current OpenRouter boundary:
 Keep this sequence ordered. Refine each item into a tighter spec immediately
 before implementing that slice.
 
-- [ ] Add a tiny HTTP test server for MCP Streamable HTTP.
+- [x] Add a tiny HTTP test server for MCP Streamable HTTP.
   - Compile it only as a test/example utility; never link it into `libcai`.
   - Serve the existing `cai_mcp_handler` on `/mcp`.
   - Bind to `127.0.0.1`.

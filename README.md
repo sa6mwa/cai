@@ -272,6 +272,13 @@ The handler asks for headers by lowercase logical names such as
 header names. cai sets response headers such as `content-type` and
 `mcp-protocol-version` through the supplied callback.
 
+The test build also provides `cai_mcp_http_server`, a tiny plain HTTP utility
+for serving the MCP handler on `/mcp`. It is test/example infrastructure only
+and is not linked into `libcai`. It binds `127.0.0.1`, defaults to port
+`18765` for manual runs, and supports `--port 0 --print-port` for conflict-free
+tests. Headers are parsed in memory, while request bodies remain socket-backed
+`cai_source` streams pulled by the MCP handler.
+
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
 ```sh

@@ -361,6 +361,20 @@ if(CAI_BUILD_TESTS)
   cai_configure_c_target(cai_tests)
   add_test(NAME cai_tests COMMAND cai_tests)
 
+  add_executable(cai_mcp_http_server tests/mcp_http_server.c)
+  target_include_directories(cai_mcp_http_server PRIVATE
+    "${CAI_PUBLIC_INCLUDE_DIR}"
+    "${CAI_GENERATED_INCLUDE_DIR}"
+    "${CAI_LONEJSON_INCLUDE_DIR}")
+  target_link_libraries(cai_mcp_http_server PRIVATE cai_static CURL::libcurl
+    Threads::Threads "${CAI_LONEJSON_LIBRARY}")
+  cai_configure_c_target(cai_mcp_http_server)
+
+  add_executable(cai_mcp_http_smoke tests/mcp_http_smoke.c)
+  cai_configure_c_target(cai_mcp_http_smoke)
+  add_test(NAME cai_mcp_http_smoke
+    COMMAND cai_mcp_http_smoke $<TARGET_FILE:cai_mcp_http_server>)
+
   if(CAI_INSTALL)
     add_test(NAME cai_install_metadata_test
       COMMAND "${CMAKE_COMMAND}"
