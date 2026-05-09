@@ -81,6 +81,11 @@ typedef struct integration_tool_event_state {
   int outputs;
 } integration_tool_event_state;
 
+typedef struct integration_write_state {
+  char buffer[65536];
+  size_t length;
+} integration_write_state;
+
 static const lonejson_field integration_lookup_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, city, "city"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, code, "code")};
@@ -175,6 +180,21 @@ static int integration_tool_event(void *context, const cai_tool_event *event,
   } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
     state->outputs++;
   }
+  return CAI_OK;
+}
+
+static int integration_write(void *context, const void *bytes, size_t count,
+                             cai_error *error) {
+  integration_write_state *state;
+
+  (void)error;
+  state = (integration_write_state *)context;
+  if (state == NULL || state->length + count >= sizeof(state->buffer)) {
+    return CAI_ERR_INVALID;
+  }
+  memcpy(state->buffer + state->length, bytes, count);
+  state->length += count;
+  state->buffer[state->length] = '\0';
   return CAI_OK;
 }
 
@@ -480,6 +500,134 @@ static int run_openrouter_tool_regression(void) {
 done:
   cai_response_destroy(response);
   cai_output_destroy(output);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_openrouter_stream_tool_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_response *response;
+  cai_error error;
+  integration_lookup_state tool_state;
+  integration_tool_event_state event_state;
+  integration_write_state writer;
+  const char *answer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_stream_sinks_init(&stream_sinks);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  response = NULL;
+  answer = NULL;
+  memset(&tool_state, 0, sizeof(tool_state));
+  memset(&event_state, 0, sizeof(event_state));
+  memset(&writer, 0, sizeof(writer));
+
+  agent_config.model = openrouter_tool_integration_model();
+  fprintf(stderr, "[integration-openrouter-stream-tool] model=%s\n",
+          agent_config.model);
+  agent_config.developer_instructions =
+      "You are a strict OpenRouter streaming tool regression assistant. When "
+      "the user asks for an integration lookup, call integration_lookup "
+      "exactly once. After the tool result, answer with exactly: "
+      "OPENROUTER_STREAM_TOOL_OK report=<report> city=<city> code=<code>. "
+      "When asked to recall the code later, answer with only the code.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
+  agent_config.max_output_tokens = 128;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_tool_event;
+  run_options.tool_event_context = &event_state;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_tool(
+        agent, "integration_lookup",
+        "Return a deterministic integration-test marker for a city and code.",
+        &integration_lookup_arg_map, &integration_lookup_result_map,
+        integration_lookup_tool, &tool_state, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "Perform a streaming integration lookup for city=Gothenburg and "
+        "code=openrouter-stream-tool-code-514. You must call the tool.",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    stream_sinks.output_text = sink;
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter stream tool regression", rc, &error);
+    goto done;
+  }
+  if (tool_state.called == 0 || event_state.starts != 1 ||
+      event_state.outputs != 1 ||
+      strstr(writer.buffer, "OPENROUTER_STREAM_TOOL_OK") == NULL ||
+      strstr(writer.buffer, "openrouter-tool-verified") == NULL ||
+      strstr(writer.buffer, "Gothenburg") == NULL ||
+      strstr(writer.buffer, "openrouter-stream-tool-code-514") == NULL) {
+    fprintf(stderr,
+            "openrouter stream tool answer failed check; called=%d "
+            "starts=%d outputs=%d answer:\n%s\n",
+            tool_state.called, event_state.starts, event_state.outputs,
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  rc = cai_session_send_text(
+      session,
+      "Recall the exact code value from the previous streaming integration "
+      "lookup.",
+      &response, &error);
+  if (rc != CAI_OK) {
+    print_error("openrouter stream tool continuation", rc, &error);
+    goto done;
+  }
+  answer = cai_response_output_text(response);
+  if (answer == NULL ||
+      strstr(answer, "openrouter-stream-tool-code-514") == NULL) {
+    fprintf(stderr,
+            "openrouter stream tool continuation did not preserve code:\n%s\n",
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_response_destroy(response);
+  cai_sink_close(sink);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -1214,6 +1362,7 @@ int main(void) {
   const char *openrouter_e2e;
   const char *openrouter_session;
   const char *openrouter_tool;
+  const char *openrouter_stream_tool;
   const char *openrouter_tool_security;
   const char *searxng_tool;
   const char *searxng_stream_tool;
@@ -1239,6 +1388,11 @@ int main(void) {
   if (openrouter_tool != NULL && openrouter_tool[0] != '\0' &&
       strcmp(openrouter_tool, "0") != 0) {
     return run_openrouter_tool_regression();
+  }
+  openrouter_stream_tool = getenv("CAI_INTEGRATION_OPENROUTER_STREAM_TOOL");
+  if (openrouter_stream_tool != NULL && openrouter_stream_tool[0] != '\0' &&
+      strcmp(openrouter_stream_tool, "0") != 0) {
+    return run_openrouter_stream_tool_regression();
   }
   openrouter_tool_security = getenv("CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY");
   if (openrouter_tool_security != NULL &&

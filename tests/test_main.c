@@ -2172,6 +2172,7 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_history_2\",\"usage\":{\"input_tokens\":20,"
       "\"output_tokens\":3,\"total_tokens\":23}}}\n\n";
+  static char stream_openrouter_metadata_body[1024];
   static char stream_tool_body[1024];
   static char stream_tool_reasoning_body[1024];
   static char stream_tool_reasoning_duplicate_body[1400];
@@ -2279,6 +2280,34 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "history stream first") != NULL &&
           strstr(request, "previous_response_id") == NULL) {
         return stream_history_first_body;
+      }
+      if (strstr(request, "openrouter metadata stream") != NULL) {
+        if (stream_openrouter_metadata_body[0] == '\0') {
+          strcpy(stream_openrouter_metadata_body,
+                 "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+                 "\"resp_stream_openrouter_meta\",\"usage\":null,");
+          strcat(stream_openrouter_metadata_body,
+                 "\"reasoning\":null}}\n\n");
+          strcat(stream_openrouter_metadata_body,
+                 "data: {\"type\":\"response.reasoning_text.delta\","
+                 "\"delta\":\"or thought\"}\n\n");
+          strcat(stream_openrouter_metadata_body,
+                 "data: {\"type\":\"response.reasoning_text.done\"}\n\n");
+          strcat(stream_openrouter_metadata_body,
+                 "data: {\"type\":\"response.output_text.delta\","
+                 "\"delta\":\"or text\"}\n\n");
+          strcat(stream_openrouter_metadata_body,
+                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+                 "\"resp_stream_openrouter_meta\",\"usage\":{\"input_tokens\":7,");
+          strcat(stream_openrouter_metadata_body,
+                 "\"input_tokens_details\":{\"cached_tokens\":2},"
+                 "\"output_tokens\":4,");
+          strcat(stream_openrouter_metadata_body,
+                 "\"output_tokens_details\":{\"reasoning_tokens\":1},"
+                 "\"total_tokens\":11}}}\n\n");
+          strcat(stream_openrouter_metadata_body, "data: [DONE]\n\n");
+        }
+        return stream_openrouter_metadata_body;
       }
       if (strstr(request, "stream tool call turn") != NULL) {
         if (stream_tool_body[0] == '\0') {
@@ -4541,6 +4570,7 @@ static void test_stream_response_text(test_state *state) {
   expect_str(state, "stream_source_value", read_buffer, "hello");
   cai_source_close(source);
   source = NULL;
+
   expect_int(state, "stream_agent_new",
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
@@ -6094,6 +6124,115 @@ static void test_session_state_validation(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_stream_openrouter_metadata_events(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_sink *reasoning_sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  write_state reasoning_writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_or_metadata_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_or_metadata_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_or_metadata_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  params = NULL;
+  sink = NULL;
+  reasoning_sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&reasoning_writer, 0, sizeof(reasoning_writer));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+
+  expect_int(state, "stream_or_metadata_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_or_metadata_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_or_metadata_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_NANO, &error),
+             CAI_OK);
+  expect_int(state, "stream_or_metadata_text",
+             cai_response_create_params_add_text(
+                 params, "user", "openrouter metadata stream", &error),
+             CAI_OK);
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_or_metadata_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  sink_callbacks.context = &reasoning_writer;
+  expect_int(state, "stream_or_metadata_reasoning_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &reasoning_sink, &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.reasoning_summary = reasoning_sink;
+  stream_sinks.reasoning_summary_prefix.text = "[r] ";
+  stream_sinks.reasoning_summary_suffix.text = "\n\n";
+  expect_int(state, "stream_or_metadata_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_or_metadata_output", writer.buffer, "or text");
+  expect_str(state, "stream_or_metadata_reasoning", reasoning_writer.buffer,
+             "[r] or thought\n\n");
+  expect_int(state, "stream_or_metadata_usage_total", usage.total_tokens, 11L);
+  expect_int(state, "stream_or_metadata_usage_cached",
+             usage.input_cached_tokens, 2L);
+  expect_int(state, "stream_or_metadata_usage_reasoning",
+             usage.output_reasoning_tokens, 1L);
+
+  cai_sink_close(sink);
+  cai_sink_close(reasoning_sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_or_metadata_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_or_metadata_mock", "mock child failed");
+  }
+}
+
 int main(void) {
   test_state state;
 
@@ -6122,6 +6261,7 @@ int main(void) {
   test_agent_tool_output_max_bytes(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
+  test_stream_openrouter_metadata_events(&state);
   test_session_stream_auto_tool_run(&state);
   test_session_stream_auto_reasoning_tool_response(&state);
   test_session_stream_auto_multi_tool_run(&state);
