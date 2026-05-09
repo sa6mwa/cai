@@ -43,7 +43,9 @@ application.
   [ROADMAP.md](ROADMAP.md) until cai has a deliberate WebSocket transport
   slice, C mock WebSocket coverage, and stable DX.
 - MCP: not part of the first implementation, except that the C SDK design must
-  not paint us into a corner for later MCP support.
+  not paint us into a corner for later MCP support. The first MCP serving
+  slice is now a transport-neutral route handler over cai tool registries, not
+  an HTTP server.
 - Tool execution: synchronous local C callbacks only in the first version.
 - Default SDK model: no hidden default for production SDK calls. Callers must
   choose a model explicitly.
@@ -101,6 +103,11 @@ application.
   is a convenience/materialized path; interactive agents and worker pipelines
   should prefer `stream_auto` so reasoning summaries, response text, and tool
   activity are observable while the turn is still running.
+- MCP serving is exposed as `cai_mcp_handler`, a route-handler facade that lets
+  Vectis/Kore or another HTTP stack pass through method, headers, request body
+  source, response headers, and response sink. cai handles MCP JSON-RPC and
+  tool dispatch; the host handles routing, TLS, auth, timeouts, CORS policy,
+  and connection lifecycle.
 
 ## Product shape
 
@@ -648,6 +655,37 @@ single call rather than hand-writing `lonejson` maps.
 - Preserve existing `register_tool(...)` and `register_raw_tool(...)` behavior as
   first-class, non-deprecated paths.
 - Preset constructors are additive quality-of-life APIs, not a registry redesign.
+
+### MCP route handler
+
+Expose cai tool registries through MCP without adding an HTTP server to cai.
+The public boundary is `<cai/mcp.h>`:
+
+- `cai_mcp_handler`
+- `cai_mcp_handler_config`
+- `cai_mcp_http_request`
+- `cai_mcp_http_response`
+
+The host HTTP stack provides:
+
+- request method,
+- request body as `cai_source`,
+- header lookup callback,
+- response body as `cai_sink`,
+- response header setter callback.
+
+The first implemented transport slice is POST-only Streamable HTTP with JSON
+responses. It supports `initialize`, `notifications/initialized`, `ping`,
+`tools/list`, and `tools/call`. `GET`/SSE, resumability, stateful
+`Mcp-Session-Id` lifecycle, resources, prompts, sampling, and roots remain
+future MCP slices.
+
+Streaming rule: the MCP handler must not take a full request JSON string.
+It parses the JSON-RPC envelope from a `cai_source`; `id`, `params`, and
+`params.arguments` are validated into spooled JSON values with lonejson
+parse-sinks. Typed tool arguments are parsed from the spool. Tool result JSON
+is written to a spooled sink so MCP can emit both a small text content fallback
+and `structuredContent` without heap-materializing the result.
 
 Initial result payload support:
 

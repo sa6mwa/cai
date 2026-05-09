@@ -1,4 +1,5 @@
 #include <cai/cai.h>
+#include <cai/mcp.h>
 #include <cai/tools/searxng.h>
 
 #include "cai_internal.h"
@@ -31,6 +32,18 @@ typedef struct write_state {
   size_t length;
   int closed;
 } write_state;
+
+typedef struct mcp_header_pair {
+  const char *name;
+  const char *value;
+} mcp_header_pair;
+
+typedef struct mcp_header_state {
+  const mcp_header_pair *request;
+  size_t request_count;
+  mcp_header_pair response[8];
+  size_t response_count;
+} mcp_header_state;
 
 typedef struct stream_tool_state {
   char delta[64];
@@ -503,6 +516,66 @@ static void test_write_close(void *context) {
 
   state = (write_state *)context;
   state->closed = 1;
+}
+
+static const char *test_mcp_header_get(void *context, const char *name) {
+  mcp_header_state *state;
+  size_t i;
+
+  state = (mcp_header_state *)context;
+  if (state == NULL || name == NULL) {
+    return NULL;
+  }
+  for (i = 0U; i < state->request_count; i++) {
+    if (state->request[i].name != NULL &&
+        strcmp(state->request[i].name, name) == 0) {
+      return state->request[i].value;
+    }
+  }
+  return NULL;
+}
+
+static int test_mcp_header_set(void *context, const char *name,
+                               const char *value, cai_error *error) {
+  mcp_header_state *state;
+
+  (void)error;
+  state = (mcp_header_state *)context;
+  if (state == NULL || state->response_count >=
+                           sizeof(state->response) / sizeof(state->response[0])) {
+    return CAI_ERR_INVALID;
+  }
+  state->response[state->response_count].name = name;
+  state->response[state->response_count].value = value;
+  state->response_count++;
+  return CAI_OK;
+}
+
+static const char *test_mcp_response_header(mcp_header_state *state,
+                                            const char *name) {
+  size_t i;
+
+  for (i = 0U; i < state->response_count; i++) {
+    if (state->response[i].name != NULL &&
+        strcmp(state->response[i].name, name) == 0) {
+      return state->response[i].value;
+    }
+  }
+  return NULL;
+}
+
+static void expect_valid_json(test_state *state, const char *name,
+                              const char *json) {
+  lonejson_json_value value;
+  lonejson_error error;
+
+  lonejson_json_value_init(&value);
+  lonejson_error_init(&error);
+  if (lonejson_json_value_set_buffer(&value, json, strlen(json), &error) !=
+      LONEJSON_STATUS_OK) {
+    test_fail(state, name, error.message);
+  }
+  lonejson_json_value_cleanup(&value);
 }
 
 static int test_stream_tool_delta(void *context, const char *item_id,
@@ -1177,6 +1250,193 @@ static void test_tool_registry(test_state *state) {
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
   unlink(source_path);
+}
+
+static int test_mcp_handle(cai_mcp_handler *handler,
+                           const mcp_header_pair *headers,
+                           size_t header_count, const char *body,
+                           write_state *writer, mcp_header_state *headers_out,
+                           int *status_out, cai_error *error) {
+  read_state reader;
+  cai_source_callbacks source_callbacks;
+  cai_sink_callbacks sink_callbacks;
+  cai_source *source;
+  cai_sink *sink;
+  cai_mcp_http_request request;
+  cai_mcp_http_response response;
+  int rc;
+
+  source = NULL;
+  sink = NULL;
+  reader.text = body;
+  reader.offset = 0U;
+  reader.closed = 0;
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &reader;
+  rc = cai_source_from_callbacks(&source_callbacks, &source, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  writer->buffer[0] = '\0';
+  writer->length = 0U;
+  writer->closed = 0;
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = writer;
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, error);
+  if (rc != CAI_OK) {
+    cai_source_close(source);
+    return rc;
+  }
+  memset(headers_out, 0, sizeof(*headers_out));
+  headers_out->request = headers;
+  headers_out->request_count = header_count;
+  request.method = "POST";
+  request.body = source;
+  request.header = test_mcp_header_get;
+  request.header_context = headers_out;
+  request.user_context = NULL;
+  response.status = 0;
+  response.body = sink;
+  response.set_header = test_mcp_header_set;
+  response.header_context = headers_out;
+  rc = cai_mcp_handler_handle_http(handler, &request, &response, error);
+  if (status_out != NULL) {
+    *status_out = response.status;
+  }
+  cai_sink_close(sink);
+  cai_source_close(source);
+  return rc;
+}
+
+static void test_mcp_handler(test_state *state) {
+  static const mcp_header_pair headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "application/json, text/event-stream"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+  static const mcp_header_pair bad_origin_headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "application/json"},
+      {"origin", "https://evil.example"}};
+  static const mcp_header_pair no_version_headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "application/json"}};
+  const char *allowed_origins[1];
+  cai_tool_registry *registry;
+  cai_mcp_handler_config config;
+  cai_mcp_handler *handler;
+  write_state writer;
+  mcp_header_state header_state;
+  cai_error error;
+  int status;
+
+  registry = NULL;
+  handler = NULL;
+  cai_error_init(&error);
+  expect_int(state, "mcp_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "mcp_register_tool",
+             cai_tool_registry_register_lonejson(
+                 registry, "weather", "Get weather", &tool_weather_map,
+                 &tool_weather_result_map, test_weather_tool, NULL, &error),
+             CAI_OK);
+  cai_mcp_handler_config_init(&config);
+  allowed_origins[0] = "https://app.example";
+  config.name = "cai-test";
+  config.version = "1.2.3";
+  config.tools = registry;
+  config.allowed_origins = allowed_origins;
+  config.allowed_origin_count = 1U;
+  config.tool_output_max_bytes = 1024U;
+  expect_int(state, "mcp_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_initialize",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+                 "\"params\":{\"protocolVersion\":\"2025-11-25\"}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_initialize_status", status, 200L);
+  if (strstr(writer.buffer, "\"protocolVersion\":\"2025-11-25\"") == NULL ||
+      strstr(writer.buffer, "\"name\":\"cai-test\"") == NULL ||
+      strstr(writer.buffer, "\"tools\":{\"listChanged\":false}") == NULL) {
+    test_fail(state, "mcp_initialize_body", "initialize response incomplete");
+  }
+  expect_valid_json(state, "mcp_initialize_json", writer.buffer);
+  expect_str(state, "mcp_initialize_content_type",
+             test_mcp_response_header(&header_state, "content-type"),
+             "application/json");
+  expect_int(state, "mcp_tools_list",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"list-1\","
+                             "\"method\":\"tools/list\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"id\":\"list-1\"") == NULL ||
+      strstr(writer.buffer, "\"name\":\"weather\"") == NULL ||
+      strstr(writer.buffer, "\"inputSchema\"") == NULL ||
+      strstr(writer.buffer, "\"city\"") == NULL) {
+    test_fail(state, "mcp_tools_list_body", "tools/list response incomplete");
+  }
+  expect_valid_json(state, "mcp_tools_list_json", writer.buffer);
+  expect_int(state, "mcp_tools_call",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"weather\",\"arguments\":{\"city\":"
+                 "\"Malmo\",\"days\":3}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"structuredContent\":{\"summary\":\"Malmo:3\"}") ==
+          NULL ||
+      strstr(writer.buffer, "\"isError\":false") == NULL ||
+      strstr(writer.buffer, "structured JSON result") == NULL) {
+    test_fail(state, "mcp_tools_call_body", "tools/call response incomplete");
+  }
+  expect_valid_json(state, "mcp_tools_call_json", writer.buffer);
+  expect_int(state, "mcp_initialized_notification",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\","
+                             "\"method\":\"notifications/initialized\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_initialized_status", status, 202L);
+  expect_str(state, "mcp_initialized_empty", writer.buffer, "");
+  expect_int(state, "mcp_reject_origin",
+             test_mcp_handle(handler, bad_origin_headers,
+                             sizeof(bad_origin_headers) /
+                                 sizeof(bad_origin_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":3,"
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_reject_origin_status", status, 403L);
+  expect_valid_json(state, "mcp_reject_origin_json", writer.buffer);
+
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.allow_legacy_no_version = 0;
+  expect_int(state, "mcp_strict_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_reject_missing_version",
+             test_mcp_handle(handler, no_version_headers,
+                             sizeof(no_version_headers) /
+                                 sizeof(no_version_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":4,"
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_reject_missing_version_status", status, 400L);
+  expect_valid_json(state, "mcp_reject_missing_version_json", writer.buffer);
+
+  cai_mcp_handler_destroy(handler);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
 }
 
 static void test_client_open(test_state *state) {
@@ -6869,6 +7129,7 @@ int main(void) {
   test_env_precedence(&state);
   test_source_sink(&state);
   test_tool_registry(&state);
+  test_mcp_handler(&state);
   test_client_open(&state);
   test_mike_mind_prompt_contract(&state);
   test_response_json(&state);

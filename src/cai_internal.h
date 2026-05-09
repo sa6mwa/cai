@@ -366,6 +366,17 @@ int cai_tool_registry_register_lonejson_owned(
     const lonejson_map *params_map, const lonejson_map *result_map,
     cai_tool_fn callback, void *context, void (*context_cleanup)(void *context),
     cai_error *error);
+int cai_tool_registry_run_spooled(cai_tool_registry *registry,
+                                  const char *name,
+                                  lonejson_spooled *arguments_json,
+                                  cai_sink *output, cai_error *error);
+size_t cai_tool_registry_count(const cai_tool_registry *registry);
+const char *cai_tool_registry_name_at(const cai_tool_registry *registry,
+                                      size_t index);
+const char *cai_tool_registry_description_at(const cai_tool_registry *registry,
+                                             size_t index);
+const char *cai_tool_registry_schema_at(const cai_tool_registry *registry,
+                                        size_t index);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,

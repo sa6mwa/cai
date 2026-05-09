@@ -220,6 +220,58 @@ model. `register_raw_tool` deliberately bypasses the typed result API; cai
 still validates that raw arguments are JSON before invoking the callback, but
 raw tools remain an expert escape hatch.
 
+## MCP Handler
+
+`<cai/mcp.h>` exposes a transport-neutral MCP Streamable HTTP route handler for
+serving a `cai_tool_registry` through MCP without making cai an HTTP server.
+The host framework, for example Vectis/Kore, owns routing, TLS, auth,
+timeouts, and connection lifecycle. cai receives a streaming request body,
+reads logical headers through a callback, writes logical response headers
+through a callback, and streams the JSON-RPC response into a caller-provided
+sink.
+
+First implemented scope:
+
+- POST only.
+- JSON response only.
+- `initialize`
+- `notifications/initialized`
+- `ping`
+- `tools/list`
+- `tools/call`
+
+The request body is a `cai_source` and the response body is a `cai_sink`.
+The JSON-RPC envelope is parsed with lonejson while `id`, `params`, and
+`params.arguments` are validated into spooled JSON values. Typed tool
+arguments are parsed from that spool and tool results are serialized back into
+a spooled JSON result before the MCP response is written. `GET`/SSE streams,
+stateful `Mcp-Session-Id` lifecycle, resources, prompts, and sampling are not
+implemented yet.
+
+Minimal route adapter shape:
+
+```c
+cai_mcp_http_request req;
+cai_mcp_http_response res;
+
+req.method = "POST";
+req.body = request_body_source;
+req.header = my_header_get;
+req.header_context = route;
+
+res.body = response_body_sink;
+res.set_header = my_header_set;
+res.header_context = route;
+
+cai_mcp_handler_handle_http(handler, &req, &res, &error);
+```
+
+The handler asks for headers by lowercase logical names such as
+`content-type`, `accept`, `origin`, `mcp-protocol-version`, and
+`mcp-session-id`; adapters should normalize however their HTTP stack stores
+header names. cai sets response headers such as `content-type` and
+`mcp-protocol-version` through the supplied callback.
+
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
 ```sh

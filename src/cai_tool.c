@@ -70,6 +70,10 @@ typedef struct cai_tool_typed_property_doc {
   const char *description;
 } cai_tool_typed_property_doc;
 
+typedef struct cai_tool_spooled_reader {
+  lonejson_spooled cursor;
+} cai_tool_spooled_reader;
+
 #define CAI_TOOL_SCHEMA_IMPL(schema) ((cai_tool_schema_impl *)((schema)->impl))
 
 static void cai_tool_schema_init_methods(cai_tool_schema *schema);
@@ -99,6 +103,15 @@ static lonejson_status cai_lonejson_sink_write(void *user, const void *data,
   }
   cai_error_cleanup(&error);
   return LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static lonejson_read_result cai_tool_spooled_read(void *user,
+                                                  unsigned char *buffer,
+                                                  size_t capacity) {
+  cai_tool_spooled_reader *reader;
+
+  reader = (cai_tool_spooled_reader *)user;
+  return lonejson_spooled_read(&reader->cursor, buffer, capacity);
 }
 
 static void cai_tool_entry_cleanup(cai_tool_entry *entry) {
@@ -1090,6 +1103,34 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
   return CAI_OK;
 }
 
+size_t cai_tool_registry_count(const cai_tool_registry *registry) {
+  return registry != NULL ? registry->count : 0U;
+}
+
+const char *cai_tool_registry_name_at(const cai_tool_registry *registry,
+                                      size_t index) {
+  if (registry == NULL || index >= registry->count) {
+    return NULL;
+  }
+  return registry->entries[index].name;
+}
+
+const char *cai_tool_registry_description_at(const cai_tool_registry *registry,
+                                             size_t index) {
+  if (registry == NULL || index >= registry->count) {
+    return NULL;
+  }
+  return registry->entries[index].description;
+}
+
+const char *cai_tool_registry_schema_at(const cai_tool_registry *registry,
+                                        size_t index) {
+  if (registry == NULL || index >= registry->count) {
+    return NULL;
+  }
+  return registry->entries[index].schema_json;
+}
+
 int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
                           const char *arguments_json, cai_sink *output,
                           cai_error *error) {
@@ -1139,6 +1180,129 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
   lonejson_error_init(&json_error);
   status = lonejson_parse_cstr(entry->params_map, params, arguments_json, NULL,
                                &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    lonejson_cleanup(entry->params_map, params);
+    lonejson_cleanup(entry->result_map, result);
+    cai_free_mem(NULL, result);
+    cai_free_mem(NULL, params);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse tool arguments",
+                                json_error.message);
+  }
+  rc = entry->lonejson_callback(entry->context, params, result, error);
+  if (rc == CAI_OK) {
+    lonejson_error_init(&json_error);
+    status = lonejson_serialize_sink(entry->result_map, result,
+                                     cai_lonejson_sink_write, output, NULL,
+                                     &json_error);
+    if (status != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize tool result",
+                                json_error.message);
+    }
+  }
+  lonejson_cleanup(entry->params_map, params);
+  cai_tool_result_cleanup_plain(entry->result_map, result);
+  cai_free_mem(NULL, result);
+  cai_free_mem(NULL, params);
+  return rc;
+}
+
+int cai_tool_registry_run_spooled(cai_tool_registry *registry,
+                                  const char *name,
+                                  lonejson_spooled *arguments_json,
+                                  cai_sink *output, cai_error *error) {
+  cai_tool_entry *entry;
+  cai_tool_spooled_reader reader;
+  lonejson_parse_options options;
+  lonejson_error json_error;
+  lonejson_status status;
+  void *params;
+  void *result;
+  char *raw_json;
+  size_t raw_len;
+  int rc;
+
+  if (name == NULL || name[0] == '\0' || arguments_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool name and arguments JSON are required");
+  }
+  entry = cai_tool_registry_find(registry, name);
+  if (entry == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
+  }
+  if (entry->kind == CAI_TOOL_RAW) {
+    raw_len = lonejson_spooled_size(arguments_json);
+    raw_json = (char *)cai_alloc(NULL, raw_len + 1U);
+    if (raw_json == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate raw tool arguments");
+    }
+    reader.cursor = *arguments_json;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      cai_free_mem(NULL, raw_json);
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to rewind tool arguments",
+                                  json_error.message);
+    }
+    {
+      lonejson_read_result chunk;
+      size_t offset;
+
+      offset = 0U;
+      while (offset < raw_len) {
+        chunk = lonejson_spooled_read(&reader.cursor,
+                                      (unsigned char *)raw_json + offset,
+                                      raw_len - offset);
+        if (chunk.error_code != 0) {
+          cai_free_mem(NULL, raw_json);
+          return cai_set_error(error, CAI_ERR_PROTOCOL,
+                               "failed to read tool arguments");
+        }
+        if (chunk.bytes_read == 0U) {
+          break;
+        }
+        offset += chunk.bytes_read;
+      }
+      raw_json[offset] = '\0';
+    }
+    rc = cai_tool_registry_run(registry, name, raw_json, output, error);
+    cai_free_mem(NULL, raw_json);
+    return rc;
+  }
+  params = cai_alloc(NULL, entry->params_map->struct_size);
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate tool parameters");
+  }
+  result = cai_alloc(NULL, entry->result_map->struct_size);
+  if (result == NULL) {
+    cai_free_mem(NULL, params);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate tool result");
+  }
+  memset(params, 0, entry->params_map->struct_size);
+  memset(result, 0, entry->result_map->struct_size);
+  lonejson_init(entry->params_map, params);
+  lonejson_init(entry->result_map, result);
+  reader.cursor = *arguments_json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_cleanup(entry->params_map, params);
+    lonejson_cleanup(entry->result_map, result);
+    cai_free_mem(NULL, result);
+    cai_free_mem(NULL, params);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind tool arguments",
+                                json_error.message);
+  }
+  options = lonejson_default_parse_options();
+  status = lonejson_parse_reader(entry->params_map, params,
+                                 cai_tool_spooled_read, &reader, &options,
+                                 &json_error);
   if (status != LONEJSON_STATUS_OK) {
     lonejson_cleanup(entry->params_map, params);
     lonejson_cleanup(entry->result_map, result);
