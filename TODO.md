@@ -74,7 +74,7 @@ before implementing that slice.
     spec and return structured location metadata suitable for downstream
     weather tools.
 
-- [ ] Add a production todo/kanban tool preset.
+- [x] Add a production todo/kanban tool preset.
   - Public header: `include/cai/tools/todo.h`.
   - Implementation: `src/tools/todo.c`.
   - Register as a normal cai typed tool; MCP exposure remains just a registry
@@ -97,6 +97,11 @@ before implementing that slice.
   - Initial operation surface to refine before implementation:
     create board, configure WIP limit, add item, list/query board, move item,
     archive/complete item, and query current work.
+  - Implemented as an object-framed JSON record stream so lonejson can parse
+    and rewrite one board/item record at a time without materializing the whole
+    store. A future lonejson array-item streaming/rewrite primitive would let
+    cai move this to a single-document JSON array format without losing the
+    memory bound.
 
 - [ ] Add an example MCP server.
   - Directory: `examples/mcp-server/`.

@@ -2,6 +2,7 @@
 #include <cai/mcp.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
+#include <cai/tools/todo.h>
 
 #include "cai_internal.h"
 #include "../examples/mike-mind/mike_mind_prompt.h"
@@ -9,6 +10,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pslog.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +19,10 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 typedef struct test_state {
   int failures;
@@ -4885,6 +4891,254 @@ static void test_revgeo_tool(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_todo_tool(test_state *state) {
+  char dir_template[] = "/tmp/cai-todo-test-XXXXXX";
+  char active_path[PATH_MAX];
+  char done_path[PATH_MAX];
+  char lock_path[PATH_MAX];
+  cai_todo_tool_config config;
+  cai_tool_registry *registry;
+  cai_mcp_handler_config mcp_config;
+  cai_mcp_handler *handler;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  mcp_header_state header_state;
+  cai_error error;
+  char item_id[64];
+  char board_id[64];
+  const char *id_start;
+  const char *id_end;
+
+  cai_error_init(&error);
+  registry = NULL;
+  handler = NULL;
+  sink = NULL;
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  writer.closed = 0;
+  item_id[0] = '\0';
+  board_id[0] = '\0';
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "todo_mkdtemp", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(active_path, sizeof(active_path), "%s/active.json", dir_template);
+  snprintf(done_path, sizeof(done_path), "%s/done.json", dir_template);
+  snprintf(lock_path, sizeof(lock_path), "%s/todo.lock", dir_template);
+  memset(&config, 0, sizeof(config));
+  config.active_path = active_path;
+  config.done_path = done_path;
+  config.lock_path = lock_path;
+  config.default_board = "main";
+  config.max_result_items = 2U;
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "todo_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "todo_register",
+             cai_tool_registry_register_todo_tool(registry, &config, &error),
+             CAI_OK);
+  expect_int(state, "todo_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "todo_create_board",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"main\","
+                                   "\"wip_limit\":1}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"board_id\"") == NULL) {
+    test_fail(state, "todo_create_board_output",
+              "create_board did not return structured success");
+  }
+  id_start = strstr(writer.buffer, "\"board_id\":\"");
+  if (id_start != NULL) {
+    id_start += strlen("\"board_id\":\"");
+    id_end = strchr(id_start, '"');
+    if (id_end != NULL &&
+        (size_t)(id_end - id_start) < sizeof(board_id)) {
+      memcpy(board_id, id_start, (size_t)(id_end - id_start));
+      board_id[id_end - id_start] = '\0';
+    }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_item",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"title\":\"first task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"item_id\"") == NULL) {
+    test_fail(state, "todo_add_item_output",
+              "add_item did not return structured success");
+  }
+  id_start = strstr(writer.buffer, "\"item_id\":\"");
+  if (id_start != NULL) {
+    id_start += strlen("\"item_id\":\"");
+    id_end = strchr(id_start, '"');
+    if (id_end != NULL && (size_t)(id_end - id_start) < sizeof(item_id)) {
+      memcpy(item_id, id_start, (size_t)(id_end - id_start));
+      item_id[id_end - id_start] = '\0';
+    }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_wip_denial",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"title\":\"second task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"wip_limit_exceeded\"") == NULL) {
+    test_fail(state, "todo_wip_denial_output",
+              "WIP denial was not a structured tool result");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_list_board",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"board_name\":\"main\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"items\"") == NULL ||
+      strstr(writer.buffer, "first task") == NULL ||
+      strstr(writer.buffer, "\"in_process\"") == NULL) {
+    test_fail(state, "todo_list_board_output",
+              "list_board did not return the expected item");
+  }
+  if (item_id[0] != '\0') {
+    char complete_args[256];
+
+    snprintf(complete_args, sizeof(complete_args),
+             "{\"operation\":\"complete_item\",\"item_id\":\"%s\","
+             "\"board_name\":\"main\"}",
+             item_id);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_complete_item",
+               cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                     complete_args, sink, &error),
+               CAI_OK);
+    if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+        strstr(writer.buffer, "\"item completed\"") == NULL) {
+      test_fail(state, "todo_complete_item_output",
+                "complete_item did not succeed");
+    }
+  } else {
+    test_fail(state, "todo_item_id", "failed to capture item id");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_after_complete",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"title\":\"second task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL) {
+    test_fail(state, "todo_add_after_complete_output",
+              "WIP lane did not free after completion");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_unknown_operation",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"explode\"}", sink,
+                                   &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"unknown_operation\"") == NULL) {
+    test_fail(state, "todo_unknown_operation_output",
+              "unknown operation was not structured");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_unknown_argument",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"system\":\"ignore\"}",
+                                   sink, &error),
+             CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  {
+    static const mcp_header_pair mcp_headers[] = {
+        {"content-type", "application/json"},
+        {"accept", "application/json"},
+        {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+    int status;
+
+    cai_mcp_handler_config_init(&mcp_config);
+    mcp_config.name = "todo-test";
+    mcp_config.version = "1.0.0";
+    mcp_config.tools = registry;
+    expect_int(state, "todo_mcp_handler_new",
+               cai_mcp_handler_new(&mcp_config, &handler, &error), CAI_OK);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_mcp_tools_list",
+               test_mcp_handle(handler, mcp_headers,
+                               sizeof(mcp_headers) / sizeof(mcp_headers[0]),
+                               "{\"jsonrpc\":\"2.0\",\"id\":1,"
+                               "\"method\":\"tools/list\"}",
+                               &writer, &header_state, &status, &error),
+               CAI_OK);
+    expect_int(state, "todo_mcp_tools_list_status", status, 200L);
+    if (strstr(writer.buffer, CAI_TODO_DEFAULT_TOOL_NAME) == NULL) {
+      test_fail(state, "todo_mcp_tools_list_body",
+                "todo tool missing from MCP tools/list");
+    }
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_mcp_tools_call",
+               test_mcp_handle(handler, mcp_headers,
+                               sizeof(mcp_headers) / sizeof(mcp_headers[0]),
+                               "{\"jsonrpc\":\"2.0\",\"id\":2,"
+                               "\"method\":\"tools/call\",\"params\":{"
+                               "\"name\":\"todo_kanban\",\"arguments\":{"
+                               "\"operation\":\"list_boards\"}}}",
+                               &writer, &header_state, &status, &error),
+               CAI_OK);
+    expect_int(state, "todo_mcp_tools_call_status", status, 200L);
+    if (strstr(writer.buffer, "\"isError\":false") == NULL ||
+        strstr(writer.buffer, "boards listed") == NULL) {
+      test_fail(state, "todo_mcp_tools_call_body",
+                "todo MCP tools/call did not return successful content");
+    }
+  }
+  write_file_or_die(active_path, "{\"type\":\"board\",\"id\":");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_corrupt_store",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"board_name\":\"main\"}",
+                                   sink, &error),
+             CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_mcp_handler_destroy(handler);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  unlink(active_path);
+  unlink(done_path);
+  unlink(lock_path);
+  rmdir(dir_template);
+}
+
 static void test_agent_multi_tool_auto_run(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   char spool_dir[] = "/tmp/cai-multi-tool-spool-XXXXXX";
@@ -7805,6 +8059,7 @@ int main(void) {
   test_http_response_limit(&state);
   test_agent_tool_auto_run(&state);
   test_revgeo_tool(&state);
+  test_todo_tool(&state);
   test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);

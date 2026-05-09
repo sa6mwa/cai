@@ -804,6 +804,22 @@ static void cai_tool_result_cleanup_plain(const lonejson_map *map,
     case LONEJSON_FIELD_KIND_OBJECT:
       cai_tool_result_cleanup_plain(field->submap, ptr);
       break;
+    case LONEJSON_FIELD_KIND_OBJECT_ARRAY: {
+      lonejson_object_array *array;
+      size_t j;
+
+      array = (lonejson_object_array *)ptr;
+      for (j = 0U; j < array->count; j++) {
+        cai_tool_result_cleanup_plain(
+            field->submap,
+            (unsigned char *)array->items + (j * array->elem_size));
+      }
+      cai_free_mem(NULL, array->items);
+      array->items = NULL;
+      array->count = 0U;
+      array->capacity = 0U;
+      break;
+    }
     case LONEJSON_FIELD_KIND_STRING_STREAM:
     case LONEJSON_FIELD_KIND_BASE64_STREAM:
       lonejson_spooled_cleanup((lonejson_spooled *)ptr);

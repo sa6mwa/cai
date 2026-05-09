@@ -447,6 +447,30 @@ response storage. Public Nominatim usage requires polite request volume and a
 descriptive user agent; production deployments that need higher volume should
 configure their own provider endpoint.
 
+Agents or registries can register the persisted todo/kanban preset by
+including `<cai/tools/todo.h>` and calling `cai_agent_register_todo_tool` or
+`cai_tool_registry_register_todo_tool`. The default tool name is
+`todo_kanban`. It exposes a single domain tool with an `operation` argument:
+`create_board`, `list_boards`, `set_wip_limit`, `add_item`, `list_board`,
+`current_work`, `move_item`, and `complete_item`.
+
+By default the active store is `$XDG_CONFIG_HOME/cai/todo-active.json`, falling
+back to `$HOME/.config/cai/todo-active.json`; the done archive is
+`todo-done.json` beside it, with `todo.lock` as the transaction lockfile.
+Callers can override all three paths in `cai_todo_tool_config`. Missing parent
+directories and files are created at registration and operation time.
+
+The todo store is an object-framed JSON record stream, not a single giant JSON
+document. Each board or item is one JSON object, and cai reads and rewrites the
+store one record at a time under an advisory `fcntl` lock. That shape is
+intentional: current lonejson releases stream object-framed records directly,
+while streaming and rewriting a single-document JSON array item-by-item would
+require an additional lonejson primitive. Tool results are bounded by
+`max_result_items`; when a result is truncated it includes `truncated=true`.
+Moving an item into `in_process` respects the board's WIP limit and reports
+`ok=false` with `code="wip_limit_exceeded"` as a normal structured tool result,
+not as a transport failure.
+
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and
