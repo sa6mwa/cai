@@ -28,10 +28,27 @@ typedef struct read_state {
 } read_state;
 
 typedef struct write_state {
-  char buffer[256];
+  char buffer[8192];
   size_t length;
   int closed;
 } write_state;
+
+typedef struct mcp_source_state {
+  const char *text;
+  size_t offset;
+  size_t max_chunk;
+  int fail_after_reads;
+  int reads;
+  int closed;
+} mcp_source_state;
+
+typedef struct mcp_sink_state {
+  char buffer[16384];
+  size_t length;
+  int write_count;
+  int fail_after_writes;
+  int closed;
+} mcp_sink_state;
 
 typedef struct mcp_header_pair {
   const char *name;
@@ -564,6 +581,75 @@ static const char *test_mcp_response_header(mcp_header_state *state,
   return NULL;
 }
 
+static size_t test_mcp_source_read(void *context, void *buffer, size_t count,
+                                   cai_error *error) {
+  mcp_source_state *state;
+  size_t remaining;
+  size_t n;
+
+  state = (mcp_source_state *)context;
+  state->reads++;
+  if (state->fail_after_reads > 0 && state->reads > state->fail_after_reads) {
+    cai_set_error(error, CAI_ERR_TRANSPORT, "MCP source failed deliberately");
+    return 0U;
+  }
+  remaining = strlen(state->text) - state->offset;
+  n = remaining < count ? remaining : count;
+  if (state->max_chunk > 0U && n > state->max_chunk) {
+    n = state->max_chunk;
+  }
+  if (n > 0U) {
+    memcpy(buffer, state->text + state->offset, n);
+    state->offset += n;
+  }
+  return n;
+}
+
+static int test_mcp_source_reset(void *context, cai_error *error) {
+  mcp_source_state *state;
+
+  (void)error;
+  state = (mcp_source_state *)context;
+  state->offset = 0U;
+  state->reads = 0;
+  return CAI_OK;
+}
+
+static void test_mcp_source_close(void *context) {
+  mcp_source_state *state;
+
+  state = (mcp_source_state *)context;
+  state->closed = 1;
+}
+
+static int test_mcp_sink_write(void *context, const void *bytes, size_t count,
+                               cai_error *error) {
+  mcp_sink_state *state;
+
+  state = (mcp_sink_state *)context;
+  state->write_count++;
+  if (state->fail_after_writes > 0 &&
+      state->write_count > state->fail_after_writes) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "MCP sink failed deliberately");
+  }
+  if (state->length + count >= sizeof(state->buffer)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP sink test buffer overflow");
+  }
+  memcpy(state->buffer + state->length, bytes, count);
+  state->length += count;
+  state->buffer[state->length] = '\0';
+  return CAI_OK;
+}
+
+static void test_mcp_sink_close(void *context) {
+  mcp_sink_state *state;
+
+  state = (mcp_sink_state *)context;
+  state->closed = 1;
+}
+
 static void expect_valid_json(test_state *state, const char *name,
                               const char *json) {
   lonejson_json_value value;
@@ -779,7 +865,8 @@ static int test_tool_event(void *context, const cai_tool_event *event,
       rc = cai_tool_event_write_output(event, sink, error);
     }
     cai_sink_close(sink);
-    snprintf(state->output, sizeof(state->output), "%s", writer.buffer);
+    snprintf(state->output, sizeof(state->output), "%.*s",
+             (int)sizeof(state->output) - 1, writer.buffer);
     return rc;
   }
   return CAI_OK;
@@ -835,6 +922,25 @@ static int test_large_raw_tool(void *context, const char *arguments_json,
   }
   payload[sizeof(payload) - 1U] = '\0';
   return cai_sink_write(output, payload, sizeof(payload) - 1U, error);
+}
+
+static int test_large_weather_tool(void *context, const void *params,
+                                   void *result, cai_error *error) {
+  tool_weather_result *out;
+  char payload[512];
+  size_t i;
+
+  (void)context;
+  (void)params;
+  out = (tool_weather_result *)result;
+  for (i = 0U; i < sizeof(payload) - 1U; i++) {
+    payload[i] = (char)('a' + (i % 26U));
+  }
+  payload[sizeof(payload) - 1U] = '\0';
+  out->summary = cai_tool_result_strdup(payload, error);
+  return out->summary != NULL ? CAI_OK
+                              : cai_set_error(error, CAI_ERR_NOMEM,
+                                              "failed to allocate result");
 }
 
 static int test_error_tool(void *context, const char *arguments_json,
@@ -1268,6 +1374,10 @@ static int test_mcp_handle(cai_mcp_handler *handler,
 
   source = NULL;
   sink = NULL;
+  if (error != NULL) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+  }
   reader.text = body;
   reader.offset = 0U;
   reader.closed = 0;
@@ -1311,6 +1421,81 @@ static int test_mcp_handle(cai_mcp_handler *handler,
   return rc;
 }
 
+static int test_mcp_handle_stream(cai_mcp_handler *handler,
+                                  const mcp_header_pair *headers,
+                                  size_t header_count, const char *method,
+                                  const char *body, size_t max_source_chunk,
+                                  int fail_after_reads,
+                                  int fail_after_writes,
+                                  mcp_source_state *source_state_out,
+                                  mcp_sink_state *sink_state_out,
+                                  mcp_header_state *headers_out,
+                                  int *status_out, cai_error *error) {
+  mcp_source_state source_state;
+  mcp_sink_state sink_state;
+  cai_source_callbacks source_callbacks;
+  cai_sink_callbacks sink_callbacks;
+  cai_source *source;
+  cai_sink *sink;
+  cai_mcp_http_request request;
+  cai_mcp_http_response response;
+  int rc;
+
+  source = NULL;
+  sink = NULL;
+  if (error != NULL) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+  }
+  memset(&source_state, 0, sizeof(source_state));
+  source_state.text = body != NULL ? body : "";
+  source_state.max_chunk = max_source_chunk;
+  source_state.fail_after_reads = fail_after_reads;
+  source_callbacks.read = test_mcp_source_read;
+  source_callbacks.reset = test_mcp_source_reset;
+  source_callbacks.close = test_mcp_source_close;
+  source_callbacks.context = &source_state;
+  rc = cai_source_from_callbacks(&source_callbacks, &source, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&sink_state, 0, sizeof(sink_state));
+  sink_state.fail_after_writes = fail_after_writes;
+  sink_callbacks.write = test_mcp_sink_write;
+  sink_callbacks.close = test_mcp_sink_close;
+  sink_callbacks.context = &sink_state;
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, error);
+  if (rc != CAI_OK) {
+    cai_source_close(source);
+    return rc;
+  }
+  memset(headers_out, 0, sizeof(*headers_out));
+  headers_out->request = headers;
+  headers_out->request_count = header_count;
+  request.method = method != NULL ? method : "POST";
+  request.body = source;
+  request.header = test_mcp_header_get;
+  request.header_context = headers_out;
+  request.user_context = NULL;
+  response.status = 0;
+  response.body = sink;
+  response.set_header = test_mcp_header_set;
+  response.header_context = headers_out;
+  rc = cai_mcp_handler_handle_http(handler, &request, &response, error);
+  if (status_out != NULL) {
+    *status_out = response.status;
+  }
+  cai_sink_close(sink);
+  cai_source_close(source);
+  if (source_state_out != NULL) {
+    *source_state_out = source_state;
+  }
+  if (sink_state_out != NULL) {
+    *sink_state_out = sink_state;
+  }
+  return rc;
+}
+
 static void test_mcp_handler(test_state *state) {
   static const mcp_header_pair headers[] = {
       {"content-type", "application/json"},
@@ -1323,11 +1508,25 @@ static void test_mcp_handler(test_state *state) {
   static const mcp_header_pair no_version_headers[] = {
       {"content-type", "application/json"},
       {"accept", "application/json"}};
+  static const mcp_header_pair bad_content_type_headers[] = {
+      {"content-type", "text/plain"},
+      {"accept", "application/json"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+  static const mcp_header_pair bad_accept_headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "text/html"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+  static const mcp_header_pair bad_version_headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "application/json"},
+      {"mcp-protocol-version", "1900-01-01"}};
   const char *allowed_origins[1];
   cai_tool_registry *registry;
   cai_mcp_handler_config config;
   cai_mcp_handler *handler;
   write_state writer;
+  mcp_source_state source_state;
+  mcp_sink_state sink_state;
   mcp_header_state header_state;
   cai_error error;
   int status;
@@ -1341,6 +1540,12 @@ static void test_mcp_handler(test_state *state) {
              cai_tool_registry_register_lonejson(
                  registry, "weather", "Get weather", &tool_weather_map,
                  &tool_weather_result_map, test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "mcp_register_large_tool",
+             cai_tool_registry_register_lonejson(
+                 registry, "large_weather", "Get large weather",
+                 &tool_weather_map, &tool_weather_result_map,
+                 test_large_weather_tool, NULL, &error),
              CAI_OK);
   cai_mcp_handler_config_init(&config);
   allowed_origins[0] = "https://app.example";
@@ -1398,6 +1603,33 @@ static void test_mcp_handler(test_state *state) {
     test_fail(state, "mcp_tools_call_body", "tools/call response incomplete");
   }
   expect_valid_json(state, "mcp_tools_call_json", writer.buffer);
+  expect_int(state, "mcp_streamed_large_tool_call",
+             test_mcp_handle_stream(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "POST",
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"stream-1\","
+                 "\"method\":\"tools/call\",\"params\":{\"name\":"
+                 "\"large_weather\",\"arguments\":{\"city\":\"Goteborg\","
+                 "\"days\":1}}}",
+                 1U, 0, 0, &source_state, &sink_state, &header_state,
+                 &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamed_large_status", status, 200L);
+  if (source_state.reads < 20) {
+    test_fail(state, "mcp_streamed_large_source",
+              "MCP request source was not read in chunks");
+  }
+  if (sink_state.write_count < 6) {
+    test_fail(state, "mcp_streamed_large_sink",
+              "MCP response sink was not written in chunks");
+  }
+  if (strstr(sink_state.buffer, "\"id\":\"stream-1\"") == NULL ||
+      strstr(sink_state.buffer, "\"structuredContent\"") == NULL ||
+      strstr(sink_state.buffer, "\"isError\":false") == NULL) {
+    test_fail(state, "mcp_streamed_large_body",
+              "MCP streamed tool response was incomplete");
+  }
+  expect_valid_json(state, "mcp_streamed_large_json", sink_state.buffer);
   expect_int(state, "mcp_initialized_notification",
              test_mcp_handle(handler, headers,
                              sizeof(headers) / sizeof(headers[0]),
@@ -1433,6 +1665,174 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_reject_missing_version_status", status, 400L);
   expect_valid_json(state, "mcp_reject_missing_version_json", writer.buffer);
+
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.allow_legacy_no_version = 1;
+  config.tool_output_max_bytes = 16U;
+  expect_int(state, "mcp_limited_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_tool_output_limit",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"large_weather\",\"arguments\":{"
+                 "\"city\":\"Goteborg\",\"days\":1}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_tool_output_limit_status", status, 200L);
+  if (strstr(writer.buffer, "\"isError\":true") == NULL) {
+    test_fail(state, "mcp_tool_output_limit_body",
+              "tool output limit was not surfaced as MCP tool error");
+  }
+  expect_valid_json(state, "mcp_tool_output_limit_json", writer.buffer);
+
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.tool_output_max_bytes = 1024U;
+  config.request_max_bytes = 32U;
+  expect_int(state, "mcp_small_request_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_request_limit",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"ping\","
+                 "\"params\":{\"padding\":\"abcdefghijklmnopqrstuvwxyz\"}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_request_limit_status", status, 400L);
+  expect_valid_json(state, "mcp_request_limit_json", writer.buffer);
+
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.request_max_bytes = 1024U * 1024U;
+  expect_int(state, "mcp_final_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_bad_method",
+             test_mcp_handle_stream(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]), "GET",
+                 "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}", 0U, 0,
+                 0, &source_state, &sink_state, &header_state, &status,
+                 &error),
+             CAI_OK);
+  expect_int(state, "mcp_bad_method_status", status, 405L);
+  expect_valid_json(state, "mcp_bad_method_json", sink_state.buffer);
+  expect_int(state, "mcp_bad_content_type",
+             test_mcp_handle(
+                 handler, bad_content_type_headers,
+                 sizeof(bad_content_type_headers) /
+                     sizeof(bad_content_type_headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"ping\"}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_bad_content_type_status", status, 415L);
+  expect_valid_json(state, "mcp_bad_content_type_json", writer.buffer);
+  expect_int(state, "mcp_bad_accept",
+             test_mcp_handle(handler, bad_accept_headers,
+                             sizeof(bad_accept_headers) /
+                                 sizeof(bad_accept_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":9,"
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_bad_accept_status", status, 406L);
+  expect_valid_json(state, "mcp_bad_accept_json", writer.buffer);
+  expect_int(state, "mcp_bad_version",
+             test_mcp_handle(handler, bad_version_headers,
+                             sizeof(bad_version_headers) /
+                                 sizeof(bad_version_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":10,"
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_bad_version_status", status, 400L);
+  expect_valid_json(state, "mcp_bad_version_json", writer.buffer);
+  expect_int(state, "mcp_malformed_json",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":11,"
+                             "\"method\":\"ping\"",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_malformed_json_status", status, 400L);
+  expect_valid_json(state, "mcp_malformed_json_response", writer.buffer);
+  expect_int(state, "mcp_invalid_jsonrpc",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"1.0\",\"id\":12,"
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_invalid_jsonrpc_status", status, 400L);
+  expect_valid_json(state, "mcp_invalid_jsonrpc_json", writer.buffer);
+  expect_int(state, "mcp_unknown_method",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":13,"
+                             "\"method\":\"resources/list\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_unknown_method_status", status, 200L);
+  if (strstr(writer.buffer, "\"code\":-32601") == NULL) {
+    test_fail(state, "mcp_unknown_method_body",
+              "unknown method did not return JSON-RPC method-not-found");
+  }
+  expect_valid_json(state, "mcp_unknown_method_json", writer.buffer);
+  expect_int(state, "mcp_notification_no_body",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_notification_no_body_status", status, 202L);
+  expect_str(state, "mcp_notification_no_body_empty", writer.buffer, "");
+  expect_int(state, "mcp_invalid_tool_params",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":14,"
+                             "\"method\":\"tools/call\",\"params\":{\"name\":"
+                             "\"weather\"}}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"code\":-32602") == NULL) {
+    test_fail(state, "mcp_invalid_tool_params_body",
+              "invalid tool params did not return invalid-params error");
+  }
+  expect_valid_json(state, "mcp_invalid_tool_params_json", writer.buffer);
+  expect_int(state, "mcp_unknown_tool",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":15,"
+                             "\"method\":\"tools/call\",\"params\":{\"name\":"
+                             "\"missing\",\"arguments\":{}}}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"isError\":true") == NULL) {
+    test_fail(state, "mcp_unknown_tool_body",
+              "unknown tool did not surface as MCP tool error");
+  }
+  expect_valid_json(state, "mcp_unknown_tool_json", writer.buffer);
+  expect_int(state, "mcp_source_failure",
+             test_mcp_handle_stream(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "POST",
+                 "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"ping\"}", 1U, 3,
+                 0, &source_state, &sink_state, &header_state, &status,
+                 &error),
+             CAI_OK);
+  expect_int(state, "mcp_source_failure_status", status, 400L);
+  expect_valid_json(state, "mcp_source_failure_json", sink_state.buffer);
+  expect_int(state, "mcp_sink_failure",
+             test_mcp_handle_stream(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "POST",
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"sinkfail\","
+                 "\"method\":\"tools/call\",\"params\":{\"name\":"
+                 "\"large_weather\",\"arguments\":{\"city\":\"Goteborg\","
+                 "\"days\":1}}}",
+                 1U, 0, 4, &source_state, &sink_state, &header_state,
+                 &status, &error),
+             CAI_ERR_TRANSPORT);
 
   cai_mcp_handler_destroy(handler);
   cai_tool_registry_destroy(registry);
