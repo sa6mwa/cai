@@ -36,3 +36,81 @@ Current OpenRouter boundary:
 - OpenRouter Responses beta is stateless, so cai uses client-side history
   replay for multi-turn OpenRouter sessions. Server-side continuation remains
   the cai default for OpenAI.
+
+## MCP HTTP Test Server And Tool Presets
+
+Keep this sequence ordered. Refine each item into a tighter spec immediately
+before implementing that slice.
+
+- [ ] Add a tiny HTTP test server for MCP Streamable HTTP.
+  - Compile it only as a test/example utility; never link it into `libcai`.
+  - Serve the existing `cai_mcp_handler` on `/mcp`.
+  - Bind to `127.0.0.1`.
+  - Use `18765` as the manual default port because common local ports such as
+    `8080` are often occupied on this host.
+  - E2E tests should bind port `0`, read/report the selected port, and avoid
+    fixed-port conflicts.
+  - Keep it plain HTTP with no authentication.
+  - Keep MCP origin validation enabled.
+
+- [ ] Add MCP compliance/e2e coverage using the official MCP Inspector CLI.
+  - Prefer the official `@modelcontextprotocol/inspector` CLI against the test
+    server's Streamable HTTP endpoint.
+  - Cover at minimum `initialize`, `tools/list`, and `tools/call`.
+  - Use this to validate the HTTP route boundary, not just direct
+    `cai_mcp_handler_handle_http()` calls.
+  - If the Inspector CLI path is brittle in CI/local containers, evaluate the
+    official MCP TypeScript SDK client as the fallback conformance client.
+
+- [ ] Add a production reverse-geolocation tool preset.
+  - Public header: `include/cai/tools/revgeo.h`.
+  - Implementation: `src/tools/revgeo.c`.
+  - Register as a normal cai typed tool; MCP exposure remains just a registry
+    concern.
+  - First release should work out of the box with a free unauthenticated public
+    JSON API, matching the current example-level reverse-geocoding approach.
+  - API-key/authenticated provider variants can come later.
+  - Tool should accept location/coordinate input shape decided in the slice
+    spec and return structured location metadata suitable for downstream
+    weather tools.
+
+- [ ] Add a production todo/kanban tool preset.
+  - Public header: `include/cai/tools/todo.h`.
+  - Implementation: `src/tools/todo.c`.
+  - Register as a normal cai typed tool; MCP exposure remains just a registry
+    concern.
+  - Persist active boards/lists in one JSON file.
+  - Persist the done archive in a separate JSON file.
+  - Both paths are configurable in the tool constructor/config.
+  - Support multiple kanban boards.
+  - Active statuses are `todo` and `in_process`.
+  - Done items move to the separate done archive.
+  - Each board can have an optional WIP limit for the `in_process` lane.
+  - Default WIP limit is unset.
+  - Moving an item into `in_process` must be denied with a structured tool
+    result when the board's WIP limit would be exceeded.
+  - Tool-generated opaque IDs are the default. The agent discovers IDs by
+    querying/listing boards, then uses those IDs for follow-up operations.
+  - IDs should be unique across active boards and the done archive. Prefer a
+    time-based, conflict-resistant ID shape such as xid/ULID-style text, while
+    keeping the exact implementation C89/POSIX-friendly.
+  - Initial operation surface to refine before implementation:
+    create board, configure WIP limit, add item, list/query board, move item,
+    archive/complete item, and query current work.
+
+- [ ] Add an example MCP server.
+  - Directory: `examples/mcp-server/`.
+  - Reuse the tiny HTTP server substrate or a small example-specific wrapper;
+    do not add an HTTP server dependency to `libcai`.
+  - Serve these tools through MCP:
+    reverse geolocation preset, todo preset, SMHI weather example tool, and
+    Linux clipboard example tool.
+  - SMHI weather can remain example-only and should use the reverse-geolocation
+    preset where useful.
+  - Clipboard tool is Linux/X11-only and example-only.
+  - Enable the clipboard tool by default only when `xclip` is found in `PATH`.
+  - Clipboard implementation must pipe the tool input to
+    `xclip -selection clipboard` via `fork`/`exec` or `posix_spawn`, not via a
+    shell.
+  - Clipboard input must be size-limited and documented as local-machine side
+    effect behavior.
