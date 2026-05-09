@@ -2172,6 +2172,18 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_history_2\",\"usage\":{\"input_tokens\":20,"
       "\"output_tokens\":3,\"total_tokens\":23}}}\n\n";
+  static const char stream_client_history_first_body[] =
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"client streamed first answer\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_client_history_1\",\"usage\":{\"input_tokens\":8,"
+      "\"output_tokens\":4,\"total_tokens\":12}}}\n\n";
+  static const char stream_client_history_second_body[] =
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"client streamed second answer\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_client_history_2\",\"usage\":{\"input_tokens\":18,"
+      "\"output_tokens\":5,\"total_tokens\":23}}}\n\n";
   static char stream_openrouter_metadata_body[1024];
   static char stream_tool_body[1024];
   static char stream_tool_reasoning_body[1024];
@@ -2280,6 +2292,17 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "history stream first") != NULL &&
           strstr(request, "previous_response_id") == NULL) {
         return stream_history_first_body;
+      }
+      if (strstr(request, "client stream history second") != NULL &&
+          strstr(request, "client stream history first") != NULL &&
+          strstr(request, "client streamed first answer") != NULL &&
+          strstr(request, "previous_response_id") == NULL) {
+        return stream_client_history_second_body;
+      }
+      if (strstr(request, "client stream history first") != NULL &&
+          strstr(request, "client stream history second") == NULL &&
+          strstr(request, "previous_response_id") == NULL) {
+        return stream_client_history_first_body;
       }
       if (strstr(request, "openrouter metadata stream") != NULL) {
         if (stream_openrouter_metadata_body[0] == '\0') {
@@ -5732,6 +5755,133 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   }
 }
 
+static void test_stream_client_history_captures_output(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_source *history_source;
+  write_state writer;
+  cai_error error;
+  char history_json[2048];
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_client_history_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_client_history_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_client_history_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  history_source = NULL;
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  memset(&writer, 0, sizeof(writer));
+
+  expect_int(state, "stream_client_history_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_client_history_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_session_new",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_client_history_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_client_history_add_first",
+             cai_session_add_user_text(session, "client stream history first",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_first",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_client_history_first_value", writer.buffer,
+             "client streamed first answer");
+  cai_sink_close(sink);
+  sink = NULL;
+
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_client_history_sink_create_second",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_client_history_add_second",
+             cai_session_add_user_text(session, "client stream history second",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_second",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_client_history_second_value", writer.buffer,
+             "client streamed second answer");
+  expect_int(state, "stream_client_history_export_source",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "stream_client_history_export_read",
+                       history_source, history_json, sizeof(history_json),
+                       &error)) {
+    if (strstr(history_json, "client stream history first") == NULL ||
+        strstr(history_json, "client streamed first answer") == NULL ||
+        strstr(history_json, "client stream history second") == NULL ||
+        strstr(history_json, "client streamed second answer") == NULL) {
+      test_fail(state, "stream_client_history_export_value",
+                "client stream history missed streamed transcript text");
+    }
+  }
+
+  cai_source_close(history_source);
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_client_history_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_client_history_mock", "mock child failed");
+  }
+}
+
 static void test_local_history_opt_in(test_state *state) {
   cai_client_config client_config;
   cai_agent_config agent_config;
@@ -6271,6 +6421,7 @@ int main(void) {
   test_session_stream_auto_tool_output_max_bytes(&state);
   test_stream_sse_event_limit(&state);
   test_stream_history_preserves_pretty_json(&state);
+  test_stream_client_history_captures_output(&state);
   test_local_history_opt_in(&state);
   test_session_resume_and_history_import(&state);
   test_session_state_validation(&state);

@@ -548,8 +548,10 @@ static int run_openrouter_stream_tool_regression(void) {
       "You are a strict OpenRouter streaming tool regression assistant. When "
       "the user asks for an integration lookup, call integration_lookup "
       "exactly once. After the tool result, answer with exactly: "
-      "OPENROUTER_STREAM_TOOL_OK report=<report> city=<city> code=<code>. "
-      "When asked to recall the code later, answer with only the code.";
+      "OPENROUTER_STREAM_TOOL_OK assistant_phrase="
+      "streamed-assistant-memory-271 report=<report> city=<city> code=<code>. "
+      "When asked to recall values later, answer with only the requested "
+      "values.";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
   agent_config.max_output_tokens = 128;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
@@ -595,6 +597,7 @@ static int run_openrouter_stream_tool_regression(void) {
   if (tool_state.called == 0 || event_state.starts != 1 ||
       event_state.outputs != 1 ||
       strstr(writer.buffer, "OPENROUTER_STREAM_TOOL_OK") == NULL ||
+      strstr(writer.buffer, "streamed-assistant-memory-271") == NULL ||
       strstr(writer.buffer, "openrouter-tool-verified") == NULL ||
       strstr(writer.buffer, "Gothenburg") == NULL ||
       strstr(writer.buffer, "openrouter-stream-tool-code-514") == NULL) {
@@ -608,8 +611,8 @@ static int run_openrouter_stream_tool_regression(void) {
   }
   rc = cai_session_send_text(
       session,
-      "Recall the exact code value from the previous streaming integration "
-      "lookup.",
+      "Recall the exact code value and assistant_phrase value from your "
+      "previous streaming answer.",
       &response, &error);
   if (rc != CAI_OK) {
     print_error("openrouter stream tool continuation", rc, &error);
@@ -617,9 +620,11 @@ static int run_openrouter_stream_tool_regression(void) {
   }
   answer = cai_response_output_text(response);
   if (answer == NULL ||
-      strstr(answer, "openrouter-stream-tool-code-514") == NULL) {
+      strstr(answer, "openrouter-stream-tool-code-514") == NULL ||
+      strstr(answer, "streamed-assistant-memory-271") == NULL) {
     fprintf(stderr,
-            "openrouter stream tool continuation did not preserve code:\n%s\n",
+            "openrouter stream tool continuation did not preserve streamed "
+            "assistant text:\n%s\n",
             answer != NULL ? answer : "(null)");
     rc = CAI_ERR_PROTOCOL;
     goto done;

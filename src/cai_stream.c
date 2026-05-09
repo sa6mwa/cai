@@ -378,6 +378,22 @@ static int cai_sse_write_output_delta(cai_sse_state *state,
   return cai_sink_write(state->sinks.output_text, delta, length, NULL);
 }
 
+static int cai_sse_emit_output_text_delta(cai_sse_state *state,
+                                          const cai_stream_delta_doc *doc) {
+  int rc;
+
+  rc = CAI_OK;
+  if (state->sinks.output_text_delta != NULL) {
+    rc = state->sinks.output_text_delta(
+        state->sinks.output_text_context, doc->item_id, (int)doc->output_index,
+        doc->delta, NULL);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sse_write_output_delta(state, doc->delta);
+  }
+  return rc;
+}
+
 static int cai_sse_emit_function_call_delta(cai_sse_state *state,
                                             const cai_stream_delta_doc *doc) {
   if (state->sinks.function_call_arguments_delta == NULL ||
@@ -420,7 +436,7 @@ static int cai_sse_emit_doc(cai_sse_state *state,
   if (doc->type != NULL &&
       strcmp(doc->type, "response.output_text.delta") == 0 &&
       doc->delta != NULL) {
-    rc = cai_sse_write_output_delta(state, doc->delta);
+    rc = cai_sse_emit_output_text_delta(state, doc);
   } else if (doc->type != NULL &&
              (strcmp(doc->type, "response.reasoning_summary_text.delta") ==
                   0 ||

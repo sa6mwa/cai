@@ -11,6 +11,10 @@ typedef struct cai_tool_output_capture {
   lonejson_spooled output;
 } cai_tool_output_capture;
 
+typedef struct cai_agent_json_spooled_doc {
+  lonejson_spooled value;
+} cai_agent_json_spooled_doc;
+
 typedef struct cai_history_sink_context {
   lonejson_spooled *spool;
 } cai_history_sink_context;
@@ -19,6 +23,13 @@ typedef struct cai_lonejson_cai_sink_context {
   cai_sink *sink;
   cai_error *error;
 } cai_lonejson_cai_sink_context;
+
+typedef struct cai_agent_json_builder_sink_state {
+  cai_json_builder *builder;
+  size_t skip;
+  int hold_last;
+  char last;
+} cai_agent_json_builder_sink_state;
 
 typedef struct cai_stream_tool_call_list {
   cai_response_tool_call *items;
@@ -29,6 +40,7 @@ typedef struct cai_stream_tool_call_list {
 typedef struct cai_stream_tool_capture {
   const cai_stream_sinks *user_sinks;
   cai_stream_tool_call_list *tool_calls;
+  lonejson_spooled *output_text;
 } cai_stream_tool_capture;
 
 typedef struct cai_spooled_record_reader {
@@ -38,6 +50,12 @@ typedef struct cai_spooled_record_reader {
   size_t length;
   int eof;
 } cai_spooled_record_reader;
+
+static const lonejson_field cai_agent_json_spooled_fields[] = {
+    LONEJSON_FIELD_STRING_STREAM_REQ(cai_agent_json_spooled_doc, value,
+                                     "value")};
+LONEJSON_MAP_DEFINE(cai_agent_json_spooled_map, cai_agent_json_spooled_doc,
+                    cai_agent_json_spooled_fields);
 
 typedef struct cai_spooled_reader_context {
   lonejson_spooled cursor;
@@ -702,6 +720,54 @@ static lonejson_status cai_agent_spool_sink(void *user, const void *data,
   return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
 }
 
+static lonejson_status cai_agent_json_builder_sink(void *user,
+                                                   const void *data,
+                                                   size_t len,
+                                                   lonejson_error *error) {
+  cai_agent_json_builder_sink_state *state;
+  const char *bytes;
+  size_t offset;
+  size_t available;
+  cai_error sink_error;
+  int rc;
+
+  (void)error;
+  state = (cai_agent_json_builder_sink_state *)user;
+  bytes = (const char *)data;
+  offset = 0U;
+  if (state->skip > 0U) {
+    available = len < state->skip ? len : state->skip;
+    offset += available;
+    state->skip -= available;
+  }
+  cai_error_init(&sink_error);
+  available = len - offset;
+  if (available > 0U && state->hold_last) {
+    rc = cai_json_builder_append(state->builder, &state->last, 1U,
+                                 &sink_error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(&sink_error);
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
+    state->hold_last = 0;
+  }
+  if (available > 1U) {
+    rc = cai_json_builder_append(state->builder, bytes + offset,
+                                 available - 1U, &sink_error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(&sink_error);
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
+    offset += available - 1U;
+  }
+  if (offset < len) {
+    state->last = bytes[offset];
+    state->hold_last = 1;
+  }
+  cai_error_cleanup(&sink_error);
+  return LONEJSON_STATUS_OK;
+}
+
 static int cai_stream_tool_calls_spool(cai_session *session,
                                        const cai_stream_tool_call_list *calls,
                                        lonejson_spooled *out,
@@ -772,6 +838,110 @@ static int cai_stream_tool_calls_spool(cai_session *session,
   return CAI_OK;
 }
 
+static int cai_agent_json_builder_spooled_string(cai_json_builder *builder,
+                                                 const lonejson_spooled *value,
+                                                 cai_error *error) {
+  cai_agent_json_spooled_doc doc;
+  cai_agent_json_builder_sink_state sink_state;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (value == NULL) {
+    return cai_json_builder_lit(builder, "null", error);
+  }
+  doc.value = *value;
+  sink_state.builder = builder;
+  sink_state.skip = sizeof("{\"value\":") - 1U;
+  sink_state.hold_last = 0;
+  sink_state.last = '\0';
+  lonejson_error_init(&json_error);
+  status = lonejson_serialize_sink(&cai_agent_json_spooled_map, &doc,
+                                   cai_agent_json_builder_sink, &sink_state,
+                                   NULL, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to serialize streamed output text",
+                                json_error.message);
+  }
+  if (sink_state.skip != 0U || !sink_state.hold_last ||
+      sink_state.last != '}') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "lonejson produced an unexpected string wrapper");
+  }
+  return CAI_OK;
+}
+
+static int cai_stream_output_text_spool(cai_session *session,
+                                        const lonejson_spooled *text,
+                                        lonejson_spooled *out,
+                                        size_t *out_len,
+                                        cai_error *error) {
+  cai_json_builder builder;
+  lonejson_error json_error;
+  int rc;
+
+  if (out_len != NULL) {
+    *out_len = 0U;
+  }
+  cai_history_init_spooled(session, out);
+  if (text == NULL || lonejson_spooled_size(text) == 0U) {
+    return CAI_OK;
+  }
+  lonejson_error_init(&json_error);
+  memset(&builder, 0, sizeof(builder));
+  builder.sink = cai_agent_spool_sink;
+  builder.sink_user = out;
+  builder.sink_error = &json_error;
+  rc = cai_json_builder_lit(
+      &builder,
+      "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":",
+      error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_json_builder_spooled_string(&builder, text, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_json_builder_lit(&builder, "}]}", error);
+  }
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(out);
+    return rc;
+  }
+  if (out_len != NULL) {
+    *out_len = lonejson_spooled_size(out);
+  }
+  return CAI_OK;
+}
+
+static int cai_stream_capture_output_text(void *context, const char *item_id,
+                                          int output_index, const char *delta,
+                                          cai_error *error) {
+  cai_stream_tool_capture *capture;
+  lonejson_error json_error;
+  int rc;
+
+  (void)item_id;
+  (void)output_index;
+  capture = (cai_stream_tool_capture *)context;
+  rc = CAI_OK;
+  if (capture != NULL && capture->output_text != NULL && delta != NULL) {
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_append(capture->output_text, delta, strlen(delta),
+                                &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to spool streamed output text",
+                                json_error.message);
+    }
+  }
+  if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
+      capture->user_sinks->output_text_delta != NULL) {
+    rc = capture->user_sinks->output_text_delta(
+        capture->user_sinks->output_text_context, item_id, output_index, delta,
+        error);
+  }
+  return rc;
+}
+
 static int cai_stream_capture_tool_delta(void *context, const char *item_id,
                                          int output_index, const char *delta,
                                          cai_error *error) {
@@ -813,15 +983,22 @@ static int cai_stream_capture_tool_done(void *context, const char *item_id,
 static int cai_session_after_stream_tool_calls(
     cai_session *session, const lonejson_spooled *pending_items,
     int has_pending_items, const char *response_id, const cai_token_usage *usage,
-    const cai_stream_tool_call_list *tool_calls, cai_error *error) {
+    const cai_stream_tool_call_list *tool_calls,
+    const lonejson_spooled *output_text, cai_error *error) {
   lonejson_spooled call_items;
+  lonejson_spooled output_items;
   size_t call_items_len;
+  size_t output_items_len;
   int has_call_items;
+  int has_output_items;
   int rc;
 
   memset(&call_items, 0, sizeof(call_items));
+  memset(&output_items, 0, sizeof(output_items));
   call_items_len = 0U;
+  output_items_len = 0U;
   has_call_items = 0;
+  has_output_items = 0;
   rc = cai_session_remember_response_id(session, response_id, error);
   if (rc == CAI_OK && !cai_token_usage_is_empty(usage)) {
     CAI_SESSION_IMPL(session)->last_usage = *usage;
@@ -843,8 +1020,22 @@ static int cai_session_after_stream_tool_calls(
   if (rc == CAI_OK && call_items_len > 0U) {
     rc = cai_history_append_spooled(session, &call_items, error);
   }
+  if (rc == CAI_OK && output_text != NULL &&
+      lonejson_spooled_size(output_text) > 0U) {
+    rc = cai_stream_output_text_spool(session, output_text, &output_items,
+                                     &output_items_len, error);
+    if (rc == CAI_OK) {
+      has_output_items = 1;
+    }
+  }
+  if (rc == CAI_OK && output_items_len > 0U) {
+    rc = cai_history_append_spooled(session, &output_items, error);
+  }
   if (has_call_items) {
     lonejson_spooled_cleanup(&call_items);
+  }
+  if (has_output_items) {
+    lonejson_spooled_cleanup(&output_items);
   }
   return rc;
 }
@@ -2304,7 +2495,10 @@ static int cai_session_stream_once(cai_session *session,
   cai_stream_sinks effective_sinks;
   char *response_id;
   lonejson_spooled pending_items;
+  lonejson_spooled output_text;
   int has_pending_items;
+  int has_output_text;
+  int capture_stream;
   cai_token_usage usage;
   int rc;
 
@@ -2317,14 +2511,30 @@ static int cai_session_stream_once(cai_session *session,
                          "required");
   }
   effective_sinks = *sinks;
-  if (tool_calls != NULL) {
+  capture_stream =
+      tool_calls != NULL ||
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  has_output_text = 0;
+  if (capture_stream) {
     memset(&capture, 0, sizeof(capture));
     capture.user_sinks = sinks;
     capture.tool_calls = tool_calls;
-    effective_sinks.function_call_arguments_delta =
-        cai_stream_capture_tool_delta;
-    effective_sinks.function_call_arguments_done = cai_stream_capture_tool_done;
-    effective_sinks.function_call_context = &capture;
+    if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+        CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+      cai_history_init_spooled(session, &output_text);
+      has_output_text = 1;
+      capture.output_text = &output_text;
+      effective_sinks.output_text_delta = cai_stream_capture_output_text;
+      effective_sinks.output_text_context = &capture;
+    }
+    if (tool_calls != NULL) {
+      effective_sinks.function_call_arguments_delta =
+          cai_stream_capture_tool_delta;
+      effective_sinks.function_call_arguments_done =
+          cai_stream_capture_tool_done;
+      effective_sinks.function_call_context = &capture;
+    }
   }
   params = NULL;
   response_id = NULL;
@@ -2343,12 +2553,11 @@ static int cai_session_stream_once(cai_session *session,
         &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
-    if (tool_calls != NULL && tool_calls->count > 0U &&
-        CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-            CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+        CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_session_after_stream_tool_calls(
           session, &pending_items, has_pending_items, response_id, &usage,
-          tool_calls, error);
+          tool_calls, &output_text, error);
     } else {
       rc = cai_session_after_stream(session, &pending_items, has_pending_items,
                                     response_id, &usage, error);
@@ -2358,6 +2567,9 @@ static int cai_session_stream_once(cai_session *session,
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
     lonejson_spooled_cleanup(&pending_items);
+  }
+  if (has_output_text) {
+    lonejson_spooled_cleanup(&output_text);
   }
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
@@ -2447,19 +2659,30 @@ static int cai_session_stream_tool_round(
   cai_stream_sinks effective_sinks;
   char *response_id;
   lonejson_spooled pending_items;
+  lonejson_spooled output_text;
   cai_token_usage usage;
   int has_pending_items;
+  int has_output_text;
   int rc;
 
   params = NULL;
   response_id = NULL;
   memset(&pending_items, 0, sizeof(pending_items));
   has_pending_items = 0;
+  has_output_text = 0;
   memset(&usage, 0, sizeof(usage));
   effective_sinks = *sinks;
   memset(&capture, 0, sizeof(capture));
   capture.user_sinks = sinks;
   capture.tool_calls = output_calls;
+  if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+      CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    cai_history_init_spooled(session, &output_text);
+    has_output_text = 1;
+    capture.output_text = &output_text;
+    effective_sinks.output_text_delta = cai_stream_capture_output_text;
+    effective_sinks.output_text_context = &capture;
+  }
   effective_sinks.function_call_arguments_delta = cai_stream_capture_tool_delta;
   effective_sinks.function_call_arguments_done = cai_stream_capture_tool_done;
   effective_sinks.function_call_context = &capture;
@@ -2482,7 +2705,7 @@ static int cai_session_stream_tool_round(
         CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_session_after_stream_tool_calls(
           session, &pending_items, has_pending_items, response_id, &usage,
-          output_calls, error);
+          output_calls, &output_text, error);
     } else {
       rc = cai_session_after_stream(session, &pending_items, has_pending_items,
                                     response_id, &usage, error);
@@ -2492,6 +2715,9 @@ static int cai_session_stream_tool_round(
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
     lonejson_spooled_cleanup(&pending_items);
+  }
+  if (has_output_text) {
+    lonejson_spooled_cleanup(&output_text);
   }
   return rc;
 }
