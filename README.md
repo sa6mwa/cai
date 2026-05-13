@@ -463,10 +463,10 @@ directories and files are created at registration and operation time.
 The todo store is an object-framed JSON record stream, not a single giant JSON
 document. Each board or item is one JSON object, and cai reads and rewrites the
 store one record at a time under an advisory `fcntl` lock. That shape is
-intentional: current lonejson releases stream object-framed records directly,
-while streaming and rewriting a single-document JSON array item-by-item would
-require an additional lonejson primitive. Tool results are bounded by
-`max_result_items`; when a result is truncated it includes `truncated=true`.
+intentional: lonejson can now stream selected arrays for read-side cursors, but
+cai still needs a streaming array rewriter before a single-document todo store
+can be mutated without materializing the whole file. Tool results are bounded
+by `max_result_items`; when a result is truncated it includes `truncated=true`.
 Moving an item into `in_process` respects the board's WIP limit and reports
 `ok=false` with `code="wip_limit_exceeded"` as a normal structured tool result,
 not as a transport failure.

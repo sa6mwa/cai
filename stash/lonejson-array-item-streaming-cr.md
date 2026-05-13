@@ -1,4 +1,10 @@
-# lonejson CR: Streaming JSON Array Item Reader/Rewriter
+# lonejson CR: Streaming JSON Array Rewriter
+
+Status: partially addressed by liblockdc 0.7.0/lonejson. The selected-array
+read cursor now exists (`lonejson_array_stream_open_*`,
+`lonejson_array_stream_next`, and `lonejson_array_stream_next_value`), with v1
+direct root object-key selection. The remaining cai blocker is the optional
+streaming rewriter described below.
 
 ## Problem
 
@@ -16,34 +22,35 @@ document with arrays, for example:
 ```
 
 Current lonejson supports object-framed streams with `lonejson_stream_next()`,
-and it supports semantic value visitors with `lonejson_visit_value_*()`. Those
-are enough to build a true streaming store if the file is represented as
-consecutive JSON object records. They are not enough to conveniently stream
-one item at a time from an array inside a single JSON document while also
-preserving and re-emitting the surrounding document.
+selected-array read cursors with `lonejson_array_stream_next*()`, and semantic
+value visitors with `lonejson_visit_value_*()`. Those are enough to build a
+true streaming store if the file is represented as consecutive JSON object
+records, and enough for read-only selected-array scans. They are not enough to
+rewrite one item at a time from an array inside a single JSON document while
+also preserving and re-emitting the surrounding document.
 
-## Requested Feature
+## Landed Feature
 
-Add an API that can stream array elements from a selected path in a JSON
-document without materializing the whole array or root document.
+liblockdc 0.7.0/lonejson added APIs that can stream array elements from a
+selected path in a JSON document without materializing the whole array or root
+document.
 
-Desired capabilities:
+Landed capabilities:
 
 - Parse from `FILE *`, fd, path, or `lonejson_reader_fn`.
-- Select an array by a simple object-key path such as `boards` or
-  `boards.items`.
+- Select a root array with `""` or one direct root object key such as `boards`
+  or `items`. Dotted paths and implicit fan-out are intentionally not v1.
 - Yield each element as either:
   - a mapped struct through a `lonejson_map`, or
-  - a `lonejson_json_value`/reader for callers that want to pass through or
-    transform the item.
+  - a captured `lonejson_json_value`.
 - Enforce normal lonejson parse options and limits.
 - Preserve bounded memory: only the current element may be buffered/spooled.
 - Surface duplicate-key, malformed JSON, type mismatch, and overflow errors
   with normal `lonejson_error` detail.
 
-## Optional Rewriter
+## Remaining Rewriter
 
-A paired streaming rewriter would be very useful:
+A paired streaming rewriter is still needed:
 
 - Copy all unchanged JSON from input to output.
 - For each selected array element, call a callback with the parsed item.
