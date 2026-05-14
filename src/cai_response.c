@@ -233,9 +233,9 @@ typedef struct cai_response_request_state {
 
 struct cai_response_request_upload {
   cai_response_request_state state;
-  lonejson_generator generator;
+  lonejson_curl_upload curl;
   curl_off_t size;
-  int generator_started;
+  int curl_started;
 };
 
 static int cai_spooled_copy_range(const lonejson_spooled *src,
@@ -3156,17 +3156,16 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
     cai_response_request_upload_close(upload);
     return rc;
   }
-  status = lonejson_generator_init(&upload->generator,
-                                   &cai_response_request_map,
-                                   &upload->state.doc, NULL);
+  status = lonejson_curl_upload_init(&upload->curl, &cai_response_request_map,
+                                     &upload->state.doc, NULL);
   if (status != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "failed to prepare response request upload",
-                              upload->generator.error.message);
+                              upload->curl.generator.error.message);
     cai_response_request_upload_close(upload);
     return rc;
   }
-  upload->generator_started = 1;
+  upload->curl_started = 1;
   *out = upload;
   return CAI_OK;
 }
@@ -3174,28 +3173,12 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
 size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
                                         void *userdata) {
   cai_response_request_upload *upload;
-  lonejson_status status;
-  size_t capacity;
-  size_t out_len;
-  int out_eof;
 
   upload = (cai_response_request_upload *)userdata;
   if (upload == NULL) {
     return CURL_READFUNC_ABORT;
   }
-  if (size != 0U && nmemb > ((size_t)-1 / size)) {
-    return CURL_READFUNC_ABORT;
-  }
-  capacity = size * nmemb;
-  out_len = 0U;
-  out_eof = 0;
-  status = lonejson_generator_read(&upload->generator, (unsigned char *)ptr,
-                                   capacity, &out_len, &out_eof);
-  if (status != LONEJSON_STATUS_OK) {
-    return CURL_READFUNC_ABORT;
-  }
-  (void)out_eof;
-  return out_len;
+  return lonejson_curl_read_callback(ptr, size, nmemb, &upload->curl);
 }
 
 curl_off_t cai_response_request_upload_size(
@@ -3210,9 +3193,9 @@ void cai_response_request_upload_close(cai_response_request_upload *upload) {
   if (upload == NULL) {
     return;
   }
-  if (upload->generator_started) {
-    lonejson_generator_cleanup(&upload->generator);
-    upload->generator_started = 0;
+  if (upload->curl_started) {
+    lonejson_curl_upload_cleanup(&upload->curl);
+    upload->curl_started = 0;
   }
   cai_response_request_state_cleanup(&upload->state);
   cai_free_mem(NULL, upload);
