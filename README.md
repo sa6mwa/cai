@@ -38,7 +38,7 @@ example layers settle.
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under
   `share/doc/libcai/`.
-- Dependency mode defaults to `pkt`: the build uses the official
+- Dependency mode defaults to `cpkt`: the build uses the official
   `github.com/sa6mwa/c.pkt.systems` release tarball for the selected target to
   provide curl, OpenSSL, nghttp2, libssh2, zlib, and the native dependency
   stack. It also uses official `lonejson` and `libpslog` release artifacts for
@@ -47,9 +47,9 @@ example layers settle.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
   libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. `auto` chooses host
   only when all required host pieces are discoverable, otherwise it falls back
-  to `pkt`.
+  to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
-  `pkt` mode records the official `c.pkt.systems` dependency URL and checksum;
+  `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.

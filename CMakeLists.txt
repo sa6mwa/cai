@@ -20,16 +20,16 @@ option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
-option(CAI_USE_LOCKDC_SDK "Deprecated alias for CAI_DEPENDENCY_MODE=pkt." OFF)
+option(CAI_USE_LOCKDC_SDK "Deprecated alias for CAI_DEPENDENCY_MODE=cpkt." OFF)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
     CACHE PATH "Downloaded third-party dependency cache.")
-set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
-    "Dependency mode: pkt, host, or auto.")
-set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS pkt host auto)
+set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
+    "Dependency mode: cpkt, host, or auto.")
+set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 set(CAI_LONEJSON_VERSION "0.14.0")
@@ -41,21 +41,27 @@ endif()
 
 if(CAI_USE_LOCKDC_SDK)
   message(WARNING
-    "CAI_USE_LOCKDC_SDK is deprecated; using CAI_DEPENDENCY_MODE=pkt.")
-  set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
-      "Dependency mode: pkt, host, or auto." FORCE)
+    "CAI_USE_LOCKDC_SDK is deprecated; using CAI_DEPENDENCY_MODE=cpkt.")
+  set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
+      "Dependency mode: cpkt, host, or auto." FORCE)
 endif()
 if(CAI_DEPENDENCY_MODE STREQUAL "lockdc")
   message(WARNING
-    "CAI_DEPENDENCY_MODE=lockdc is deprecated; use pkt. Treating it as pkt.")
-  set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
-      "Dependency mode: pkt, host, or auto." FORCE)
+    "CAI_DEPENDENCY_MODE=lockdc is deprecated; use cpkt. Treating it as cpkt.")
+  set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
+      "Dependency mode: cpkt, host, or auto." FORCE)
 endif()
-if(NOT CAI_DEPENDENCY_MODE STREQUAL "pkt" AND
+if(CAI_DEPENDENCY_MODE STREQUAL "pkt")
+  message(WARNING
+    "CAI_DEPENDENCY_MODE=pkt is deprecated; use cpkt. Treating it as cpkt.")
+  set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
+      "Dependency mode: cpkt, host, or auto." FORCE)
+endif()
+if(NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt" AND
    NOT CAI_DEPENDENCY_MODE STREQUAL "host" AND
    NOT CAI_DEPENDENCY_MODE STREQUAL "auto")
   message(FATAL_ERROR
-    "CAI_DEPENDENCY_MODE must be one of: pkt, host, auto.")
+    "CAI_DEPENDENCY_MODE must be one of: cpkt, host, auto.")
 endif()
 
 if(CAI_TARGET_ID STREQUAL "")
@@ -149,7 +155,7 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
      _cai_auto_lonejson_library)
     set(CAI_RESOLVED_DEPENDENCY_MODE "host")
   else()
-    set(CAI_RESOLVED_DEPENDENCY_MODE "pkt")
+    set(CAI_RESOLVED_DEPENDENCY_MODE "cpkt")
   endif()
   unset(_cai_auto_lonejson_include CACHE)
   unset(_cai_auto_pslog_include CACHE)
@@ -187,7 +193,7 @@ function(cai_download_tarball name url archive prefix sha256 stamp_file)
   endif()
 endfunction()
 
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256)
   set(CAI_C_PKT_SYSTEMS_NAME
       "c.pkt.systems-${CAI_C_PKT_SYSTEMS_VERSION}-${CAI_TARGET_ID}")
@@ -235,15 +241,15 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
     "${CAI_PSLOG_PKG_SHA256}"
     "${CAI_PSLOG_PREFIX}/include/pslog.h")
   if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
-    set(_cai_pkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.dylib")
+    set(_cai_cpkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.dylib")
     set(_cai_lonejson_library "${CAI_LONEJSON_PREFIX}/lib/liblonejson.dylib")
   else()
-    set(_cai_pkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.so")
+    set(_cai_cpkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.so")
     set(_cai_lonejson_library "${CAI_LONEJSON_PREFIX}/lib/liblonejson.so")
   endif()
   set(CURL_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include" CACHE PATH "curl include directory" FORCE)
-  set(CURL_LIBRARY "${_cai_pkt_curl_library}" CACHE FILEPATH "curl library" FORCE)
-  set(CURL_LIBRARY_RELEASE "${_cai_pkt_curl_library}" CACHE FILEPATH "curl release library" FORCE)
+  set(CURL_LIBRARY "${_cai_cpkt_curl_library}" CACHE FILEPATH "curl library" FORCE)
+  set(CURL_LIBRARY_RELEASE "${_cai_cpkt_curl_library}" CACHE FILEPATH "curl release library" FORCE)
   set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_PREFIX}/include")
   set(CAI_LONEJSON_LIBRARY "${_cai_lonejson_library}")
   set(CAI_PSLOG_INCLUDE_DIR "${CAI_PSLOG_PREFIX}/include")
@@ -255,16 +261,16 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
 endif()
 
 set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "")
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_SHA256}")
 else()
   cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE)
 endif()
 
 find_package(CURL REQUIRED)
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt" AND TARGET CURL::libcurl)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND TARGET CURL::libcurl)
   set_target_properties(CURL::libcurl PROPERTIES
-    IMPORTED_LOCATION "${_cai_pkt_curl_library}"
+    IMPORTED_LOCATION "${_cai_cpkt_curl_library}"
     INTERFACE_INCLUDE_DIRECTORIES "${CAI_C_PKT_SYSTEMS_PREFIX}/include")
 endif()
 find_package(Threads REQUIRED)
@@ -312,7 +318,7 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
-if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   find_path(CAI_LONEJSON_INCLUDE_DIR lonejson.h)
   find_path(CAI_PSLOG_INCLUDE_DIR pslog.h)
   find_library(CAI_LONEJSON_LIBRARY NAMES lonejson)
@@ -320,17 +326,17 @@ endif()
 if(NOT CAI_LONEJSON_INCLUDE_DIR OR
    NOT EXISTS "${CAI_LONEJSON_INCLUDE_DIR}/lonejson.h")
   message(FATAL_ERROR
-    "Failed to find lonejson.h. Use CAI_DEPENDENCY_MODE=pkt or set "
+    "Failed to find lonejson.h. Use CAI_DEPENDENCY_MODE=cpkt or set "
     "CAI_LONEJSON_INCLUDE_DIR to an official installed lonejson include path.")
 endif()
 if(NOT CAI_PSLOG_INCLUDE_DIR OR NOT EXISTS "${CAI_PSLOG_INCLUDE_DIR}/pslog.h")
   message(FATAL_ERROR
-    "Failed to find pslog.h. Use CAI_DEPENDENCY_MODE=pkt or set "
+    "Failed to find pslog.h. Use CAI_DEPENDENCY_MODE=cpkt or set "
     "CAI_PSLOG_INCLUDE_DIR to an official installed pslog include path.")
 endif()
 if(NOT CAI_LONEJSON_LIBRARY)
   message(FATAL_ERROR
-    "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=pkt or set "
+    "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=cpkt or set "
     "CAI_LONEJSON_LIBRARY to an official installed lonejson library.")
 endif()
 
@@ -538,7 +544,7 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
-  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     set(CAI_PACKAGE_REQUIRES_PRIVATE "libcurl")
     set(CAI_PC_DEPENDENCY_CFLAGS "")
     set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "-llonejson")
