@@ -38,19 +38,20 @@ example layers settle.
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under
   `share/doc/libcai/`.
-- Dependency mode defaults to `lockdc`: the build uses the official
-  `github.com/sa6mwa/liblockdc` SDK release tarball for the selected target to
-  provide curl, lonejson, pslog, and the native dependency stack. The tarball
-  URL and SHA-256 are pinned in CMake; sibling checkout artifacts are not
-  dependency inputs.
+- Dependency mode defaults to `pkt`: the build uses the official
+  `github.com/sa6mwa/c.pkt.systems` release tarball for the selected target to
+  provide curl, OpenSSL, nghttp2, libssh2, zlib, and the native dependency
+  stack. It also uses official `lonejson` and `libpslog` release artifacts for
+  the JSON library and logger header. Tarball URLs and SHA-256 values are
+  pinned in CMake; sibling checkout artifacts are not dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
   libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. `auto` chooses host
   only when all required host pieces are discoverable, otherwise it falls back
-  to `lockdc`.
+  to `pkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
-  `lockdc` mode points downstream consumers at the official `lockdc`
-  SDK/package; `host` mode records the resolved host include/library paths.
-  `cai` archives do not vendor dependency headers.
+  `pkt` mode records the official `c.pkt.systems` dependency URL and checksum;
+  `host` mode records the resolved host include/library paths. `cai` archives
+  do not vendor dependency headers.
 - OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
 - `.env` overrides the inherited environment when present.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
@@ -60,7 +61,7 @@ example layers settle.
   such as OpenRouter.
 - `lonejson` is the JSON layer and is linked as an external library, not
   compiled into cai. That keeps cai compatible with host applications such as
-  Vectis that already use the liblockdc-provided lonejson.
+  Vectis that already provide their own lonejson instance.
 - `pslog` is used as an external public header dependency for optional
   host-owned logging.
 - Large inputs and outputs should stream through lonejson spooling/source/sink

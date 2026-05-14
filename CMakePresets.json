@@ -34,7 +34,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CAI_DIST_DIR": "${sourceDir}/dist",
-        "CAI_USE_LOCKDC_SDK": "ON",
+        "CAI_DEPENDENCY_MODE": "pkt",
         "CAI_TARGET_ID": "x86_64-linux-gnu"
       }
     },

@@ -2,10 +2,10 @@ prefix=${pcfiledir}/../..
 exec_prefix=${prefix}
 libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
-lockdc_sdk_version=@CAI_LOCKDC_SDK_VERSION@
-lockdc_sdk_target=@CAI_TARGET_ID@
-lockdc_sdk_url=https://github.com/sa6mwa/liblockdc/releases/download/v@CAI_LOCKDC_SDK_VERSION@/liblockdc-@CAI_LOCKDC_SDK_VERSION@-@CAI_TARGET_ID@.tar.gz
-lockdc_sdk_sha256=@CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE@
+c_pkt_systems_version=@CAI_C_PKT_SYSTEMS_VERSION@
+c_pkt_systems_target=@CAI_TARGET_ID@
+c_pkt_systems_url=https://github.com/sa6mwa/c.pkt.systems/releases/download/v@CAI_C_PKT_SYSTEMS_VERSION@/c.pkt.systems-@CAI_C_PKT_SYSTEMS_VERSION@-@CAI_TARGET_ID@.tar.gz
+c_pkt_systems_sha256=@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@
 dependency_mode=@CAI_RESOLVED_DEPENDENCY_MODE@
 
 Name: cai

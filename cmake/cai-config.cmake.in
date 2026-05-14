@@ -2,45 +2,32 @@
 
 include(CMakeFindDependencyMacro)
 set(cai_DEPENDENCY_MODE "@CAI_RESOLVED_DEPENDENCY_MODE@")
-set(cai_LOCKDC_SDK_VERSION "@CAI_LOCKDC_SDK_VERSION@")
-set(cai_LOCKDC_SDK_TARGET "@CAI_TARGET_ID@")
-set(cai_LOCKDC_SDK_URL
-    "https://github.com/sa6mwa/liblockdc/releases/download/v@CAI_LOCKDC_SDK_VERSION@/liblockdc-@CAI_LOCKDC_SDK_VERSION@-@CAI_TARGET_ID@.tar.gz")
-set(cai_LOCKDC_SDK_SHA256 "@CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE@")
+set(cai_C_PKT_SYSTEMS_VERSION "@CAI_C_PKT_SYSTEMS_VERSION@")
+set(cai_C_PKT_SYSTEMS_TARGET "@CAI_TARGET_ID@")
+set(cai_C_PKT_SYSTEMS_URL
+    "https://github.com/sa6mwa/c.pkt.systems/releases/download/v@CAI_C_PKT_SYSTEMS_VERSION@/c.pkt.systems-@CAI_C_PKT_SYSTEMS_VERSION@-@CAI_TARGET_ID@.tar.gz")
+set(cai_C_PKT_SYSTEMS_SHA256 "@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@")
 
-if(cai_DEPENDENCY_MODE STREQUAL "lockdc")
-  find_dependency(lockdc CONFIG)
-else()
-  find_dependency(CURL)
-endif()
+find_dependency(CURL)
 find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cai-targets.cmake")
 
 set(_cai_dependency_includes "")
-if(cai_DEPENDENCY_MODE STREQUAL "lockdc")
-  if(TARGET lockdc::static)
-    get_target_property(_cai_dependency_includes lockdc::static
-                        INTERFACE_INCLUDE_DIRECTORIES)
-  elseif(TARGET lockdc::shared)
-    get_target_property(_cai_dependency_includes lockdc::shared
-                        INTERFACE_INCLUDE_DIRECTORIES)
-  endif()
-else()
-  find_path(cai_LONEJSON_INCLUDE_DIR lonejson.h
-            HINTS "@CAI_CONFIG_LONEJSON_INCLUDE_HINT@")
-  find_path(cai_PSLOG_INCLUDE_DIR pslog.h
-            HINTS "@CAI_CONFIG_PSLOG_INCLUDE_HINT@")
-  find_library(cai_LONEJSON_LIBRARY NAMES lonejson
-               HINTS "@CAI_CONFIG_LONEJSON_LIBRARY_HINT@")
-  if(NOT cai_LONEJSON_INCLUDE_DIR OR NOT cai_PSLOG_INCLUDE_DIR OR
-     NOT cai_LONEJSON_LIBRARY)
-    message(FATAL_ERROR
-      "cai host dependency mode requires lonejson.h, pslog.h, and liblonejson")
-  endif()
-  list(APPEND _cai_dependency_includes
-       "${cai_LONEJSON_INCLUDE_DIR}" "${cai_PSLOG_INCLUDE_DIR}")
+find_path(cai_LONEJSON_INCLUDE_DIR lonejson.h
+          HINTS "@CAI_CONFIG_LONEJSON_INCLUDE_HINT@")
+find_path(cai_PSLOG_INCLUDE_DIR pslog.h
+          HINTS "@CAI_CONFIG_PSLOG_INCLUDE_HINT@")
+find_library(cai_LONEJSON_LIBRARY NAMES lonejson
+             HINTS "@CAI_CONFIG_LONEJSON_LIBRARY_HINT@")
+if(NOT cai_LONEJSON_INCLUDE_DIR OR NOT cai_PSLOG_INCLUDE_DIR OR
+   NOT cai_LONEJSON_LIBRARY)
+  message(FATAL_ERROR
+    "cai requires CURL, lonejson.h, pslog.h, and liblonejson. "
+    "For native curl/OpenSSL dependencies, use ${cai_C_PKT_SYSTEMS_URL}.")
 endif()
+list(APPEND _cai_dependency_includes
+     "${cai_LONEJSON_INCLUDE_DIR}" "${cai_PSLOG_INCLUDE_DIR}")
 
 foreach(_cai_target cai::cai_static cai::cai_shared)
   if(TARGET "${_cai_target}" AND _cai_dependency_includes)
@@ -48,7 +35,7 @@ foreach(_cai_target cai::cai_static cai::cai_shared)
       INTERFACE_INCLUDE_DIRECTORIES "${_cai_dependency_includes}")
   endif()
 endforeach()
-if(NOT cai_DEPENDENCY_MODE STREQUAL "lockdc" AND TARGET cai::cai_static)
+if(TARGET cai::cai_static)
   set_property(TARGET cai::cai_static APPEND PROPERTY
     INTERFACE_LINK_LIBRARIES "${cai_LONEJSON_LIBRARY}")
 endif()

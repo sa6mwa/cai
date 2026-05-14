@@ -843,20 +843,21 @@ Mirror liblockdc where practical:
   file.
 - Direct pinned download of the official lonejson release header artifact.
 - Release/dependency provisioning for libcurl and its native dependency stack
-  uses the official `github.com/sa6mwa/liblockdc` SDK release tarballs, pinned
+  uses the official `github.com/sa6mwa/c.pkt.systems` release tarballs, pinned
   by version and SHA-256 per target. Do not use sibling checkout artifacts as
   cai inputs.
 - SDK archives do not vendor dependency headers. Installed CMake/pkg-config
-  metadata should point consumers at the official `lockdc` SDK/package, which
-  carries curl, lonejson, pslog, and the other native dependency headers/libs.
-- `CAI_DEPENDENCY_MODE=lockdc` is the default. `host` uses explicitly
-  installed host dependencies for curl, lonejson, and pslog. `auto` may select
-  host only when every required host dependency is discoverable; otherwise it
-  falls back to `lockdc`.
+  metadata should point consumers at the official `c.pkt.systems` release
+  carrying curl/OpenSSL/nghttp2/libssh2/zlib, while lonejson and pslog remain
+  external official dependencies.
+- `CAI_DEPENDENCY_MODE=pkt` is the default. `host` uses explicitly installed
+  host dependencies for curl, lonejson, and pslog. `auto` may select host only
+  when every required host dependency is discoverable; otherwise it falls back
+  to `pkt`.
 - cai must link against external `liblonejson` rather than compiling a private
   `LONEJSON_IMPLEMENTATION` unit. This avoids duplicate lonejson/pslog copies
-  and version drift inside host processes such as Vectis that already link
-  liblockdc.
+  and version drift inside host processes such as Vectis that already provide
+  those dependencies.
 - Release matrix:
   - `x86_64-linux-gnu`
   - `x86_64-linux-musl`

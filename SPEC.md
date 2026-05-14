@@ -6,17 +6,17 @@ The stack requirements and constraints:
 
 - C89 (-std=c89) with POSIX support (enabled via POSIX macros)
 - No strcpy or sprintf usage, use snprintf, etc even if that is not standard C89 (if used at all)
-- For dependencies, tie those to openssl, curl, nghttp2 from `liblockdc` (they contain .a and .so libs as well as the headers for these):
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-x86_64-linux-gnu.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-x86_64-linux-musl.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-armhf-linux-musl.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-armhf-linux-gnu.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-arm64-apple-darwin.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-aarch64-linux-musl.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-aarch64-linux-gnu.tar.gz
-  * https://github.com/sa6mwa/liblockdc/releases/download/v0.3.0/liblockdc-0.3.0-CHECKSUMS
-- Use `lonejson` that is distributed with `liblockdc` for all JSON-related work regarding the API. lonejson has callbacks to `libcurl` making it a perfect match for serious streamed and memory-efficient JSON API work
-- It should be possible to build against the OS/distro's openssl and curl libraries, but we develop against the liblockdc SDK distribution in `cai`
+- For dependencies, tie openssl, curl, nghttp2, libssh2, and zlib to `c.pkt.systems` release tarballs. They contain .a/.so libs and headers:
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-x86_64-linux-gnu.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-x86_64-linux-musl.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-armhf-linux-musl.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-armhf-linux-gnu.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-arm64-apple-darwin.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-aarch64-linux-musl.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-aarch64-linux-gnu.tar.gz
+  * https://github.com/sa6mwa/c.pkt.systems/releases/download/v0.1.0/c.pkt.systems-0.1.0-CHECKSUMS
+- Use official `lonejson` release artifacts for all JSON-related work regarding the API. lonejson has callbacks to `libcurl` making it a perfect match for serious streamed and memory-efficient JSON API work.
+- It should be possible to build against the OS/distro's openssl and curl libraries, but we develop against the `c.pkt.systems` SDK distribution in `cai`.
 - Build and release for exactly the same architecture and OSes that liblockdc ship for: linux x86_64/armhf/aarch64 and gnu/musl as well as darwin arm64
 - tarballs should be produced by `make release` and packaged under `dist/` with tar --owner=0 --group=0 and if the HEAD git commit has a v-tag on it, e.g v0.1.0 it should be the version of the tarballs and any version macros inside the header files, e.g: dist/cai-0.1.0-x86_64-linux-gnu.tar.gz
 - Lua bindings for liblockdc and the downstream luas are available here, but I think :
@@ -27,7 +27,7 @@ The stack requirements and constraints:
   * https://github.com/sa6mwa/lonejson/releases/download/v0.4.1/lonejson-0.4.1-CHECKSUMS
   * https://github.com/sa6mwa/libpslog/releases/download/v0.3.1/lua-pslog-0.3.1-1.rockspec
   * https://github.com/sa6mwa/libpslog/releases/download/v0.3.1/lua-pslog-0.3.1-1.src.rock
-- libpslog is shipped with liblockdc, there should (as with liblockdc) be a client logger functionality that (if enabled) log through pslog at various levels regarding what is happening inside `cai`. Levels are trace, debug, info, warn and error. Logging from inside cai should be granular to over all of those levels. Error and Trace are probably easiest to classify (error is pretty self-explanatory and trace is essentially every possible relevant metric), while debug, info, and warn are where judgment have to decide what the right level is. Info should not be Debug, debug should aid developers while info should hint operations while warn should obviously involve everything that is non-fatal and not a clear error, could also be warnings propagated from the openai api e.g credit limits, rate limits, etc.
+- libpslog is an external dependency. There should (as with liblockdc) be a client logger functionality that (if enabled) log through pslog at various levels regarding what is happening inside `cai`. Levels are trace, debug, info, warn and error. Logging from inside cai should be granular to over all of those levels. Error and Trace are probably easiest to classify (error is pretty self-explanatory and trace is essentially every possible relevant metric), while debug, info, and warn are where judgment have to decide what the right level is. Info should not be Debug, debug should aid developers while info should hint operations while warn should obviously involve everything that is non-fatal and not a clear error, could also be warnings propagated from the openai api e.g credit limits, rate limits, etc.
 - lockdc lua does not expose a possibility to provide a custom pslog logger, so there is no example of that in the Lua binding for lockdc. What I want is instead something of a C-only factory facade or something that sets up a default context for the module where you can specify a logger (this is obviously not called from Lua, but from C and Lua never sees the logger). Essentially, the host will own the pslog instance. That is perhaps a good preparation for exporting the lua module to where it will endup in the next phase when `cai` is done - into vectis, see ../vectis/. Vectis will bundle several lua sources and then it will be possible to send a pslog logger in C only throughout all of the lua modules that Vectis ships with its framework platform (and then we don't need to go up/down Lua/C for pslog as that logger gets shared across several lua facades from the back by the C layer that sits above lockd client, pslog, lonejson, and cai).
 
 ## OpenAI API

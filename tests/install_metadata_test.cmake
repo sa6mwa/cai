@@ -40,41 +40,27 @@ if(pc_version_pos EQUAL -1)
 endif()
 
 file(READ "${prefix}/lib/cmake/cai/cai-config.cmake" config_text)
-string(FIND "${config_text}" "find_dependency(lockdc CONFIG)" lockdc_dep_pos)
 string(FIND "${config_text}" "find_dependency(CURL)" curl_dep_pos)
 string(FIND "${config_text}" "find_dependency(Threads)" threads_dep_pos)
-if(threads_dep_pos EQUAL -1)
+if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1)
   message(FATAL_ERROR "cai CMake package does not declare dependencies")
 endif()
-if(DEFINED CAI_RESOLVED_DEPENDENCY_MODE AND
-   CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "host")
-  if(curl_dep_pos EQUAL -1)
-    message(FATAL_ERROR "cai host CMake package does not declare curl")
-  endif()
-else()
-  if(lockdc_dep_pos EQUAL -1)
-    message(FATAL_ERROR "cai lockdc CMake package does not declare lockdc")
-  endif()
-endif()
 
-string(FIND "${pc_text}" "Requires.private: lockdc" pc_lockdc_pos)
 string(FIND "${pc_text}" "Requires.private: libcurl" pc_curl_pos)
-string(FIND "${pc_text}" "lockdc_sdk_url=" pc_lockdc_url_pos)
-if(DEFINED CAI_RESOLVED_DEPENDENCY_MODE AND
-   CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "host")
-  if(pc_curl_pos EQUAL -1)
-    message(FATAL_ERROR "cai.pc does not point at host curl dependency")
-  endif()
-else()
-  if(pc_lockdc_pos EQUAL -1 OR pc_lockdc_url_pos EQUAL -1)
-    message(FATAL_ERROR "cai.pc does not point at the lockdc SDK dependency")
-  endif()
+string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
+if(pc_curl_pos EQUAL -1 OR pc_c_pkt_url_pos EQUAL -1)
+  message(FATAL_ERROR "cai.pc does not point at curl/c.pkt.systems dependency")
 endif()
 
 if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
-    NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "host") AND
-   DEFINED CAI_LOCKDC_SDK_PREFIX AND NOT CAI_LOCKDC_SDK_PREFIX STREQUAL "" AND
-   EXISTS "${CAI_LOCKDC_SDK_PREFIX}/lib/cmake/lockdc/lockdcConfig.cmake")
+    CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt") AND
+   DEFINED CAI_C_PKT_SYSTEMS_PREFIX AND
+   NOT CAI_C_PKT_SYSTEMS_PREFIX STREQUAL "" AND
+   EXISTS "${CAI_C_PKT_SYSTEMS_PREFIX}/include/curl/curl.h" AND
+   DEFINED CAI_LONEJSON_PREFIX AND NOT CAI_LONEJSON_PREFIX STREQUAL "" AND
+   EXISTS "${CAI_LONEJSON_PREFIX}/include/lonejson.h" AND
+   DEFINED CAI_PSLOG_PREFIX AND NOT CAI_PSLOG_PREFIX STREQUAL "" AND
+   EXISTS "${CAI_PSLOG_PREFIX}/include/pslog.h")
   set(consumer_dir "${CAI_BINARY_DIR}/install-metadata-consumer")
   file(REMOVE_RECURSE "${consumer_dir}")
   file(MAKE_DIRECTORY "${consumer_dir}")
@@ -97,7 +83,8 @@ int main(void) {
 ")
   execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${consumer_dir}" -B "${consumer_dir}/build"
-            -G Ninja "-DCMAKE_PREFIX_PATH=${prefix};${CAI_LOCKDC_SDK_PREFIX}"
+            -G Ninja
+            "-DCMAKE_PREFIX_PATH=${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
     RESULT_VARIABLE consumer_configure_result)
   if(NOT consumer_configure_result EQUAL 0)
     message(FATAL_ERROR "failed to configure cai installed-package consumer")

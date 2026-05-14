@@ -233,9 +233,9 @@ typedef struct cai_response_request_state {
 
 struct cai_response_request_upload {
   cai_response_request_state state;
-  lonejson_curl_upload curl;
+  lonejson_generator generator;
   curl_off_t size;
-  int curl_started;
+  int generator_started;
 };
 
 static int cai_spooled_copy_range(const lonejson_spooled *src,
@@ -3126,7 +3126,7 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
   cai_response_request_upload *upload;
   lonejson_error json_error;
   lonejson_status status;
-  size_t size;
+  size_t request_size;
   int rc;
 
   if (out == NULL) {
@@ -3134,11 +3134,11 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
                          "request upload output pointer is required");
   }
   *out = NULL;
-  size = 0U;
+  request_size = 0U;
   lonejson_error_init(&json_error);
   rc = cai_response_create_params_write_json_sink(
-      params, stream, cai_response_request_count_sink, &size, &json_error,
-      NULL, error);
+      params, stream, cai_response_request_count_sink, &request_size,
+      &json_error, NULL, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -3148,7 +3148,7 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
                          "failed to allocate response request upload");
   }
   memset(upload, 0, sizeof(*upload));
-  upload->size = (curl_off_t)size;
+  upload->size = (curl_off_t)request_size;
   cai_response_request_state_init(&upload->state);
   rc = cai_response_request_state_prepare(&upload->state, params, stream,
                                           error);
@@ -3156,16 +3156,17 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
     cai_response_request_upload_close(upload);
     return rc;
   }
-  status = lonejson_curl_upload_init(&upload->curl, &cai_response_request_map,
-                                     &upload->state.doc, NULL);
+  status = lonejson_generator_init(&upload->generator,
+                                   &cai_response_request_map,
+                                   &upload->state.doc, NULL);
   if (status != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "failed to prepare response request upload",
-                              upload->curl.generator.error.message);
+                              upload->generator.error.message);
     cai_response_request_upload_close(upload);
     return rc;
   }
-  upload->curl_started = 1;
+  upload->generator_started = 1;
   *out = upload;
   return CAI_OK;
 }
@@ -3173,12 +3174,28 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
 size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
                                         void *userdata) {
   cai_response_request_upload *upload;
+  lonejson_status status;
+  size_t capacity;
+  size_t out_len;
+  int out_eof;
 
   upload = (cai_response_request_upload *)userdata;
   if (upload == NULL) {
     return CURL_READFUNC_ABORT;
   }
-  return lonejson_curl_read_callback(ptr, size, nmemb, &upload->curl);
+  if (size != 0U && nmemb > ((size_t)-1 / size)) {
+    return CURL_READFUNC_ABORT;
+  }
+  capacity = size * nmemb;
+  out_len = 0U;
+  out_eof = 0;
+  status = lonejson_generator_read(&upload->generator, (unsigned char *)ptr,
+                                   capacity, &out_len, &out_eof);
+  if (status != LONEJSON_STATUS_OK) {
+    return CURL_READFUNC_ABORT;
+  }
+  (void)out_eof;
+  return out_len;
 }
 
 curl_off_t cai_response_request_upload_size(
@@ -3193,9 +3210,9 @@ void cai_response_request_upload_close(cai_response_request_upload *upload) {
   if (upload == NULL) {
     return;
   }
-  if (upload->curl_started) {
-    lonejson_curl_upload_cleanup(&upload->curl);
-    upload->curl_started = 0;
+  if (upload->generator_started) {
+    lonejson_generator_cleanup(&upload->generator);
+    upload->generator_started = 0;
   }
   cai_response_request_state_cleanup(&upload->state);
   cai_free_mem(NULL, upload);

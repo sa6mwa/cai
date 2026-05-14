@@ -20,18 +20,18 @@ option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
-option(CAI_USE_LOCKDC_SDK "Deprecated alias for CAI_DEPENDENCY_MODE=lockdc." OFF)
+option(CAI_USE_LOCKDC_SDK "Deprecated alias for CAI_DEPENDENCY_MODE=pkt." OFF)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
     CACHE PATH "Downloaded third-party dependency cache.")
-set(CAI_DEPENDENCY_MODE "lockdc" CACHE STRING
-    "Dependency mode: lockdc, host, or auto.")
-set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS lockdc host auto)
-set(CAI_LOCKDC_SDK_VERSION "0.7.0" CACHE STRING
-    "Pinned liblockdc SDK release used for curl/native dependencies." FORCE)
+set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
+    "Dependency mode: pkt, host, or auto.")
+set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS pkt host auto)
+set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
+    "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 set(CAI_LONEJSON_VERSION "0.8.0")
 set(CAI_LONEJSON_SHA256
     "f1fd6468192a363d8f147e4f3909ab115012a2fc2443111cc421d489c7bfa614")
@@ -48,14 +48,22 @@ if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
 endif()
 
 if(CAI_USE_LOCKDC_SDK)
-  set(CAI_DEPENDENCY_MODE "lockdc" CACHE STRING
-      "Dependency mode: lockdc, host, or auto." FORCE)
+  message(WARNING
+    "CAI_USE_LOCKDC_SDK is deprecated; using CAI_DEPENDENCY_MODE=pkt.")
+  set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
+      "Dependency mode: pkt, host, or auto." FORCE)
 endif()
-if(NOT CAI_DEPENDENCY_MODE STREQUAL "lockdc" AND
+if(CAI_DEPENDENCY_MODE STREQUAL "lockdc")
+  message(WARNING
+    "CAI_DEPENDENCY_MODE=lockdc is deprecated; use pkt. Treating it as pkt.")
+  set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
+      "Dependency mode: pkt, host, or auto." FORCE)
+endif()
+if(NOT CAI_DEPENDENCY_MODE STREQUAL "pkt" AND
    NOT CAI_DEPENDENCY_MODE STREQUAL "host" AND
    NOT CAI_DEPENDENCY_MODE STREQUAL "auto")
   message(FATAL_ERROR
-    "CAI_DEPENDENCY_MODE must be one of: lockdc, host, auto.")
+    "CAI_DEPENDENCY_MODE must be one of: pkt, host, auto.")
 endif()
 
 if(CAI_TARGET_ID STREQUAL "")
@@ -74,23 +82,63 @@ if(CAI_TARGET_ID STREQUAL "")
   endif()
 endif()
 
-function(cai_lockdc_sdk_sha256 target_id out_var)
+function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "fe8633f5649bed2746801cd18b6dbc5e3d2569fff8fedfe271f05202f946fe59")
+    set(_sha256 "4e6c4ca07c0647a05923b4a56ef12d440a1d1b53465224e30d990fc18777aa4e")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "9dcfc85fe2e87b9d39fb625d30c6a5a1315df2ed4a7f8dd4b054c4f6d1357298")
+    set(_sha256 "d44f70558b961125c96d356d27ce83fc7d50c9cc650a335c2016c8d3778d98aa")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "fc12ca796040f1266dca10ed0917c986d43a30b61d5c2ed7f1e1353b4c1b044a")
+    set(_sha256 "c20969872de3087f984e8bca3e01fa98e495a3581940e426d07ebed014cf8190")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "0039ce1033ec98a7e4d953396b0e15b8c5e1f5ee3e263347e28ec8e64c4cd780")
+    set(_sha256 "8ff3cc3c457dc66918470beaea01744bc38c342a87c20c6b072761c56c858e19")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "f36c1414857d6b97f19eae072fe0c5c72a1a9b6ddd3adf70676303c0d88c9c57")
+    set(_sha256 "26787953d690b0f01a11538e8692f68f9c746b8e97a9baf47ac15241d9a947fc")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "83b5689f20715b9f17b4cb83abaff6e697bad95d55cb23b9227739c1ac38e8aa")
+    set(_sha256 "f0172a6ff928111cfaeb503b01b48b3cdd2c05a04d54047630180ee79f65af31")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "0d2fb098fb2991d9847cf974a54307edb0ab60909a18dde1021e588864a99a53")
+    set(_sha256 "dba4424de9566c2418162f62e5e90c45b40266c6e750b5096d4a251bf96d8e9a")
   else()
-    message(FATAL_ERROR "No pinned liblockdc SDK checksum for target ${target_id}")
+    message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
+  endif()
+  set(${out_var} "${_sha256}" PARENT_SCOPE)
+endfunction()
+
+function(cai_lonejson_pkg_sha256 target_id out_var)
+  if(target_id STREQUAL "x86_64-linux-gnu")
+    set(_sha256 "bfce5ec3c0a918258649eac741704fe3786dfb7ba5c2a80c7b1bdc994ed7fe7e")
+  elseif(target_id STREQUAL "x86_64-linux-musl")
+    set(_sha256 "63b4215450e8ca5b4c5066c4662f992346dcbd34fd821f1894780243a30cd282")
+  elseif(target_id STREQUAL "aarch64-linux-gnu")
+    set(_sha256 "4ea196d1e22e4537e0f6f73814171ed1e3b487c110eae1b75147929a05d123ab")
+  elseif(target_id STREQUAL "aarch64-linux-musl")
+    set(_sha256 "d3065ed8ce89c4e40c6a4df0770d33cc83e75657a35e56c709aa2285c042eec6")
+  elseif(target_id STREQUAL "armhf-linux-gnu")
+    set(_sha256 "bd3d58e1a35ea8ff753b7412577eb2fd4602f47d21a0e8892ae8a11e8fc7b233")
+  elseif(target_id STREQUAL "armhf-linux-musl")
+    set(_sha256 "dc134dc2fd4b9805078348799367afc6c48b93e68781ad6bbd7963d39ad5552b")
+  else()
+    message(FATAL_ERROR
+      "No pinned liblonejson package checksum for target ${target_id}")
+  endif()
+  set(${out_var} "${_sha256}" PARENT_SCOPE)
+endfunction()
+
+function(cai_pslog_pkg_sha256 target_id out_var)
+  if(target_id STREQUAL "x86_64-linux-gnu")
+    set(_sha256 "4113d490dfd0c7706a518d32cef5d8acfc6d8bae8b42488edb76fd64e55dd14d")
+  elseif(target_id STREQUAL "x86_64-linux-musl")
+    set(_sha256 "f71f325de984677594da1bea589ab154a14b363ad4d3fa6125443a6a8fb0e448")
+  elseif(target_id STREQUAL "aarch64-linux-gnu")
+    set(_sha256 "f47808e9d87cb3368888c40329f8370e6ebd1a4782f2709da135441cdf4d8239")
+  elseif(target_id STREQUAL "aarch64-linux-musl")
+    set(_sha256 "fdfac09bf98dcc0bfdec3bcd55478d7b9b1446ff85d14dbad2fd9cdad166a3cb")
+  elseif(target_id STREQUAL "armhf-linux-gnu")
+    set(_sha256 "57b22d018220754e8d2824df15faebca123103d20921b8b1bd73187f866bdeff")
+  elseif(target_id STREQUAL "armhf-linux-musl")
+    set(_sha256 "a2cd382af639c8cf923e317f21604e20c866e6cc00ac9d30b20dbabb39d7c489")
+  else()
+    message(FATAL_ERROR
+      "No pinned libpslog package checksum for target ${target_id}")
   endif()
   set(${out_var} "${_sha256}" PARENT_SCOPE)
 endfunction()
@@ -99,75 +147,154 @@ set(CAI_RESOLVED_DEPENDENCY_MODE "${CAI_DEPENDENCY_MODE}")
 if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   find_path(_cai_auto_lonejson_include lonejson.h)
   find_path(_cai_auto_pslog_include pslog.h)
+  find_library(_cai_auto_lonejson_library NAMES lonejson)
   find_package(CURL QUIET)
-  if(CURL_FOUND AND _cai_auto_lonejson_include AND _cai_auto_pslog_include)
+  if(CURL_FOUND AND _cai_auto_lonejson_include AND _cai_auto_pslog_include AND
+     _cai_auto_lonejson_library)
     set(CAI_RESOLVED_DEPENDENCY_MODE "host")
   else()
-    set(CAI_RESOLVED_DEPENDENCY_MODE "lockdc")
+    set(CAI_RESOLVED_DEPENDENCY_MODE "pkt")
   endif()
   unset(_cai_auto_lonejson_include CACHE)
   unset(_cai_auto_pslog_include CACHE)
+  unset(_cai_auto_lonejson_library CACHE)
 endif()
 
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
-  cai_lockdc_sdk_sha256("${CAI_TARGET_ID}" CAI_LOCKDC_SDK_SHA256)
-  set(CAI_LOCKDC_SDK_NAME "liblockdc-${CAI_LOCKDC_SDK_VERSION}-${CAI_TARGET_ID}")
-  set(CAI_LOCKDC_SDK_URL
-      "https://github.com/sa6mwa/liblockdc/releases/download/v${CAI_LOCKDC_SDK_VERSION}/${CAI_LOCKDC_SDK_NAME}.tar.gz")
-  set(CAI_LOCKDC_SDK_ARCHIVE "${CAI_DEPS_DIR}/${CAI_LOCKDC_SDK_NAME}.tar.gz")
-  set(CAI_LOCKDC_SDK_PREFIX "${CAI_DEPS_DIR}/${CAI_LOCKDC_SDK_NAME}")
-
+function(cai_download_tarball name url archive prefix sha256 stamp_file)
   file(MAKE_DIRECTORY "${CAI_DEPS_DIR}")
-  set(_cai_lockdc_download 1)
-  if(EXISTS "${CAI_LOCKDC_SDK_ARCHIVE}")
-    file(SHA256 "${CAI_LOCKDC_SDK_ARCHIVE}" _cai_lockdc_actual_sha256)
-    if(_cai_lockdc_actual_sha256 STREQUAL CAI_LOCKDC_SDK_SHA256)
-      set(_cai_lockdc_download 0)
+  set(_cai_download 1)
+  if(EXISTS "${archive}")
+    file(SHA256 "${archive}" _cai_actual_sha256)
+    if(_cai_actual_sha256 STREQUAL "${sha256}")
+      set(_cai_download 0)
     endif()
   endif()
-  if(_cai_lockdc_download)
-    message(STATUS "Downloading liblockdc SDK ${CAI_LOCKDC_SDK_VERSION} ${CAI_TARGET_ID} from ${CAI_LOCKDC_SDK_URL}")
+  if(_cai_download)
+    message(STATUS "Downloading ${name} from ${url}")
     file(DOWNLOAD
-      "${CAI_LOCKDC_SDK_URL}"
-      "${CAI_LOCKDC_SDK_ARCHIVE}"
-      EXPECTED_HASH "SHA256=${CAI_LOCKDC_SDK_SHA256}"
+      "${url}"
+      "${archive}"
+      EXPECTED_HASH "SHA256=${sha256}"
       TLS_VERIFY ON
       SHOW_PROGRESS)
   endif()
-  if(NOT EXISTS "${CAI_LOCKDC_SDK_PREFIX}/include/curl/curl.h")
+  if(NOT EXISTS "${stamp_file}")
+    file(REMOVE_RECURSE "${prefix}")
+    file(MAKE_DIRECTORY "${prefix}")
     execute_process(
-      COMMAND "${CMAKE_COMMAND}" -E tar xzf "${CAI_LOCKDC_SDK_ARCHIVE}"
+      COMMAND "${CMAKE_COMMAND}" -E tar xzf "${archive}"
       WORKING_DIRECTORY "${CAI_DEPS_DIR}"
-      RESULT_VARIABLE _cai_lockdc_extract_result)
-    if(NOT _cai_lockdc_extract_result EQUAL 0)
-      message(FATAL_ERROR "Failed to extract ${CAI_LOCKDC_SDK_ARCHIVE}")
+      RESULT_VARIABLE _cai_extract_result)
+    if(NOT _cai_extract_result EQUAL 0)
+      message(FATAL_ERROR "Failed to extract ${archive}")
+    endif()
+  endif()
+endfunction()
+
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+  cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256)
+  set(CAI_C_PKT_SYSTEMS_NAME
+      "c.pkt.systems-${CAI_C_PKT_SYSTEMS_VERSION}-${CAI_TARGET_ID}")
+  set(CAI_C_PKT_SYSTEMS_URL
+      "https://github.com/sa6mwa/c.pkt.systems/releases/download/v${CAI_C_PKT_SYSTEMS_VERSION}/${CAI_C_PKT_SYSTEMS_NAME}.tar.gz")
+  set(CAI_C_PKT_SYSTEMS_ARCHIVE
+      "${CAI_DEPS_DIR}/${CAI_C_PKT_SYSTEMS_NAME}.tar.gz")
+  set(CAI_C_PKT_SYSTEMS_PREFIX
+      "${CAI_DEPS_DIR}/${CAI_C_PKT_SYSTEMS_NAME}")
+  cai_download_tarball(
+    "c.pkt.systems ${CAI_C_PKT_SYSTEMS_VERSION} ${CAI_TARGET_ID}"
+    "${CAI_C_PKT_SYSTEMS_URL}"
+    "${CAI_C_PKT_SYSTEMS_ARCHIVE}"
+    "${CAI_C_PKT_SYSTEMS_PREFIX}"
+    "${CAI_C_PKT_SYSTEMS_SHA256}"
+    "${CAI_C_PKT_SYSTEMS_PREFIX}/include/curl/curl.h")
+
+  cai_lonejson_pkg_sha256("${CAI_TARGET_ID}" CAI_LONEJSON_PKG_SHA256)
+  set(CAI_LONEJSON_PKG_NAME
+      "liblonejson-${CAI_LONEJSON_VERSION}-${CAI_TARGET_ID}")
+  set(CAI_LONEJSON_PKG_URL
+      "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/${CAI_LONEJSON_PKG_NAME}.tar.gz")
+  set(CAI_LONEJSON_PKG_ARCHIVE
+      "${CAI_DEPS_DIR}/${CAI_LONEJSON_PKG_NAME}.tar.gz")
+  set(CAI_LONEJSON_PREFIX "${CAI_DEPS_DIR}/${CAI_LONEJSON_PKG_NAME}")
+  cai_download_tarball(
+    "liblonejson ${CAI_LONEJSON_VERSION} ${CAI_TARGET_ID}"
+    "${CAI_LONEJSON_PKG_URL}"
+    "${CAI_LONEJSON_PKG_ARCHIVE}"
+    "${CAI_LONEJSON_PREFIX}"
+    "${CAI_LONEJSON_PKG_SHA256}"
+    "${CAI_LONEJSON_PREFIX}/include/lonejson.h")
+
+  cai_pslog_pkg_sha256("${CAI_TARGET_ID}" CAI_PSLOG_PKG_SHA256)
+  set(CAI_PSLOG_PKG_NAME "libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}")
+  set(CAI_PSLOG_PKG_URL
+      "https://github.com/sa6mwa/libpslog/releases/download/v${CAI_PSLOG_VERSION}/${CAI_PSLOG_PKG_NAME}.tar.gz")
+  set(CAI_PSLOG_PKG_ARCHIVE "${CAI_DEPS_DIR}/${CAI_PSLOG_PKG_NAME}.tar.gz")
+  set(CAI_PSLOG_PREFIX "${CAI_DEPS_DIR}/${CAI_PSLOG_PKG_NAME}")
+  if(CAI_PSLOG_PKG_NAME MATCHES "armhf|aarch64|x86_64")
+    set(_cai_pslog_stamp "${CAI_PSLOG_PREFIX}/include/pslog.h")
+  else()
+    set(_cai_pslog_stamp "${CAI_PSLOG_PREFIX}/include/pslog.h")
+  endif()
+  if(NOT EXISTS "${_cai_pslog_stamp}")
+    file(REMOVE_RECURSE "${CAI_PSLOG_PREFIX}")
+    file(MAKE_DIRECTORY "${CAI_PSLOG_PREFIX}")
+    set(_cai_pslog_download 1)
+    if(EXISTS "${CAI_PSLOG_PKG_ARCHIVE}")
+      file(SHA256 "${CAI_PSLOG_PKG_ARCHIVE}" _cai_pslog_actual_sha256)
+      if(_cai_pslog_actual_sha256 STREQUAL CAI_PSLOG_PKG_SHA256)
+        set(_cai_pslog_download 0)
+      endif()
+    endif()
+    if(_cai_pslog_download)
+      message(STATUS "Downloading libpslog ${CAI_PSLOG_VERSION} ${CAI_TARGET_ID} from ${CAI_PSLOG_PKG_URL}")
+      file(DOWNLOAD
+        "${CAI_PSLOG_PKG_URL}"
+        "${CAI_PSLOG_PKG_ARCHIVE}"
+        EXPECTED_HASH "SHA256=${CAI_PSLOG_PKG_SHA256}"
+        TLS_VERIFY ON
+        SHOW_PROGRESS)
+    endif()
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E tar xzf "${CAI_PSLOG_PKG_ARCHIVE}"
+      WORKING_DIRECTORY "${CAI_PSLOG_PREFIX}"
+      RESULT_VARIABLE _cai_pslog_extract_result)
+    if(NOT _cai_pslog_extract_result EQUAL 0)
+      message(FATAL_ERROR "Failed to extract ${CAI_PSLOG_PKG_ARCHIVE}")
     endif()
   endif()
   if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
-    set(_cai_lockdc_curl_library "${CAI_LOCKDC_SDK_PREFIX}/lib/libcurl.dylib")
+    set(_cai_pkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.dylib")
+    set(_cai_lonejson_library "${CAI_LONEJSON_PREFIX}/lib/liblonejson.dylib")
   else()
-    set(_cai_lockdc_curl_library "${CAI_LOCKDC_SDK_PREFIX}/lib/libcurl.so")
+    set(_cai_pkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.so")
+    set(_cai_lonejson_library "${CAI_LONEJSON_PREFIX}/lib/liblonejson.so")
   endif()
-  set(CURL_INCLUDE_DIR "${CAI_LOCKDC_SDK_PREFIX}/include" CACHE PATH "curl include directory" FORCE)
-  set(CURL_LIBRARY "${_cai_lockdc_curl_library}" CACHE FILEPATH "curl library" FORCE)
-  set(CURL_LIBRARY_RELEASE "${_cai_lockdc_curl_library}" CACHE FILEPATH "curl release library" FORCE)
-  set(CMAKE_PREFIX_PATH "${CAI_LOCKDC_SDK_PREFIX};${CMAKE_PREFIX_PATH}")
+  set(CURL_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include" CACHE PATH "curl include directory" FORCE)
+  set(CURL_LIBRARY "${_cai_pkt_curl_library}" CACHE FILEPATH "curl library" FORCE)
+  set(CURL_LIBRARY_RELEASE "${_cai_pkt_curl_library}" CACHE FILEPATH "curl release library" FORCE)
+  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LONEJSON_PREFIX}/include")
+  set(CAI_LONEJSON_LIBRARY "${_cai_lonejson_library}")
+  set(CAI_PSLOG_INCLUDE_DIR "${CAI_PSLOG_PREFIX}/include")
+  set(CMAKE_PREFIX_PATH
+      "${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX};${CMAKE_PREFIX_PATH}")
   list(APPEND CMAKE_INSTALL_RPATH "$ORIGIN")
-  list(APPEND CMAKE_BUILD_RPATH "${CAI_LOCKDC_SDK_PREFIX}/lib")
+  list(APPEND CMAKE_BUILD_RPATH
+       "${CAI_C_PKT_SYSTEMS_PREFIX}/lib" "${CAI_LONEJSON_PREFIX}/lib")
 endif()
 
-set(CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE "")
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
-  set(CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE "${CAI_LOCKDC_SDK_SHA256}")
+set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "")
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+  set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_SHA256}")
 else()
-  cai_lockdc_sdk_sha256("${CAI_TARGET_ID}" CAI_LOCKDC_SDK_SHA256_FOR_PACKAGE)
+  cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE)
 endif()
 
 find_package(CURL REQUIRED)
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc" AND TARGET CURL::libcurl)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt" AND TARGET CURL::libcurl)
   set_target_properties(CURL::libcurl PROPERTIES
-    IMPORTED_LOCATION "${_cai_lockdc_curl_library}"
-    INTERFACE_INCLUDE_DIRECTORIES "${CAI_LOCKDC_SDK_PREFIX}/include")
+    IMPORTED_LOCATION "${_cai_pkt_curl_library}"
+    INTERFACE_INCLUDE_DIRECTORIES "${CAI_C_PKT_SYSTEMS_PREFIX}/include")
 endif()
 find_package(Threads REQUIRED)
 
@@ -214,15 +341,7 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
-  set(CAI_LONEJSON_INCLUDE_DIR "${CAI_LOCKDC_SDK_PREFIX}/include")
-  set(CAI_PSLOG_INCLUDE_DIR "${CAI_LOCKDC_SDK_PREFIX}/include")
-  if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
-    set(CAI_LONEJSON_LIBRARY "${CAI_LOCKDC_SDK_PREFIX}/lib/liblonejson.dylib")
-  else()
-    set(CAI_LONEJSON_LIBRARY "${CAI_LOCKDC_SDK_PREFIX}/lib/liblonejson.so")
-  endif()
-else()
+if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
   find_path(CAI_LONEJSON_INCLUDE_DIR lonejson.h)
   find_path(CAI_PSLOG_INCLUDE_DIR pslog.h)
   find_library(CAI_LONEJSON_LIBRARY NAMES lonejson)
@@ -230,17 +349,17 @@ endif()
 if(NOT CAI_LONEJSON_INCLUDE_DIR OR
    NOT EXISTS "${CAI_LONEJSON_INCLUDE_DIR}/lonejson.h")
   message(FATAL_ERROR
-    "Failed to find lonejson.h. Use CAI_DEPENDENCY_MODE=lockdc or set "
+    "Failed to find lonejson.h. Use CAI_DEPENDENCY_MODE=pkt or set "
     "CAI_LONEJSON_INCLUDE_DIR to an official installed lonejson include path.")
 endif()
 if(NOT CAI_PSLOG_INCLUDE_DIR OR NOT EXISTS "${CAI_PSLOG_INCLUDE_DIR}/pslog.h")
   message(FATAL_ERROR
-    "Failed to find pslog.h. Use CAI_DEPENDENCY_MODE=lockdc or set "
+    "Failed to find pslog.h. Use CAI_DEPENDENCY_MODE=pkt or set "
     "CAI_PSLOG_INCLUDE_DIR to an official installed pslog include path.")
 endif()
 if(NOT CAI_LONEJSON_LIBRARY)
   message(FATAL_ERROR
-    "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=lockdc or set "
+    "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=pkt or set "
     "CAI_LONEJSON_LIBRARY to an official installed lonejson library.")
 endif()
 
@@ -298,14 +417,9 @@ if(TARGET cai_shared)
     "${CAI_LONEJSON_LIBRARY}")
 endif()
 if(TARGET cai_static)
-  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
-    target_link_libraries(cai_static INTERFACE
-      $<INSTALL_INTERFACE:lockdc::static>)
-  else()
-    target_link_libraries(cai_static INTERFACE
-      $<INSTALL_INTERFACE:CURL::libcurl>
-      $<INSTALL_INTERFACE:Threads::Threads>)
-  endif()
+  target_link_libraries(cai_static INTERFACE
+    $<INSTALL_INTERFACE:CURL::libcurl>
+    $<INSTALL_INTERFACE:Threads::Threads>)
 endif()
 
 if(CAI_BUILD_EXAMPLES)
@@ -386,7 +500,9 @@ if(CAI_BUILD_TESTS)
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         "-DCAI_VERSION=${PROJECT_VERSION}"
-        "-DCAI_LOCKDC_SDK_PREFIX=${CAI_LOCKDC_SDK_PREFIX}"
+        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+        "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_RESOLVED_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
   endif()
@@ -451,10 +567,10 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
-  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "lockdc")
-    set(CAI_PACKAGE_REQUIRES_PRIVATE "lockdc")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
+    set(CAI_PACKAGE_REQUIRES_PRIVATE "libcurl")
     set(CAI_PC_DEPENDENCY_CFLAGS "")
-    set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "")
+    set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "-llonejson")
     set(CAI_CONFIG_LONEJSON_INCLUDE_HINT "")
     set(CAI_CONFIG_PSLOG_INCLUDE_HINT "")
     set(CAI_CONFIG_LONEJSON_LIBRARY_HINT "")
