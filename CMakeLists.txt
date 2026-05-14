@@ -32,16 +32,8 @@ set(CAI_DEPENDENCY_MODE "pkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS pkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_LONEJSON_VERSION "0.8.0")
-set(CAI_LONEJSON_SHA256
-    "f1fd6468192a363d8f147e4f3909ab115012a2fc2443111cc421d489c7bfa614")
-set(CAI_LONEJSON_URL
-    "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/lonejson-${CAI_LONEJSON_VERSION}.h.gz")
-set(CAI_PSLOG_VERSION "0.3.1")
-set(CAI_PSLOG_SHA256
-    "3fd34c48c7851692e7a851714c1af8b2fb880c2858b4c4c45c3424a45c77b094")
-set(CAI_PSLOG_URL
-    "https://github.com/sa6mwa/libpslog/releases/download/v${CAI_PSLOG_VERSION}/pslog-${CAI_PSLOG_VERSION}.h.gz")
+set(CAI_LONEJSON_VERSION "0.13.0")
+set(CAI_PSLOG_VERSION "0.4.0")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -105,17 +97,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "bfce5ec3c0a918258649eac741704fe3786dfb7ba5c2a80c7b1bdc994ed7fe7e")
+    set(_sha256 "af40c90499e1bd7661e1dbf8d5767700bc28453367190c985c229e4ca8c2e4b3")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "63b4215450e8ca5b4c5066c4662f992346dcbd34fd821f1894780243a30cd282")
+    set(_sha256 "223951ab8fee946573f348049d95f7f2fe8cdf5fd7327d34b44d02e3d4416b45")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "4ea196d1e22e4537e0f6f73814171ed1e3b487c110eae1b75147929a05d123ab")
+    set(_sha256 "2384d4f2d2efa4d740cb4bcdac6cff19171c876ee60b8d23dbb7efd37aff6432")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "d3065ed8ce89c4e40c6a4df0770d33cc83e75657a35e56c709aa2285c042eec6")
+    set(_sha256 "64cdea4ff6b63549cf33d60fbce60f1c538d7406bca367ab598c9c18869a74c3")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "bd3d58e1a35ea8ff753b7412577eb2fd4602f47d21a0e8892ae8a11e8fc7b233")
+    set(_sha256 "46751e6a4a99a304bf6b027473443dbbf4aaa3110deec051c29289b5c885870c")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "dc134dc2fd4b9805078348799367afc6c48b93e68781ad6bbd7963d39ad5552b")
+    set(_sha256 "3e94cfcae4df9c79ca55d62b1d275216f9ce994d43c97d07ba5d2d1a87f2ef1e")
+  elseif(target_id STREQUAL "arm64-apple-darwin")
+    set(_sha256 "aab10deb2ba38324b58647797bfcbb74a2f7cd096a35365e63d38c572ad53486")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -125,17 +119,19 @@ endfunction()
 
 function(cai_pslog_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "4113d490dfd0c7706a518d32cef5d8acfc6d8bae8b42488edb76fd64e55dd14d")
+    set(_sha256 "45ef795dd947b4896a7e11b12f7edf3d873fe442cb1a12cc35d44de44f9361ff")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "f71f325de984677594da1bea589ab154a14b363ad4d3fa6125443a6a8fb0e448")
+    set(_sha256 "fa3e8d66c6f707f7c208bfe24d74d616b34063e61cc89730a2e92b4d04bfd545")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "f47808e9d87cb3368888c40329f8370e6ebd1a4782f2709da135441cdf4d8239")
+    set(_sha256 "302c62a75bb3695d2e669416865e8fe1caf7536f7a4b19d33e263d780f43b37c")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "fdfac09bf98dcc0bfdec3bcd55478d7b9b1446ff85d14dbad2fd9cdad166a3cb")
+    set(_sha256 "aa9d1b70096ab6faee945e9354a2c5fe13e1122d89ce54820f4c5b492e028a6e")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "57b22d018220754e8d2824df15faebca123103d20921b8b1bd73187f866bdeff")
+    set(_sha256 "b240ba753c6ec9db2c00b1a082c17cbc098ce0bd4f95c88647d966c5efa08785")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "a2cd382af639c8cf923e317f21604e20c866e6cc00ac9d30b20dbabb39d7c489")
+    set(_sha256 "fa6f747dd56a2457edb90f2a5feb96182cb00ea44459814514d88b4fbe6a32b1")
+  elseif(target_id STREQUAL "arm64-apple-darwin")
+    set(_sha256 "a60e3c6eba56e392d2e72c893807f4fe9aab38b77d6d013930ccac8d98aadcde")
   else()
     message(FATAL_ERROR
       "No pinned libpslog package checksum for target ${target_id}")
@@ -231,38 +227,13 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "pkt")
       "https://github.com/sa6mwa/libpslog/releases/download/v${CAI_PSLOG_VERSION}/${CAI_PSLOG_PKG_NAME}.tar.gz")
   set(CAI_PSLOG_PKG_ARCHIVE "${CAI_DEPS_DIR}/${CAI_PSLOG_PKG_NAME}.tar.gz")
   set(CAI_PSLOG_PREFIX "${CAI_DEPS_DIR}/${CAI_PSLOG_PKG_NAME}")
-  if(CAI_PSLOG_PKG_NAME MATCHES "armhf|aarch64|x86_64")
-    set(_cai_pslog_stamp "${CAI_PSLOG_PREFIX}/include/pslog.h")
-  else()
-    set(_cai_pslog_stamp "${CAI_PSLOG_PREFIX}/include/pslog.h")
-  endif()
-  if(NOT EXISTS "${_cai_pslog_stamp}")
-    file(REMOVE_RECURSE "${CAI_PSLOG_PREFIX}")
-    file(MAKE_DIRECTORY "${CAI_PSLOG_PREFIX}")
-    set(_cai_pslog_download 1)
-    if(EXISTS "${CAI_PSLOG_PKG_ARCHIVE}")
-      file(SHA256 "${CAI_PSLOG_PKG_ARCHIVE}" _cai_pslog_actual_sha256)
-      if(_cai_pslog_actual_sha256 STREQUAL CAI_PSLOG_PKG_SHA256)
-        set(_cai_pslog_download 0)
-      endif()
-    endif()
-    if(_cai_pslog_download)
-      message(STATUS "Downloading libpslog ${CAI_PSLOG_VERSION} ${CAI_TARGET_ID} from ${CAI_PSLOG_PKG_URL}")
-      file(DOWNLOAD
-        "${CAI_PSLOG_PKG_URL}"
-        "${CAI_PSLOG_PKG_ARCHIVE}"
-        EXPECTED_HASH "SHA256=${CAI_PSLOG_PKG_SHA256}"
-        TLS_VERIFY ON
-        SHOW_PROGRESS)
-    endif()
-    execute_process(
-      COMMAND "${CMAKE_COMMAND}" -E tar xzf "${CAI_PSLOG_PKG_ARCHIVE}"
-      WORKING_DIRECTORY "${CAI_PSLOG_PREFIX}"
-      RESULT_VARIABLE _cai_pslog_extract_result)
-    if(NOT _cai_pslog_extract_result EQUAL 0)
-      message(FATAL_ERROR "Failed to extract ${CAI_PSLOG_PKG_ARCHIVE}")
-    endif()
-  endif()
+  cai_download_tarball(
+    "libpslog ${CAI_PSLOG_VERSION} ${CAI_TARGET_ID}"
+    "${CAI_PSLOG_PKG_URL}"
+    "${CAI_PSLOG_PKG_ARCHIVE}"
+    "${CAI_PSLOG_PREFIX}"
+    "${CAI_PSLOG_PKG_SHA256}"
+    "${CAI_PSLOG_PREFIX}/include/pslog.h")
   if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
     set(_cai_pkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.dylib")
     set(_cai_lonejson_library "${CAI_LONEJSON_PREFIX}/lib/liblonejson.dylib")
