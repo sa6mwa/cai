@@ -13,5 +13,6 @@ Description: C89/POSIX SDK client for the OpenAI Responses API
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lcai
 Libs.private: -pthread @CAI_PC_DEPENDENCY_LIBS_PRIVATE@
+Requires: @CAI_PACKAGE_REQUIRES@
 Requires.private: @CAI_PACKAGE_REQUIRES_PRIVATE@
 Cflags: -I${includedir} @CAI_PC_DEPENDENCY_CFLAGS@

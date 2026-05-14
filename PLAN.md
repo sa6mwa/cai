@@ -849,7 +849,8 @@ Mirror liblockdc where practical:
 - SDK archives do not vendor dependency headers. Installed CMake/pkg-config
   metadata should point consumers at the official `c.pkt.systems` release
   carrying curl/OpenSSL/nghttp2/libssh2/zlib, while lonejson and pslog remain
-  external official dependencies.
+  external official dependencies discovered through their own released CMake
+  and pkg-config metadata.
 - `CAI_DEPENDENCY_MODE=cpkt` is the default. `host` uses explicitly installed
   host dependencies for curl, lonejson, and pslog. `auto` may select host only
   when every required host dependency is discoverable; otherwise it falls back

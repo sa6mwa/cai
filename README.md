@@ -42,8 +42,10 @@ example layers settle.
   `github.com/sa6mwa/c.pkt.systems` release tarball for the selected target to
   provide curl, OpenSSL, nghttp2, libssh2, zlib, and the native dependency
   stack. It also uses official `lonejson` and `libpslog` release artifacts for
-  the JSON library and logger header. Tarball URLs and SHA-256 values are
-  pinned in CMake; sibling checkout artifacts are not dependency inputs.
+  the JSON library and logger header. Those dependency archives ship consumer
+  CMake and pkg-config metadata, and cai consumes that metadata when available.
+  Tarball URLs and SHA-256 values are pinned in CMake; sibling checkout
+  artifacts are not dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
   libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. `auto` chooses host
   only when all required host pieces are discoverable, otherwise it falls back
@@ -113,10 +115,13 @@ target_link_libraries(app PRIVATE cai::cai_shared)
 
 The metadata records the dependency mode used to build cai. In the default
 `cpkt` mode it points at the matching official `c.pkt.systems` release URL and
-checksum for the native curl/OpenSSL stack. Dependencies are still external:
-consumer environments must make libcurl, `lonejson.h`/`liblonejson`, and
-`pslog.h` discoverable. cai release archives do not vendor those dependency
-headers or libraries and do not compile in single-header dependency variants.
+checksum for the native curl/OpenSSL stack. The CMake package calls
+`find_dependency()` for curl, lonejson, and pslog; the pkg-config file exposes
+lonejson and pslog as public requirements and libcurl as a private link
+requirement. Dependencies are still external: consumer environments must make
+libcurl, `lonejson.h`/`liblonejson`, and `pslog.h` discoverable. cai release
+archives do not vendor those dependency headers or libraries and do not compile
+in single-header dependency variants.
 
 ## Agent Instructions
 

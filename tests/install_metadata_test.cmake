@@ -42,14 +42,21 @@ endif()
 file(READ "${prefix}/lib/cmake/cai/cai-config.cmake" config_text)
 string(FIND "${config_text}" "find_dependency(CURL)" curl_dep_pos)
 string(FIND "${config_text}" "find_dependency(Threads)" threads_dep_pos)
-if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1)
+string(FIND "${config_text}" "find_dependency(lonejson CONFIG QUIET)"
+       lonejson_dep_pos)
+string(FIND "${config_text}" "find_dependency(pslog CONFIG QUIET)"
+       pslog_dep_pos)
+if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1 OR
+   lonejson_dep_pos EQUAL -1 OR pslog_dep_pos EQUAL -1)
   message(FATAL_ERROR "cai CMake package does not declare dependencies")
 endif()
 
 string(FIND "${pc_text}" "Requires.private: libcurl" pc_curl_pos)
+string(FIND "${pc_text}" "Requires: lonejson pslog" pc_public_deps_pos)
 string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
-if(pc_curl_pos EQUAL -1 OR pc_c_pkt_url_pos EQUAL -1)
-  message(FATAL_ERROR "cai.pc does not point at curl/c.pkt.systems dependency")
+if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
+   pc_c_pkt_url_pos EQUAL -1)
+  message(FATAL_ERROR "cai.pc does not point at required dependencies")
 endif()
 
 if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
