@@ -91,6 +91,33 @@ example layers settle.
   practice it may route to a free model that reasons about calling the tool
   without emitting a function call.
 
+## Consuming cai
+
+Installed cai archives include both CMake package metadata and pkg-config
+metadata. They are meant to keep consumer build files small and avoid manual
+include/library path plumbing.
+
+With pkg-config:
+
+```sh
+cc app.c $(pkg-config --cflags --libs cai)
+```
+
+With CMake:
+
+```cmake
+find_package(cai CONFIG REQUIRED)
+add_executable(app app.c)
+target_link_libraries(app PRIVATE cai::cai_shared)
+```
+
+The metadata records the dependency mode used to build cai. In the default
+`cpkt` mode it points at the matching official `c.pkt.systems` release URL and
+checksum for the native curl/OpenSSL stack. Dependencies are still external:
+consumer environments must make libcurl, `lonejson.h`/`liblonejson`, and
+`pslog.h` discoverable. cai release archives do not vendor those dependency
+headers or libraries and do not compile in single-header dependency variants.
+
 ## Agent Instructions
 
 The preferred high-level API is method-style handles:
