@@ -110,6 +110,26 @@ typedef struct tool_route_args {
   lonejson_object_array points;
 } tool_route_args;
 
+typedef struct nested_stream_item {
+  char *id;
+} nested_stream_item;
+
+typedef struct nested_stream_board {
+  char *id;
+  lonejson_mapped_array_stream items;
+} nested_stream_board;
+
+typedef struct nested_stream_store {
+  lonejson_mapped_array_stream boards;
+} nested_stream_store;
+
+typedef struct nested_stream_state {
+  int boards;
+  int items;
+  nested_stream_board board;
+  nested_stream_item item;
+} nested_stream_state;
+
 typedef struct tool_source_result {
   lonejson_source body;
   lonejson_spooled note;
@@ -164,6 +184,24 @@ static const lonejson_field tool_route_fields[] = {
                                 tool_point_args, &tool_point_map,
                                 LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(tool_route_map, tool_route_args, tool_route_fields);
+
+static const lonejson_field nested_stream_item_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(nested_stream_item, id, "id")};
+LONEJSON_MAP_DEFINE(nested_stream_item_map, nested_stream_item,
+                    nested_stream_item_fields);
+
+static const lonejson_field nested_stream_board_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(nested_stream_board, id, "id"),
+    LONEJSON_FIELD_MAPPED_ARRAY_STREAM_REQ(nested_stream_board, items,
+                                           "items")};
+LONEJSON_MAP_DEFINE(nested_stream_board_map, nested_stream_board,
+                    nested_stream_board_fields);
+
+static const lonejson_field nested_stream_store_fields[] = {
+    LONEJSON_FIELD_MAPPED_ARRAY_STREAM_REQ(nested_stream_store, boards,
+                                           "boards")};
+LONEJSON_MAP_DEFINE(nested_stream_store_map, nested_stream_store,
+                    nested_stream_store_fields);
 
 static const lonejson_field tool_source_result_fields[] = {
     LONEJSON_FIELD_STRING_SOURCE_REQ(tool_source_result, body, "body"),
@@ -1059,6 +1097,83 @@ static void test_source_sink(test_state *state) {
     fclose(fp);
   }
   cai_error_cleanup(&error);
+}
+
+static lonejson_status nested_stream_item_cb(void *user, void *item,
+                                             lonejson_error *error) {
+  nested_stream_state *state;
+  nested_stream_item *parsed;
+
+  (void)error;
+  state = (nested_stream_state *)user;
+  parsed = (nested_stream_item *)item;
+  if (parsed->id != NULL && parsed->id[0] != '\0') {
+    state->items++;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status nested_stream_board_cb(void *user, void *item,
+                                              lonejson_error *error) {
+  nested_stream_state *state;
+  nested_stream_board *parsed;
+
+  (void)error;
+  state = (nested_stream_state *)user;
+  parsed = (nested_stream_board *)item;
+  if (parsed->id != NULL && parsed->id[0] != '\0') {
+    state->boards++;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static void test_lonejson_nested_mapped_array_stream(test_state *state) {
+  static const char json[] =
+      "{\"boards\":[{\"id\":\"b1\",\"items\":[{\"id\":\"i1\"},"
+      "{\"id\":\"i2\"}]},{\"id\":\"b2\",\"items\":[{\"id\":\"i3\"}]}]}";
+  nested_stream_state stream_state;
+  nested_stream_store store;
+  lonejson_mapped_array_stream_handler board_handler;
+  lonejson_mapped_array_stream_handler item_handler;
+  lonejson_error error;
+
+  memset(&stream_state, 0, sizeof(stream_state));
+  memset(&store, 0, sizeof(store));
+  memset(&board_handler, 0, sizeof(board_handler));
+  memset(&item_handler, 0, sizeof(item_handler));
+  lonejson_error_init(&error);
+  lonejson_init(&nested_stream_store_map, &store);
+  lonejson_init(&nested_stream_board_map, &stream_state.board);
+  lonejson_init(&nested_stream_item_map, &stream_state.item);
+  lonejson_mapped_array_stream_init(&store.boards);
+  lonejson_mapped_array_stream_init(&stream_state.board.items);
+  item_handler.item_map = &nested_stream_item_map;
+  item_handler.item_dst = &stream_state.item;
+  item_handler.item = nested_stream_item_cb;
+  item_handler.user = &stream_state;
+  expect_int(state, "lonejson_nested_item_stream_handler",
+             lonejson_mapped_array_stream_set_handler(
+                 &stream_state.board.items, &item_handler, &error),
+             LONEJSON_STATUS_OK);
+  board_handler.item_map = &nested_stream_board_map;
+  board_handler.item_dst = &stream_state.board;
+  board_handler.item = nested_stream_board_cb;
+  board_handler.user = &stream_state;
+  expect_int(state, "lonejson_nested_board_stream_handler",
+             lonejson_mapped_array_stream_set_handler(&store.boards,
+                                                      &board_handler, &error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "lonejson_nested_mapped_array_parse",
+             lonejson_parse_cstr(&nested_stream_store_map, &store, json, NULL,
+                                 &error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "lonejson_nested_mapped_array_boards",
+             stream_state.boards, 2L);
+  expect_int(state, "lonejson_nested_mapped_array_items", stream_state.items,
+             3L);
+  lonejson_cleanup(&nested_stream_store_map, &store);
+  lonejson_cleanup(&nested_stream_board_map, &stream_state.board);
+  lonejson_cleanup(&nested_stream_item_map, &stream_state.item);
 }
 
 static void test_tool_registry(test_state *state) {
@@ -8042,6 +8157,7 @@ int main(void) {
   test_model_capabilities(&state);
   test_env_precedence(&state);
   test_source_sink(&state);
+  test_lonejson_nested_mapped_array_stream(&state);
   test_tool_registry(&state);
   test_mcp_handler(&state);
   test_client_open(&state);

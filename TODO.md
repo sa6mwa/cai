@@ -99,9 +99,10 @@ before implementing that slice.
     archive/complete item, and query current work.
   - Implemented as an object-framed JSON record stream so lonejson can parse
     and rewrite one board/item record at a time without materializing the whole
-    store. lonejson provides selected-array read streaming; a future
-    streaming array rewriter is still needed before cai can move this to a
-    single-document JSON array format without losing the memory bound.
+    store. lonejson provides selected-array and nested mapped-array read
+    streaming; a future streaming array rewriter is still needed before cai can
+    move this to a single-document JSON array format without losing the memory
+    bound.
 
 - [ ] Add an example MCP server.
   - Directory: `examples/mcp-server/`.
