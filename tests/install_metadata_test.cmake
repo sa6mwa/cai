@@ -4,6 +4,12 @@ endif()
 if(NOT DEFINED CAI_VERSION OR CAI_VERSION STREQUAL "")
   set(CAI_VERSION "0.0.0")
 endif()
+if(NOT DEFINED CAI_BUILD_TYPE)
+  set(CAI_BUILD_TYPE "")
+endif()
+if(NOT DEFINED CAI_TARGET_ID)
+  set(CAI_TARGET_ID "")
+endif()
 
 set(prefix "${CAI_BINARY_DIR}/install-metadata-test")
 file(REMOVE_RECURSE "${prefix}")
@@ -28,6 +34,59 @@ foreach(path IN LISTS required_files)
     message(FATAL_ERROR "missing installed file: ${path}")
   endif()
 endforeach()
+
+file(GLOB installed_shared_libraries
+  "${prefix}/lib/libcai.so*"
+  "${prefix}/lib/libcai.*.dylib")
+set(installed_shared_library "")
+foreach(path IN LISTS installed_shared_libraries)
+  if(NOT IS_SYMLINK "${path}")
+    set(installed_shared_library "${path}")
+  endif()
+endforeach()
+if(installed_shared_libraries AND installed_shared_library STREQUAL "")
+  list(GET installed_shared_libraries 0 installed_shared_library)
+endif()
+if(installed_shared_library)
+  file(STRINGS "${installed_shared_library}" installed_shared_strings
+       REGEX "/home/|/Users/|/opt/|/tmp/|fsanitize|__asan|__ubsan|libasan|libubsan")
+  string(TOLOWER "${CAI_BUILD_TYPE}" cai_build_type_lower)
+  if(cai_build_type_lower STREQUAL "release")
+    if(installed_shared_strings MATCHES "/home/|/Users/|/opt/|/tmp/")
+      message(FATAL_ERROR
+        "release libcai contains host-specific path: ${installed_shared_strings}")
+    endif()
+    if(installed_shared_strings MATCHES "fsanitize|__asan|__ubsan|libasan|libubsan")
+      message(FATAL_ERROR
+        "release libcai contains sanitizer artifact: ${installed_shared_strings}")
+    endif()
+  endif()
+  if(NOT CAI_TARGET_ID MATCHES "darwin")
+    find_program(readelf_bin NAMES readelf)
+    if(readelf_bin)
+      execute_process(
+        COMMAND "${readelf_bin}" -d "${installed_shared_library}"
+        RESULT_VARIABLE readelf_result
+        OUTPUT_VARIABLE readelf_output
+        ERROR_VARIABLE readelf_error)
+      if(NOT readelf_result EQUAL 0)
+        message(FATAL_ERROR "readelf failed: ${readelf_error}")
+      endif()
+      if(NOT readelf_output MATCHES "\\$ORIGIN")
+        message(FATAL_ERROR "installed libcai runpath does not contain $ORIGIN")
+      endif()
+      if(readelf_output MATCHES "/home/|/Users/|/opt/|/tmp/")
+        message(FATAL_ERROR
+          "installed libcai runpath contains host-specific path: ${readelf_output}")
+      endif()
+      if(cai_build_type_lower STREQUAL "release" AND
+         readelf_output MATCHES "libasan|libubsan")
+        message(FATAL_ERROR
+          "release libcai links sanitizer runtime: ${readelf_output}")
+      endif()
+    endif()
+  endif()
+endif()
 
 file(READ "${prefix}/lib/pkgconfig/cai.pc" pc_text)
 string(FIND "${pc_text}" "prefix=\${pcfiledir}/../.." pc_prefix_pos)

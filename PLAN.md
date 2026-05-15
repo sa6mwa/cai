@@ -21,11 +21,10 @@ application.
 ## Current decisions
 
 - Language and platform: C89 with POSIX features, built with CMake/Ninja/Make.
-- Dependency source: cai consumes lonejson directly from the official
-  `github.com/sa6mwa/lonejson` release `.h.gz` asset, pinned by version and
-  SHA-256 in CMake. Do not use a sibling lonejson checkout as an implicit
-  dependency. Other native dependencies should come from the normal platform or
-  cai release provisioning path.
+- Dependency source: cai consumes official binary dependency archives for
+  lonejson, libpslog, and the `c.pkt.systems` native curl/OpenSSL stack,
+  pinned by version and SHA-256 in CMake. Do not use sibling checkouts or
+  single-header release assets as implicit dependency inputs.
 - JSON: all API JSON construction/parsing goes through lonejson.
 - Logging: pslog is accepted as a borrowed host-owned logger in client config,
   with `logger_disabled` as the zero-default opt-out.
@@ -841,7 +840,8 @@ Mirror liblockdc where practical:
 - Host debug, ASan/UBSan, coverage, release, and cross presets.
 - Installed builds export CMake package metadata and a relocatable pkg-config
   file.
-- Direct pinned download of the official lonejson release header artifact.
+- Direct pinned download of official binary lonejson and libpslog release
+  artifacts.
 - Release/dependency provisioning for libcurl and its native dependency stack
   uses the official `github.com/sa6mwa/c.pkt.systems` release tarballs, pinned
   by version and SHA-256 per target. Do not use sibling checkout artifacts as
@@ -889,8 +889,8 @@ Mirror liblockdc where practical:
 
 - Add CMake/Makefile/scripts based on liblockdc conventions.
 - Add public header skeleton, version header generation, pkg-config metadata.
-- Add dependency fetch/use logic for the official lonejson release `.h.gz`
-  artifact and keep it pinned by checksum.
+- Add dependency fetch/use logic for official binary lonejson/libpslog and
+  `c.pkt.systems` release artifacts and keep them pinned by checksum.
 - Add C89 compile flags and clang-format.
 - Add minimal tests for build metadata and public header C-only inclusion.
 

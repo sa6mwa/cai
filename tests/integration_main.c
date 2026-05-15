@@ -1180,8 +1180,8 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
   char previous_secret[64];
   char expected_turn[64];
   char expected_first[64];
-  char expected_previous[64];
-  char expected_current[64];
+  char expected_previous[96];
+  char expected_current[96];
   double spent_usd;
   double limit_usd;
   int rc;
