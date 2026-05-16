@@ -110,6 +110,9 @@ cmake --build --preset debug --target cai_example_mcp_server
 ./build/debug/cai_example_mcp_server --port 18766
 ```
 
+See `examples/mcp-server/README.md` for curl probes, diagnostic endpoints, and
+MCP Inspector notes.
+
 ## SearXNG Search Tool
 
 Run an agent with the built-in SearXNG search preset. Start the local SearXNG

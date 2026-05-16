@@ -328,6 +328,9 @@ static const char *status_text(int status) {
   if (status == 400) {
     return "Bad Request";
   }
+  if (status == 404) {
+    return "Not Found";
+  }
   if (status == 403) {
     return "Forbidden";
   }
@@ -341,6 +344,30 @@ static const char *status_text(int status) {
     return "Unsupported Media Type";
   }
   return "OK";
+}
+
+static int write_plain_response(int fd, int status, const char *content_type,
+                                const char *body) {
+  char header[256];
+  size_t body_len;
+
+  body_len = body != NULL ? strlen(body) : 0U;
+  snprintf(header, sizeof(header),
+           "HTTP/1.1 %d %s\r\n"
+           "Content-Type: %s\r\n"
+           "Content-Length: %lu\r\n"
+           "Connection: close\r\n"
+           "\r\n",
+           status, status_text(status),
+           content_type != NULL ? content_type : "text/plain",
+           (unsigned long)body_len);
+  if (write_cstr(fd, header) != 0) {
+    return -1;
+  }
+  if (body_len != 0U && write_all(fd, body, body_len) != 0) {
+    return -1;
+  }
+  return 0;
 }
 
 static int send_response_headers(http_response_state *response,
@@ -530,14 +557,45 @@ static int handle_connection(int fd, cai_mcp_handler *handler,
   request_state.fd = fd;
   if (read_headers(&request_state) != 0) {
     pslog_warnf(log, "invalid HTTP request", "fd=%d", fd);
-    write_cstr(fd, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+    write_plain_response(fd, 400, "text/plain", "bad request\n");
     return 1;
+  }
+  if (strcmp(request_state.path, "/health") == 0 ||
+      (strcmp(request_state.path, "/mcp") == 0 &&
+       strcmp(request_state.method, "GET") == 0)) {
+    if (strcmp(request_state.method, "GET") != 0) {
+      write_plain_response(fd, 405, "text/plain", "method not allowed\n");
+      return 1;
+    }
+    pslog_infof(log, "handling diagnostic request", "path=%s",
+                request_state.path);
+    write_plain_response(fd, 200, "application/json",
+                         "{\"ok\":true,\"service\":\"cai-mcp-example\"}\n");
+    return 0;
   }
   if (strcmp(request_state.path, "/mcp") != 0) {
     pslog_warnf(log, "request path not found", "method=%s path=%s",
                 request_state.method, request_state.path);
-    write_cstr(fd, "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    write_plain_response(fd, 404, "text/plain", "not found\n");
     return 1;
+  }
+  if (strcmp(request_state.method, "POST") != 0) {
+    pslog_warnf(log, "method not allowed", "method=%s path=%s",
+                request_state.method, request_state.path);
+    write_plain_response(fd, 405, "text/plain", "method not allowed\n");
+    return 1;
+  }
+  {
+    const char *content_type;
+
+    content_type = request_header_get(&request_state, "content-type");
+    if (content_type == NULL ||
+        strncmp(content_type, "application/json", 16U) != 0) {
+      pslog_warnf(log, "unsupported media type", "content_type=%s",
+                  content_type != NULL ? content_type : "");
+      write_plain_response(fd, 415, "text/plain", "unsupported media type\n");
+      return 1;
+    }
   }
   pslog_infof(log, "handling MCP request", "method=%s path=%s bytes=%u",
               request_state.method, request_state.path,
