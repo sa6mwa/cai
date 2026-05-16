@@ -553,6 +553,13 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_tests PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_todo_workflow
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_TODO_WORKFLOW=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_todo_workflow PROPERTIES
+      LABELS "integration;offline"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
 endif()
 

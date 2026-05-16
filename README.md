@@ -509,6 +509,7 @@ The default test suite is offline. Integration tests intentionally spend API tok
 must be run explicitly:
 
 ```sh
+CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests

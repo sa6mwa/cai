@@ -1,13 +1,19 @@
 #include <cai/cai.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
+#include <cai/tools/todo.h>
 
 #include <lonejson.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 #define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
 
@@ -199,6 +205,88 @@ static int integration_write(void *context, const void *bytes, size_t count,
   return CAI_OK;
 }
 
+static void integration_write_reset(integration_write_state *state) {
+  state->buffer[0] = '\0';
+  state->length = 0U;
+}
+
+static int integration_expect_contains(const char *name, const char *haystack,
+                                       const char *needle) {
+  if (haystack == NULL || strstr(haystack, needle) == NULL) {
+    fprintf(stderr, "%s missing expected text: %s\nactual:\n%s\n", name,
+            needle, haystack != NULL ? haystack : "(null)");
+    return 1;
+  }
+  return 0;
+}
+
+static int integration_extract_json_string(const char *json, const char *field,
+                                           char *out, size_t capacity) {
+  char needle[64];
+  const char *start;
+  const char *end;
+  size_t field_len;
+  size_t len;
+
+  field_len = strlen(field);
+  if (field_len + 4U > sizeof(needle) || capacity == 0U) {
+    return 0;
+  }
+  needle[0] = '"';
+  memcpy(needle + 1U, field, field_len);
+  memcpy(needle + 1U + field_len, "\":\"", 4U);
+  start = strstr(json, needle);
+  if (start == NULL) {
+    return 0;
+  }
+  start += field_len + 4U;
+  end = strchr(start, '"');
+  if (end == NULL) {
+    return 0;
+  }
+  len = (size_t)(end - start);
+  if (len >= capacity) {
+    return 0;
+  }
+  memcpy(out, start, len);
+  out[len] = '\0';
+  return 1;
+}
+
+static void integration_write_file_or_die(const char *path, const char *text) {
+  FILE *fp;
+
+  fp = fopen(path, "w");
+  if (fp == NULL) {
+    perror(path);
+    exit(2);
+  }
+  fputs(text, fp);
+  fclose(fp);
+}
+
+static int integration_read_file(const char *path, char *buffer,
+                                 size_t capacity) {
+  FILE *fp;
+  size_t nread;
+
+  if (capacity == 0U) {
+    return 0;
+  }
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return 0;
+  }
+  nread = fread(buffer, 1U, capacity - 1U, fp);
+  if (ferror(fp)) {
+    fclose(fp);
+    return 0;
+  }
+  buffer[nread] = '\0';
+  fclose(fp);
+  return 1;
+}
+
 static int run_basic_response(void) {
   const char *model;
   cai_client_config client_config;
@@ -248,6 +336,317 @@ done:
   cai_client_close(client);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
+}
+
+static int todo_run(cai_tool_registry *registry, cai_sink *sink,
+                    integration_write_state *writer, const char *name,
+                    const char *args, int expected_rc, cai_error *error) {
+  int rc;
+
+  integration_write_reset(writer);
+  rc = cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME, args, sink,
+                             error);
+  if (rc != expected_rc) {
+    fprintf(stderr, "%s expected rc=%d got rc=%d: %s\n", name, expected_rc, rc,
+            error->message != NULL ? error->message : cai_status_string(rc));
+    if (error->detail != NULL) {
+      fprintf(stderr, "detail: %s\n", error->detail);
+    }
+    return 1;
+  }
+  return 0;
+}
+
+static int run_todo_workflow_regression(void) {
+  char dir_template[] = "/tmp/cai-todo-integration-XXXXXX";
+  char store_path[PATH_MAX];
+  char lock_path[PATH_MAX];
+  char args[1024];
+  char board_main[64];
+  char board_ops[64];
+  char item_plan[64];
+  char item_build[64];
+  char item_review[64];
+  char item_ops[64];
+  char store[16384];
+  cai_todo_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  integration_write_state writer;
+  cai_error error;
+  int failures;
+  int i;
+
+  cai_error_init(&error);
+  registry = NULL;
+  sink = NULL;
+  failures = 0;
+  board_main[0] = '\0';
+  board_ops[0] = '\0';
+  item_plan[0] = '\0';
+  item_build[0] = '\0';
+  item_review[0] = '\0';
+  item_ops[0] = '\0';
+  integration_write_reset(&writer);
+  if (mkdtemp(dir_template) == NULL) {
+    perror("mkdtemp");
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  snprintf(store_path, sizeof(store_path), "%s/todo.json", dir_template);
+  snprintf(lock_path, sizeof(lock_path), "%s/todo.lock", dir_template);
+  memset(&config, 0, sizeof(config));
+  config.store_path = store_path;
+  config.lock_path = lock_path;
+  config.default_board = "main";
+  config.max_title_bytes = 64U;
+  config.max_description_bytes = 128U;
+  config.max_result_items = 3U;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+  if (cai_tool_registry_new(&registry, &error) != CAI_OK ||
+      cai_tool_registry_register_todo_tool(registry, &config, &error) !=
+          CAI_OK ||
+      cai_sink_from_callbacks(&sink_callbacks, &sink, &error) != CAI_OK) {
+    print_error("todo workflow setup", error.code, &error);
+    failures++;
+    goto done;
+  }
+
+  failures += todo_run(registry, sink, &writer, "todo create main",
+                       "{\"operation\":\"create_board\",\"board_name\":\"main\","
+                       "\"wip_limit\":1}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo create main ok", writer.buffer,
+                                          "\"ok\":true");
+  if (!integration_extract_json_string(writer.buffer, "board_id", board_main,
+                                       sizeof(board_main))) {
+    fprintf(stderr, "todo workflow failed to capture main board id\n");
+    failures++;
+  }
+  failures += todo_run(registry, sink, &writer, "todo create ops",
+                       "{\"operation\":\"create_board\",\"board_name\":\"ops\"}",
+                       CAI_OK, &error);
+  if (!integration_extract_json_string(writer.buffer, "board_id", board_ops,
+                                       sizeof(board_ops))) {
+    fprintf(stderr, "todo workflow failed to capture ops board id\n");
+    failures++;
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+           "\"title\":\"plan slice\",\"description\":\"define expected "
+           "workflow invariants\",\"status\":\"todo\"}",
+           board_main);
+  failures += todo_run(registry, sink, &writer, "todo add plan", args, CAI_OK,
+                       &error);
+  failures += integration_expect_contains("todo add plan ok", writer.buffer,
+                                          "\"ok\":true");
+  if (!integration_extract_json_string(writer.buffer, "item_id", item_plan,
+                                       sizeof(item_plan))) {
+    failures++;
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+           "\"title\":\"build slice\",\"status\":\"in_process\"}",
+           board_main);
+  failures += todo_run(registry, sink, &writer, "todo add build", args, CAI_OK,
+                       &error);
+  if (!integration_extract_json_string(writer.buffer, "item_id", item_build,
+                                       sizeof(item_build))) {
+    failures++;
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+           "\"title\":\"review slice\",\"status\":\"in_process\"}",
+           board_main);
+  failures += todo_run(registry, sink, &writer, "todo wip denial", args,
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo wip denial ok=false",
+                                          writer.buffer, "\"ok\":false");
+  failures += integration_expect_contains("todo wip denial code",
+                                          writer.buffer,
+                                          "\"wip_limit_exceeded\"");
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"set_wip_limit\",\"board_id\":\"%s\","
+           "\"wip_limit\":2}",
+           board_main);
+  failures += todo_run(registry, sink, &writer, "todo set wip", args, CAI_OK,
+                       &error);
+  failures += integration_expect_contains("todo set wip result", writer.buffer,
+                                          "\"wip_limit\":2");
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+           "\"title\":\"review slice\",\"status\":\"in_process\"}",
+           board_main);
+  failures += todo_run(registry, sink, &writer, "todo add review", args,
+                       CAI_OK, &error);
+  if (!integration_extract_json_string(writer.buffer, "item_id", item_review,
+                                       sizeof(item_review))) {
+    failures++;
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"current_work\",\"board_id\":\"%s\"}", board_main);
+  failures += todo_run(registry, sink, &writer, "todo current work", args,
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo current includes build",
+                                          writer.buffer, "build slice");
+  failures += integration_expect_contains("todo current includes review",
+                                          writer.buffer, "review slice");
+  if (strstr(writer.buffer, "plan slice") != NULL) {
+    fprintf(stderr, "todo current_work included todo-lane item\n%s\n",
+            writer.buffer);
+    failures++;
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"move_item\",\"item_id\":\"%s\","
+           "\"board_id\":\"%s\",\"status\":\"todo\"}",
+           item_review, board_main);
+  failures += todo_run(registry, sink, &writer, "todo move review", args,
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo move status", writer.buffer,
+                                          "\"status\":\"todo\"");
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+           "\"title\":\"ops deploy\",\"status\":\"in_process\"}",
+           board_ops);
+  failures += todo_run(registry, sink, &writer, "todo add ops", args, CAI_OK,
+                       &error);
+  if (!integration_extract_json_string(writer.buffer, "item_id", item_ops,
+                                       sizeof(item_ops))) {
+    failures++;
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"complete_item\",\"item_id\":\"%s\","
+           "\"board_id\":\"%s\"}",
+           item_build, board_main);
+  failures += todo_run(registry, sink, &writer, "todo complete build", args,
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo complete result",
+                                          writer.buffer, "item completed");
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+           "\"title\":\"ship slice\",\"status\":\"in_process\"}",
+           board_main);
+  failures += todo_run(registry, sink, &writer,
+                       "todo add after completion frees wip", args, CAI_OK,
+                       &error);
+  failures += integration_expect_contains("todo add after completion",
+                                          writer.buffer, "\"ok\":true");
+  for (i = 0; i < 8; ++i) {
+    snprintf(args, sizeof(args),
+             "{\"operation\":\"add_item\",\"board_id\":\"%s\","
+             "\"title\":\"backlog %d\",\"status\":\"todo\"}",
+             board_main, i);
+    failures += todo_run(registry, sink, &writer, "todo backlog add", args,
+                         CAI_OK, &error);
+  }
+  snprintf(args, sizeof(args),
+           "{\"operation\":\"list_board\",\"board_id\":\"%s\"}", board_main);
+  failures += todo_run(registry, sink, &writer, "todo list bounded", args,
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo list bounded truncated",
+                                          writer.buffer, "\"truncated\":true");
+  failures += integration_expect_contains("todo list bounded count",
+                                          writer.buffer, "\"item_count\":");
+  failures += todo_run(registry, sink, &writer, "todo list boards",
+                       "{\"operation\":\"list_boards\"}", CAI_OK, &error);
+  failures += integration_expect_contains("todo list boards main",
+                                          writer.buffer, "\"main\"");
+  failures += integration_expect_contains("todo list boards ops",
+                                          writer.buffer, "\"ops\"");
+
+  failures += todo_run(registry, sink, &writer, "todo board missing",
+                       "{\"operation\":\"add_item\","
+                       "\"board_name\":\"missing\",\"title\":\"nope\"}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo board missing result",
+                                          writer.buffer, "\"board_not_found\"");
+  failures += todo_run(registry, sink, &writer, "todo item missing",
+                       "{\"operation\":\"complete_item\","
+                       "\"item_id\":\"missing-item\",\"board_name\":\"main\"}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo item missing result",
+                                          writer.buffer, "\"item_not_found\"");
+  failures += todo_run(registry, sink, &writer, "todo invalid status",
+                       "{\"operation\":\"add_item\",\"board_name\":\"main\","
+                       "\"title\":\"bad status\",\"status\":\"blocked\"}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo invalid status result",
+                                          writer.buffer, "\"invalid_status\"");
+  failures += todo_run(registry, sink, &writer, "todo invalid wip",
+                       "{\"operation\":\"set_wip_limit\","
+                       "\"board_name\":\"main\",\"wip_limit\":-1}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo invalid wip result",
+                                          writer.buffer, "\"invalid_request\"");
+  failures += todo_run(registry, sink, &writer, "todo title too large",
+                       "{\"operation\":\"add_item\",\"board_name\":\"main\","
+                       "\"title\":\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\"}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo title too large result",
+                                          writer.buffer, "\"title_too_large\"");
+  failures += todo_run(registry, sink, &writer, "todo description too large",
+                       "{\"operation\":\"add_item\",\"board_name\":\"main\","
+                       "\"title\":\"desc\",\"description\":\""
+                       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                       "aaaaaaaaaaaaaaaa\"}",
+                       CAI_OK, &error);
+  failures += integration_expect_contains("todo description too large result",
+                                          writer.buffer,
+                                          "\"description_too_large\"");
+  failures += todo_run(registry, sink, &writer, "todo unknown operation",
+                       "{\"operation\":\"explode\"}", CAI_OK, &error);
+  failures += integration_expect_contains("todo unknown op result",
+                                          writer.buffer,
+                                          "\"unknown_operation\"");
+  failures += todo_run(registry, sink, &writer, "todo unknown arg",
+                       "{\"operation\":\"list_boards\",\"system\":\"ignore\"}",
+                       CAI_ERR_PROTOCOL, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (!integration_read_file(store_path, store, sizeof(store))) {
+    fprintf(stderr, "todo workflow failed to read store\n");
+    failures++;
+  } else {
+    failures += integration_expect_contains("todo store boards", store,
+                                            "\"boards\":[");
+    failures += integration_expect_contains("todo store items", store,
+                                            "\"items\":[");
+    failures += integration_expect_contains("todo store done", store,
+                                            "\"done\":[");
+    failures += integration_expect_contains("todo store archived build", store,
+                                            "build slice");
+    if (strstr(store, "\"type\"") != NULL) {
+      fprintf(stderr, "todo workflow store contained legacy type field\n%s\n",
+              store);
+      failures++;
+    }
+  }
+  integration_write_file_or_die(
+      store_path,
+      "{\"version\":1,\"boards\":[],\"boards\":[],\"items\":[],\"done\":[]}");
+  failures += todo_run(registry, sink, &writer, "todo duplicate key store",
+                       "{\"operation\":\"list_boards\"}", CAI_ERR_PROTOCOL,
+                       &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  integration_write_file_or_die(store_path, "{\"version\":1,\"boards\":[");
+  failures += todo_run(registry, sink, &writer, "todo corrupt store",
+                       "{\"operation\":\"list_boards\"}", CAI_ERR_PROTOCOL,
+                       &error);
+
+done:
+  cai_error_cleanup(&error);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  unlink(store_path);
+  unlink(lock_path);
+  rmdir(dir_template);
+  return failures == 0 ? 0 : 1;
 }
 
 static int run_openrouter_basic_response(void) {
@@ -1531,6 +1930,7 @@ int main(void) {
   const char *searxng_stream_tool;
   const char *state_restore;
   const char *revgeo_provider;
+  const char *todo_workflow;
   const char *tool_security;
 
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
@@ -1595,6 +1995,11 @@ int main(void) {
   if (revgeo_provider != NULL && revgeo_provider[0] != '\0' &&
       strcmp(revgeo_provider, "0") != 0) {
     return run_revgeo_provider_regression();
+  }
+  todo_workflow = getenv("CAI_INTEGRATION_TODO_WORKFLOW");
+  if (todo_workflow != NULL && todo_workflow[0] != '\0' &&
+      strcmp(todo_workflow, "0") != 0) {
+    return run_todo_workflow_regression();
   }
   e2e = getenv("CAI_INTEGRATION_E2E");
   if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
