@@ -291,10 +291,12 @@ First implemented scope:
 The request body is a `cai_source` and the response body is a `cai_sink`.
 The JSON-RPC envelope is parsed with lonejson while `id`, `params`, and
 `params.arguments` are validated into spooled JSON values. Typed tool
-arguments are parsed from that spool and tool results are serialized back into
-a spooled JSON result before the MCP response is written. `GET`/SSE streams,
-stateful `Mcp-Session-Id` lifecycle, resources, prompts, and sampling are not
-implemented yet.
+arguments are parsed from that spool. By default, successful `tools/call`
+results stream directly into the MCP response body as `structuredContent`.
+If `tool_output_max_bytes` is configured, cai intentionally switches that
+tool-call output to bounded spooling so it can fail closed before committing a
+partial JSON-RPC response. `GET`/SSE streams, stateful `Mcp-Session-Id`
+lifecycle, resources, prompts, and sampling are not implemented yet.
 
 Minimal route adapter shape:
 

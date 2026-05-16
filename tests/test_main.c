@@ -1059,6 +1059,23 @@ static int test_large_raw_tool(void *context, const char *arguments_json,
   return cai_sink_write(output, payload, sizeof(payload) - 1U, error);
 }
 
+static int test_chunked_json_tool(void *context, const char *arguments_json,
+                                  cai_sink *output, cai_error *error) {
+  static const char *chunks[] = {"{\"value\":\"", "alpha", "-", "beta",
+                                "\"}"};
+  size_t i;
+
+  (void)context;
+  (void)arguments_json;
+  for (i = 0U; i < sizeof(chunks) / sizeof(chunks[0]); i++) {
+    if (cai_sink_write(output, chunks[i], strlen(chunks[i]), error) !=
+        CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+  }
+  return CAI_OK;
+}
+
 static int test_large_weather_tool(void *context, const void *params,
                                    void *result, cai_error *error) {
   tool_weather_result *out;
@@ -2112,6 +2129,12 @@ static void test_mcp_handler(test_state *state) {
                  &tool_weather_map, &tool_weather_result_map,
                  test_large_weather_tool, NULL, &error),
              CAI_OK);
+  expect_int(state, "mcp_register_chunked_tool",
+             cai_tool_registry_register_raw(
+                 registry, "chunked_json", "Write chunked JSON",
+                 "{\"type\":\"object\",\"properties\":{}}", 0,
+                 test_chunked_json_tool, NULL, &error),
+             CAI_OK);
   cai_mcp_handler_config_init(&config);
   allowed_origins[0] = "https://app.example";
   config.name = "cai-test";
@@ -2119,7 +2142,7 @@ static void test_mcp_handler(test_state *state) {
   config.tools = registry;
   config.allowed_origins = allowed_origins;
   config.allowed_origin_count = 1U;
-  config.tool_output_max_bytes = 1024U;
+  config.tool_output_max_bytes = 0U;
   expect_int(state, "mcp_handler_new",
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
   expect_int(state, "mcp_initialize",
@@ -2168,6 +2191,28 @@ static void test_mcp_handler(test_state *state) {
     test_fail(state, "mcp_tools_call_body", "tools/call response incomplete");
   }
   expect_valid_json(state, "mcp_tools_call_json", writer.buffer);
+  expect_int(state, "mcp_chunked_tool_call",
+             test_mcp_handle_stream(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "POST",
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"chunked-1\","
+                 "\"method\":\"tools/call\",\"params\":{\"name\":"
+                 "\"chunked_json\",\"arguments\":{}}}",
+                 1U, 0, 0, &source_state, &sink_state, &header_state,
+                 &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_chunked_tool_status", status, 200L);
+  if (sink_state.write_count < 10) {
+    test_fail(state, "mcp_chunked_tool_sink",
+              "MCP tool output was not streamed through response writes");
+  }
+  if (strstr(sink_state.buffer, "\"structuredContent\":{\"value\":"
+                               "\"alpha-beta\"}") == NULL ||
+      strstr(sink_state.buffer, "\"isError\":false") == NULL) {
+    test_fail(state, "mcp_chunked_tool_body",
+              "chunked MCP tool response was incomplete");
+  }
+  expect_valid_json(state, "mcp_chunked_tool_json", sink_state.buffer);
   expect_int(state, "mcp_streamed_large_tool_call",
              test_mcp_handle_stream(
                  handler, headers, sizeof(headers) / sizeof(headers[0]),

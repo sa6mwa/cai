@@ -34,6 +34,22 @@ typedef struct cai_mcp_spool_sink_context {
   size_t limit;
 } cai_mcp_spool_sink_context;
 
+typedef struct cai_mcp_tool_stream_context {
+  cai_sink *response;
+  const lonejson_spooled *id;
+  size_t total;
+  int began;
+} cai_mcp_tool_stream_context;
+
+static int cai_mcp_write(cai_sink *sink, const char *text, cai_error *error);
+static int cai_mcp_write_bytes(cai_sink *sink, const void *data, size_t len,
+                               cai_error *error);
+static int cai_mcp_write_json_string(cai_sink *sink, const char *value,
+                                     cai_error *error);
+static int cai_mcp_write_result_begin(cai_sink *sink,
+                                      const lonejson_spooled *id,
+                                      cai_error *error);
+
 struct cai_mcp_handler {
   char *name;
   char *version;
@@ -134,6 +150,57 @@ static int cai_mcp_spool_write(void *context, const void *bytes, size_t count,
   }
   sink_context->total += count;
   return CAI_OK;
+}
+
+static int cai_mcp_write_tool_success_prefix(cai_sink *sink,
+                                             cai_error *error) {
+  int rc;
+
+  rc = cai_mcp_write(sink, "{\"content\":[{\"type\":\"text\",\"text\":",
+                     error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(sink, "structured JSON result", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write(sink, "}],\"structuredContent\":", error);
+  }
+  return rc;
+}
+
+static int cai_mcp_write_tool_success_suffix(cai_sink *sink,
+                                             cai_error *error) {
+  return cai_mcp_write(sink, ",\"isError\":false}}", error);
+}
+
+static int cai_mcp_tool_stream_write(void *context, const void *bytes,
+                                     size_t count, cai_error *error) {
+  cai_mcp_tool_stream_context *stream;
+  int rc;
+
+  stream = (cai_mcp_tool_stream_context *)context;
+  if (!stream->began) {
+    rc = cai_mcp_write_result_begin(stream->response, stream->id, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    rc = cai_mcp_write_tool_success_prefix(stream->response, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    stream->began = 1;
+  }
+  if (count == 0U) {
+    return CAI_OK;
+  }
+  if (stream->total > (size_t)-1 - count) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP tool output byte count overflow");
+  }
+  rc = cai_mcp_write_bytes(stream->response, bytes, count, error);
+  if (rc == CAI_OK) {
+    stream->total += count;
+  }
+  return rc;
 }
 
 static int cai_mcp_write(cai_sink *sink, const char *text, cai_error *error) {
@@ -446,6 +513,7 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
   lonejson_spool_options spool_options;
   cai_sink_callbacks callbacks;
   cai_mcp_spool_sink_context spool_sink_context;
+  cai_mcp_tool_stream_context stream_context;
   cai_sink *output_sink;
   char *name;
   int rc;
@@ -460,6 +528,60 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
     return cai_mcp_write_error(sink, id, -32602,
                                "Invalid tool call parameters", error);
   }
+
+  if (handler->tool_output_max_bytes == 0U) {
+    memset(&stream_context, 0, sizeof(stream_context));
+    stream_context.response = sink;
+    stream_context.id = id;
+    callbacks.write = cai_mcp_tool_stream_write;
+    callbacks.close = NULL;
+    callbacks.context = &stream_context;
+    rc = cai_sink_from_callbacks(&callbacks, &output_sink, error);
+    if (rc == CAI_OK) {
+      rc = cai_tool_registry_run_spooled(handler->tools, name, &arguments,
+                                         output_sink, error);
+    }
+    cai_sink_close(output_sink);
+    if (rc != CAI_OK) {
+      if (stream_context.began) {
+        cai_free_mem(NULL, name);
+        lonejson_spooled_cleanup(&arguments);
+        return rc;
+      }
+      rc = cai_mcp_write_result_begin(sink, id, error);
+      if (rc == CAI_OK) {
+        rc = cai_mcp_write(sink,
+                           "{\"content\":[{\"type\":\"text\",\"text\":",
+                           error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_write_json_string(
+            sink, error != NULL && error->message != NULL ? error->message
+                                                          : "tool failed",
+            error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_write(sink, "}],\"isError\":true}}", error);
+      }
+    } else {
+      if (!stream_context.began) {
+        rc = cai_mcp_write_result_begin(sink, id, error);
+        if (rc == CAI_OK) {
+          rc = cai_mcp_write_tool_success_prefix(sink, error);
+        }
+        if (rc == CAI_OK) {
+          rc = cai_mcp_write(sink, "null", error);
+        }
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_write_tool_success_suffix(sink, error);
+      }
+    }
+    cai_free_mem(NULL, name);
+    lonejson_spooled_cleanup(&arguments);
+    return rc;
+  }
+
   spool_options = lonejson_default_spool_options();
   spool_options.memory_limit = handler->response_spool_memory_limit;
   lonejson_spooled_init(&output, &spool_options);
@@ -494,20 +616,13 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
   } else {
     rc = cai_mcp_write_result_begin(sink, id, error);
     if (rc == CAI_OK) {
-      rc = cai_mcp_write(sink, "{\"content\":[{\"type\":\"text\",\"text\":",
-                         error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_mcp_write_json_string(sink, "structured JSON result", error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_mcp_write(sink, "}],\"structuredContent\":", error);
+      rc = cai_mcp_write_tool_success_prefix(sink, error);
     }
     if (rc == CAI_OK) {
       rc = cai_mcp_write_spooled(sink, &output, error);
     }
     if (rc == CAI_OK) {
-      rc = cai_mcp_write(sink, ",\"isError\":false}}", error);
+      rc = cai_mcp_write_tool_success_suffix(sink, error);
     }
   }
   cai_free_mem(NULL, name);

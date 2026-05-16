@@ -698,8 +698,10 @@ Streaming rule: the MCP handler must not take a full request JSON string.
 It parses the JSON-RPC envelope from a `cai_source`; `id`, `params`, and
 `params.arguments` are validated into spooled JSON values with lonejson
 parse-sinks. Typed tool arguments are parsed from the spool. Tool result JSON
-is written to a spooled sink so MCP can emit both a small text content fallback
-and `structuredContent` without heap-materializing the result.
+streams directly into the MCP response `structuredContent` by default. If
+`tool_output_max_bytes` is configured, that specific `tools/call` path uses
+bounded spooling so cai can reject oversize output before committing a partial
+JSON-RPC response.
 
 Initial result payload support:
 
