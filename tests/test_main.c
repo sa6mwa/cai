@@ -3511,6 +3511,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_img\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"image turn\"}]}]}";
+  static const char session_file_body[] =
+      "{\"id\":\"resp_session_file\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"file turn\"}]}]}";
   static const char session_conversation_body[] =
       "{\"id\":\"resp_session_conv\",\"status\":\"completed\","
       "\"conversation\":{\"id\":\"conv_session\"},\"output\":[{"
@@ -4097,6 +4101,14 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_session_3\"") !=
             NULL) {
       return session_image_body;
+    }
+    if (strstr(request, "\"type\":\"input_file\"") != NULL &&
+        strstr(request, "\"filename\":\"session-note.txt\"") != NULL &&
+        strstr(request, "\"file_data\":\"session file body\"") != NULL &&
+        strstr(request, "\"detail\":\"low\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_session_img\"") !=
+            NULL) {
+      return session_file_body;
     }
     if (strstr(request, "conversation turn") != NULL &&
         strstr(request, "\"conversation\":\"conv_session\"") != NULL &&
@@ -4896,6 +4908,8 @@ static void test_agent_session(test_state *state) {
   cai_output *output;
   const cai_response *output_response;
   cai_error error;
+  char file_path[] = "/tmp/cai-session-file-XXXXXX";
+  int file_fd;
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "agent_mock", "pipe failed");
@@ -4910,7 +4924,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 9);
+    mock_openai_child(pipe_fds[1], 10);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -4958,9 +4972,10 @@ static void test_agent_session(test_state *state) {
   if (client->new_agent == NULL || client->close == NULL ||
       agent->register_tool == NULL || agent->register_raw_tool == NULL ||
       agent->register_raw_spooled_tool == NULL ||
-      agent->add_user_text == NULL || agent->stream_text == NULL ||
-      agent->run_output == NULL || agent->new_session == NULL ||
-      agent->close == NULL) {
+      agent->add_user_text == NULL || agent->add_user_file_path == NULL ||
+      agent->add_user_file_data_spooled == NULL ||
+      agent->stream_text == NULL || agent->run_output == NULL ||
+      agent->new_session == NULL || agent->close == NULL) {
     test_fail(state, "agent_methods", "method facade not initialized");
   }
   expect_int(
@@ -4981,7 +4996,8 @@ static void test_agent_session(test_state *state) {
   response = NULL;
   expect_int(state, "agent_session_new",
              agent->new_session(agent, &session, &error), CAI_OK);
-  if (session->add_user_text == NULL || session->run == NULL ||
+  if (session->add_user_text == NULL || session->add_user_file_path == NULL ||
+      session->add_user_file_data_spooled == NULL || session->run == NULL ||
       session->send_text == NULL || session->close == NULL) {
     test_fail(state, "session_methods", "session facade not initialized");
   }
@@ -5028,6 +5044,26 @@ static void test_agent_session(test_state *state) {
              "image turn");
   cai_response_destroy(response);
   response = NULL;
+  file_fd = mkstemp(file_path);
+  if (file_fd < 0) {
+    test_fail(state, "agent_file_path", "mkstemp failed");
+  } else {
+    close(file_fd);
+    write_file_or_die(file_path, "session file body");
+    expect_int(state, "agent_add_file_path",
+               session->add_user_file_path(session, file_path,
+                                           "session-note.txt", "low", &error),
+               CAI_OK);
+    expect_int(state, "agent_file_run",
+               session->run(session, &response, &error), CAI_OK);
+    expect_str(state, "agent_file_id", cai_response_id(response),
+               "resp_session_file");
+    expect_str(state, "agent_file_text", cai_response_output_text(response),
+               "file turn");
+    cai_response_destroy(response);
+    response = NULL;
+    unlink(file_path);
+  }
   expect_int(state, "agent_session_conversation",
              cai_conversation_from_id("conv_session", &conversation, &error),
              CAI_OK);

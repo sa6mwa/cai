@@ -237,8 +237,11 @@ directory.
 
 Rules:
 
-- Request input should accept borrowed strings, `lc_source`, file paths, and
-  application callbacks.
+- Request input should accept borrowed strings, file paths, spooled file data,
+  `lc_source`, and application callbacks. Implemented high-level session/agent
+  input currently covers borrowed text, image URLs, file paths, and spooled
+  file data; callback/source-backed pending input remains a future extension
+  unless it can preserve retry safety without hidden materialization.
 - Response output should be representable as:
   - parsed metadata plus streamed content events,
   - a generated lonejson writer/source,

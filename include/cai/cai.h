@@ -272,6 +272,12 @@ struct cai_agent {
   int (*add_user_text)(cai_agent *agent, const char *text, cai_error *error);
   int (*add_user_image_url)(cai_agent *agent, const char *url,
                             const char *detail, cai_error *error);
+  int (*add_user_file_data_spooled)(cai_agent *agent, const char *filename,
+                                    struct lonejson_spooled *file_data,
+                                    const char *detail, cai_error *error);
+  int (*add_user_file_path)(cai_agent *agent, const char *path,
+                            const char *filename, const char *detail,
+                            cai_error *error);
   int (*run)(cai_agent *agent, cai_response **out, cai_error *error);
   int (*run_output)(cai_agent *agent, cai_output **out, cai_error *error);
   int (*run_auto)(cai_agent *agent, const cai_run_options *options,
@@ -310,6 +316,13 @@ struct cai_session {
                        cai_error *error);
   int (*add_user_image_url)(cai_session *session, const char *url,
                             const char *detail, cai_error *error);
+  int (*add_user_file_data_spooled)(cai_session *session,
+                                    const char *filename,
+                                    struct lonejson_spooled *file_data,
+                                    const char *detail, cai_error *error);
+  int (*add_user_file_path)(cai_session *session, const char *path,
+                            const char *filename, const char *detail,
+                            cai_error *error);
   int (*add_function_call_output)(cai_session *session, const char *call_id,
                                   const char *output, cai_error *error);
   int (*run)(cai_session *session, cai_response **out, cai_error *error);
@@ -430,6 +443,14 @@ int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error);
 int cai_session_add_user_image_url(cai_session *session, const char *url,
                                    const char *detail, cai_error *error);
+int cai_session_add_user_file_data_spooled(cai_session *session,
+                                           const char *filename,
+                                           struct lonejson_spooled *file_data,
+                                           const char *detail,
+                                           cai_error *error);
+int cai_session_add_user_file_path(cai_session *session, const char *path,
+                                   const char *filename, const char *detail,
+                                   cai_error *error);
 int cai_session_add_function_call_output(cai_session *session,
                                          const char *call_id,
                                          const char *output, cai_error *error);

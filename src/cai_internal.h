@@ -59,9 +59,12 @@ typedef struct cai_session_text_input {
   char *role;
   char *text;
   char *image_url;
+  char *filename;
   char *detail;
   char *call_id;
   char *output;
+  lonejson_spooled file_data;
+  int has_file_data;
 } cai_session_input;
 
 typedef struct cai_session_impl {

@@ -159,6 +159,12 @@ turns, so simple chat and workflow drivers get Responses context continuity
 without manually carrying a `cai_session`. Explicit sessions remain available
 for multi-session, conversation-handle, and advanced workflows.
 
+User file input is available at the same facade level. Use
+`add_user_file_path` for a local path or `add_user_file_data_spooled` when the
+caller already owns a `lonejson_spooled` value. The session keeps the pending
+file content spooled and clones it into each request, so a failed request does
+not consume the queued file input.
+
 Process restart/resume has two separate pieces by design. To continue
 inference against OpenAI-held Responses context, persist either
 `cai_session_previous_response_id(session)` or

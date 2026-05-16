@@ -92,7 +92,8 @@ LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
 enum {
   CAI_SESSION_INPUT_TEXT = 0,
   CAI_SESSION_INPUT_IMAGE = 1,
-  CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT = 2
+  CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT = 2,
+  CAI_SESSION_INPUT_FILE_DATA = 3
 };
 
 static int cai_history_append_spooled(cai_session *session,
@@ -136,6 +137,12 @@ static int cai_session_remember_stream(cai_session *session,
 static int cai_agent_add_user_text(cai_agent *agent, const char *text,
                                    cai_error *error);
 static int cai_agent_add_user_image_url(cai_agent *agent, const char *url,
+                                        const char *detail, cai_error *error);
+static int cai_agent_add_user_file_data_spooled(
+    cai_agent *agent, const char *filename, lonejson_spooled *file_data,
+    const char *detail, cai_error *error);
+static int cai_agent_add_user_file_path(cai_agent *agent, const char *path,
+                                        const char *filename,
                                         const char *detail, cai_error *error);
 static int cai_agent_run(cai_agent *agent, cai_response **out,
                          cai_error *error);
@@ -606,9 +613,13 @@ static void cai_session_clear_inputs(cai_session *session) {
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].role);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].text);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].image_url);
+    cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].filename);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].detail);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].call_id);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].output);
+    if (CAI_SESSION_IMPL(session)->inputs[i].has_file_data) {
+      lonejson_spooled_cleanup(&CAI_SESSION_IMPL(session)->inputs[i].file_data);
+    }
   }
   CAI_SESSION_IMPL(session)->input_count = 0U;
 }
@@ -642,6 +653,32 @@ static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
     return LONEJSON_STATUS_OK;
   }
   return LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static int cai_agent_clone_spooled(cai_session *session,
+                                   const lonejson_spooled *src,
+                                   lonejson_spooled *dst,
+                                   cai_error *error) {
+  cai_history_sink_context sink_context;
+  lonejson_error json_error;
+
+  if (src == NULL || dst == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "spooled value and output are required");
+  }
+  memset(dst, 0, sizeof(*dst));
+  cai_history_init_spooled(session, dst);
+  sink_context.spool = dst;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_write_to_sink(src, cai_history_lonejson_sink,
+                                     &sink_context, &json_error) ==
+      LONEJSON_STATUS_OK) {
+    return CAI_OK;
+  }
+  lonejson_spooled_cleanup(dst);
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to clone spooled value",
+                              json_error.message);
 }
 
 static lonejson_status cai_lonejson_write_cai_sink(void *user,
@@ -1517,6 +1554,94 @@ static int cai_session_add_input(cai_session *session, int kind,
   return CAI_OK;
 }
 
+static const char *cai_session_basename(const char *path) {
+  const char *slash;
+
+  if (path == NULL) {
+    return NULL;
+  }
+  slash = strrchr(path, '/');
+  return slash != NULL && slash[1] != '\0' ? slash + 1 : path;
+}
+
+static int cai_session_source_to_spooled(cai_session *session,
+                                         cai_source *source,
+                                         lonejson_spooled *out,
+                                         cai_error *error) {
+  lonejson_error json_error;
+  unsigned char buffer[4096];
+  size_t nread;
+
+  if (source == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "source and spool output are required");
+  }
+  memset(out, 0, sizeof(*out));
+  cai_history_init_spooled(session, out);
+  for (;;) {
+    nread = cai_source_read(source, buffer, sizeof(buffer), error);
+    if (nread == 0U) {
+      break;
+    }
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_append(out, buffer, nread, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      lonejson_spooled_cleanup(out);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to spool file input",
+                                  json_error.message);
+    }
+  }
+  return CAI_OK;
+}
+
+static int cai_session_add_file_input_spooled(cai_session *session,
+                                              const char *role,
+                                              const char *filename,
+                                              lonejson_spooled *file_data,
+                                              const char *detail,
+                                              cai_error *error) {
+  cai_session_input *input;
+  cai_allocator *allocator;
+  int rc;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (role == NULL || role[0] == '\0' || file_data == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "role and file data spool are required");
+  }
+  rc = cai_session_grow_inputs(session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
+  input = &CAI_SESSION_IMPL(session)->inputs[CAI_SESSION_IMPL(session)->input_count];
+  memset(input, 0, sizeof(*input));
+  input->kind = CAI_SESSION_INPUT_FILE_DATA;
+  input->role = cai_strdup(allocator, role);
+  input->filename = cai_strdup(allocator, filename);
+  input->detail = cai_strdup(allocator, detail);
+  input->file_data = *file_data;
+  input->has_file_data = 1;
+  memset(file_data, 0, sizeof(*file_data));
+  if (input->role == NULL || (filename != NULL && input->filename == NULL) ||
+      (detail != NULL && input->detail == NULL)) {
+    cai_free_mem(allocator, input->role);
+    cai_free_mem(allocator, input->filename);
+    cai_free_mem(allocator, input->detail);
+    if (input->has_file_data) {
+      lonejson_spooled_cleanup(&input->file_data);
+    }
+    memset(input, 0, sizeof(*input));
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate session file input");
+  }
+  CAI_SESSION_IMPL(session)->input_count++;
+  return CAI_OK;
+}
+
 int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error) {
   if (text == NULL) {
@@ -1535,6 +1660,57 @@ int cai_session_add_user_image_url(cai_session *session, const char *url,
                                url, detail, NULL, NULL, error);
 }
 
+int cai_session_add_user_file_data_spooled(cai_session *session,
+                                           const char *filename,
+                                           lonejson_spooled *file_data,
+                                           const char *detail,
+                                           cai_error *error) {
+  if (file_data == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "file data spool is required");
+  }
+  return cai_session_add_file_input_spooled(session, "user", filename,
+                                           file_data, detail, error);
+}
+
+int cai_session_add_user_file_path(cai_session *session, const char *path,
+                                   const char *filename, const char *detail,
+                                   cai_error *error) {
+  lonejson_spooled file_data;
+  cai_source *source;
+  FILE *fp;
+  int rc;
+
+  if (session == NULL || path == NULL || path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and file path are required");
+  }
+  memset(&file_data, 0, sizeof(file_data));
+  source = NULL;
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open user file input path");
+  }
+  rc = cai_source_file(fp, 1, &source, error);
+  if (rc == CAI_OK) {
+    fp = NULL;
+    rc = cai_session_source_to_spooled(session, source, &file_data, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_file_data_spooled(
+        session, filename != NULL ? filename : cai_session_basename(path),
+        &file_data, detail, error);
+  }
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(&file_data);
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  cai_source_close(source);
+  return rc;
+}
+
 int cai_session_add_function_call_output(cai_session *session,
                                          const char *call_id,
                                          const char *output, cai_error *error) {
@@ -1549,6 +1725,7 @@ int cai_session_add_function_call_output(cai_session *session,
 static int cai_session_add_pending_inputs(cai_session *session,
                                           cai_response_create_params *params,
                                           cai_error *error) {
+  lonejson_spooled file_data;
   size_t i;
   int rc;
 
@@ -1558,6 +1735,21 @@ static int cai_session_add_pending_inputs(cai_session *session,
       rc = cai_response_create_params_add_image_url(
           params, CAI_SESSION_IMPL(session)->inputs[i].role, CAI_SESSION_IMPL(session)->inputs[i].image_url,
           CAI_SESSION_IMPL(session)->inputs[i].detail, error);
+    } else if (CAI_SESSION_IMPL(session)->inputs[i].kind ==
+               CAI_SESSION_INPUT_FILE_DATA) {
+      memset(&file_data, 0, sizeof(file_data));
+      rc = cai_agent_clone_spooled(
+          session, &CAI_SESSION_IMPL(session)->inputs[i].file_data, &file_data,
+          error);
+      if (rc == CAI_OK) {
+        rc = cai_response_create_params_add_file_data_spooled(
+            params, CAI_SESSION_IMPL(session)->inputs[i].role,
+            CAI_SESSION_IMPL(session)->inputs[i].filename, &file_data,
+            CAI_SESSION_IMPL(session)->inputs[i].detail, error);
+      }
+      if (rc != CAI_OK) {
+        lonejson_spooled_cleanup(&file_data);
+      }
     } else if (CAI_SESSION_IMPL(session)->inputs[i].kind ==
                CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT) {
       rc = cai_response_create_params_add_function_call_output(
@@ -3615,6 +3807,8 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->new_session_for_conversation = cai_agent_new_session_for_conversation;
   agent->add_user_text = cai_agent_add_user_text;
   agent->add_user_image_url = cai_agent_add_user_image_url;
+  agent->add_user_file_data_spooled = cai_agent_add_user_file_data_spooled;
+  agent->add_user_file_path = cai_agent_add_user_file_path;
   agent->run = cai_agent_run;
   agent->run_output = cai_agent_run_output;
   agent->run_auto = cai_agent_run_auto;
@@ -3637,6 +3831,8 @@ static void cai_session_init_methods(cai_session *session) {
   session->previous_response_id = cai_session_previous_response_id;
   session->add_user_text = cai_session_add_user_text;
   session->add_user_image_url = cai_session_add_user_image_url;
+  session->add_user_file_data_spooled = cai_session_add_user_file_data_spooled;
+  session->add_user_file_path = cai_session_add_user_file_path;
   session->add_function_call_output = cai_session_add_function_call_output;
   session->run = cai_session_run;
   session->run_output = cai_session_run_output;
@@ -3710,6 +3906,33 @@ static int cai_agent_add_user_image_url(cai_agent *agent, const char *url,
     return rc;
   }
   return cai_session_add_user_image_url(session, url, detail, error);
+}
+
+static int cai_agent_add_user_file_data_spooled(
+    cai_agent *agent, const char *filename, lonejson_spooled *file_data,
+    const char *detail, cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_add_user_file_data_spooled(session, filename, file_data,
+                                                detail, error);
+}
+
+static int cai_agent_add_user_file_path(cai_agent *agent, const char *path,
+                                        const char *filename,
+                                        const char *detail, cai_error *error) {
+  cai_session *session;
+  int rc;
+
+  rc = cai_agent_default_session(agent, &session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_session_add_user_file_path(session, path, filename, detail, error);
 }
 
 static int cai_agent_run(cai_agent *agent, cai_response **out,
