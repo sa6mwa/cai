@@ -79,12 +79,12 @@ before implementing that slice.
   - Implementation: `src/tools/todo.c`.
   - Register as a normal cai typed tool; MCP exposure remains just a registry
     concern.
-  - Persist active boards/lists in one JSON file.
-  - Persist the done archive in a separate JSON file.
-  - Both paths are configurable in the tool constructor/config.
+  - Persist boards, active items, and the done archive in one JSON document at
+    `~/.config/cai/todo.json` by default.
+  - Store path and lock path are configurable in the tool constructor/config.
   - Support multiple kanban boards.
   - Active statuses are `todo` and `in_process`.
-  - Done items move to the separate done archive.
+  - Done items move to the document's `done` archive array.
   - Each board can have an optional WIP limit for the `in_process` lane.
   - Default WIP limit is unset.
   - Moving an item into `in_process` must be denied with a structured tool
@@ -97,25 +97,14 @@ before implementing that slice.
   - Initial operation surface to refine before implementation:
     create board, configure WIP limit, add item, list/query board, move item,
     archive/complete item, and query current work.
-  - Implemented as an object-framed JSON record stream so lonejson can parse
-    and rewrite one board/item record at a time without materializing the whole
-    store.
-  - lonejson 0.16.0 provides selected-array rewrite support, so the next todo
-    storage slice can migrate to a single-document JSON array format while
-    preserving the memory bound.
-
-- [ ] Migrate the todo/kanban preset to a single-document JSON store using
-  lonejson selected-array rewrite support.
-  - Target shape should avoid nested rewrite paths at first:
-    `{ "version": 1, "boards": [], "items": [], "done": [] }`.
-  - Preserve read compatibility with the current object-framed record stream or
-    provide an explicit migration path before changing the default on-disk
-    format.
+  - Store shape is `{ "version": 1, "boards": [], "items": [], "done": [] }`.
+  - Use lonejson selected-array cursors for reads and selected-array rewriter
+    support for mutations; no full-document or full-array materialization.
   - Use `lonejson_array_rewrite_*` for add, update, move, complete/archive, and
     WIP-limit changes; no full-document or full-array materialization.
   - Keep the existing `fcntl` lock/temp/rename transaction boundary.
-  - Add tests for large stores, WIP denial, corrupt JSON, duplicate keys,
-    failed callbacks/sinks, and old-store migration/compatibility.
+  - Tests cover WIP denial, corrupt JSON, MCP exposure, and happy-path
+    create/add/list/complete/re-add behavior.
 
 - [ ] Add an example MCP server.
   - Directory: `examples/mcp-server/`.

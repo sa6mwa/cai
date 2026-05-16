@@ -487,20 +487,18 @@ including `<cai/tools/todo.h>` and calling `cai_agent_register_todo_tool` or
 `create_board`, `list_boards`, `set_wip_limit`, `add_item`, `list_board`,
 `current_work`, `move_item`, and `complete_item`.
 
-By default the active store is `$XDG_CONFIG_HOME/cai/todo-active.json`, falling
-back to `$HOME/.config/cai/todo-active.json`; the done archive is
-`todo-done.json` beside it, with `todo.lock` as the transaction lockfile.
-Callers can override all three paths in `cai_todo_tool_config`. Missing parent
+By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
+`$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.
+Callers can override both paths in `cai_todo_tool_config`. Missing parent
 directories and files are created at registration and operation time.
 
-The todo store is an object-framed JSON record stream, not a single giant JSON
-document. Each board or item is one JSON object, and cai reads and rewrites the
-store one record at a time under an advisory `fcntl` lock. That shape is
-intentional: lonejson can stream selected arrays and nested mapped array fields
-for read-side cursors and now provides selected-array rewrite support. cai has
-not yet migrated this tool to a single-document store, because that migration
-needs a dedicated compatibility and transaction slice. Tool results are bounded
-by `max_result_items`; when a result is truncated it includes `truncated=true`.
+The todo store is one canonical JSON document:
+`{ "version": 1, "boards": [], "items": [], "done": [] }`. cai reads selected
+arrays one item at a time with lonejson array cursors and mutates selected
+arrays with `lonejson_array_rewrite_*` under an advisory `fcntl` lock plus
+temp-file/rename transaction boundary. The complete document and selected
+arrays are not materialized for storage operations. Tool results are bounded by
+`max_result_items`; when a result is truncated it includes `truncated=true`.
 Moving an item into `in_process` respects the board's WIP limit and reports
 `ok=false` with `code="wip_limit_exceeded"` as a normal structured tool result,
 not as a transport failure.

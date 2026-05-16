@@ -5137,8 +5137,7 @@ static void test_revgeo_tool(test_state *state) {
 
 static void test_todo_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-todo-test-XXXXXX";
-  char active_path[PATH_MAX];
-  char done_path[PATH_MAX];
+  char store_path[PATH_MAX];
   char lock_path[PATH_MAX];
   cai_todo_tool_config config;
   cai_tool_registry *registry;
@@ -5151,6 +5150,7 @@ static void test_todo_tool(test_state *state) {
   cai_error error;
   char item_id[64];
   char board_id[64];
+  char store_text[4096];
   const char *id_start;
   const char *id_end;
 
@@ -5168,12 +5168,10 @@ static void test_todo_tool(test_state *state) {
     cai_error_cleanup(&error);
     return;
   }
-  snprintf(active_path, sizeof(active_path), "%s/active.json", dir_template);
-  snprintf(done_path, sizeof(done_path), "%s/done.json", dir_template);
+  snprintf(store_path, sizeof(store_path), "%s/todo.json", dir_template);
   snprintf(lock_path, sizeof(lock_path), "%s/todo.lock", dir_template);
   memset(&config, 0, sizeof(config));
-  config.active_path = active_path;
-  config.done_path = done_path;
+  config.store_path = store_path;
   config.lock_path = lock_path;
   config.default_board = "main";
   config.max_result_items = 2U;
@@ -5297,6 +5295,16 @@ static void test_todo_tool(test_state *state) {
     test_fail(state, "todo_add_after_complete_output",
               "WIP lane did not free after completion");
   }
+  if (!read_text_file(store_path, store_text, sizeof(store_text))) {
+    test_fail(state, "todo_store_read", "failed to read todo store");
+  } else if (strstr(store_text, "\"boards\":[") == NULL ||
+             strstr(store_text, "\"items\":[") == NULL ||
+             strstr(store_text, "\"done\":[") == NULL ||
+             strstr(store_text, "\"done\":[]") != NULL ||
+             strstr(store_text, "\"type\"") != NULL) {
+    test_fail(state, "todo_store_shape",
+              "todo store is not the canonical single-document shape");
+  }
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(state, "todo_unknown_operation",
@@ -5364,7 +5372,7 @@ static void test_todo_tool(test_state *state) {
                 "todo MCP tools/call did not return successful content");
     }
   }
-  write_file_or_die(active_path, "{\"type\":\"board\",\"id\":");
+  write_file_or_die(store_path, "{\"boards\":[{\"id\":");
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(state, "todo_corrupt_store",
@@ -5377,8 +5385,7 @@ static void test_todo_tool(test_state *state) {
   cai_mcp_handler_destroy(handler);
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
-  unlink(active_path);
-  unlink(done_path);
+  unlink(store_path);
   unlink(lock_path);
   rmdir(dir_template);
 }
