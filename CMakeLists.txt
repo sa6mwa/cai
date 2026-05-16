@@ -272,6 +272,12 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     "${CAI_PSLOG_PREFIX}/include/pslog.h")
   set(CMAKE_PREFIX_PATH
       "${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX};${CMAKE_PREFIX_PATH}")
+  if(CMAKE_CROSSCOMPILING)
+    list(APPEND CMAKE_FIND_ROOT_PATH
+         "${CAI_C_PKT_SYSTEMS_PREFIX}"
+         "${CAI_LONEJSON_PREFIX}"
+         "${CAI_PSLOG_PREFIX}")
+  endif()
   find_package(lonejson CONFIG REQUIRED)
   find_package(pslog CONFIG REQUIRED)
   cai_set_lonejson_from_target()
@@ -430,6 +436,8 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
+    target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS}
+      "${CURL_INCLUDE_DIR}")
     target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
     cai_configure_c_target(${_cai_target})
   endif()

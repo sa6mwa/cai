@@ -33,7 +33,9 @@ example layers settle.
   relocatable `cai.pc` pkg-config file.
 - `make release` builds/tests the release matrix and writes binary SDK
   archives as `dist/cai-<version>-<target>.tar.gz`, a source archive as
-  `dist/cai-<version>.tar.gz`, and SHA-256 sums.
+  `dist/cai-<version>.tar.gz`, and `dist/cai-<version>-CHECKSUMS`.
+  Release verification checks archive roots, installed docs, pkg-config/CMake
+  metadata, dependency-header exclusion, and host-free `$ORIGIN` runpaths.
 - Binary SDK archives contain installed headers, CMake/pkg-config metadata,
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under

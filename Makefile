@@ -11,7 +11,7 @@ CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan package package-source package-source-smoke package-checksums release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -25,6 +25,7 @@ help:
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
 		'make release      Build, test, package, and checksum release artifacts.' \
+		'make package-verify Verify release archive structure and metadata.' \
 		'make searxng-pull Pull the configured SearXNG container image.' \
 		'make searxng-up   Start local SearXNG via nerdctl compose or docker compose.' \
 		'make searxng-wait Wait for the local SearXNG endpoint to answer.' \
@@ -79,7 +80,10 @@ package-source-smoke: package-source
 package-checksums: package
 	$(CMAKE) --build --preset x86_64-linux-gnu-release --target cai_package_checksums
 
-release: test-release package-checksums
+package-verify: package-checksums
+	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
+
+release: test-release package-verify
 
 compose-check:
 	@if [[ -z "$(COMPOSE)" ]]; then \
