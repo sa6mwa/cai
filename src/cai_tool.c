@@ -6,7 +6,8 @@
 
 typedef enum cai_tool_kind {
   CAI_TOOL_LONEJSON = 1,
-  CAI_TOOL_RAW = 2
+  CAI_TOOL_RAW = 2,
+  CAI_TOOL_RAW_SPOOLED = 3
 } cai_tool_kind;
 
 typedef struct cai_tool_entry {
@@ -19,6 +20,7 @@ typedef struct cai_tool_entry {
   const lonejson_map *result_map;
   cai_tool_fn lonejson_callback;
   cai_tool_raw_fn raw_callback;
+  cai_tool_raw_spooled_fn raw_spooled_callback;
   void *context;
   void (*context_cleanup)(void *context);
 } cai_tool_entry;
@@ -213,6 +215,36 @@ static int cai_tool_validate_json_value(const char *json, const char *message,
   }
   lonejson_json_value_cleanup(&value);
   return rc;
+}
+
+static int cai_tool_validate_spooled_json_value(lonejson_spooled *json,
+                                                const char *message,
+                                                cai_error *error) {
+  cai_tool_spooled_reader reader;
+  lonejson_value_visitor visitor;
+  lonejson_value_limits limits;
+  lonejson_error json_error;
+
+  if (json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, message);
+  }
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind tool arguments",
+                                json_error.message);
+  }
+  visitor = lonejson_default_value_visitor();
+  limits = lonejson_default_value_limits();
+  if (lonejson_visit_value_reader(cai_tool_spooled_read, &reader, &visitor,
+                                  NULL, &limits, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID, message,
+                                json_error.message);
+  }
+  return CAI_OK;
 }
 
 static lonejson_status cai_tool_compact_json_sink(void *user, const void *data,
@@ -962,7 +994,8 @@ static int cai_tool_registry_register_common(
     cai_tool_registry *registry, const char *name, const char *description,
     const char *schema_json, int strict, cai_tool_kind kind,
     const lonejson_map *params_map, const lonejson_map *result_map,
-    cai_tool_fn lonejson_callback, cai_tool_raw_fn raw_callback, void *context,
+    cai_tool_fn lonejson_callback, cai_tool_raw_fn raw_callback,
+    cai_tool_raw_spooled_fn raw_spooled_callback, void *context,
     void (*context_cleanup)(void *context), cai_error *error) {
   cai_tool_entry *entry;
   int rc;
@@ -988,6 +1021,10 @@ static int cai_tool_registry_register_common(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "raw tool callback is required");
   }
+  if (kind == CAI_TOOL_RAW_SPOOLED && raw_spooled_callback == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "spooled raw tool callback is required");
+  }
   rc = cai_tool_registry_grow(registry, error);
   if (rc != CAI_OK) {
     return rc;
@@ -1003,6 +1040,7 @@ static int cai_tool_registry_register_common(
   entry->result_map = result_map;
   entry->lonejson_callback = lonejson_callback;
   entry->raw_callback = raw_callback;
+  entry->raw_spooled_callback = raw_spooled_callback;
   if (entry->name == NULL ||
       (description != NULL && entry->description == NULL) ||
       entry->schema_json == NULL) {
@@ -1062,7 +1100,7 @@ int cai_tool_registry_register_lonejson(
     rc = cai_tool_registry_register_common(
         registry, name, description, cai_tool_schema_json(schema),
         cai_tool_schema_strict(schema), CAI_TOOL_LONEJSON, params_map,
-        result_map, callback, NULL, context, NULL, error);
+        result_map, callback, NULL, NULL, context, NULL, error);
   }
   cai_tool_schema_destroy(schema);
   return rc;
@@ -1082,7 +1120,7 @@ int cai_tool_registry_register_lonejson_owned(
     rc = cai_tool_registry_register_common(
         registry, name, description, cai_tool_schema_json(schema),
         cai_tool_schema_strict(schema), CAI_TOOL_LONEJSON, params_map,
-        result_map, callback, NULL, context, context_cleanup, error);
+        result_map, callback, NULL, NULL, context, context_cleanup, error);
   }
   cai_tool_schema_destroy(schema);
   return rc;
@@ -1095,7 +1133,8 @@ int cai_tool_registry_register_lonejson_schema_owned(
     void (*context_cleanup)(void *context), cai_error *error) {
   return cai_tool_registry_register_common(
       registry, name, description, schema_json, strict, CAI_TOOL_LONEJSON,
-      params_map, result_map, callback, NULL, context, context_cleanup, error);
+      params_map, result_map, callback, NULL, NULL, context, context_cleanup,
+      error);
 }
 
 int cai_tool_registry_register_raw(cai_tool_registry *registry,
@@ -1105,7 +1144,16 @@ int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    cai_error *error) {
   return cai_tool_registry_register_common(
       registry, name, description, schema_json, strict, CAI_TOOL_RAW, NULL,
-      NULL, NULL, callback, context, NULL, error);
+      NULL, NULL, callback, NULL, context, NULL, error);
+}
+
+int cai_tool_registry_register_raw_spooled(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
+    void *context, cai_error *error) {
+  return cai_tool_registry_register_common(
+      registry, name, description, schema_json, strict, CAI_TOOL_RAW_SPOOLED,
+      NULL, NULL, NULL, NULL, callback, context, NULL, error);
 }
 
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
@@ -1182,6 +1230,29 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
       return rc;
     }
     return entry->raw_callback(entry->context, arguments_json, output, error);
+  }
+  if (entry->kind == CAI_TOOL_RAW_SPOOLED) {
+    lonejson_spooled spooled;
+    lonejson_error spool_error;
+
+    rc = cai_tool_validate_json_value(
+        arguments_json, "tool arguments must be valid JSON", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    lonejson_spooled_init(&spooled, NULL);
+    lonejson_error_init(&spool_error);
+    if (lonejson_spooled_append(&spooled, arguments_json,
+                                strlen(arguments_json), &spool_error) !=
+        LONEJSON_STATUS_OK) {
+      lonejson_spooled_cleanup(&spooled);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to spool raw tool arguments",
+                                  spool_error.message);
+    }
+    rc = entry->raw_spooled_callback(entry->context, &spooled, output, error);
+    lonejson_spooled_cleanup(&spooled);
+    return rc;
   }
   rc = cai_tool_validate_arguments_shape(entry->params_map, arguments_json,
                                          error);
@@ -1297,6 +1368,15 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry,
     rc = cai_tool_registry_run(registry, name, raw_json, output, error);
     cai_free_mem(NULL, raw_json);
     return rc;
+  }
+  if (entry->kind == CAI_TOOL_RAW_SPOOLED) {
+    rc = cai_tool_validate_spooled_json_value(
+        arguments_json, "tool arguments must be valid JSON", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    return entry->raw_spooled_callback(entry->context, arguments_json, output,
+                                       error);
   }
   params = cai_alloc(NULL, entry->params_map->struct_size);
   if (params == NULL) {

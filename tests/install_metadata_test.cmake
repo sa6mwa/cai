@@ -161,6 +161,9 @@ int main(void) {
                           cai_error *);
   int (*register_todo)(cai_tool_registry *, const cai_todo_tool_config *,
                        cai_error *);
+  int (*register_raw_spooled)(cai_tool_registry *, const char *, const char *,
+                              const char *, int, cai_tool_raw_spooled_fn,
+                              void *, cai_error *);
   void (*mcp_config_init)(cai_mcp_handler_config *);
   int (*mcp_new)(const cai_mcp_handler_config *, cai_mcp_handler **,
                  cai_error *);
@@ -171,11 +174,13 @@ int main(void) {
   register_revgeo = cai_tool_registry_register_revgeo_tool;
   register_searxng = cai_tool_registry_register_searxng_tool;
   register_todo = cai_tool_registry_register_todo_tool;
+  register_raw_spooled = cai_tool_registry_register_raw_spooled;
   mcp_config_init = cai_mcp_handler_config_init;
   mcp_new = cai_mcp_handler_new;
   mcp_handle = cai_mcp_handler_handle_http;
   mcp_destroy = cai_mcp_handler_destroy;
   if (register_revgeo == 0 || register_searxng == 0 || register_todo == 0 ||
+      register_raw_spooled == 0 ||
       mcp_config_init == 0 || mcp_new == 0 || mcp_handle == 0 ||
       mcp_destroy == 0) {
     return 1;

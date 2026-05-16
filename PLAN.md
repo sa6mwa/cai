@@ -586,7 +586,10 @@ agent->register_tool(agent, "lookup_customer", "Look up a customer.",
 parameter map and serializes the handler result through the result map. Required
 fields come from lonejson `_REQ` fields so the C decoder and OpenAI schema have
 one source of truth. `register_raw_tool` is the explicit escape hatch for
-dynamic JSON parameters.
+dynamic JSON parameters that are already acceptable as full strings.
+`register_raw_spooled_tool` is the corresponding raw path for large arguments:
+cai validates the spooled JSON value and passes the spool through without
+rebuilding a whole argument string.
 
 Multi-agent workflows should remain host-driven. `cai` should make it cheap to
 construct several agents and sessions, but it should not impose a graph runtime
@@ -666,8 +669,9 @@ Current public presets:
 SMHI weather is intentionally example-only in `examples/smhi-weather`; it is
 not a public cai tool preset.
 
-- Preserve existing `register_tool(...)` and `register_raw_tool(...)` behavior as
-  first-class, non-deprecated paths.
+- Preserve existing `register_tool(...)`, `register_raw_tool(...)`, and
+  `register_raw_spooled_tool(...)` behavior as first-class, non-deprecated
+  paths.
 - Preset constructors are additive quality-of-life APIs, not a registry redesign.
 
 ### MCP route handler
@@ -967,7 +971,8 @@ Mirror liblockdc where practical:
   before callbacks run, unknown object fields are rejected against the lonejson
   map, including nested objects and object-array elements, duplicate keys remain
   rejected by lonejson parse defaults, and raw tools receive only syntactically
-  valid JSON. Tool output and tool-call ids have regression coverage proving
+  valid JSON. Spooled raw tools avoid rebuilding large argument strings when
+  invoked from a spooled path. Tool output and tool-call ids have regression coverage proving
   role/system-shaped payloads remain escaped data in `function_call_output`. A
   Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
   argument surfaces.

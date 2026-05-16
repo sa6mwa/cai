@@ -150,6 +150,11 @@ typedef struct raw_tool_state {
   char seen[64];
 } raw_tool_state;
 
+typedef struct spooled_raw_tool_state {
+  size_t seen_size;
+  int chunks;
+} spooled_raw_tool_state;
+
 typedef struct tool_event_state {
   int starts;
   int outputs;
@@ -965,6 +970,41 @@ static int test_raw_tool(void *context, const char *arguments_json,
   return cai_sink_write(output, arguments_json, strlen(arguments_json), error);
 }
 
+static int test_spooled_raw_tool(void *context,
+                                 lonejson_spooled *arguments_json,
+                                 cai_sink *output, cai_error *error) {
+  spooled_raw_tool_state *state;
+  lonejson_spooled cursor;
+  lonejson_read_result chunk;
+  lonejson_error json_error;
+  unsigned char buffer[7];
+
+  state = (spooled_raw_tool_state *)context;
+  state->seen_size = lonejson_spooled_size(arguments_json);
+  cursor = *arguments_json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind spooled raw arguments",
+                                json_error.message);
+  }
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to read spooled raw arguments");
+    }
+    if (chunk.bytes_read == 0U) {
+      break;
+    }
+    state->chunks++;
+    if (cai_sink_write(output, buffer, chunk.bytes_read, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+  }
+  return CAI_OK;
+}
+
 static int test_tool_event(void *context, const cai_tool_event *event,
                            cai_error *error) {
   tool_event_state *state;
@@ -1648,6 +1688,7 @@ static void test_tool_registry(test_state *state) {
   cai_sink *sink;
   write_state writer;
   raw_tool_state raw_state;
+  spooled_raw_tool_state spooled_raw_state;
   counting_tool_state secure_state;
   counting_tool_state nested_state;
   counting_tool_state route_state;
@@ -1667,6 +1708,8 @@ static void test_tool_registry(test_state *state) {
   writer.length = 0U;
   writer.closed = 0;
   raw_state.seen[0] = '\0';
+  spooled_raw_state.seen_size = 0U;
+  spooled_raw_state.chunks = 0;
   secure_state.called = 0;
   nested_state.called = 0;
   route_state.called = 0;
@@ -1789,6 +1832,12 @@ static void test_tool_registry(test_state *state) {
                                             "Echo raw JSON", schema, 0,
                                             test_raw_tool, &raw_state, &error),
              CAI_OK);
+  expect_int(state, "tool_register_raw_spooled",
+             cai_tool_registry_register_raw_spooled(
+                 registry, "raw_spooled_echo", "Echo spooled raw JSON",
+                 schema, 0, test_spooled_raw_tool, &spooled_raw_state,
+                 &error),
+             CAI_OK);
   expect_int(state, "tool_register_error",
              cai_tool_registry_register_raw(registry, "raw_error",
                                             "Fail deliberately", schema, 0,
@@ -1885,6 +1934,79 @@ static void test_tool_registry(test_state *state) {
   expect_str(state, "tool_run_raw_output", writer.buffer, "{\"x\":1}");
   expect_str(state, "tool_run_raw_seen", raw_state.seen, "{\"x\":1}");
   raw_state.seen[0] = '\0';
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  spooled_raw_state.seen_size = 0U;
+  spooled_raw_state.chunks = 0;
+  expect_int(state, "tool_run_raw_spooled_cstr",
+             cai_tool_registry_run(registry, "raw_spooled_echo",
+                                   "{\"city\":\"Malmo\",\"days\":3}", sink,
+                                   &error),
+             CAI_OK);
+  expect_str(state, "tool_run_raw_spooled_cstr_output", writer.buffer,
+             "{\"city\":\"Malmo\",\"days\":3}");
+  expect_int(state, "tool_run_raw_spooled_cstr_size",
+             spooled_raw_state.seen_size, 25L);
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  spooled_raw_state.seen_size = 0U;
+  spooled_raw_state.chunks = 0;
+  {
+    lonejson_spooled spooled_args;
+    lonejson_error json_error;
+
+    lonejson_spooled_init(&spooled_args, NULL);
+    lonejson_error_init(&json_error);
+    expect_int(state, "tool_spooled_arg_append_1",
+               lonejson_spooled_append(&spooled_args, "{\"city\":\"", 9U,
+                                       &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "tool_spooled_arg_append_2",
+               lonejson_spooled_append(&spooled_args, "Goteborg", 8U,
+                                       &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "tool_spooled_arg_append_3",
+               lonejson_spooled_append(&spooled_args, "\",\"days\":5}", 11U,
+                                       &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "tool_run_raw_spooled_native",
+               cai_tool_registry_run_spooled(registry, "raw_spooled_echo",
+                                             &spooled_args, sink, &error),
+               CAI_OK);
+    lonejson_spooled_cleanup(&spooled_args);
+  }
+  expect_str(state, "tool_run_raw_spooled_native_output", writer.buffer,
+             "{\"city\":\"Goteborg\",\"days\":5}");
+  expect_int(state, "tool_run_raw_spooled_native_size",
+             spooled_raw_state.seen_size, 28L);
+  if (spooled_raw_state.chunks < 4) {
+    test_fail(state, "tool_run_raw_spooled_native_chunks",
+              "spooled raw arguments were not read in chunks");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  spooled_raw_state.seen_size = 0U;
+  spooled_raw_state.chunks = 0;
+  {
+    lonejson_spooled bad_args;
+    lonejson_error json_error;
+
+    lonejson_spooled_init(&bad_args, NULL);
+    lonejson_error_init(&json_error);
+    expect_int(state, "tool_spooled_bad_arg_append",
+               lonejson_spooled_append(&bad_args, "{\"x\":", 5U,
+                                       &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "tool_run_raw_spooled_invalid",
+               cai_tool_registry_run_spooled(registry, "raw_spooled_echo",
+                                             &bad_args, sink, &error),
+               CAI_ERR_INVALID);
+    lonejson_spooled_cleanup(&bad_args);
+  }
+  expect_int(state, "tool_run_raw_spooled_invalid_not_called",
+             spooled_raw_state.chunks, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "tool_run_raw_invalid_json",
              cai_tool_registry_run(registry, "raw_echo", "{\"x\":", sink,
                                    &error),
@@ -4797,6 +4919,7 @@ static void test_agent_session(test_state *state) {
              CAI_OK);
   if (client->new_agent == NULL || client->close == NULL ||
       agent->register_tool == NULL || agent->register_raw_tool == NULL ||
+      agent->register_raw_spooled_tool == NULL ||
       agent->add_user_text == NULL || agent->stream_text == NULL ||
       agent->run_output == NULL || agent->new_session == NULL ||
       agent->close == NULL) {

@@ -454,6 +454,25 @@ int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
                                         error);
 }
 
+int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
+                                        const char *description,
+                                        const char *schema_json, int strict,
+                                        cai_tool_raw_spooled_fn callback,
+                                        void *context, cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return cai_tool_registry_register_raw_spooled(
+      impl->tools, name, description, schema_json, strict, callback, context,
+      error);
+}
+
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error) {
   cai_session *session;
@@ -3463,6 +3482,7 @@ int cai_session_load_state_path(cai_session *session, const char *path,
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
+  agent->register_raw_spooled_tool = cai_agent_register_raw_spooled_tool;
   agent->new_session = cai_agent_new_session;
   agent->new_conversation_session = cai_agent_new_conversation_session;
   agent->new_session_for_conversation = cai_agent_new_session_for_conversation;

@@ -225,6 +225,9 @@ typedef int (*cai_tool_fn)(void *context, const void *params, void *result,
 typedef cai_tool_fn cai_tool_lonejson_fn;
 typedef int (*cai_tool_raw_fn)(void *context, const char *arguments_json,
                                cai_sink *output, cai_error *error);
+typedef int (*cai_tool_raw_spooled_fn)(void *context,
+                                       struct lonejson_spooled *arguments_json,
+                                       cai_sink *output, cai_error *error);
 
 char *cai_tool_result_strdup(const char *value, cai_error *error);
 int cai_tool_result_set_source_path(const struct lonejson_map *result_map,
@@ -254,6 +257,11 @@ struct cai_agent {
                            const char *description, const char *schema_json,
                            int strict, cai_tool_raw_fn callback, void *context,
                            cai_error *error);
+  int (*register_raw_spooled_tool)(cai_agent *agent, const char *name,
+                                   const char *description,
+                                   const char *schema_json, int strict,
+                                   cai_tool_raw_spooled_fn callback,
+                                   void *context, cai_error *error);
   int (*new_session)(cai_agent *agent, cai_session **out, cai_error *error);
   int (*new_conversation_session)(cai_agent *agent, cai_session **out,
                                   cai_error *error);
@@ -393,6 +401,11 @@ int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
                                 const char *schema_json, int strict,
                                 cai_tool_raw_fn callback, void *context,
                                 cai_error *error);
+int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
+                                        const char *description,
+                                        const char *schema_json, int strict,
+                                        cai_tool_raw_spooled_fn callback,
+                                        void *context, cai_error *error);
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
@@ -516,6 +529,10 @@ int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    const char *schema_json, int strict,
                                    cai_tool_raw_fn callback, void *context,
                                    cai_error *error);
+int cai_tool_registry_register_raw_spooled(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
+    void *context, cai_error *error);
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,
                                              cai_error *error);

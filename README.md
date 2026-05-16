@@ -207,8 +207,9 @@ Structured output text can be decoded into a caller-owned lonejson struct with
 it does not inspect arbitrary response metadata or raw response JSON.
 
 Tools are agent capabilities. The default `register_tool` path is a typed
-lonejson callback; `register_raw_tool` is the JSON escape hatch. The typed path
-uses a lonejson map for parameters and a second lonejson map for the result.
+lonejson callback; `register_raw_tool` is the full-string JSON escape hatch;
+`register_raw_spooled_tool` is the raw JSON path for large arguments. The typed
+path uses a lonejson map for parameters and a second lonejson map for the result.
 JSON Schema is derived from the parameter map automatically, and `_REQ` fields
 become required schema fields:
 
@@ -264,9 +265,12 @@ lonejson map, relies on lonejson for required/type/duplicate-key failures, and
 serializes callback results as JSON values instead of raw text concatenation.
 This prevents common prompt-injection payloads from smuggling extra fields into
 typed callbacks or escaping JSON string boundaries on the way back to the
-model. `register_raw_tool` deliberately bypasses the typed result API; cai
-still validates that raw arguments are JSON before invoking the callback, but
-raw tools remain an expert escape hatch.
+model. `register_raw_tool` deliberately bypasses the typed result API and
+passes arguments as a full C string, so it is a convenience/materialized escape
+hatch. Use `register_raw_spooled_tool` or
+`cai_tool_registry_register_raw_spooled` when raw JSON arguments may be large;
+cai validates the spooled value as JSON and passes the spool through without
+rebuilding a whole argument string.
 
 ## MCP Handler
 
