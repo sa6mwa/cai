@@ -99,10 +99,23 @@ before implementing that slice.
     archive/complete item, and query current work.
   - Implemented as an object-framed JSON record stream so lonejson can parse
     and rewrite one board/item record at a time without materializing the whole
-    store. lonejson provides selected-array and nested mapped-array read
-    streaming; a future streaming array rewriter is still needed before cai can
-    move this to a single-document JSON array format without losing the memory
-    bound.
+    store.
+  - lonejson 0.16.0 provides selected-array rewrite support, so the next todo
+    storage slice can migrate to a single-document JSON array format while
+    preserving the memory bound.
+
+- [ ] Migrate the todo/kanban preset to a single-document JSON store using
+  lonejson selected-array rewrite support.
+  - Target shape should avoid nested rewrite paths at first:
+    `{ "version": 1, "boards": [], "items": [], "done": [] }`.
+  - Preserve read compatibility with the current object-framed record stream or
+    provide an explicit migration path before changing the default on-disk
+    format.
+  - Use `lonejson_array_rewrite_*` for add, update, move, complete/archive, and
+    WIP-limit changes; no full-document or full-array materialization.
+  - Keep the existing `fcntl` lock/temp/rename transaction boundary.
+  - Add tests for large stores, WIP denial, corrupt JSON, duplicate keys,
+    failed callbacks/sinks, and old-store migration/compatibility.
 
 - [ ] Add an example MCP server.
   - Directory: `examples/mcp-server/`.

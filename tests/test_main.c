@@ -130,6 +130,12 @@ typedef struct nested_stream_state {
   nested_stream_item item;
 } nested_stream_state;
 
+typedef struct rewrite_state {
+  int seen;
+  nested_stream_item replacement;
+  nested_stream_item append;
+} rewrite_state;
+
 typedef struct tool_source_result {
   lonejson_source body;
   lonejson_spooled note;
@@ -1174,6 +1180,129 @@ static void test_lonejson_nested_mapped_array_stream(test_state *state) {
   lonejson_cleanup(&nested_stream_store_map, &store);
   lonejson_cleanup(&nested_stream_board_map, &stream_state.board);
   lonejson_cleanup(&nested_stream_item_map, &stream_state.item);
+}
+
+static lonejson_status rewrite_item_cb(void *user,
+                                       const lonejson_array_rewrite_context
+                                           *context,
+                                       void *item,
+                                       lonejson_array_rewrite_result *result,
+                                       lonejson_error *error) {
+  rewrite_state *state;
+  nested_stream_item *parsed;
+
+  (void)context;
+  (void)error;
+  state = (rewrite_state *)user;
+  parsed = (nested_stream_item *)item;
+  state->seen++;
+  if (parsed->id != NULL && strcmp(parsed->id, "i1") == 0) {
+    result->action = LONEJSON_ARRAY_REWRITE_DROP;
+  } else if (parsed->id != NULL && strcmp(parsed->id, "i2") == 0) {
+    result->action = LONEJSON_ARRAY_REWRITE_REPLACE;
+    result->replacement.map = &nested_stream_item_map;
+    result->replacement.src = &state->replacement;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status rewrite_append_cb(
+    void *user, const lonejson_array_rewrite_context *context,
+    lonejson_array_rewrite_emit_fn emit, void *emit_user,
+    lonejson_error *error) {
+  rewrite_state *state;
+  lonejson_array_rewrite_source source;
+
+  (void)context;
+  state = (rewrite_state *)user;
+  memset(&source, 0, sizeof(source));
+  source.map = &nested_stream_item_map;
+  source.src = &state->append;
+  return emit(emit_user, &source, error);
+}
+
+static int read_text_file(const char *path, char *buffer, size_t capacity) {
+  FILE *fp;
+  size_t nread;
+
+  if (capacity == 0U) {
+    return 0;
+  }
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return 0;
+  }
+  nread = fread(buffer, 1U, capacity - 1U, fp);
+  if (ferror(fp)) {
+    fclose(fp);
+    return 0;
+  }
+  buffer[nread] = '\0';
+  fclose(fp);
+  return 1;
+}
+
+static void test_lonejson_selected_array_rewrite(test_state *state) {
+  char input_path[] = "/tmp/cai-array-rewrite-in-XXXXXX";
+  char output_path[] = "/tmp/cai-array-rewrite-out-XXXXXX";
+  char replacement_id[] = "r2";
+  char append_id[] = "i3";
+  char output[512];
+  int input_fd;
+  int output_fd;
+  nested_stream_item item;
+  rewrite_state rewrite;
+  lonejson_array_rewrite_options options;
+  lonejson_error error;
+
+  input_fd = mkstemp(input_path);
+  output_fd = mkstemp(output_path);
+  if (input_fd < 0 || output_fd < 0) {
+    test_fail(state, "lonejson_array_rewrite_mkstemp", "mkstemp failed");
+    if (input_fd >= 0) {
+      close(input_fd);
+      unlink(input_path);
+    }
+    if (output_fd >= 0) {
+      close(output_fd);
+      unlink(output_path);
+    }
+    return;
+  }
+  close(input_fd);
+  close(output_fd);
+  unlink(output_path);
+  write_file_or_die(input_path,
+                    "{\"items\":[{\"id\":\"i1\"},{\"id\":\"i2\"}],"
+                    "\"meta\":true}");
+  memset(&item, 0, sizeof(item));
+  memset(&rewrite, 0, sizeof(rewrite));
+  memset(&options, 0, sizeof(options));
+  lonejson_error_init(&error);
+  rewrite.replacement.id = replacement_id;
+  rewrite.append.id = append_id;
+  options.item_map = &nested_stream_item_map;
+  options.item_dst = &item;
+  options.item = rewrite_item_cb;
+  options.append = rewrite_append_cb;
+  options.user = &rewrite;
+  expect_int(state, "lonejson_array_rewrite_path",
+             lonejson_array_rewrite_path("items", input_path, output_path,
+                                         &options, &error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "lonejson_array_rewrite_seen", rewrite.seen, 2L);
+  if (!read_text_file(output_path, output, sizeof(output))) {
+    test_fail(state, "lonejson_array_rewrite_read", "failed to read output");
+  } else if (strstr(output, "\"id\":\"i1\"") != NULL ||
+             strstr(output, "\"id\":\"i2\"") != NULL ||
+             strstr(output, "\"id\":\"r2\"") == NULL ||
+             strstr(output, "\"id\":\"i3\"") == NULL ||
+             strstr(output, "\"meta\":true") == NULL) {
+    test_fail(state, "lonejson_array_rewrite_output",
+              "rewrite output did not drop, replace, append, and preserve");
+  }
+  unlink(input_path);
+  unlink(output_path);
 }
 
 static void test_tool_registry(test_state *state) {
@@ -8158,6 +8287,7 @@ int main(void) {
   test_env_precedence(&state);
   test_source_sink(&state);
   test_lonejson_nested_mapped_array_stream(&state);
+  test_lonejson_selected_array_rewrite(&state);
   test_tool_registry(&state);
   test_mcp_handler(&state);
   test_client_open(&state);

@@ -497,10 +497,10 @@ The todo store is an object-framed JSON record stream, not a single giant JSON
 document. Each board or item is one JSON object, and cai reads and rewrites the
 store one record at a time under an advisory `fcntl` lock. That shape is
 intentional: lonejson can stream selected arrays and nested mapped array fields
-for read-side cursors, but cai still needs a streaming array rewriter before a
-single-document todo store can be mutated without materializing the whole file.
-Tool results are bounded by `max_result_items`; when a result is truncated it
-includes `truncated=true`.
+for read-side cursors and now provides selected-array rewrite support. cai has
+not yet migrated this tool to a single-document store, because that migration
+needs a dedicated compatibility and transaction slice. Tool results are bounded
+by `max_result_items`; when a result is truncated it includes `truncated=true`.
 Moving an item into `in_process` respects the board's WIP limit and reports
 `ok=false` with `code="wip_limit_exceeded"` as a normal structured tool result,
 not as a transport failure.

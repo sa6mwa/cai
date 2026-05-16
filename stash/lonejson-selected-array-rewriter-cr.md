@@ -2,7 +2,10 @@
 
 ## Status
 
-New CR written after cai upgraded to lonejson 0.15.0.
+Implemented upstream in lonejson 0.16.0. Kept here as background for cai's
+todo-store migration.
+
+Original CR written after cai upgraded to lonejson 0.15.0.
 
 This replaces the older `stash/lonejson-array-item-streaming-cr.md` direction
 where the proposed fix was to replace the read cursor entirely. In 0.15.0 the
@@ -229,4 +232,3 @@ document.
 lonejson 0.15.0 solves the read side well enough for cai's nested todo queries.
 The missing write-side primitive is now the only reason cai keeps the todo
 store as object-framed records instead of a normal single JSON document.
-
