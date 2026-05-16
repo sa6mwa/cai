@@ -275,6 +275,9 @@ struct cai_agent {
   int (*add_user_file_data_spooled)(cai_agent *agent, const char *filename,
                                     struct lonejson_spooled *file_data,
                                     const char *detail, cai_error *error);
+  int (*add_user_file_source)(cai_agent *agent, const char *filename,
+                              cai_source *source, const char *detail,
+                              cai_error *error);
   int (*add_user_file_path)(cai_agent *agent, const char *path,
                             const char *filename, const char *detail,
                             cai_error *error);
@@ -320,6 +323,9 @@ struct cai_session {
                                     const char *filename,
                                     struct lonejson_spooled *file_data,
                                     const char *detail, cai_error *error);
+  int (*add_user_file_source)(cai_session *session, const char *filename,
+                              cai_source *source, const char *detail,
+                              cai_error *error);
   int (*add_user_file_path)(cai_session *session, const char *path,
                             const char *filename, const char *detail,
                             cai_error *error);
@@ -448,6 +454,9 @@ int cai_session_add_user_file_data_spooled(cai_session *session,
                                            struct lonejson_spooled *file_data,
                                            const char *detail,
                                            cai_error *error);
+int cai_session_add_user_file_source(cai_session *session,
+                                     const char *filename, cai_source *source,
+                                     const char *detail, cai_error *error);
 int cai_session_add_user_file_path(cai_session *session, const char *path,
                                    const char *filename, const char *detail,
                                    cai_error *error);

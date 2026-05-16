@@ -3515,6 +3515,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_file\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"file turn\"}]}]}";
+  static const char session_source_body[] =
+      "{\"id\":\"resp_session_source\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"source turn\"}]}]}";
   static const char session_conversation_body[] =
       "{\"id\":\"resp_session_conv\",\"status\":\"completed\","
       "\"conversation\":{\"id\":\"conv_session\"},\"output\":[{"
@@ -4109,6 +4113,13 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_session_img\"") !=
             NULL) {
       return session_file_body;
+    }
+    if (strstr(request, "\"type\":\"input_file\"") != NULL &&
+        strstr(request, "\"filename\":\"source-note.txt\"") != NULL &&
+        strstr(request, "\"file_data\":\"source file body\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_session_file\"") !=
+            NULL) {
+      return session_source_body;
     }
     if (strstr(request, "conversation turn") != NULL &&
         strstr(request, "\"conversation\":\"conv_session\"") != NULL &&
@@ -4908,6 +4919,11 @@ static void test_agent_session(test_state *state) {
   cai_output *output;
   const cai_response *output_response;
   cai_error error;
+  cai_source_callbacks source_callbacks;
+  cai_source *source;
+  cai_source *failing_source;
+  read_state source_state;
+  mcp_source_state failing_source_state;
   char file_path[] = "/tmp/cai-session-file-XXXXXX";
   int file_fd;
 
@@ -4924,7 +4940,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 10);
+    mock_openai_child(pipe_fds[1], 11);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -4963,6 +4979,11 @@ static void test_agent_session(test_state *state) {
   response = NULL;
   output = NULL;
   output_response = NULL;
+  source = NULL;
+  failing_source = NULL;
+  memset(&source_callbacks, 0, sizeof(source_callbacks));
+  memset(&source_state, 0, sizeof(source_state));
+  memset(&failing_source_state, 0, sizeof(failing_source_state));
 
   expect_int(state, "agent_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -4974,6 +4995,7 @@ static void test_agent_session(test_state *state) {
       agent->register_raw_spooled_tool == NULL ||
       agent->add_user_text == NULL || agent->add_user_file_path == NULL ||
       agent->add_user_file_data_spooled == NULL ||
+      agent->add_user_file_source == NULL ||
       agent->stream_text == NULL || agent->run_output == NULL ||
       agent->new_session == NULL || agent->close == NULL) {
     test_fail(state, "agent_methods", "method facade not initialized");
@@ -4997,7 +5019,8 @@ static void test_agent_session(test_state *state) {
   expect_int(state, "agent_session_new",
              agent->new_session(agent, &session, &error), CAI_OK);
   if (session->add_user_text == NULL || session->add_user_file_path == NULL ||
-      session->add_user_file_data_spooled == NULL || session->run == NULL ||
+      session->add_user_file_data_spooled == NULL ||
+      session->add_user_file_source == NULL || session->run == NULL ||
       session->send_text == NULL || session->close == NULL) {
     test_fail(state, "session_methods", "session facade not initialized");
   }
@@ -5064,6 +5087,50 @@ static void test_agent_session(test_state *state) {
     response = NULL;
     unlink(file_path);
   }
+  failing_source_state.text = "source file body";
+  failing_source_state.max_chunk = 4U;
+  failing_source_state.fail_after_reads = 1;
+  source_callbacks.read = test_mcp_source_read;
+  source_callbacks.reset = test_mcp_source_reset;
+  source_callbacks.close = test_mcp_source_close;
+  source_callbacks.context = &failing_source_state;
+  expect_int(state, "agent_file_source_fail_create",
+             cai_source_from_callbacks(&source_callbacks, &failing_source,
+                                       &error),
+             CAI_OK);
+  expect_int(state, "agent_file_source_fail",
+             session->add_user_file_source(session, "bad-source.txt",
+                                           failing_source, NULL, &error),
+             CAI_ERR_TRANSPORT);
+  cai_source_close(failing_source);
+  failing_source = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  source_state.text = "source file body";
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &source_state;
+  expect_int(state, "agent_file_source_create",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "agent_add_file_source",
+             session->add_user_file_source(session, "source-note.txt", source,
+                                           NULL, &error),
+             CAI_OK);
+  expect_int(state, "agent_file_source_read_all",
+             (long)source_state.offset, (long)strlen(source_state.text));
+  expect_int(state, "agent_source_file_run",
+             session->run(session, &response, &error), CAI_OK);
+  expect_str(state, "agent_source_file_id", cai_response_id(response),
+             "resp_session_source");
+  expect_str(state, "agent_source_file_text", cai_response_output_text(response),
+             "source turn");
+  cai_response_destroy(response);
+  response = NULL;
+  cai_source_close(source);
+  source = NULL;
+  expect_int(state, "agent_file_source_not_owned", source_state.closed, 1L);
   expect_int(state, "agent_session_conversation",
              cai_conversation_from_id("conv_session", &conversation, &error),
              CAI_OK);
