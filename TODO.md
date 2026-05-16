@@ -82,6 +82,10 @@ before implementing that slice.
   - Persist boards, active items, and the done archive in one JSON document at
     `~/.config/cai/todo.json` by default.
   - Store path and lock path are configurable in the tool constructor/config.
+  - Custom storage is supported through transaction callbacks that provide
+    lonejson readers/sinks. The default remains file-backed JSON; future lockd
+    integration should implement the same callback interface rather than
+    changing the todo domain code.
   - Support multiple kanban boards.
   - Active statuses are `todo` and `in_process`.
   - Done items move to the document's `done` archive array.
@@ -105,7 +109,8 @@ before implementing that slice.
   - Keep the existing `fcntl` lock/temp/rename transaction boundary.
   - Tests cover WIP denial and update behavior, move semantics, bounded large
     listings, duplicate-key/corrupt JSON rejection, MCP exposure, canonical
-    store shape, and happy-path create/add/list/complete/re-add behavior.
+    store shape, callback-backed storage, and happy-path
+    create/add/list/complete/re-add behavior.
 
 - [x] Add an example MCP server.
   - Directory: `examples/mcp-server/`.

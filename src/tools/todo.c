@@ -25,8 +25,8 @@
 #define CAI_TODO_INITIAL_STORE "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}"
 
 typedef struct cai_todo_context {
-  char *store_path;
-  char *lock_path;
+  cai_todo_store_callbacks store;
+  void *store_context;
   char *default_board;
   size_t max_title_bytes;
   size_t max_description_bytes;
@@ -104,6 +104,21 @@ typedef struct cai_todo_file_lock {
   int fd;
 } cai_todo_file_lock;
 
+typedef struct cai_todo_file_store {
+  char *store_path;
+  char *lock_path;
+} cai_todo_file_store;
+
+typedef struct cai_todo_file_transaction {
+  cai_todo_file_store *store;
+  cai_todo_file_lock lock;
+  char *read_path;
+  char *write_path;
+  FILE *read_fp;
+  FILE *write_fp;
+  int owns_read_path;
+} cai_todo_file_transaction;
+
 typedef struct cai_todo_find_board_state {
   const char *board_id;
   const char *board_name;
@@ -152,6 +167,25 @@ typedef struct cai_todo_rewrite_state {
   int complete;
   long long now_unix;
 } cai_todo_rewrite_state;
+
+static void cai_todo_file_store_destroy(void *context);
+static int cai_todo_file_store_begin(void *context, void **transaction,
+                                     cai_error *error);
+static int cai_todo_file_store_open_read(void *context, void *transaction,
+                                         lonejson_reader_fn *reader,
+                                         void **reader_context,
+                                         cai_error *error);
+static void cai_todo_file_store_close_read(void *context, void *transaction,
+                                           void *reader_context);
+static int cai_todo_file_store_open_write(void *context, void *transaction,
+                                          lonejson_sink_fn *sink,
+                                          void **sink_context,
+                                          cai_error *error);
+static int cai_todo_file_store_commit_write(void *context, void *transaction,
+                                            cai_error *error);
+static int cai_todo_file_store_commit(void *context, void *transaction,
+                                      cai_error *error);
+static void cai_todo_file_store_rollback(void *context, void *transaction);
 
 static const lonejson_field cai_todo_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_args, operation, "operation"),
@@ -263,8 +297,9 @@ static void cai_todo_context_cleanup(void *context) {
   if (ctx == NULL) {
     return;
   }
-  cai_free_mem(NULL, ctx->store_path);
-  cai_free_mem(NULL, ctx->lock_path);
+  if (ctx->store.destroy != NULL) {
+    ctx->store.destroy(ctx->store_context);
+  }
   cai_free_mem(NULL, ctx->default_board);
   cai_free_mem(NULL, ctx);
 }
@@ -414,29 +449,67 @@ static int cai_todo_ensure_file(const char *path, cai_error *error) {
 static int cai_todo_context_new(const cai_todo_tool_config *config,
                                 cai_todo_context **out, cai_error *error) {
   cai_todo_context *ctx;
+  cai_todo_file_store *file_store;
   int rc;
 
   *out = NULL;
+  file_store = NULL;
   ctx = (cai_todo_context *)cai_alloc(NULL, sizeof(*ctx));
   if (ctx == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate todo tool context");
   }
   memset(ctx, 0, sizeof(*ctx));
-  if (config != NULL && config->store_path != NULL &&
-      config->store_path[0] != '\0') {
-    rc = cai_todo_copy_string(&ctx->store_path, config->store_path, error);
+  rc = CAI_OK;
+  if (config != NULL && config->store != NULL) {
+    ctx->store = *config->store;
+    ctx->store_context = config->store_context;
   } else {
-    rc = cai_todo_default_path(&ctx->store_path, CAI_TODO_DEFAULT_STORE_FILE,
-                               error);
+    file_store = (cai_todo_file_store *)cai_alloc(NULL, sizeof(*file_store));
+    if (file_store == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate todo file store");
+    } else {
+      memset(file_store, 0, sizeof(*file_store));
+      if (config != NULL && config->store_path != NULL &&
+          config->store_path[0] != '\0') {
+        rc = cai_todo_copy_string(&file_store->store_path, config->store_path,
+                                  error);
+      } else {
+        rc = cai_todo_default_path(&file_store->store_path,
+                                   CAI_TODO_DEFAULT_STORE_FILE, error);
+      }
+      if (rc == CAI_OK) {
+        if (config != NULL && config->lock_path != NULL &&
+            config->lock_path[0] != '\0') {
+          rc = cai_todo_copy_string(&file_store->lock_path, config->lock_path,
+                                    error);
+        } else {
+          rc = cai_todo_default_path(&file_store->lock_path,
+                                     CAI_TODO_DEFAULT_LOCK_FILE, error);
+        }
+      }
+      if (rc == CAI_OK) {
+        ctx->store.begin = cai_todo_file_store_begin;
+        ctx->store.open_read = cai_todo_file_store_open_read;
+        ctx->store.close_read = cai_todo_file_store_close_read;
+        ctx->store.open_write = cai_todo_file_store_open_write;
+        ctx->store.commit_write = cai_todo_file_store_commit_write;
+        ctx->store.commit = cai_todo_file_store_commit;
+        ctx->store.rollback = cai_todo_file_store_rollback;
+        ctx->store.destroy = cai_todo_file_store_destroy;
+        ctx->store_context = file_store;
+        file_store = NULL;
+      }
+    }
   }
   if (rc == CAI_OK) {
-    if (config != NULL && config->lock_path != NULL &&
-        config->lock_path[0] != '\0') {
-      rc = cai_todo_copy_string(&ctx->lock_path, config->lock_path, error);
-    } else {
-      rc = cai_todo_default_path(&ctx->lock_path, CAI_TODO_DEFAULT_LOCK_FILE,
-                                 error);
+    if (ctx->store.begin == NULL || ctx->store.open_read == NULL ||
+        ctx->store.close_read == NULL || ctx->store.open_write == NULL ||
+        ctx->store.commit_write == NULL || ctx->store.commit == NULL ||
+        ctx->store.rollback == NULL) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "todo store callbacks are incomplete");
     }
   }
   if (rc == CAI_OK) {
@@ -447,6 +520,7 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
         error);
   }
   if (rc != CAI_OK) {
+    cai_todo_file_store_destroy(file_store);
     cai_todo_context_cleanup(ctx);
     return rc;
   }
@@ -462,31 +536,22 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
       config != NULL && config->max_result_items != 0U
           ? config->max_result_items
           : 100U;
-  rc = cai_todo_ensure_store(ctx->store_path, error);
-  if (rc == CAI_OK) {
-    rc = cai_todo_ensure_file(ctx->lock_path, error);
-  }
-  if (rc != CAI_OK) {
-    cai_todo_context_cleanup(ctx);
-    return rc;
-  }
   *out = ctx;
   return CAI_OK;
 }
 
-static int cai_todo_lock(cai_todo_context *ctx, cai_todo_file_lock *lock,
-                         cai_error *error) {
+static int cai_todo_lock_file(const char *lock_path, cai_todo_file_lock *lock,
+                              cai_error *error) {
   struct flock fl;
 
   lock->fd = -1;
-  if (cai_todo_ensure_file(ctx->lock_path, error) != CAI_OK) {
+  if (cai_todo_ensure_file(lock_path, error) != CAI_OK) {
     return error != NULL ? error->code : CAI_ERR_TRANSPORT;
   }
-  lock->fd = open(ctx->lock_path, O_RDWR, 0600);
+  lock->fd = open(lock_path, O_RDWR, 0600);
   if (lock->fd < 0) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to open todo lockfile",
-                                ctx->lock_path);
+                                "failed to open todo lockfile", lock_path);
   }
   memset(&fl, 0, sizeof(fl));
   fl.l_type = F_WRLCK;
@@ -495,7 +560,7 @@ static int cai_todo_lock(cai_todo_context *ctx, cai_todo_file_lock *lock,
     close(lock->fd);
     lock->fd = -1;
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to lock todo store", ctx->lock_path);
+                                "failed to lock todo store", lock_path);
   }
   return CAI_OK;
 }
@@ -516,12 +581,15 @@ static void cai_todo_unlock(cai_todo_file_lock *lock) {
 
 static int cai_todo_tmp_path(char **out, const char *path, cai_error *error) {
   char suffix[64];
+  struct timeval tv;
   size_t len;
   size_t suffix_len;
   char *tmp;
+  static unsigned int counter;
 
-  snprintf(suffix, sizeof(suffix), ".tmp.%ld.%ld", (long)getpid(),
-           (long)time(NULL));
+  gettimeofday(&tv, NULL);
+  snprintf(suffix, sizeof(suffix), ".tmp.%ld.%ld.%ld.%u", (long)getpid(),
+           (long)tv.tv_sec, (long)tv.tv_usec, ++counter);
   len = strlen(path);
   suffix_len = strlen(suffix);
   tmp = (char *)cai_alloc(NULL, len + suffix_len + 1U);
@@ -544,20 +612,338 @@ static int cai_todo_commit_temp(const char *tmp_path, const char *target_path,
   return CAI_OK;
 }
 
-static int cai_todo_rewrite(const cai_todo_context *ctx, const char *selector,
-                            const char *tmp_path,
+static lonejson_read_result cai_todo_file_read(void *user,
+                                               unsigned char *buffer,
+                                               size_t capacity) {
+  FILE *fp;
+  lonejson_read_result result;
+
+  result = lonejson_default_read_result();
+  fp = (FILE *)user;
+  if (capacity == 0U) {
+    return result;
+  }
+  result.bytes_read = fread(buffer, 1U, capacity, fp);
+  if (result.bytes_read < capacity) {
+    if (ferror(fp)) {
+      result.error_code = errno != 0 ? errno : EIO;
+    } else if (feof(fp)) {
+      result.eof = 1;
+    }
+  }
+  return result;
+}
+
+static lonejson_status cai_todo_file_write(void *user, const void *data,
+                                           size_t len,
+                                           lonejson_error *error) {
+  FILE *fp;
+
+  fp = (FILE *)user;
+  if (len != 0U && fwrite(data, 1U, len, fp) != len) {
+    if (error != NULL) {
+      lonejson_error_init(error);
+      error->code = LONEJSON_STATUS_IO_ERROR;
+      error->system_errno = errno != 0 ? errno : EIO;
+      snprintf(error->message, sizeof(error->message),
+               "failed to write todo store");
+    }
+    return LONEJSON_STATUS_IO_ERROR;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static void cai_todo_file_store_destroy(void *context) {
+  cai_todo_file_store *store;
+
+  store = (cai_todo_file_store *)context;
+  if (store == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, store->store_path);
+  cai_free_mem(NULL, store->lock_path);
+  cai_free_mem(NULL, store);
+}
+
+static int cai_todo_file_store_begin(void *context, void **transaction,
+                                     cai_error *error) {
+  cai_todo_file_store *store;
+  cai_todo_file_transaction *txn;
+  int rc;
+
+  *transaction = NULL;
+  store = (cai_todo_file_store *)context;
+  if (store == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "todo file store is required");
+  }
+  rc = cai_todo_ensure_store(store->store_path, error);
+  if (rc == CAI_OK) {
+    rc = cai_todo_ensure_file(store->lock_path, error);
+  }
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  txn = (cai_todo_file_transaction *)cai_alloc(NULL, sizeof(*txn));
+  if (txn == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate todo store transaction");
+  }
+  memset(txn, 0, sizeof(*txn));
+  txn->store = store;
+  txn->lock.fd = -1;
+  rc = cai_todo_lock_file(store->lock_path, &txn->lock, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, txn);
+    return rc;
+  }
+  rc = cai_todo_copy_string(&txn->read_path, store->store_path, error);
+  if (rc != CAI_OK) {
+    cai_todo_unlock(&txn->lock);
+    cai_free_mem(NULL, txn);
+    return rc;
+  }
+  *transaction = txn;
+  return CAI_OK;
+}
+
+static int cai_todo_file_store_open_read(void *context, void *transaction,
+                                         lonejson_reader_fn *reader,
+                                         void **reader_context,
+                                         cai_error *error) {
+  cai_todo_file_transaction *txn;
+
+  (void)context;
+  txn = (cai_todo_file_transaction *)transaction;
+  if (txn == NULL || reader == NULL || reader_context == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo read transaction is required");
+  }
+  if (txn->read_fp != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo read stream is already open");
+  }
+  txn->read_fp = fopen(txn->read_path, "rb");
+  if (txn->read_fp == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to open todo store for reading",
+                                txn->read_path);
+  }
+  *reader = cai_todo_file_read;
+  *reader_context = txn->read_fp;
+  return CAI_OK;
+}
+
+static void cai_todo_file_store_close_read(void *context, void *transaction,
+                                           void *reader_context) {
+  cai_todo_file_transaction *txn;
+
+  (void)context;
+  (void)reader_context;
+  txn = (cai_todo_file_transaction *)transaction;
+  if (txn != NULL && txn->read_fp != NULL) {
+    fclose(txn->read_fp);
+    txn->read_fp = NULL;
+  }
+}
+
+static int cai_todo_file_store_open_write(void *context, void *transaction,
+                                          lonejson_sink_fn *sink,
+                                          void **sink_context,
+                                          cai_error *error) {
+  cai_todo_file_transaction *txn;
+  int rc;
+
+  (void)context;
+  txn = (cai_todo_file_transaction *)transaction;
+  if (txn == NULL || sink == NULL || sink_context == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo write transaction is required");
+  }
+  if (txn->write_fp != NULL || txn->write_path != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo write stream is already open");
+  }
+  rc = cai_todo_tmp_path(&txn->write_path, txn->store->store_path, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  txn->write_fp = fopen(txn->write_path, "wb");
+  if (txn->write_fp == NULL) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to open todo temp store",
+                              txn->write_path);
+    cai_free_mem(NULL, txn->write_path);
+    txn->write_path = NULL;
+    return rc;
+  }
+  *sink = cai_todo_file_write;
+  *sink_context = txn->write_fp;
+  return CAI_OK;
+}
+
+static int cai_todo_file_store_commit_write(void *context, void *transaction,
+                                            cai_error *error) {
+  cai_todo_file_transaction *txn;
+
+  (void)context;
+  txn = (cai_todo_file_transaction *)transaction;
+  if (txn == NULL || txn->write_fp == NULL || txn->write_path == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo write stream is not open");
+  }
+  if (fflush(txn->write_fp) != 0 || fclose(txn->write_fp) != 0) {
+    txn->write_fp = NULL;
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to close todo temp store",
+                                txn->write_path);
+  }
+  txn->write_fp = NULL;
+  if (txn->owns_read_path && txn->read_path != NULL) {
+    unlink(txn->read_path);
+  }
+  cai_free_mem(NULL, txn->read_path);
+  txn->read_path = txn->write_path;
+  txn->write_path = NULL;
+  txn->owns_read_path = 1;
+  return CAI_OK;
+}
+
+static int cai_todo_file_store_commit(void *context, void *transaction,
+                                      cai_error *error) {
+  cai_todo_file_transaction *txn;
+  int rc;
+
+  (void)context;
+  txn = (cai_todo_file_transaction *)transaction;
+  if (txn == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo transaction is required");
+  }
+  rc = CAI_OK;
+  if (txn->write_fp != NULL) {
+    rc = cai_todo_file_store_commit_write(context, transaction, error);
+  }
+  if (rc == CAI_OK && txn->owns_read_path && txn->read_path != NULL) {
+    rc = cai_todo_commit_temp(txn->read_path, txn->store->store_path, error);
+    if (rc == CAI_OK) {
+      cai_free_mem(NULL, txn->read_path);
+      txn->read_path = NULL;
+      txn->owns_read_path = 0;
+    }
+  }
+  if (txn->write_fp != NULL) {
+    fclose(txn->write_fp);
+    txn->write_fp = NULL;
+  }
+  if (txn->read_fp != NULL) {
+    fclose(txn->read_fp);
+    txn->read_fp = NULL;
+  }
+  if (txn->write_path != NULL) {
+    unlink(txn->write_path);
+  }
+  cai_free_mem(NULL, txn->write_path);
+  if (txn->owns_read_path && txn->read_path != NULL) {
+    unlink(txn->read_path);
+  }
+  cai_free_mem(NULL, txn->read_path);
+  cai_todo_unlock(&txn->lock);
+  cai_free_mem(NULL, txn);
+  return rc;
+}
+
+static void cai_todo_file_store_rollback(void *context, void *transaction) {
+  cai_todo_file_transaction *txn;
+
+  (void)context;
+  txn = (cai_todo_file_transaction *)transaction;
+  if (txn == NULL) {
+    return;
+  }
+  if (txn->read_fp != NULL) {
+    fclose(txn->read_fp);
+  }
+  if (txn->write_fp != NULL) {
+    fclose(txn->write_fp);
+  }
+  if (txn->write_path != NULL) {
+    unlink(txn->write_path);
+  }
+  if (txn->owns_read_path && txn->read_path != NULL) {
+    unlink(txn->read_path);
+  }
+  cai_free_mem(NULL, txn->write_path);
+  cai_free_mem(NULL, txn->read_path);
+  cai_todo_unlock(&txn->lock);
+  cai_free_mem(NULL, txn);
+}
+
+static int cai_todo_store_begin(const cai_todo_context *ctx, void **txn,
+                                cai_error *error) {
+  if (ctx->store.begin == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo store begin callback is required");
+  }
+  return ctx->store.begin(ctx->store_context, txn, error);
+}
+
+static void cai_todo_store_rollback(const cai_todo_context *ctx, void *txn) {
+  if (ctx != NULL && ctx->store.rollback != NULL && txn != NULL) {
+    ctx->store.rollback(ctx->store_context, txn);
+  }
+}
+
+static int cai_todo_store_commit(const cai_todo_context *ctx, void *txn,
+                                 cai_error *error) {
+  if (ctx->store.commit == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo store commit callback is required");
+  }
+  return ctx->store.commit(ctx->store_context, txn, error);
+}
+
+static int cai_todo_rewrite(const cai_todo_context *ctx, void *txn,
+                            const char *selector,
                             const lonejson_array_rewrite_options *options,
                             cai_error *error) {
   lonejson_error json_error;
+  lonejson_reader_fn reader;
+  lonejson_sink_fn sink;
+  void *reader_context;
+  void *sink_context;
+  int rc;
 
-  lonejson_error_init(&json_error);
-  if (lonejson_array_rewrite_path(selector, ctx->store_path, tmp_path, options,
-                                  &json_error) != LONEJSON_STATUS_OK) {
-    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to rewrite todo store",
-                                json_error.message);
+  if (ctx->store.open_read == NULL || ctx->store.open_write == NULL ||
+      ctx->store.commit_write == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "todo store streaming callbacks are required");
   }
-  return CAI_OK;
+  reader = NULL;
+  sink = NULL;
+  reader_context = NULL;
+  sink_context = NULL;
+  rc = ctx->store.open_read(ctx->store_context, txn, &reader, &reader_context,
+                            error);
+  if (rc == CAI_OK) {
+    rc = ctx->store.open_write(ctx->store_context, txn, &sink, &sink_context,
+                               error);
+  }
+  lonejson_error_init(&json_error);
+  if (rc == CAI_OK &&
+      lonejson_array_rewrite_reader(selector, reader, reader_context, sink,
+                                    sink_context, options,
+                                    &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                              "failed to rewrite todo store",
+                              json_error.message);
+  }
+  if (ctx->store.close_read != NULL && reader_context != NULL) {
+    ctx->store.close_read(ctx->store_context, txn, reader_context);
+  }
+  if (rc == CAI_OK) {
+    rc = ctx->store.commit_write(ctx->store_context, txn, error);
+  }
+  return rc;
 }
 
 static int cai_todo_spool_string(lonejson_spooled *spool, const char *value,
@@ -867,21 +1253,51 @@ static int cai_todo_copy_item(cai_todo_item *dst, const cai_todo_item *src,
   return rc;
 }
 
-static int cai_todo_stream_boards(const cai_todo_context *ctx,
+static int cai_todo_stream_boards(const cai_todo_context *ctx, void *txn,
                                   lonejson_array_stream_item_fn callback,
                                   void *user, cai_error *error) {
   lonejson_array_stream *stream;
   lonejson_array_stream_result result;
   lonejson_error json_error;
+  lonejson_reader_fn reader;
+  void *reader_context;
+  void *local_txn;
   cai_todo_board board;
   int rc;
 
+  local_txn = NULL;
+  reader = NULL;
+  reader_context = NULL;
+  if (txn == NULL) {
+    rc = cai_todo_store_begin(ctx, &local_txn, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    txn = local_txn;
+  }
+  if (ctx->store.open_read == NULL) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "todo store open_read callback is required");
+    cai_todo_store_rollback(ctx, local_txn);
+    return rc;
+  }
+  rc = ctx->store.open_read(ctx->store_context, txn, &reader, &reader_context,
+                            error);
+  if (rc != CAI_OK) {
+    cai_todo_store_rollback(ctx, local_txn);
+    return rc;
+  }
   lonejson_error_init(&json_error);
-  stream = lonejson_array_stream_open_path("boards", ctx->store_path, NULL,
-                                           &json_error);
+  stream = lonejson_array_stream_open_reader("boards", reader, reader_context,
+                                             NULL, &json_error);
   if (stream == NULL) {
+    if (ctx->store.close_read != NULL) {
+      ctx->store.close_read(ctx->store_context, txn, reader_context);
+    }
+    cai_todo_store_rollback(ctx, local_txn);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to open todo boards", json_error.message);
+                                "failed to open todo boards",
+                                json_error.message);
   }
   rc = CAI_OK;
   for (;;) {
@@ -910,25 +1326,65 @@ static int cai_todo_stream_boards(const cai_todo_context *ctx,
     break;
   }
   lonejson_array_stream_close(stream);
+  if (ctx->store.close_read != NULL) {
+    ctx->store.close_read(ctx->store_context, txn, reader_context);
+  }
+  if (local_txn != NULL) {
+    if (rc == CAI_OK) {
+      rc = cai_todo_store_commit(ctx, local_txn, error);
+    } else {
+      cai_todo_store_rollback(ctx, local_txn);
+    }
+  }
   return rc;
 }
 
 static int cai_todo_stream_items_path(const cai_todo_context *ctx,
-                                      const char *path,
+                                      void *txn, const char *path,
                                       lonejson_array_stream_item_fn callback,
                                       void *user, cai_error *error) {
   lonejson_array_stream *stream;
   lonejson_array_stream_result result;
   lonejson_error json_error;
+  lonejson_reader_fn reader;
+  void *reader_context;
+  void *local_txn;
   cai_todo_item item;
   int rc;
 
+  local_txn = NULL;
+  reader = NULL;
+  reader_context = NULL;
+  if (txn == NULL) {
+    rc = cai_todo_store_begin(ctx, &local_txn, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    txn = local_txn;
+  }
+  if (ctx->store.open_read == NULL) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "todo store open_read callback is required");
+    cai_todo_store_rollback(ctx, local_txn);
+    return rc;
+  }
+  rc = ctx->store.open_read(ctx->store_context, txn, &reader, &reader_context,
+                            error);
+  if (rc != CAI_OK) {
+    cai_todo_store_rollback(ctx, local_txn);
+    return rc;
+  }
   lonejson_error_init(&json_error);
-  stream = lonejson_array_stream_open_path(path, ctx->store_path, NULL,
-                                           &json_error);
+  stream = lonejson_array_stream_open_reader(path, reader, reader_context, NULL,
+                                             &json_error);
   if (stream == NULL) {
+    if (ctx->store.close_read != NULL) {
+      ctx->store.close_read(ctx->store_context, txn, reader_context);
+    }
+    cai_todo_store_rollback(ctx, local_txn);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to open todo items", json_error.message);
+                                "failed to open todo items",
+                                json_error.message);
   }
   rc = CAI_OK;
   for (;;) {
@@ -957,6 +1413,16 @@ static int cai_todo_stream_items_path(const cai_todo_context *ctx,
     break;
   }
   lonejson_array_stream_close(stream);
+  if (ctx->store.close_read != NULL) {
+    ctx->store.close_read(ctx->store_context, txn, reader_context);
+  }
+  if (local_txn != NULL) {
+    if (rc == CAI_OK) {
+      rc = cai_todo_store_commit(ctx, local_txn, error);
+    } else {
+      cai_todo_store_rollback(ctx, local_txn);
+    }
+  }
   return rc;
 }
 
@@ -982,7 +1448,8 @@ static lonejson_status cai_todo_find_board_cb(void *user, void *dst) {
   return LONEJSON_STATUS_OK;
 }
 
-static int cai_todo_find_board(cai_todo_context *ctx, const char *board_id,
+static int cai_todo_find_board(cai_todo_context *ctx, void *txn,
+                               const char *board_id,
                                const char *board_name, cai_todo_board *out,
                                long long *in_process, long long *items,
                                cai_error *error);
@@ -1002,7 +1469,8 @@ static lonejson_status cai_todo_count_items_cb(void *user, void *dst) {
   return LONEJSON_STATUS_OK;
 }
 
-static int cai_todo_find_board(cai_todo_context *ctx, const char *board_id,
+static int cai_todo_find_board(cai_todo_context *ctx, void *txn,
+                               const char *board_id,
                                const char *board_name, cai_todo_board *out,
                                long long *in_process, long long *items,
                                cai_error *error) {
@@ -1015,7 +1483,8 @@ static int cai_todo_find_board(cai_todo_context *ctx, const char *board_id,
   board_state.board_id = board_id;
   board_state.board_name = board_name;
   board_state.out = out;
-  rc = cai_todo_stream_boards(ctx, cai_todo_find_board_cb, &board_state, error);
+  rc = cai_todo_stream_boards(ctx, txn, cai_todo_find_board_cb, &board_state,
+                              error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1025,7 +1494,7 @@ static int cai_todo_find_board(cai_todo_context *ctx, const char *board_id,
   }
   memset(&item_state, 0, sizeof(item_state));
   item_state.board_id = out->id;
-  rc = cai_todo_stream_items_path(ctx, "items", cai_todo_count_items_cb,
+  rc = cai_todo_stream_items_path(ctx, txn, "items", cai_todo_count_items_cb,
                                   &item_state, error);
   if (rc != CAI_OK) {
     cai_todo_board_cleanup(out);
@@ -1060,23 +1529,23 @@ static lonejson_status cai_todo_id_item_cb(void *user, void *dst) {
   return LONEJSON_STATUS_OK;
 }
 
-static int cai_todo_id_exists(const cai_todo_context *ctx, const char *id,
-                              cai_error *error) {
+static int cai_todo_id_exists(const cai_todo_context *ctx, void *txn,
+                              const char *id, cai_error *error) {
   cai_todo_id_state state;
   int rc;
 
   memset(&state, 0, sizeof(state));
   state.id = id;
-  rc = cai_todo_stream_boards(ctx, cai_todo_id_board_cb, &state, error);
+  rc = cai_todo_stream_boards(ctx, txn, cai_todo_id_board_cb, &state, error);
   if (rc != CAI_OK || state.found) {
     return rc == CAI_OK ? 1 : rc;
   }
-  rc = cai_todo_stream_items_path(ctx, "items", cai_todo_id_item_cb, &state,
+  rc = cai_todo_stream_items_path(ctx, txn, "items", cai_todo_id_item_cb, &state,
                                   error);
   if (rc != CAI_OK || state.found) {
     return rc == CAI_OK ? 1 : rc;
   }
-  rc = cai_todo_stream_items_path(ctx, "done", cai_todo_id_item_cb, &state,
+  rc = cai_todo_stream_items_path(ctx, txn, "done", cai_todo_id_item_cb, &state,
                                   error);
   if (rc != CAI_OK) {
     return rc;
@@ -1107,8 +1576,8 @@ static void cai_todo_base36(unsigned long long value, char *out,
   out[i] = '\0';
 }
 
-static int cai_todo_generate_id(const cai_todo_context *ctx, char out[32],
-                                cai_error *error) {
+static int cai_todo_generate_id(const cai_todo_context *ctx, void *txn,
+                                char out[32], cai_error *error) {
   struct timeval tv;
   unsigned long long random_part;
   unsigned long long value;
@@ -1137,7 +1606,7 @@ static int cai_todo_generate_id(const cai_todo_context *ctx, char out[32],
             ((unsigned long long)getpid() << 16) ^
             ((unsigned long long)counter << 8) ^ random_part;
     cai_todo_base36(value, out, 32U);
-    exists = cai_todo_id_exists(ctx, out, error);
+    exists = cai_todo_id_exists(ctx, txn, out, error);
     if (exists == 0) {
       return CAI_OK;
     }
@@ -1324,40 +1793,36 @@ static lonejson_status cai_todo_move_item_cb(
 static int cai_todo_create_board(cai_todo_context *ctx,
                                  const cai_todo_args *args,
                                  cai_todo_result *result, cai_error *error) {
-  cai_todo_file_lock lock;
   cai_todo_rewrite_state state;
   lonejson_array_rewrite_options options;
   char id[32];
-  char *tmp;
   const char *name;
+  void *txn;
   int rc;
 
   memset(&state, 0, sizeof(state));
   memset(&options, 0, sizeof(options));
   cai_todo_board_init(&state.board);
-  lock.fd = -1;
-  tmp = NULL;
-  rc = cai_todo_lock(ctx, &lock, error);
+  txn = NULL;
+  rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc != CAI_OK) {
     cai_todo_board_cleanup(&state.board);
     return rc;
   }
-  rc = cai_todo_generate_id(ctx, id, error);
+  rc = cai_todo_generate_id(ctx, txn, id, error);
   name = cai_todo_arg_string(args->board_name, ctx->default_board);
   if (rc == CAI_OK) {
     rc = cai_todo_set_board(&state.board, id, name, args->wip_limit,
                             args->has_wip_limit, (long long)time(NULL), error);
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_tmp_path(&tmp, ctx->store_path, error);
-  }
-  if (rc == CAI_OK) {
     options.append = cai_todo_append_board_cb;
     options.user = &state;
-    rc = cai_todo_rewrite(ctx, "boards", tmp, &options, error);
+    rc = cai_todo_rewrite(ctx, txn, "boards", &options, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_commit_temp(tmp, ctx->store_path, error);
+    rc = cai_todo_store_commit(ctx, txn, error);
+    txn = NULL;
   }
   if (rc == CAI_OK) {
     rc = cai_todo_set_result(result, args->operation, 1, "ok", "board created",
@@ -1373,26 +1838,23 @@ static int cai_todo_create_board(cai_todo_context *ctx,
     result->wip_limit = args->wip_limit;
     result->has_wip_limit = 1;
   }
-  if (tmp != NULL && rc != CAI_OK) {
-    unlink(tmp);
+  if (txn != NULL) {
+    cai_todo_store_rollback(ctx, txn);
   }
-  cai_free_mem(NULL, tmp);
   cai_todo_board_cleanup(&state.board);
-  cai_todo_unlock(&lock);
   return rc;
 }
 
 static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
                              cai_todo_result *result, cai_error *error) {
-  cai_todo_file_lock lock;
   cai_todo_rewrite_state state;
   lonejson_array_rewrite_options options;
   cai_todo_board board;
   char id[32];
-  char *tmp;
   long long in_process;
   long long items;
   const char *status;
+  void *txn;
   int rc;
 
   if (args->title == NULL || args->title[0] == '\0') {
@@ -1413,15 +1875,14 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
   memset(&options, 0, sizeof(options));
   cai_todo_item_init(&state.item);
   cai_todo_board_init(&board);
-  lock.fd = -1;
-  tmp = NULL;
-  rc = cai_todo_lock(ctx, &lock, error);
+  txn = NULL;
+  rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc != CAI_OK) {
     cai_todo_item_cleanup(&state.item);
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(ctx, args->board_id,
+  rc = cai_todo_find_board(ctx, txn, args->board_id,
                            cai_todo_arg_string(args->board_name,
                                                ctx->default_board),
                            &board, &in_process, &items, error);
@@ -1442,7 +1903,7 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
                              "board WIP limit would be exceeded", error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
-    rc = cai_todo_generate_id(ctx, id, error);
+    rc = cai_todo_generate_id(ctx, txn, id, error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     rc = cai_todo_set_item(&state.item, id, board.id, board.name, args->title,
@@ -1450,15 +1911,13 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
                            error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
-    rc = cai_todo_tmp_path(&tmp, ctx->store_path, error);
-  }
-  if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     options.append = cai_todo_append_item_cb;
     options.user = &state;
-    rc = cai_todo_rewrite(ctx, "items", tmp, &options, error);
+    rc = cai_todo_rewrite(ctx, txn, "items", &options, error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
-    rc = cai_todo_commit_temp(tmp, ctx->store_path, error);
+    rc = cai_todo_store_commit(ctx, txn, error);
+    txn = NULL;
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     rc = cai_todo_set_result(result, args->operation, 1, "ok", "item added",
@@ -1481,13 +1940,16 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
   result->has_in_process_count = 1;
   result->item_count = items + (result->ok ? 1 : 0);
   result->has_item_count = 1;
-  if (tmp != NULL && rc != CAI_OK) {
-    unlink(tmp);
+  if (txn != NULL) {
+    if (result->has_ok && !result->ok && rc == CAI_OK) {
+      rc = cai_todo_store_commit(ctx, txn, error);
+      txn = NULL;
+    } else {
+      cai_todo_store_rollback(ctx, txn);
+    }
   }
-  cai_free_mem(NULL, tmp);
   cai_todo_item_cleanup(&state.item);
   cai_todo_board_cleanup(&board);
-  cai_todo_unlock(&lock);
   return rc;
 }
 
@@ -1529,7 +1991,7 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(ctx, args->board_id,
+  rc = cai_todo_find_board(ctx, NULL, args->board_id,
                            cai_todo_arg_string(args->board_name,
                                                ctx->default_board),
                            &board, &in_process, &items, error);
@@ -1561,7 +2023,7 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
     list_state.max_items = ctx->max_result_items;
     list_state.error = error;
     list_state.rc = CAI_OK;
-    rc = cai_todo_stream_items_path(ctx, "items", cai_todo_list_item_cb,
+    rc = cai_todo_stream_items_path(ctx, NULL, "items", cai_todo_list_item_cb,
                                     &list_state, error);
     if (rc == CAI_OK) {
       rc = list_state.rc;
@@ -1604,7 +2066,7 @@ static int cai_todo_list_boards(cai_todo_context *ctx,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_todo_stream_boards(ctx, cai_todo_list_board_cb, &state, error);
+  rc = cai_todo_stream_boards(ctx, NULL, cai_todo_list_board_cb, &state, error);
   if (rc == CAI_OK) {
     rc = state.rc;
   }
@@ -1617,15 +2079,13 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
                                  const cai_todo_args *args,
                                  cai_todo_result *result, int complete,
                                  cai_error *error) {
-  cai_todo_file_lock lock;
   cai_todo_rewrite_state state;
   lonejson_array_rewrite_options options;
   cai_todo_board board;
-  char *tmp1;
-  char *tmp2;
   long long in_process;
   long long items;
   const char *new_status;
+  void *txn;
   int rc;
 
   if (args->item_id == NULL || args->item_id[0] == '\0') {
@@ -1643,17 +2103,15 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
   cai_todo_item_init(&state.append_item);
   cai_todo_item_init(&state.replacement_item);
   cai_todo_board_init(&board);
-  lock.fd = -1;
-  tmp1 = NULL;
-  tmp2 = NULL;
-  rc = cai_todo_lock(ctx, &lock, error);
+  txn = NULL;
+  rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc != CAI_OK) {
     cai_todo_item_cleanup(&state.append_item);
     cai_todo_item_cleanup(&state.replacement_item);
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(ctx, args->board_id,
+  rc = cai_todo_find_board(ctx, txn, args->board_id,
                            cai_todo_arg_string(args->board_name,
                                                ctx->default_board),
                            &board, &in_process, &items, error);
@@ -1668,9 +2126,6 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
                              "board WIP limit would be exceeded", error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
-    rc = cai_todo_tmp_path(&tmp1, ctx->store_path, error);
-  }
-  if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     state.ctx = ctx;
     state.args = args;
     state.new_status = new_status;
@@ -1680,48 +2135,21 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
     options.item_dst = &state.item;
     options.item = cai_todo_move_item_cb;
     options.user = &state;
-    rc = cai_todo_rewrite(ctx, "items", tmp1, &options, error);
+    rc = cai_todo_rewrite(ctx, txn, "items", &options, error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok) && !state.found) {
     rc = cai_todo_set_result(result, args->operation, 0, "item_not_found",
                              "item was not found", error);
   }
   if (rc == CAI_OK && state.found && complete) {
-    rc = cai_todo_tmp_path(&tmp2, tmp1, error);
-  }
-  if (rc == CAI_OK && state.found && complete) {
-    if (rename(tmp1, tmp2) != 0) {
-      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to stage todo temp store", tmp1);
-    } else {
-      cai_free_mem(NULL, tmp1);
-      tmp1 = tmp2;
-      tmp2 = NULL;
-    }
-  }
-  if (rc == CAI_OK && state.found && complete) {
-    rc = cai_todo_tmp_path(&tmp2, ctx->store_path, error);
-  }
-  if (rc == CAI_OK && state.found && complete) {
     memset(&options, 0, sizeof(options));
     options.append = cai_todo_append_done_cb;
     options.user = &state;
-    {
-      lonejson_error json_error;
-      lonejson_error_init(&json_error);
-      if (lonejson_array_rewrite_path("done", tmp1, tmp2, &options,
-                                      &json_error) != LONEJSON_STATUS_OK) {
-        rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                  "failed to rewrite todo done archive",
-                                  json_error.message);
-      }
-    }
+    rc = cai_todo_rewrite(ctx, txn, "done", &options, error);
   }
   if (rc == CAI_OK && state.found) {
-    rc = cai_todo_commit_temp(complete ? tmp2 : tmp1, ctx->store_path, error);
-  }
-  if (rc == CAI_OK && state.found && complete && tmp1 != NULL) {
-    unlink(tmp1);
+    rc = cai_todo_store_commit(ctx, txn, error);
+    txn = NULL;
   }
   if (rc == CAI_OK && state.found) {
     rc = cai_todo_set_result(result, args->operation, 1, "ok",
@@ -1734,28 +2162,26 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
   if (rc == CAI_OK && state.found && !complete) {
     rc = cai_todo_copy_string(&result->status, new_status, error);
   }
-  if (tmp1 != NULL && rc != CAI_OK) {
-    unlink(tmp1);
+  if (txn != NULL) {
+    if (result->has_ok && !result->ok && rc == CAI_OK) {
+      rc = cai_todo_store_commit(ctx, txn, error);
+      txn = NULL;
+    } else {
+      cai_todo_store_rollback(ctx, txn);
+    }
   }
-  if (tmp2 != NULL && rc != CAI_OK) {
-    unlink(tmp2);
-  }
-  cai_free_mem(NULL, tmp1);
-  cai_free_mem(NULL, tmp2);
   cai_todo_item_cleanup(&state.replacement_item);
   cai_todo_item_cleanup(&state.append_item);
   cai_todo_board_cleanup(&board);
-  cai_todo_unlock(&lock);
   return rc;
 }
 
 static int cai_todo_set_wip_limit(cai_todo_context *ctx,
                                   const cai_todo_args *args,
                                   cai_todo_result *result, cai_error *error) {
-  cai_todo_file_lock lock;
   cai_todo_rewrite_state state;
   lonejson_array_rewrite_options options;
-  char *tmp;
+  void *txn;
   int rc;
 
   if (!args->has_wip_limit || args->wip_limit < 0) {
@@ -1764,12 +2190,8 @@ static int cai_todo_set_wip_limit(cai_todo_context *ctx,
   }
   memset(&state, 0, sizeof(state));
   memset(&options, 0, sizeof(options));
-  lock.fd = -1;
-  tmp = NULL;
-  rc = cai_todo_lock(ctx, &lock, error);
-  if (rc == CAI_OK) {
-    rc = cai_todo_tmp_path(&tmp, ctx->store_path, error);
-  }
+  txn = NULL;
+  rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc == CAI_OK) {
     state.ctx = ctx;
     state.args = args;
@@ -1778,14 +2200,15 @@ static int cai_todo_set_wip_limit(cai_todo_context *ctx,
     options.item_dst = &state.board;
     options.item = cai_todo_update_board_cb;
     options.user = &state;
-    rc = cai_todo_rewrite(ctx, "boards", tmp, &options, error);
+    rc = cai_todo_rewrite(ctx, txn, "boards", &options, error);
   }
   if (rc == CAI_OK && !state.found) {
     rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
                              "board was not found", error);
   }
   if (rc == CAI_OK && state.found) {
-    rc = cai_todo_commit_temp(tmp, ctx->store_path, error);
+    rc = cai_todo_store_commit(ctx, txn, error);
+    txn = NULL;
   }
   if (rc == CAI_OK && state.found) {
     rc = cai_todo_set_result(result, args->operation, 1, "ok",
@@ -1795,11 +2218,14 @@ static int cai_todo_set_wip_limit(cai_todo_context *ctx,
     result->wip_limit = args->wip_limit;
     result->has_wip_limit = 1;
   }
-  if (tmp != NULL && rc != CAI_OK) {
-    unlink(tmp);
+  if (txn != NULL) {
+    if (result->has_ok && !result->ok && rc == CAI_OK) {
+      rc = cai_todo_store_commit(ctx, txn, error);
+      txn = NULL;
+    } else {
+      cai_todo_store_rollback(ctx, txn);
+    }
   }
-  cai_free_mem(NULL, tmp);
-  cai_todo_unlock(&lock);
   return rc;
 }
 

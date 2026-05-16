@@ -491,14 +491,23 @@ By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
 `$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.
 Callers can override both paths in `cai_todo_tool_config`. Missing parent
 directories and files are created at registration and operation time.
+For non-file backends, set `cai_todo_tool_config.store` and
+`store_context`. The callback store API is transaction-oriented: cai opens a
+transaction, streams the current JSON document through a `lonejson_reader_fn`,
+streams each rewritten document through a `lonejson_sink_fn`, calls
+`commit_write` to promote each rewrite pass inside the transaction, then calls
+`commit` once to publish the final document. `rollback` must discard staged
+writes. This is the intended boundary for lockd-backed or application-owned
+todo storage.
 
 The todo store is one canonical JSON document:
 `{ "version": 1, "boards": [], "items": [], "done": [] }`. cai reads selected
 arrays one item at a time with lonejson array cursors and mutates selected
 arrays with `lonejson_array_rewrite_*` under an advisory `fcntl` lock plus
-temp-file/rename transaction boundary. The complete document and selected
-arrays are not materialized for storage operations. Tool results are bounded by
-`max_result_items`; when a result is truncated it includes `truncated=true`.
+temp-file/rename transaction boundary in the default file store. The complete
+document and selected arrays are not materialized for storage operations. Tool
+results are bounded by `max_result_items`; when a result is truncated it
+includes `truncated=true`.
 Moving an item into `in_process` respects the board's WIP limit and reports
 `ok=false` with `code="wip_limit_exceeded"` as a normal structured tool result,
 not as a transport failure.

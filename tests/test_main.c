@@ -8,6 +8,7 @@
 #include "../examples/mike-mind/mike_mind_prompt.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <pslog.h>
 #include <limits.h>
@@ -164,6 +165,26 @@ typedef struct failing_callback_state {
 typedef struct counting_tool_state {
   int called;
 } counting_tool_state;
+
+typedef struct todo_callback_store {
+  char store_path[PATH_MAX];
+  int begin_count;
+  int read_count;
+  int write_count;
+  int commit_write_count;
+  int commit_count;
+  int rollback_count;
+  int temp_counter;
+} todo_callback_store;
+
+typedef struct todo_callback_transaction {
+  todo_callback_store *store;
+  char read_path[PATH_MAX];
+  char write_path[PATH_MAX];
+  FILE *read_fp;
+  FILE *write_fp;
+  int owns_read_path;
+} todo_callback_transaction;
 
 static const lonejson_field tool_weather_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(tool_weather_args, city, "city"),
@@ -1240,6 +1261,203 @@ static int read_text_file(const char *path, char *buffer, size_t capacity) {
   buffer[nread] = '\0';
   fclose(fp);
   return 1;
+}
+
+static lonejson_read_result todo_callback_read(void *user,
+                                               unsigned char *buffer,
+                                               size_t capacity) {
+  FILE *fp;
+  lonejson_read_result result;
+
+  result = lonejson_default_read_result();
+  fp = (FILE *)user;
+  result.bytes_read = fread(buffer, 1U, capacity, fp);
+  if (result.bytes_read < capacity) {
+    if (ferror(fp)) {
+      result.error_code = errno != 0 ? errno : EIO;
+    } else if (feof(fp)) {
+      result.eof = 1;
+    }
+  }
+  return result;
+}
+
+static lonejson_status todo_callback_write(void *user, const void *data,
+                                           size_t len,
+                                           lonejson_error *error) {
+  FILE *fp;
+
+  fp = (FILE *)user;
+  if (len != 0U && fwrite(data, 1U, len, fp) != len) {
+    if (error != NULL) {
+      lonejson_error_init(error);
+      error->code = LONEJSON_STATUS_IO_ERROR;
+      error->system_errno = errno != 0 ? errno : EIO;
+      snprintf(error->message, sizeof(error->message),
+               "test todo store write failed");
+    }
+    return LONEJSON_STATUS_IO_ERROR;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static int todo_callback_begin(void *context, void **transaction,
+                               cai_error *error) {
+  todo_callback_store *store;
+  todo_callback_transaction *txn;
+
+  (void)error;
+  store = (todo_callback_store *)context;
+  txn = (todo_callback_transaction *)calloc(1U, sizeof(*txn));
+  if (txn == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  txn->store = store;
+  snprintf(txn->read_path, sizeof(txn->read_path), "%s", store->store_path);
+  store->begin_count++;
+  *transaction = txn;
+  return CAI_OK;
+}
+
+static int todo_callback_open_read(void *context, void *transaction,
+                                   lonejson_reader_fn *reader,
+                                   void **reader_context, cai_error *error) {
+  todo_callback_transaction *txn;
+
+  (void)context;
+  txn = (todo_callback_transaction *)transaction;
+  txn->read_fp = fopen(txn->read_path, "rb");
+  if (txn->read_fp == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "test todo store read failed",
+                                txn->read_path);
+  }
+  txn->store->read_count++;
+  *reader = todo_callback_read;
+  *reader_context = txn->read_fp;
+  return CAI_OK;
+}
+
+static void todo_callback_close_read(void *context, void *transaction,
+                                     void *reader_context) {
+  todo_callback_transaction *txn;
+
+  (void)context;
+  (void)reader_context;
+  txn = (todo_callback_transaction *)transaction;
+  if (txn != NULL && txn->read_fp != NULL) {
+    fclose(txn->read_fp);
+    txn->read_fp = NULL;
+  }
+}
+
+static int todo_callback_open_write(void *context, void *transaction,
+                                    lonejson_sink_fn *sink,
+                                    void **sink_context, cai_error *error) {
+  todo_callback_transaction *txn;
+  char suffix[64];
+  size_t base_len;
+  size_t suffix_len;
+
+  (void)context;
+  txn = (todo_callback_transaction *)transaction;
+  snprintf(suffix, sizeof(suffix), ".tmp.%d.%d", (int)getpid(),
+           ++txn->store->temp_counter);
+  base_len = strlen(txn->store->store_path);
+  suffix_len = strlen(suffix);
+  if (base_len + suffix_len >= sizeof(txn->write_path)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test todo store path is too long");
+  }
+  memcpy(txn->write_path, txn->store->store_path, base_len);
+  memcpy(txn->write_path + base_len, suffix, suffix_len + 1U);
+  txn->write_fp = fopen(txn->write_path, "wb");
+  if (txn->write_fp == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "test todo store write open failed",
+                                txn->write_path);
+  }
+  txn->store->write_count++;
+  *sink = todo_callback_write;
+  *sink_context = txn->write_fp;
+  return CAI_OK;
+}
+
+static int todo_callback_commit_write(void *context, void *transaction,
+                                      cai_error *error) {
+  todo_callback_transaction *txn;
+
+  (void)context;
+  txn = (todo_callback_transaction *)transaction;
+  if (txn->write_fp == NULL || txn->write_path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test todo store write is not open");
+  }
+  if (fflush(txn->write_fp) != 0 || fclose(txn->write_fp) != 0) {
+    txn->write_fp = NULL;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "test todo store write close failed");
+  }
+  txn->write_fp = NULL;
+  if (txn->owns_read_path) {
+    unlink(txn->read_path);
+  }
+  snprintf(txn->read_path, sizeof(txn->read_path), "%s", txn->write_path);
+  txn->write_path[0] = '\0';
+  txn->owns_read_path = 1;
+  txn->store->commit_write_count++;
+  return CAI_OK;
+}
+
+static int todo_callback_commit(void *context, void *transaction,
+                                cai_error *error) {
+  todo_callback_transaction *txn;
+
+  (void)context;
+  txn = (todo_callback_transaction *)transaction;
+  if (txn->write_fp != NULL &&
+      todo_callback_commit_write(context, transaction, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  if (txn->read_fp != NULL) {
+    fclose(txn->read_fp);
+  }
+  if (txn->owns_read_path &&
+      rename(txn->read_path, txn->store->store_path) != 0) {
+    free(txn);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "test todo store commit failed");
+  }
+  if (txn->write_path[0] != '\0') {
+    unlink(txn->write_path);
+  }
+  txn->store->commit_count++;
+  free(txn);
+  return CAI_OK;
+}
+
+static void todo_callback_rollback(void *context, void *transaction) {
+  todo_callback_transaction *txn;
+
+  (void)context;
+  txn = (todo_callback_transaction *)transaction;
+  if (txn == NULL) {
+    return;
+  }
+  if (txn->read_fp != NULL) {
+    fclose(txn->read_fp);
+  }
+  if (txn->write_fp != NULL) {
+    fclose(txn->write_fp);
+  }
+  if (txn->write_path[0] != '\0') {
+    unlink(txn->write_path);
+  }
+  if (txn->owns_read_path) {
+    unlink(txn->read_path);
+  }
+  txn->store->rollback_count++;
+  free(txn);
 }
 
 static int extract_json_string_field(const char *json, const char *field,
@@ -5578,6 +5796,139 @@ static void test_todo_tool(test_state *state) {
   rmdir(dir_template);
 }
 
+static void test_todo_callback_store(test_state *state) {
+  char dir_template[] = "/tmp/cai-todo-callback-test-XXXXXX";
+  todo_callback_store store;
+  cai_todo_store_callbacks store_callbacks;
+  cai_todo_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char item_id[64];
+  char args[256];
+  char store_text[4096];
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  memset(&store_callbacks, 0, sizeof(store_callbacks));
+  memset(&config, 0, sizeof(config));
+  registry = NULL;
+  sink = NULL;
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  writer.closed = 0;
+  item_id[0] = '\0';
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "todo_callback_mkdtemp", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(store.store_path, sizeof(store.store_path), "%s/todo.json",
+           dir_template);
+  write_file_or_die(store.store_path,
+                    "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}");
+  store_callbacks.begin = todo_callback_begin;
+  store_callbacks.open_read = todo_callback_open_read;
+  store_callbacks.close_read = todo_callback_close_read;
+  store_callbacks.open_write = todo_callback_open_write;
+  store_callbacks.commit_write = todo_callback_commit_write;
+  store_callbacks.commit = todo_callback_commit;
+  store_callbacks.rollback = todo_callback_rollback;
+  config.store = &store_callbacks;
+  config.store_context = &store;
+  config.default_board = "callback";
+  config.max_result_items = 8U;
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "todo_callback_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  {
+    cai_todo_store_callbacks incomplete_callbacks;
+    cai_todo_tool_config incomplete_config;
+
+    memset(&incomplete_callbacks, 0, sizeof(incomplete_callbacks));
+    memset(&incomplete_config, 0, sizeof(incomplete_config));
+    incomplete_config.store = &incomplete_callbacks;
+    incomplete_config.store_context = &store;
+    expect_int(state, "todo_callback_incomplete_store",
+               cai_tool_registry_register_todo_tool(registry,
+                                                    &incomplete_config,
+                                                    &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  expect_int(state, "todo_callback_register",
+             cai_tool_registry_register_todo_tool(registry, &config, &error),
+             CAI_OK);
+  expect_int(state, "todo_callback_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "todo_callback_create_board",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"callback\","
+                                   "\"wip_limit\":1}",
+                                   sink, &error),
+             CAI_OK);
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_callback_add_item",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"callback\","
+                                   "\"title\":\"callback task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (!extract_json_string_field(writer.buffer, "item_id", item_id,
+                                 sizeof(item_id))) {
+    test_fail(state, "todo_callback_item_id", "failed to capture item id");
+  }
+  if (item_id[0] != '\0') {
+    snprintf(args, sizeof(args),
+             "{\"operation\":\"complete_item\",\"board_name\":\"callback\","
+             "\"item_id\":\"%s\"}",
+             item_id);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_callback_complete",
+               cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                     args, sink, &error),
+               CAI_OK);
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_callback_list",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_boards\"}", sink,
+                                   &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"callback\"") == NULL) {
+    test_fail(state, "todo_callback_list_output",
+              "callback-backed store did not preserve board");
+  }
+  if (!read_text_file(store.store_path, store_text, sizeof(store_text)) ||
+      strstr(store_text, "\"done\":[") == NULL ||
+      strstr(store_text, "callback task") == NULL) {
+    test_fail(state, "todo_callback_store_text",
+              "callback-backed store did not persist completed item");
+  }
+  if (store.begin_count < 4 || store.read_count < 4 || store.write_count < 3 ||
+      store.commit_write_count < 3 || store.commit_count < 4 ||
+      store.rollback_count != 0) {
+    test_fail(state, "todo_callback_counts",
+              "todo store callbacks were not exercised as expected");
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  unlink(store.store_path);
+  rmdir(dir_template);
+}
+
 static void test_agent_multi_tool_auto_run(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   char spool_dir[] = "/tmp/cai-multi-tool-spool-XXXXXX";
@@ -8501,6 +8852,7 @@ int main(void) {
   test_agent_tool_auto_run(&state);
   test_revgeo_tool(&state);
   test_todo_tool(&state);
+  test_todo_callback_store(&state);
   test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);
