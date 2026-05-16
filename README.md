@@ -123,6 +123,19 @@ libcurl, `lonejson.h`/`liblonejson`, and `pslog.h` discoverable. cai release
 archives do not vendor those dependency headers or libraries and do not compile
 in single-header dependency variants.
 
+## Logging
+
+`cai_client_config.logger` accepts a borrowed `pslog_logger *`. cai never owns
+or destroys that logger; set `logger_disabled` to nonzero to suppress logging
+even when a logger is present.
+
+Current cai-owned log events cover client setup, OpenRouter server-continuity
+warnings, HTTP request start/completion, API error status responses, transport
+failures, and configured HTTP response-size limit failures. API keys and
+request/response bodies are not logged. HTTP request starts are trace-level,
+successful completions are debug-level, 4xx API responses are warn-level, and
+5xx/transport failures are error-level.
+
 ## Agent Instructions
 
 The preferred high-level API is method-style handles:

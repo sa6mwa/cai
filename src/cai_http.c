@@ -591,8 +591,14 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
   }
 
+  cai_log_http_request_start(CAI_CLIENT_IMPL(client), method, path, 0,
+                             request_json != NULL ? request_json_len : 0U);
   curl_rc = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+  if (curl_rc == CURLE_OK) {
+    cai_log_http_request_done(CAI_CLIENT_IMPL(client), method, path,
+                              http_status, body.length, request_id);
+  }
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
@@ -604,10 +610,14 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
     cai_free_mem(NULL, body.data);
     cai_free_mem(NULL, request_id);
     if (body.exceeded) {
+      cai_log_http_response_limit(CAI_CLIENT_IMPL(client), method, path,
+                                  body.limit);
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "HTTP response exceeded configured JSON response "
                            "limit");
     }
+    cai_log_http_transport_error(CAI_CLIENT_IMPL(client), method, path,
+                                 curl_easy_strerror(curl_rc));
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "HTTP request transport failed",
                                 curl_easy_strerror(curl_rc));
@@ -778,8 +788,15 @@ int cai_http_response_params_request(cai_client *client, const char *path,
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
+    cai_log_http_request_start(CAI_CLIENT_IMPL(client), "POST", path, stream,
+                               (size_t)cai_response_request_upload_size(
+                                   upload));
     curl_rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    if (curl_rc == CURLE_OK) {
+      cai_log_http_request_done(CAI_CLIENT_IMPL(client), "POST", path,
+                                http_status, body.length, request_id);
+    }
   } else {
     curl_rc = CURLE_OK;
     http_status = 0L;
@@ -800,10 +817,14 @@ int cai_http_response_params_request(cai_client *client, const char *path,
     cai_free_mem(NULL, body.data);
     cai_free_mem(NULL, request_id);
     if (body.exceeded) {
+      cai_log_http_response_limit(CAI_CLIENT_IMPL(client), "POST", path,
+                                  body.limit);
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "HTTP response exceeded configured JSON response "
                            "limit");
     }
+    cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", path,
+                                 curl_easy_strerror(curl_rc));
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "HTTP request transport failed",
                                 curl_easy_strerror(curl_rc));

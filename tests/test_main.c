@@ -297,7 +297,50 @@ static int read_source_text(test_state *state, const char *name,
   return 1;
 }
 
+static int g_test_infof_count = 0;
+static int g_test_tracef_count = 0;
+static int g_test_debugf_count = 0;
 static int g_test_warnf_count = 0;
+static int g_test_errorf_count = 0;
+
+static void test_pslog_infof(pslog_logger *log, const char *msg,
+                             const char *kvfmt, ...) {
+  va_list args;
+
+  (void)log;
+  (void)msg;
+  va_start(args, kvfmt);
+  va_end(args);
+  if (kvfmt != NULL) {
+    g_test_infof_count++;
+  }
+}
+
+static void test_pslog_tracef(pslog_logger *log, const char *msg,
+                              const char *kvfmt, ...) {
+  va_list args;
+
+  (void)log;
+  (void)msg;
+  va_start(args, kvfmt);
+  va_end(args);
+  if (kvfmt != NULL) {
+    g_test_tracef_count++;
+  }
+}
+
+static void test_pslog_debugf(pslog_logger *log, const char *msg,
+                              const char *kvfmt, ...) {
+  va_list args;
+
+  (void)log;
+  (void)msg;
+  va_start(args, kvfmt);
+  va_end(args);
+  if (kvfmt != NULL) {
+    g_test_debugf_count++;
+  }
+}
 
 static void test_pslog_warnf(pslog_logger *log, const char *msg,
                              const char *kvfmt, ...) {
@@ -309,6 +352,19 @@ static void test_pslog_warnf(pslog_logger *log, const char *msg,
   va_end(args);
   if (kvfmt != NULL) {
     g_test_warnf_count++;
+  }
+}
+
+static void test_pslog_errorf(pslog_logger *log, const char *msg,
+                              const char *kvfmt, ...) {
+  va_list args;
+
+  (void)log;
+  (void)msg;
+  va_start(args, kvfmt);
+  va_end(args);
+  if (kvfmt != NULL) {
+    g_test_errorf_count++;
   }
 }
 
@@ -2353,6 +2409,7 @@ static void test_client_open(test_state *state) {
   cai_agent_config agent_config;
   cai_client *client;
   cai_agent *agent;
+  pslog_logger fake_logger;
   struct pslog_logger *logger;
   cai_error error;
 
@@ -2365,10 +2422,14 @@ static void test_client_open(test_state *state) {
              CAI_OPENROUTER_API_KEY_ENV);
   expect_str(state, "client_config_openrouter_base", config.base_url,
              CAI_OPENROUTER_BASE_URL);
-  logger = (struct pslog_logger *)(void *)&state->failures;
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  fake_logger.warnf = test_pslog_warnf;
+  logger = &fake_logger;
   config.api_key = "test-key";
   config.base_url = "http://example.test/v1";
   config.logger = logger;
+  g_test_infof_count = 0;
   client = NULL;
   agent = NULL;
   expect_int(state, "client_open", cai_client_open(&config, &client, &error),
@@ -2383,6 +2444,7 @@ static void test_client_open(test_state *state) {
     if (CAI_CLIENT_IMPL(client)->logger != logger) {
       test_fail(state, "client_logger", "borrowed logger not preserved");
     }
+    expect_int(state, "client_logger_open_info_count", g_test_infof_count, 1L);
     expect_int(state, "client_logger_disabled", CAI_CLIENT_IMPL(client)->logger_disabled, 0);
     expect_int(state, "client_limit", (long)CAI_CLIENT_IMPL(client)->json_response_limit_bytes,
                (long)CAI_DEFAULT_JSON_RESPONSE_LIMIT);
@@ -2407,14 +2469,18 @@ static void test_client_open(test_state *state) {
   cai_client_config_use_openrouter(&config);
   config.api_key = "test-key";
   {
-    pslog_logger fake_logger;
+    pslog_logger openrouter_logger;
 
-    memset(&fake_logger, 0, sizeof(fake_logger));
-    fake_logger.warnf = test_pslog_warnf;
-    config.logger = &fake_logger;
+    memset(&openrouter_logger, 0, sizeof(openrouter_logger));
+    openrouter_logger.infof = test_pslog_infof;
+    openrouter_logger.warnf = test_pslog_warnf;
+    config.logger = &openrouter_logger;
+    g_test_infof_count = 0;
     g_test_warnf_count = 0;
     expect_int(state, "openrouter_warn_client_open",
                cai_client_open(&config, &client, &error), CAI_OK);
+    expect_int(state, "openrouter_client_open_info_count",
+               g_test_infof_count, 1L);
     cai_agent_config_init(&agent_config);
     agent_config.model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
     expect_int(state, "openrouter_server_continuity_warn_agent",
@@ -4221,6 +4287,7 @@ static void test_http_create_response(test_state *state) {
   cai_input_item_list *items;
   cai_list_params list_params;
   cai_error error;
+  pslog_logger fake_logger;
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "http_mock", "pipe failed");
@@ -4255,6 +4322,18 @@ static void test_http_create_response(test_state *state) {
   config.project_id = "proj_mock";
   config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  fake_logger.tracef = test_pslog_tracef;
+  fake_logger.debugf = test_pslog_debugf;
+  fake_logger.warnf = test_pslog_warnf;
+  fake_logger.errorf = test_pslog_errorf;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
   client = NULL;
   params = NULL;
   response = NULL;
@@ -4321,6 +4400,11 @@ static void test_http_create_response(test_state *state) {
   expect_str(state, "http_list_input_items_role",
              cai_input_item_role(items, 1U), "assistant");
   cai_input_item_list_destroy(items);
+  expect_int(state, "http_log_client_open_info_count", g_test_infof_count, 1L);
+  expect_int(state, "http_log_trace_count", g_test_tracef_count, 5L);
+  expect_int(state, "http_log_debug_count", g_test_debugf_count, 5L);
+  expect_int(state, "http_log_warn_count", g_test_warnf_count, 0L);
+  expect_int(state, "http_log_error_count", g_test_errorf_count, 0L);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
   cai_error_cleanup(&error);
@@ -4343,6 +4427,7 @@ static void test_http_error_details(test_state *state) {
   cai_client *client;
   cai_response *response;
   cai_error error;
+  pslog_logger fake_logger;
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "http_error_mock", "pipe failed");
@@ -4375,6 +4460,18 @@ static void test_http_error_details(test_state *state) {
   config.base_url = base_url;
   config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  fake_logger.tracef = test_pslog_tracef;
+  fake_logger.debugf = test_pslog_debugf;
+  fake_logger.warnf = test_pslog_warnf;
+  fake_logger.errorf = test_pslog_errorf;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
   client = NULL;
   response = NULL;
 
@@ -4392,6 +4489,12 @@ static void test_http_error_details(test_state *state) {
              "missing_required_parameter");
   expect_str(state, "http_error_request_id", error.request_id,
              "req_mock_error");
+  expect_int(state, "http_error_log_client_open_info_count",
+             g_test_infof_count, 1L);
+  expect_int(state, "http_error_log_trace_count", g_test_tracef_count, 1L);
+  expect_int(state, "http_error_log_debug_count", g_test_debugf_count, 0L);
+  expect_int(state, "http_error_log_warn_count", g_test_warnf_count, 1L);
+  expect_int(state, "http_error_log_error_count", g_test_errorf_count, 0L);
 
   cai_response_destroy(response);
   cai_client_close(client);

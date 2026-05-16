@@ -103,6 +103,22 @@ int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, const char *env_name,
                         char **out, cai_error *error);
 
+void cai_log_client_opened(const cai_client_impl *client);
+void cai_log_openrouter_server_continuity(const cai_client_impl *client);
+void cai_log_http_request_start(const cai_client_impl *client,
+                                const char *method, const char *path,
+                                int stream, size_t request_bytes);
+void cai_log_http_request_done(const cai_client_impl *client,
+                               const char *method, const char *path,
+                               long http_status, size_t response_bytes,
+                               const char *request_id);
+void cai_log_http_transport_error(const cai_client_impl *client,
+                                  const char *method, const char *path,
+                                  const char *detail);
+void cai_log_http_response_limit(const cai_client_impl *client,
+                                 const char *method, const char *path,
+                                 size_t limit);
+
 struct cai_content_part {
   char *type;
   char *text;

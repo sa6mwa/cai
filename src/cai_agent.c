@@ -211,17 +211,10 @@ static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
 
 static void cai_agent_warn_openrouter_server_continuity(
     const cai_client_impl *client) {
-  if (client == NULL || client->logger == NULL ||
-      !cai_client_base_url_is_openrouter(client)) {
+  if (!cai_client_base_url_is_openrouter(client)) {
     return;
   }
-  client->logger->warnf(
-      client->logger,
-      "cai.openrouter.server_side_continuity",
-      "base_url=%s note=%s",
-      client->base_url,
-      "OpenRouter Responses beta is stateless; use client_history continuity "
-      "for multi-turn sessions");
+  cai_log_openrouter_server_continuity(client);
 }
 
 void cai_run_options_init(cai_run_options *options) {

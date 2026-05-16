@@ -125,6 +125,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   client->close = cai_client_close;
   client->impl = impl;
   *out = client;
+  cai_log_client_opened(impl);
   return CAI_OK;
 }
 
