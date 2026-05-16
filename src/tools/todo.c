@@ -145,6 +145,7 @@ typedef struct cai_todo_rewrite_state {
   const cai_todo_args *args;
   cai_todo_board board;
   cai_todo_item item;
+  cai_todo_item replacement_item;
   cai_todo_item append_item;
   const char *new_status;
   int found;
@@ -1303,15 +1304,19 @@ static lonejson_status cai_todo_move_item_cb(
     state->append_item.has_updated_at_unix = 1;
     result->action = LONEJSON_ARRAY_REWRITE_DROP;
   } else {
-    if (cai_todo_replace_string(&src->status, state->new_status, NULL) !=
+    if (cai_todo_copy_item(&state->replacement_item, src, NULL) != CAI_OK) {
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
+    if (cai_todo_replace_string(&state->replacement_item.status,
+                                state->new_status, NULL) !=
         CAI_OK) {
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
-    src->updated_at_unix = state->now_unix;
-    src->has_updated_at_unix = 1;
+    state->replacement_item.updated_at_unix = state->now_unix;
+    state->replacement_item.has_updated_at_unix = 1;
     result->action = LONEJSON_ARRAY_REWRITE_REPLACE;
     result->replacement.map = &cai_todo_item_map;
-    result->replacement.src = src;
+    result->replacement.src = &state->replacement_item;
   }
   return LONEJSON_STATUS_OK;
 }
@@ -1636,6 +1641,7 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
   memset(&state, 0, sizeof(state));
   memset(&options, 0, sizeof(options));
   cai_todo_item_init(&state.append_item);
+  cai_todo_item_init(&state.replacement_item);
   cai_todo_board_init(&board);
   lock.fd = -1;
   tmp1 = NULL;
@@ -1643,6 +1649,7 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
   rc = cai_todo_lock(ctx, &lock, error);
   if (rc != CAI_OK) {
     cai_todo_item_cleanup(&state.append_item);
+    cai_todo_item_cleanup(&state.replacement_item);
     cai_todo_board_cleanup(&board);
     return rc;
   }
@@ -1735,7 +1742,7 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
   }
   cai_free_mem(NULL, tmp1);
   cai_free_mem(NULL, tmp2);
-  cai_todo_item_cleanup(&state.item);
+  cai_todo_item_cleanup(&state.replacement_item);
   cai_todo_item_cleanup(&state.append_item);
   cai_todo_board_cleanup(&board);
   cai_todo_unlock(&lock);
@@ -1792,7 +1799,6 @@ static int cai_todo_set_wip_limit(cai_todo_context *ctx,
     unlink(tmp);
   }
   cai_free_mem(NULL, tmp);
-  cai_todo_board_cleanup(&state.board);
   cai_todo_unlock(&lock);
   return rc;
 }

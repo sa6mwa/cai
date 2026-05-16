@@ -103,8 +103,9 @@ before implementing that slice.
   - Use `lonejson_array_rewrite_*` for add, update, move, complete/archive, and
     WIP-limit changes; no full-document or full-array materialization.
   - Keep the existing `fcntl` lock/temp/rename transaction boundary.
-  - Tests cover WIP denial, corrupt JSON, MCP exposure, and happy-path
-    create/add/list/complete/re-add behavior.
+  - Tests cover WIP denial and update behavior, move semantics, bounded large
+    listings, duplicate-key/corrupt JSON rejection, MCP exposure, canonical
+    store shape, and happy-path create/add/list/complete/re-add behavior.
 
 - [ ] Add an example MCP server.
   - Directory: `examples/mcp-server/`.

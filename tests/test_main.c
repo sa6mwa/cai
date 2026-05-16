@@ -1242,6 +1242,39 @@ static int read_text_file(const char *path, char *buffer, size_t capacity) {
   return 1;
 }
 
+static int extract_json_string_field(const char *json, const char *field,
+                                     char *out, size_t capacity) {
+  char needle[64];
+  const char *start;
+  const char *end;
+  size_t field_len;
+  size_t len;
+
+  field_len = strlen(field);
+  if (field_len + 4U > sizeof(needle) || capacity == 0U) {
+    return 0;
+  }
+  needle[0] = '"';
+  memcpy(needle + 1U, field, field_len);
+  memcpy(needle + 1U + field_len, "\":\"", 4U);
+  start = strstr(json, needle);
+  if (start == NULL) {
+    return 0;
+  }
+  start += field_len + 4U;
+  end = strchr(start, '"');
+  if (end == NULL) {
+    return 0;
+  }
+  len = (size_t)(end - start);
+  if (len >= capacity) {
+    return 0;
+  }
+  memcpy(out, start, len);
+  out[len] = '\0';
+  return 1;
+}
+
 static void test_lonejson_selected_array_rewrite(test_state *state) {
   char input_path[] = "/tmp/cai-array-rewrite-in-XXXXXX";
   char output_path[] = "/tmp/cai-array-rewrite-out-XXXXXX";
@@ -5150,9 +5183,13 @@ static void test_todo_tool(test_state *state) {
   cai_error error;
   char item_id[64];
   char board_id[64];
+  char second_item_id[64];
+  char third_item_id[64];
   char store_text[4096];
+  char todo_args[512];
   const char *id_start;
   const char *id_end;
+  int i;
 
   cai_error_init(&error);
   registry = NULL;
@@ -5163,6 +5200,8 @@ static void test_todo_tool(test_state *state) {
   writer.closed = 0;
   item_id[0] = '\0';
   board_id[0] = '\0';
+  second_item_id[0] = '\0';
+  third_item_id[0] = '\0';
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "todo_mkdtemp", "mkdtemp failed");
     cai_error_cleanup(&error);
@@ -5295,6 +5334,10 @@ static void test_todo_tool(test_state *state) {
     test_fail(state, "todo_add_after_complete_output",
               "WIP lane did not free after completion");
   }
+  if (!extract_json_string_field(writer.buffer, "item_id", second_item_id,
+                                 sizeof(second_item_id))) {
+    test_fail(state, "todo_second_item_id", "failed to capture second item id");
+  }
   if (!read_text_file(store_path, store_text, sizeof(store_text))) {
     test_fail(state, "todo_store_read", "failed to read todo store");
   } else if (strstr(store_text, "\"boards\":[") == NULL ||
@@ -5304,6 +5347,139 @@ static void test_todo_tool(test_state *state) {
              strstr(store_text, "\"type\"") != NULL) {
     test_fail(state, "todo_store_shape",
               "todo store is not the canonical single-document shape");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_set_wip_limit",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"set_wip_limit\","
+                                   "\"board_name\":\"main\","
+                                   "\"wip_limit\":2}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"wip_limit\":2") == NULL) {
+    test_fail(state, "todo_set_wip_limit_output",
+              "set_wip_limit did not update the board");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_third_in_process",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"title\":\"third task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      !extract_json_string_field(writer.buffer, "item_id", third_item_id,
+                                 sizeof(third_item_id))) {
+    test_fail(state, "todo_add_third_output",
+              "third in-process item was not accepted");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_wip_denial_after_limit_update",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"title\":\"fourth task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"wip_limit_exceeded\"") == NULL) {
+    test_fail(state, "todo_wip_denial_after_limit_output",
+              "updated WIP limit was not enforced");
+  }
+  if (third_item_id[0] != '\0') {
+    snprintf(todo_args, sizeof(todo_args),
+             "{\"operation\":\"move_item\",\"item_id\":\"%s\","
+             "\"board_name\":\"main\",\"status\":\"todo\"}",
+             third_item_id);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_move_item_to_todo",
+               cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                     todo_args, sink, &error),
+               CAI_OK);
+    if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+        strstr(writer.buffer, "\"status\":\"todo\"") == NULL) {
+      test_fail(state, "todo_move_item_to_todo_output",
+                "move_item did not update item status");
+    }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_after_move",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"title\":\"fourth task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL) {
+    test_fail(state, "todo_add_after_move_output",
+              "WIP lane did not free after move_item");
+  }
+  for (i = 0; i < 8; ++i) {
+    snprintf(todo_args, sizeof(todo_args),
+             "{\"operation\":\"add_item\",\"board_name\":\"main\","
+             "\"title\":\"backlog task %d\",\"status\":\"todo\"}",
+             i);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_bulk_add",
+               cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                     todo_args, sink, &error),
+               CAI_OK);
+    if (strstr(writer.buffer, "\"ok\":true") == NULL) {
+      test_fail(state, "todo_bulk_add_output", "bulk add failed");
+      break;
+    }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_list_board_truncated",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"board_name\":\"main\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"truncated\":true") == NULL ||
+      strstr(writer.buffer, "\"item_count\":") == NULL) {
+    test_fail(state, "todo_list_board_truncated_output",
+              "large board listing was not bounded and marked truncated");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_create_aux_board",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"aux\"}",
+                                   sink, &error),
+             CAI_OK);
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_create_ops_board",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"ops\"}",
+                                   sink, &error),
+             CAI_OK);
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_list_boards_truncated",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_boards\"}", sink,
+                                   &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"truncated\":true") == NULL ||
+      strstr(writer.buffer, "\"item_count\":3") == NULL) {
+    test_fail(state, "todo_list_boards_truncated_output",
+              "board listing did not report truncation and total count");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -5372,6 +5548,18 @@ static void test_todo_tool(test_state *state) {
                 "todo MCP tools/call did not return successful content");
     }
   }
+  write_file_or_die(store_path,
+                    "{\"version\":1,\"boards\":[],\"boards\":[],"
+                    "\"items\":[],\"done\":[]}");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_duplicate_key_store",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_boards\"}", sink,
+                                   &error),
+             CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   write_file_or_die(store_path, "{\"boards\":[{\"id\":");
   writer.buffer[0] = '\0';
   writer.length = 0U;
