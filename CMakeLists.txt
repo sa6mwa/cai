@@ -473,6 +473,10 @@ if(CAI_BUILD_EXAMPLES)
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"
       "${CAI_LONEJSON_INCLUDE_DIR}")
+    if(_cai_example STREQUAL "mcp_server")
+      target_include_directories(cai_example_${_cai_example} PRIVATE
+        "${CAI_PSLOG_INCLUDE_DIR}")
+    endif()
     target_link_libraries(cai_example_${_cai_example} PRIVATE
       ${_cai_example_link_target})
     if(_cai_example_link_target STREQUAL "cai_static")
@@ -480,6 +484,15 @@ if(CAI_BUILD_EXAMPLES)
         Threads::Threads ${CAI_LONEJSON_LINK})
     elseif(_cai_example STREQUAL "smhi_weather")
       target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl)
+    endif()
+    if(_cai_example STREQUAL "mcp_server")
+      if(TARGET pslog::pslog_shared)
+        target_link_libraries(cai_example_${_cai_example} PRIVATE
+          pslog::pslog_shared)
+      elseif(TARGET pslog::pslog_static)
+        target_link_libraries(cai_example_${_cai_example} PRIVATE
+          pslog::pslog_static)
+      endif()
     endif()
     cai_configure_c_target(cai_example_${_cai_example})
   endforeach()

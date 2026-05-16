@@ -98,6 +98,10 @@ through `cai_mcp_handler`, registers the production `reverse_geocode` and
 available in `PATH`. Clipboard writes are a local-machine side effect and the
 example rejects clipboard inputs larger than 1 MiB.
 
+The server runs in the foreground. It logs with libpslog to `stderr` so
+`--print-port` remains machine-readable on `stdout`; the MCP server logger and
+the cai client logger use separate palettes.
+
 The todo store defaults to cai's normal todo path. For isolated runs, set
 `CAI_MCP_EXAMPLE_TODO_STORE` and `CAI_MCP_EXAMPLE_TODO_LOCK`.
 

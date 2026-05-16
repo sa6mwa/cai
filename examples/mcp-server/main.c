@@ -4,6 +4,7 @@
 #include <cai/tools/todo.h>
 
 #include <lonejson.h>
+#include <pslog.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -54,6 +55,13 @@ typedef struct http_response_state {
   size_t header_count;
   int headers_sent;
 } http_response_state;
+
+typedef struct logger_bundle {
+  pslog_logger *server_root;
+  pslog_logger *cai_root;
+  pslog_logger *server;
+  pslog_logger *cai;
+} logger_bundle;
 
 static const lonejson_field clipboard_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(clipboard_args, text, "text")};
@@ -107,6 +115,59 @@ static void trim_ascii(char *s) {
     end--;
   }
   *end = '\0';
+}
+
+static void logger_bundle_init(logger_bundle *loggers) {
+  pslog_config config;
+
+  memset(loggers, 0, sizeof(*loggers));
+  pslog_default_config(&config);
+  config.mode = PSLOG_MODE_CONSOLE;
+  config.color = PSLOG_COLOR_AUTO;
+  config.min_level = PSLOG_LEVEL_INFO;
+  config.timestamps = 1;
+  config.utc = 0;
+  config.with_level_field = 1;
+  config.palette = &pslog_builtin_palette_gruvbox;
+  config.output = pslog_output_from_fp(stderr, 0);
+  loggers->server_root = pslog_new(&config);
+  if (loggers->server_root != NULL) {
+    loggers->server =
+        loggers->server_root->withf(loggers->server_root, "component=%s",
+                                    "mcp-example");
+  }
+  pslog_default_config(&config);
+  config.mode = PSLOG_MODE_CONSOLE;
+  config.color = PSLOG_COLOR_AUTO;
+  config.min_level = PSLOG_LEVEL_INFO;
+  config.timestamps = 1;
+  config.utc = 0;
+  config.with_level_field = 1;
+  config.palette = &pslog_builtin_palette_tokyo_night;
+  config.output = pslog_output_from_fp(stderr, 0);
+  loggers->cai_root = pslog_new(&config);
+  if (loggers->cai_root != NULL) {
+    loggers->cai =
+        loggers->cai_root->withf(loggers->cai_root, "component=%s",
+                                 "cai-client");
+  }
+}
+
+static void logger_destroy(pslog_logger *logger) {
+  if (logger != NULL) {
+    logger->destroy(logger);
+  }
+}
+
+static void logger_bundle_cleanup(logger_bundle *loggers) {
+  if (loggers == NULL) {
+    return;
+  }
+  logger_destroy(loggers->server);
+  logger_destroy(loggers->cai);
+  logger_destroy(loggers->server_root);
+  logger_destroy(loggers->cai_root);
+  memset(loggers, 0, sizeof(*loggers));
 }
 
 static int write_all(int fd, const void *data, size_t len) {
@@ -450,7 +511,8 @@ static int clipboard_tool(void *context, const void *params, void *result,
   return out->message != NULL ? CAI_OK : CAI_ERR_NOMEM;
 }
 
-static int handle_connection(int fd, cai_mcp_handler *handler) {
+static int handle_connection(int fd, cai_mcp_handler *handler,
+                             pslog_logger *log) {
   http_request_state request_state;
   http_response_state response_state;
   cai_source_callbacks source_callbacks;
@@ -467,13 +529,19 @@ static int handle_connection(int fd, cai_mcp_handler *handler) {
   cai_error_init(&error);
   request_state.fd = fd;
   if (read_headers(&request_state) != 0) {
+    pslog_warnf(log, "invalid HTTP request", "fd=%d", fd);
     write_cstr(fd, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
     return 1;
   }
   if (strcmp(request_state.path, "/mcp") != 0) {
+    pslog_warnf(log, "request path not found", "method=%s path=%s",
+                request_state.method, request_state.path);
     write_cstr(fd, "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
     return 1;
   }
+  pslog_infof(log, "handling MCP request", "method=%s path=%s bytes=%u",
+              request_state.method, request_state.path,
+              (unsigned int)request_state.remaining_body);
   source_callbacks.read = body_source_read;
   source_callbacks.reset = body_source_reset;
   source_callbacks.close = NULL;
@@ -510,8 +578,12 @@ done:
   cai_sink_close(sink);
   cai_source_close(source);
   if (rc != CAI_OK) {
-    fprintf(stderr, "mcp request failed: %s\n",
-            error.message != NULL ? error.message : cai_status_string(rc));
+    pslog_errorf(log, "mcp request failed", "status=%d error=%s", rc,
+                 error.message != NULL ? error.message
+                                       : cai_status_string(rc));
+  } else {
+    pslog_infof(log, "mcp request completed", "http_status=%d",
+                response.status);
   }
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
@@ -561,7 +633,10 @@ int main(int argc, char **argv) {
   cai_tool_registry *registry;
   cai_mcp_handler_config mcp_config;
   cai_todo_tool_config todo_config;
+  cai_client_config client_config;
+  cai_client *client_handle;
   cai_mcp_handler *handler;
+  logger_bundle loggers;
   cai_error error;
   unsigned short port;
   unsigned short actual_port;
@@ -575,12 +650,14 @@ int main(int argc, char **argv) {
   char xclip_path[512];
 
   registry = NULL;
+  client_handle = NULL;
   handler = NULL;
   port = CAI_MCP_EXAMPLE_DEFAULT_PORT;
   actual_port = 0U;
   request_limit = 0L;
   handled = 0L;
   print_port = 0;
+  logger_bundle_init(&loggers);
   cai_error_init(&error);
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -593,9 +670,24 @@ int main(int argc, char **argv) {
       request_limit = strtol(argv[i], NULL, 10);
     } else {
       usage(argv[0]);
+      logger_bundle_cleanup(&loggers);
       return 2;
     }
   }
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mcp-example-unused";
+  client_config.logger = loggers.cai;
+  rc = cai_client_open(&client_config, &client_handle, &error);
+  if (rc != CAI_OK) {
+    pslog_errorf(loggers.server, "cai client setup failed", "status=%d error=%s",
+                 rc,
+                 error.message != NULL ? error.message : cai_status_string(rc));
+    cai_error_cleanup(&error);
+    logger_bundle_cleanup(&loggers);
+    return 1;
+  }
+  pslog_infof(loggers.cai, "cai client logging configured", "base_url=%s",
+              CAI_OPENAI_BASE_URL);
   rc = cai_tool_registry_new(&registry, &error);
   if (rc == CAI_OK) {
     rc = cai_tool_registry_register_revgeo_tool(registry, NULL, &error);
@@ -614,10 +706,14 @@ int main(int argc, char **argv) {
         &error);
   }
   if (rc != CAI_OK) {
-    fprintf(stderr, "tool registry setup failed: %s\n",
-            error.message != NULL ? error.message : cai_status_string(rc));
+    pslog_errorf(loggers.server, "tool registry setup failed",
+                 "status=%d error=%s", rc,
+                 error.message != NULL ? error.message
+                                       : cai_status_string(rc));
     cai_tool_registry_destroy(registry);
+    cai_client_close(client_handle);
     cai_error_cleanup(&error);
+    logger_bundle_cleanup(&loggers);
     return 1;
   }
   cai_mcp_handler_config_init(&mcp_config);
@@ -626,24 +722,33 @@ int main(int argc, char **argv) {
   mcp_config.tools = registry;
   rc = cai_mcp_handler_new(&mcp_config, &handler, &error);
   if (rc != CAI_OK) {
-    fprintf(stderr, "MCP handler setup failed: %s\n",
-            error.message != NULL ? error.message : cai_status_string(rc));
+    pslog_errorf(loggers.server, "MCP handler setup failed",
+                 "status=%d error=%s", rc,
+                 error.message != NULL ? error.message
+                                       : cai_status_string(rc));
     cai_tool_registry_destroy(registry);
+    cai_client_close(client_handle);
     cai_error_cleanup(&error);
+    logger_bundle_cleanup(&loggers);
     return 1;
   }
   listener = create_listener(port, &actual_port);
   if (listener < 0) {
-    perror("listen");
+    pslog_errorf(loggers.server, "listen failed", "port=%d errno=%m",
+                 (int)port);
     cai_mcp_handler_destroy(handler);
     cai_tool_registry_destroy(registry);
+    cai_client_close(client_handle);
     cai_error_cleanup(&error);
+    logger_bundle_cleanup(&loggers);
     return 1;
   }
   if (print_port) {
     printf("%u\n", (unsigned int)actual_port);
     fflush(stdout);
   }
+  pslog_infof(loggers.server, "mcp example server listening",
+              "addr=%s port=%d", "127.0.0.1", (int)actual_port);
   for (;;) {
     if (request_limit > 0L && handled >= request_limit) {
       break;
@@ -653,16 +758,21 @@ int main(int argc, char **argv) {
       if (errno == EINTR) {
         continue;
       }
-      perror("accept");
+      pslog_errorf(loggers.server, "accept failed", "errno=%m");
       break;
     }
-    handle_connection(client, handler);
+    pslog_debugf(loggers.server, "accepted connection", "fd=%d", client);
+    handle_connection(client, handler, loggers.server);
     handled++;
     close(client);
   }
+  pslog_infof(loggers.server, "mcp example server stopping",
+              "requests=%d", (int)handled);
   close(listener);
   cai_mcp_handler_destroy(handler);
   cai_tool_registry_destroy(registry);
+  cai_client_close(client_handle);
   cai_error_cleanup(&error);
+  logger_bundle_cleanup(&loggers);
   return 0;
 }
