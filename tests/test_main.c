@@ -4207,6 +4207,8 @@ static const char *mock_response_for_request(const char *request) {
       strstr(request, "\"items\":[") != NULL &&
       strstr(request, "\"type\":\"input_text\"") != NULL &&
       strstr(request, "\"text\":\"conversation item\"") != NULL &&
+      strstr(request, "\"text\":\"conversation spooled text\"") != NULL &&
+      strstr(request, "\"text\":\"conversation source text\"") != NULL &&
       strstr(request, "\"type\":\"input_image\"") != NULL &&
       strstr(request, "https://example.test/conv.png") != NULL &&
       strstr(request, "\"type\":\"input_file\"") != NULL &&
@@ -4771,6 +4773,10 @@ static void test_conversations(test_state *state) {
   cai_conversation_item *item;
   cai_input_item_list *items;
   cai_conversation_items_params *item_params;
+  cai_source_callbacks source_callbacks;
+  cai_source *source;
+  read_state source_state;
+  lonejson_spooled conversation_text_data;
   lonejson_spooled conversation_file_data;
   lonejson_error json_error;
   cai_list_params list_params;
@@ -4813,6 +4819,9 @@ static void test_conversations(test_state *state) {
   item = NULL;
   items = NULL;
   item_params = NULL;
+  source = NULL;
+  memset(&source_callbacks, 0, sizeof(source_callbacks));
+  memset(&source_state, 0, sizeof(source_state));
   expect_int(state, "conversation_client_open",
              cai_client_open(&config, &client, &error), CAI_OK);
   expect_int(state, "conversation_create",
@@ -4852,6 +4861,34 @@ static void test_conversations(test_state *state) {
              cai_conversation_items_params_add_text(
                  item_params, "user", "conversation item", &error),
              CAI_OK);
+  lonejson_error_init(&json_error);
+  lonejson_spooled_init(&conversation_text_data, NULL);
+  expect_int(state, "conversation_items_text_append",
+             lonejson_spooled_append(&conversation_text_data,
+                                     "conversation spooled text",
+                                     strlen("conversation spooled text"),
+                                     &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "conversation_items_add_text_spooled",
+             cai_conversation_items_params_add_text_spooled(
+                 item_params, "user", &conversation_text_data, &error),
+             CAI_OK);
+  source_state.text = "conversation source text";
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &source_state;
+  expect_int(state, "conversation_items_text_source_create",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "conversation_items_add_text_source",
+             cai_conversation_items_params_add_text_source(
+                 item_params, "user", source, &error),
+             CAI_OK);
+  expect_int(state, "conversation_items_text_source_read",
+             (long)source_state.offset, (long)strlen(source_state.text));
+  cai_source_close(source);
+  source = NULL;
   expect_int(
       state, "conversation_items_add_image",
       cai_conversation_items_params_add_image_url(

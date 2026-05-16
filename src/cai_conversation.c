@@ -101,6 +101,10 @@ cai_conversation_content_part_cleanup(const cai_allocator *allocator,
   }
   cai_free_mem(allocator, part->type);
   cai_free_mem(allocator, part->text);
+  if (part->has_text_spooled) {
+    lonejson_spooled_cleanup(&part->text_spooled);
+    part->has_text_spooled = 0;
+  }
   cai_free_mem(allocator, part->image_url);
   cai_free_mem(allocator, part->file_id);
   cai_free_mem(allocator, part->filename);
@@ -706,6 +710,91 @@ int cai_conversation_items_params_add_text(
   rc = cai_conversation_items_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
     cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+int cai_conversation_items_params_add_text_spooled(
+    cai_conversation_items_params *params, const char *role,
+    lonejson_spooled *text, cai_error *error) {
+  struct cai_content_part part;
+  const cai_allocator *allocator;
+  int rc;
+
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "text spool is required");
+  }
+  allocator = params != NULL ? &params->allocator : NULL;
+  memset(&part, 0, sizeof(part));
+  part.type = cai_strdup(allocator, "input_text");
+  part.text_spooled = *text;
+  part.has_text_spooled = 1;
+  memset(text, 0, sizeof(*text));
+  if (part.type == NULL) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
+  }
+  rc = cai_conversation_items_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_conversation_content_part_cleanup(allocator, &part);
+  }
+  return rc;
+}
+
+static int cai_conversation_source_to_spooled(cai_source *source,
+                                              lonejson_spooled *out,
+                                              cai_error *error) {
+  lonejson_error json_error;
+  unsigned char buffer[4096];
+  size_t nread;
+  int previous_error_code;
+
+  if (source == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "source and spool output are required");
+  }
+  memset(out, 0, sizeof(*out));
+  lonejson_spooled_init(out, NULL);
+  for (;;) {
+    previous_error_code = error != NULL ? error->code : CAI_OK;
+    nread = cai_source_read(source, buffer, sizeof(buffer), error);
+    if (nread == 0U && error != NULL && error->code != previous_error_code &&
+        error->code != CAI_OK) {
+      lonejson_spooled_cleanup(out);
+      return error->code;
+    }
+    if (nread == 0U) {
+      break;
+    }
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_append(out, buffer, nread, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      lonejson_spooled_cleanup(out);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to spool conversation text input",
+                                  json_error.message);
+    }
+  }
+  return CAI_OK;
+}
+
+int cai_conversation_items_params_add_text_source(
+    cai_conversation_items_params *params, const char *role, cai_source *source,
+    cai_error *error) {
+  lonejson_spooled text;
+  int rc;
+
+  if (source == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "text source is required");
+  }
+  memset(&text, 0, sizeof(text));
+  rc = cai_conversation_source_to_spooled(source, &text, error);
+  if (rc == CAI_OK) {
+    rc = cai_conversation_items_params_add_text_spooled(params, role, &text,
+                                                       error);
+  }
+  if (rc != CAI_OK) {
+    lonejson_spooled_cleanup(&text);
   }
   return rc;
 }

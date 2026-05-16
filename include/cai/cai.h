@@ -825,6 +825,12 @@ void cai_conversation_items_params_destroy(
 int cai_conversation_items_params_add_text(
     cai_conversation_items_params *params, const char *role, const char *text,
     cai_error *error);
+int cai_conversation_items_params_add_text_spooled(
+    cai_conversation_items_params *params, const char *role,
+    struct lonejson_spooled *text, cai_error *error);
+int cai_conversation_items_params_add_text_source(
+    cai_conversation_items_params *params, const char *role, cai_source *source,
+    cai_error *error);
 int cai_conversation_items_params_add_image_url(
     cai_conversation_items_params *params, const char *role, const char *url,
     const char *detail, cai_error *error);
