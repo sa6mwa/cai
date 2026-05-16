@@ -90,6 +90,22 @@ cmake --build --preset debug --target cai_example_smhi_weather
 OPENAI_API_KEY=... ./build/debug/cai_example_smhi_weather Gothenburg
 ```
 
+## MCP Server
+
+Run a small MCP-over-HTTP example server on loopback. It streams request bodies
+through `cai_mcp_handler`, registers the production `reverse_geocode` and
+`todo_kanban` presets, and registers `copy_to_clipboard` only when `xclip` is
+available in `PATH`. Clipboard writes are a local-machine side effect and the
+example rejects clipboard inputs larger than 1 MiB.
+
+The todo store defaults to cai's normal todo path. For isolated runs, set
+`CAI_MCP_EXAMPLE_TODO_STORE` and `CAI_MCP_EXAMPLE_TODO_LOCK`.
+
+```sh
+cmake --build --preset debug --target cai_example_mcp_server
+./build/debug/cai_example_mcp_server --port 18766
+```
+
 ## SearXNG Search Tool
 
 Run an agent with the built-in SearXNG search preset. Start the local SearXNG

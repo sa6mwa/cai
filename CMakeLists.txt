@@ -459,6 +459,7 @@ if(CAI_BUILD_EXAMPLES)
     searxng_search:searxng-search
     session_state:session-state
     smhi_weather:smhi-weather
+    mcp_server:mcp-server
     streaming_text:streaming-text
     terminal_chat:terminal-chat
     mike_mind:mike-mind)
@@ -512,6 +513,12 @@ if(CAI_BUILD_TESTS)
   cai_configure_c_target(cai_mcp_http_smoke)
   add_test(NAME cai_mcp_http_smoke
     COMMAND cai_mcp_http_smoke $<TARGET_FILE:cai_mcp_http_server>)
+  add_executable(cai_mcp_example_smoke tests/mcp_example_smoke.c)
+  cai_configure_c_target(cai_mcp_example_smoke)
+  if(TARGET cai_example_mcp_server)
+    add_test(NAME cai_mcp_example_smoke
+      COMMAND cai_mcp_example_smoke $<TARGET_FILE:cai_example_mcp_server>)
+  endif()
   add_test(NAME cai_mcp_inspector_e2e
     COMMAND /bin/sh
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_inspector_e2e.sh"

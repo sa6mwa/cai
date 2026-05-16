@@ -107,19 +107,19 @@ before implementing that slice.
     listings, duplicate-key/corrupt JSON rejection, MCP exposure, canonical
     store shape, and happy-path create/add/list/complete/re-add behavior.
 
-- [ ] Add an example MCP server.
+- [x] Add an example MCP server.
   - Directory: `examples/mcp-server/`.
   - Reuse the tiny HTTP server substrate or a small example-specific wrapper;
     do not add an HTTP server dependency to `libcai`.
   - Serve these tools through MCP:
-    reverse geolocation preset, todo preset, SMHI weather example tool, and
-    Linux clipboard example tool.
-  - SMHI weather can remain example-only and should use the reverse-geolocation
-    preset where useful.
+    reverse geolocation preset, todo preset, and Linux clipboard example tool.
+  - SMHI weather remains covered by `examples/smhi-weather`; factor it into a
+    reusable example tool helper later if we want it served by the generic MCP
+    example too.
   - Clipboard tool is Linux/X11-only and example-only.
   - Enable the clipboard tool by default only when `xclip` is found in `PATH`.
   - Clipboard implementation must pipe the tool input to
     `xclip -selection clipboard` via `fork`/`exec` or `posix_spawn`, not via a
     shell.
-  - Clipboard input must be size-limited and documented as local-machine side
+  - Clipboard input is limited to 1 MiB and is documented as local-machine side
     effect behavior.
