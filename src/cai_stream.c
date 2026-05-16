@@ -854,8 +854,15 @@ static int cai_client_stream_response_params_with_id(
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
+    cai_log_http_request_start(CAI_CLIENT_IMPL(client), "POST", "responses", 1,
+                               (size_t)cai_response_request_upload_size(
+                                   upload));
     curl_rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    if (curl_rc == CURLE_OK) {
+      cai_log_http_request_done(CAI_CLIENT_IMPL(client), "POST", "responses",
+                                http_status, state.body_length, NULL);
+    }
   } else {
     curl_rc = CURLE_OK;
     http_status = 0L;
@@ -894,14 +901,20 @@ static int cai_client_stream_response_params_with_id(
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, state.body);
     if (state.failed) {
+      cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST",
+                                   "responses", state.failed_message);
       return cai_set_error(error, state.failed_code, state.failed_message);
     }
+    cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
+                                 curl_easy_strerror(curl_rc));
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "streaming HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
   if (state.failed) {
     cai_free_mem(NULL, state.body);
+    cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
+                                 state.failed_message);
     return cai_set_error(error, state.failed_code, state.failed_message);
   }
   if (http_status < 200L || http_status >= 300L) {

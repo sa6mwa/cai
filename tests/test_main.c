@@ -6784,6 +6784,7 @@ static void test_stream_response_text(test_state *state) {
   stream_tool_state tool_stream;
   stream_output_state output_stream;
   cai_error error;
+  pslog_logger fake_logger;
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "stream_mock", "pipe failed");
@@ -6818,6 +6819,18 @@ static void test_stream_response_text(test_state *state) {
   config.base_url = base_url;
   config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  fake_logger.tracef = test_pslog_tracef;
+  fake_logger.debugf = test_pslog_debugf;
+  fake_logger.warnf = test_pslog_warnf;
+  fake_logger.errorf = test_pslog_errorf;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -7062,6 +7075,12 @@ static void test_stream_response_text(test_state *state) {
              "{\"city\":\"Gothenburg\"}");
   expect_str(state, "stream_session_tool_arguments", tool_stream.arguments,
              "{\"city\":\"Gothenburg\"}");
+  expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
+             1L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 10L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 10L);
+  expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
+  expect_int(state, "stream_log_error_count", g_test_errorf_count, 0L);
 
   cai_response_create_params_destroy(params);
   cai_session_destroy(session);
