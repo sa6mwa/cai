@@ -464,7 +464,9 @@ preset registers a typed lonejson tool named `searxng_search` by default. Its
 input is `query`; its output is a compact typed result containing `query`,
 `engine`, `title`, `url`, `snippet`, `source`, `result_count`, and
 `infobox_count`. The callback fetches SearXNG JSON into bounded/spillable
-`lonejson_spooled` storage before parsing the stable fields. When
+`lonejson_spooled` storage, then streams the `results` and `infoboxes` arrays
+with lonejson mapped-array streams. It counts every returned item but keeps only
+the first usable result or infobox in the compact tool output. When
 `config.engine` is unset, cai does not send `engines=...`; the SearXNG instance
 uses its configured defaults.
 

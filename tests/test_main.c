@@ -3747,8 +3747,10 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_searxng_1\"") != NULL &&
         strstr(request, "\\\"engine\\\":\\\"wikipedia\\\"") != NULL &&
-        strstr(request, "\\\"title\\\":\\\"OpenAI\\\"") != NULL &&
-        strstr(request, "\\\"source\\\":\\\"infobox\\\"") != NULL &&
+        strstr(request, "\\\"title\\\":\\\"OpenAI first result\\\"") != NULL &&
+        strstr(request, "\\\"source\\\":\\\"result\\\"") != NULL &&
+        strstr(request, "\\\"result_count\\\":2") != NULL &&
+        strstr(request, "\\\"infobox_count\\\":1") != NULL &&
         strstr(request, "\"previous_response_id\":\"resp_searxng_tool_1\"") !=
             NULL) {
       return searxng_tool_done_body;
@@ -3987,11 +3989,16 @@ static void mock_openai_child(int pipe_fd, int request_count) {
 
 static void mock_searxng_child(int pipe_fd) {
   static const char body[] =
-      "{\"query\":\"OpenAI\",\"number_of_results\":0,\"results\":[],"
-      "\"infoboxes\":[{\"infobox\":\"OpenAI\","
-      "\"id\":\"https://en.wikipedia.org/wiki/OpenAI\","
-      "\"content\":\"OpenAI is an artificial intelligence research "
-      "organization.\",\"engine\":\"wikipedia\"}],"
+      "{\"query\":\"OpenAI\",\"number_of_results\":2,\"results\":["
+      "{\"title\":\"OpenAI first result\","
+      "\"url\":\"https://e.co/1\","
+      "\"content\":\"First.\",\"engine\":\"wikipedia\"},"
+      "{\"title\":\"OpenAI second result\","
+      "\"url\":\"https://e.co/2\","
+      "\"content\":\"Second.\",\"engine\":\"wikipedia\"}],"
+      "\"infoboxes\":[{\"infobox\":\"OpenAI infobox\","
+      "\"id\":\"https://e.co/i\","
+      "\"content\":\"Info.\",\"engine\":\"wikipedia\"}],"
       "\"unresponsive_engines\":[]}";
   char request[2048];
   struct sockaddr_in addr;
