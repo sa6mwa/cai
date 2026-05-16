@@ -429,7 +429,7 @@ Relevant OpenAI documentation:
 ## Local SearXNG
 
 cai includes a local SearXNG compose service for developing and testing the
-future web-search tool preset. The Makefile prefers `nerdctl compose` and falls
+web-search tool preset. The Makefile prefers `nerdctl compose` and falls
 back to `docker compose` when nerdctl is not installed.
 
 ```sh
@@ -458,8 +458,9 @@ Future cai web-search tool tests should keep this rule: use explicit engines,
 and prefer documented API-backed engines such as SearXNG's `braveapi`,
 Mojeek, or Marginalia when credentials are configured.
 
-Agents can register the opt-in SearXNG search preset by including
-`<cai/tools/searxng.h>` and calling `cai_agent_register_searxng_tool`. The
+Agents or registries can register the opt-in SearXNG search preset by including
+`<cai/tools/searxng.h>` and calling `cai_agent_register_searxng_tool` or
+`cai_tool_registry_register_searxng_tool`. The
 preset registers a typed lonejson tool named `searxng_search` by default. Its
 input is `query`; its output is a compact typed result containing `query`,
 `engine`, `title`, `url`, `snippet`, `source`, `result_count`, and

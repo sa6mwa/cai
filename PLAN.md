@@ -955,7 +955,8 @@ Mirror liblockdc where practical:
   Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
   argument surfaces.
 - Implemented constructor-style SearXNG preset:
-  - `cai_agent_register_searxng_tool(...)` in `<cai/tools/searxng.h>` wires
+  - `cai_tool_registry_register_searxng_tool(...)` and
+    `cai_agent_register_searxng_tool(...)` in `<cai/tools/searxng.h>` wire
     schema and callback together without adding preset-specific members to the
     core agent handle.
   - preset input/result contracts are typed and stable: input `query`; output

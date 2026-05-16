@@ -262,6 +262,13 @@ static void expect_str(test_state *state, const char *name, const char *actual,
   }
 }
 
+static void expect_substr(test_state *state, const char *name,
+                          const char *actual, const char *expected) {
+  if (actual == NULL || strstr(actual, expected) == NULL) {
+    test_fail(state, name, "substring missing");
+  }
+}
+
 static int read_source_text(test_state *state, const char *name,
                             cai_source *source, char *buffer,
                             size_t capacity, cai_error *error) {
@@ -5225,6 +5232,90 @@ static void test_agent_searxng_tool_auto_run(test_state *state) {
   }
 }
 
+static void test_searxng_registry_tool(test_state *state) {
+  int searxng_pipe[2];
+  pid_t searxng_pid;
+  int searxng_port;
+  int child_status;
+  ssize_t nread;
+  char searxng_base_url[128];
+  cai_searxng_tool_config searxng_config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(searxng_pipe) != 0) {
+    test_fail(state, "searxng_registry_mock", "pipe failed");
+    return;
+  }
+  searxng_pid = fork();
+  if (searxng_pid < 0) {
+    test_fail(state, "searxng_registry_mock", "fork failed");
+    close(searxng_pipe[0]);
+    close(searxng_pipe[1]);
+    return;
+  }
+  if (searxng_pid == 0) {
+    close(searxng_pipe[0]);
+    mock_searxng_child(searxng_pipe[1]);
+  }
+  close(searxng_pipe[1]);
+  nread = read(searxng_pipe[0], &searxng_port, sizeof(searxng_port));
+  close(searxng_pipe[0]);
+  if (nread != (ssize_t)sizeof(searxng_port)) {
+    test_fail(state, "searxng_registry_mock", "failed to read mock port");
+    waitpid(searxng_pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(searxng_base_url, sizeof(searxng_base_url),
+           "http://127.0.0.1:%d", searxng_port);
+  memset(&searxng_config, 0, sizeof(searxng_config));
+  searxng_config.base_url = searxng_base_url;
+  searxng_config.response_memory_limit = 16U;
+  searxng_config.response_max_bytes = 4096U;
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  registry = NULL;
+  sink = NULL;
+
+  expect_int(state, "searxng_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "searxng_registry_register",
+             cai_tool_registry_register_searxng_tool(registry,
+                                                     &searxng_config, &error),
+             CAI_OK);
+  expect_int(state, "searxng_registry_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "searxng_registry_run",
+             cai_tool_registry_run(registry, "searxng_search",
+                                   "{\"query\":\"OpenAI\"}", sink, &error),
+             CAI_OK);
+  expect_substr(state, "searxng_registry_title", writer.buffer,
+                "\"title\":\"OpenAI first result\"");
+  expect_substr(state, "searxng_registry_source", writer.buffer,
+                "\"source\":\"result\"");
+  expect_substr(state, "searxng_registry_result_count", writer.buffer,
+                "\"result_count\":2");
+  expect_substr(state, "searxng_registry_infobox_count", writer.buffer,
+                "\"infobox_count\":1");
+
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  if (waitpid(searxng_pid, &child_status, 0) != searxng_pid) {
+    test_fail(state, "searxng_registry_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "searxng_registry_mock", "mock child failed");
+  }
+}
+
 static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
                                 size_t max_bytes, int expected_rc,
                                 write_state *writer, cai_error *error) {
@@ -8895,6 +8986,7 @@ int main(void) {
   test_revgeo_tool(&state);
   test_todo_tool(&state);
   test_todo_callback_store(&state);
+  test_searxng_registry_tool(&state);
   test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);

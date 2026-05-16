@@ -23,6 +23,9 @@ typedef struct cai_searxng_tool_config {
   const char *response_spool_dir;
 } cai_searxng_tool_config;
 
+int cai_tool_registry_register_searxng_tool(
+    cai_tool_registry *registry, const cai_searxng_tool_config *config,
+    cai_error *error);
 int cai_agent_register_searxng_tool(cai_agent *agent,
                                     const cai_searxng_tool_config *config,
                                     cai_error *error);

@@ -643,22 +643,17 @@ static int cai_searxng_tool_callback(void *context, const void *params,
   return rc;
 }
 
-int cai_agent_register_searxng_tool(cai_agent *agent,
-                                    const cai_searxng_tool_config *config,
-                                    cai_error *error) {
+int cai_tool_registry_register_searxng_tool(
+    cai_tool_registry *registry, const cai_searxng_tool_config *config,
+    cai_error *error) {
   const char *name;
   const char *description;
   cai_searxng_context *ctx;
-  cai_agent_impl *impl;
   cai_tool_schema *schema;
   int rc;
 
-  if (agent == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
-  }
-  impl = CAI_AGENT_IMPL(agent);
-  if (impl == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  if (registry == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool registry is required");
   }
   name = cai_searxng_default_string(config != NULL ? config->name : NULL,
                                     "searxng_search");
@@ -676,7 +671,7 @@ int cai_agent_register_searxng_tool(cai_agent *agent,
   }
   if (rc == CAI_OK) {
     rc = cai_tool_registry_register_lonejson_owned(
-        impl->tools, name, description, &cai_searxng_args_map,
+        registry, name, description, &cai_searxng_args_map,
         &cai_searxng_result_map, cai_searxng_tool_callback, ctx,
         cai_searxng_context_cleanup, error);
   }
@@ -685,4 +680,19 @@ int cai_agent_register_searxng_tool(cai_agent *agent,
     cai_searxng_context_cleanup(ctx);
   }
   return rc;
+}
+
+int cai_agent_register_searxng_tool(cai_agent *agent,
+                                    const cai_searxng_tool_config *config,
+                                    cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return cai_tool_registry_register_searxng_tool(impl->tools, config, error);
 }
