@@ -634,23 +634,38 @@ Tool execution loop:
 
 ### Tool presets (constructor-style registration)
 
-Add higher-level preset constructors so callers can register common tools via a
-single call rather than hand-writing `lonejson` maps.
+Higher-level preset constructors let callers register common tools via a single
+call rather than hand-writing `lonejson` maps. Presets stay outside the core
+agent/session model and register against a `cai_tool_registry`; agent helpers
+delegate to the registry helpers.
 
-- Add a SearXNG preset first:
-  - API: `cai_agent_register_searxng_tool(...)` (or equivalent free function),
-    taking a config struct.
-  - Config fields:
-    - required `base_url` endpoint,
-    - optional `search_path` (default `/search`),
-    - optional `query_param` (default `q`),
-    - optional `format` (default `json`),
-    - optional `timeout_ms` and request tuning.
-  - Preset registers schema and callback in one call:
-    - input: `query` only.
-    - output: deterministic fields like `query`, `title`, `url`, `snippet`,
-      plus optional result metadata.
-  - Transport is internal to cai; no API key required by default.
+Current public presets:
+
+- SearXNG search:
+  - API: `cai_tool_registry_register_searxng_tool(...)` and
+    `cai_agent_register_searxng_tool(...)`.
+  - Config fields include optional `base_url` (default local SearXNG),
+    `search_path` (default `/search`), `engine`, `language`, timeout, response
+    byte limit, spool memory limit, and spool temp directory.
+  - Input: `query`.
+  - Output: `query`, `engine`, `title`, `url`, `snippet`, `source`,
+    `result_count`, and `infobox_count`.
+  - Transport is internal to cai; no API key is required by default.
+- Reverse geocoding:
+  - API: `cai_tool_registry_register_revgeo_tool(...)` and
+    `cai_agent_register_revgeo_tool(...)`.
+  - Input: `latitude` and `longitude`.
+  - Output: provider, label, city/municipality/region/country metadata, and
+    normalized coordinates when available.
+- Todo/kanban:
+  - API: `cai_tool_registry_register_todo_tool(...)` and
+    `cai_agent_register_todo_tool(...)`.
+  - Exposes a single `todo_kanban` tool with domain operations and a file-backed
+    streaming JSON store by default.
+
+SMHI weather is intentionally example-only in `examples/smhi-weather`; it is
+not a public cai tool preset.
+
 - Preserve existing `register_tool(...)` and `register_raw_tool(...)` behavior as
   first-class, non-deprecated paths.
 - Preset constructors are additive quality-of-life APIs, not a registry redesign.

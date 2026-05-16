@@ -118,9 +118,8 @@ before implementing that slice.
     do not add an HTTP server dependency to `libcai`.
   - Serve these tools through MCP:
     reverse geolocation preset, todo preset, and Linux clipboard example tool.
-  - SMHI weather remains covered by `examples/smhi-weather`; factor it into a
-    reusable example tool helper later if we want it served by the generic MCP
-    example too.
+  - SMHI weather remains example-only in `examples/smhi-weather`; do not expose
+    it as a public cai tool preset unless that decision is reopened.
   - Clipboard tool is Linux/X11-only and example-only.
   - Enable the clipboard tool by default only when `xclip` is found in `PATH`.
   - Clipboard implementation must pipe the tool input to
