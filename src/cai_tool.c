@@ -1088,6 +1088,16 @@ int cai_tool_registry_register_lonejson_owned(
   return rc;
 }
 
+int cai_tool_registry_register_lonejson_schema_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const char *schema_json, int strict, const lonejson_map *params_map,
+    const lonejson_map *result_map, cai_tool_fn callback, void *context,
+    void (*context_cleanup)(void *context), cai_error *error) {
+  return cai_tool_registry_register_common(
+      registry, name, description, schema_json, strict, CAI_TOOL_LONEJSON,
+      params_map, result_map, callback, NULL, context, context_cleanup, error);
+}
+
 int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    const char *name, const char *description,
                                    const char *schema_json, int strict,

@@ -23,6 +23,22 @@
 #define CAI_TODO_STATUS_IN_PROCESS "in_process"
 #define CAI_TODO_FOUND_NONE (-9001)
 #define CAI_TODO_INITIAL_STORE "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}"
+#define CAI_TODO_DESCRIPTION                                                  \
+  "Persistent kanban board tool for planning work. Start with operation=help "\
+  "when uncertain. Use list_boards to discover board IDs, add_item to add "   \
+  "work, current_work to inspect in_process work, move_item to move between " \
+  "todo/in_process, complete_item to archive done work, and set_wip_limit to "\
+  "limit WIP. Prefer returned board_id/item_id. wip_limit_exceeded is a "     \
+  "normal structured result."
+#define CAI_TODO_HELP_TEXT                                                    \
+  "todo_kanban usage: list_boards discovers boards and IDs. create_board "    \
+  "accepts board_name and optional wip_limit. add_item requires title and "   \
+  "accepts board_id or board_name, description, status=todo|in_process. "     \
+  "current_work lists only in_process items; list_board lists all active "    \
+  "items. move_item requires item_id and status. "                            \
+  "complete_item archives done work. set_wip_limit requires board and "       \
+  "wip_limit. WIP denial returns code=wip_limit_exceeded. "                   \
+  "Always use returned board_id/item_id."
 
 typedef struct cai_todo_context {
   cai_todo_store_callbacks store;
@@ -2229,6 +2245,97 @@ static int cai_todo_set_wip_limit(cai_todo_context *ctx,
   return rc;
 }
 
+static int cai_todo_help(const cai_todo_args *args, cai_todo_result *result,
+                         cai_error *error) {
+  int rc;
+
+  rc = cai_todo_set_result(result, args->operation, 1, "ok",
+                           CAI_TODO_HELP_TEXT, error);
+  if (rc == CAI_OK) {
+    result->item_count = 0;
+    result->has_item_count = 1;
+  }
+  return rc;
+}
+
+static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
+  static const char *const operations[] = {
+      "help",        "create_board", "list_boards",  "set_wip_limit",
+      "add_item",    "list_board",   "current_work", "move_item",
+      "complete_item"};
+  cai_tool_schema *schema;
+  int rc;
+
+  schema = NULL;
+  rc = cai_tool_schema_from_map(&cai_todo_args_map, &schema, error);
+  if (rc == CAI_OK) {
+    rc = schema->string_enum(
+        schema, "operation",
+        "Required operation. Use help first when unsure. help returns a usage "
+        "guide. create_board creates a board. list_boards discovers boards "
+        "and IDs. set_wip_limit configures in_process concurrency. add_item "
+        "adds active work. list_board lists all active work. current_work "
+        "lists only in_process work. move_item moves an item between todo and "
+        "in_process. complete_item archives an item to done.",
+        operations, sizeof(operations) / sizeof(operations[0]), 1, error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->describe(
+        schema, "board_id",
+        "Opaque board ID returned by create_board or list_boards. Prefer this "
+        "over board_name for exact follow-up calls.",
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->describe(
+        schema, "board_name",
+        "Human board name. Used to create or find a board when board_id is not "
+        "available. Defaults to the configured default board.",
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->describe(
+        schema, "item_id",
+        "Opaque item ID returned by add_item, list_board, or current_work. "
+        "Required for move_item and complete_item.",
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->describe(schema, "title",
+                          "Short task title. Required for add_item.", error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->describe(
+        schema, "description",
+        "Optional task detail. Keep concise unless the work item needs enough "
+        "context to be useful later.",
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->raw_property(
+        schema, "status",
+        "Active lane status. For add_item and move_item use todo or "
+        "in_process. complete_item does not use status; it moves the item to "
+        "the done archive.",
+        "{\"type\":\"string\",\"enum\":[\"todo\",\"in_process\"]}", 0, error);
+  }
+  if (rc == CAI_OK) {
+    rc = schema->describe(
+        schema, "wip_limit",
+        "Non-negative limit for the board's in_process lane. Required for "
+        "set_wip_limit; optional for create_board. When reached, moving or "
+        "adding more in_process work returns ok=false with "
+        "code=wip_limit_exceeded.",
+        error);
+  }
+  if (rc != CAI_OK) {
+    cai_tool_schema_destroy(schema);
+    return rc;
+  }
+  *out = schema;
+  return CAI_OK;
+}
+
 static int cai_todo_run(void *context, const void *params, void *out,
                         cai_error *error) {
   cai_todo_context *ctx;
@@ -2238,6 +2345,9 @@ static int cai_todo_run(void *context, const void *params, void *out,
   ctx = (cai_todo_context *)context;
   args = (const cai_todo_args *)params;
   result = (cai_todo_result *)out;
+  if (cai_todo_streq(args->operation, "help")) {
+    return cai_todo_help(args, result, error);
+  }
   if (cai_todo_streq(args->operation, "create_board")) {
     return cai_todo_create_board(ctx, args, result, error);
   }
@@ -2270,6 +2380,7 @@ int cai_tool_registry_register_todo_tool(cai_tool_registry *registry,
                                          const cai_todo_tool_config *config,
                                          cai_error *error) {
   cai_todo_context *ctx;
+  cai_tool_schema *schema;
   const char *name;
   const char *description;
   int rc;
@@ -2285,13 +2396,17 @@ int cai_tool_registry_register_todo_tool(cai_tool_registry *registry,
   name = cai_todo_arg_string(config != NULL ? config->name : NULL,
                              CAI_TODO_DEFAULT_TOOL_NAME);
   description = cai_todo_arg_string(
-      config != NULL ? config->description : NULL,
-      "Manage persisted kanban todo boards. Use operation create_board, "
-      "list_boards, add_item, list_board, current_work, move_item, "
-      "complete_item, or set_wip_limit.");
-  rc = cai_tool_registry_register_lonejson_owned(
-      registry, name, description, &cai_todo_args_map, &cai_todo_result_map,
-      cai_todo_run, ctx, cai_todo_context_cleanup, error);
+      config != NULL ? config->description : NULL, CAI_TODO_DESCRIPTION);
+  schema = NULL;
+  rc = cai_todo_schema_new(&schema, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_lonejson_schema_owned(
+        registry, name, description, cai_tool_schema_json(schema),
+        cai_tool_schema_strict(schema), &cai_todo_args_map,
+        &cai_todo_result_map, cai_todo_run, ctx, cai_todo_context_cleanup,
+        error);
+  }
+  cai_tool_schema_destroy(schema);
   if (rc != CAI_OK) {
     cai_todo_context_cleanup(ctx);
   }

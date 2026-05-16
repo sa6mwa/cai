@@ -484,8 +484,11 @@ Agents or registries can register the persisted todo/kanban preset by
 including `<cai/tools/todo.h>` and calling `cai_agent_register_todo_tool` or
 `cai_tool_registry_register_todo_tool`. The default tool name is
 `todo_kanban`. It exposes a single domain tool with an `operation` argument:
-`create_board`, `list_boards`, `set_wip_limit`, `add_item`, `list_board`,
-`current_work`, `move_item`, and `complete_item`.
+`help`, `create_board`, `list_boards`, `set_wip_limit`, `add_item`,
+`list_board`, `current_work`, `move_item`, and `complete_item`. The registered
+tool description and JSON schema include agent-facing usage guidance, operation
+enums, field descriptions, and WIP-limit semantics. Agents can call
+`operation=help` when they need an in-band reminder of the workflow.
 
 By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
 `$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.

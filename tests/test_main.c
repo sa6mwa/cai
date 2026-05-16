@@ -5440,8 +5440,41 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_register",
              cai_tool_registry_register_todo_tool(registry, &config, &error),
              CAI_OK);
+  if (cai_tool_registry_description_at(registry, 0U) == NULL ||
+      strstr(cai_tool_registry_description_at(registry, 0U),
+             "Start with operation=help") == NULL ||
+      strstr(cai_tool_registry_description_at(registry, 0U),
+             "wip_limit_exceeded") == NULL) {
+    test_fail(state, "todo_description",
+              "todo tool description does not explain agent usage");
+  }
+  if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "\"enum\":[\"help\",\"create_board\"") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "Use help first when unsure") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "Opaque item ID") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "\"enum\":[\"todo\",\"in_process\"]") == NULL) {
+    test_fail(state, "todo_schema_usage",
+              "todo tool schema does not provide agent usage guidance");
+  }
   expect_int(state, "todo_sink",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "todo_help",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"help\"}", sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "current_work") == NULL ||
+      strstr(writer.buffer, "wip_limit_exceeded") == NULL ||
+      strstr(writer.buffer, "Always use returned board_id/item_id") == NULL) {
+    test_fail(state, "todo_help_output",
+              "todo help operation did not return usage guidance");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
   expect_int(state, "todo_create_board",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"create_board\","
@@ -5744,9 +5777,11 @@ static void test_todo_tool(test_state *state) {
                                &writer, &header_state, &status, &error),
                CAI_OK);
     expect_int(state, "todo_mcp_tools_list_status", status, 200L);
-    if (strstr(writer.buffer, CAI_TODO_DEFAULT_TOOL_NAME) == NULL) {
+    if (strstr(writer.buffer, CAI_TODO_DEFAULT_TOOL_NAME) == NULL ||
+        strstr(writer.buffer, "Start with operation=help") == NULL ||
+        strstr(writer.buffer, "\"enum\":[\"help\",\"create_board\"") == NULL) {
       test_fail(state, "todo_mcp_tools_list_body",
-                "todo tool missing from MCP tools/list");
+                "todo tool usage guidance missing from MCP tools/list");
     }
     writer.buffer[0] = '\0';
     writer.length = 0U;
