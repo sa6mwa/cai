@@ -82,8 +82,9 @@ cmake --build --preset debug --target cai_example_session_state
 Run an agent with a typed lonejson tool that receives a location name, resolves
 it through the Open-Meteo Geocoding API, calls SMHI Open Data's public `snow1g`
 point forecast API for the resolved coordinate, parses both JSON responses
-through lonejson maps, and returns typed weather fields for the agent to
-summarize.
+through lonejson maps, streams Open-Meteo `results` and SMHI `timeSeries`
+arrays item by item, and returns typed weather fields for the agent to
+summarize. This is an example-local tool, not a public cai tool preset.
 
 ```sh
 cmake --build --preset debug --target cai_example_smhi_weather
