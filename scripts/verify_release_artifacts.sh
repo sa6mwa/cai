@@ -46,6 +46,18 @@ require_no_member() {
   fi
 }
 
+require_no_member_glob() {
+  local listing=$1
+  local pattern=$2
+  local match
+
+  match=$(grep -E "$pattern" "$listing" || true)
+  if [[ -n "$match" ]]; then
+    printf '%s\n' "$match" >&2
+    fail "archive contains forbidden member matching: $pattern"
+  fi
+}
+
 verify_checksum_file() {
   require_file "$checksums"
   if compgen -G "$dist_dir/cai-$version-SHA256SUMS" >/dev/null; then
@@ -86,6 +98,18 @@ verify_no_host_paths() {
   fi
 }
 
+verify_no_sanitizer_artifacts() {
+  local root_dir=$1
+  local matches
+
+  matches=$(grep -R -I -n -E 'fsanitize|__asan|__ubsan|libasan|libubsan' \
+    "$root_dir/lib" 2>/dev/null || true)
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    fail "release library contains sanitizer artifact"
+  fi
+}
+
 verify_linux_runpath() {
   local root_dir=$1
   local so
@@ -105,6 +129,11 @@ verify_linux_runpath() {
         >/dev/null; then
       printf '%s\n' "$dynamic" >&2
       fail "shared library has host-specific runpath: $so"
+    fi
+    if grep -E 'NEEDED' <<<"$dynamic" | grep -E 'libasan|libubsan' \
+      >/dev/null; then
+      printf '%s\n' "$dynamic" >&2
+      fail "shared library links sanitizer runtime: $so"
     fi
   done < <(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai.so*' -print)
 }
@@ -127,7 +156,10 @@ verify_binary_archive() {
   require_member "$listing" "$root/share/doc/libcai/LICENSE"
   require_no_member "$listing" "$root/include/lonejson.h"
   require_no_member "$listing" "$root/include/pslog.h"
+  require_no_member_glob "$listing" "^$root/lib/lib(lonejson|pslog|curl)\\."
+  require_no_member_glob "$listing" "^$root/lib/.*(asan|ubsan)"
   verify_no_host_paths "$root_dir"
+  verify_no_sanitizer_artifacts "$root_dir"
   if [[ "$root" == *-linux-* ]]; then
     verify_linux_runpath "$root_dir"
   fi

@@ -364,6 +364,29 @@ Streamable HTTP. It is skipped by default so normal local test runs do not
 depend on container image availability. Override the image with
 `CAI_MCP_INSPECTOR_IMAGE`.
 
+The example MCP server can also be attached to an agent client for manual
+end-to-end testing of the production tool presets. Start it with an isolated
+todo store:
+
+```sh
+cmake --build --preset debug --target cai_example_mcp_server
+tmpdir=$(mktemp -d)
+CAI_MCP_EXAMPLE_TODO_STORE="$tmpdir/todo.json" \
+CAI_MCP_EXAMPLE_TODO_LOCK="$tmpdir/todo.lock" \
+./build/debug/cai_example_mcp_server --port 18766
+```
+
+Then add the Streamable HTTP endpoint to Codex or Claude Code:
+
+```sh
+codex mcp add caiTodo --url http://127.0.0.1:18766/mcp
+claude mcp add --transport http caiTodo http://127.0.0.1:18766/mcp
+```
+
+See [examples/mcp-server/README.md](examples/mcp-server/README.md) for the
+equivalent config-file snippets and a todo-kanban workflow prompt that checks
+tool discovery, help text, WIP-limit denial, completion, and board state.
+
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
 ```sh

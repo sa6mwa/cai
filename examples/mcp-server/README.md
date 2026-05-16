@@ -63,3 +63,66 @@ The MCP Inspector e2e test uses the official container image and is opt-in:
 ```sh
 CAI_MCP_INSPECTOR_E2E=1 ctest --preset debug -R cai_mcp_inspector_e2e --output-on-failure
 ```
+
+## Testing From Agent Clients
+
+The example server is a Streamable HTTP MCP server. Run it in one terminal with
+isolated storage:
+
+```sh
+cmake --build --preset debug --target cai_example_mcp_server
+tmpdir=$(mktemp -d)
+CAI_MCP_EXAMPLE_TODO_STORE="$tmpdir/todo.json" \
+CAI_MCP_EXAMPLE_TODO_LOCK="$tmpdir/todo.lock" \
+./build/debug/cai_example_mcp_server --port 18766
+```
+
+Then register `http://127.0.0.1:18766/mcp` in the MCP client.
+
+Codex CLI:
+
+```sh
+codex mcp add caiTodo --url http://127.0.0.1:18766/mcp
+codex mcp list
+```
+
+Equivalent Codex TOML:
+
+```toml
+[mcp_servers.caiTodo]
+url = "http://127.0.0.1:18766/mcp"
+```
+
+Claude Code:
+
+```sh
+claude mcp add --transport http caiTodo http://127.0.0.1:18766/mcp
+claude mcp get caiTodo
+```
+
+Equivalent project-scoped `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "caiTodo": {
+      "type": "http",
+      "url": "http://127.0.0.1:18766/mcp"
+    }
+  }
+}
+```
+
+Useful agent prompt for the todo preset:
+
+```text
+Use the caiTodo MCP server. Call todo_kanban with operation=help first,
+then create a board named "agent-test", set its WIP limit to 1, add two
+items, move the first item to in_process, verify moving the second item to
+in_process is denied by the WIP limit, complete the first item, then move
+the second item to in_process and summarize the board state.
+```
+
+That sequence exercises tool discovery, help text, create/list/update
+operations, the WIP-limit invariant, and the done archive without touching the
+default user todo store.
