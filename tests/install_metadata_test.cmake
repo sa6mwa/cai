@@ -22,6 +22,7 @@ endif()
 
 set(required_files
   "${prefix}/include/cai/cai.h"
+  "${prefix}/include/cai/mcp.h"
   "${prefix}/include/cai/models.h"
   "${prefix}/include/cai/tools/revgeo.h"
   "${prefix}/include/cai/tools/searxng.h"
@@ -145,6 +146,7 @@ endif()
 ")
   file(WRITE "${consumer_dir}/main.c"
 "#include <cai/cai.h>
+#include <cai/mcp.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -159,11 +161,23 @@ int main(void) {
                           cai_error *);
   int (*register_todo)(cai_tool_registry *, const cai_todo_tool_config *,
                        cai_error *);
+  void (*mcp_config_init)(cai_mcp_handler_config *);
+  int (*mcp_new)(const cai_mcp_handler_config *, cai_mcp_handler **,
+                 cai_error *);
+  int (*mcp_handle)(cai_mcp_handler *, const cai_mcp_http_request *,
+                    cai_mcp_http_response *, cai_error *);
+  void (*mcp_destroy)(cai_mcp_handler *);
   (void)sizeof(error);
   register_revgeo = cai_tool_registry_register_revgeo_tool;
   register_searxng = cai_tool_registry_register_searxng_tool;
   register_todo = cai_tool_registry_register_todo_tool;
-  if (register_revgeo == 0 || register_searxng == 0 || register_todo == 0) {
+  mcp_config_init = cai_mcp_handler_config_init;
+  mcp_new = cai_mcp_handler_new;
+  mcp_handle = cai_mcp_handler_handle_http;
+  mcp_destroy = cai_mcp_handler_destroy;
+  if (register_revgeo == 0 || register_searxng == 0 || register_todo == 0 ||
+      mcp_config_init == 0 || mcp_new == 0 || mcp_handle == 0 ||
+      mcp_destroy == 0) {
     return 1;
   }
   (void)registry;
