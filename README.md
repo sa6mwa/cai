@@ -272,6 +272,12 @@ hatch. Use `register_raw_spooled_tool` or
 cai validates the spooled value as JSON and passes the spool through without
 rebuilding a whole argument string.
 
+For streamed auto-run tool calls, `cai_tool_event.arguments_json` remains a
+compatibility string for logging and simple handlers, while
+`arguments_json_spooled` exposes the same validated arguments as a
+`lonejson_spooled` handle. cai uses that spooled path for tool execution when
+function-call arguments arrive through the streaming capture path.
+
 ## MCP Handler
 
 `<cai/mcp.h>` exposes a transport-neutral MCP Streamable HTTP route handler for

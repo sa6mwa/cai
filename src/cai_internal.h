@@ -182,6 +182,9 @@ typedef struct cai_response_tool_call {
   char *call_id;
   char *name;
   char *arguments;
+  int output_index;
+  lonejson_spooled arguments_spooled;
+  int has_arguments_spooled;
 } cai_response_tool_call;
 
 typedef struct cai_response_output_item {

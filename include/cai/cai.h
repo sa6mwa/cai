@@ -129,6 +129,7 @@ typedef struct cai_tool_event {
   int type;
   const char *name;
   const char *arguments_json;
+  const struct lonejson_spooled *arguments_json_spooled;
   const struct lonejson_spooled *output_json;
   const cai_error *tool_error;
 } cai_tool_event;

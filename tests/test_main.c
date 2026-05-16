@@ -160,6 +160,7 @@ typedef struct tool_event_state {
   int outputs;
   char name[32];
   char arguments[64];
+  size_t arguments_spooled_size;
   char output[256];
 } tool_event_state;
 
@@ -1005,6 +1006,39 @@ static int test_spooled_raw_tool(void *context,
   return CAI_OK;
 }
 
+static int test_spooled_raw_weather_tool(void *context,
+                                         lonejson_spooled *arguments_json,
+                                         cai_sink *output, cai_error *error) {
+  static const char result[] = "{\"summary\":\"Gothenburg:0\"}";
+  spooled_raw_tool_state *state;
+  lonejson_spooled cursor;
+  lonejson_read_result chunk;
+  lonejson_error json_error;
+  unsigned char buffer[5];
+
+  state = (spooled_raw_tool_state *)context;
+  state->seen_size = lonejson_spooled_size(arguments_json);
+  cursor = *arguments_json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind spooled weather arguments",
+                                json_error.message);
+  }
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to read spooled weather arguments");
+    }
+    if (chunk.bytes_read == 0U) {
+      break;
+    }
+    state->chunks++;
+  }
+  return cai_sink_write(output, result, sizeof(result) - 1U, error);
+}
+
 static int test_tool_event(void *context, const cai_tool_event *event,
                            cai_error *error) {
   tool_event_state *state;
@@ -1024,6 +1058,10 @@ static int test_tool_event(void *context, const cai_tool_event *event,
              event->name != NULL ? event->name : "");
     snprintf(state->arguments, sizeof(state->arguments), "%s",
              event->arguments_json != NULL ? event->arguments_json : "");
+    state->arguments_spooled_size =
+        event->arguments_json_spooled != NULL
+            ? lonejson_spooled_size(event->arguments_json_spooled)
+            : 0U;
     return CAI_OK;
   }
   if (event->type == CAI_TOOL_EVENT_OUTPUT) {
@@ -7377,6 +7415,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   write_state writer;
   stream_tool_state tool_stream;
   tool_event_state event_state;
+  spooled_raw_tool_state spooled_tool_state;
   cai_token_usage usage;
   cai_error error;
 
@@ -7424,6 +7463,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   memset(&writer, 0, sizeof(writer));
   memset(&tool_stream, 0, sizeof(tool_stream));
   memset(&event_state, 0, sizeof(event_state));
+  memset(&spooled_tool_state, 0, sizeof(spooled_tool_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -7434,10 +7474,12 @@ static void test_session_stream_auto_tool_run(test_state *state) {
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
   expect_int(state, "stream_auto_tool_register",
-             cai_agent_register_tool(agent, "weather", "Get weather",
-                                     &tool_weather_map,
-                                     &tool_weather_result_map,
-                                     test_weather_tool, NULL, &error),
+             cai_agent_register_raw_spooled_tool(
+                 agent, "weather", "Get weather",
+                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":"
+                 "\"string\"}},\"required\":[\"city\"]}",
+                 0, test_spooled_raw_weather_tool, &spooled_tool_state,
+                 &error),
              CAI_OK);
   expect_int(state, "stream_auto_tool_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
@@ -7472,6 +7514,12 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   expect_int(state, "stream_auto_tool_event_outputs", event_state.outputs, 1L);
   expect_str(state, "stream_auto_tool_event_name", event_state.name,
              "weather");
+  expect_str(state, "stream_auto_tool_event_arguments", event_state.arguments,
+             "{\"city\":\"Gothenburg\"}");
+  expect_int(state, "stream_auto_tool_event_spooled_args",
+             event_state.arguments_spooled_size, 21L);
+  expect_int(state, "stream_auto_tool_spooled_chunks",
+             spooled_tool_state.chunks, 5L);
   expect_str(state, "stream_auto_tool_event_output", event_state.output,
              "{\"summary\":\"Gothenburg:0\"}");
 

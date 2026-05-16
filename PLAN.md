@@ -102,6 +102,10 @@ application.
   is a convenience/materialized path; interactive agents and worker pipelines
   should prefer `stream_auto` so reasoning summaries, response text, and tool
   activity are observable while the turn is still running.
+- `stream_auto` captures function-call argument deltas into `lonejson_spooled`
+  storage, surfaces that spool on tool events, and executes tools from the
+  spool when possible. The string argument field remains for compatibility and
+  simple logging.
 - MCP serving is exposed as `cai_mcp_handler`, a route-handler facade that lets
   Vectis/Kore or another HTTP stack pass through method, headers, request body
   source, response headers, and response sink. cai handles MCP JSON-RPC and
@@ -972,10 +976,11 @@ Mirror liblockdc where practical:
   map, including nested objects and object-array elements, duplicate keys remain
   rejected by lonejson parse defaults, and raw tools receive only syntactically
   valid JSON. Spooled raw tools avoid rebuilding large argument strings when
-  invoked from a spooled path. Tool output and tool-call ids have regression coverage proving
-  role/system-shaped payloads remain escaped data in `function_call_output`. A
-  Clang/libFuzzer harness (`cai_tool_fuzz`) exercises typed and raw tool
-  argument surfaces.
+  invoked from a spooled path. Streamed tool-call argument deltas are captured
+  into `lonejson_spooled` storage and exposed on tool events. Tool output and
+  tool-call ids have regression coverage proving role/system-shaped payloads
+  remain escaped data in `function_call_output`. A Clang/libFuzzer harness
+  (`cai_tool_fuzz`) exercises typed and raw tool argument surfaces.
 - Implemented constructor-style SearXNG preset:
   - `cai_tool_registry_register_searxng_tool(...)` and
     `cai_agent_register_searxng_tool(...)` in `<cai/tools/searxng.h>` wire
