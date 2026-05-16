@@ -58,6 +58,8 @@ typedef struct cai_session_text_input {
   int kind;
   char *role;
   char *text;
+  lonejson_spooled text_spooled;
+  int has_text_spooled;
   char *image_url;
   char *filename;
   char *detail;
@@ -125,6 +127,8 @@ void cai_log_http_response_limit(const cai_client_impl *client,
 struct cai_content_part {
   char *type;
   char *text;
+  lonejson_spooled text_spooled;
+  int has_text_spooled;
   char *image_url;
   char *file_id;
   char *filename;

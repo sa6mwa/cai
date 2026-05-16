@@ -159,6 +159,11 @@ turns, so simple chat and workflow drivers get Responses context continuity
 without manually carrying a `cai_session`. Explicit sessions remain available
 for multi-session, conversation-handle, and advanced workflows.
 
+Large user text can use `add_user_text_source` or `add_user_text_spooled`
+instead of building a temporary C string. The session keeps the pending text
+spooled and clones it into each request, so retry behavior is the same as for
+small string input.
+
 User file input is available at the same facade level. Use
 `add_user_file_path` for a local path, `add_user_file_source` for a `cai_source`,
 or `add_user_file_data_spooled` when the caller already owns a

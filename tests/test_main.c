@@ -3113,6 +3113,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
   cai_response_create_params *params;
   cai_response_create_params *cloned_params;
   lonejson_spooled raw_items;
+  lonejson_spooled text_data;
   lonejson_spooled file_data;
   lonejson_spooled tool_file_data;
   lonejson_spooled request_json;
@@ -3164,6 +3165,16 @@ static void test_response_spooled_request_fragments(test_state *state) {
       state, "spooled_typed_add",
       cai_response_create_params_add_text(params, "user", "next", &error),
       CAI_OK);
+  lonejson_spooled_init(&text_data, NULL);
+  expect_int(state, "spooled_text_append",
+             lonejson_spooled_append(&text_data, "large spooled text",
+                                     strlen("large spooled text"),
+                                     &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "spooled_text_add",
+             cai_response_create_params_add_text_spooled(params, "user",
+                                                         &text_data, &error),
+             CAI_OK);
   lonejson_spooled_init(&file_data, NULL);
   expect_int(state, "spooled_file_append",
              lonejson_spooled_append(&file_data, "inline file text",
@@ -3225,6 +3236,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
         strstr(json, "\"text\":\"remembered\"") == NULL ||
         strstr(json, "\"role\":\"user\"") == NULL ||
         strstr(json, "\"text\":\"next\"") == NULL ||
+        strstr(json, "\"text\":\"large spooled text\"") == NULL ||
         strstr(json, "\"filename\":\"note.txt\"") == NULL ||
         strstr(json, "\"file_data\":\"inline file text\"") == NULL ||
         strstr(json, "\"file_id\":\"file_input_123\"") == NULL ||
@@ -3519,6 +3531,10 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_session_source\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"source turn\"}]}]}";
+  static const char session_text_source_body[] =
+      "{\"id\":\"resp_session_text_source\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"text source turn\"}]}]}";
   static const char session_conversation_body[] =
       "{\"id\":\"resp_session_conv\",\"status\":\"completed\","
       "\"conversation\":{\"id\":\"conv_session\"},\"output\":[{"
@@ -4120,6 +4136,12 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"previous_response_id\":\"resp_session_file\"") !=
             NULL) {
       return session_source_body;
+    }
+    if (strstr(request, "\"type\":\"input_text\"") != NULL &&
+        strstr(request, "\"text\":\"source text body\"") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_session_source\"") !=
+            NULL) {
+      return session_text_source_body;
     }
     if (strstr(request, "conversation turn") != NULL &&
         strstr(request, "\"conversation\":\"conv_session\"") != NULL &&
@@ -4940,7 +4962,7 @@ static void test_agent_session(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 11);
+    mock_openai_child(pipe_fds[1], 12);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -4993,7 +5015,9 @@ static void test_agent_session(test_state *state) {
   if (client->new_agent == NULL || client->close == NULL ||
       agent->register_tool == NULL || agent->register_raw_tool == NULL ||
       agent->register_raw_spooled_tool == NULL ||
-      agent->add_user_text == NULL || agent->add_user_file_path == NULL ||
+      agent->add_user_text == NULL || agent->add_user_text_spooled == NULL ||
+      agent->add_user_text_source == NULL ||
+      agent->add_user_file_path == NULL ||
       agent->add_user_file_data_spooled == NULL ||
       agent->add_user_file_source == NULL ||
       agent->stream_text == NULL || agent->run_output == NULL ||
@@ -5018,7 +5042,10 @@ static void test_agent_session(test_state *state) {
   response = NULL;
   expect_int(state, "agent_session_new",
              agent->new_session(agent, &session, &error), CAI_OK);
-  if (session->add_user_text == NULL || session->add_user_file_path == NULL ||
+  if (session->add_user_text == NULL ||
+      session->add_user_text_spooled == NULL ||
+      session->add_user_text_source == NULL ||
+      session->add_user_file_path == NULL ||
       session->add_user_file_data_spooled == NULL ||
       session->add_user_file_source == NULL || session->run == NULL ||
       session->send_text == NULL || session->close == NULL) {
@@ -5131,6 +5158,30 @@ static void test_agent_session(test_state *state) {
   cai_source_close(source);
   source = NULL;
   expect_int(state, "agent_file_source_not_owned", source_state.closed, 1L);
+  memset(&source_state, 0, sizeof(source_state));
+  source_state.text = "source text body";
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &source_state;
+  expect_int(state, "agent_text_source_create",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "agent_add_text_source",
+             session->add_user_text_source(session, source, &error), CAI_OK);
+  expect_int(state, "agent_text_source_read_all",
+             (long)source_state.offset, (long)strlen(source_state.text));
+  expect_int(state, "agent_text_source_run",
+             session->run(session, &response, &error), CAI_OK);
+  expect_str(state, "agent_text_source_id", cai_response_id(response),
+             "resp_session_text_source");
+  expect_str(state, "agent_text_source_text", cai_response_output_text(response),
+             "text source turn");
+  cai_response_destroy(response);
+  response = NULL;
+  cai_source_close(source);
+  source = NULL;
+  expect_int(state, "agent_text_source_not_owned", source_state.closed, 1L);
   expect_int(state, "agent_session_conversation",
              cai_conversation_from_id("conv_session", &conversation, &error),
              CAI_OK);

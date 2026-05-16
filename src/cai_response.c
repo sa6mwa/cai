@@ -134,7 +134,10 @@ typedef struct cai_response_request_function_tool_doc {
 
 typedef struct cai_request_content_part_doc {
   const char *type;
-  const char *text;
+  lonejson_json_value text;
+  lonejson_spooled text_json;
+  cai_response_spooled_reader_context text_reader;
+  int has_text_json;
   const char *image_url;
   const char *file_id;
   const char *filename;
@@ -496,8 +499,8 @@ LONEJSON_MAP_DEFINE(cai_response_request_function_tool_map,
 
 static const lonejson_field cai_request_content_part_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_request_content_part_doc, type, "type"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_request_content_part_doc, text,
-                                          "text"),
+    LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_request_content_part_doc, text,
+                                        "text"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_request_content_part_doc,
                                           image_url, "image_url"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_request_content_part_doc,
@@ -669,6 +672,10 @@ static void cai_content_part_cleanup(const cai_allocator *allocator,
   }
   cai_free_mem(allocator, part->type);
   cai_free_mem(allocator, part->text);
+  if (part->has_text_spooled) {
+    lonejson_spooled_cleanup(&part->text_spooled);
+    part->has_text_spooled = 0;
+  }
   cai_free_mem(allocator, part->image_url);
   cai_free_mem(allocator, part->file_id);
   cai_free_mem(allocator, part->filename);
@@ -1604,6 +1611,32 @@ int cai_response_create_params_add_text(cai_response_create_params *params,
   return rc;
 }
 
+int cai_response_create_params_add_text_spooled(
+    cai_response_create_params *params, const char *role,
+    lonejson_spooled *text, cai_error *error) {
+  struct cai_content_part part;
+  int rc;
+
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "text spool is required");
+  }
+  cai_content_part_zero(&part);
+  part.type =
+      cai_strdup(params != NULL ? &params->allocator : NULL, "input_text");
+  part.text_spooled = *text;
+  part.has_text_spooled = 1;
+  memset(text, 0, sizeof(*text));
+  if (part.type == NULL) {
+    cai_content_part_cleanup(params != NULL ? &params->allocator : NULL, &part);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
+  }
+  rc = cai_response_params_add_part(params, role, &part, error);
+  if (rc != CAI_OK) {
+    cai_content_part_cleanup(params != NULL ? &params->allocator : NULL, &part);
+  }
+  return rc;
+}
+
 int cai_response_create_params_add_image_url(cai_response_create_params *params,
                                              const char *role, const char *url,
                                              const char *detail,
@@ -1842,6 +1875,15 @@ cai_response_content_part_clone(const cai_allocator *allocator,
       return rc;
     }
     dst->has_file_data = 1;
+  }
+  if (src->has_text_spooled) {
+    rc = cai_response_spooled_clone(&src->text_spooled, &dst->text_spooled,
+                                    error);
+    if (rc != CAI_OK) {
+      cai_content_part_cleanup(allocator, dst);
+      return rc;
+    }
+    dst->has_text_spooled = 1;
   }
   return CAI_OK;
 }
@@ -2269,6 +2311,10 @@ static void cai_request_content_part_docs_cleanup(
     if (docs[i].has_file_data_json) {
       lonejson_spooled_cleanup(&docs[i].file_data_json);
     }
+    lonejson_json_value_cleanup(&docs[i].text);
+    if (docs[i].has_text_json) {
+      lonejson_spooled_cleanup(&docs[i].text_json);
+    }
   }
   cai_free_mem(NULL, docs);
 }
@@ -2521,17 +2567,42 @@ static int cai_build_request_content_part_docs(
   memset(docs, 0, content->count * sizeof(*docs));
   parts = (struct cai_content_part *)content->items;
   for (i = 0U; i < content->count; i++) {
+    int rc;
+
     docs[i].type = parts[i].type;
-    docs[i].text = parts[i].text;
     docs[i].image_url = parts[i].image_url;
     docs[i].file_id = parts[i].file_id;
     docs[i].filename = parts[i].filename;
     docs[i].file_url = parts[i].file_url;
     docs[i].detail = parts[i].detail;
+    lonejson_json_value_init(&docs[i].text);
     lonejson_json_value_init(&docs[i].file_data);
+    if (parts[i].has_text_spooled || parts[i].text != NULL) {
+      if (parts[i].has_text_spooled) {
+        rc = cai_spooled_json_string_from_spooled(&parts[i].text_spooled,
+                                                  &docs[i].text_json, error);
+      } else {
+        rc = cai_spooled_json_string_from_cstr(parts[i].text,
+                                               &docs[i].text_json, error);
+      }
+      if (rc != CAI_OK) {
+        cai_request_content_part_docs_cleanup(docs, i + 1U);
+        return rc;
+      }
+      docs[i].has_text_json = 1;
+      docs[i].text_reader.cursor = docs[i].text_json;
+      lonejson_error_init(&json_error);
+      if (lonejson_json_value_set_reader(&docs[i].text,
+                                         cai_response_spooled_reader,
+                                         &docs[i].text_reader,
+                                         &json_error) != LONEJSON_STATUS_OK) {
+        cai_request_content_part_docs_cleanup(docs, i + 1U);
+        return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to prepare text JSON",
+                                    json_error.message);
+      }
+    }
     if (parts[i].has_file_data) {
-      int rc;
-
       rc = cai_spooled_json_string_from_spooled(&parts[i].file_data,
                                                 &docs[i].file_data_json,
                                                 error);

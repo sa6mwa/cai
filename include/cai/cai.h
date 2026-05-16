@@ -270,6 +270,11 @@ struct cai_agent {
                                       const cai_conversation *conversation,
                                       cai_session **out, cai_error *error);
   int (*add_user_text)(cai_agent *agent, const char *text, cai_error *error);
+  int (*add_user_text_spooled)(cai_agent *agent,
+                               struct lonejson_spooled *text,
+                               cai_error *error);
+  int (*add_user_text_source)(cai_agent *agent, cai_source *source,
+                              cai_error *error);
   int (*add_user_image_url)(cai_agent *agent, const char *url,
                             const char *detail, cai_error *error);
   int (*add_user_file_data_spooled)(cai_agent *agent, const char *filename,
@@ -317,6 +322,11 @@ struct cai_session {
   const char *(*previous_response_id)(const cai_session *session);
   int (*add_user_text)(cai_session *session, const char *text,
                        cai_error *error);
+  int (*add_user_text_spooled)(cai_session *session,
+                               struct lonejson_spooled *text,
+                               cai_error *error);
+  int (*add_user_text_source)(cai_session *session, cai_source *source,
+                              cai_error *error);
   int (*add_user_image_url)(cai_session *session, const char *url,
                             const char *detail, cai_error *error);
   int (*add_user_file_data_spooled)(cai_session *session,
@@ -447,6 +457,11 @@ int cai_session_set_previous_response_id(cai_session *session,
 const char *cai_session_previous_response_id(const cai_session *session);
 int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error);
+int cai_session_add_user_text_spooled(cai_session *session,
+                                      struct lonejson_spooled *text,
+                                      cai_error *error);
+int cai_session_add_user_text_source(cai_session *session, cai_source *source,
+                                     cai_error *error);
 int cai_session_add_user_image_url(cai_session *session, const char *url,
                                    const char *detail, cai_error *error);
 int cai_session_add_user_file_data_spooled(cai_session *session,
@@ -641,6 +656,9 @@ int cai_response_create_params_set_text_format_json_schema(
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
                                         cai_error *error);
+int cai_response_create_params_add_text_spooled(
+    cai_response_create_params *params, const char *role,
+    struct lonejson_spooled *text, cai_error *error);
 int cai_response_create_params_add_image_url(cai_response_create_params *params,
                                              const char *role, const char *url,
                                              const char *detail,

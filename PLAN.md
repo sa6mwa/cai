@@ -239,9 +239,9 @@ Rules:
 
 - Request input should accept borrowed strings, file paths, spooled file data,
   `lc_source`, and application callbacks. Implemented high-level session/agent
-  input currently covers borrowed text, image URLs, file paths, `cai_source`
-  file input, and spooled file data. `lc_source` interop remains dependent on a
-  deliberate external dependency boundary.
+  input currently covers borrowed text, spooled/source-backed text, image URLs,
+  file paths, `cai_source` file input, and spooled file data. `lc_source`
+  interop remains dependent on a deliberate external dependency boundary.
 - Response output should be representable as:
   - parsed metadata plus streamed content events,
   - a generated lonejson writer/source,
