@@ -23,7 +23,9 @@ endif()
 set(required_files
   "${prefix}/include/cai/cai.h"
   "${prefix}/include/cai/models.h"
+  "${prefix}/include/cai/tools/revgeo.h"
   "${prefix}/include/cai/tools/searxng.h"
+  "${prefix}/include/cai/tools/todo.h"
   "${prefix}/include/cai/version.h"
   "${prefix}/lib/cmake/cai/cai-config.cmake"
   "${prefix}/lib/cmake/cai/cai-config-version.cmake"
@@ -135,15 +137,36 @@ if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
 project(cai_consumer_smoke LANGUAGES C)
 find_package(cai CONFIG REQUIRED)
 add_executable(cai_consumer_smoke main.c)
-target_link_libraries(cai_consumer_smoke PRIVATE cai::cai_static)
+if(TARGET cai::cai_shared)
+  target_link_libraries(cai_consumer_smoke PRIVATE cai::cai_shared)
+else()
+  target_link_libraries(cai_consumer_smoke PRIVATE cai::cai_static)
+endif()
 ")
   file(WRITE "${consumer_dir}/main.c"
 "#include <cai/cai.h>
+#include <cai/tools/revgeo.h>
+#include <cai/tools/searxng.h>
+#include <cai/tools/todo.h>
 #include <lonejson.h>
 #include <pslog.h>
 int main(void) {
   cai_error error;
+  cai_tool_registry *registry = 0;
+  int (*register_revgeo)(cai_tool_registry *, const cai_revgeo_tool_config *,
+                         cai_error *);
+  int (*register_searxng)(cai_tool_registry *, const cai_searxng_tool_config *,
+                          cai_error *);
+  int (*register_todo)(cai_tool_registry *, const cai_todo_tool_config *,
+                       cai_error *);
   (void)sizeof(error);
+  register_revgeo = cai_tool_registry_register_revgeo_tool;
+  register_searxng = cai_tool_registry_register_searxng_tool;
+  register_todo = cai_tool_registry_register_todo_tool;
+  if (register_revgeo == 0 || register_searxng == 0 || register_todo == 0) {
+    return 1;
+  }
+  (void)registry;
   return 0;
 }
 ")
