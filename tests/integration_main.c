@@ -16,6 +16,7 @@
 #endif
 
 #define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
+#define CAI_INTEGRATION_OPENROUTER_E2E_DEFAULT_DELAY_SEC 4U
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -1530,6 +1531,24 @@ static double integration_spend_limit_usd(void) {
   return parsed > 0.0 ? parsed : CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD;
 }
 
+static unsigned int openrouter_e2e_delay_sec(void) {
+  const char *value;
+  long parsed;
+
+  value = getenv("CAI_OPENROUTER_E2E_DELAY_SEC");
+  if (value == NULL || value[0] == '\0') {
+    return CAI_INTEGRATION_OPENROUTER_E2E_DEFAULT_DELAY_SEC;
+  }
+  parsed = atol(value);
+  if (parsed < 0L) {
+    parsed = 0L;
+  }
+  if (parsed > 60L) {
+    parsed = 60L;
+  }
+  return (unsigned int)parsed;
+}
+
 static double usage_estimate_usd(const char *model,
                                  const cai_token_usage *usage) {
   if (usage == NULL) {
@@ -1583,6 +1602,7 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
   char expected_current[96];
   double spent_usd;
   double limit_usd;
+  unsigned int openrouter_delay_sec;
   int rc;
   int turn;
 
@@ -1597,6 +1617,7 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
                               : integration_model();
   spent_usd = 0.0;
   limit_usd = integration_spend_limit_usd();
+  openrouter_delay_sec = use_openrouter != 0 ? openrouter_e2e_delay_sec() : 0U;
   if (use_openrouter != 0) {
     cai_client_config_use_openrouter(&client_config);
   }
@@ -1626,6 +1647,9 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
     rc = cai_agent_new_session(agent, &session, &error);
   }
   for (turn = 1; rc == CAI_OK && turn <= 20; turn++) {
+    if (turn > 1 && openrouter_delay_sec > 0U) {
+      sleep(openrouter_delay_sec);
+    }
     snprintf(current_secret, sizeof(current_secret), "turn-%02d-key-%03d", turn,
              700 + turn);
     if (turn == 1) {

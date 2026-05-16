@@ -639,7 +639,9 @@ client-side history replay and the known working free tool-call model.
 `CAI_INTEGRATION_OPENROUTER_E2E=1` runs the same 20-turn continuity eval as
 `CAI_INTEGRATION_E2E=1`, but against OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
-mode.
+mode. The test paces requests by `CAI_OPENROUTER_E2E_DELAY_SEC`, defaulting to
+4 seconds, because free OpenRouter models can have low per-minute request
+limits.
 
 `CAI_INTEGRATION_SEARXNG_TOOL=1` runs a real OpenAI tool-calling regression
 against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the
