@@ -237,7 +237,7 @@ local weather_schema = [[
 ]]
 assert_ok(registry:register_raw_tool("lua_weather", "Lua weather test tool", weather_schema, function(args_json)
   assert(args_json:match("Gothenburg"))
-  return { ok = true, summary = "dry enough" }
+  return '{"ok":true,"summary":"dry enough"}'
 end, true))
 
 assert_ok(registry:register_raw_spooled_tool("lua_spooled_weather", "Lua spooled weather test tool", weather_schema, function(args)

@@ -9,7 +9,6 @@
 #include <lua.h>
 #include <lualib.h>
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -571,160 +570,15 @@ static void cai_lua_push_spool_reader(lua_State *L,
   lua_setmetatable(L, -2);
 }
 
-static int cai_lua_write_escaped_string(lua_State *L, luaL_Buffer *buffer,
-                                        const char *s, size_t len) {
-  size_t i;
-  char tmp[7];
-  (void)L;
-  luaL_addchar(buffer, '"');
-  for (i = 0u; i < len; i++) {
-    unsigned char c;
-    c = (unsigned char)s[i];
-    if (c == '"' || c == '\\') {
-      luaL_addchar(buffer, '\\');
-      luaL_addchar(buffer, (char)c);
-    } else if (c == '\b') {
-      luaL_addstring(buffer, "\\b");
-    } else if (c == '\f') {
-      luaL_addstring(buffer, "\\f");
-    } else if (c == '\n') {
-      luaL_addstring(buffer, "\\n");
-    } else if (c == '\r') {
-      luaL_addstring(buffer, "\\r");
-    } else if (c == '\t') {
-      luaL_addstring(buffer, "\\t");
-    } else if (c < 0x20u) {
-      snprintf(tmp, sizeof(tmp), "\\u%04x", (unsigned)c);
-      luaL_addstring(buffer, tmp);
-    } else {
-      luaL_addchar(buffer, (char)c);
-    }
-  }
-  luaL_addchar(buffer, '"');
-  return 1;
-}
-
-static int cai_lua_encode_json_value(lua_State *L, luaL_Buffer *buffer,
-                                     int index, int depth);
-
-static int cai_lua_is_array(lua_State *L, int index, size_t *count) {
-  size_t n;
-  size_t seen;
-  int is_array;
-  index = lua_absindex(L, index);
-  n = lua_rawlen(L, index);
-  seen = 0u;
-  is_array = 1;
-  lua_pushnil(L);
-  while (lua_next(L, index) != 0) {
-    if (lua_type(L, -2) == LUA_TNUMBER) {
-      lua_Integer k;
-      k = lua_tointeger(L, -2);
-      if (k < 1 || (size_t)k > n) {
-        is_array = 0;
-      }
-    } else {
-      is_array = 0;
-    }
-    seen++;
-    lua_pop(L, 1);
-  }
-  if (seen != n) {
-    is_array = 0;
-  }
-  *count = n;
-  return is_array;
-}
-
-static int cai_lua_encode_table(lua_State *L, luaL_Buffer *buffer, int index,
-                                int depth) {
-  size_t count;
-  size_t i;
-  int first;
-  index = lua_absindex(L, index);
-  if (cai_lua_is_array(L, index, &count)) {
-    luaL_addchar(buffer, '[');
-    for (i = 1u; i <= count; i++) {
-      if (i > 1u) {
-        luaL_addchar(buffer, ',');
-      }
-      lua_rawgeti(L, index, (lua_Integer)i);
-      cai_lua_encode_json_value(L, buffer, -1, depth + 1);
-      lua_pop(L, 1);
-    }
-    luaL_addchar(buffer, ']');
-    return 1;
-  }
-  luaL_addchar(buffer, '{');
-  first = 1;
-  lua_pushnil(L);
-  while (lua_next(L, index) != 0) {
-    size_t key_len;
-    const char *key;
-    if (lua_type(L, -2) != LUA_TSTRING) {
-      return luaL_error(L, "JSON object keys must be strings");
-    }
-    if (!first) {
-      luaL_addchar(buffer, ',');
-    }
-    first = 0;
-    key = lua_tolstring(L, -2, &key_len);
-    cai_lua_write_escaped_string(L, buffer, key, key_len);
-    luaL_addchar(buffer, ':');
-    cai_lua_encode_json_value(L, buffer, -1, depth + 1);
-    lua_pop(L, 1);
-  }
-  luaL_addchar(buffer, '}');
-  return 1;
-}
-
-static int cai_lua_encode_json_value(lua_State *L, luaL_Buffer *buffer,
-                                     int index, int depth) {
-  int type;
-  size_t len;
-  const char *s;
-  char num[64];
-  if (depth > 64) {
-    return luaL_error(L, "JSON nesting too deep");
-  }
-  type = lua_type(L, index);
-  switch (type) {
-  case LUA_TNIL:
-    luaL_addstring(buffer, "null");
-    break;
-  case LUA_TBOOLEAN:
-    luaL_addstring(buffer, lua_toboolean(L, index) ? "true" : "false");
-    break;
-  case LUA_TNUMBER:
-    snprintf(num, sizeof(num), "%.17g", (double)lua_tonumber(L, index));
-    luaL_addstring(buffer, num);
-    break;
-  case LUA_TSTRING:
-    s = lua_tolstring(L, index, &len);
-    cai_lua_write_escaped_string(L, buffer, s, len);
-    break;
-  case LUA_TTABLE:
-    cai_lua_encode_table(L, buffer, index, depth);
-    break;
-  default:
-    return luaL_error(L, "cannot encode %s as JSON", lua_typename(L, type));
-  }
-  return 1;
-}
-
 static const char *cai_lua_json_from_stack(lua_State *L, int index,
                                            size_t *len) {
   index = lua_absindex(L, index);
-  if (lua_type(L, index) == LUA_TSTRING) {
-    return lua_tolstring(L, index, len);
+  if (lua_type(L, index) != LUA_TSTRING) {
+    luaL_error(L,
+               "raw JSON must be supplied as a JSON string or streamed source");
+    return NULL;
   }
-  {
-    luaL_Buffer buffer;
-    luaL_buffinit(L, &buffer);
-    cai_lua_encode_json_value(L, &buffer, index, 0);
-    luaL_pushresult(&buffer);
-    return lua_tolstring(L, -1, len);
-  }
+  return lua_tolstring(L, index, len);
 }
 
 static int cai_lua_stack_has_read_method(lua_State *L, int index) {

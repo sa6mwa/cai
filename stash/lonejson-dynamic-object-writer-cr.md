@@ -86,6 +86,12 @@ a bespoke JSON builder. That builder can be correct, but it is not the desired
 architecture: lonejson should own JSON escaping, object framing, and streaming
 for both fixed and dynamic JSON objects.
 
+Current cai references that should disappear once this exists:
+
+- `src/cai_tool.c`: `cai_tool_schema_rebuild()`
+- `src/cai_tool.c`: `cai_tool_schema_describe()`
+- `src/cai_tool.c`: `cai_tool_schema_add_raw_property()`
+
 ## Acceptance Criteria
 
 - CAI can rebuild `cai_tool_schema_rebuild()` without hand-writing object

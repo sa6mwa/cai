@@ -193,23 +193,10 @@ static int cai_stream_copy_usage_value(cai_token_usage *out,
   cai_stream_usage_doc usage;
   lonejson_error json_error;
   lonejson_status status;
-  size_t i;
-  const char *json;
 
   if (out == NULL || value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL ||
       value->json == NULL || value->len == 0U) {
     return CAI_OK;
-  }
-  json = value->json;
-  for (i = 0U; i < value->len; i++) {
-    if (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' ||
-        json[i] == '\t') {
-      continue;
-    }
-    if (json[i] == 'n') {
-      return CAI_OK;
-    }
-    break;
   }
   memset(&usage, 0, sizeof(usage));
   lonejson_init(&cai_stream_usage_map, &usage);
@@ -239,23 +226,10 @@ static int cai_stream_parse_response_value(
   lonejson_parse_options options;
   lonejson_error json_error;
   lonejson_status status;
-  size_t i;
-  const char *json;
 
   if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL ||
       value->json == NULL || value->len == 0U) {
     return CAI_OK;
-  }
-  json = value->json;
-  for (i = 0U; i < value->len; i++) {
-    if (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' ||
-        json[i] == '\t') {
-      continue;
-    }
-    if (json[i] == 'n') {
-      return CAI_OK;
-    }
-    break;
   }
   lonejson_error_init(&json_error);
   if (cai_stream_response_doc_init(response, &json_error) !=

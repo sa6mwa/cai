@@ -67,6 +67,12 @@ typedef struct cai_source_reader_context {
   int failed;
 } cai_source_reader_context;
 
+typedef struct cai_json_root_array_check {
+  int depth;
+  int root_seen;
+  int root_is_array;
+} cai_json_root_array_check;
+
 typedef struct cai_session_state_doc {
   long long version;
   char *model;
@@ -104,7 +110,9 @@ static int cai_history_append_array_record_spooled(cai_session *session,
                                                    cai_error *error);
 static void cai_history_init_spooled(cai_session *session,
                                      lonejson_spooled *spool);
-static int cai_json_is_ws(unsigned char ch);
+static lonejson_read_result cai_history_spooled_reader(void *user,
+                                                       unsigned char *buffer,
+                                                       size_t capacity);
 static void cai_history_cleanup(cai_session *session);
 static int cai_token_usage_is_empty(const cai_token_usage *usage);
 static int
@@ -3391,16 +3399,77 @@ static lonejson_read_result cai_state_source_reader(void *user,
   return result;
 }
 
+static lonejson_status cai_root_check_object_begin(void *user,
+                                                   lonejson_error *error) {
+  cai_json_root_array_check *check;
+
+  (void)error;
+  check = (cai_json_root_array_check *)user;
+  if (check->depth == 0) {
+    check->root_seen = 1;
+    check->root_is_array = 0;
+  }
+  check->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_root_check_object_end(void *user,
+                                                 lonejson_error *error) {
+  cai_json_root_array_check *check;
+
+  (void)error;
+  check = (cai_json_root_array_check *)user;
+  if (check->depth > 0) {
+    check->depth--;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_root_check_array_begin(void *user,
+                                                  lonejson_error *error) {
+  cai_json_root_array_check *check;
+
+  (void)error;
+  check = (cai_json_root_array_check *)user;
+  if (check->depth == 0) {
+    check->root_seen = 1;
+    check->root_is_array = 1;
+  }
+  check->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_root_check_array_end(void *user,
+                                                lonejson_error *error) {
+  return cai_root_check_object_end(user, error);
+}
+
+static lonejson_status cai_root_check_scalar(void *user,
+                                             lonejson_error *error) {
+  cai_json_root_array_check *check;
+
+  (void)error;
+  check = (cai_json_root_array_check *)user;
+  if (check->depth == 0) {
+    check->root_seen = 1;
+    check->root_is_array = 0;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_root_check_bool(void *user, int value,
+                                           lonejson_error *error) {
+  (void)value;
+  return cai_root_check_scalar(user, error);
+}
+
 static int cai_spooled_json_is_array(const lonejson_spooled *spool,
                                      cai_error *error) {
   lonejson_spooled cursor;
   lonejson_error json_error;
-  lonejson_read_result chunk;
-  unsigned char buffer[4096];
-  size_t i;
-  unsigned char first_ch;
-  unsigned char last_ch;
-  int have_nonspace;
+  lonejson_value_visitor visitor;
+  cai_json_root_array_check check;
+  cai_spooled_reader_context reader_context;
 
   if (spool == NULL || lonejson_spooled_size(spool) == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID, "JSON value is empty");
@@ -3412,37 +3481,84 @@ static int cai_spooled_json_is_array(const lonejson_spooled *spool,
                                 "failed to rewind JSON value",
                                 json_error.message);
   }
-  first_ch = 0U;
-  last_ch = 0U;
-  have_nonspace = 0;
-  for (;;) {
-    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
-    if (chunk.error_code != 0) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read JSON value");
-    }
-    for (i = 0U; i < chunk.bytes_read; i++) {
-      if (!cai_json_is_ws(buffer[i])) {
-        if (!have_nonspace) {
-          first_ch = buffer[i];
-          have_nonspace = 1;
-        }
-        last_ch = buffer[i];
-      }
-    }
-    if (chunk.eof) {
-      break;
-    }
+  reader_context.cursor = cursor;
+  memset(&check, 0, sizeof(check));
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_root_check_object_begin;
+  visitor.object_end = cai_root_check_object_end;
+  visitor.array_begin = cai_root_check_array_begin;
+  visitor.array_end = cai_root_check_array_end;
+  visitor.string_begin = cai_root_check_scalar;
+  visitor.number_begin = cai_root_check_scalar;
+  visitor.boolean_value = cai_root_check_bool;
+  visitor.null_value = cai_root_check_scalar;
+  lonejson_error_init(&json_error);
+  if (lonejson_visit_value_reader(cai_history_spooled_reader, &reader_context,
+                                  &visitor, &check, NULL, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "JSON value is not valid JSON",
+                                json_error.message);
   }
-  if (!have_nonspace || first_ch != '[' || last_ch != ']') {
+  if (!check.root_seen || !check.root_is_array) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "JSON value must be an array");
   }
   return CAI_OK;
 }
 
-static int cai_json_is_ws(unsigned char ch) {
-  return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
+static int cai_compact_spooled_json(cai_session *session,
+                                    const lonejson_spooled *json,
+                                    lonejson_spooled *out,
+                                    cai_error *error) {
+  lonejson_spooled cursor;
+  lonejson_json_value value;
+  lonejson_error json_error;
+  cai_spooled_reader_context reader_context;
+  cai_history_sink_context sink_context;
+  int has_out;
+  int rc;
+
+  memset(out, 0, sizeof(*out));
+  has_out = 0;
+  rc = CAI_OK;
+  cursor = *json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind JSON value",
+                                json_error.message);
+  }
+  cai_history_init_spooled(session, out);
+  has_out = 1;
+  lonejson_json_value_init(&value);
+  reader_context.cursor = cursor;
+  lonejson_error_init(&json_error);
+  if (lonejson_json_value_set_reader(&value, cai_history_spooled_reader,
+                                     &reader_context,
+                                     &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to prepare JSON value",
+                              json_error.message);
+    goto done;
+  }
+  sink_context.spool = out;
+  lonejson_error_init(&json_error);
+  if (lonejson_json_value_write_to_sink(&value, cai_history_lonejson_sink,
+                                        &sink_context,
+                                        &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                              "failed to compact JSON value",
+                              json_error.message);
+    goto done;
+  }
+
+done:
+  lonejson_json_value_cleanup(&value);
+  if (rc != CAI_OK && has_out) {
+    lonejson_spooled_cleanup(out);
+  }
+  return rc;
 }
 
 static lonejson_read_result cai_history_spooled_reader(void *user,
@@ -3466,25 +3582,12 @@ static int cai_history_source_to_array_spooled(cai_session *session,
                                                lonejson_spooled *out,
                                                cai_error *error) {
   lonejson_spooled raw;
-  lonejson_spooled trimmed;
+  lonejson_spooled compact;
   lonejson_error json_error;
-  cai_spooled_reader_context reader_context;
   unsigned char buffer[4096];
   size_t nread;
-  size_t i;
-  size_t pos;
-  size_t first_pos;
-  size_t last_pos;
-  size_t global_start;
-  size_t global_end;
-  size_t start;
-  size_t end;
-  unsigned char first_ch;
-  unsigned char last_ch;
-  lonejson_read_result chunk;
-  int have_nonspace;
   int has_raw;
-  int has_trimmed;
+  int has_compact;
   int rc;
 
   if (out == NULL) {
@@ -3492,15 +3595,9 @@ static int cai_history_source_to_array_spooled(cai_session *session,
                          "history spool output pointer is required");
   }
   memset(&raw, 0, sizeof(raw));
-  memset(&trimmed, 0, sizeof(trimmed));
+  memset(&compact, 0, sizeof(compact));
   has_raw = 0;
-  has_trimmed = 0;
-  pos = 0U;
-  first_pos = 0U;
-  last_pos = 0U;
-  first_ch = 0U;
-  last_ch = 0U;
-  have_nonspace = 0;
+  has_compact = 0;
   rc = CAI_OK;
   cai_history_init_spooled(session, &raw);
   has_raw = 1;
@@ -3517,94 +3614,30 @@ static int cai_history_source_to_array_spooled(cai_session *session,
                                 json_error.message);
       goto done;
     }
-    for (i = 0U; i < nread; i++) {
-      if (!cai_json_is_ws(buffer[i])) {
-        if (!have_nonspace) {
-          first_pos = pos + i;
-          first_ch = buffer[i];
-          have_nonspace = 1;
-        }
-        last_pos = pos + i;
-        last_ch = buffer[i];
-      }
-    }
-    pos += nread;
   }
-  if (!have_nonspace) {
+  if (lonejson_spooled_size(&raw) == 0U) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "imported history JSON is empty");
     goto done;
   }
-  if (first_ch != '[' || last_ch != ']') {
-    rc = cai_set_error(error, CAI_ERR_INVALID,
-                       "imported history must be a JSON array");
-    goto done;
-  }
-  reader_context.cursor = raw;
-  lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                              "failed to rewind imported history",
-                              json_error.message);
-    goto done;
-  }
-  lonejson_error_init(&json_error);
-  if (lonejson_validate_reader(cai_history_spooled_reader, &reader_context,
-                               &json_error) != LONEJSON_STATUS_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
-                              "imported history is not valid JSON",
-                              json_error.message);
-    goto done;
-  }
-  cai_history_init_spooled(session, &trimmed);
-  has_trimmed = 1;
-  lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&raw, &json_error) != LONEJSON_STATUS_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                              "failed to rewind imported history",
-                              json_error.message);
-    goto done;
-  }
-  pos = 0U;
-  for (;;) {
-    chunk = lonejson_spooled_read(&raw, buffer, sizeof(buffer));
-    if (chunk.error_code != 0) {
-      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to read imported history");
-      goto done;
-    }
-    if (chunk.bytes_read > 0U) {
-      global_start = pos;
-      global_end = pos + chunk.bytes_read - 1U;
-      if (!(global_end < first_pos || global_start > last_pos)) {
-        start = first_pos > global_start ? first_pos - global_start : 0U;
-        end = last_pos < global_end ? last_pos - global_start + 1U
-                                    : chunk.bytes_read;
-        lonejson_error_init(&json_error);
-        if (lonejson_spooled_append(&trimmed, buffer + start, end - start,
-                                    &json_error) != LONEJSON_STATUS_OK) {
-          rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                    "failed to copy imported history",
-                                    json_error.message);
-          goto done;
-        }
-      }
-      pos += chunk.bytes_read;
-    }
-    if (chunk.eof) {
-      break;
+  rc = cai_spooled_json_is_array(&raw, error);
+  if (rc == CAI_OK) {
+    rc = cai_compact_spooled_json(session, &raw, &compact, error);
+    if (rc == CAI_OK) {
+      has_compact = 1;
     }
   }
-  *out = trimmed;
-  has_trimmed = 0;
+  if (rc == CAI_OK) {
+    *out = compact;
+    has_compact = 0;
+  }
 
 done:
   if (has_raw) {
     lonejson_spooled_cleanup(&raw);
   }
-  if (has_trimmed) {
-    lonejson_spooled_cleanup(&trimmed);
+  if (has_compact) {
+    lonejson_spooled_cleanup(&compact);
   }
   return rc;
 }

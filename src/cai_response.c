@@ -3724,15 +3724,15 @@ const char *cai_response_raw_json(const cai_response *response) {
 
 static int cai_spooled_array_items_json(const lonejson_spooled *array_json,
                                         char **out_json, cai_error *error) {
-  lonejson_spooled cursor;
+  cai_response_spooled_reader_context reader_context;
+  lonejson_array_stream *stream;
+  lonejson_array_stream_result result;
+  lonejson_json_value item;
   lonejson_error json_error;
-  lonejson_read_result chunk;
-  unsigned char buffer[4096];
   cai_json_builder builder;
-  unsigned char held;
-  size_t i;
-  int seen_first;
-  int have_held;
+  cai_response_json_builder_sink_context sink_context;
+  int need_comma;
+  int has_value;
   int rc;
 
   if (out_json == NULL) {
@@ -3743,59 +3743,67 @@ static int cai_spooled_array_items_json(const lonejson_spooled *array_json,
   if (array_json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "array JSON is required");
   }
-  cursor = *array_json;
+  reader_context.cursor = *array_json;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+  if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind output item JSON",
                                 json_error.message);
   }
-  builder.data = NULL;
-  builder.length = 0U;
-  builder.capacity = 0U;
-  builder.sink = NULL;
-  builder.sink_user = NULL;
-  builder.sink_error = NULL;
-  held = '\0';
-  seen_first = 0;
-  have_held = 0;
+  stream = lonejson_array_stream_open_reader(
+      "", cai_response_spooled_reader, &reader_context, NULL, &json_error);
+  if (stream == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "response output JSON is not an array",
+                                json_error.message);
+  }
+  memset(&builder, 0, sizeof(builder));
+  sink_context.builder = &builder;
+  sink_context.error = error;
+  need_comma = 0;
+  has_value = 0;
+  lonejson_json_value_init(&item);
   for (;;) {
-    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
-    if (chunk.error_code != 0) {
-      cai_free_mem(NULL, builder.data);
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read output item JSON");
-    }
-    for (i = 0U; i < chunk.bytes_read; i++) {
-      if (!seen_first) {
-        if (buffer[i] != '[') {
-          cai_free_mem(NULL, builder.data);
-          return cai_set_error(error, CAI_ERR_PROTOCOL,
-                               "response output JSON is not an array");
-        }
-        seen_first = 1;
-        continue;
-      }
-      if (have_held) {
-        rc = cai_json_builder_append(&builder, (const char *)&held, 1U, error);
-        if (rc != CAI_OK) {
-          cai_free_mem(NULL, builder.data);
-          return rc;
-        }
-      }
-      held = buffer[i];
-      have_held = 1;
-    }
-    if (chunk.eof) {
+    result = lonejson_array_stream_next_value(stream, &item, &json_error);
+    if (result == LONEJSON_ARRAY_STREAM_EOF) {
       break;
     }
+    if (result != LONEJSON_ARRAY_STREAM_ITEM) {
+      cai_free_mem(NULL, builder.data);
+      lonejson_json_value_cleanup(&item);
+      lonejson_array_stream_close(stream);
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to parse response output array",
+                                  json_error.message);
+    }
+    if (need_comma) {
+      rc = cai_json_builder_append(&builder, ",", 1U, error);
+      if (rc != CAI_OK) {
+        cai_free_mem(NULL, builder.data);
+        lonejson_json_value_cleanup(&item);
+        lonejson_array_stream_close(stream);
+        return rc;
+      }
+    }
+    lonejson_error_init(&json_error);
+    if (lonejson_json_value_write_to_sink(&item, cai_response_json_builder_sink,
+                                          &sink_context, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      cai_free_mem(NULL, builder.data);
+      lonejson_json_value_cleanup(&item);
+      lonejson_array_stream_close(stream);
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to write response output item JSON",
+                                  json_error.message);
+    }
+    lonejson_json_value_reset(&item);
+    need_comma = 1;
+    has_value = 1;
   }
-  if (!seen_first || !have_held || held != ']') {
-    cai_free_mem(NULL, builder.data);
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "unterminated response output JSON array");
-  }
-  if (builder.data == NULL) {
+  lonejson_json_value_cleanup(&item);
+  lonejson_array_stream_close(stream);
+  if (!has_value) {
     builder.data = cai_strdup(NULL, "");
     if (builder.data == NULL) {
       return cai_set_error(error, CAI_ERR_NOMEM,
@@ -3809,15 +3817,13 @@ static int cai_spooled_array_items_json(const lonejson_spooled *array_json,
 static int cai_spooled_array_items_spool(const lonejson_spooled *array_json,
                                          lonejson_spooled *out, size_t *out_len,
                                          cai_error *error) {
-  lonejson_spooled cursor;
+  cai_response_spooled_reader_context reader_context;
+  lonejson_array_stream *stream;
+  lonejson_array_stream_result result;
+  lonejson_json_value item;
   lonejson_error json_error;
-  lonejson_read_result chunk;
-  unsigned char buffer[4096];
-  unsigned char held;
-  size_t i;
   size_t length;
-  int seen_first;
-  int have_held;
+  int need_comma;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -3826,57 +3832,67 @@ static int cai_spooled_array_items_spool(const lonejson_spooled *array_json,
   if (array_json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "array JSON is required");
   }
-  cursor = *array_json;
+  reader_context.cursor = *array_json;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+  if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind output item JSON",
                                 json_error.message);
   }
+  stream = lonejson_array_stream_open_reader(
+      "", cai_response_spooled_reader, &reader_context, NULL, &json_error);
+  if (stream == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "response output JSON is not an array",
+                                json_error.message);
+  }
   lonejson_spooled_init(out, NULL);
-  held = '\0';
+  lonejson_json_value_init(&item);
+  need_comma = 0;
   length = 0U;
-  seen_first = 0;
-  have_held = 0;
   for (;;) {
-    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
-    if (chunk.error_code != 0) {
-      lonejson_spooled_cleanup(out);
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read output item JSON");
-    }
-    for (i = 0U; i < chunk.bytes_read; i++) {
-      if (!seen_first) {
-        if (buffer[i] != '[') {
-          lonejson_spooled_cleanup(out);
-          return cai_set_error(error, CAI_ERR_PROTOCOL,
-                               "response output JSON is not an array");
-        }
-        seen_first = 1;
-        continue;
-      }
-      if (have_held) {
-        if (lonejson_spooled_append(out, &held, 1U, &json_error) !=
-            LONEJSON_STATUS_OK) {
-          lonejson_spooled_cleanup(out);
-          return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                      "failed to spool output item JSON",
-                                      json_error.message);
-        }
-        length++;
-      }
-      held = buffer[i];
-      have_held = 1;
-    }
-    if (chunk.eof) {
+    result = lonejson_array_stream_next_value(stream, &item, &json_error);
+    if (result == LONEJSON_ARRAY_STREAM_EOF) {
       break;
     }
+    if (result != LONEJSON_ARRAY_STREAM_ITEM) {
+      lonejson_spooled_cleanup(out);
+      lonejson_json_value_cleanup(&item);
+      lonejson_array_stream_close(stream);
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to parse response output array",
+                                  json_error.message);
+    }
+    if (need_comma) {
+      lonejson_error_init(&json_error);
+      if (lonejson_spooled_append(out, ",", 1U, &json_error) !=
+          LONEJSON_STATUS_OK) {
+        lonejson_spooled_cleanup(out);
+        lonejson_json_value_cleanup(&item);
+        lonejson_array_stream_close(stream);
+        return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to spool output item JSON",
+                                    json_error.message);
+      }
+      length++;
+    }
+    lonejson_error_init(&json_error);
+    if (lonejson_json_value_write_to_sink(&item, cai_spooled_lonejson_sink, out,
+                                          &json_error) != LONEJSON_STATUS_OK) {
+      lonejson_spooled_cleanup(out);
+      lonejson_json_value_cleanup(&item);
+      lonejson_array_stream_close(stream);
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to write response output item JSON",
+                                  json_error.message);
+    }
+    length += item.len;
+    lonejson_json_value_reset(&item);
+    need_comma = 1;
   }
-  if (!seen_first || !have_held || held != ']') {
-    lonejson_spooled_cleanup(out);
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "unterminated response output JSON array");
-  }
+  lonejson_json_value_cleanup(&item);
+  lonejson_array_stream_close(stream);
   if (out_len != NULL) {
     *out_len = length;
   }
