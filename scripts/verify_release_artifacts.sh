@@ -58,6 +58,18 @@ require_no_member_glob() {
   fi
 }
 
+verify_no_private_text() {
+  local root_dir=$1
+  local matches
+
+  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|/tmp/|/var/tmp|\.cache/deps|\.\./' \
+    "$root_dir" 2>/dev/null || true)
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    fail "artifact contains host-specific or out-of-repository paths"
+  fi
+}
+
 verify_checksum_file() {
   require_file "$checksums"
   if compgen -G "$dist_dir/cai-$version-SHA256SUMS" >/dev/null; then
@@ -178,25 +190,101 @@ verify_source_archive() {
   require_no_member "$listing" "$root/.env"
 }
 
+verify_lua_source_archive() {
+  local root=$1
+  local listing=$2
+  local extract_root=$3
+
+  require_member "$listing" "$root/LICENSE"
+  require_member "$listing" "$root/README.md"
+  require_member "$listing" "$root/VERSION"
+  require_member "$listing" "$root/RELEASE_MANIFEST"
+  require_member "$listing" "$root/cai.rockspec.in"
+  require_member "$listing" "$root/scripts/build_lua_rock.sh"
+  require_member "$listing" "$root/scripts/render_release_rockspec.sh"
+  require_member "$listing" "$root/lua/cai_lua.c"
+  require_member "$listing" "$root/include/cai/cai.h"
+  require_member "$listing" "$root/include/cai/mcp.h"
+  require_member "$listing" "$root/include/cai/models.h"
+  require_no_member "$listing" "$root/.git/config"
+  require_no_member "$listing" "$root/.env"
+  verify_no_private_text "$extract_root/$root"
+}
+
+verify_rockspec_file() {
+  local rockspec=$1
+  local matches
+
+  require_file "$rockspec"
+  matches=$(grep -n -E '/home/|/Users/|/opt/|/tmp/|/var/tmp|\.cache/deps|\.\./' \
+    "$rockspec" 2>/dev/null || true)
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    fail "rockspec contains host-specific or out-of-repository paths: $rockspec"
+  fi
+}
+
+verify_src_rock() {
+  local rock=$1
+  local listing
+  local extract_root
+  local rockspec_name="cai-$version-1.rockspec"
+  local source_name="cai-lua-$version.tar.gz"
+  local source_listing
+  local source_extract_root
+
+  command -v unzip >/dev/null 2>&1 || fail "unzip is required to verify source rock"
+  require_file "$rock"
+  listing=$(mktemp)
+  extract_root=$(mktemp -d)
+  trap 'rm -f "$listing"; rm -rf "$extract_root"' RETURN
+
+  unzip -Z1 "$rock" >"$listing"
+  require_member "$listing" "$rockspec_name"
+  require_member "$listing" "$source_name"
+  unzip -q "$rock" -d "$extract_root"
+  verify_rockspec_file "$extract_root/$rockspec_name"
+
+  source_listing=$(mktemp)
+  source_extract_root=$(mktemp -d)
+  tar -tzf "$extract_root/$source_name" >"$source_listing"
+  verify_single_root "$extract_root/$source_name" "cai-$version" "$source_listing"
+  tar -xzf "$extract_root/$source_name" -C "$source_extract_root"
+  verify_lua_source_archive "cai-$version" "$source_listing" "$source_extract_root"
+  rm -f "$source_listing"
+  rm -rf "$source_extract_root"
+
+  rm -f "$listing"
+  rm -rf "$extract_root"
+  trap - RETURN
+}
+
 verify_archive() {
   local archive=$1
   local name
   local root
+  local expected_root
   local listing
   local extract_root
 
   name=$(basename "$archive")
   root=${name%.tar.gz}
+  expected_root=$root
+  if [[ "$root" == "cai-lua-$version" ]]; then
+    expected_root="cai-$version"
+  fi
   listing=$(mktemp)
   extract_root=$(mktemp -d)
   trap 'rm -f "$listing"; rm -rf "$extract_root"' RETURN
 
   tar -tzf "$archive" >"$listing"
-  verify_single_root "$archive" "$root" "$listing"
+  verify_single_root "$archive" "$expected_root" "$listing"
   tar -xzf "$archive" -C "$extract_root"
 
   if [[ "$root" == "cai-$version" ]]; then
     verify_source_archive "$root" "$listing"
+  elif [[ "$root" == "cai-lua-$version" ]]; then
+    verify_lua_source_archive "$expected_root" "$listing" "$extract_root"
   else
     verify_binary_archive "$archive" "$root" "$listing" "$extract_root"
   fi
@@ -217,6 +305,9 @@ fi
 for archive in "${archives[@]}"; do
   verify_archive "$archive"
 done
+
+verify_rockspec_file "$dist_dir/cai-$version-1.rockspec"
+verify_src_rock "$dist_dir/cai-$version-1.src.rock"
 
 printf 'Verified %d cai release archive(s) for version %s\n' \
   "${#archives[@]}" "$version"

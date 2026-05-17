@@ -3,6 +3,7 @@ version = "@VERSION@-1"
 source = {
   url = "@SOURCE_URL@",
 @SOURCE_TAG_LINE@
+@SOURCE_DIR_LINE@
 }
 description = {
   summary = "Lua binding for the cai OpenAI Responses SDK",

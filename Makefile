@@ -21,6 +21,11 @@ RELEASE_LUA_ROCK_DIR := dist/lua-rock
 RELEASE_LUA_STAGE_DIR := $(RELEASE_LUA_ROCK_DIR)/cai-$(RELEASE_VERSION)
 RELEASE_LUA_SOURCE_TARBALL := dist/cai-lua-$(RELEASE_VERSION).tar.gz
 RELEASE_LUA_ROCKSPEC := dist/cai-$(RELEASE_VERSION)-1.rockspec
+RELEASE_LUA_PACK_DIR := dist/.lua-rock-pack
+RELEASE_LUA_PACK_STAGE_DIR := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)
+RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar.gz
+RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
+RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 
 .PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
@@ -83,7 +88,7 @@ test-asan: asan
 
 $(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | build-debug
 	mkdir -p "$(LUA_ROCK_TREE)"
-	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(LUA_ROCKSPEC)" "git+file://$(CURDIR)" "" "$$lib_ext"
+	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(LUA_ROCKSPEC)" "git+file://$(CURDIR)" "" "$$lib_ext" ""
 
 $(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) lua/cai_lua.c scripts/build_lua_rock.sh
 	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
@@ -108,9 +113,30 @@ $(RELEASE_LUA_SOURCE_TARBALL): scripts/stage_lua_rock_sources.sh lua/cai_lua.c c
 	rm -rf "$(RELEASE_LUA_ROCK_DIR)"
 
 $(RELEASE_LUA_ROCKSPEC): $(RELEASE_LUA_SOURCE_TARBALL) scripts/render_release_rockspec.sh
-	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(RELEASE_LUA_ROCKSPEC)" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext"
+	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(RELEASE_LUA_ROCKSPEC)" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"
 
-release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC)
+$(RELEASE_LUA_PACK_SOURCE_TARBALL): scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in | build-debug
+	rm -rf "$(RELEASE_LUA_PACK_DIR)"
+	mkdir -p "$(RELEASE_LUA_PACK_DIR)"
+	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_PACK_STAGE_DIR)" "$(RELEASE_VERSION)"
+	tar -C "$(RELEASE_LUA_PACK_DIR)" --format=gnu --owner=0 --group=0 -cf "$(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar" "cai-$(RELEASE_VERSION)"
+	gzip -9 -f -n "$(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar"
+
+$(RELEASE_LUA_PACK_ROCKSPEC): Makefile $(RELEASE_LUA_PACK_SOURCE_TARBALL) scripts/render_release_rockspec.sh
+	cd "$(RELEASE_LUA_PACK_STAGE_DIR)" && lib_ext="$$(luarocks config variables.LIB_EXTENSION)" && ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "../$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))" "file://$(CURDIR)/$(RELEASE_LUA_PACK_SOURCE_TARBALL)" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"
+
+$(RELEASE_LUA_SRC_ROCK): $(RELEASE_LUA_PACK_ROCKSPEC) $(RELEASE_LUA_ROCKSPEC)
+	rm -f "$(RELEASE_LUA_SRC_ROCK)"
+	cd "$(RELEASE_LUA_PACK_DIR)" && luarocks pack "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"
+	mv "$(RELEASE_LUA_PACK_DIR)/$(notdir $(RELEASE_LUA_SRC_ROCK))" "$(RELEASE_LUA_SRC_ROCK)"
+	@tmp_dir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; \
+	./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$$tmp_dir/$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"; \
+	cd "$$tmp_dir" && zip -q -u "$(CURDIR)/$(RELEASE_LUA_SRC_ROCK)" "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"
+	rm -rf "$(RELEASE_LUA_PACK_DIR)"
+
+release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC) $(RELEASE_LUA_SRC_ROCK)
 
 package: build-release
 	bash ./scripts/package_release_matrix.sh
@@ -122,7 +148,7 @@ package-source:
 package-source-smoke: package-source
 	bash ./scripts/test_release_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h).tar.gz"
 
-package-checksums: package
+package-checksums: package release-lua-artifacts
 	$(CMAKE) --build --preset x86_64-linux-gnu-release --target cai_package_checksums
 
 package-verify: package-checksums
