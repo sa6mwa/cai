@@ -69,6 +69,9 @@ Recent prerelease gates run successfully:
 - OpenRouter 20-turn client-history e2e with request pacing.
 - Reverse-geocoding provider e2e.
 - SearXNG-backed OpenAI tool e2e.
+- Lua MCP todo/kanban facade e2e.
+- Lua OpenAI streamed-tool e2e.
+- Lua OpenAI streamed session-continuity e2e.
 
 ## Active First-Release Work
 
