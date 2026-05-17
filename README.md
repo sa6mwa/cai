@@ -650,6 +650,8 @@ CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
+CAI_LUA_TOOL_STREAM_E2E=1 ctest --preset integration -R cai_lua_tool_stream_e2e --output-on-failure
+CAI_LUA_SESSION_E2E=1 ctest --preset integration -R cai_lua_session_continuity_e2e --output-on-failure
 ```
 
 `CAI_INTEGRATION_OPENROUTER_DOTENV=1` clears any inherited

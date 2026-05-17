@@ -27,10 +27,26 @@ local function assert_ok(value, err, label)
   return value
 end
 
+local function dotenv_has_openai_key()
+  local fp = io.open(".env", "r")
+  if not fp then
+    return false
+  end
+  for line in fp:lines() do
+    if line:match("^%s*OPENAI_API_KEY%s*=") then
+      fp:close()
+      return true
+    end
+  end
+  fp:close()
+  return false
+end
+
 if os.getenv("CAI_LUA_TOOL_STREAM_E2E") ~= "1" then
   skip("set CAI_LUA_TOOL_STREAM_E2E=1 to run Lua streamed tool e2e")
 end
-if os.getenv("OPENAI_API_KEY") == nil or os.getenv("OPENAI_API_KEY") == "" then
+if (os.getenv("OPENAI_API_KEY") == nil or os.getenv("OPENAI_API_KEY") == "") and
+    not dotenv_has_openai_key() then
   skip("OPENAI_API_KEY is not set")
 end
 

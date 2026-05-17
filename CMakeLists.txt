@@ -619,6 +619,12 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_lua_tests PROPERTIES
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_lua_mcp_todo_e2e
+      COMMAND "${CAI_LUA_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_mcp_todo.lua")
+    set_tests_properties(cai_lua_mcp_todo_e2e PROPERTIES
+      ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
 
   if(CAI_BUILD_INTEGRATION_TESTS)
@@ -648,6 +654,13 @@ if(CAI_BUILD_TESTS)
         COMMAND "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_tool_stream.lua")
       set_tests_properties(cai_lua_tool_stream_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      add_test(NAME cai_lua_session_continuity_e2e
+        COMMAND "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_session_continuity.lua")
+      set_tests_properties(cai_lua_session_continuity_e2e PROPERTIES
         LABELS integration
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
