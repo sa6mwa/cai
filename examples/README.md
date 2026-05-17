@@ -139,6 +139,54 @@ LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
 OPENAI_API_KEY=... lua examples/lua-basic/main.lua
 ```
 
+Lua examples use `require("cai")` and the LuaRock module built by
+`make lua-rock`.
+
+## Lua Terminal Chat
+
+Lua port of the terminal chat agent. It streams reasoning and response text,
+prints usage, registers SearXNG search, and registers the persisted
+`todo_kanban` tool preset.
+
+```sh
+make lua-rock
+eval "$(luarocks path --tree build/luarocks)"
+LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
+OPENAI_API_KEY=... lua examples/lua-terminal-chat/main.lua
+```
+
+Optional local todo isolation:
+
+```sh
+CAI_LUA_TODO_STORE=/tmp/cai-lua-todo.json \
+CAI_LUA_TODO_LOCK=/tmp/cai-lua-todo.lock \
+OPENAI_API_KEY=... lua examples/lua-terminal-chat/main.lua
+```
+
+## Lua Conversation
+
+Create a conversation handle and add items through the lower-level
+Conversations facade:
+
+```sh
+make lua-rock
+eval "$(luarocks path --tree build/luarocks)"
+LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
+OPENAI_API_KEY=... lua examples/lua-conversation/main.lua
+```
+
+## Lua Session State
+
+Run a turn, save session state to disk, restore it into a new session, and
+continue:
+
+```sh
+make lua-rock
+eval "$(luarocks path --tree build/luarocks)"
+LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
+OPENAI_API_KEY=... lua examples/lua-session-state/main.lua /tmp/cai-lua-state.json
+```
+
 ## Terminal Chat
 
 Run a small terminal chat agent that reads prompts from stdin, keeps context

@@ -27,6 +27,31 @@ assert(model.context_window_tokens > 0)
 assert(model.auto_compact_token_limit > 0)
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+local dummy_agent = assert_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+  session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
+  history_memory_limit = 128,
+}))
+local dummy_session = assert_ok(dummy_agent:new_session())
+assert_ok(dummy_session:set_previous_response_id("resp_lua_test"))
+assert_ok(dummy_session:set_conversation_id("conv_lua_test"))
+assert_ok(dummy_session:add_user_text("hello"))
+local source_part = 0
+assert_ok(dummy_session:add_user_text_source(function()
+  source_part = source_part + 1
+  return ({ "streamed ", "hello", nil })[source_part]
+end))
+local ids = dummy_session:ids()
+assert_eq(ids.conversation_id, "conv_lua_test", "session conversation id")
+local state_chunks = {}
+assert_ok(dummy_session:export_state(function(chunk)
+  state_chunks[#state_chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(state_chunks):match("conv_lua_test"))
+dummy_session:close()
+dummy_agent:close()
 dummy_client:close()
 local dummy_openrouter = assert_ok(cai.open({
   openrouter = true,
@@ -35,9 +60,40 @@ local dummy_openrouter = assert_ok(cai.open({
 }))
 dummy_openrouter:close()
 
+local params = assert_ok(cai.response_params())
+assert_ok(params:set_model(cai.MODEL_GPT_5_NANO))
+assert_ok(params:set_instructions("Lua low-level params test"))
+assert_ok(params:set_reasoning("minimal", "auto"))
+assert_ok(params:add_text("user", "hello"))
+assert_ok(params:add_image_url("user", "https://example.com/image.png", "low"))
+assert_ok(params:add_file_url("user", "https://example.com/file.txt"))
+assert_ok(params:add_function_tool("noop", "No-op test tool", '{"type":"object","properties":{},"additionalProperties":false}', true))
+assert_ok(params:add_function_call_output("call_test", '{"ok":true}'))
+params:close()
+
+local conversation = assert_ok(cai.conversation_from_id("conv_lua_test"))
+assert_eq(conversation:id(), "conv_lua_test", "conversation id")
+conversation:close()
+
+local conv_params = assert_ok(cai.conversation_items_params())
+assert_ok(conv_params:add_text("user", "hello"))
+local part = 0
+assert_ok(conv_params:add_text_source("user", function()
+  part = part + 1
+  return ({ "large ", "text", nil })[part]
+end))
+assert_ok(conv_params:add_image_url("user", "https://example.com/i.png", "low"))
+assert_ok(conv_params:add_file_url("user", "https://example.com/f.txt"))
+conv_params:close()
+
 local schema = assert_ok(cai.tool_schema())
+assert_ok(schema:set_strict(true))
 assert_ok(schema:string("city", "City name", true))
 assert_ok(schema:integer("days", "Forecast days", false))
+assert_ok(schema:string_enum("unit", "Temperature unit", { "c", "f" }, false))
+assert_ok(schema:describe("city", "City to check"))
+assert_ok(schema:raw_property("extra", "Raw schema", '{"type":"object"}', false))
+assert(schema:strict())
 local schema_json = schema:json()
 assert(schema_json:match('"city"'))
 assert(schema_json:match('"required"'))

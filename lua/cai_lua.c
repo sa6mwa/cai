@@ -35,6 +35,11 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_REGISTRY "cai.tool_registry"
 #define CAI_LUA_MCP "cai.mcp_handler"
 #define CAI_LUA_SCHEMA "cai.tool_schema"
+#define CAI_LUA_PARAMS "cai.response_params"
+#define CAI_LUA_CONVERSATION "cai.conversation"
+#define CAI_LUA_INPUT_ITEMS "cai.input_item_list"
+#define CAI_LUA_CONVERSATION_ITEM "cai.conversation_item"
+#define CAI_LUA_CONVERSATION_PARAMS "cai.conversation_items_params"
 
 int luaopen_cai(lua_State *L);
 
@@ -81,6 +86,26 @@ typedef struct cai_lua_mcp {
 typedef struct cai_lua_schema {
   cai_tool_schema *ptr;
 } cai_lua_schema;
+
+typedef struct cai_lua_params {
+  cai_response_create_params *ptr;
+} cai_lua_params;
+
+typedef struct cai_lua_conversation {
+  cai_conversation *ptr;
+} cai_lua_conversation;
+
+typedef struct cai_lua_input_items {
+  cai_input_item_list *ptr;
+} cai_lua_input_items;
+
+typedef struct cai_lua_conversation_item {
+  cai_conversation_item *ptr;
+} cai_lua_conversation_item;
+
+typedef struct cai_lua_conversation_params {
+  cai_conversation_items_params *ptr;
+} cai_lua_conversation_params;
 
 typedef struct cai_lua_sink_ctx {
   lua_State *L;
@@ -288,6 +313,48 @@ static cai_lua_schema *cai_lua_check_schema(lua_State *L, int index) {
   return self;
 }
 
+static cai_lua_params *cai_lua_check_params(lua_State *L, int index) {
+  cai_lua_params *self;
+  self = (cai_lua_params *)luaL_checkudata(L, index, CAI_LUA_PARAMS);
+  luaL_argcheck(L, self->ptr != NULL, index, "closed cai response params");
+  return self;
+}
+
+static cai_lua_conversation *cai_lua_check_conversation(lua_State *L,
+                                                        int index) {
+  cai_lua_conversation *self;
+  self =
+      (cai_lua_conversation *)luaL_checkudata(L, index, CAI_LUA_CONVERSATION);
+  luaL_argcheck(L, self->ptr != NULL, index, "closed cai conversation");
+  return self;
+}
+
+static cai_lua_input_items *cai_lua_check_input_items(lua_State *L, int index) {
+  cai_lua_input_items *self;
+  self = (cai_lua_input_items *)luaL_checkudata(L, index, CAI_LUA_INPUT_ITEMS);
+  luaL_argcheck(L, self->ptr != NULL, index, "closed cai input item list");
+  return self;
+}
+
+static cai_lua_conversation_item *cai_lua_check_conversation_item(lua_State *L,
+                                                                  int index) {
+  cai_lua_conversation_item *self;
+  self = (cai_lua_conversation_item *)luaL_checkudata(
+      L, index, CAI_LUA_CONVERSATION_ITEM);
+  luaL_argcheck(L, self->ptr != NULL, index, "closed cai conversation item");
+  return self;
+}
+
+static cai_lua_conversation_params *
+cai_lua_check_conversation_params(lua_State *L, int index) {
+  cai_lua_conversation_params *self;
+  self = (cai_lua_conversation_params *)luaL_checkudata(
+      L, index, CAI_LUA_CONVERSATION_PARAMS);
+  luaL_argcheck(L, self->ptr != NULL, index,
+                "closed cai conversation items params");
+  return self;
+}
+
 static void cai_lua_unref_tools(lua_State *L, cai_lua_tool_ref *tool) {
   cai_lua_tool_ref *next;
   while (tool != NULL) {
@@ -364,6 +431,49 @@ static void cai_lua_push_schema(lua_State *L, cai_tool_schema *schema) {
   ud = (cai_lua_schema *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = schema;
   luaL_getmetatable(L, CAI_LUA_SCHEMA);
+  lua_setmetatable(L, -2);
+}
+
+static void cai_lua_push_params(lua_State *L, cai_response_create_params *ptr) {
+  cai_lua_params *ud;
+  ud = (cai_lua_params *)lua_newuserdata(L, sizeof(*ud));
+  ud->ptr = ptr;
+  luaL_getmetatable(L, CAI_LUA_PARAMS);
+  lua_setmetatable(L, -2);
+}
+
+static void cai_lua_push_conversation(lua_State *L, cai_conversation *ptr) {
+  cai_lua_conversation *ud;
+  ud = (cai_lua_conversation *)lua_newuserdata(L, sizeof(*ud));
+  ud->ptr = ptr;
+  luaL_getmetatable(L, CAI_LUA_CONVERSATION);
+  lua_setmetatable(L, -2);
+}
+
+static void cai_lua_push_input_items(lua_State *L, cai_input_item_list *ptr) {
+  cai_lua_input_items *ud;
+  ud = (cai_lua_input_items *)lua_newuserdata(L, sizeof(*ud));
+  ud->ptr = ptr;
+  luaL_getmetatable(L, CAI_LUA_INPUT_ITEMS);
+  lua_setmetatable(L, -2);
+}
+
+static void cai_lua_push_conversation_item(lua_State *L,
+                                           cai_conversation_item *ptr) {
+  cai_lua_conversation_item *ud;
+  ud = (cai_lua_conversation_item *)lua_newuserdata(L, sizeof(*ud));
+  ud->ptr = ptr;
+  luaL_getmetatable(L, CAI_LUA_CONVERSATION_ITEM);
+  lua_setmetatable(L, -2);
+}
+
+static void
+cai_lua_push_conversation_params(lua_State *L,
+                                 cai_conversation_items_params *ptr) {
+  cai_lua_conversation_params *ud;
+  ud = (cai_lua_conversation_params *)lua_newuserdata(L, sizeof(*ud));
+  ud->ptr = ptr;
+  luaL_getmetatable(L, CAI_LUA_CONVERSATION_PARAMS);
   lua_setmetatable(L, -2);
 }
 
@@ -665,6 +775,39 @@ static int cai_lua_make_source(lua_State *L, int index, cai_lua_source_ctx *ctx,
   return cai_source_from_callbacks(&callbacks, out, error);
 }
 
+static int cai_lua_copy_source_to_callback(lua_State *L, cai_source *source,
+                                           int callback_index,
+                                           cai_error *error) {
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  int rc;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  sink = NULL;
+  rc = cai_lua_make_sink(L, callback_index, &sink_ctx, &sink, error);
+  if (rc == CAI_OK) {
+    rc = cai_source_copy_to_sink(source, sink, error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return rc;
+}
+
+static void cai_lua_list_params_from_table(lua_State *L, int index,
+                                           cai_list_params *params) {
+  index = lua_absindex(L, index);
+  cai_list_params_init(params);
+  if (!lua_istable(L, index)) {
+    return;
+  }
+  params->after = cai_lua_opt_string_field(L, index, "after", params->after);
+  params->limit = cai_lua_opt_int_field(L, index, "limit", params->limit);
+  params->order = cai_lua_opt_string_field(L, index, "order", params->order);
+}
+
 static int cai_lua_call_tool(lua_State *L, int callback_ref,
                              const char *arguments_json, cai_sink *output,
                              cai_error *error) {
@@ -815,6 +958,296 @@ static int cai_lua_client_new_agent(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_client_create_conversation(lua_State *L) {
+  cai_lua_client *self;
+  cai_conversation *conversation;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  rc = cai_client_create_conversation(self->ptr, &conversation, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_conversation(L, conversation);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_retrieve_conversation(lua_State *L) {
+  cai_lua_client *self;
+  cai_conversation *conversation;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *handle;
+    handle = cai_lua_check_conversation(L, 2);
+    rc = cai_client_retrieve_conversation_handle(self->ptr, handle->ptr,
+                                                 &conversation, &error);
+  } else {
+    rc = cai_client_retrieve_conversation(self->ptr, luaL_checkstring(L, 2),
+                                          &conversation, &error);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_conversation(L, conversation);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_update_conversation_metadata(lua_State *L) {
+  cai_lua_client *self;
+  cai_conversation *conversation;
+  cai_error error;
+  size_t len;
+  const char *metadata_json;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  metadata_json = cai_lua_json_from_stack(L, 3, &len);
+  (void)len;
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *handle;
+    handle = cai_lua_check_conversation(L, 2);
+    rc = cai_client_update_conversation_metadata_handle(
+        self->ptr, handle->ptr, metadata_json, &conversation, &error);
+  } else {
+    rc = cai_client_update_conversation_metadata(
+        self->ptr, luaL_checkstring(L, 2), metadata_json, &conversation,
+        &error);
+  }
+  if (lua_type(L, -1) == LUA_TSTRING && !lua_isstring(L, 3)) {
+    lua_pop(L, 1);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_conversation(L, conversation);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_delete_conversation(lua_State *L) {
+  cai_lua_client *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *handle;
+    handle = cai_lua_check_conversation(L, 2);
+    rc = cai_client_delete_conversation_handle(self->ptr, handle->ptr, &error);
+  } else {
+    rc = cai_client_delete_conversation(self->ptr, luaL_checkstring(L, 2),
+                                        &error);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_client_create_response(lua_State *L) {
+  cai_lua_client *self;
+  cai_lua_params *params;
+  cai_response *response;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  params = cai_lua_check_params(L, 2);
+  cai_error_init(&error);
+  rc = cai_client_create_response(self->ptr, params->ptr, &response, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_response(L, response);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_stream_response_text(lua_State *L) {
+  cai_lua_client *self;
+  cai_lua_params *params;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  params = cai_lua_check_params(L, 2);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 3, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_stream_response_text(self->ptr, params->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_client_retrieve_response(lua_State *L) {
+  cai_lua_client *self;
+  cai_response *response;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  rc = cai_client_retrieve_response(self->ptr, luaL_checkstring(L, 2),
+                                    &response, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_response(L, response);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_cancel_response(lua_State *L) {
+  cai_lua_client *self;
+  cai_response *response;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  rc = cai_client_cancel_response(self->ptr, luaL_checkstring(L, 2), &response,
+                                  &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_response(L, response);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_delete_response(lua_State *L) {
+  cai_lua_client *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  rc = cai_client_delete_response(self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_client_list_response_input_items(lua_State *L) {
+  cai_lua_client *self;
+  cai_input_item_list *list;
+  cai_list_params params;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_lua_list_params_from_table(L, 3, &params);
+  cai_error_init(&error);
+  rc = cai_client_list_response_input_items(self->ptr, luaL_checkstring(L, 2),
+                                            &params, &list, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_input_items(L, list);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_list_conversation_items(lua_State *L) {
+  cai_lua_client *self;
+  cai_input_item_list *list;
+  cai_list_params params;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_lua_list_params_from_table(L, 3, &params);
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *conversation;
+    conversation = cai_lua_check_conversation(L, 2);
+    rc = cai_client_list_conversation_items_handle(self->ptr, conversation->ptr,
+                                                   &params, &list, &error);
+  } else {
+    rc = cai_client_list_conversation_items(self->ptr, luaL_checkstring(L, 2),
+                                            &params, &list, &error);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_input_items(L, list);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_create_conversation_items(lua_State *L) {
+  cai_lua_client *self;
+  cai_lua_conversation_params *params;
+  cai_input_item_list *list;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  params = cai_lua_check_conversation_params(L, 3);
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *conversation;
+    conversation = cai_lua_check_conversation(L, 2);
+    rc = cai_client_create_conversation_items_handle(
+        self->ptr, conversation->ptr, params->ptr, &list, &error);
+  } else {
+    rc = cai_client_create_conversation_items(self->ptr, luaL_checkstring(L, 2),
+                                              params->ptr, &list, &error);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_input_items(L, list);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_retrieve_conversation_item(lua_State *L) {
+  cai_lua_client *self;
+  cai_conversation_item *item;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *conversation;
+    conversation = cai_lua_check_conversation(L, 2);
+    rc = cai_client_retrieve_conversation_item_handle(
+        self->ptr, conversation->ptr, luaL_checkstring(L, 3), &item, &error);
+  } else {
+    rc = cai_client_retrieve_conversation_item(
+        self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &item,
+        &error);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_conversation_item(L, item);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_delete_conversation_item(lua_State *L) {
+  cai_lua_client *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_client(L, 1);
+  cai_error_init(&error);
+  if (luaL_testudata(L, 2, CAI_LUA_CONVERSATION) != NULL) {
+    cai_lua_conversation *conversation;
+    conversation = cai_lua_check_conversation(L, 2);
+    rc = cai_client_delete_conversation_item_handle(
+        self->ptr, conversation->ptr, luaL_checkstring(L, 3), &error);
+  } else {
+    rc = cai_client_delete_conversation_item(self->ptr, luaL_checkstring(L, 2),
+                                             luaL_checkstring(L, 3), &error);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_gc(lua_State *L) {
   cai_lua_agent *self;
   self = (cai_lua_agent *)luaL_checkudata(L, 1, CAI_LUA_AGENT);
@@ -845,6 +1278,41 @@ static int cai_lua_agent_new_session(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_agent_new_conversation_session(lua_State *L) {
+  cai_lua_agent *self;
+  cai_session *session;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_error_init(&error);
+  rc = self->ptr->new_conversation_session(self->ptr, &session, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_session(L, session);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_new_session_for_conversation(lua_State *L) {
+  cai_lua_agent *self;
+  cai_lua_conversation *conversation;
+  cai_session *session;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  conversation = cai_lua_check_conversation(L, 2);
+  cai_error_init(&error);
+  rc = self->ptr->new_session_for_conversation(self->ptr, conversation->ptr,
+                                               &session, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_session(L, session);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_add_user_text(lua_State *L) {
   cai_lua_agent *self;
   cai_error error;
@@ -852,6 +1320,28 @@ static int cai_lua_agent_add_user_text(lua_State *L) {
   self = cai_lua_check_agent(L, 1);
   cai_error_init(&error);
   rc = self->ptr->add_user_text(self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_add_user_text_source(lua_State *L) {
+  cai_lua_agent *self;
+  cai_source *source;
+  cai_lua_source_ctx source_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_error_init(&error);
+  source = NULL;
+  rc = cai_lua_make_source(L, 2, &source_ctx, &source, &error);
+  if (rc == CAI_OK) {
+    rc = self->ptr->add_user_text_source(self->ptr, source, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  if (source_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+  }
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -1379,6 +1869,96 @@ static int cai_lua_session_add_user_text(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_session_add_user_text_source(lua_State *L) {
+  cai_lua_session *self;
+  cai_source *source;
+  cai_lua_source_ctx source_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  cai_error_init(&error);
+  source = NULL;
+  rc = cai_lua_make_source(L, 2, &source_ctx, &source, &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text_source(self->ptr, source, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  if (source_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_add_user_image_url(lua_State *L) {
+  cai_lua_session *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  cai_error_init(&error);
+  rc = cai_session_add_user_image_url(self->ptr, luaL_checkstring(L, 2),
+                                      luaL_optstring(L, 3, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_add_user_file_path(lua_State *L) {
+  cai_lua_session *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  cai_error_init(&error);
+  rc = cai_session_add_user_file_path(self->ptr, luaL_checkstring(L, 2),
+                                      luaL_optstring(L, 3, NULL),
+                                      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_add_function_call_output(lua_State *L) {
+  cai_lua_session *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  cai_error_init(&error);
+  rc = cai_session_add_function_call_output(self->ptr, luaL_checkstring(L, 2),
+                                            luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_set_previous_response_id(lua_State *L) {
+  cai_lua_session *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  cai_error_init(&error);
+  rc = cai_session_set_previous_response_id(self->ptr, luaL_checkstring(L, 2),
+                                            &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_set_conversation_id(lua_State *L) {
+  cai_lua_session *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  cai_error_init(&error);
+  rc = cai_session_set_conversation_id(self->ptr, luaL_checkstring(L, 2),
+                                       &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_set_conversation(lua_State *L) {
+  cai_lua_session *self;
+  cai_lua_conversation *conversation;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  conversation = cai_lua_check_conversation(L, 2);
+  cai_error_init(&error);
+  rc = cai_session_set_conversation(self->ptr, conversation->ptr, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_session_run(lua_State *L) {
   cai_lua_session *self;
   cai_response *response;
@@ -1426,6 +2006,29 @@ static int cai_lua_session_run_output(lua_State *L) {
   self = cai_lua_check_session(L, 1);
   cai_error_init(&error);
   rc = cai_session_run_output(self->ptr, &output, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_output(L, output);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_session_run_auto_output(lua_State *L) {
+  cai_lua_session *self;
+  cai_output *output;
+  cai_run_options options;
+  cai_lua_tool_event_ctx event_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  memset(&event_ctx, 0, sizeof(event_ctx));
+  cai_error_init(&error);
+  cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
+  rc = cai_session_run_auto_output(self->ptr, &options, &output, &error);
+  if (event_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
+  }
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
@@ -1564,6 +2167,112 @@ static int cai_lua_session_save_state_path(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_session_export_state(lua_State *L) {
+  cai_lua_session *self;
+  cai_source *source;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  source = NULL;
+  cai_error_init(&error);
+  rc = cai_session_export_state_source(self->ptr, &source, &error);
+  if (rc == CAI_OK) {
+    rc = cai_lua_copy_source_to_callback(L, source, 2, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_import_state(lua_State *L) {
+  cai_lua_session *self;
+  cai_source *source;
+  cai_lua_source_ctx source_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  source = NULL;
+  cai_error_init(&error);
+  rc = cai_lua_make_source(L, 2, &source_ctx, &source, &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_import_state_source(self->ptr, source, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  if (source_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_export_history(lua_State *L) {
+  cai_lua_session *self;
+  cai_source *source;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  source = NULL;
+  cai_error_init(&error);
+  rc = cai_session_export_history_source(self->ptr, &source, &error);
+  if (rc == CAI_OK) {
+    rc = cai_lua_copy_source_to_callback(L, source, 2, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_import_history(lua_State *L) {
+  cai_lua_session *self;
+  cai_source *source;
+  cai_lua_source_ctx source_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  source = NULL;
+  cai_error_init(&error);
+  rc = cai_lua_make_source(L, 2, &source_ctx, &source, &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_import_history_source(self->ptr, source, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  if (source_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_context(lua_State *L) {
+  cai_lua_session *self;
+  cai_error error;
+  double percent;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  percent = 0.0;
+  cai_error_init(&error);
+  rc = cai_session_context_percent(self->ptr, &percent, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_newtable(L);
+  lua_pushinteger(L, (lua_Integer)cai_session_context_window_tokens(self->ptr));
+  lua_setfield(L, -2, "context_window_tokens");
+  lua_pushinteger(L,
+                  (lua_Integer)cai_session_auto_compact_token_limit(self->ptr));
+  lua_setfield(L, -2, "auto_compact_token_limit");
+  lua_pushnumber(L, percent);
+  lua_setfield(L, -2, "percent");
+  lua_pushboolean(L, cai_session_history_spilled(self->ptr));
+  lua_setfield(L, -2, "history_spilled");
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_session_load_state_path(lua_State *L) {
   cai_lua_session *self;
   cai_error error;
@@ -1638,6 +2347,73 @@ static int cai_lua_response_id(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_response_status(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushstring(L, cai_response_status(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_model(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushstring(L, cai_response_model(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_refusal(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushstring(L, cai_response_refusal(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_tool_calls(lua_State *L) {
+  cai_lua_response *self;
+  size_t i;
+  size_t count;
+  self = cai_lua_check_response(L, 1);
+  count = cai_response_tool_call_count(self->ptr);
+  lua_newtable(L);
+  for (i = 0u; i < count; i++) {
+    lua_newtable(L);
+    lua_pushstring(L, cai_response_tool_call_id(self->ptr, i));
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, cai_response_tool_call_name(self->ptr, i));
+    lua_setfield(L, -2, "name");
+    lua_pushstring(L, cai_response_tool_call_arguments(self->ptr, i));
+    lua_setfield(L, -2, "arguments");
+    lua_rawseti(L, -2, (lua_Integer)i + 1);
+  }
+  return 1;
+}
+
+static int cai_lua_response_output_items(lua_State *L) {
+  cai_lua_response *self;
+  size_t i;
+  size_t count;
+  self = cai_lua_check_response(L, 1);
+  count = cai_response_output_item_count(self->ptr);
+  lua_newtable(L);
+  for (i = 0u; i < count; i++) {
+    lua_newtable(L);
+    lua_pushstring(L, cai_response_output_item_id(self->ptr, i));
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, cai_response_output_item_type(self->ptr, i));
+    lua_setfield(L, -2, "type");
+    lua_pushstring(L, cai_response_output_item_status(self->ptr, i));
+    lua_setfield(L, -2, "status");
+    lua_pushstring(L, cai_response_output_item_role(self->ptr, i));
+    lua_setfield(L, -2, "role");
+    lua_pushstring(L, cai_response_output_item_call_id(self->ptr, i));
+    lua_setfield(L, -2, "call_id");
+    lua_pushstring(L, cai_response_output_item_name(self->ptr, i));
+    lua_setfield(L, -2, "name");
+    lua_rawseti(L, -2, (lua_Integer)i + 1);
+  }
+  return 1;
+}
+
 static int cai_lua_response_usage(lua_State *L) {
   cai_lua_response *self;
   cai_token_usage usage;
@@ -1704,6 +2480,55 @@ static int cai_lua_output_text(lua_State *L) {
     lua_pushstring(L, value);
   }
   return 1;
+}
+
+static int cai_lua_output_refusal(lua_State *L) {
+  cai_lua_output *self;
+  const char *value;
+  self = cai_lua_check_output(L, 1);
+  value = cai_output_refusal(self->ptr);
+  if (value == NULL) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, value);
+  }
+  return 1;
+}
+
+static int cai_lua_output_raw_json(lua_State *L) {
+  cai_lua_output *self;
+  const char *value;
+  self = cai_lua_check_output(L, 1);
+  value = cai_output_raw_json(self->ptr);
+  if (value == NULL) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, value);
+  }
+  return 1;
+}
+
+static int cai_lua_output_write_text(lua_State *L) {
+  cai_lua_output *self;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_output(L, 1);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_output_write_text(self->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
 }
 
 static int cai_lua_registry_gc(lua_State *L) {
@@ -2114,6 +2939,75 @@ static int cai_lua_schema_add_boolean(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_schema_set_strict(lua_State *L) {
+  cai_lua_schema *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_schema(L, 1);
+  cai_error_init(&error);
+  rc = cai_tool_schema_set_strict(self->ptr, lua_toboolean(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_schema_add_string_enum(lua_State *L) {
+  cai_lua_schema *self;
+  const char **values;
+  size_t count;
+  size_t i;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_schema(L, 1);
+  luaL_checktype(L, 4, LUA_TTABLE);
+  count = lua_rawlen(L, 4);
+  values = (const char **)calloc(count == 0u ? 1u : count, sizeof(*values));
+  if (values == NULL) {
+    lua_pushnil(L);
+    lua_pushstring(L, "out of memory");
+    return 2;
+  }
+  for (i = 0u; i < count; i++) {
+    lua_rawgeti(L, 4, (lua_Integer)i + 1);
+    values[i] = luaL_checkstring(L, -1);
+    lua_pop(L, 1);
+  }
+  cai_error_init(&error);
+  rc = cai_tool_schema_add_string_enum(self->ptr, luaL_checkstring(L, 2),
+                                       luaL_optstring(L, 3, NULL), values,
+                                       count, lua_toboolean(L, 5), &error);
+  free(values);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_schema_describe(lua_State *L) {
+  cai_lua_schema *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_schema(L, 1);
+  cai_error_init(&error);
+  rc = cai_tool_schema_describe(self->ptr, luaL_checkstring(L, 2),
+                                luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_schema_add_raw_property(lua_State *L) {
+  cai_lua_schema *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_schema(L, 1);
+  cai_error_init(&error);
+  rc = cai_tool_schema_add_raw_property(
+      self->ptr, luaL_checkstring(L, 2), luaL_optstring(L, 3, NULL),
+      luaL_checkstring(L, 4), lua_toboolean(L, 5), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_schema_strict(lua_State *L) {
+  cai_lua_schema *self;
+  self = cai_lua_check_schema(L, 1);
+  lua_pushboolean(L, cai_tool_schema_strict(self->ptr));
+  return 1;
+}
+
 static int cai_lua_model_info(lua_State *L) {
   const cai_model_info *info;
   const char *model;
@@ -2143,14 +3037,383 @@ static int cai_lua_model_info(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_conversation_from_id(lua_State *L) {
+  cai_conversation *conversation;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  rc = cai_conversation_from_id(luaL_checkstring(L, 1), &conversation, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_conversation(L, conversation);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_conversation_gc(lua_State *L) {
+  cai_lua_conversation *self;
+  self = (cai_lua_conversation *)luaL_checkudata(L, 1, CAI_LUA_CONVERSATION);
+  if (self->ptr != NULL) {
+    cai_conversation_destroy(self->ptr);
+    self->ptr = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_conversation_close(lua_State *L) {
+  return cai_lua_conversation_gc(L);
+}
+
+static int cai_lua_conversation_id(lua_State *L) {
+  cai_lua_conversation *self;
+  self = cai_lua_check_conversation(L, 1);
+  lua_pushstring(L, cai_conversation_id(self->ptr));
+  return 1;
+}
+
+static int cai_lua_conversation_object(lua_State *L) {
+  cai_lua_conversation *self;
+  self = cai_lua_check_conversation(L, 1);
+  lua_pushstring(L, cai_conversation_object(self->ptr));
+  return 1;
+}
+
+static int cai_lua_input_items_gc(lua_State *L) {
+  cai_lua_input_items *self;
+  self = (cai_lua_input_items *)luaL_checkudata(L, 1, CAI_LUA_INPUT_ITEMS);
+  if (self->ptr != NULL) {
+    cai_input_item_list_destroy(self->ptr);
+    self->ptr = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_input_items_close(lua_State *L) {
+  return cai_lua_input_items_gc(L);
+}
+
+static int cai_lua_input_items_summary(lua_State *L) {
+  cai_lua_input_items *self;
+  size_t i;
+  size_t count;
+  self = cai_lua_check_input_items(L, 1);
+  count = cai_input_item_list_count(self->ptr);
+  lua_newtable(L);
+  lua_pushinteger(L, (lua_Integer)count);
+  lua_setfield(L, -2, "count");
+  lua_pushboolean(L, cai_input_item_list_has_more(self->ptr));
+  lua_setfield(L, -2, "has_more");
+  lua_pushstring(L, cai_input_item_list_first_id(self->ptr));
+  lua_setfield(L, -2, "first_id");
+  lua_pushstring(L, cai_input_item_list_last_id(self->ptr));
+  lua_setfield(L, -2, "last_id");
+  lua_newtable(L);
+  for (i = 0u; i < count; i++) {
+    lua_newtable(L);
+    lua_pushstring(L, cai_input_item_id(self->ptr, i));
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, cai_input_item_type(self->ptr, i));
+    lua_setfield(L, -2, "type");
+    lua_pushstring(L, cai_input_item_role(self->ptr, i));
+    lua_setfield(L, -2, "role");
+    lua_rawseti(L, -2, (lua_Integer)i + 1);
+  }
+  lua_setfield(L, -2, "items");
+  return 1;
+}
+
+static int cai_lua_input_items_raw_json(lua_State *L) {
+  cai_lua_input_items *self;
+  self = cai_lua_check_input_items(L, 1);
+  lua_pushstring(L, cai_input_item_list_raw_json(self->ptr));
+  return 1;
+}
+
+static int cai_lua_conversation_item_gc(lua_State *L) {
+  cai_lua_conversation_item *self;
+  self = (cai_lua_conversation_item *)luaL_checkudata(
+      L, 1, CAI_LUA_CONVERSATION_ITEM);
+  if (self->ptr != NULL) {
+    cai_conversation_item_destroy(self->ptr);
+    self->ptr = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_conversation_item_close(lua_State *L) {
+  return cai_lua_conversation_item_gc(L);
+}
+
+static int cai_lua_conversation_item_summary(lua_State *L) {
+  cai_lua_conversation_item *self;
+  self = cai_lua_check_conversation_item(L, 1);
+  lua_newtable(L);
+  lua_pushstring(L, cai_conversation_item_id(self->ptr));
+  lua_setfield(L, -2, "id");
+  lua_pushstring(L, cai_conversation_item_type(self->ptr));
+  lua_setfield(L, -2, "type");
+  lua_pushstring(L, cai_conversation_item_role(self->ptr));
+  lua_setfield(L, -2, "role");
+  lua_pushstring(L, cai_conversation_item_raw_json(self->ptr));
+  lua_setfield(L, -2, "raw_json");
+  return 1;
+}
+
+static int cai_lua_params_new(lua_State *L) {
+  cai_response_create_params *params;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  rc = cai_response_create_params_new(&params, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_params(L, params);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_params_gc(lua_State *L) {
+  cai_lua_params *self;
+  self = (cai_lua_params *)luaL_checkudata(L, 1, CAI_LUA_PARAMS);
+  if (self->ptr != NULL) {
+    cai_response_create_params_destroy(self->ptr);
+    self->ptr = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_params_close(lua_State *L) { return cai_lua_params_gc(L); }
+
+static int cai_lua_params_set_model(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_model(self->ptr, luaL_checkstring(L, 2),
+                                            &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_instructions(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_instructions(
+      self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_previous_response_id(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_previous_response_id(
+      self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_conversation_id(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_conversation_id(
+      self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_reasoning(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_reasoning(
+      self->ptr, luaL_optstring(L, 2, NULL), luaL_optstring(L, 3, NULL),
+      &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_text(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_text(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_image_url(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_image_url(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_file_url(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_file_url(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_function_tool(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_function_tool(
+      self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3),
+      luaL_checkstring(L, 4), lua_toboolean(L, 5), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_function_call_output(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_function_call_output(
+      self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_conversation_params_new(lua_State *L) {
+  cai_conversation_items_params *params;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  rc = cai_conversation_items_params_new(&params, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_conversation_params(L, params);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_conversation_params_gc(lua_State *L) {
+  cai_lua_conversation_params *self;
+  self = (cai_lua_conversation_params *)luaL_checkudata(
+      L, 1, CAI_LUA_CONVERSATION_PARAMS);
+  if (self->ptr != NULL) {
+    cai_conversation_items_params_destroy(self->ptr);
+    self->ptr = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_conversation_params_close(lua_State *L) {
+  return cai_lua_conversation_params_gc(L);
+}
+
+static int cai_lua_conversation_params_add_text(lua_State *L) {
+  cai_lua_conversation_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_conversation_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_conversation_items_params_add_text(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_conversation_params_add_text_source(lua_State *L) {
+  cai_lua_conversation_params *self;
+  cai_source *source;
+  cai_lua_source_ctx source_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_conversation_params(L, 1);
+  source = NULL;
+  cai_error_init(&error);
+  rc = cai_lua_make_source(L, 3, &source_ctx, &source, &error);
+  if (rc == CAI_OK) {
+    rc = cai_conversation_items_params_add_text_source(
+        self->ptr, luaL_optstring(L, 2, "user"), source, &error);
+  }
+  if (source != NULL) {
+    cai_source_close(source);
+  }
+  if (source_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_conversation_params_add_image_url(lua_State *L) {
+  cai_lua_conversation_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_conversation_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_conversation_items_params_add_image_url(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_conversation_params_add_file_url(lua_State *L) {
+  cai_lua_conversation_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_conversation_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_conversation_items_params_add_file_url(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
+    {"create_response", cai_lua_client_create_response},
+    {"stream_response_text", cai_lua_client_stream_response_text},
+    {"retrieve_response", cai_lua_client_retrieve_response},
+    {"cancel_response", cai_lua_client_cancel_response},
+    {"delete_response", cai_lua_client_delete_response},
+    {"list_response_input_items", cai_lua_client_list_response_input_items},
+    {"create_conversation", cai_lua_client_create_conversation},
+    {"retrieve_conversation", cai_lua_client_retrieve_conversation},
+    {"update_conversation_metadata",
+     cai_lua_client_update_conversation_metadata},
+    {"delete_conversation", cai_lua_client_delete_conversation},
+    {"list_conversation_items", cai_lua_client_list_conversation_items},
+    {"create_conversation_items", cai_lua_client_create_conversation_items},
+    {"retrieve_conversation_item", cai_lua_client_retrieve_conversation_item},
+    {"delete_conversation_item", cai_lua_client_delete_conversation_item},
     {"close", cai_lua_client_close},
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_agent_methods[] = {
     {"new_session", cai_lua_agent_new_session},
+    {"new_conversation_session", cai_lua_agent_new_conversation_session},
+    {"new_session_for_conversation",
+     cai_lua_agent_new_session_for_conversation},
     {"add_user_text", cai_lua_agent_add_user_text},
+    {"add_user_text_source", cai_lua_agent_add_user_text_source},
     {"add_user_image_url", cai_lua_agent_add_user_image_url},
     {"add_user_file_path", cai_lua_agent_add_user_file_path},
     {"run", cai_lua_agent_run},
@@ -2169,14 +3432,27 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_session_methods[] = {
+    {"set_previous_response_id", cai_lua_session_set_previous_response_id},
+    {"set_conversation_id", cai_lua_session_set_conversation_id},
+    {"set_conversation", cai_lua_session_set_conversation},
     {"add_user_text", cai_lua_session_add_user_text},
+    {"add_user_text_source", cai_lua_session_add_user_text_source},
+    {"add_user_image_url", cai_lua_session_add_user_image_url},
+    {"add_user_file_path", cai_lua_session_add_user_file_path},
+    {"add_function_call_output", cai_lua_session_add_function_call_output},
     {"run", cai_lua_session_run},
     {"run_auto", cai_lua_session_run_auto},
     {"run_output", cai_lua_session_run_output},
+    {"run_auto_output", cai_lua_session_run_auto_output},
     {"send_text", cai_lua_session_send_text},
     {"stream", cai_lua_session_stream},
     {"stream_text", cai_lua_session_stream_text},
     {"last_usage", cai_lua_session_last_usage},
+    {"context", cai_lua_session_context},
+    {"export_state", cai_lua_session_export_state},
+    {"import_state", cai_lua_session_import_state},
+    {"export_history", cai_lua_session_export_history},
+    {"import_history", cai_lua_session_import_history},
     {"save_state_path", cai_lua_session_save_state_path},
     {"load_state_path", cai_lua_session_load_state_path},
     {"ids", cai_lua_session_ids},
@@ -2185,15 +3461,23 @@ static const luaL_Reg cai_lua_session_methods[] = {
 
 static const luaL_Reg cai_lua_response_methods[] = {
     {"id", cai_lua_response_id},
+    {"status", cai_lua_response_status},
+    {"model", cai_lua_response_model},
     {"output_text", cai_lua_response_output_text},
+    {"refusal", cai_lua_response_refusal},
     {"raw_json", cai_lua_response_raw_json},
     {"usage", cai_lua_response_usage},
+    {"tool_calls", cai_lua_response_tool_calls},
+    {"output_items", cai_lua_response_output_items},
     {"summary", cai_lua_response_summary},
     {"close", cai_lua_response_close},
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_output_methods[] = {
     {"text", cai_lua_output_text},
+    {"refusal", cai_lua_output_refusal},
+    {"raw_json", cai_lua_output_raw_json},
+    {"write_text", cai_lua_output_write_text},
     {"close", cai_lua_output_close},
     {NULL, NULL}};
 
@@ -2212,12 +3496,56 @@ static const luaL_Reg cai_lua_mcp_methods[] = {
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_schema_methods[] = {
+    {"set_strict", cai_lua_schema_set_strict},
     {"string", cai_lua_schema_add_string},
     {"integer", cai_lua_schema_add_integer},
     {"number", cai_lua_schema_add_number},
     {"boolean", cai_lua_schema_add_boolean},
+    {"string_enum", cai_lua_schema_add_string_enum},
+    {"describe", cai_lua_schema_describe},
+    {"raw_property", cai_lua_schema_add_raw_property},
     {"json", cai_lua_schema_json},
+    {"strict", cai_lua_schema_strict},
     {"close", cai_lua_schema_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_params_methods[] = {
+    {"set_model", cai_lua_params_set_model},
+    {"set_instructions", cai_lua_params_set_instructions},
+    {"set_previous_response_id", cai_lua_params_set_previous_response_id},
+    {"set_conversation_id", cai_lua_params_set_conversation_id},
+    {"set_reasoning", cai_lua_params_set_reasoning},
+    {"add_text", cai_lua_params_add_text},
+    {"add_image_url", cai_lua_params_add_image_url},
+    {"add_file_url", cai_lua_params_add_file_url},
+    {"add_function_tool", cai_lua_params_add_function_tool},
+    {"add_function_call_output", cai_lua_params_add_function_call_output},
+    {"close", cai_lua_params_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_conversation_methods[] = {
+    {"id", cai_lua_conversation_id},
+    {"object", cai_lua_conversation_object},
+    {"close", cai_lua_conversation_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_input_items_methods[] = {
+    {"summary", cai_lua_input_items_summary},
+    {"raw_json", cai_lua_input_items_raw_json},
+    {"close", cai_lua_input_items_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_conversation_item_methods[] = {
+    {"summary", cai_lua_conversation_item_summary},
+    {"close", cai_lua_conversation_item_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_conversation_params_methods[] = {
+    {"add_text", cai_lua_conversation_params_add_text},
+    {"add_text_source", cai_lua_conversation_params_add_text_source},
+    {"add_image_url", cai_lua_conversation_params_add_image_url},
+    {"add_file_url", cai_lua_conversation_params_add_file_url},
+    {"close", cai_lua_conversation_params_close},
     {NULL, NULL}};
 
 static void cai_lua_metatable(lua_State *L, const char *name,
@@ -2246,6 +3574,18 @@ int luaopen_cai(lua_State *L) {
   cai_lua_metatable(L, CAI_LUA_MCP, cai_lua_mcp_methods, cai_lua_mcp_gc);
   cai_lua_metatable(L, CAI_LUA_SCHEMA, cai_lua_schema_methods,
                     cai_lua_schema_gc);
+  cai_lua_metatable(L, CAI_LUA_PARAMS, cai_lua_params_methods,
+                    cai_lua_params_gc);
+  cai_lua_metatable(L, CAI_LUA_CONVERSATION, cai_lua_conversation_methods,
+                    cai_lua_conversation_gc);
+  cai_lua_metatable(L, CAI_LUA_INPUT_ITEMS, cai_lua_input_items_methods,
+                    cai_lua_input_items_gc);
+  cai_lua_metatable(L, CAI_LUA_CONVERSATION_ITEM,
+                    cai_lua_conversation_item_methods,
+                    cai_lua_conversation_item_gc);
+  cai_lua_metatable(L, CAI_LUA_CONVERSATION_PARAMS,
+                    cai_lua_conversation_params_methods,
+                    cai_lua_conversation_params_gc);
   lua_newtable(L);
   lua_pushcfunction(L, cai_lua_open);
   lua_setfield(L, -2, "open");
@@ -2255,6 +3595,12 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "mcp_handler");
   lua_pushcfunction(L, cai_lua_schema_new);
   lua_setfield(L, -2, "tool_schema");
+  lua_pushcfunction(L, cai_lua_params_new);
+  lua_setfield(L, -2, "response_params");
+  lua_pushcfunction(L, cai_lua_conversation_params_new);
+  lua_setfield(L, -2, "conversation_items_params");
+  lua_pushcfunction(L, cai_lua_conversation_from_id);
+  lua_setfield(L, -2, "conversation_from_id");
   lua_pushcfunction(L, cai_lua_model_info);
   lua_setfield(L, -2, "model_info");
   lua_pushstring(L, CAI_SESSION_CONTINUITY_SERVER == 0 ? "server" : "server");

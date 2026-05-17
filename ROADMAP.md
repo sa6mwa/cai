@@ -43,7 +43,8 @@ Implemented:
   response examples.
 - Lua 5.5 binding with client/agent/session/response/output handles, streaming
   sinks, raw Lua callback tools, public tool presets, MCP handler exposure,
-  offline tests, and local LuaRock build/test targets.
+  low-level Responses and Conversations handles, offline tests, Lua examples,
+  and local/release LuaRock build targets.
 - Release matrix packaging for Linux x86_64/aarch64/armhf with GNU and musl
   variants plus Darwin arm64 when osxcross is available.
 - Source archive packaging.
