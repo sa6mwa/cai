@@ -137,6 +137,24 @@ static int cai_tool_schema_append_comma(cai_json_builder *builder, size_t count,
   return cai_json_builder_lit(builder, ",", error);
 }
 
+static int cai_tool_schema_append_property_json(
+    cai_json_builder *builder, const cai_tool_schema_property *prop,
+    int strict, cai_error *error) {
+  int rc;
+
+  if (strict && !prop->required) {
+    rc = cai_json_builder_lit(builder, "{\"anyOf\":[", error);
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, prop->property_json, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_json_builder_lit(builder, ",{\"type\":\"null\"}]}", error);
+    }
+    return rc;
+  }
+  return cai_json_builder_lit(builder, prop->property_json, error);
+}
+
 static void cai_tool_schema_property_cleanup(cai_tool_schema_property *prop) {
   if (prop == NULL) {
     return;
@@ -590,8 +608,8 @@ static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
       rc = cai_json_builder_lit(&builder, ":", error);
     }
     if (rc == CAI_OK) {
-      rc = cai_json_builder_lit(&builder, impl->properties[i].property_json,
-                                error);
+      rc = cai_tool_schema_append_property_json(
+          &builder, &impl->properties[i], impl->strict, error);
     }
   }
   if (rc == CAI_OK) {
@@ -599,7 +617,7 @@ static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
   }
   for (i = 0U, required_count = 0U; rc == CAI_OK && i < impl->property_count;
        i++) {
-    if (!impl->properties[i].required) {
+    if (!impl->strict && !impl->properties[i].required) {
       continue;
     }
     rc = cai_tool_schema_append_comma(&builder, required_count, error);
@@ -1550,7 +1568,7 @@ int cai_tool_schema_set_strict(cai_tool_schema *schema, int strict,
     return cai_set_error(error, CAI_ERR_INVALID, "tool schema is closed");
   }
   impl->strict = strict ? 1 : 0;
-  return CAI_OK;
+  return cai_tool_schema_rebuild(schema, error);
 }
 
 int cai_tool_schema_add_string(cai_tool_schema *schema, const char *name,

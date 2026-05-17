@@ -1879,13 +1879,28 @@ static void test_tool_registry(test_state *state) {
   }
   if (cai_tool_schema_json(tool_schema) == NULL ||
       strstr(cai_tool_schema_json(tool_schema), "\"city\"") == NULL ||
-      strstr(cai_tool_schema_json(tool_schema), "\"required\":[\"city\"]") ==
-          NULL ||
+      strstr(cai_tool_schema_json(tool_schema),
+             "\"required\":[\"city\",\"days\",\"units\"]") == NULL ||
+      strstr(cai_tool_schema_json(tool_schema),
+             "\"days\":{\"anyOf\":[{\"type\":\"integer\"") == NULL ||
       strstr(cai_tool_schema_json(tool_schema), "\"enum\":[\"metric\","
                                                 "\"imperial\"]") == NULL ||
+      strstr(cai_tool_schema_json(tool_schema), "{\"type\":\"null\"}") ==
+          NULL ||
       cai_tool_schema_strict(tool_schema) != 1) {
     test_fail(state, "tool_schema_json", "schema builder JSON is incomplete");
   }
+  expect_int(state, "tool_schema_non_strict",
+             tool_schema->set_strict(tool_schema, 0, &error), CAI_OK);
+  if (strstr(cai_tool_schema_json(tool_schema), "\"required\":[\"city\"]") ==
+          NULL ||
+      strstr(cai_tool_schema_json(tool_schema), "\"anyOf\"") != NULL ||
+      cai_tool_schema_strict(tool_schema) != 0) {
+    test_fail(state, "tool_schema_non_strict_json",
+              "non-strict schema should preserve optional properties");
+  }
+  expect_int(state, "tool_schema_strict_restore",
+             tool_schema->set_strict(tool_schema, 1, &error), CAI_OK);
   expect_int(state, "tool_schema_bad_raw_json",
              tool_schema->raw_property(tool_schema, "bad", NULL,
                                        "{\"type\":\"string\"", 0, &error),
@@ -1898,10 +1913,10 @@ static void test_tool_registry(test_state *state) {
   if (cai_tool_schema_json(map_schema) == NULL ||
       strstr(cai_tool_schema_json(map_schema), "\"city\":{\"type\":"
                                              "\"string\"}") == NULL ||
-      strstr(cai_tool_schema_json(map_schema), "\"days\":{\"type\":"
-                                             "\"integer\"}") == NULL ||
-      strstr(cai_tool_schema_json(map_schema), "\"required\":[\"city\"]") ==
-          NULL) {
+      strstr(cai_tool_schema_json(map_schema),
+             "\"days\":{\"anyOf\":[{\"type\":\"integer\"") == NULL ||
+      strstr(cai_tool_schema_json(map_schema),
+             "\"required\":[\"city\",\"days\"]") == NULL) {
     test_fail(state, "tool_schema_from_map_json",
               "map-derived schema JSON is incomplete");
   }
@@ -5558,8 +5573,8 @@ static void test_agent_tool_declarations(test_state *state) {
       strstr(cai_tool_schema_json(tool_schema),
              "\"city\":{\"type\":\"string\",\"description\":\"City name\"}") ==
           NULL ||
-      strstr(cai_tool_schema_json(tool_schema), "\"required\":[\"city\"]") ==
-          NULL) {
+      strstr(cai_tool_schema_json(tool_schema),
+             "\"required\":[\"city\",\"days\"]") == NULL) {
     test_fail(state, "agent_tool_schema_describe",
               "schema description enrichment is incomplete");
   }
@@ -6162,7 +6177,13 @@ static void test_todo_tool(test_state *state) {
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "Opaque item ID") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
-             "\"enum\":[\"todo\",\"in_process\"]") == NULL) {
+             "\"enum\":[\"todo\",\"in_process\"]") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "\"required\":[\"operation\",\"board_id\",\"board_name\","
+             "\"item_id\",\"title\",\"description\",\"status\","
+             "\"wip_limit\"]") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "\"board_id\":{\"anyOf\"") == NULL) {
     test_fail(state, "todo_schema_usage",
               "todo tool schema does not provide agent usage guidance");
   }

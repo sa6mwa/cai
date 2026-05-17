@@ -36,6 +36,7 @@ RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VER
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
+LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
 .PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
@@ -105,7 +106,7 @@ $(LUA_LONEJSON_ROCK_STAMP):
 	mkdir -p "$(LUA_ROCK_TREE)"
 	luarocks install --tree "$(LUA_ROCK_TREE)" "$(LONEJSON_LUA_ROCK_URL)"
 
-$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh
+$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh $(LUA_ROCK_NATIVE_INPUTS)
 	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
 	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
 
