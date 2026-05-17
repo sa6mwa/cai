@@ -127,6 +127,18 @@ OPENAI_API_KEY=... ./build/debug/cai_example_searxng_search "OpenAI Responses AP
 CAI_SEARXNG_ENGINE=wikipedia OPENAI_API_KEY=... ./build/debug/cai_example_searxng_search "OpenAI"
 ```
 
+## Lua Basic
+
+Build the local LuaRock into `build/luarocks`, then run a Lua 5.5 example
+against the same C SDK facade:
+
+```sh
+make lua-rock
+eval "$(luarocks path --tree build/luarocks)"
+LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
+OPENAI_API_KEY=... lua examples/lua-basic/main.lua
+```
+
 ## Terminal Chat
 
 Run a small terminal chat agent that reads prompts from stdin, keeps context

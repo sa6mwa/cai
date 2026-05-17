@@ -10,8 +10,15 @@ COMPOSE := $(shell if command -v nerdctl >/dev/null 2>&1; then printf 'nerdctl c
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
+RELEASE_VERSION := $(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/debug/generated/include/cai/version.h 2>/dev/null || printf '0.0.0')
+LUA_ROCK_TREE := build/luarocks
+LUA_ROCKSPEC := $(LUA_ROCK_TREE)/cai-$(RELEASE_VERSION)-1.rockspec
+LUA_ROCK_STAMP := $(LUA_ROCK_TREE)/.installed.stamp
+LUA_ROCK_BUILD_LOCK := $(LUA_ROCK_TREE)/.build.lock
+LUA_ROCK_EXTRA_CFLAGS ?= -O3 -DNDEBUG
+LUA_ROCK_PREFIX := $(LUA_ROCK_TREE)/cai-prefix
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-test package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -21,6 +28,8 @@ help:
 		'make test-release Build and run the release unit tests.' \
 		'make test-integration  Run opt-in OpenAI API integration tests.' \
 		'make asan         Build and run the ASan/UBSan unit tests.' \
+		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
+		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
 		'make package      Build release and write dist/cai-*.tar.gz.' \
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
@@ -66,6 +75,24 @@ asan:
 	$(CTEST) --preset asan
 
 test-asan: asan
+
+$(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | build-debug
+	mkdir -p "$(LUA_ROCK_TREE)"
+	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(LUA_ROCKSPEC)" "git+file://$(CURDIR)" "" "$$lib_ext"
+
+$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) lua/cai_lua.c scripts/build_lua_rock.sh
+	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
+	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CURDIR)/.cache/deps/liblonejson-0.16.0-x86_64-linux-gnu/lib/pkgconfig:$(CURDIR)/.cache/deps/libpslog-0.4.1-x86_64-linux-gnu/lib/pkgconfig:$(CURDIR)/.cache/deps/c.pkt.systems-0.1.0-x86_64-linux-gnu/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
+
+lua-rock: $(LUA_ROCK_STAMP)
+
+lua-test: lua-rock
+	asan_lib="$$(cc -print-file-name=libasan.so 2>/dev/null || true)"; \
+	if [[ ! -f "$$asan_lib" ]]; then asan_lib=""; fi; \
+	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
+	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CURDIR)/.cache/deps/liblonejson-0.16.0-x86_64-linux-gnu/lib:$(CURDIR)/.cache/deps/c.pkt.systems-0.1.0-x86_64-linux-gnu/lib:$${LD_LIBRARY_PATH:-}" \
+	LD_PRELOAD="$${asan_lib}$${LD_PRELOAD:+:$$LD_PRELOAD}" \
+	lua tests/lua/test_lua.lua
 
 package: build-release
 	bash ./scripts/package_release_matrix.sh

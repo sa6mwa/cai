@@ -21,12 +21,13 @@ Responses path.
 
 ## Scope
 
-The first prerelease target is the C SDK: OpenAI Responses, Conversations,
-HTTP/SSE streaming, agent/session DX, local tool callbacks, MCP tool serving,
-examples, and release packaging.
+The first prerelease target is the C SDK plus the Lua 5.5 facade: OpenAI
+Responses, Conversations, HTTP/SSE streaming, agent/session DX, local tool
+callbacks, MCP tool serving, examples, LuaRock packaging, and release
+packaging.
 
-Lua bindings and WebSocket transports are not part of the first C prerelease.
-They are tracked in [ROADMAP.md](ROADMAP.md).
+WebSocket transports are not part of the first prerelease. They are tracked in
+[ROADMAP.md](ROADMAP.md).
 
 ## Status
 
@@ -78,6 +79,24 @@ shape, but may still change before the initial tag.
   host-owned logging.
 - Large inputs and outputs should stream through lonejson spooling/source/sink
   paths rather than being materialized in memory.
+
+## Lua Binding
+
+The Lua binding targets Lua 5.5 and is exposed as `require("cai")`. It wraps
+the public C facade: clients, agents, sessions, responses/outputs, streaming
+sinks, tool registries, tool presets, and the MCP Streamable HTTP handler.
+
+Build and run the local LuaRock test:
+
+```sh
+make lua-test
+```
+
+The LuaRock links against an installed `libcai` discovered through
+`pkg-config cai`; the local test target installs the current debug build into
+`build/luarocks/cai-prefix` first. Lua projects can use the rock as a facade
+over the C library, while Vectis can still call the C API directly where that
+fits its performance and integration needs better.
 - Non-streamed JSON responses are capped by `json_response_limit_bytes`
   (default 1 MiB). Tool output can spill to disk with
   `tool_output_memory_limit` and can be hard-capped per auto-run with

@@ -17,6 +17,7 @@ option(CAI_BUILD_SHARED "Build the shared cai library." ON)
 option(CAI_BUILD_TESTS "Build cai unit tests." ON)
 option(CAI_BUILD_INTEGRATION_TESTS "Build integration tests that hit OpenAI when run." OFF)
 option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
+option(CAI_BUILD_LUA "Build the Lua 5.5 binding and Lua tests." OFF)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
@@ -312,6 +313,33 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND TARGET CURL::libcurl)
 endif()
 find_package(Threads REQUIRED)
 
+if(CAI_BUILD_LUA)
+  find_program(CAI_LUA_EXECUTABLE NAMES lua lua5.5 REQUIRED)
+  find_path(CAI_LUA_INCLUDE_DIR lua.h
+    PATHS /usr/local/include /usr/include /opt/homebrew/include)
+  find_library(CAI_LUA_LIBRARY NAMES lua lua5.5
+    PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
+          /opt/homebrew/lib)
+  if(NOT CAI_LUA_INCLUDE_DIR OR NOT CAI_LUA_LIBRARY)
+    message(FATAL_ERROR
+      "CAI_BUILD_LUA requires Lua 5.5 headers and library. Set "
+      "CAI_BUILD_LUA=OFF to skip the binding.")
+  endif()
+  set(CAI_LUA_TEST_ENV
+      "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua/?.so;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib;;")
+  if(CMAKE_C_FLAGS_DEBUG MATCHES "fsanitize=address" AND
+     CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND
+     CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    execute_process(
+      COMMAND "${CMAKE_C_COMPILER}" -print-file-name=libasan.so
+      OUTPUT_VARIABLE CAI_ASAN_LIBRARY
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(CAI_ASAN_LIBRARY AND EXISTS "${CAI_ASAN_LIBRARY}")
+      list(APPEND CAI_LUA_TEST_ENV "LD_PRELOAD=${CAI_ASAN_LIBRARY}")
+    endif()
+  endif()
+endif()
+
 function(cai_configure_c_target target)
   get_target_property(_cai_target_type ${target} TYPE)
   set_target_properties(${target} PROPERTIES
@@ -507,6 +535,30 @@ if(CAI_BUILD_EXAMPLES)
   endforeach()
 endif()
 
+if(CAI_BUILD_LUA)
+  add_library(cai_lua MODULE lua/cai_lua.c)
+  set_target_properties(cai_lua PROPERTIES
+    OUTPUT_NAME cai
+    PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lua")
+  target_include_directories(cai_lua PRIVATE
+    "${CAI_PUBLIC_INCLUDE_DIR}"
+    "${CAI_GENERATED_INCLUDE_DIR}"
+    "${CAI_LONEJSON_INCLUDE_DIR}"
+    "${CAI_PSLOG_INCLUDE_DIR}"
+    "${CAI_LUA_INCLUDE_DIR}")
+  target_link_libraries(cai_lua PRIVATE cai_static CURL::libcurl
+    Threads::Threads ${CAI_LONEJSON_LINK})
+  if(APPLE)
+    target_link_options(cai_lua PRIVATE "-undefined" "dynamic_lookup")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(cai_lua PRIVATE "-Wl,--allow-shlib-undefined")
+  else()
+    target_link_libraries(cai_lua PRIVATE "${CAI_LUA_LIBRARY}")
+  endif()
+  cai_configure_c_target(cai_lua)
+endif()
+
 if(CAI_BUILD_TESTS)
   enable_testing()
   add_executable(cai_tests tests/test_main.c)
@@ -560,6 +612,15 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
   endif()
 
+  if(CAI_BUILD_LUA)
+    add_test(NAME cai_lua_tests
+      COMMAND "${CAI_LUA_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/test_lua.lua")
+    set_tests_properties(cai_lua_tests PROPERTIES
+      ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  endif()
+
   if(CAI_BUILD_INTEGRATION_TESTS)
     add_executable(cai_integration_tests tests/integration_main.c)
     target_include_directories(cai_integration_tests PRIVATE
@@ -609,6 +670,7 @@ find_program(CLANG_FORMAT_BIN NAMES clang-format)
 file(GLOB_RECURSE CAI_FORMAT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lua/*.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.c"

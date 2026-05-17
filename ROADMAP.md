@@ -7,8 +7,8 @@ build documentation lives in [README.md](README.md).
 ## Current Prerelease Baseline
 
 cai is a C89/POSIX SDK-style client for OpenAI-compatible Responses workflows.
-The first prerelease target is the C SDK and examples, not Lua or WebSocket
-transports.
+The first prerelease target is the C SDK, Lua 5.5 facade, and examples, not
+WebSocket transports.
 
 Implemented:
 
@@ -41,6 +41,9 @@ Implemented:
 - Terminal chat, SearXNG, SMHI weather, Mike Mind, session-state,
   history-export, conversation-handle, OpenRouter, streaming, and basic
   response examples.
+- Lua 5.5 binding with client/agent/session/response/output handles, streaming
+  sinks, raw Lua callback tools, public tool presets, MCP handler exposure,
+  offline tests, and local LuaRock build/test targets.
 - Release matrix packaging for Linux x86_64/aarch64/armhf with GNU and musl
   variants plus Darwin arm64 when osxcross is available.
 - Source archive packaging.
@@ -78,40 +81,6 @@ Before tagging the first C SDK prerelease:
   metadata, and docs. Dependency headers/libraries stay external.
 - Verify release builds do not contain sanitizer artifacts, host paths, or
   non-relocatable runpaths.
-
-## Parked: Lua Binding
-
-Status: next major product feature after the C SDK prerelease.
-
-Goal:
-
-- Wrap the public C SDK surface, not internal HTTP/SSE transport details.
-- Support client, agent, session, response, streaming sinks, and tool
-  registration.
-- Keep logger injection C-owned. Lua should not need to hop C/Lua boundaries
-  for pslog.
-- Package a LuaRock and source rock under `dist/`, following the release style
-  used by the neighboring libraries.
-
-Initial scope:
-
-- Lua module under `lua/`.
-- Lua-friendly error surface.
-- Lua wrappers for:
-  - client config/open/close,
-  - agent config/new/destroy,
-  - session send/stream/state save/restore,
-  - basic response output/usage access,
-  - registering Lua callbacks as cai tools.
-- Lua tests against the offline mock paths first.
-- Optional live integration examples only after the C surface remains stable.
-
-Open design points:
-
-- Exact Lua object model and naming.
-- How much of `lonejson` should be exposed directly to Lua callers versus
-  wrapped behind cai-specific helpers.
-- LuaRock dependency declarations for cai/lonejson/libpslog binary artifacts.
 
 ## Parked: Responses WebSocket
 

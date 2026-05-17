@@ -17,6 +17,7 @@
         "CAI_BUILD_SHARED": "ON",
         "CAI_BUILD_TESTS": "ON",
         "CAI_BUILD_INTEGRATION_TESTS": "OFF",
+        "CAI_BUILD_LUA": "ON",
         "CAI_ENABLE_COVERAGE": "OFF",
         "CAI_INSTALL": "ON"
       }
@@ -34,6 +35,7 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CAI_BUILD_LUA": "OFF",
         "CAI_DIST_DIR": "${sourceDir}/dist",
         "CAI_DEPENDENCY_MODE": "cpkt",
         "CAI_TARGET_ID": "x86_64-linux-gnu"
