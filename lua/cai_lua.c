@@ -3640,6 +3640,22 @@ static int cai_lua_mcp_handle_http(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   if (sink == NULL) {
+    cai_source_close(source);
+    if (source_ctx.callback_ref != 0) {
+      luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+    }
+    if (headers_ctx.get_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, headers_ctx.get_ref);
+    }
+    if (headers_ctx.set_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, headers_ctx.set_ref);
+    }
+    if (headers_ctx.request_table_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, headers_ctx.request_table_ref);
+    }
+    if (headers_ctx.response_table_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, headers_ctx.response_table_ref);
+    }
     luaL_error(L, "mcp handle_http requires a streaming write callback");
   }
   response.body = sink;
