@@ -140,13 +140,16 @@ OPENAI_API_KEY=... lua examples/lua-basic/main.lua
 ```
 
 Lua examples use `require("cai")` and the LuaRock module built by
-`make lua-rock`.
+`make lua-rock`. The rock depends on the `lonejson` Lua rock; `make lua-rock`
+installs that dependency into `build/luarocks` when needed.
 
 ## Lua Terminal Chat
 
 Lua port of the terminal chat agent. It streams reasoning and response text,
 prints streamed tool input/output, prints usage, registers SearXNG search, and
-registers the persisted `todo_kanban` tool preset.
+registers the persisted `todo_kanban` tool preset. The Lua binding also exposes
+spooled large-value methods such as `add_user_text_spooled()` and
+`register_raw_spooled_tool()` for lonejson-backed payloads.
 
 ```sh
 make lua-rock

@@ -643,6 +643,15 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_todo_workflow PROPERTIES
       LABELS "integration;offline"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(CAI_BUILD_LUA)
+      add_test(NAME cai_lua_tool_stream_e2e
+        COMMAND "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_tool_stream.lua")
+      set_tests_properties(cai_lua_tool_stream_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
   endif()
 endif()
 

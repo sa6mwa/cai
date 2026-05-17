@@ -199,6 +199,7 @@ typedef struct cai_response_request_doc {
   const char *previous_response_id;
   const char *conversation;
   const char *prompt_cache_key;
+  const char *tool_choice;
   long long max_output_tokens;
   int has_max_output_tokens;
   cai_response_request_reasoning_doc reasoning;
@@ -560,6 +561,8 @@ static const lonejson_field cai_response_request_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_response_request_doc,
                                           prompt_cache_key,
                                           "prompt_cache_key"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_response_request_doc,
+                                          tool_choice, "tool_choice"),
     LONEJSON_FIELD_I64_PRESENT(cai_response_request_doc, max_output_tokens,
                                has_max_output_tokens, "max_output_tokens"),
     LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_response_request_doc, reasoning,
@@ -1255,6 +1258,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->instructions = NULL;
   params->previous_response_id = NULL;
   params->prompt_cache_key = NULL;
+  params->tool_choice = NULL;
   params->reasoning_effort = NULL;
   params->reasoning_summary = NULL;
   params->text_format_type = NULL;
@@ -1286,6 +1290,7 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->instructions);
   cai_free_mem(&params->allocator, params->previous_response_id);
   cai_free_mem(&params->allocator, params->prompt_cache_key);
+  cai_free_mem(&params->allocator, params->tool_choice);
   cai_free_mem(&params->allocator, params->reasoning_effort);
   cai_free_mem(&params->allocator, params->reasoning_summary);
   cai_free_mem(&params->allocator, params->text_format_type);
@@ -1374,6 +1379,24 @@ int cai_response_create_params_set_prompt_cache_key(
   }
   return cai_replace_string(&params->allocator, &params->prompt_cache_key,
                             prompt_cache_key, error);
+}
+
+int cai_response_create_params_set_tool_choice(
+    cai_response_create_params *params, const char *tool_choice,
+    cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (tool_choice != NULL && tool_choice[0] != '\0' &&
+      strcmp(tool_choice, CAI_TOOL_CHOICE_AUTO) != 0 &&
+      strcmp(tool_choice, CAI_TOOL_CHOICE_NONE) != 0 &&
+      strcmp(tool_choice, CAI_TOOL_CHOICE_REQUIRED) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool choice must be auto, none, or required");
+  }
+  return cai_replace_string(&params->allocator, &params->tool_choice,
+                            tool_choice, error);
 }
 
 int cai_response_create_params_set_max_output_tokens(
@@ -2002,6 +2025,10 @@ int cai_response_create_params_clone(const cai_response_create_params *params,
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_prompt_cache_key(
         clone, params->prompt_cache_key, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_tool_choice(clone, params->tool_choice,
+                                                    error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_reasoning(
@@ -3058,6 +3085,7 @@ static int cai_response_request_state_prepare(
   state->doc.previous_response_id = params->previous_response_id;
   state->doc.conversation = params->conversation_id;
   state->doc.prompt_cache_key = params->prompt_cache_key;
+  state->doc.tool_choice = params->tool_choice;
   if (params->max_output_tokens > 0) {
     state->doc.max_output_tokens = params->max_output_tokens;
     state->doc.has_max_output_tokens = 1;

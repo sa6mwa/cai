@@ -12,7 +12,7 @@ local client = assert_ok(cai.open())
 local agent = assert_ok(client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   instructions = "You are a terse Lua session-state example assistant.",
-  reasoning_effort = "minimal",
+  reasoning_effort = cai.REASONING_EFFORT_MINIMAL,
 }))
 
 local session = assert_ok(agent:new_session())

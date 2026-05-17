@@ -92,11 +92,18 @@ Build and run the local LuaRock test:
 make lua-test
 ```
 
-The LuaRock links against an installed `libcai` discovered through
-`pkg-config cai`; the local test target installs the current debug build into
-`build/luarocks/cai-prefix` first. Lua projects can use the rock as a facade
-over the C library, while Vectis can still call the C API directly where that
-fits its performance and integration needs better.
+The LuaRock depends on the `lonejson` Lua rock and links against an installed
+`libcai` discovered through `pkg-config cai`; the local test target installs
+the current debug build into `build/luarocks/cai-prefix` first. Lua projects
+can use the rock as a facade over the C library, while Vectis can still call
+the C API directly where that fits its performance and integration needs
+better.
+
+Lua APIs that accept large text or file payloads have `*_spooled` variants.
+Those accept strings, chunk-producing callbacks, or lonejson-style spooled
+readers with `rewind()` and `read(n)`. Lua raw spooled tool callbacks receive
+that same reader shape for arguments, and may return a chunk-producing callback
+or spooled reader to stream JSON output without building the full value first.
 
 The Lua examples include a basic streaming agent, a terminal chatbot with
 SearXNG and todo/kanban tools, streamed tool output, low-level conversation

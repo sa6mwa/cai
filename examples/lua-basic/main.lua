@@ -8,7 +8,7 @@ end
 local agent = assert(client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   instructions = "You are a concise Lua example assistant.",
-  reasoning_effort = "minimal",
+  reasoning_effort = cai.REASONING_EFFORT_MINIMAL,
 }))
 
 agent:add_user_text("Say hello from cai Lua in one short sentence.")

@@ -204,6 +204,7 @@ void cai_agent_config_init(cai_agent_config *config) {
   config->model = NULL;
   config->developer_instructions = NULL;
   config->prompt_cache_key = NULL;
+  config->tool_choice = NULL;
   config->reasoning_effort = NULL;
   config->reasoning_summary = NULL;
   config->text_format_name = NULL;
@@ -288,6 +289,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       cai_strdup(&client_impl->allocator, config->developer_instructions);
   impl->prompt_cache_key =
       cai_strdup(&client_impl->allocator, config->prompt_cache_key);
+  impl->tool_choice = cai_strdup(&client_impl->allocator, config->tool_choice);
   impl->reasoning_effort =
       cai_strdup(&client_impl->allocator, config->reasoning_effort);
   impl->reasoning_summary =
@@ -359,6 +361,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       (config->developer_instructions != NULL &&
        impl->developer_instructions == NULL) ||
       (config->prompt_cache_key != NULL && impl->prompt_cache_key == NULL) ||
+      (config->tool_choice != NULL && impl->tool_choice == NULL) ||
       (config->reasoning_effort != NULL && impl->reasoning_effort == NULL) ||
       (config->reasoning_summary != NULL && impl->reasoning_summary == NULL) ||
       (config->text_format_name != NULL && impl->text_format_name == NULL) ||
@@ -412,6 +415,7 @@ void cai_agent_destroy(cai_agent *agent) {
   cai_free_mem(allocator, impl->model);
   cai_free_mem(allocator, impl->developer_instructions);
   cai_free_mem(allocator, impl->prompt_cache_key);
+  cai_free_mem(allocator, impl->tool_choice);
   cai_free_mem(allocator, impl->reasoning_effort);
   cai_free_mem(allocator, impl->reasoning_summary);
   cai_free_mem(allocator, impl->text_format_name);
@@ -2722,6 +2726,10 @@ static int cai_session_init_response_params(cai_session *session,
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->prompt_cache_key != NULL) {
     rc = cai_response_create_params_set_prompt_cache_key(
         params, CAI_SESSION_AGENT_IMPL(session)->prompt_cache_key, error);
+  }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->tool_choice != NULL) {
+    rc = cai_response_create_params_set_tool_choice(
+        params, CAI_SESSION_AGENT_IMPL(session)->tool_choice, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->max_output_tokens > 0) {
     rc = cai_response_create_params_set_max_output_tokens(

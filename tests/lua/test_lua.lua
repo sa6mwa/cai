@@ -15,11 +15,37 @@ local function assert_ok(value, err, label)
   return value
 end
 
+local function spool_text(text, chunk_size)
+  return {
+    pos = 1,
+    rewind = function(self)
+      self.pos = 1
+      return true
+    end,
+    read = function(self, n)
+      local size = chunk_size or n or 4096
+      local first = self.pos
+      local last
+      if first > #text then
+        return nil
+      end
+      last = first + size - 1
+      self.pos = last + 1
+      return text:sub(first, last)
+    end,
+  }
+end
+
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.mcp_handler) == "function")
 assert(type(cai.tool_schema) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
+assert_eq(cai.TOOL_CHOICE_AUTO, "auto", "tool choice auto")
+assert_eq(cai.TOOL_CHOICE_NONE, "none", "tool choice none")
+assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
+assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
+assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
 assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
 assert_eq(cai.MODEL_GPT_4O, "gpt-4o", "model constant")
@@ -42,6 +68,9 @@ local dummy_session = assert_ok(dummy_agent:new_session())
 assert_ok(dummy_session:set_previous_response_id("resp_lua_test"))
 assert_ok(dummy_session:set_conversation_id("conv_lua_test"))
 assert_ok(dummy_session:add_user_text("hello"))
+assert_ok(dummy_session:add_user_text_spooled(spool_text("spooled hello", 3)))
+assert_ok(dummy_session:add_user_file_data_spooled(
+  "notes.txt", spool_text("spooled file data", 4)))
 local source_part = 0
 assert_ok(dummy_session:add_user_text_source(function()
   source_part = source_part + 1
@@ -69,6 +98,7 @@ local params = assert_ok(cai.response_params())
 assert_ok(params:set_model(cai.MODEL_GPT_5_NANO))
 assert_ok(params:set_instructions("Lua low-level params test"))
 assert_ok(params:set_prompt_cache_key("cai:lua:test"))
+assert_ok(params:set_tool_choice(cai.TOOL_CHOICE_AUTO))
 assert_ok(params:set_max_output_tokens(128))
 assert_ok(params:set_parallel_tool_calls(true))
 assert_ok(params:set_compact_threshold(320000))
@@ -76,15 +106,20 @@ assert_ok(params:set_reasoning("minimal", "auto"))
 assert_ok(params:set_text_format_json_object())
 assert_ok(params:set_text_format_json_schema("lua_test", "Lua schema test", '{"type":"object","properties":{"ok":{"type":"boolean"}},"additionalProperties":false}', true))
 assert_ok(params:add_text("user", "hello"))
+assert_ok(params:add_text_spooled("user", spool_text("params spooled text", 5)))
 assert_ok(params:add_image_url("user", "https://example.com/image.png", "low"))
 assert_ok(params:add_image_file_id("user", "file_lua_image", "low"))
 assert_ok(params:add_file_id("user", "file_lua_doc"))
+assert_ok(params:add_file_data_spooled(
+  "user", "params.txt", spool_text("params file data", 6)))
 assert_ok(params:add_file_url("user", "https://example.com/file.txt"))
 assert_ok(params:add_function_tool("noop", "No-op test tool", '{"type":"object","properties":{},"additionalProperties":false}', true))
 assert_ok(params:add_function_call_output("call_test", '{"ok":true}'))
 assert_ok(params:add_function_call_output_text("call_text", "plain tool result"))
 assert_ok(params:add_function_call_output_image_url("call_image", "https://example.com/out.png", "low"))
 assert_ok(params:add_function_call_output_file_id("call_file", "file_lua_result"))
+assert_ok(params:add_function_call_output_file_data_spooled(
+  "call_file_data", "result.txt", spool_text("function result file", 7)))
 params:close()
 
 local conversation = assert_ok(cai.conversation_from_id("conv_lua_test"))
@@ -93,6 +128,7 @@ conversation:close()
 
 local conv_params = assert_ok(cai.conversation_items_params())
 assert_ok(conv_params:add_text("user", "hello"))
+assert_ok(conv_params:add_text_spooled("user", spool_text("conv spooled text", 2)))
 local part = 0
 assert_ok(conv_params:add_text_source("user", function()
   part = part + 1
@@ -101,6 +137,8 @@ end))
 assert_ok(conv_params:add_image_url("user", "https://example.com/i.png", "low"))
 assert_ok(conv_params:add_image_file_id("user", "file_lua_conv_image", "low"))
 assert_ok(conv_params:add_file_id("user", "file_lua_conv_doc"))
+assert_ok(conv_params:add_file_data_spooled(
+  "user", "conv.txt", spool_text("conv file data", 3)))
 assert_ok(conv_params:add_file_url("user", "https://example.com/f.txt"))
 conv_params:close()
 
@@ -126,6 +164,18 @@ assert_ok(registry:register_raw_tool("lua_weather", "Lua weather test tool", wea
   return { ok = true, summary = "dry enough" }
 end, true))
 
+assert_ok(registry:register_raw_spooled_tool("lua_spooled_weather", "Lua spooled weather test tool", weather_schema, function(args)
+  local arguments = args:read_all()
+  local out = { '{"ok":', 'true,"summary":"spooled ', 'dry enough"}', nil }
+  local i = 0
+  assert(arguments:match("Gothenburg"))
+  assert(args:size() > 0)
+  return function()
+    i = i + 1
+    return out[i]
+  end
+end, true))
+
 local raw_chunks = {}
 assert_ok(registry:run("lua_weather", '{"city":"Gothenburg"}', function(chunk)
   raw_chunks[#raw_chunks + 1] = chunk
@@ -134,6 +184,15 @@ end))
 local raw_json = table.concat(raw_chunks)
 assert(raw_json:match('"ok":true'))
 assert(raw_json:match('"summary":"dry enough"'))
+
+local spooled_chunks = {}
+assert_ok(registry:run("lua_spooled_weather", '{"city":"Gothenburg"}', function(chunk)
+  spooled_chunks[#spooled_chunks + 1] = chunk
+  return true
+end))
+local spooled_json = table.concat(spooled_chunks)
+assert(spooled_json:match('"ok":true'))
+assert(spooled_json:match('"summary":"spooled dry enough"'))
 
 assert_ok(registry:register_todo_tool({
   store_path = "/tmp/cai-lua-test-todo.json",

@@ -89,6 +89,7 @@ typedef struct cai_agent_config {
   const char *model;
   const char *developer_instructions;
   const char *prompt_cache_key;
+  const char *tool_choice;
   const char *reasoning_effort;
   const char *reasoning_summary;
   const char *text_format_name;
@@ -120,6 +121,10 @@ typedef struct cai_agent_config {
 #define CAI_REASONING_SUMMARY_AUTO "auto"
 #define CAI_REASONING_SUMMARY_CONCISE "concise"
 #define CAI_REASONING_SUMMARY_DETAILED "detailed"
+
+#define CAI_TOOL_CHOICE_AUTO "auto"
+#define CAI_TOOL_CHOICE_NONE "none"
+#define CAI_TOOL_CHOICE_REQUIRED "required"
 
 #define CAI_TOOL_EVENT_START 1
 #define CAI_TOOL_EVENT_OUTPUT 2
@@ -634,6 +639,9 @@ int cai_response_create_params_set_conversation_id(
     cai_error *error);
 int cai_response_create_params_set_prompt_cache_key(
     cai_response_create_params *params, const char *prompt_cache_key,
+    cai_error *error);
+int cai_response_create_params_set_tool_choice(
+    cai_response_create_params *params, const char *tool_choice,
     cai_error *error);
 int cai_response_create_params_set_max_output_tokens(
     cai_response_create_params *params, int max_output_tokens,

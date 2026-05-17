@@ -35,6 +35,7 @@ typedef struct cai_agent_impl {
   char *model;
   char *developer_instructions;
   char *prompt_cache_key;
+  char *tool_choice;
   char *reasoning_effort;
   char *reasoning_summary;
   char *text_format_name;
@@ -162,6 +163,7 @@ struct cai_response_create_params {
   char *instructions;
   char *previous_response_id;
   char *prompt_cache_key;
+  char *tool_choice;
   char *reasoning_effort;
   char *reasoning_summary;
   char *text_format_type;
