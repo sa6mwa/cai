@@ -69,8 +69,15 @@ shape, but may still change before the initial tag.
   `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
-- OpenAI API key from explicit config, `.env`, or `OPENAI_API_KEY`.
-- `.env` overrides the inherited environment when present.
+- `cai_client_open` resolves API keys only from explicit `config.api_key` or
+  `getenv(config.api_key_env)`. It does not implicitly load dotenv files.
+- `CAI_DEFAULT_DOTENV_PATH` is `.env` for callers that explicitly want cai's
+  dotenv parser. Call `cai_load_dotenv_api_key(path, env_name, &key, &error)`,
+  pass the returned key to `config.api_key`, then release it with
+  `cai_string_destroy` after `cai_client_open` has copied it.
+  Dotenv contents are treated as untrusted input: cai does not execute or
+  expand dotenv values, and rejects invalid variable names, overlong lines,
+  unterminated quoted values, empty keys, and control characters in key values.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
   uses `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`.
 - Session continuity defaults to OpenAI-style server-side continuation.

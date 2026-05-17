@@ -1,4 +1,5 @@
 local cai = require("cai")
+local common = dofile("examples/lua-common.lua")
 
 local function assert_ok(value, err)
   if not value then
@@ -7,7 +8,7 @@ local function assert_ok(value, err)
   return value
 end
 
-local client = assert_ok(cai.open())
+local client = assert_ok(cai.open(common.client_config(cai)))
 local conversation = assert_ok(client:create_conversation())
 local params = assert_ok(cai.conversation_items_params())
 assert_ok(params:add_text("user", "Remember that this conversation was created from Lua."))

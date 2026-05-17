@@ -63,6 +63,7 @@ typedef struct cai_allocator {
 
 #define CAI_OPENAI_BASE_URL "https://api.openai.com/v1"
 #define CAI_OPENROUTER_BASE_URL "https://openrouter.ai/api/v1"
+#define CAI_DEFAULT_DOTENV_PATH ".env"
 #define CAI_OPENAI_API_KEY_ENV "OPENAI_API_KEY"
 #define CAI_OPENROUTER_API_KEY_ENV "OPENROUTER_API_KEY"
 
@@ -411,6 +412,9 @@ struct cai_tool_schema {
 
 void cai_client_config_init(cai_client_config *config);
 void cai_client_config_use_openrouter(cai_client_config *config);
+int cai_load_dotenv_api_key(const char *dotenv_path, const char *api_key_env,
+                            char **out, cai_error *error);
+void cai_string_destroy(char *value);
 int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
 void cai_client_close(cai_client *client);

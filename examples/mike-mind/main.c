@@ -1,5 +1,7 @@
 #include <cai/cai.h>
 
+#include "../common.h"
+
 #include "mike_mind_prompt.h"
 
 #include <stdio.h>
@@ -107,6 +109,7 @@ int main(void) {
   double total_spent_usd;
   int has_context_percent;
   char *developer_prompt;
+  char *dotenv_api_key;
   char line[4096];
   int exit_code;
   int rc;
@@ -123,6 +126,7 @@ int main(void) {
   agent = NULL;
   session = NULL;
   stdout_sink = NULL;
+  dotenv_api_key = NULL;
   exit_code = 1;
   total_spent_usd = 0.0;
 
@@ -133,6 +137,11 @@ int main(void) {
   }
   agent_config.developer_instructions = developer_prompt;
 
+  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
+    goto done;
+  }
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_open", rc, &error);
@@ -229,5 +238,6 @@ done:
   }
   cai_error_cleanup(&error);
   free(developer_prompt);
+  cai_string_destroy(dotenv_api_key);
   return exit_code;
 }

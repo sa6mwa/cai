@@ -37,7 +37,7 @@ RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.ro
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -48,6 +48,7 @@ help:
 		'make test-integration  Run opt-in OpenAI API integration tests.' \
 		'make asan         Build and run the ASan/UBSan unit tests.' \
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
+		'make lua-env      Print shell exports for running local Lua examples.' \
 		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
 		'make release-lua-artifacts Generate dist LuaRock source artifacts.' \
 		'make package      Build release and write dist/cai-*.tar.gz.' \
@@ -109,6 +110,19 @@ $(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) lua/cai_lua.c scri
 	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
 
 lua-rock: $(LUA_ROCK_STAMP)
+
+lua-env:
+	@asan_lib="$$(cc -print-file-name=libasan.so 2>/dev/null || true)"; \
+	if [[ ! -f "$$asan_lib" ]]; then asan_lib=""; fi; \
+	printf '%s\n' 'eval "$$(luarocks path --tree "$(ROOT)/$(LUA_ROCK_TREE)")"'; \
+	printf 'export LD_LIBRARY_PATH="%s:%s:%s:%s:$${LD_LIBRARY_PATH:-}"\n' \
+		"$(ROOT)/$(LUA_ROCK_PREFIX)/lib" \
+		"$(CAI_LONEJSON_PREFIX)/lib" \
+		"$(CAI_C_PKT_SYSTEMS_PREFIX)/lib" \
+		"$(CAI_PSLOG_PREFIX)/lib"; \
+	if [[ -n "$$asan_lib" ]]; then \
+		printf 'export LD_PRELOAD="%s$${LD_PRELOAD:+:$$LD_PRELOAD}"\n' "$$asan_lib"; \
+	fi
 
 lua-test: lua-rock
 	asan_lib="$$(cc -print-file-name=libasan.so 2>/dev/null || true)"; \

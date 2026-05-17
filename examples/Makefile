@@ -1,0 +1,100 @@
+SHELL := bash
+.DEFAULT_GOAL := help
+MAKEFLAGS += --no-print-directory
+.PHONY: help lua-rock lua-env run-basic-response run-openrouter-response run-conversation-handles run-streaming-text run-history-export run-session-state run-smhi-weather run-mcp-server run-searxng-search run-terminal-chat run-mike-mind run-lua-basic run-lua-terminal-chat run-lua-conversation run-lua-session-state
+
+ROOT := ..
+CMAKE ?= cmake
+LUA ?= lua
+
+CAI_SESSION_STATE_PATH ?= /tmp/cai-session-state.json
+CAI_LUA_SESSION_STATE_PATH ?= /tmp/cai-lua-state.json
+CAI_SMHI_LOCATION ?= Gothenburg
+CAI_SEARXNG_QUERY ?= OpenAI Responses API
+CAI_MCP_EXAMPLE_PORT ?= 18766
+
+define run_c_example
+	cd "$(ROOT)" && \
+	$(CMAKE) --build --preset debug --target $(1) && \
+	./build/debug/$(1) $(2)
+endef
+
+define run_lua_example
+	cd "$(ROOT)" && \
+	$(MAKE) lua-rock && \
+	eval "$$($(MAKE) -s lua-env)" && \
+	$(LUA) $(1) $(2)
+endef
+
+help:
+	@printf '%s\n' \
+		'cai example runners:' \
+		'  make run-basic-response' \
+		'  make run-openrouter-response' \
+		'  make run-conversation-handles' \
+		'  make run-streaming-text' \
+		'  make run-history-export' \
+		'  make run-session-state CAI_SESSION_STATE_PATH=/tmp/cai-session-state.json' \
+		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
+		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
+		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
+		'  make run-terminal-chat' \
+		'  make run-mike-mind' \
+		'  make run-lua-basic' \
+		'  make run-lua-terminal-chat' \
+		'  make run-lua-conversation' \
+		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
+		'' \
+		'Most examples call the real API. Provide OPENAI_API_KEY, OPENROUTER_API_KEY,' \
+		'or a repo-local .env as appropriate.'
+
+lua-rock:
+	@cd "$(ROOT)" && $(MAKE) lua-rock
+
+lua-env:
+	@cd "$(ROOT)" && $(MAKE) -s lua-env
+
+run-basic-response:
+	$(call run_c_example,cai_example_basic_response,)
+
+run-openrouter-response:
+	$(call run_c_example,cai_example_openrouter_response,)
+
+run-conversation-handles:
+	$(call run_c_example,cai_example_conversation_handles,)
+
+run-streaming-text:
+	$(call run_c_example,cai_example_streaming_text,)
+
+run-history-export:
+	$(call run_c_example,cai_example_history_export,)
+
+run-session-state:
+	$(call run_c_example,cai_example_session_state,"$(CAI_SESSION_STATE_PATH)")
+
+run-smhi-weather:
+	$(call run_c_example,cai_example_smhi_weather,"$(CAI_SMHI_LOCATION)")
+
+run-mcp-server:
+	$(call run_c_example,cai_example_mcp_server,--port "$(CAI_MCP_EXAMPLE_PORT)")
+
+run-searxng-search:
+	$(call run_c_example,cai_example_searxng_search,"$(CAI_SEARXNG_QUERY)")
+
+run-terminal-chat:
+	$(call run_c_example,cai_example_terminal_chat,)
+
+run-mike-mind:
+	$(call run_c_example,cai_example_mike_mind,)
+
+run-lua-basic:
+	$(call run_lua_example,examples/lua-basic/main.lua,)
+
+run-lua-terminal-chat:
+	$(call run_lua_example,examples/lua-terminal-chat/main.lua,)
+
+run-lua-conversation:
+	$(call run_lua_example,examples/lua-conversation/main.lua,)
+
+run-lua-session-state:
+	$(call run_lua_example,examples/lua-session-state/main.lua,"$(CAI_LUA_SESSION_STATE_PATH)")

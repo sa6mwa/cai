@@ -20,19 +20,15 @@ local function assert_ok(value, err, label)
   return value
 end
 
-local function dotenv_has_openai_key()
-  local fp = io.open(".env", "r")
-  if not fp then
-    return false
+local function api_key_config()
+  if os.getenv("OPENAI_API_KEY") ~= nil and os.getenv("OPENAI_API_KEY") ~= "" then
+    return nil
   end
-  for line in fp:lines() do
-    if line:match("^%s*OPENAI_API_KEY%s*=") then
-      fp:close()
-      return true
-    end
+  local key = cai.load_dotenv_api_key(cai.DEFAULT_DOTENV_PATH, cai.OPENAI_API_KEY_ENV)
+  if key ~= nil and key ~= "" then
+    return key
   end
-  fp:close()
-  return false
+  return nil
 end
 
 local function stream_turn(session, text)
@@ -61,13 +57,14 @@ end
 if os.getenv("CAI_LUA_SESSION_E2E") ~= "1" then
   skip("set CAI_LUA_SESSION_E2E=1 to run Lua session continuity e2e")
 end
+local api_key = api_key_config()
 if (os.getenv("OPENAI_API_KEY") == nil or os.getenv("OPENAI_API_KEY") == "") and
-    not dotenv_has_openai_key() then
+    api_key == nil then
   skip("OPENAI_API_KEY is not set")
 end
 
 local secret = "lua-continuity-" .. tostring(os.time()) .. "-gothenburg"
-local client = assert_ok(cai.open({ timeout_ms = 60000 }), nil, "cai.open")
+local client = assert_ok(cai.open({ timeout_ms = 60000, api_key = api_key }), nil, "cai.open")
 local agent = assert_ok(client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   instructions = table.concat({

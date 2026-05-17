@@ -1,5 +1,7 @@
 #include <cai/cai.h>
 
+#include "../common.h"
+
 #include <curl/curl.h>
 #include <lonejson.h>
 
@@ -675,6 +677,7 @@ int main(int argc, char **argv) {
   cai_agent *agent;
   cai_output *output;
   cai_error error;
+  char *dotenv_api_key;
   int rc;
   int exit_code;
 
@@ -696,11 +699,17 @@ int main(int argc, char **argv) {
   client = NULL;
   agent = NULL;
   output = NULL;
+  dotenv_api_key = NULL;
   exit_code = 1;
 
   rc = curl_global_init(CURL_GLOBAL_DEFAULT);
   if (rc != CURLE_OK) {
     fprintf(stderr, "curl_global_init failed\n");
+    goto done;
+  }
+  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
     goto done;
   }
   rc = cai_client_open(&client_config, &client, &error);
@@ -745,6 +754,7 @@ done:
   if (client != NULL) {
     client->close(client);
   }
+  cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   curl_global_cleanup();
   return exit_code;

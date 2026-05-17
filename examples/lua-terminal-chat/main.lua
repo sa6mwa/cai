@@ -1,4 +1,5 @@
 local cai = require("cai")
+local common = dofile("examples/lua-common.lua")
 
 local reset = "\27[0m"
 local gray = "\27[90m"
@@ -58,7 +59,7 @@ local searxng_base_url = os.getenv("CAI_SEARXNG_BASE_URL") or "http://127.0.0.1:
 local todo_store = os.getenv("CAI_LUA_TODO_STORE")
 local todo_lock = os.getenv("CAI_LUA_TODO_LOCK")
 
-local client = ok(cai.open(), nil, "cai.open")
+local client = ok(cai.open(common.client_config(cai)), nil, "cai.open")
 local agent = ok(client:new_agent({
   model = model,
   instructions =

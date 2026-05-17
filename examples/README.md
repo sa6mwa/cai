@@ -1,18 +1,32 @@
 # CAI Examples
 
 These examples are built by default with `CAI_BUILD_EXAMPLES=ON`. They call the
-real OpenAI API when run, so they require either `OPENAI_API_KEY` in the
-environment or a repo-local `.env` file containing `OPENAI_API_KEY=...`.
+real OpenAI API when run, so they require `OPENAI_API_KEY` in the environment
+or a repo-local `.env` file containing `OPENAI_API_KEY=...`. The examples load
+that dotenv file explicitly and pass the parsed key as `cai_client_config.api_key`
+or `cai.open({ api_key = ... })`.
+
+`cai_client_open` itself does not implicitly load dotenv files. Applications
+that want dotenv support should call `cai_load_dotenv_api_key` explicitly, pass
+the returned key to `cai_client_config.api_key`, then release it with
+`cai_string_destroy` after opening the client. Lua callers can use
+`cai.load_dotenv_api_key(path, env_name)` and pass the returned string as
+`api_key`.
 
 The agent-oriented examples use the method-style handle facade (`client->...`,
 `agent->...`, `session->...`). Raw Responses examples still use free functions
 because they demonstrate request construction close to the wire API.
 
+Most examples can be built and run through the examples Makefile:
+
+```sh
+make -C examples help
+```
+
 ## Basic Response
 
 ```sh
-cmake --build --preset debug --target cai_example_basic_response
-./build/debug/cai_example_basic_response
+make -C examples run-basic-response
 ```
 
 ## OpenRouter Response
@@ -23,8 +37,7 @@ Run the same Responses-style request through OpenRouter. This example uses
 override the model.
 
 ```sh
-cmake --build --preset debug --target cai_example_openrouter_response
-OPENROUTER_API_KEY=... ./build/debug/cai_example_openrouter_response
+OPENROUTER_API_KEY=... make -C examples run-openrouter-response
 ```
 
 ## Conversation Handles
@@ -32,14 +45,14 @@ OPENROUTER_API_KEY=... ./build/debug/cai_example_openrouter_response
 Create a conversation handle transparently and run a session against it:
 
 ```sh
-cmake --build --preset debug --target cai_example_conversation_handles
-./build/debug/cai_example_conversation_handles
+make -C examples run-conversation-handles
 ```
 
 Reuse an existing OpenAI conversation ID without threading IDs through every
 call:
 
 ```sh
+cmake --build --preset debug --target cai_example_conversation_handles
 ./build/debug/cai_example_conversation_handles conv_abc123
 ```
 
@@ -52,8 +65,7 @@ Read response text from a pipe-backed `cai_source` while the SSE response is
 still being generated:
 
 ```sh
-cmake --build --preset debug --target cai_example_streaming_text
-./build/debug/cai_example_streaming_text
+make -C examples run-streaming-text
 ```
 
 ## History Export
@@ -62,8 +74,7 @@ Run one non-streamed agent turn with opt-in local history capture, then stream
 the exported history JSON array to stdout through `cai_source_copy_to_sink`:
 
 ```sh
-cmake --build --preset debug --target cai_example_history_export
-./build/debug/cai_example_history_export
+make -C examples run-history-export
 ```
 
 ## Session State
@@ -73,8 +84,7 @@ session from that file, and continue inference through the restored
 continuation handle:
 
 ```sh
-cmake --build --preset debug --target cai_example_session_state
-./build/debug/cai_example_session_state /tmp/cai-session-state.json
+make -C examples run-session-state CAI_SESSION_STATE_PATH=/tmp/cai-session-state.json
 ```
 
 ## SMHI Weather Tool
@@ -87,8 +97,7 @@ arrays item by item, and returns typed weather fields for the agent to
 summarize. This is an example-local tool, not a public cai tool preset.
 
 ```sh
-cmake --build --preset debug --target cai_example_smhi_weather
-OPENAI_API_KEY=... ./build/debug/cai_example_smhi_weather Gothenburg
+OPENAI_API_KEY=... make -C examples run-smhi-weather CAI_SMHI_LOCATION=Gothenburg
 ```
 
 ## MCP Server
@@ -107,8 +116,7 @@ The todo store defaults to cai's normal todo path. For isolated runs, set
 `CAI_MCP_EXAMPLE_TODO_STORE` and `CAI_MCP_EXAMPLE_TODO_LOCK`.
 
 ```sh
-cmake --build --preset debug --target cai_example_mcp_server
-./build/debug/cai_example_mcp_server --port 18766
+make -C examples run-mcp-server CAI_MCP_EXAMPLE_PORT=18766
 ```
 
 See `examples/mcp-server/README.md` for curl probes, diagnostic endpoints, and
@@ -122,9 +130,8 @@ by default so the SearXNG instance uses its configured search engines. Set
 `CAI_SEARXNG_ENGINE` to force a specific engine.
 
 ```sh
-cmake --build --preset debug --target cai_example_searxng_search
-OPENAI_API_KEY=... ./build/debug/cai_example_searxng_search "OpenAI Responses API"
-CAI_SEARXNG_ENGINE=wikipedia OPENAI_API_KEY=... ./build/debug/cai_example_searxng_search "OpenAI"
+OPENAI_API_KEY=... make -C examples run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"
+CAI_SEARXNG_ENGINE=wikipedia OPENAI_API_KEY=... make -C examples run-searxng-search CAI_SEARXNG_QUERY="OpenAI"
 ```
 
 ## Lua Basic
@@ -133,10 +140,7 @@ Build the local LuaRock into `build/luarocks`, then run a Lua 5.5 example
 against the same C SDK facade:
 
 ```sh
-make lua-rock
-eval "$(luarocks path --tree build/luarocks)"
-LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
-OPENAI_API_KEY=... lua examples/lua-basic/main.lua
+OPENAI_API_KEY=... make -C examples run-lua-basic
 ```
 
 Lua examples use `require("cai")` and the LuaRock module built by
@@ -153,10 +157,7 @@ spooled large-value methods such as `add_user_text_spooled()` and
 `register_raw_spooled_tool()` for lonejson-backed payloads.
 
 ```sh
-make lua-rock
-eval "$(luarocks path --tree build/luarocks)"
-LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
-OPENAI_API_KEY=... lua examples/lua-terminal-chat/main.lua
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
 ```
 
 Optional local todo isolation:
@@ -164,7 +165,7 @@ Optional local todo isolation:
 ```sh
 CAI_LUA_TODO_STORE=/tmp/cai-lua-todo.json \
 CAI_LUA_TODO_LOCK=/tmp/cai-lua-todo.lock \
-OPENAI_API_KEY=... lua examples/lua-terminal-chat/main.lua
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
 ```
 
 ## Lua Conversation
@@ -173,10 +174,7 @@ Create a conversation handle and add items through the lower-level
 Conversations facade:
 
 ```sh
-make lua-rock
-eval "$(luarocks path --tree build/luarocks)"
-LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
-OPENAI_API_KEY=... lua examples/lua-conversation/main.lua
+OPENAI_API_KEY=... make -C examples run-lua-conversation
 ```
 
 ## Lua Session State
@@ -185,10 +183,7 @@ Run a turn, save session state to disk, restore it into a new session, and
 continue:
 
 ```sh
-make lua-rock
-eval "$(luarocks path --tree build/luarocks)"
-LD_LIBRARY_PATH="build/luarocks/cai-prefix/lib:$LD_LIBRARY_PATH" \
-OPENAI_API_KEY=... lua examples/lua-session-state/main.lua /tmp/cai-lua-state.json
+OPENAI_API_KEY=... make -C examples run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json
 ```
 
 ## Terminal Chat
@@ -207,8 +202,7 @@ so search activity is visible while a turn is running. Exit with Ctrl-D at an
 empty prompt, `/quit`, or `/exit`.
 
 ```sh
-cmake --build --preset debug --target cai_example_terminal_chat
-OPENAI_API_KEY=... ./build/debug/cai_example_terminal_chat
+OPENAI_API_KEY=... make -C examples run-terminal-chat
 ```
 
 ## Mike Mind
@@ -220,6 +214,5 @@ sets a stable `prompt_cache_key` because the developer prompt is cacheable
 across runs.
 
 ```sh
-cmake --build --preset debug --target cai_example_mike_mind
-OPENAI_API_KEY=... ./build/debug/cai_example_mike_mind
+OPENAI_API_KEY=... make -C examples run-mike-mind
 ```

@@ -1,6 +1,8 @@
 #include <cai/cai.h>
 #include <cai/tools/searxng.h>
 
+#include "../common.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -151,6 +153,7 @@ int main(void) {
   cai_token_usage usage;
   double context_percent;
   double total_spent_usd;
+  char *dotenv_api_key;
   int has_context_percent;
   char line[4096];
   int exit_code;
@@ -179,9 +182,15 @@ int main(void) {
   stdout_sink = NULL;
   tool_trace.fp = stdout;
   tool_trace.sink = NULL;
+  dotenv_api_key = NULL;
   exit_code = 1;
   total_spent_usd = 0.0;
 
+  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
+    goto done;
+  }
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_open", rc, &error);
@@ -282,6 +291,7 @@ done:
   if (client != NULL) {
     client->close(client);
   }
+  cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return exit_code;
 }

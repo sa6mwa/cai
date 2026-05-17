@@ -1,6 +1,7 @@
 local cai = require("cai")
+local common = dofile("examples/lua-common.lua")
 
-local client, err = cai.open()
+local client, err = cai.open(common.client_config(cai))
 if not client then
   error(err.message or err.status_string)
 end

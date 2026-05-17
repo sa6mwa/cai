@@ -90,7 +90,11 @@ assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.mcp_handler) == "function")
 assert(type(cai.tool_schema) == "function")
+assert(type(cai.load_dotenv_api_key) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
+assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
+assert_eq(cai.OPENAI_API_KEY_ENV, "OPENAI_API_KEY", "OpenAI env name")
+assert_eq(cai.OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY", "OpenRouter env name")
 assert_eq(cai.TOOL_CHOICE_AUTO, "auto", "tool choice auto")
 assert_eq(cai.TOOL_CHOICE_NONE, "none", "tool choice none")
 assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
@@ -108,6 +112,16 @@ assert(model.context_window_tokens > 0)
 assert(model.auto_compact_token_limit > 0)
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+local dotenv_path = "/tmp/cai-lua-dotenv-test.env"
+do
+  local fp = assert(io.open(dotenv_path, "w"))
+  fp:write("OPENAI_API_KEY=lua-dotenv-key\n")
+  fp:close()
+end
+assert_eq(assert_ok(cai.load_dotenv_api_key(dotenv_path)), "lua-dotenv-key",
+  "Lua dotenv helper")
+local dotenv_value, dotenv_err = cai.load_dotenv_api_key("", nil)
+assert_not_ok(dotenv_value, dotenv_err, "empty Lua dotenv path")
 local dummy_agent = assert_ok(dummy_client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   instructions = "offline lua test",

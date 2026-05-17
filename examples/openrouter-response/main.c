@@ -1,5 +1,7 @@
 #include <cai/cai.h>
 
+#include "../common.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -28,6 +30,7 @@ int main(void) {
   cai_response *response;
   cai_client *client;
   cai_error error;
+  char *dotenv_api_key;
   int rc;
   int exit_code;
 
@@ -37,8 +40,14 @@ int main(void) {
   client = NULL;
   params = NULL;
   response = NULL;
+  dotenv_api_key = NULL;
   exit_code = 1;
 
+  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
+    goto done;
+  }
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_open", rc, &error);
@@ -76,6 +85,7 @@ done:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
+  cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return exit_code;
 }

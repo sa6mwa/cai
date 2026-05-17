@@ -561,35 +561,48 @@ static void test_env_precedence(test_state *state) {
 
   write_file_or_die(".env", "OPENAI_API_KEY=dotenv-key\n");
   key = NULL;
-  expect_int(state, "dotenv_override",
+  expect_int(state, "env_ignores_dotenv",
              cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_OK);
-  expect_str(state, "dotenv_override_value", key, "dotenv-key");
+  expect_str(state, "env_ignores_dotenv_value", key, "env-key");
   cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
 
   write_file_or_die(".env", "export OPENAI_API_KEY = \"quoted-key\" \n");
   key = NULL;
   expect_int(state, "dotenv_quoted",
-             cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_OK);
+             cai_load_dotenv_api_key(".env", NULL, &key, &error),
+             CAI_OK);
   expect_str(state, "dotenv_quoted_value", key, "quoted-key");
-  cai_free_mem(NULL, key);
+  cai_string_destroy(key);
   cai_error_cleanup(&error);
 
   write_file_or_die(".env", "OPENAI_API_KEY=dotenv-key\n");
   key = NULL;
   expect_int(state, "explicit_override",
-             cai_resolve_api_key(NULL, "explicit-key", NULL, &key, &error), CAI_OK);
+             cai_resolve_api_key(NULL, "explicit-key", NULL, &key, &error),
+             CAI_OK);
   expect_str(state, "explicit_override_value", key, "explicit-key");
   cai_free_mem(NULL, key);
   cai_error_cleanup(&error);
 
   write_file_or_die(".env", "OTHER=value\n");
+  unsetenv("OPENAI_API_KEY");
+  key = NULL;
+  expect_int(state, "env_missing_key",
+             cai_resolve_api_key(NULL, NULL, NULL, &key, &error),
+             CAI_ERR_INVALID);
+  if (key != NULL) {
+    test_fail(state, "env_missing_key", "unexpected key allocated");
+    cai_free_mem(NULL, key);
+  }
+  cai_error_cleanup(&error);
   key = NULL;
   expect_int(state, "dotenv_missing_key",
-             cai_resolve_api_key(NULL, NULL, NULL, &key, &error), CAI_ERR_INVALID);
+             cai_load_dotenv_api_key(".env", NULL, &key, &error),
+             CAI_ERR_INVALID);
   if (key != NULL) {
     test_fail(state, "dotenv_missing_key", "unexpected key allocated");
-    cai_free_mem(NULL, key);
+    cai_string_destroy(key);
   }
   cai_error_cleanup(&error);
 
@@ -607,14 +620,90 @@ static void test_env_precedence(test_state *state) {
 
   write_file_or_die(".env", "OPENROUTER_API_KEY=openrouter-dotenv-key\n");
   key = NULL;
-  expect_int(state, "openrouter_dotenv_override",
-             cai_resolve_api_key(NULL, NULL, CAI_OPENROUTER_API_KEY_ENV, &key,
-                                 &error),
+  expect_int(state, "openrouter_dotenv_helper",
+             cai_load_dotenv_api_key(".env", CAI_OPENROUTER_API_KEY_ENV, &key,
+                                     &error),
              CAI_OK);
-  expect_str(state, "openrouter_dotenv_override_value", key,
+  expect_str(state, "openrouter_dotenv_helper_value", key,
              "openrouter-dotenv-key");
-  cai_free_mem(NULL, key);
+  cai_string_destroy(key);
   cai_error_cleanup(&error);
+
+  write_file_or_die("custom.env", "OPENAI_API_KEY=custom-dotenv-key\n");
+  write_file_or_die(".env", "OPENAI_API_KEY=default-dotenv-key\n");
+  key = NULL;
+  expect_int(state, "dotenv_custom_path",
+             cai_load_dotenv_api_key("custom.env", NULL, &key, &error),
+             CAI_OK);
+  expect_str(state, "dotenv_custom_path_value", key, "custom-dotenv-key");
+  cai_string_destroy(key);
+  cai_error_cleanup(&error);
+
+  key = NULL;
+  expect_int(state, "dotenv_empty_path",
+             cai_load_dotenv_api_key("", NULL, &key, &error), CAI_ERR_INVALID);
+  if (key != NULL) {
+    test_fail(state, "dotenv_empty_path", "unexpected key allocated");
+    cai_string_destroy(key);
+  }
+  cai_error_cleanup(&error);
+
+  write_file_or_die("bad.env", "OPENAI_API_KEY=\"unterminated\n");
+  key = NULL;
+  expect_int(state, "dotenv_unterminated_quote",
+             cai_load_dotenv_api_key("bad.env", NULL, &key, &error),
+             CAI_ERR_INVALID);
+  if (key != NULL) {
+    test_fail(state, "dotenv_unterminated_quote", "unexpected key allocated");
+    cai_string_destroy(key);
+  }
+  cai_error_cleanup(&error);
+
+  write_file_or_die("bad.env", "OPENAI_API_KEY=bad\tkey\n");
+  key = NULL;
+  expect_int(state, "dotenv_control_character",
+             cai_load_dotenv_api_key("bad.env", NULL, &key, &error),
+             CAI_ERR_INVALID);
+  if (key != NULL) {
+    test_fail(state, "dotenv_control_character", "unexpected key allocated");
+    cai_string_destroy(key);
+  }
+  cai_error_cleanup(&error);
+
+  key = NULL;
+  expect_int(state, "dotenv_bad_env_name",
+             cai_load_dotenv_api_key(".env", "BAD-NAME", &key, &error),
+             CAI_ERR_INVALID);
+  if (key != NULL) {
+    test_fail(state, "dotenv_bad_env_name", "unexpected key allocated");
+    cai_string_destroy(key);
+  }
+  cai_error_cleanup(&error);
+
+  {
+    FILE *fp;
+    size_t i;
+
+    fp = fopen("overlong.env", "w");
+    if (fp == NULL) {
+      test_fail(state, "dotenv_overlong_line", "failed to create test file");
+    } else {
+      fputs("OPENAI_API_KEY=", fp);
+      for (i = 0U; i < 9000U; i++) {
+        fputc('x', fp);
+      }
+      fclose(fp);
+      key = NULL;
+      expect_int(state, "dotenv_overlong_line",
+                 cai_load_dotenv_api_key("overlong.env", NULL, &key, &error),
+                 CAI_ERR_INVALID);
+      if (key != NULL) {
+        test_fail(state, "dotenv_overlong_line", "unexpected key allocated");
+        cai_string_destroy(key);
+      }
+      cai_error_cleanup(&error);
+    }
+  }
 
   if (chdir(original_cwd) != 0) {
     test_fail(state, "env_precedence", "restore chdir failed");

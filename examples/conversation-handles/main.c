@@ -1,5 +1,7 @@
 #include <cai/cai.h>
 
+#include "../common.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -32,6 +34,7 @@ int main(int argc, char **argv) {
   cai_client *client;
   cai_agent *agent;
   cai_error error;
+  char *dotenv_api_key;
   int exit_code;
   int rc;
 
@@ -47,8 +50,14 @@ int main(int argc, char **argv) {
   output = NULL;
   conversation = NULL;
   items = NULL;
+  dotenv_api_key = NULL;
   exit_code = 1;
 
+  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
+    goto done;
+  }
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_open", rc, &error);
@@ -113,6 +122,7 @@ done:
   if (client != NULL) {
     client->close(client);
   }
+  cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return exit_code;
 }

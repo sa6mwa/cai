@@ -1268,6 +1268,26 @@ static int cai_lua_open(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_load_dotenv_api_key(lua_State *L) {
+  const char *dotenv_path;
+  const char *api_key_env;
+  cai_error error;
+  char *api_key;
+  int rc;
+
+  dotenv_path = luaL_checkstring(L, 1);
+  api_key_env = luaL_optstring(L, 2, NULL);
+  api_key = NULL;
+  cai_error_init(&error);
+  rc = cai_load_dotenv_api_key(dotenv_path, api_key_env, &api_key, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, api_key);
+  cai_string_destroy(api_key);
+  return 1;
+}
+
 static int cai_lua_client_gc(lua_State *L) {
   cai_lua_client *self;
   self = (cai_lua_client *)luaL_checkudata(L, 1, CAI_LUA_CLIENT);
@@ -4743,6 +4763,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "conversation_items_params");
   lua_pushcfunction(L, cai_lua_conversation_from_id);
   lua_setfield(L, -2, "conversation_from_id");
+  lua_pushcfunction(L, cai_lua_load_dotenv_api_key);
+  lua_setfield(L, -2, "load_dotenv_api_key");
   lua_pushcfunction(L, cai_lua_model_info);
   lua_setfield(L, -2, "model_info");
   lua_pushstring(L, CAI_SESSION_CONTINUITY_SERVER == 0 ? "server" : "server");
@@ -4751,6 +4773,9 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("CONTINUITY_CLIENT_HISTORY",
                       CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
+  CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
+  CAI_LUA_SET_STRING("OPENAI_API_KEY_ENV", CAI_OPENAI_API_KEY_ENV);
+  CAI_LUA_SET_STRING("OPENROUTER_API_KEY_ENV", CAI_OPENROUTER_API_KEY_ENV);
   CAI_LUA_SET_STRING("TOOL_CHOICE_AUTO", CAI_TOOL_CHOICE_AUTO);
   CAI_LUA_SET_STRING("TOOL_CHOICE_NONE", CAI_TOOL_CHOICE_NONE);
   CAI_LUA_SET_STRING("TOOL_CHOICE_REQUIRED", CAI_TOOL_CHOICE_REQUIRED);

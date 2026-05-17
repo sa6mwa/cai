@@ -1,4 +1,5 @@
 local cai = require("cai")
+local common = dofile("examples/lua-common.lua")
 
 local function assert_ok(value, err)
   if not value then
@@ -8,7 +9,7 @@ local function assert_ok(value, err)
 end
 
 local path = arg[1] or "/tmp/cai-lua-session-state.json"
-local client = assert_ok(cai.open())
+local client = assert_ok(cai.open(common.client_config(cai)))
 local agent = assert_ok(client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   instructions = "You are a terse Lua session-state example assistant.",

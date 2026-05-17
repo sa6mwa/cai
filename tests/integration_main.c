@@ -720,8 +720,64 @@ done:
 }
 
 static int run_openrouter_dotenv_response(void) {
+  cai_response_create_params *params;
+  cai_client_config client_config;
+  cai_response *response;
+  cai_client *client;
+  cai_error error;
+  char *api_key;
+  int rc;
+
   unsetenv(CAI_OPENROUTER_API_KEY_ENV);
-  return run_openrouter_basic_response();
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  client = NULL;
+  params = NULL;
+  response = NULL;
+  api_key = NULL;
+
+  rc = cai_load_dotenv_api_key(CAI_DEFAULT_DOTENV_PATH,
+                               CAI_OPENROUTER_API_KEY_ENV, &api_key, &error);
+  if (rc == CAI_OK) {
+    client_config.api_key = api_key;
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_new(&params, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_model(
+        params, openrouter_integration_model(), &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_max_output_tokens(params, 96, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_text(
+        params, "user",
+        "Reply with exactly: openrouter dotenv compatibility ok", &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_create_response(client, params, &response, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter dotenv explicit response", rc, &error);
+  } else if (cai_response_output_text(response) == NULL ||
+             strstr(cai_response_output_text(response), "openrouter") == NULL) {
+    fprintf(stderr, "openrouter dotenv response missing expected text: %s\n",
+            cai_response_output_text(response) != NULL
+                ? cai_response_output_text(response)
+                : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+  }
+
+  cai_response_destroy(response);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_string_destroy(api_key);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
 }
 
 static int run_openrouter_session_regression(void) {
