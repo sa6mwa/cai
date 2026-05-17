@@ -2298,7 +2298,6 @@ static void test_mcp_handler(test_state *state) {
   cai_mcp_handler_config_init(&config);
   allowed_origins[0] = "https://app.example";
   config.name = "cai-test";
-  config.version = "1.2.3";
   config.tools = registry;
   config.allowed_origins = allowed_origins;
   config.allowed_origin_count = 1U;
@@ -2315,6 +2314,7 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_initialize_status", status, 200L);
   if (strstr(writer.buffer, "\"protocolVersion\":\"2025-11-25\"") == NULL ||
       strstr(writer.buffer, "\"name\":\"cai-test\"") == NULL ||
+      strstr(writer.buffer, "\"version\":\"" CAI_VERSION_STRING "\"") == NULL ||
       strstr(writer.buffer, "\"tools\":{\"listChanged\":false}") == NULL) {
     test_fail(state, "mcp_initialize_body", "initialize response incomplete");
   }

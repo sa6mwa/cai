@@ -674,7 +674,7 @@ void cai_mcp_handler_config_init(cai_mcp_handler_config *config) {
   }
   memset(config, 0, sizeof(*config));
   config->name = "cai";
-  config->version = "0.0.0";
+  config->version = CAI_VERSION_STRING;
   config->request_max_bytes = 1024U * 1024U;
   config->response_spool_memory_limit = 128U * 1024U;
   config->stateless = 1;
@@ -710,7 +710,8 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
   memset(handler, 0, sizeof(*handler));
   handler->name = cai_strdup(NULL, config->name != NULL ? config->name : "cai");
   handler->version =
-      cai_strdup(NULL, config->version != NULL ? config->version : "0.0.0");
+      cai_strdup(NULL, config->version != NULL ? config->version
+                                               : CAI_VERSION_STRING);
   handler->protocol_version = cai_strdup(
       NULL, config->protocol_version != NULL ? config->protocol_version
                                              : CAI_MCP_PROTOCOL_VERSION);

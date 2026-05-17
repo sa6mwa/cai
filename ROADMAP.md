@@ -72,13 +72,16 @@ Recent prerelease gates run successfully:
 - Lua MCP todo/kanban facade e2e.
 - Lua OpenAI streamed-tool e2e.
 - Lua OpenAI streamed session-continuity e2e.
+- Full `make release` gate, including release CTest, binary/source archive
+  packaging, Lua rock artifacts, checksums, and archive verification.
 
 ## Active First-Release Work
 
 Before tagging the first C SDK prerelease:
 
 - Keep README, examples, and installed docs aligned with the current API.
-- Run the complete prerelease verification cycle on the release candidate tag.
+- Run the complete prerelease verification cycle on the release candidate tag
+  or with `CAI_VERSION_OVERRIDE` set to the intended prerelease version.
 - Verify `make release` outputs:
   - binary SDK archives as `dist/cai-<version>-<target>.tar.gz`,
   - source archive as `dist/cai-<version>.tar.gz`,

@@ -45,6 +45,10 @@ shape, but may still change before the initial tag.
   `dist/cai-<version>.tar.gz`, and `dist/cai-<version>-CHECKSUMS`.
   Release verification checks archive roots, installed docs, pkg-config/CMake
   metadata, dependency-header exclusion, and host-free `$ORIGIN` runpaths.
+- Release versions are detected from an exact `vX.Y.Z` git tag. Local release
+  candidates can use `CAI_VERSION_OVERRIDE=X.Y.Z-rc.N cmake ...` or the same
+  override through a custom CMake preset; untagged builds intentionally fall
+  back to `0.0.0`.
 - Binary SDK archives contain installed headers, CMake/pkg-config metadata,
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under
