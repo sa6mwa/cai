@@ -17,8 +17,12 @@ LUA_ROCK_STAMP := $(LUA_ROCK_TREE)/.installed.stamp
 LUA_ROCK_BUILD_LOCK := $(LUA_ROCK_TREE)/.build.lock
 LUA_ROCK_EXTRA_CFLAGS ?= -O3 -DNDEBUG
 LUA_ROCK_PREFIX := $(LUA_ROCK_TREE)/cai-prefix
+RELEASE_LUA_ROCK_DIR := dist/lua-rock
+RELEASE_LUA_STAGE_DIR := $(RELEASE_LUA_ROCK_DIR)/cai-$(RELEASE_VERSION)
+RELEASE_LUA_SOURCE_TARBALL := dist/cai-lua-$(RELEASE_VERSION).tar.gz
+RELEASE_LUA_ROCKSPEC := dist/cai-$(RELEASE_VERSION)-1.rockspec
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-test package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -30,6 +34,7 @@ help:
 		'make asan         Build and run the ASan/UBSan unit tests.' \
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
 		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
+		'make release-lua-artifacts Generate dist LuaRock source artifacts.' \
 		'make package      Build release and write dist/cai-*.tar.gz.' \
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
@@ -93,6 +98,19 @@ lua-test: lua-rock
 	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CURDIR)/.cache/deps/liblonejson-0.16.0-x86_64-linux-gnu/lib:$(CURDIR)/.cache/deps/c.pkt.systems-0.1.0-x86_64-linux-gnu/lib:$${LD_LIBRARY_PATH:-}" \
 	LD_PRELOAD="$${asan_lib}$${LD_PRELOAD:+:$$LD_PRELOAD}" \
 	lua tests/lua/test_lua.lua
+
+$(RELEASE_LUA_SOURCE_TARBALL): scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in | build-debug
+	rm -rf "$(RELEASE_LUA_ROCK_DIR)" "$(RELEASE_LUA_SOURCE_TARBALL)"
+	mkdir -p "$(RELEASE_LUA_ROCK_DIR)"
+	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_STAGE_DIR)" "$(RELEASE_VERSION)"
+	tar -C "$(RELEASE_LUA_ROCK_DIR)" --format=gnu --owner=0 --group=0 -cf "dist/cai-lua-$(RELEASE_VERSION).tar" "cai-$(RELEASE_VERSION)"
+	gzip -9 -f -n "dist/cai-lua-$(RELEASE_VERSION).tar"
+	rm -rf "$(RELEASE_LUA_ROCK_DIR)"
+
+$(RELEASE_LUA_ROCKSPEC): $(RELEASE_LUA_SOURCE_TARBALL) scripts/render_release_rockspec.sh
+	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(RELEASE_LUA_ROCKSPEC)" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext"
+
+release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC)
 
 package: build-release
 	bash ./scripts/package_release_matrix.sh
