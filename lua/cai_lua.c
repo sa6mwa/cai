@@ -135,7 +135,44 @@ typedef struct cai_lua_headers_ctx {
 typedef struct cai_lua_tool_event_ctx {
   lua_State *L;
   int callback_ref;
+  const cai_tool_event *current_event;
 } cai_lua_tool_event_ctx;
+
+typedef struct cai_lua_function_call_ctx {
+  lua_State *L;
+  int delta_ref;
+  int done_ref;
+} cai_lua_function_call_ctx;
+
+static int cai_lua_make_sink(lua_State *L, int index, cai_lua_sink_ctx *ctx,
+                             cai_sink **out, cai_error *error);
+static int cai_lua_bool_result(lua_State *L, int rc, cai_error *error);
+
+static int cai_lua_tool_event_write_output_lua(lua_State *L) {
+  cai_lua_tool_event_ctx *event_ctx;
+  const cai_tool_event *event;
+  cai_lua_sink_ctx sink_ctx;
+  cai_sink *sink;
+  cai_error error;
+  int rc;
+
+  event_ctx = (cai_lua_tool_event_ctx *)lua_touserdata(L, lua_upvalueindex(1));
+  event = event_ctx != NULL ? event_ctx->current_event : NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  sink = NULL;
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 1, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_event_write_output(event, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
 
 static void cai_lua_error_cleanup(cai_error *error) {
   cai_error_cleanup(error);
@@ -1443,6 +1480,7 @@ static int cai_lua_tool_event_trampoline(void *context,
   int rc;
   (void)error;
   ctx = (cai_lua_tool_event_ctx *)context;
+  ctx->current_event = event;
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
   lua_newtable(ctx->L);
   lua_pushinteger(ctx->L, event->type);
@@ -1472,6 +1510,9 @@ static int cai_lua_tool_event_trampoline(void *context,
   if (event->output_json != NULL) {
     lua_pushinteger(ctx->L, (lua_Integer)event->output_json->size);
     lua_setfield(ctx->L, -2, "output_size");
+    lua_pushlightuserdata(ctx->L, ctx);
+    lua_pushcclosure(ctx->L, cai_lua_tool_event_write_output_lua, 1);
+    lua_setfield(ctx->L, -2, "write_output");
   }
   if (event->tool_error != NULL) {
     cai_lua_push_error(ctx->L, event->tool_error->code, event->tool_error);
@@ -1480,13 +1521,16 @@ static int cai_lua_tool_event_trampoline(void *context,
   rc = lua_pcall(ctx->L, 1, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);
+    ctx->current_event = NULL;
     return CAI_ERR_INVALID;
   }
   if (lua_isboolean(ctx->L, -1) && !lua_toboolean(ctx->L, -1)) {
     lua_pop(ctx->L, 1);
+    ctx->current_event = NULL;
     return CAI_ERR_CANCELLED;
   }
   lua_pop(ctx->L, 1);
+  ctx->current_event = NULL;
   return CAI_OK;
 }
 
@@ -1613,6 +1657,64 @@ static int cai_lua_stream_output_delta(void *context, const char *item_id,
   return CAI_OK;
 }
 
+static int cai_lua_stream_function_delta(void *context, const char *item_id,
+                                         int output_index, const char *delta,
+                                         cai_error *error) {
+  cai_lua_function_call_ctx *ctx;
+  int rc;
+  (void)error;
+  ctx = (cai_lua_function_call_ctx *)context;
+  if (ctx == NULL || ctx->delta_ref == 0) {
+    return CAI_OK;
+  }
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->delta_ref);
+  lua_pushstring(ctx->L, item_id != NULL ? item_id : "");
+  lua_pushinteger(ctx->L, output_index);
+  lua_pushstring(ctx->L, delta != NULL ? delta : "");
+  rc = lua_pcall(ctx->L, 3, 1, 0);
+  if (rc != LUA_OK) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_INVALID;
+  }
+  if (lua_isboolean(ctx->L, -1) && !lua_toboolean(ctx->L, -1)) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_CANCELLED;
+  }
+  lua_pop(ctx->L, 1);
+  return CAI_OK;
+}
+
+static int cai_lua_stream_function_done(void *context, const char *item_id,
+                                        int output_index, const char *call_id,
+                                        const char *name,
+                                        const char *arguments,
+                                        cai_error *error) {
+  cai_lua_function_call_ctx *ctx;
+  int rc;
+  (void)error;
+  ctx = (cai_lua_function_call_ctx *)context;
+  if (ctx == NULL || ctx->done_ref == 0) {
+    return CAI_OK;
+  }
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->done_ref);
+  lua_pushstring(ctx->L, item_id != NULL ? item_id : "");
+  lua_pushinteger(ctx->L, output_index);
+  lua_pushstring(ctx->L, call_id != NULL ? call_id : "");
+  lua_pushstring(ctx->L, name != NULL ? name : "");
+  lua_pushstring(ctx->L, arguments != NULL ? arguments : "");
+  rc = lua_pcall(ctx->L, 5, 1, 0);
+  if (rc != LUA_OK) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_INVALID;
+  }
+  if (lua_isboolean(ctx->L, -1) && !lua_toboolean(ctx->L, -1)) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_CANCELLED;
+  }
+  lua_pop(ctx->L, 1);
+  return CAI_OK;
+}
+
 static void cai_lua_apply_affix(lua_State *L, int index, const char *field,
                                 cai_stream_affix *affix) {
   index = lua_absindex(L, index);
@@ -1632,6 +1734,7 @@ static int cai_lua_agent_stream(lua_State *L) {
   cai_sink *output_sink;
   cai_lua_sink_ctx reasoning_ctx;
   cai_lua_sink_ctx output_ctx;
+  cai_lua_function_call_ctx function_ctx;
   cai_error error;
   int rc;
   self = cai_lua_check_agent(L, 1);
@@ -1642,6 +1745,8 @@ static int cai_lua_agent_stream(lua_State *L) {
   cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
   memset(&reasoning_ctx, 0, sizeof(reasoning_ctx));
   memset(&output_ctx, 0, sizeof(output_ctx));
+  memset(&function_ctx, 0, sizeof(function_ctx));
+  function_ctx.L = L;
   reasoning_sink = NULL;
   output_sink = NULL;
   lua_getfield(L, 2, "reasoning");
@@ -1681,6 +1786,24 @@ static int cai_lua_agent_stream(lua_State *L) {
     sinks.output_text_context = &output_ctx;
   }
   lua_pop(L, 1);
+  lua_getfield(L, 2, "on_function_call_delta");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    function_ctx.delta_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.function_call_arguments_delta = cai_lua_stream_function_delta;
+    sinks.function_call_context = &function_ctx;
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "on_function_call_done");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    function_ctx.done_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.function_call_arguments_done = cai_lua_stream_function_done;
+    if (sinks.function_call_context == NULL) {
+      sinks.function_call_context = &function_ctx;
+    }
+  }
+  lua_pop(L, 1);
   rc = self->ptr->stream_auto(self->ptr, &options, &sinks, &error);
   if (event_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
@@ -1696,6 +1819,12 @@ static int cai_lua_agent_stream(lua_State *L) {
   }
   if (output_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, output_ctx.callback_ref);
+  }
+  if (function_ctx.delta_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.delta_ref);
+  }
+  if (function_ctx.done_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.done_ref);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -2067,6 +2196,7 @@ static int cai_lua_session_stream(lua_State *L) {
   cai_sink *output_sink;
   cai_lua_sink_ctx reasoning_ctx;
   cai_lua_sink_ctx output_ctx;
+  cai_lua_function_call_ctx function_ctx;
   cai_error error;
   int rc;
   self = cai_lua_check_session(L, 1);
@@ -2077,6 +2207,8 @@ static int cai_lua_session_stream(lua_State *L) {
   cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
   memset(&reasoning_ctx, 0, sizeof(reasoning_ctx));
   memset(&output_ctx, 0, sizeof(output_ctx));
+  memset(&function_ctx, 0, sizeof(function_ctx));
+  function_ctx.L = L;
   reasoning_sink = NULL;
   output_sink = NULL;
   lua_getfield(L, 2, "reasoning");
@@ -2105,6 +2237,24 @@ static int cai_lua_session_stream(lua_State *L) {
                       &sinks.reasoning_summary_suffix);
   cai_lua_apply_affix(L, 2, "response_prefix", &sinks.output_text_prefix);
   cai_lua_apply_affix(L, 2, "response_suffix", &sinks.output_text_suffix);
+  lua_getfield(L, 2, "on_function_call_delta");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    function_ctx.delta_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.function_call_arguments_delta = cai_lua_stream_function_delta;
+    sinks.function_call_context = &function_ctx;
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "on_function_call_done");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    function_ctx.done_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.function_call_arguments_done = cai_lua_stream_function_done;
+    if (sinks.function_call_context == NULL) {
+      sinks.function_call_context = &function_ctx;
+    }
+  }
+  lua_pop(L, 1);
   rc = cai_session_stream_auto(self->ptr, &options, &sinks, &error);
   if (event_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
@@ -2120,6 +2270,12 @@ static int cai_lua_session_stream(lua_State *L) {
   }
   if (output_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, output_ctx.callback_ref);
+  }
+  if (function_ctx.delta_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.delta_ref);
+  }
+  if (function_ctx.done_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.done_ref);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -3230,6 +3386,50 @@ static int cai_lua_params_set_conversation_id(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_params_set_prompt_cache_key(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_prompt_cache_key(
+      self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_max_output_tokens(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_max_output_tokens(
+      self->ptr, (int)luaL_checkinteger(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_parallel_tool_calls(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_parallel_tool_calls(
+      self->ptr, lua_toboolean(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_compact_threshold(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_compact_threshold(
+      self->ptr, (long long)luaL_checkinteger(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_params_set_reasoning(lua_State *L) {
   cai_lua_params *self;
   cai_error error;
@@ -3239,6 +3439,29 @@ static int cai_lua_params_set_reasoning(lua_State *L) {
   rc = cai_response_create_params_set_reasoning(
       self->ptr, luaL_optstring(L, 2, NULL), luaL_optstring(L, 3, NULL),
       &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_text_format_json_object(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_text_format_json_object(self->ptr,
+                                                              &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_text_format_json_schema(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_text_format_json_schema(
+      self->ptr, luaL_checkstring(L, 2), luaL_optstring(L, 3, NULL),
+      luaL_checkstring(L, 4), lua_toboolean(L, 5), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -3260,6 +3483,30 @@ static int cai_lua_params_add_image_url(lua_State *L) {
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
   rc = cai_response_create_params_add_image_url(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_image_file_id(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_image_file_id(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_file_id(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_file_id(
       self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
       luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
@@ -3297,6 +3544,41 @@ static int cai_lua_params_add_function_call_output(lua_State *L) {
   cai_error_init(&error);
   rc = cai_response_create_params_add_function_call_output(
       self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_function_call_output_text(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_function_call_output_text(
+      self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_function_call_output_image_url(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_function_call_output_image_url(
+      self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_function_call_output_file_id(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_function_call_output_file_id(
+      self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -3370,6 +3652,30 @@ static int cai_lua_conversation_params_add_image_url(lua_State *L) {
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
   rc = cai_conversation_items_params_add_image_url(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_conversation_params_add_image_file_id(lua_State *L) {
+  cai_lua_conversation_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_conversation_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_conversation_items_params_add_image_file_id(
+      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
+      luaL_optstring(L, 4, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_conversation_params_add_file_id(lua_State *L) {
+  cai_lua_conversation_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_conversation_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_conversation_items_params_add_file_id(
       self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
       luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
@@ -3514,12 +3820,28 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"set_instructions", cai_lua_params_set_instructions},
     {"set_previous_response_id", cai_lua_params_set_previous_response_id},
     {"set_conversation_id", cai_lua_params_set_conversation_id},
+    {"set_prompt_cache_key", cai_lua_params_set_prompt_cache_key},
+    {"set_max_output_tokens", cai_lua_params_set_max_output_tokens},
+    {"set_parallel_tool_calls", cai_lua_params_set_parallel_tool_calls},
+    {"set_compact_threshold", cai_lua_params_set_compact_threshold},
     {"set_reasoning", cai_lua_params_set_reasoning},
+    {"set_text_format_json_object",
+     cai_lua_params_set_text_format_json_object},
+    {"set_text_format_json_schema",
+     cai_lua_params_set_text_format_json_schema},
     {"add_text", cai_lua_params_add_text},
     {"add_image_url", cai_lua_params_add_image_url},
+    {"add_image_file_id", cai_lua_params_add_image_file_id},
+    {"add_file_id", cai_lua_params_add_file_id},
     {"add_file_url", cai_lua_params_add_file_url},
     {"add_function_tool", cai_lua_params_add_function_tool},
     {"add_function_call_output", cai_lua_params_add_function_call_output},
+    {"add_function_call_output_text",
+     cai_lua_params_add_function_call_output_text},
+    {"add_function_call_output_image_url",
+     cai_lua_params_add_function_call_output_image_url},
+    {"add_function_call_output_file_id",
+     cai_lua_params_add_function_call_output_file_id},
     {"close", cai_lua_params_close},
     {NULL, NULL}};
 
@@ -3544,6 +3866,8 @@ static const luaL_Reg cai_lua_conversation_params_methods[] = {
     {"add_text", cai_lua_conversation_params_add_text},
     {"add_text_source", cai_lua_conversation_params_add_text_source},
     {"add_image_url", cai_lua_conversation_params_add_image_url},
+    {"add_image_file_id", cai_lua_conversation_params_add_image_file_id},
+    {"add_file_id", cai_lua_conversation_params_add_file_id},
     {"add_file_url", cai_lua_conversation_params_add_file_url},
     {"close", cai_lua_conversation_params_close},
     {NULL, NULL}};
@@ -3560,6 +3884,16 @@ static void cai_lua_metatable(lua_State *L, const char *name,
 }
 
 int luaopen_cai(lua_State *L) {
+#define CAI_LUA_SET_STRING(name, value)                                      \
+  do {                                                                       \
+    lua_pushstring(L, (value));                                               \
+    lua_setfield(L, -2, (name));                                              \
+  } while (0)
+#define CAI_LUA_SET_INTEGER(name, value)                                     \
+  do {                                                                       \
+    lua_pushinteger(L, (lua_Integer)(value));                                 \
+    lua_setfield(L, -2, (name));                                              \
+  } while (0)
   cai_lua_metatable(L, CAI_LUA_CLIENT, cai_lua_client_methods,
                     cai_lua_client_gc);
   cai_lua_metatable(L, CAI_LUA_AGENT, cai_lua_agent_methods, cai_lua_agent_gc);
@@ -3605,17 +3939,188 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "model_info");
   lua_pushstring(L, CAI_SESSION_CONTINUITY_SERVER == 0 ? "server" : "server");
   lua_setfield(L, -2, "CONTINUITY_SERVER_NAME");
-  lua_pushinteger(L, CAI_SESSION_CONTINUITY_SERVER);
-  lua_setfield(L, -2, "CONTINUITY_SERVER");
-  lua_pushinteger(L, CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
-  lua_setfield(L, -2, "CONTINUITY_CLIENT_HISTORY");
-  lua_pushinteger(L, CAI_SESSION_CONTINUITY_AUTO);
-  lua_setfield(L, -2, "CONTINUITY_AUTO");
-  lua_pushstring(L, CAI_MODEL_GPT_5_NANO);
-  lua_setfield(L, -2, "MODEL_GPT_5_NANO");
-  lua_pushstring(L, CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES);
-  lua_setfield(L, -2, "OPENROUTER_MODEL_DEFAULT_RESPONSES");
-  lua_pushstring(L, CAI_MCP_PROTOCOL_VERSION);
-  lua_setfield(L, -2, "MCP_PROTOCOL_VERSION");
+  CAI_LUA_SET_INTEGER("CONTINUITY_SERVER", CAI_SESSION_CONTINUITY_SERVER);
+  CAI_LUA_SET_INTEGER("CONTINUITY_CLIENT_HISTORY",
+                      CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
+  CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_RESPONSES", CAI_MODEL_CAP_RESPONSES);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_REALTIME", CAI_MODEL_CAP_REALTIME);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_STREAMING", CAI_MODEL_CAP_STREAMING);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_FUNCTION_CALLING",
+                      CAI_MODEL_CAP_FUNCTION_CALLING);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_STRUCTURED_OUTPUTS",
+                      CAI_MODEL_CAP_STRUCTURED_OUTPUTS);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_IMAGE_INPUT", CAI_MODEL_CAP_IMAGE_INPUT);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_AUDIO_INPUT", CAI_MODEL_CAP_AUDIO_INPUT);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_AUDIO_OUTPUT", CAI_MODEL_CAP_AUDIO_OUTPUT);
+  CAI_LUA_SET_INTEGER("MODEL_META_VERIFIED", CAI_MODEL_META_VERIFIED);
+  CAI_LUA_SET_INTEGER("MODEL_META_INCOMPLETE", CAI_MODEL_META_INCOMPLETE);
+  CAI_LUA_SET_INTEGER("MODEL_META_INFERRED", CAI_MODEL_META_INFERRED);
+  CAI_LUA_SET_INTEGER("MODEL_META_DEPRECATED", CAI_MODEL_META_DEPRECATED);
+  CAI_LUA_SET_INTEGER("MODEL_META_PROVIDER_OPENROUTER",
+                      CAI_MODEL_META_PROVIDER_OPENROUTER);
+  CAI_LUA_SET_STRING("MODEL_DEFAULT_RESPONSES", CAI_MODEL_DEFAULT_RESPONSES);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_5", CAI_MODEL_GPT_5_5);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_5_2026_04_23",
+                     CAI_MODEL_GPT_5_5_2026_04_23);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_5_PRO", CAI_MODEL_GPT_5_5_PRO);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_5_PRO_2026_04_23",
+                     CAI_MODEL_GPT_5_5_PRO_2026_04_23);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4_NANO", CAI_MODEL_GPT_5_4_NANO);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4_MINI", CAI_MODEL_GPT_5_4_MINI);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4", CAI_MODEL_GPT_5_4);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4_MINI_2026_03_17",
+                     CAI_MODEL_GPT_5_4_MINI_2026_03_17);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4_NANO_2026_03_17",
+                     CAI_MODEL_GPT_5_4_NANO_2026_03_17);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_3_CHAT_LATEST",
+                     CAI_MODEL_GPT_5_3_CHAT_LATEST);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_2", CAI_MODEL_GPT_5_2);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_2_2025_12_11",
+                     CAI_MODEL_GPT_5_2_2025_12_11);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_2_CHAT_LATEST",
+                     CAI_MODEL_GPT_5_2_CHAT_LATEST);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_2_PRO", CAI_MODEL_GPT_5_2_PRO);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_2_PRO_2025_12_11",
+                     CAI_MODEL_GPT_5_2_PRO_2025_12_11);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_1", CAI_MODEL_GPT_5_1);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_1_2025_11_13",
+                     CAI_MODEL_GPT_5_1_2025_11_13);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_1_CODEX", CAI_MODEL_GPT_5_1_CODEX);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_1_CODEX_MAX",
+                     CAI_MODEL_GPT_5_1_CODEX_MAX);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_1_MINI", CAI_MODEL_GPT_5_1_MINI);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_1_CHAT_LATEST",
+                     CAI_MODEL_GPT_5_1_CHAT_LATEST);
+  CAI_LUA_SET_STRING("MODEL_GPT_5", CAI_MODEL_GPT_5);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_MINI", CAI_MODEL_GPT_5_MINI);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_NANO", CAI_MODEL_GPT_5_NANO);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_2025_08_07",
+                     CAI_MODEL_GPT_5_2025_08_07);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_MINI_2025_08_07",
+                     CAI_MODEL_GPT_5_MINI_2025_08_07);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_NANO_2025_08_07",
+                     CAI_MODEL_GPT_5_NANO_2025_08_07);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_CHAT_LATEST", CAI_MODEL_GPT_5_CHAT_LATEST);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_CODEX", CAI_MODEL_GPT_5_CODEX);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_PRO", CAI_MODEL_GPT_5_PRO);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_PRO_2025_10_06",
+                     CAI_MODEL_GPT_5_PRO_2025_10_06);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1", CAI_MODEL_GPT_4_1);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1_MINI", CAI_MODEL_GPT_4_1_MINI);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1_NANO", CAI_MODEL_GPT_4_1_NANO);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1_2025_04_14",
+                     CAI_MODEL_GPT_4_1_2025_04_14);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1_MINI_2025_04_14",
+                     CAI_MODEL_GPT_4_1_MINI_2025_04_14);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1_NANO_2025_04_14",
+                     CAI_MODEL_GPT_4_1_NANO_2025_04_14);
+  CAI_LUA_SET_STRING("MODEL_O4_MINI", CAI_MODEL_O4_MINI);
+  CAI_LUA_SET_STRING("MODEL_O4_MINI_2025_04_16",
+                     CAI_MODEL_O4_MINI_2025_04_16);
+  CAI_LUA_SET_STRING("MODEL_O4_MINI_DEEP_RESEARCH",
+                     CAI_MODEL_O4_MINI_DEEP_RESEARCH);
+  CAI_LUA_SET_STRING("MODEL_O4_MINI_DEEP_RESEARCH_2025_06_26",
+                     CAI_MODEL_O4_MINI_DEEP_RESEARCH_2025_06_26);
+  CAI_LUA_SET_STRING("MODEL_O3", CAI_MODEL_O3);
+  CAI_LUA_SET_STRING("MODEL_O3_2025_04_16", CAI_MODEL_O3_2025_04_16);
+  CAI_LUA_SET_STRING("MODEL_O3_MINI", CAI_MODEL_O3_MINI);
+  CAI_LUA_SET_STRING("MODEL_O3_MINI_2025_01_31",
+                     CAI_MODEL_O3_MINI_2025_01_31);
+  CAI_LUA_SET_STRING("MODEL_O3_PRO", CAI_MODEL_O3_PRO);
+  CAI_LUA_SET_STRING("MODEL_O3_PRO_2025_06_10",
+                     CAI_MODEL_O3_PRO_2025_06_10);
+  CAI_LUA_SET_STRING("MODEL_O3_DEEP_RESEARCH", CAI_MODEL_O3_DEEP_RESEARCH);
+  CAI_LUA_SET_STRING("MODEL_O3_DEEP_RESEARCH_2025_06_26",
+                     CAI_MODEL_O3_DEEP_RESEARCH_2025_06_26);
+  CAI_LUA_SET_STRING("MODEL_O1", CAI_MODEL_O1);
+  CAI_LUA_SET_STRING("MODEL_O1_2024_12_17", CAI_MODEL_O1_2024_12_17);
+  CAI_LUA_SET_STRING("MODEL_O1_PRO", CAI_MODEL_O1_PRO);
+  CAI_LUA_SET_STRING("MODEL_O1_PRO_2025_03_19",
+                     CAI_MODEL_O1_PRO_2025_03_19);
+  CAI_LUA_SET_STRING("MODEL_O1_PREVIEW", CAI_MODEL_O1_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_O1_PREVIEW_2024_09_12",
+                     CAI_MODEL_O1_PREVIEW_2024_09_12);
+  CAI_LUA_SET_STRING("MODEL_O1_MINI", CAI_MODEL_O1_MINI);
+  CAI_LUA_SET_STRING("MODEL_O1_MINI_2024_09_12",
+                     CAI_MODEL_O1_MINI_2024_09_12);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O", CAI_MODEL_GPT_4O);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_2024_11_20",
+                     CAI_MODEL_GPT_4O_2024_11_20);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_2024_08_06",
+                     CAI_MODEL_GPT_4O_2024_08_06);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_2024_05_13",
+                     CAI_MODEL_GPT_4O_2024_05_13);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_AUDIO_PREVIEW",
+                     CAI_MODEL_GPT_4O_AUDIO_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_AUDIO_PREVIEW_2024_10_01",
+                     CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_10_01);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_AUDIO_PREVIEW_2024_12_17",
+                     CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_12_17);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_AUDIO_PREVIEW_2025_06_03",
+                     CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2025_06_03);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_MINI_AUDIO_PREVIEW",
+                     CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_MINI_AUDIO_PREVIEW_2024_12_17",
+                     CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW_2024_12_17);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_SEARCH_PREVIEW",
+                     CAI_MODEL_GPT_4O_SEARCH_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_MINI_SEARCH_PREVIEW",
+                     CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_SEARCH_PREVIEW_2025_03_11",
+                     CAI_MODEL_GPT_4O_SEARCH_PREVIEW_2025_03_11);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_MINI_SEARCH_PREVIEW_2025_03_11",
+                     CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW_2025_03_11);
+  CAI_LUA_SET_STRING("MODEL_CHATGPT_4O_LATEST", CAI_MODEL_CHATGPT_4O_LATEST);
+  CAI_LUA_SET_STRING("MODEL_CODEX_MINI_LATEST", CAI_MODEL_CODEX_MINI_LATEST);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_MINI", CAI_MODEL_GPT_4O_MINI);
+  CAI_LUA_SET_STRING("MODEL_GPT_4O_MINI_2024_07_18",
+                     CAI_MODEL_GPT_4O_MINI_2024_07_18);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_TURBO", CAI_MODEL_GPT_4_TURBO);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_TURBO_2024_04_09",
+                     CAI_MODEL_GPT_4_TURBO_2024_04_09);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_0125_PREVIEW",
+                     CAI_MODEL_GPT_4_0125_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_TURBO_PREVIEW",
+                     CAI_MODEL_GPT_4_TURBO_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_1106_PREVIEW",
+                     CAI_MODEL_GPT_4_1106_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_VISION_PREVIEW",
+                     CAI_MODEL_GPT_4_VISION_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_GPT_4", CAI_MODEL_GPT_4);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_0314", CAI_MODEL_GPT_4_0314);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_0613", CAI_MODEL_GPT_4_0613);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_32K", CAI_MODEL_GPT_4_32K);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_32K_0314", CAI_MODEL_GPT_4_32K_0314);
+  CAI_LUA_SET_STRING("MODEL_GPT_4_32K_0613", CAI_MODEL_GPT_4_32K_0613);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO", CAI_MODEL_GPT_3_5_TURBO);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO_16K",
+                     CAI_MODEL_GPT_3_5_TURBO_16K);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO_0301",
+                     CAI_MODEL_GPT_3_5_TURBO_0301);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO_0613",
+                     CAI_MODEL_GPT_3_5_TURBO_0613);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO_1106",
+                     CAI_MODEL_GPT_3_5_TURBO_1106);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO_0125",
+                     CAI_MODEL_GPT_3_5_TURBO_0125);
+  CAI_LUA_SET_STRING("MODEL_GPT_3_5_TURBO_16K_0613",
+                     CAI_MODEL_GPT_3_5_TURBO_16K_0613);
+  CAI_LUA_SET_STRING("MODEL_COMPUTER_USE_PREVIEW",
+                     CAI_MODEL_COMPUTER_USE_PREVIEW);
+  CAI_LUA_SET_STRING("MODEL_COMPUTER_USE_PREVIEW_2025_03_11",
+                     CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11);
+  CAI_LUA_SET_STRING(
+      "OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE",
+      CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE);
+  CAI_LUA_SET_STRING("OPENROUTER_MODEL_FREE_ROUTER",
+                     CAI_OPENROUTER_MODEL_FREE_ROUTER);
+  CAI_LUA_SET_STRING("OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE",
+                     CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE);
+  CAI_LUA_SET_STRING("OPENROUTER_MODEL_DEFAULT_RESPONSES",
+                     CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES);
+  CAI_LUA_SET_STRING("MCP_PROTOCOL_VERSION", CAI_MCP_PROTOCOL_VERSION);
+#undef CAI_LUA_SET_INTEGER
+#undef CAI_LUA_SET_STRING
   return 1;
 }

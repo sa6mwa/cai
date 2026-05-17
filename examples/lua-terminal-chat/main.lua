@@ -126,8 +126,17 @@ while true do
         io.write(string.format("%s[%stool%s]%s %s input=%s\n",
           gray, cyan, gray, reset, event.name or "(unknown)", event.arguments_json or "{}"))
       elseif event.kind == "output" then
-        io.write(string.format("%s[%stool%s]%s %s output_bytes=%d\n",
-          gray, cyan, gray, reset, event.name or "(unknown)", event.output_size or 0))
+        io.write(string.format("%s[%stool%s]%s %s output=",
+          gray, cyan, gray, reset, event.name or "(unknown)"))
+        if event.write_output then
+          event.write_output(function(chunk)
+            io.write(chunk)
+            return true
+          end)
+        else
+          io.write(string.format("<%d bytes>", event.output_size or 0))
+        end
+        io.write("\n")
       elseif event.kind == "error" then
         io.write(string.format("%s[%stool%s]%s %s failed\n",
           gray, cyan, gray, reset, event.name or "(unknown)"))
