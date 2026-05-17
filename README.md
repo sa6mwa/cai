@@ -8,8 +8,8 @@ stream-first data flow, explicit ownership, predictable error handling, and
 good ergonomics for agentic workflows without forcing application code to build
 raw HTTP requests or hand-roll JSON.
 
-See [PLAN.md](PLAN.md) for the current implementation plan and
-[ROADMAP.md](ROADMAP.md) for future WebSocket work.
+See [ROADMAP.md](ROADMAP.md) for current prerelease status, parked work, and
+future feature planning.
 
 OpenAI documents both Responses WebSocket mode and Realtime WebSocket, but cai
 does not implement either yet. Responses WebSocket is a transport option for
@@ -19,11 +19,19 @@ surface for low-latency text/audio sessions. Both are parked in
 a C mock WebSocket test server, and clear DX separate from the current HTTP/SSE
 Responses path.
 
+## Scope
+
+The first prerelease target is the C SDK: OpenAI Responses, Conversations,
+HTTP/SSE streaming, agent/session DX, local tool callbacks, MCP tool serving,
+examples, and release packaging.
+
+Lua bindings and WebSocket transports are not part of the first C prerelease.
+They are tracked in [ROADMAP.md](ROADMAP.md).
+
 ## Status
 
-This project is under active implementation. The API surface is still expected
-to change while the Responses, Conversations, streaming, tool, compaction, and
-example layers settle.
+This project is in prerelease hardening. The C API is close to first-release
+shape, but may still change before the initial tag.
 
 ## Design Bias
 
