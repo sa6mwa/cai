@@ -107,6 +107,11 @@ typedef struct cai_lua_headers_ctx {
   int response_table_ref;
 } cai_lua_headers_ctx;
 
+typedef struct cai_lua_tool_event_ctx {
+  lua_State *L;
+  int callback_ref;
+} cai_lua_tool_event_ctx;
+
 static void cai_lua_error_cleanup(cai_error *error) {
   cai_error_cleanup(error);
 }
@@ -748,6 +753,11 @@ static int cai_lua_open(lua_State *L) {
   cai_error_init(&error);
   cai_client_config_init(&config);
   if (lua_istable(L, 1)) {
+    lua_getfield(L, 1, "openrouter");
+    if (lua_toboolean(L, -1)) {
+      cai_client_config_use_openrouter(&config);
+    }
+    lua_pop(L, 1);
     config.api_key = cai_lua_opt_string_field(L, 1, "api_key", config.api_key);
     config.api_key_env =
         cai_lua_opt_string_field(L, 1, "api_key_env", config.api_key_env);
@@ -936,6 +946,110 @@ static int cai_lua_agent_run(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_tool_event_trampoline(void *context,
+                                         const cai_tool_event *event,
+                                         cai_error *error) {
+  cai_lua_tool_event_ctx *ctx;
+  int rc;
+  (void)error;
+  ctx = (cai_lua_tool_event_ctx *)context;
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
+  lua_newtable(ctx->L);
+  lua_pushinteger(ctx->L, event->type);
+  lua_setfield(ctx->L, -2, "type");
+  if (event->type == CAI_TOOL_EVENT_START) {
+    lua_pushstring(ctx->L, "start");
+  } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+    lua_pushstring(ctx->L, "output");
+  } else if (event->type == CAI_TOOL_EVENT_ERROR) {
+    lua_pushstring(ctx->L, "error");
+  } else {
+    lua_pushstring(ctx->L, "unknown");
+  }
+  lua_setfield(ctx->L, -2, "kind");
+  if (event->name != NULL) {
+    lua_pushstring(ctx->L, event->name);
+    lua_setfield(ctx->L, -2, "name");
+  }
+  if (event->arguments_json != NULL) {
+    lua_pushstring(ctx->L, event->arguments_json);
+    lua_setfield(ctx->L, -2, "arguments_json");
+  }
+  if (event->arguments_json_spooled != NULL) {
+    lua_pushinteger(ctx->L, (lua_Integer)event->arguments_json_spooled->size);
+    lua_setfield(ctx->L, -2, "arguments_size");
+  }
+  if (event->output_json != NULL) {
+    lua_pushinteger(ctx->L, (lua_Integer)event->output_json->size);
+    lua_setfield(ctx->L, -2, "output_size");
+  }
+  if (event->tool_error != NULL) {
+    cai_lua_push_error(ctx->L, event->tool_error->code, event->tool_error);
+    lua_setfield(ctx->L, -2, "error");
+  }
+  rc = lua_pcall(ctx->L, 1, 1, 0);
+  if (rc != LUA_OK) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_INVALID;
+  }
+  if (lua_isboolean(ctx->L, -1) && !lua_toboolean(ctx->L, -1)) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_CANCELLED;
+  }
+  lua_pop(ctx->L, 1);
+  return CAI_OK;
+}
+
+static void cai_lua_run_options_from_table(lua_State *L, int index,
+                                           cai_run_options *options,
+                                           cai_lua_tool_event_ctx *event_ctx) {
+  index = lua_absindex(L, index);
+  cai_run_options_init(options);
+  if (!lua_istable(L, index)) {
+    return;
+  }
+  options->max_tool_rounds = cai_lua_opt_int_field(L, index, "max_tool_rounds",
+                                                   options->max_tool_rounds);
+  options->tool_output_memory_limit = cai_lua_opt_size_field(
+      L, index, "tool_output_memory_limit", options->tool_output_memory_limit);
+  options->tool_output_max_bytes = cai_lua_opt_size_field(
+      L, index, "tool_output_max_bytes", options->tool_output_max_bytes);
+  options->tool_spool_dir = cai_lua_opt_string_field(L, index, "tool_spool_dir",
+                                                     options->tool_spool_dir);
+  lua_getfield(L, index, "tool_event");
+  if (lua_isfunction(L, -1)) {
+    event_ctx->L = L;
+    lua_pushvalue(L, -1);
+    event_ctx->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    options->tool_event = cai_lua_tool_event_trampoline;
+    options->tool_event_context = event_ctx;
+  }
+  lua_pop(L, 1);
+}
+
+static int cai_lua_agent_run_auto(lua_State *L) {
+  cai_lua_agent *self;
+  cai_response *response;
+  cai_run_options options;
+  cai_lua_tool_event_ctx event_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  memset(&event_ctx, 0, sizeof(event_ctx));
+  cai_error_init(&error);
+  cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
+  rc = self->ptr->run_auto(self->ptr, &options, &response, &error);
+  if (event_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_response(L, response);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_run_output(lua_State *L) {
   cai_lua_agent *self;
   cai_output *output;
@@ -1023,6 +1137,7 @@ static int cai_lua_agent_stream(lua_State *L) {
   cai_lua_agent *self;
   cai_stream_sinks sinks;
   cai_run_options options;
+  cai_lua_tool_event_ctx event_ctx;
   cai_sink *reasoning_sink;
   cai_sink *output_sink;
   cai_lua_sink_ctx reasoning_ctx;
@@ -1033,7 +1148,8 @@ static int cai_lua_agent_stream(lua_State *L) {
   luaL_checktype(L, 2, LUA_TTABLE);
   cai_error_init(&error);
   cai_stream_sinks_init(&sinks);
-  cai_run_options_init(&options);
+  memset(&event_ctx, 0, sizeof(event_ctx));
+  cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
   memset(&reasoning_ctx, 0, sizeof(reasoning_ctx));
   memset(&output_ctx, 0, sizeof(output_ctx));
   reasoning_sink = NULL;
@@ -1076,6 +1192,9 @@ static int cai_lua_agent_stream(lua_State *L) {
   }
   lua_pop(L, 1);
   rc = self->ptr->stream_auto(self->ptr, &options, &sinks, &error);
+  if (event_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
+  }
   if (reasoning_sink != NULL) {
     cai_sink_close(reasoning_sink);
   }
@@ -1276,6 +1395,29 @@ static int cai_lua_session_run(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_session_run_auto(lua_State *L) {
+  cai_lua_session *self;
+  cai_response *response;
+  cai_run_options options;
+  cai_lua_tool_event_ctx event_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  memset(&event_ctx, 0, sizeof(event_ctx));
+  cai_error_init(&error);
+  cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
+  rc = cai_session_run_auto(self->ptr, &options, &response, &error);
+  if (event_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
+  }
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_response(L, response);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_session_run_output(lua_State *L) {
   cai_lua_session *self;
   cai_output *output;
@@ -1310,6 +1452,72 @@ static int cai_lua_session_stream_text(lua_State *L) {
     cai_sink_close(sink);
   }
   luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_stream(lua_State *L) {
+  cai_lua_session *self;
+  cai_stream_sinks sinks;
+  cai_run_options options;
+  cai_lua_tool_event_ctx event_ctx;
+  cai_sink *reasoning_sink;
+  cai_sink *output_sink;
+  cai_lua_sink_ctx reasoning_ctx;
+  cai_lua_sink_ctx output_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_session(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  cai_error_init(&error);
+  cai_stream_sinks_init(&sinks);
+  memset(&event_ctx, 0, sizeof(event_ctx));
+  cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
+  memset(&reasoning_ctx, 0, sizeof(reasoning_ctx));
+  memset(&output_ctx, 0, sizeof(output_ctx));
+  reasoning_sink = NULL;
+  output_sink = NULL;
+  lua_getfield(L, 2, "reasoning");
+  if (lua_isfunction(L, -1)) {
+    rc = cai_lua_make_sink(L, -1, &reasoning_ctx, &reasoning_sink, &error);
+    if (rc != CAI_OK) {
+      lua_pop(L, 1);
+      return cai_lua_fail(L, rc, &error);
+    }
+    sinks.reasoning_summary = reasoning_sink;
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "response");
+  if (lua_isfunction(L, -1)) {
+    rc = cai_lua_make_sink(L, -1, &output_ctx, &output_sink, &error);
+    if (rc != CAI_OK) {
+      lua_pop(L, 1);
+      return cai_lua_fail(L, rc, &error);
+    }
+    sinks.output_text = output_sink;
+  }
+  lua_pop(L, 1);
+  cai_lua_apply_affix(L, 2, "reasoning_prefix",
+                      &sinks.reasoning_summary_prefix);
+  cai_lua_apply_affix(L, 2, "reasoning_suffix",
+                      &sinks.reasoning_summary_suffix);
+  cai_lua_apply_affix(L, 2, "response_prefix", &sinks.output_text_prefix);
+  cai_lua_apply_affix(L, 2, "response_suffix", &sinks.output_text_suffix);
+  rc = cai_session_stream_auto(self->ptr, &options, &sinks, &error);
+  if (event_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
+  }
+  if (reasoning_sink != NULL) {
+    cai_sink_close(reasoning_sink);
+  }
+  if (output_sink != NULL) {
+    cai_sink_close(output_sink);
+  }
+  if (reasoning_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, reasoning_ctx.callback_ref);
+  }
+  if (output_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, output_ctx.callback_ref);
+  }
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -1906,6 +2114,35 @@ static int cai_lua_schema_add_boolean(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_model_info(lua_State *L) {
+  const cai_model_info *info;
+  const char *model;
+  model = luaL_checkstring(L, 1);
+  info = cai_model_info_by_id(model);
+  if (info == NULL) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_newtable(L);
+  lua_pushstring(L, info->id);
+  lua_setfield(L, -2, "id");
+  lua_pushinteger(L, (lua_Integer)info->capabilities);
+  lua_setfield(L, -2, "capabilities");
+  lua_pushinteger(L, (lua_Integer)info->metadata_flags);
+  lua_setfield(L, -2, "metadata_flags");
+  lua_pushinteger(L, (lua_Integer)info->context_window_tokens);
+  lua_setfield(L, -2, "context_window_tokens");
+  lua_pushinteger(L, (lua_Integer)info->auto_compact_token_limit);
+  lua_setfield(L, -2, "auto_compact_token_limit");
+  lua_pushnumber(L, info->input_usd_per_million);
+  lua_setfield(L, -2, "input_usd_per_million");
+  lua_pushnumber(L, info->cached_input_usd_per_million);
+  lua_setfield(L, -2, "cached_input_usd_per_million");
+  lua_pushnumber(L, info->output_usd_per_million);
+  lua_setfield(L, -2, "output_usd_per_million");
+  return 1;
+}
+
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
     {"close", cai_lua_client_close},
@@ -1917,6 +2154,7 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"add_user_image_url", cai_lua_agent_add_user_image_url},
     {"add_user_file_path", cai_lua_agent_add_user_file_path},
     {"run", cai_lua_agent_run},
+    {"run_auto", cai_lua_agent_run_auto},
     {"run_output", cai_lua_agent_run_output},
     {"send_text", cai_lua_agent_send_text},
     {"stream_text", cai_lua_agent_stream_text},
@@ -1933,8 +2171,10 @@ static const luaL_Reg cai_lua_agent_methods[] = {
 static const luaL_Reg cai_lua_session_methods[] = {
     {"add_user_text", cai_lua_session_add_user_text},
     {"run", cai_lua_session_run},
+    {"run_auto", cai_lua_session_run_auto},
     {"run_output", cai_lua_session_run_output},
     {"send_text", cai_lua_session_send_text},
+    {"stream", cai_lua_session_stream},
     {"stream_text", cai_lua_session_stream_text},
     {"last_usage", cai_lua_session_last_usage},
     {"save_state_path", cai_lua_session_save_state_path},
@@ -2015,6 +2255,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "mcp_handler");
   lua_pushcfunction(L, cai_lua_schema_new);
   lua_setfield(L, -2, "tool_schema");
+  lua_pushcfunction(L, cai_lua_model_info);
+  lua_setfield(L, -2, "model_info");
   lua_pushstring(L, CAI_SESSION_CONTINUITY_SERVER == 0 ? "server" : "server");
   lua_setfield(L, -2, "CONTINUITY_SERVER_NAME");
   lua_pushinteger(L, CAI_SESSION_CONTINUITY_SERVER);

@@ -21,6 +21,19 @@ assert(type(cai.mcp_handler) == "function")
 assert(type(cai.tool_schema) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
+local model = cai.model_info(cai.MODEL_GPT_5_NANO)
+assert(type(model) == "table")
+assert(model.context_window_tokens > 0)
+assert(model.auto_compact_token_limit > 0)
+
+local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+dummy_client:close()
+local dummy_openrouter = assert_ok(cai.open({
+  openrouter = true,
+  api_key = "test-key",
+  timeout_ms = 1,
+}))
+dummy_openrouter:close()
 
 local schema = assert_ok(cai.tool_schema())
 assert_ok(schema:string("city", "City name", true))
