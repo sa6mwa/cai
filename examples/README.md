@@ -141,7 +141,8 @@ OPENAI_API_KEY=... lua examples/lua-basic/main.lua
 
 Lua examples use `require("cai")` and the LuaRock module built by
 `make lua-rock`. The rock depends on the `lonejson` Lua rock; `make lua-rock`
-installs that dependency into `build/luarocks` when needed.
+installs the required lonejson source rock from the official GitHub release
+into `build/luarocks` when needed.
 
 ## Lua Terminal Chat
 

@@ -11,12 +11,21 @@ CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
 RELEASE_VERSION := $(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/debug/generated/include/cai/version.h 2>/dev/null || printf '0.0.0')
+CAI_CPKT_TARGET ?= x86_64-linux-gnu
+CAI_C_PKT_SYSTEMS_VERSION ?= 0.1.0
+CAI_LONEJSON_VERSION ?= 0.16.0
+CAI_PSLOG_VERSION ?= 0.4.1
+LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
+CAI_C_PKT_SYSTEMS_PREFIX := $(CURDIR)/.cache/deps/c.pkt.systems-$(CAI_C_PKT_SYSTEMS_VERSION)-$(CAI_CPKT_TARGET)
+CAI_LONEJSON_PREFIX := $(CURDIR)/.cache/deps/liblonejson-$(CAI_LONEJSON_VERSION)-$(CAI_CPKT_TARGET)
+CAI_PSLOG_PREFIX := $(CURDIR)/.cache/deps/libpslog-$(CAI_PSLOG_VERSION)-$(CAI_CPKT_TARGET)
 LUA_ROCK_TREE := build/luarocks
 LUA_ROCKSPEC := $(LUA_ROCK_TREE)/cai-$(RELEASE_VERSION)-1.rockspec
 LUA_ROCK_STAMP := $(LUA_ROCK_TREE)/.installed.stamp
 LUA_ROCK_BUILD_LOCK := $(LUA_ROCK_TREE)/.build.lock
 LUA_ROCK_EXTRA_CFLAGS ?= -O3 -DNDEBUG
 LUA_ROCK_PREFIX := $(LUA_ROCK_TREE)/cai-prefix
+LUA_LONEJSON_ROCK_STAMP := $(LUA_ROCK_TREE)/lib/luarocks/rocks-5.5/lonejson/$(CAI_LONEJSON_VERSION)-1/rock_manifest
 RELEASE_LUA_ROCK_DIR := dist/lua-rock
 RELEASE_LUA_STAGE_DIR := $(RELEASE_LUA_ROCK_DIR)/cai-$(RELEASE_VERSION)
 RELEASE_LUA_SOURCE_TARBALL := dist/cai-lua-$(RELEASE_VERSION).tar.gz
@@ -26,6 +35,7 @@ RELEASE_LUA_PACK_STAGE_DIR := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)
 RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar.gz
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
+LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 
 .PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
@@ -90,9 +100,13 @@ $(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | build-debu
 	mkdir -p "$(LUA_ROCK_TREE)"
 	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(LUA_ROCKSPEC)" "git+file://$(CURDIR)" "" "$$lib_ext" ""
 
-$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) lua/cai_lua.c scripts/build_lua_rock.sh
+$(LUA_LONEJSON_ROCK_STAMP):
+	mkdir -p "$(LUA_ROCK_TREE)"
+	luarocks install --tree "$(LUA_ROCK_TREE)" "$(LONEJSON_LUA_ROCK_URL)"
+
+$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh
 	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
-	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CURDIR)/.cache/deps/liblonejson-0.16.0-x86_64-linux-gnu/lib/pkgconfig:$(CURDIR)/.cache/deps/libpslog-0.4.1-x86_64-linux-gnu/lib/pkgconfig:$(CURDIR)/.cache/deps/c.pkt.systems-0.1.0-x86_64-linux-gnu/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
+	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
 
 lua-rock: $(LUA_ROCK_STAMP)
 
@@ -100,11 +114,11 @@ lua-test: lua-rock
 	asan_lib="$$(cc -print-file-name=libasan.so 2>/dev/null || true)"; \
 	if [[ ! -f "$$asan_lib" ]]; then asan_lib=""; fi; \
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
-	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CURDIR)/.cache/deps/liblonejson-0.16.0-x86_64-linux-gnu/lib:$(CURDIR)/.cache/deps/c.pkt.systems-0.1.0-x86_64-linux-gnu/lib:$${LD_LIBRARY_PATH:-}" \
+	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	LD_PRELOAD="$${asan_lib}$${LD_PRELOAD:+:$$LD_PRELOAD}" \
 	lua tests/lua/test_lua.lua
 
-$(RELEASE_LUA_SOURCE_TARBALL): scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in | build-debug
+$(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS) | build-debug
 	rm -rf "$(RELEASE_LUA_ROCK_DIR)" "$(RELEASE_LUA_SOURCE_TARBALL)"
 	mkdir -p "$(RELEASE_LUA_ROCK_DIR)"
 	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_STAGE_DIR)" "$(RELEASE_VERSION)"
@@ -115,7 +129,7 @@ $(RELEASE_LUA_SOURCE_TARBALL): scripts/stage_lua_rock_sources.sh lua/cai_lua.c c
 $(RELEASE_LUA_ROCKSPEC): $(RELEASE_LUA_SOURCE_TARBALL) scripts/render_release_rockspec.sh
 	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(RELEASE_LUA_ROCKSPEC)" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"
 
-$(RELEASE_LUA_PACK_SOURCE_TARBALL): scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in | build-debug
+$(RELEASE_LUA_PACK_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS) | build-debug
 	rm -rf "$(RELEASE_LUA_PACK_DIR)"
 	mkdir -p "$(RELEASE_LUA_PACK_DIR)"
 	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_PACK_STAGE_DIR)" "$(RELEASE_VERSION)"
