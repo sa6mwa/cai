@@ -145,8 +145,8 @@ Lua examples use `require("cai")` and the LuaRock module built by
 ## Lua Terminal Chat
 
 Lua port of the terminal chat agent. It streams reasoning and response text,
-prints usage, registers SearXNG search, and registers the persisted
-`todo_kanban` tool preset.
+prints streamed tool input/output, prints usage, registers SearXNG search, and
+registers the persisted `todo_kanban` tool preset.
 
 ```sh
 make lua-rock

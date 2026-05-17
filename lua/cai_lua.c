@@ -2524,6 +2524,52 @@ static int cai_lua_response_refusal(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_response_write_output_text(lua_State *L) {
+  cai_lua_response *self;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_response(L, 1);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_response_write_output_text(self->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_response_write_refusal(lua_State *L) {
+  cai_lua_response *self;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_response(L, 1);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_response_write_refusal(self->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_response_tool_calls(lua_State *L) {
   cai_lua_response *self;
   size_t i;
@@ -2677,6 +2723,29 @@ static int cai_lua_output_write_text(lua_State *L) {
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
     rc = cai_output_write_text(self->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_output_write_refusal(lua_State *L) {
+  cai_lua_output *self;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_output(L, 1);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_output_write_refusal(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -3771,6 +3840,8 @@ static const luaL_Reg cai_lua_response_methods[] = {
     {"model", cai_lua_response_model},
     {"output_text", cai_lua_response_output_text},
     {"refusal", cai_lua_response_refusal},
+    {"write_output_text", cai_lua_response_write_output_text},
+    {"write_refusal", cai_lua_response_write_refusal},
     {"raw_json", cai_lua_response_raw_json},
     {"usage", cai_lua_response_usage},
     {"tool_calls", cai_lua_response_tool_calls},
@@ -3784,6 +3855,7 @@ static const luaL_Reg cai_lua_output_methods[] = {
     {"refusal", cai_lua_output_refusal},
     {"raw_json", cai_lua_output_raw_json},
     {"write_text", cai_lua_output_write_text},
+    {"write_refusal", cai_lua_output_write_refusal},
     {"close", cai_lua_output_close},
     {NULL, NULL}};
 

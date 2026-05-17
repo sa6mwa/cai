@@ -99,8 +99,9 @@ over the C library, while Vectis can still call the C API directly where that
 fits its performance and integration needs better.
 
 The Lua examples include a basic streaming agent, a terminal chatbot with
-SearXNG and todo/kanban tools, low-level conversation handling, and session
-state save/restore. See [examples/README.md](examples/README.md).
+SearXNG and todo/kanban tools, streamed tool output, low-level conversation
+handling, and session state save/restore. See
+[examples/README.md](examples/README.md).
 - Non-streamed JSON responses are capped by `json_response_limit_bytes`
   (default 1 MiB). Tool output can spill to disk with
   `tool_output_memory_limit` and can be hard-capped per auto-run with
