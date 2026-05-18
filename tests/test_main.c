@@ -3411,6 +3411,177 @@ static void test_response_spooled_request_fragments(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_response_array_serialization_invariants(test_state *state) {
+  cai_response_create_params *params;
+  lonejson_spooled array_spool;
+  lonejson_spooled item_spool;
+  cai_response *response;
+  cai_error error;
+  lonejson_error json_error;
+  char *json;
+  char *items;
+  char wrapped[2048];
+  size_t json_len;
+  static const char empty_response_json[] =
+      "{\"id\":\"resp_empty_output\",\"status\":\"completed\",\"output\":[]}";
+  static const char output_response_json[] =
+      "{\"id\":\"resp_array_output\",\"status\":\"completed\",\"output\":["
+      "{\"type\":\"reasoning\",\"id\":\"rs_array\",\"summary\":[]},"
+      "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"array output\"}]}]}";
+
+  cai_error_init(&error);
+  params = NULL;
+  response = NULL;
+  json = NULL;
+  items = NULL;
+  memset(&array_spool, 0, sizeof(array_spool));
+  memset(&item_spool, 0, sizeof(item_spool));
+
+  expect_int(state, "array_serial_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "array_serial_empty_array",
+             cai_input_messages_spool_json_array(&params->input, &array_spool,
+                                                 &json_len, &error),
+             CAI_OK);
+  json = test_spooled_to_cstr(&array_spool);
+  if (json == NULL) {
+    test_fail(state, "array_serial_empty_array", "failed to read empty array");
+  } else {
+    expect_str(state, "array_serial_empty_array_value", json, "[]");
+    expect_int(state, "array_serial_empty_array_len", (long)strlen(json),
+               (long)json_len);
+    free(json);
+    json = NULL;
+  }
+  lonejson_spooled_cleanup(&array_spool);
+
+  expect_int(state, "array_serial_null_out",
+             cai_input_messages_spool_json_array(&params->input, NULL, NULL,
+                                                 &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  expect_int(state, "array_serial_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_NANO, &error),
+             CAI_OK);
+  expect_int(state, "array_serial_user_text",
+             cai_response_create_params_add_text(params, "user",
+                                                 "array user text", &error),
+             CAI_OK);
+  expect_int(state, "array_serial_tool_output",
+             cai_response_create_params_add_function_call_output_text(
+                 params, "call_array", "array tool text", &error),
+             CAI_OK);
+  expect_int(state, "array_serial_full_array",
+             cai_input_messages_spool_json_array(&params->input, &array_spool,
+                                                 &json_len, &error),
+             CAI_OK);
+  json = test_spooled_to_cstr(&array_spool);
+  if (json == NULL) {
+    test_fail(state, "array_serial_full_array", "failed to read full array");
+  } else {
+    lonejson_error_init(&json_error);
+    expect_int(state, "array_serial_full_array_valid",
+               lonejson_validate_cstr(json, &json_error), LONEJSON_STATUS_OK);
+    if (json[0] != '[' || strstr(json, "\"array user text\"") == NULL ||
+        strstr(json, "\"function_call_output\"") == NULL ||
+        strstr(json, "\"array tool text\"") == NULL) {
+      test_fail(state, "array_serial_full_array_shape",
+                "full input array was not emitted correctly");
+    }
+    expect_int(state, "array_serial_full_array_len", (long)strlen(json),
+               (long)json_len);
+    free(json);
+    json = NULL;
+  }
+  lonejson_spooled_cleanup(&array_spool);
+
+  expect_int(state, "array_serial_items_fragment",
+             cai_response_params_input_items_spool(params, &item_spool,
+                                                   &json_len, &error),
+             CAI_OK);
+  items = test_spooled_to_cstr(&item_spool);
+  if (items == NULL) {
+    test_fail(state, "array_serial_items_fragment",
+              "failed to read input item fragment");
+  } else {
+    if (items[0] == '[' || strstr(items, "\"array user text\"") == NULL ||
+        strstr(items, "\"array tool text\"") == NULL) {
+      test_fail(state, "array_serial_items_fragment_shape",
+                "input item fragment was not emitted correctly");
+    }
+    snprintf(wrapped, sizeof(wrapped), "[%s]", items);
+    lonejson_error_init(&json_error);
+    expect_int(state, "array_serial_items_fragment_valid",
+               lonejson_validate_cstr(wrapped, &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "array_serial_items_fragment_len", (long)strlen(items),
+               (long)json_len);
+    free(items);
+    items = NULL;
+  }
+  lonejson_spooled_cleanup(&item_spool);
+  cai_response_create_params_destroy(params);
+  params = NULL;
+
+  expect_int(state, "array_serial_empty_response_parse",
+             cai_response_parse_json(empty_response_json, &response, &error),
+             CAI_OK);
+  expect_int(state, "array_serial_empty_output_items",
+             cai_response_output_items_spool(response, &item_spool, &json_len,
+                                             &error),
+             CAI_OK);
+  items = test_spooled_to_cstr(&item_spool);
+  if (items == NULL) {
+    test_fail(state, "array_serial_empty_output_items",
+              "failed to read empty output items");
+  } else {
+    expect_str(state, "array_serial_empty_output_items_value", items, "");
+    expect_int(state, "array_serial_empty_output_items_len", (long)strlen(items),
+               (long)json_len);
+    free(items);
+    items = NULL;
+  }
+  lonejson_spooled_cleanup(&item_spool);
+  cai_response_destroy(response);
+  response = NULL;
+
+  expect_int(state, "array_serial_output_parse",
+             cai_response_parse_json(output_response_json, &response, &error),
+             CAI_OK);
+  expect_int(state, "array_serial_output_items",
+             cai_response_output_items_spool(response, &item_spool, &json_len,
+                                             &error),
+             CAI_OK);
+  items = test_spooled_to_cstr(&item_spool);
+  if (items == NULL) {
+    test_fail(state, "array_serial_output_items",
+              "failed to read output item fragment");
+  } else {
+    if (items[0] == '[' || strstr(items, "\"summary\":[]") == NULL ||
+        strstr(items, "\"array output\"") == NULL ||
+        strstr(items, "\"role\":null") != NULL) {
+      test_fail(state, "array_serial_output_items_shape",
+                "output item fragment was not emitted correctly");
+    }
+    snprintf(wrapped, sizeof(wrapped), "[%s]", items);
+    lonejson_error_init(&json_error);
+    expect_int(state, "array_serial_output_items_valid",
+               lonejson_validate_cstr(wrapped, &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "array_serial_output_items_len", (long)strlen(items),
+               (long)json_len);
+    free(items);
+    items = NULL;
+  }
+  lonejson_spooled_cleanup(&item_spool);
+  cai_response_destroy(response);
+  cai_error_cleanup(&error);
+}
+
 static int mock_write_all(int fd, const char *data, size_t length) {
   size_t offset;
   ssize_t written;
@@ -9631,6 +9802,7 @@ int main(void) {
   test_mike_mind_prompt_contract(&state);
   test_response_json(&state);
   test_response_spooled_request_fragments(&state);
+  test_response_array_serialization_invariants(&state);
   test_response_large_text_parse(&state);
   test_http_create_response(&state);
   test_http_error_details(&state);
