@@ -4,21 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct cai_json_string_doc {
-  char *value;
-} cai_json_string_doc;
-
-typedef struct cai_json_spooled_doc {
-  lonejson_spooled value;
-} cai_json_spooled_doc;
-
-typedef struct cai_json_builder_lonejson_sink_state {
-  cai_json_builder *builder;
-  size_t skip;
-  int hold_last;
-  char last;
-} cai_json_builder_lonejson_sink_state;
-
 typedef union cai_zero_alloc_header {
   struct {
     size_t size;
@@ -245,16 +230,9 @@ struct cai_response_request_upload {
 static int cai_spooled_copy_range(const lonejson_spooled *src,
                                   size_t skip_prefix, size_t copy_len,
                                   lonejson_spooled *dst, cai_error *error);
-
-static const lonejson_field cai_json_string_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(cai_json_string_doc, value, "value")};
-LONEJSON_MAP_DEFINE(cai_json_string_map, cai_json_string_doc,
-                    cai_json_string_fields);
-
-static const lonejson_field cai_json_spooled_fields[] = {
-    LONEJSON_FIELD_STRING_STREAM_REQ(cai_json_spooled_doc, value, "value")};
-LONEJSON_MAP_DEFINE(cai_json_spooled_map, cai_json_spooled_doc,
-                    cai_json_spooled_fields);
+static lonejson_status
+cai_response_json_builder_sink(void *user, const void *data, size_t len,
+                               lonejson_error *error);
 
 static const lonejson_field cai_response_content_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_content_doc, type, "type"),
@@ -808,64 +786,6 @@ int cai_json_builder_append(cai_json_builder *builder, const char *text,
   return CAI_OK;
 }
 
-static lonejson_status cai_json_builder_lonejson_sink(void *user,
-                                                      const void *data,
-                                                      size_t len,
-                                                      lonejson_error *error) {
-  cai_json_builder_lonejson_sink_state *state;
-  const char *bytes;
-  size_t offset;
-  size_t available;
-  cai_error sink_error;
-  int rc;
-
-  (void)error;
-  state = (cai_json_builder_lonejson_sink_state *)user;
-  bytes = (const char *)data;
-  offset = 0U;
-  if (state->skip > 0U) {
-    available = len < state->skip ? len : state->skip;
-    offset += available;
-    state->skip -= available;
-  }
-  cai_error_init(&sink_error);
-  available = len - offset;
-  if (available > 0U && state->hold_last) {
-    rc = cai_json_builder_append(state->builder, &state->last, 1U,
-                                 &sink_error);
-    if (rc != CAI_OK) {
-      cai_error_cleanup(&sink_error);
-      return LONEJSON_STATUS_ALLOCATION_FAILED;
-    }
-    state->hold_last = 0;
-  }
-  if (available > 1U) {
-    rc = cai_json_builder_append(state->builder, bytes + offset,
-                                 available - 1U, &sink_error);
-    if (rc != CAI_OK) {
-      cai_error_cleanup(&sink_error);
-      return LONEJSON_STATUS_ALLOCATION_FAILED;
-    }
-    offset += available - 1U;
-  }
-  if (offset < len) {
-    state->last = bytes[offset];
-    state->hold_last = 1;
-  }
-  cai_error_cleanup(&sink_error);
-  return LONEJSON_STATUS_OK;
-}
-
-static int cai_json_builder_lonejson_sink_finish(
-    cai_json_builder_lonejson_sink_state *state, cai_error *error) {
-  if (state->skip != 0U || !state->hold_last || state->last != '}') {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "lonejson produced an unexpected string wrapper");
-  }
-  state->hold_last = 0;
-  return CAI_OK;
-}
-
 int cai_json_builder_lit(cai_json_builder *builder, const char *text,
                          cai_error *error) {
   return cai_json_builder_append(builder, text, strlen(text), error);
@@ -873,62 +793,48 @@ int cai_json_builder_lit(cai_json_builder *builder, const char *text,
 
 int cai_json_builder_string(cai_json_builder *builder, const char *value,
                             cai_error *error) {
-  cai_json_string_doc doc;
-  cai_json_builder_lonejson_sink_state sink_state;
+  cai_response_json_builder_sink_context sink_context;
   lonejson_error json_error;
-  char *copy;
   lonejson_status status;
 
-  copy = cai_strdup(NULL, value);
-  if (copy == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate JSON string");
+  if (value == NULL) {
+    value = "";
   }
-  doc.value = copy;
-  sink_state.builder = builder;
-  sink_state.skip = sizeof("{\"value\":") - 1U;
-  sink_state.hold_last = 0;
-  sink_state.last = '\0';
+  sink_context.builder = builder;
+  sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_serialize_sink(&cai_json_string_map, &doc,
-                                   cai_json_builder_lonejson_sink, &sink_state,
-                                   NULL, &json_error);
+  status = lonejson_write_json_string_buffer_sink(
+      value, strlen(value), cai_response_json_builder_sink, &sink_context,
+      NULL, &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    cai_free_mem(NULL, copy);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to serialize JSON string",
                                 json_error.message);
   }
-  cai_free_mem(NULL, copy);
-  return cai_json_builder_lonejson_sink_finish(&sink_state, error);
+  return CAI_OK;
 }
 
 static int cai_json_builder_string_spooled(cai_json_builder *builder,
                                            const lonejson_spooled *value,
                                            cai_error *error) {
-  cai_json_spooled_doc doc;
-  cai_json_builder_lonejson_sink_state sink_state;
+  cai_response_json_builder_sink_context sink_context;
   lonejson_error json_error;
   lonejson_status status;
 
   if (value == NULL) {
     return cai_json_builder_lit(builder, "null", error);
   }
+  sink_context.builder = builder;
+  sink_context.error = error;
   lonejson_error_init(&json_error);
-  doc.value = *value;
-  sink_state.builder = builder;
-  sink_state.skip = sizeof("{\"value\":") - 1U;
-  sink_state.hold_last = 0;
-  sink_state.last = '\0';
-  status = lonejson_serialize_sink(&cai_json_spooled_map, &doc,
-                                   cai_json_builder_lonejson_sink, &sink_state,
-                                   NULL, &json_error);
+  status = lonejson_write_json_string_spooled_sink(
+      value, cai_response_json_builder_sink, &sink_context, NULL, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to serialize JSON spooled string",
                                 json_error.message);
   }
-  return cai_json_builder_lonejson_sink_finish(&sink_state, error);
+  return CAI_OK;
 }
 
 static int cai_json_builder_raw_spooled(cai_json_builder *builder,
