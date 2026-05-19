@@ -476,6 +476,9 @@ if(TARGET cai_shared)
 endif()
 if(TARGET cai_static)
   target_link_libraries(cai_static INTERFACE
+    $<BUILD_INTERFACE:CURL::libcurl>
+    $<BUILD_INTERFACE:Threads::Threads>
+    $<BUILD_INTERFACE:${CAI_LONEJSON_LINK}>
     $<INSTALL_INTERFACE:CURL::libcurl>
     $<INSTALL_INTERFACE:Threads::Threads>
     $<INSTALL_INTERFACE:lonejson::lonejson>)

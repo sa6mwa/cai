@@ -267,4 +267,56 @@ int main(void) {
   if(NOT consumer_build_result EQUAL 0)
     message(FATAL_ERROR "failed to build cai installed-package consumer")
   endif()
+
+  set(build_tree_consumer_dir "${CAI_BINARY_DIR}/build-tree-static-consumer")
+  file(REMOVE_RECURSE "${build_tree_consumer_dir}")
+  file(MAKE_DIRECTORY "${build_tree_consumer_dir}")
+  file(WRITE "${build_tree_consumer_dir}/CMakeLists.txt"
+"cmake_minimum_required(VERSION 3.21)
+project(cai_build_tree_static_consumer LANGUAGES C)
+set(CAI_BUILD_STATIC ON CACHE BOOL \"\" FORCE)
+set(CAI_BUILD_SHARED OFF CACHE BOOL \"\" FORCE)
+set(CAI_BUILD_TESTS OFF CACHE BOOL \"\" FORCE)
+set(CAI_BUILD_INTEGRATION_TESTS OFF CACHE BOOL \"\" FORCE)
+set(CAI_BUILD_EXAMPLES OFF CACHE BOOL \"\" FORCE)
+set(CAI_BUILD_LUA OFF CACHE BOOL \"\" FORCE)
+set(CAI_BUILD_FUZZERS OFF CACHE BOOL \"\" FORCE)
+set(CAI_INSTALL OFF CACHE BOOL \"\" FORCE)
+set(CAI_DEPENDENCY_MODE \"${CAI_RESOLVED_DEPENDENCY_MODE}\" CACHE STRING \"\" FORCE)
+set(CAI_DEPS_DIR \"${CAI_DEPS_DIR}\" CACHE PATH \"\" FORCE)
+set(CAI_LONEJSON_INCLUDE_DIR \"${CAI_LONEJSON_INCLUDE_DIR}\" CACHE PATH \"\" FORCE)
+set(CAI_LONEJSON_LIBRARY \"${CAI_LONEJSON_LIBRARY}\" CACHE FILEPATH \"\" FORCE)
+set(CAI_PSLOG_INCLUDE_DIR \"${CAI_PSLOG_INCLUDE_DIR}\" CACHE PATH \"\" FORCE)
+add_subdirectory(\"${CAI_SOURCE_DIR}\" cai-src)
+add_executable(cai_build_tree_static_consumer main.c)
+target_link_libraries(cai_build_tree_static_consumer PRIVATE cai::static)
+")
+  file(WRITE "${build_tree_consumer_dir}/main.c"
+"#include <cai/cai.h>
+int main(void) {
+  cai_client_config config;
+  int (*open_fn)(const cai_client_config *, cai_client **, cai_error *);
+  cai_client_config_init(&config);
+  open_fn = cai_client_open;
+  return open_fn == 0 ? 1 : 0;
+}
+")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -S "${build_tree_consumer_dir}"
+            -B "${build_tree_consumer_dir}/build"
+            -G Ninja
+            "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
+    RESULT_VARIABLE build_tree_configure_result
+    OUTPUT_VARIABLE build_tree_configure_output
+    ERROR_VARIABLE build_tree_configure_error)
+  if(NOT build_tree_configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "failed to configure cai build-tree static consumer: ${build_tree_configure_error}\n${build_tree_configure_output}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${build_tree_consumer_dir}/build"
+    RESULT_VARIABLE build_tree_build_result)
+  if(NOT build_tree_build_result EQUAL 0)
+    message(FATAL_ERROR "failed to build cai build-tree static consumer")
+  endif()
 endif()

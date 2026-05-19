@@ -168,6 +168,33 @@ assert(table.concat(state_chunks):match("conv_lua_test"))
 dummy_session:close()
 dummy_agent:close()
 dummy_client:close()
+do
+  local chained_agent = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }):new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua chained parent lifetime test",
+    session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
+  }))
+  collectgarbage("collect")
+  collectgarbage("collect")
+  assert_ok(chained_agent:add_user_text("agent parent must still be alive"))
+  chained_agent:close()
+
+  local chained_session = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }):new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua chained session lifetime test",
+    session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
+  }):new_session())
+  collectgarbage("collect")
+  collectgarbage("collect")
+  assert_ok(chained_session:add_user_text("session parent must still be alive"))
+  chained_session:close()
+end
 local dummy_openrouter = assert_ok(cai.open({
   openrouter = true,
   api_key = "test-key",

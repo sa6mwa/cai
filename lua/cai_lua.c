@@ -60,10 +60,12 @@ typedef struct cai_lua_agent {
   cai_agent *ptr;
   lua_State *L;
   cai_lua_tool_ref *tools;
+  int parent_ref;
 } cai_lua_agent;
 
 typedef struct cai_lua_session {
   cai_session *ptr;
+  int parent_ref;
 } cai_lua_session;
 
 typedef struct cai_lua_response {
@@ -455,20 +457,32 @@ static void cai_lua_push_client(lua_State *L, cai_client *client) {
   lua_setmetatable(L, -2);
 }
 
-static void cai_lua_push_agent(lua_State *L, cai_agent *agent) {
+static int cai_lua_ref_parent(lua_State *L, int parent_index) {
+  if (parent_index == 0) {
+    return LUA_NOREF;
+  }
+  lua_pushvalue(L, lua_absindex(L, parent_index));
+  return luaL_ref(L, LUA_REGISTRYINDEX);
+}
+
+static void cai_lua_push_agent_ref(lua_State *L, cai_agent *agent,
+                                   int parent_index) {
   cai_lua_agent *ud;
   ud = (cai_lua_agent *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = agent;
   ud->L = L;
   ud->tools = NULL;
+  ud->parent_ref = cai_lua_ref_parent(L, parent_index);
   luaL_getmetatable(L, CAI_LUA_AGENT);
   lua_setmetatable(L, -2);
 }
 
-static void cai_lua_push_session(lua_State *L, cai_session *session) {
+static void cai_lua_push_session_ref(lua_State *L, cai_session *session,
+                                     int parent_index) {
   cai_lua_session *ud;
   ud = (cai_lua_session *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = session;
+  ud->parent_ref = cai_lua_ref_parent(L, parent_index);
   luaL_getmetatable(L, CAI_LUA_SESSION);
   lua_setmetatable(L, -2);
 }
@@ -1198,7 +1212,7 @@ static int cai_lua_client_new_agent(lua_State *L) {
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
-  cai_lua_push_agent(L, agent);
+  cai_lua_push_agent_ref(L, agent, 1);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -1502,6 +1516,10 @@ static int cai_lua_agent_gc(lua_State *L) {
   }
   cai_lua_unref_tools(L, self->tools);
   self->tools = NULL;
+  if (self->parent_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->parent_ref);
+    self->parent_ref = LUA_NOREF;
+  }
   return 0;
 }
 
@@ -1518,7 +1536,7 @@ static int cai_lua_agent_new_session(lua_State *L) {
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
-  cai_lua_push_session(L, session);
+  cai_lua_push_session_ref(L, session, 1);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -1534,7 +1552,7 @@ static int cai_lua_agent_new_conversation_session(lua_State *L) {
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
-  cai_lua_push_session(L, session);
+  cai_lua_push_session_ref(L, session, 1);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -1553,7 +1571,7 @@ static int cai_lua_agent_new_session_for_conversation(lua_State *L) {
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
-  cai_lua_push_session(L, session);
+  cai_lua_push_session_ref(L, session, 1);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -2277,6 +2295,10 @@ static int cai_lua_session_gc(lua_State *L) {
   if (self->ptr != NULL) {
     cai_session_destroy(self->ptr);
     self->ptr = NULL;
+  }
+  if (self->parent_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->parent_ref);
+    self->parent_ref = LUA_NOREF;
   }
   return 0;
 }
