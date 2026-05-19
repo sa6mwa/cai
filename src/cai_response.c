@@ -189,10 +189,10 @@ typedef struct cai_response_request_write_context {
   size_t length;
 } cai_response_request_write_context;
 
-typedef struct cai_response_json_builder_sink_context {
-  cai_json_builder *builder;
+typedef struct cai_response_buffer_sink_context {
+  cai_buffer_builder *builder;
   cai_error *error;
-} cai_response_json_builder_sink_context;
+} cai_response_buffer_sink_context;
 
 typedef struct cai_response_request_state {
   cai_response_request_doc doc;
@@ -218,7 +218,7 @@ struct cai_response_request_upload {
 };
 
 static lonejson_status
-cai_response_json_builder_sink(void *user, const void *data, size_t len,
+cai_response_buffer_sink(void *user, const void *data, size_t len,
                                lonejson_error *error);
 static int cai_spool_mapped_object_array(const lonejson_map *map,
                                          const void *items, size_t count,
@@ -710,7 +710,7 @@ static int cai_replace_string(const cai_allocator *allocator, char **slot,
   return CAI_OK;
 }
 
-int cai_json_builder_append(cai_json_builder *builder, const char *text,
+int cai_buffer_append(cai_buffer_builder *builder, const char *text,
                             size_t length, cai_error *error) {
   size_t needed;
   size_t new_capacity;
@@ -723,7 +723,7 @@ int cai_json_builder_append(cai_json_builder *builder, const char *text,
         builder->sink(builder->sink_user, text, length, builder->sink_error);
     if (status != LONEJSON_STATUS_OK) {
       return cai_set_error_detail(
-          error, CAI_ERR_TRANSPORT, "failed to write JSON sink",
+          error, CAI_ERR_TRANSPORT, "failed to write buffer sink",
           builder->sink_error != NULL ? builder->sink_error->message : NULL);
     }
     builder->length += length;
@@ -737,7 +737,7 @@ int cai_json_builder_append(cai_json_builder *builder, const char *text,
     }
     grown = (char *)cai_realloc_mem(NULL, builder->data, new_capacity);
     if (grown == NULL) {
-      return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow JSON buffer");
+      return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow buffer");
     }
     builder->data = grown;
     builder->capacity = new_capacity;
@@ -750,14 +750,14 @@ int cai_json_builder_append(cai_json_builder *builder, const char *text,
   return CAI_OK;
 }
 
-int cai_json_builder_lit(cai_json_builder *builder, const char *text,
+int cai_buffer_append_cstr(cai_buffer_builder *builder, const char *text,
                          cai_error *error) {
-  return cai_json_builder_append(builder, text, strlen(text), error);
+  return cai_buffer_append(builder, text, strlen(text), error);
 }
 
-int cai_json_builder_string(cai_json_builder *builder, const char *value,
+int cai_buffer_append_json_string(cai_buffer_builder *builder, const char *value,
                             cai_error *error) {
-  cai_response_json_builder_sink_context sink_context;
+  cai_response_buffer_sink_context sink_context;
   lonejson_error json_error;
   lonejson_status status;
 
@@ -768,7 +768,7 @@ int cai_json_builder_string(cai_json_builder *builder, const char *value,
   sink_context.error = error;
   lonejson_error_init(&json_error);
   status = lonejson_write_json_string_buffer_sink(
-      value, strlen(value), cai_response_json_builder_sink, &sink_context,
+      value, strlen(value), cai_response_buffer_sink, &sink_context,
       NULL, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -778,10 +778,10 @@ int cai_json_builder_string(cai_json_builder *builder, const char *value,
   return CAI_OK;
 }
 
-static int cai_json_builder_string_spooled(cai_json_builder *builder,
+static int cai_buffer_append_json_string_spooled(cai_buffer_builder *builder,
                                            const lonejson_spooled *value,
                                            cai_error *error) {
-  cai_response_json_builder_sink_context sink_context;
+  cai_response_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -790,7 +790,7 @@ static int cai_json_builder_string_spooled(cai_json_builder *builder,
   sink_context.error = error;
   lonejson_error_init(&json_error);
   if (value == NULL) {
-    status = lonejson_writer_init_sink(&writer, cai_response_json_builder_sink,
+    status = lonejson_writer_init_sink(&writer, cai_response_buffer_sink,
                                        &sink_context, NULL, &json_error);
     if (status == LONEJSON_STATUS_OK) {
       status = lonejson_writer_null(&writer, &json_error);
@@ -807,7 +807,7 @@ static int cai_json_builder_string_spooled(cai_json_builder *builder,
     return CAI_OK;
   }
   status = lonejson_write_json_string_spooled_sink(
-      value, cai_response_json_builder_sink, &sink_context, NULL, &json_error);
+      value, cai_response_buffer_sink, &sink_context, NULL, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to serialize JSON spooled string",
@@ -816,7 +816,7 @@ static int cai_json_builder_string_spooled(cai_json_builder *builder,
   return CAI_OK;
 }
 
-static int cai_spooled_copy_to_builder(cai_json_builder *builder,
+static int cai_spooled_copy_to_builder(cai_buffer_builder *builder,
                                        const lonejson_spooled *value,
                                        cai_error *error) {
   lonejson_spooled cursor;
@@ -842,7 +842,7 @@ static int cai_spooled_copy_to_builder(cai_json_builder *builder,
                            "failed to read spooled JSON");
     }
     if (chunk.bytes_read > 0U) {
-      rc = cai_json_builder_append(builder, (const char *)buffer,
+      rc = cai_buffer_append(builder, (const char *)buffer,
                                    chunk.bytes_read, error);
       if (rc != CAI_OK) {
         return rc;
@@ -1001,16 +1001,16 @@ cai_response_request_write_sink(void *user, const void *data, size_t len,
 }
 
 static lonejson_status
-cai_response_json_builder_sink(void *user, const void *data, size_t len,
+cai_response_buffer_sink(void *user, const void *data, size_t len,
                                lonejson_error *error) {
-  cai_response_json_builder_sink_context *context;
+  cai_response_buffer_sink_context *context;
 
   (void)error;
-  context = (cai_response_json_builder_sink_context *)user;
+  context = (cai_response_buffer_sink_context *)user;
   if (context == NULL || context->builder == NULL || data == NULL) {
     return LONEJSON_STATUS_CALLBACK_FAILED;
   }
-  if (cai_json_builder_append(context->builder, (const char *)data, len,
+  if (cai_buffer_append(context->builder, (const char *)data, len,
                               context->error) != CAI_OK) {
     return LONEJSON_STATUS_CALLBACK_FAILED;
   }
@@ -2339,7 +2339,7 @@ static void cai_request_input_item_docs_cleanup(
 static int cai_spooled_json_string_from_cstr(const char *value,
                                              lonejson_spooled *out,
                                              cai_error *error) {
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   lonejson_error json_error;
   int rc;
 
@@ -2351,7 +2351,7 @@ static int cai_spooled_json_string_from_cstr(const char *value,
   builder.sink = cai_spooled_lonejson_sink;
   builder.sink_user = out;
   builder.sink_error = &json_error;
-  rc = cai_json_builder_string(&builder, value, error);
+  rc = cai_buffer_append_json_string(&builder, value, error);
   if (rc != CAI_OK) {
     lonejson_spooled_cleanup(out);
   }
@@ -2361,7 +2361,7 @@ static int cai_spooled_json_string_from_cstr(const char *value,
 static int cai_spooled_json_string_from_spooled(const lonejson_spooled *value,
                                                 lonejson_spooled *out,
                                                 cai_error *error) {
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   lonejson_error json_error;
   int rc;
 
@@ -2373,7 +2373,7 @@ static int cai_spooled_json_string_from_spooled(const lonejson_spooled *value,
   builder.sink = cai_spooled_lonejson_sink;
   builder.sink_user = out;
   builder.sink_error = &json_error;
-  rc = cai_json_builder_string_spooled(&builder, value, error);
+  rc = cai_buffer_append_json_string_spooled(&builder, value, error);
   if (rc != CAI_OK) {
     lonejson_spooled_cleanup(out);
   }
@@ -2627,7 +2627,7 @@ int cai_response_params_input_items_json(
     const cai_response_create_params *params, char **out_json,
     cai_error *error) {
   lonejson_spooled spooled;
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   int rc;
 
   if (out_json == NULL) {
@@ -2682,14 +2682,14 @@ int cai_response_params_input_items_spool(
 
 static int
 cai_response_create_params_write_json(const cai_response_create_params *params,
-                                      cai_json_builder *builder, int stream,
+                                      cai_buffer_builder *builder, int stream,
                                       cai_error *error) {
-  cai_response_json_builder_sink_context sink_context;
+  cai_response_buffer_sink_context sink_context;
 
   sink_context.builder = builder;
   sink_context.error = error;
   return cai_response_create_params_write_json_sink(
-      params, stream, cai_response_json_builder_sink, &sink_context, NULL,
+      params, stream, cai_response_buffer_sink, &sink_context, NULL,
       NULL, error);
 }
 
@@ -2800,7 +2800,7 @@ static int cai_response_create_params_build_input_json(
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error) {
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   int rc;
 
   if (out_json == NULL) {
@@ -2829,7 +2829,7 @@ int cai_response_create_params_serialize_json(
 int cai_response_create_params_spool_json(
     const cai_response_create_params *params, int stream, lonejson_spooled *out,
     size_t *out_len, cai_error *error) {
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   lonejson_error json_error;
   int rc;
 
@@ -3559,8 +3559,8 @@ const char *cai_response_raw_json(const cai_response *response) {
 
 int cai_response_output_items_json(const cai_response *response,
                                    char **out_json, cai_error *error) {
-  cai_json_builder builder;
-  cai_response_json_builder_sink_context sink_context;
+  cai_buffer_builder builder;
+  cai_response_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -3577,7 +3577,7 @@ int cai_response_output_items_json(const cai_response *response,
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_writer_init_sink(&writer, cai_response_json_builder_sink,
+  status = lonejson_writer_init_sink(&writer, cai_response_buffer_sink,
                                      &sink_context, NULL, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_writer_json_value_spooled(

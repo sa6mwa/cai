@@ -71,10 +71,10 @@ typedef struct cai_tool_spooled_reader {
   lonejson_spooled cursor;
 } cai_tool_spooled_reader;
 
-typedef struct cai_tool_json_builder_sink_context {
-  cai_json_builder *builder;
+typedef struct cai_tool_buffer_sink_context {
+  cai_buffer_builder *builder;
   cai_error *error;
-} cai_tool_json_builder_sink_context;
+} cai_tool_buffer_sink_context;
 
 typedef struct cai_tool_description_rewrite {
   const char *description;
@@ -113,17 +113,17 @@ static lonejson_read_result cai_tool_spooled_read(void *user,
   return lonejson_spooled_read(&reader->cursor, buffer, capacity);
 }
 
-static lonejson_status cai_tool_json_builder_sink(void *user, const void *data,
+static lonejson_status cai_tool_buffer_sink(void *user, const void *data,
                                                   size_t len,
                                                   lonejson_error *json_error) {
-  cai_tool_json_builder_sink_context *context;
+  cai_tool_buffer_sink_context *context;
 
   (void)json_error;
-  context = (cai_tool_json_builder_sink_context *)user;
+  context = (cai_tool_buffer_sink_context *)user;
   if (context == NULL || context->builder == NULL || data == NULL) {
     return LONEJSON_STATUS_CALLBACK_FAILED;
   }
-  if (cai_json_builder_append(context->builder, (const char *)data, len,
+  if (cai_buffer_append(context->builder, (const char *)data, len,
                               context->error) != CAI_OK) {
     return LONEJSON_STATUS_ALLOCATION_FAILED;
   }
@@ -164,11 +164,11 @@ cai_tool_emit_description(lonejson_writer *writer, void *user,
   return cai_tool_writer_string_cstr(writer, rewrite->description, json_error);
 }
 
-static int cai_tool_schema_rewrite_description(cai_json_builder *builder,
+static int cai_tool_schema_rewrite_description(cai_buffer_builder *builder,
                                                const char *schema_json,
                                                const char *description,
                                                cai_error *error) {
-  cai_tool_json_builder_sink_context sink_context;
+  cai_tool_buffer_sink_context sink_context;
   cai_tool_description_rewrite rewrite;
   lonejson_value_rewrite_selector_options options;
   lonejson_error json_error;
@@ -184,7 +184,7 @@ static int cai_tool_schema_rewrite_description(cai_json_builder *builder,
   options.replacement.emit_user = &rewrite;
   lonejson_error_init(&json_error);
   status = lonejson_value_rewrite_selector_buffer(
-      schema_json, strlen(schema_json), cai_tool_json_builder_sink,
+      schema_json, strlen(schema_json), cai_tool_buffer_sink,
       &sink_context, &options, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -194,11 +194,11 @@ static int cai_tool_schema_rewrite_description(cai_json_builder *builder,
   return CAI_OK;
 }
 
-static int cai_tool_schema_build_array_property(cai_json_builder *builder,
+static int cai_tool_schema_build_array_property(cai_buffer_builder *builder,
                                                 const char *item_type,
                                                 const char *item_json,
                                                 cai_error *error) {
-  cai_tool_json_builder_sink_context sink_context;
+  cai_tool_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -206,7 +206,7 @@ static int cai_tool_schema_build_array_property(cai_json_builder *builder,
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_writer_init_sink(&writer, cai_tool_json_builder_sink,
+  status = lonejson_writer_init_sink(&writer, cai_tool_buffer_sink,
                                      &sink_context, NULL, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_writer_begin_object(&writer, &json_error);
@@ -250,9 +250,9 @@ static int cai_tool_schema_build_array_property(cai_json_builder *builder,
   return CAI_OK;
 }
 
-static int cai_tool_schema_build_empty_object(cai_json_builder *builder,
+static int cai_tool_schema_build_empty_object(cai_buffer_builder *builder,
                                               cai_error *error) {
-  cai_tool_json_builder_sink_context sink_context;
+  cai_tool_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -260,7 +260,7 @@ static int cai_tool_schema_build_empty_object(cai_json_builder *builder,
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_writer_init_sink(&writer, cai_tool_json_builder_sink,
+  status = lonejson_writer_init_sink(&writer, cai_tool_buffer_sink,
                                      &sink_context, NULL, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_writer_begin_object(&writer, &json_error);
@@ -378,7 +378,7 @@ static int cai_tool_schema_grow(cai_tool_schema_impl *impl, cai_error *error) {
   return CAI_OK;
 }
 
-static int cai_tool_schema_replace(char **target, cai_json_builder *builder,
+static int cai_tool_schema_replace(char **target, cai_buffer_builder *builder,
                                    cai_error *error) {
   char *copy;
 
@@ -447,12 +447,12 @@ static int cai_tool_validate_spooled_json_value(lonejson_spooled *json,
 static lonejson_status cai_tool_compact_json_sink(void *user, const void *data,
                                                   size_t len,
                                                   lonejson_error *json_error) {
-  cai_json_builder *builder;
+  cai_buffer_builder *builder;
   cai_error error;
 
-  builder = (cai_json_builder *)user;
+  builder = (cai_buffer_builder *)user;
   cai_error_init(&error);
-  if (cai_json_builder_append(builder, (const char *)data, len, &error) ==
+  if (cai_buffer_append(builder, (const char *)data, len, &error) ==
       CAI_OK) {
     cai_error_cleanup(&error);
     return LONEJSON_STATUS_OK;
@@ -709,7 +709,7 @@ static lonejson_status cai_tool_argument_bool_event(void *user, int value,
 static int cai_tool_validate_arguments_shape(const lonejson_map *map,
                                              const char *json,
                                              cai_error *error) {
-  cai_json_builder compact;
+  cai_buffer_builder compact;
   cai_tool_argument_validator validator;
   lonejson_json_value value;
   lonejson_value_visitor visitor;
@@ -769,8 +769,8 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
 
 static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
   cai_tool_schema_impl *impl;
-  cai_json_builder builder;
-  cai_tool_json_builder_sink_context sink_context;
+  cai_buffer_builder builder;
+  cai_tool_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -781,7 +781,7 @@ static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_writer_init_sink(&writer, cai_tool_json_builder_sink,
+  status = lonejson_writer_init_sink(&writer, cai_tool_buffer_sink,
                                      &sink_context, NULL, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_writer_begin_object(&writer, &json_error);
@@ -916,8 +916,8 @@ static int cai_tool_schema_add_typed_property(cai_tool_schema *schema,
                                               const char *description,
                                               const char *type, int required,
                                               cai_error *error) {
-  cai_json_builder builder;
-  cai_tool_json_builder_sink_context sink_context;
+  cai_buffer_builder builder;
+  cai_tool_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -930,7 +930,7 @@ static int cai_tool_schema_add_typed_property(cai_tool_schema *schema,
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_writer_init_sink(&writer, cai_tool_json_builder_sink,
+  status = lonejson_writer_init_sink(&writer, cai_tool_buffer_sink,
                                      &sink_context, NULL, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_writer_begin_object(&writer, &json_error);
@@ -990,7 +990,7 @@ static const char *cai_tool_json_type_for_field(const lonejson_field *field) {
 static int cai_tool_schema_add_field(cai_tool_schema *schema,
                                      const lonejson_field *field,
                                      cai_error *error) {
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   const char *type;
   int required;
   int rc;
@@ -1835,8 +1835,8 @@ int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
                                     const char *const *values,
                                     size_t value_count, int required,
                                     cai_error *error) {
-  cai_json_builder builder;
-  cai_tool_json_builder_sink_context sink_context;
+  cai_buffer_builder builder;
+  cai_tool_buffer_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
@@ -1851,7 +1851,7 @@ int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_writer_init_sink(&writer, cai_tool_json_builder_sink,
+  status = lonejson_writer_init_sink(&writer, cai_tool_buffer_sink,
                                      &sink_context, NULL, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = lonejson_writer_begin_object(&writer, &json_error);
@@ -1904,7 +1904,7 @@ int cai_tool_schema_describe(cai_tool_schema *schema, const char *name,
                              const char *description, cai_error *error) {
   cai_tool_schema_impl *impl;
   cai_tool_schema_property *prop;
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   int required;
   int rc;
 
@@ -1945,7 +1945,7 @@ int cai_tool_schema_add_raw_property(cai_tool_schema *schema, const char *name,
                                      const char *description,
                                      const char *schema_json, int required,
                                      cai_error *error) {
-  cai_json_builder builder;
+  cai_buffer_builder builder;
   int rc;
 
   if (schema_json == NULL || schema_json[0] == '\0') {

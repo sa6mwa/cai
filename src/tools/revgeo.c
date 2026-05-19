@@ -216,30 +216,30 @@ static int cai_revgeo_context_new(const cai_revgeo_tool_config *config,
   return CAI_OK;
 }
 
-static int cai_revgeo_append_url_part(cai_json_builder *url,
+static int cai_revgeo_append_url_part(cai_buffer_builder *url,
                                       const char *base_url,
                                       const char *path, cai_error *error) {
   size_t base_len;
   int rc;
 
   base_len = strlen(base_url);
-  rc = cai_json_builder_lit(url, base_url, error);
+  rc = cai_buffer_append_cstr(url, base_url, error);
   if (rc != CAI_OK) {
     return rc;
   }
   if (base_len > 0U && base_url[base_len - 1U] == '/' && path[0] == '/') {
-    return cai_json_builder_lit(url, path + 1, error);
+    return cai_buffer_append_cstr(url, path + 1, error);
   }
   if ((base_len == 0U || base_url[base_len - 1U] != '/') && path[0] != '/') {
-    rc = cai_json_builder_lit(url, "/", error);
+    rc = cai_buffer_append_cstr(url, "/", error);
     if (rc != CAI_OK) {
       return rc;
     }
   }
-  return cai_json_builder_lit(url, path, error);
+  return cai_buffer_append_cstr(url, path, error);
 }
 
-static int cai_revgeo_append_param(CURL *curl, cai_json_builder *url,
+static int cai_revgeo_append_param(CURL *curl, cai_buffer_builder *url,
                                    const char *name, const char *value,
                                    int *need_amp, cai_error *error) {
   char *escaped;
@@ -250,15 +250,15 @@ static int cai_revgeo_append_param(CURL *curl, cai_json_builder *url,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to URL-encode reverse-geocoding parameter");
   }
-  rc = cai_json_builder_lit(url, *need_amp ? "&" : "?", error);
+  rc = cai_buffer_append_cstr(url, *need_amp ? "&" : "?", error);
   if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(url, name, error);
+    rc = cai_buffer_append_cstr(url, name, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(url, "=", error);
+    rc = cai_buffer_append_cstr(url, "=", error);
   }
   if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(url, escaped, error);
+    rc = cai_buffer_append_cstr(url, escaped, error);
   }
   curl_free(escaped);
   *need_amp = 1;
@@ -268,7 +268,7 @@ static int cai_revgeo_append_param(CURL *curl, cai_json_builder *url,
 static int cai_revgeo_build_url(CURL *curl, const cai_revgeo_context *ctx,
                                 const cai_revgeo_args *args, char **out,
                                 cai_error *error) {
-  cai_json_builder url;
+  cai_buffer_builder url;
   char number[64];
   int need_amp;
   int rc;

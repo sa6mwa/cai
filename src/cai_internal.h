@@ -262,20 +262,20 @@ struct cai_conversation {
   char *object;
 };
 
-typedef struct cai_json_builder {
+typedef struct cai_buffer_builder {
   char *data;
   size_t length;
   size_t capacity;
   lonejson_sink_fn sink;
   void *sink_user;
   lonejson_error *sink_error;
-} cai_json_builder;
+} cai_buffer_builder;
 
-int cai_json_builder_lit(cai_json_builder *builder, const char *text,
+int cai_buffer_append_cstr(cai_buffer_builder *builder, const char *text,
                          cai_error *error);
-int cai_json_builder_append(cai_json_builder *builder, const char *text,
+int cai_buffer_append(cai_buffer_builder *builder, const char *text,
                             size_t length, cai_error *error);
-int cai_json_builder_string(cai_json_builder *builder, const char *value,
+int cai_buffer_append_json_string(cai_buffer_builder *builder, const char *value,
                             cai_error *error);
 int cai_input_messages_spool_json_array(const lonejson_object_array *messages,
                                         lonejson_spooled *out,
