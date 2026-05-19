@@ -6803,11 +6803,28 @@ static void test_todo_tool(test_state *state) {
                                    "\"board_name\":\"main\","
                                    "\"title\":\"fourth task\","
                                    "\"status\":\"in_process\"}",
-                                   sink, &error),
-             CAI_OK);
+	                                   sink, &error),
+	             CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL) {
     test_fail(state, "todo_add_after_move_output",
               "WIP lane did not free after move_item");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_missing_board",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"missing\","
+                                   "\"title\":\"lost task\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"board_not_found\"") == NULL ||
+      strstr(writer.buffer, "\"in_process_count\"") != NULL ||
+      strstr(writer.buffer, "\"item_count\"") != NULL) {
+    test_fail(state, "todo_add_missing_board_output",
+              "missing-board add_item returned unsafe counts");
   }
   for (i = 0; i < 8; ++i) {
     snprintf(todo_args, sizeof(todo_args),

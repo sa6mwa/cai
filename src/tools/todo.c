@@ -1871,6 +1871,7 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
   long long items;
   const char *status;
   void *txn;
+  int board_found;
   int rc;
 
   if (args->title == NULL || args->title[0] == '\0') {
@@ -1891,6 +1892,9 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
   memset(&options, 0, sizeof(options));
   cai_todo_item_init(&state.item);
   cai_todo_board_init(&board);
+  in_process = 0;
+  items = 0;
+  board_found = 0;
   txn = NULL;
   rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc != CAI_OK) {
@@ -1905,6 +1909,8 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
   if (rc == CAI_TODO_FOUND_NONE) {
     rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
                              "board was not found", error);
+  } else if (rc == CAI_OK) {
+    board_found = 1;
   }
   status = cai_todo_arg_string(args->status, CAI_TODO_STATUS_TODO);
   if (rc == CAI_OK && !cai_todo_streq(status, CAI_TODO_STATUS_TODO) &&
@@ -1939,23 +1945,27 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
     rc = cai_todo_set_result(result, args->operation, 1, "ok", "item added",
                              error);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && board_found) {
     rc = cai_todo_copy_string(&result->board_id, board.id, error);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && board_found) {
     rc = cai_todo_copy_string(&result->board_name, board.name, error);
   }
   if (rc == CAI_OK && result->ok) {
     rc = cai_todo_copy_string(&result->item_id, id, error);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && board_found) {
     rc = cai_todo_copy_string(&result->status, status, error);
   }
-  result->in_process_count =
-      in_process + (cai_todo_streq(status, CAI_TODO_STATUS_IN_PROCESS) ? 1 : 0);
-  result->has_in_process_count = 1;
-  result->item_count = items + (result->ok ? 1 : 0);
-  result->has_item_count = 1;
+  if (board_found) {
+    result->in_process_count =
+        in_process +
+        (result->ok && cai_todo_streq(status, CAI_TODO_STATUS_IN_PROCESS) ? 1
+                                                                          : 0);
+    result->has_in_process_count = 1;
+    result->item_count = items + (result->ok ? 1 : 0);
+    result->has_item_count = 1;
+  }
   if (txn != NULL) {
     if (result->has_ok && !result->ok && rc == CAI_OK) {
       rc = cai_todo_store_commit(ctx, txn, error);

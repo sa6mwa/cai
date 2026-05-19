@@ -75,7 +75,9 @@ if(installed_shared_library)
       if(NOT readelf_result EQUAL 0)
         message(FATAL_ERROR "readelf failed: ${readelf_error}")
       endif()
-      if(NOT readelf_output MATCHES "\\$ORIGIN")
+      if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
+          CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt") AND
+         NOT readelf_output MATCHES "\\$ORIGIN")
         message(FATAL_ERROR "installed libcai runpath does not contain $ORIGIN")
       endif()
       if(readelf_output MATCHES "/home/|/Users/|/opt/|/tmp/")
@@ -141,6 +143,23 @@ if(DEFINED CAI_SOURCE_DIR AND NOT CAI_SOURCE_DIR STREQUAL "")
     -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu)
   if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
     list(APPEND configure_command -G "${CAI_GENERATOR}")
+  endif()
+  if(DEFINED CAI_LONEJSON_INCLUDE_DIR AND
+     NOT CAI_LONEJSON_INCLUDE_DIR STREQUAL "")
+    list(APPEND configure_command
+         -DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR})
+  endif()
+  if(DEFINED CAI_LONEJSON_LIBRARY AND NOT CAI_LONEJSON_LIBRARY STREQUAL "")
+    list(APPEND configure_command
+         -DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY})
+  endif()
+  if(DEFINED CAI_PSLOG_INCLUDE_DIR AND NOT CAI_PSLOG_INCLUDE_DIR STREQUAL "")
+    list(APPEND configure_command -DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR})
+  endif()
+  if(DEFINED CAI_PARENT_CMAKE_PREFIX_PATH AND
+     NOT CAI_PARENT_CMAKE_PREFIX_PATH STREQUAL "")
+    list(APPEND configure_command
+         -DCMAKE_PREFIX_PATH=${CAI_PARENT_CMAKE_PREFIX_PATH})
   endif()
   execute_process(
     COMMAND ${configure_command}
