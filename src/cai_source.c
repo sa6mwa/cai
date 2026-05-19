@@ -303,6 +303,11 @@ int cai_source_copy_to_sink(cai_source *source, cai_sink *sink,
                             cai_error *error) {
   char buffer[4096];
   size_t nread;
+  int previous_code;
+  char *previous_message;
+  char *previous_detail;
+  char *previous_server_code;
+  char *previous_request_id;
   int rc;
 
   if (source == NULL || sink == NULL) {
@@ -310,9 +315,19 @@ int cai_source_copy_to_sink(cai_source *source, cai_sink *sink,
                          "source and sink are required");
   }
   for (;;) {
+    previous_code = error != NULL ? error->code : CAI_OK;
+    previous_message = error != NULL ? error->message : NULL;
+    previous_detail = error != NULL ? error->detail : NULL;
+    previous_server_code = error != NULL ? error->server_code : NULL;
+    previous_request_id = error != NULL ? error->request_id : NULL;
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
     if (nread == 0U) {
-      if (error != NULL && error->code != CAI_OK) {
+      if (error != NULL && error->code != CAI_OK &&
+          (error->code != previous_code ||
+           error->message != previous_message ||
+           error->detail != previous_detail ||
+           error->server_code != previous_server_code ||
+           error->request_id != previous_request_id)) {
         return error->code;
       }
       return CAI_OK;

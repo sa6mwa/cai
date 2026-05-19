@@ -1420,9 +1420,14 @@ static void test_source_sink(test_state *state) {
   } else {
     expect_int(state, "sink_file_create",
                cai_sink_file(fp, 0, &file_sink, &error), CAI_OK);
+    expect_int(state, "source_copy_stale_error_seed",
+               cai_set_error(&error, CAI_ERR_INVALID,
+                             "stale earlier failure"),
+               CAI_ERR_INVALID);
     expect_int(state, "source_copy_to_file",
                cai_source_copy_to_sink(copy_source, file_sink, &error),
                CAI_OK);
+    cai_error_cleanup(&error);
     fflush(fp);
     rewind(fp);
     expect_int(state, "source_file_create",
