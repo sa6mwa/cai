@@ -128,6 +128,7 @@ typedef struct cai_lua_source_ctx {
   size_t chunk_len;
   size_t chunk_pos;
   int done;
+  int empty_reads;
 } cai_lua_source_ctx;
 
 typedef struct cai_lua_headers_ctx {
@@ -847,37 +848,63 @@ static int cai_lua_make_sink(lua_State *L, int index, cai_lua_sink_ctx *ctx,
   return cai_sink_from_callbacks(&callbacks, out, error);
 }
 
-static int cai_lua_call_chunk_source(cai_lua_source_ctx *ctx) {
+static int cai_lua_call_chunk_source(cai_lua_source_ctx *ctx,
+                                     cai_error *error) {
   int rc;
+  const char *chunk;
+  size_t len;
   if (ctx->done) {
     return 0;
   }
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
   rc = lua_pcall(ctx->L, 0, 1, 0);
   if (rc != LUA_OK) {
+    const char *detail;
+    detail = lua_tostring(ctx->L, -1);
     ctx->done = 1;
-    return 0;
+    lua_pop(ctx->L, 1);
+    (void)cai_lua_set_error_detail(error, CAI_ERR_INVALID,
+                                   "failed to read Lua source function",
+                                   detail);
+    return -1;
   }
   if (lua_isnil(ctx->L, -1)) {
     ctx->done = 1;
     lua_pop(ctx->L, 1);
     return 0;
   }
-  {
-    size_t len;
-    const char *chunk;
-    chunk = luaL_checklstring(ctx->L, -1, &len);
-    free(ctx->chunk);
-    ctx->chunk = (char *)malloc(len == 0u ? 1u : len);
-    if (ctx->chunk == NULL) {
-      ctx->done = 1;
-      lua_pop(ctx->L, 1);
-      return 0;
-    }
-    memcpy(ctx->chunk, chunk, len);
-    ctx->chunk_len = len;
-    ctx->chunk_pos = 0u;
+  chunk = lua_tolstring(ctx->L, -1, &len);
+  if (chunk == NULL) {
+    ctx->done = 1;
+    lua_pop(ctx->L, 1);
+    (void)cai_lua_set_error(error, CAI_ERR_INVALID,
+                            "Lua source function returned a non-string value");
+    return -1;
   }
+  if (len == 0U) {
+    ctx->empty_reads++;
+    lua_pop(ctx->L, 1);
+    if (ctx->empty_reads > 16) {
+      ctx->done = 1;
+      (void)cai_lua_set_error(error, CAI_ERR_INVALID,
+                              "Lua source returned too many empty reads");
+      return -1;
+    }
+    return 2;
+  }
+  ctx->empty_reads = 0;
+  free(ctx->chunk);
+  ctx->chunk = (char *)malloc(len == 0u ? 1u : len);
+  if (ctx->chunk == NULL) {
+    ctx->done = 1;
+    lua_pop(ctx->L, 1);
+    (void)cai_lua_set_error(error, CAI_ERR_NOMEM,
+                            "failed to allocate Lua source chunk");
+    return -1;
+  }
+  memcpy(ctx->chunk, chunk, len);
+  ctx->chunk_len = len;
+  ctx->chunk_pos = 0u;
   lua_pop(ctx->L, 1);
   return 1;
 }
@@ -886,7 +913,7 @@ static size_t cai_lua_source_read(void *context, void *buffer, size_t count,
                                   cai_error *error) {
   cai_lua_source_ctx *ctx;
   size_t avail;
-  (void)error;
+  int rc;
   ctx = (cai_lua_source_ctx *)context;
   if (ctx->bytes != NULL) {
     if (ctx->pos >= ctx->len) {
@@ -901,7 +928,11 @@ static size_t cai_lua_source_read(void *context, void *buffer, size_t count,
     return avail;
   }
   while (ctx->chunk_pos >= ctx->chunk_len) {
-    if (!cai_lua_call_chunk_source(ctx)) {
+    rc = cai_lua_call_chunk_source(ctx, error);
+    if (rc < 0) {
+      return 0u;
+    }
+    if (rc == 0) {
       return 0u;
     }
   }

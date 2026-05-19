@@ -1010,13 +1010,20 @@ static size_t cai_pipe_source_read(void *context, void *buffer, size_t count,
   cai_pipe_stream *stream;
   ssize_t got;
 
-  (void)error;
   stream = (cai_pipe_stream *)context;
   if (stream == NULL || stream->read_fd < 0) {
     return 0U;
   }
-  got = read(stream->read_fd, buffer, count);
-  if (got <= 0) {
+  do {
+    got = read(stream->read_fd, buffer, count);
+  } while (got < 0 && errno == EINTR);
+  if (got < 0) {
+    (void)cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                               "failed to read response text stream",
+                               strerror(errno));
+    return 0U;
+  }
+  if (got == 0) {
     return 0U;
   }
   return (size_t)got;

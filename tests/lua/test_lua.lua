@@ -140,6 +140,15 @@ assert_ok(dummy_session:add_user_text_source(function()
   source_part = source_part + 1
   return ({ "streamed ", "hello", nil })[source_part]
 end))
+assert_not_ok(dummy_session:add_user_text_source(function()
+  error("source exploded")
+end), "Lua source callback failure must fail")
+assert_not_ok(dummy_session:add_user_text_source(function()
+  return {}
+end), "Lua source callback non-string result must fail")
+assert_not_ok(dummy_session:add_user_text_source(function()
+  return ""
+end), "Lua source callback unbounded empty chunks must fail")
 assert_not_ok(dummy_session:add_user_text_spooled({ read = "not callable" }),
   "spooled reader with non-callable read must fail")
 assert_not_ok(dummy_session:add_user_text_spooled(bad_spool_rewind_false()),
