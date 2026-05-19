@@ -696,6 +696,7 @@ static int cai_client_stream_response_params_with_id(
   char *url;
   long http_status;
   int rc;
+  int http_success;
   lonejson_sse_options sse_options;
   lonejson_error sse_error;
   lonejson_status sse_status;
@@ -750,6 +751,7 @@ static int cai_client_stream_response_params_with_id(
   state.done_line_length = 0U;
   state.done_line_start = 1;
   state.done_seen = 0;
+  http_success = 0;
   if (state.sse == NULL) {
     rc = cai_set_error(error, cai_sse_status_to_code(sse_error.code),
                        cai_sse_status_to_message(sse_error.code));
@@ -842,7 +844,9 @@ static int cai_client_stream_response_params_with_id(
     http_status = 0L;
   }
   curl_easy_cleanup(curl);
-  if (curl_rc == CURLE_OK && !state.failed) {
+  http_success =
+      curl_rc == CURLE_OK && http_status >= 200L && http_status < 300L;
+  if (http_success && !state.failed) {
     rc = cai_sse_flush_done_line(&state);
     if (rc != CAI_OK) {
       state.failed = 1;
@@ -850,7 +854,7 @@ static int cai_client_stream_response_params_with_id(
       state.failed_message = "streaming response callback failed";
     }
   }
-  if (curl_rc == CURLE_OK && !state.failed && !state.done_seen) {
+  if (http_success && !state.failed && !state.done_seen) {
     memset(&sse_error, 0, sizeof(sse_error));
     sse_status = lonejson_sse_finish_json(
         state.sse, &cai_stream_delta_map, &state.doc, &state.json_options,
@@ -873,6 +877,12 @@ static int cai_client_stream_response_params_with_id(
     return rc;
   }
   if (curl_rc != CURLE_OK) {
+    if (http_status > 0L && (http_status < 200L || http_status >= 300L)) {
+      rc = cai_set_openai_error(error, http_status,
+                                state.body != NULL ? state.body : "", NULL);
+      cai_free_mem(NULL, state.body);
+      return rc;
+    }
     cai_free_mem(NULL, state.body);
     if (state.failed) {
       cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST",
@@ -885,17 +895,17 @@ static int cai_client_stream_response_params_with_id(
                                 "streaming HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
+  if (!http_success) {
+    rc = cai_set_openai_error(error, http_status,
+                              state.body != NULL ? state.body : "", NULL);
+    cai_free_mem(NULL, state.body);
+    return rc;
+  }
   if (state.failed) {
     cai_free_mem(NULL, state.body);
     cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
                                  state.failed_message);
     return cai_set_error(error, state.failed_code, state.failed_message);
-  }
-  if (http_status < 200L || http_status >= 300L) {
-    rc = cai_set_openai_error(error, http_status,
-                              state.body != NULL ? state.body : "", NULL);
-    cai_free_mem(NULL, state.body);
-    return rc;
   }
   cai_free_mem(NULL, state.body);
   return CAI_OK;

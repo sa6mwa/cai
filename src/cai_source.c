@@ -312,6 +312,9 @@ int cai_source_copy_to_sink(cai_source *source, cai_sink *sink,
   for (;;) {
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
     if (nread == 0U) {
+      if (error != NULL && error->code != CAI_OK) {
+        return error->code;
+      }
       return CAI_OK;
     }
     rc = cai_sink_write(sink, buffer, nread, error);

@@ -727,6 +727,15 @@ static size_t test_read(void *context, void *buffer, size_t count,
   return n;
 }
 
+static size_t test_failing_zero_read(void *context, void *buffer, size_t count,
+                                     cai_error *error) {
+  (void)context;
+  (void)buffer;
+  (void)count;
+  cai_set_error(error, CAI_ERR_TRANSPORT, "source read failed deliberately");
+  return 0U;
+}
+
 static int test_reset(void *context, cai_error *error) {
   read_state *state;
 
@@ -1277,8 +1286,10 @@ static void test_source_sink(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_source *source;
   cai_source *copy_source;
+  cai_source *failing_source;
   cai_source *file_source;
   cai_sink *sink;
+  cai_sink *failing_sink;
   cai_sink *file_sink;
   cai_error error;
   FILE *fp;
@@ -1295,8 +1306,10 @@ static void test_source_sink(test_state *state) {
   source_callbacks.context = &reader;
   source = NULL;
   copy_source = NULL;
+  failing_source = NULL;
   file_source = NULL;
   sink = NULL;
+  failing_sink = NULL;
   file_sink = NULL;
   fp = NULL;
   expect_int(state, "source_create",
@@ -1370,6 +1383,30 @@ static void test_source_sink(test_state *state) {
   if (fp != NULL) {
     fclose(fp);
   }
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  source_callbacks.read = test_failing_zero_read;
+  source_callbacks.reset = NULL;
+  source_callbacks.close = NULL;
+  source_callbacks.context = NULL;
+  sink_callbacks.context = &writer;
+  expect_int(state, "copy_failing_source_create",
+             cai_source_from_callbacks(&source_callbacks, &failing_source,
+                                       &error),
+             CAI_OK);
+  expect_int(state, "copy_failing_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &failing_sink, &error),
+             CAI_OK);
+  expect_int(state, "copy_failing_source_read",
+             cai_source_copy_to_sink(failing_source, failing_sink, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "copy_failing_source_error", error.message,
+             "source read failed deliberately");
+  expect_str(state, "copy_failing_source_sink_empty", writer.buffer, "");
+  cai_error_cleanup(&error);
+  cai_sink_close(failing_sink);
+  cai_source_close(failing_source);
   cai_error_cleanup(&error);
 }
 
@@ -4577,6 +4614,16 @@ static void mock_openai_child(int pipe_fd, int request_count) {
               "{\"error\":{\"message\":\"model is required\",\"type\":"
               "\"invalid_request_error\",\"code\":\"missing_required_"
               "parameter\"}}") != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
+    if (strstr(request, "stream http error") != NULL) {
+      if (mock_write_status_json_response(
+              client_fd, 401, "Unauthorized", "req_stream_error",
+              "{\"error\":{\"message\":\"invalid API key\",\"type\":"
+              "\"invalid_request_error\",\"code\":\"invalid_api_key\"}}") != 0) {
         _exit(10);
       }
       close(client_fd);
@@ -7884,6 +7931,97 @@ static void test_stream_output_delta_failure(test_state *state) {
   }
 }
 
+static void test_stream_http_error_preserves_openai_error(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_http_error_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_http_error_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_http_error_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  params = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_http_error_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_http_error_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_http_error_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_NANO, &error),
+             CAI_OK);
+  expect_int(state, "stream_http_error_text",
+             cai_response_create_params_add_text(params, "user",
+                                                 "stream http error", &error),
+             CAI_OK);
+  expect_int(state, "stream_http_error_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_http_error_run",
+             cai_client_stream_response_text(client, params, sink, &error),
+             CAI_ERR_SERVER);
+  expect_int(state, "stream_http_error_status", error.http_status, 401L);
+  expect_str(state, "stream_http_error_message", error.message,
+             "OpenAI API request failed");
+  expect_str(state, "stream_http_error_detail", error.detail, "invalid API key");
+  expect_str(state, "stream_http_error_code", error.server_code,
+             "invalid_api_key");
+  expect_str(state, "stream_http_error_sink_empty", writer.buffer, "");
+
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_http_error_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_http_error_mock", "mock child failed");
+  }
+}
+
 static void test_session_stream_auto_tool_run(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -9821,6 +9959,7 @@ int main(void) {
   test_conversations(&state);
   test_stream_response_text(&state);
   test_stream_output_delta_failure(&state);
+  test_stream_http_error_preserves_openai_error(&state);
   test_stream_openrouter_metadata_events(&state);
   test_session_stream_auto_tool_run(&state);
   test_session_stream_auto_source_tool_run(&state);

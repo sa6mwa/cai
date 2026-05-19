@@ -481,13 +481,17 @@ if(TARGET cai_static)
     $<INSTALL_INTERFACE:lonejson::lonejson>)
 endif()
 
+set(_cai_internal_link_target "")
+if(TARGET cai_static)
+  set(_cai_internal_link_target cai_static)
+elseif(TARGET cai_shared)
+  set(_cai_internal_link_target cai_shared)
+else()
+  message(FATAL_ERROR "At least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED must be enabled.")
+endif()
+
 if(CAI_BUILD_EXAMPLES)
-  set(_cai_example_link_target "")
-  if(TARGET cai_static)
-    set(_cai_example_link_target cai_static)
-  elseif(TARGET cai_shared)
-    set(_cai_example_link_target cai_shared)
-  endif()
+  set(_cai_example_link_target "${_cai_internal_link_target}")
   set(_cai_examples
     basic_response:basic-response
     conversation_handles:conversation-handles
@@ -516,11 +520,10 @@ if(CAI_BUILD_EXAMPLES)
     endif()
     target_link_libraries(cai_example_${_cai_example} PRIVATE
       ${_cai_example_link_target})
-    if(_cai_example_link_target STREQUAL "cai_static")
+    if(_cai_example_link_target STREQUAL "cai_static" OR
+        _cai_example_link_target STREQUAL "cai_shared")
       target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl
         Threads::Threads ${CAI_LONEJSON_LINK})
-    elseif(_cai_example STREQUAL "smhi_weather")
-      target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl)
     endif()
     if(_cai_example STREQUAL "mcp_server")
       if(TARGET pslog::pslog_shared)
@@ -547,7 +550,7 @@ if(CAI_BUILD_LUA)
     "${CAI_LONEJSON_INCLUDE_DIR}"
     "${CAI_PSLOG_INCLUDE_DIR}"
     "${CAI_LUA_INCLUDE_DIR}")
-  target_link_libraries(cai_lua PRIVATE cai_static CURL::libcurl
+  target_link_libraries(cai_lua PRIVATE ${_cai_internal_link_target} CURL::libcurl
     Threads::Threads ${CAI_LONEJSON_LINK})
   if(APPLE)
     target_link_options(cai_lua PRIVATE "-undefined" "dynamic_lookup")
@@ -569,7 +572,7 @@ if(CAI_BUILD_TESTS)
     "${CAI_PSLOG_INCLUDE_DIR}"
     ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  target_link_libraries(cai_tests PRIVATE cai_static CURL::libcurl
+  target_link_libraries(cai_tests PRIVATE ${_cai_internal_link_target} CURL::libcurl
     Threads::Threads ${CAI_LONEJSON_LINK})
   cai_configure_c_target(cai_tests)
   add_test(NAME cai_tests COMMAND cai_tests)
@@ -579,7 +582,7 @@ if(CAI_BUILD_TESTS)
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
     "${CAI_LONEJSON_INCLUDE_DIR}")
-  target_link_libraries(cai_mcp_http_server PRIVATE cai_static CURL::libcurl
+  target_link_libraries(cai_mcp_http_server PRIVATE ${_cai_internal_link_target} CURL::libcurl
     Threads::Threads ${CAI_LONEJSON_LINK})
   cai_configure_c_target(cai_mcp_http_server)
 
@@ -635,7 +638,7 @@ if(CAI_BUILD_TESTS)
       "${CAI_LONEJSON_INCLUDE_DIR}"
       "${CAI_PSLOG_INCLUDE_DIR}"
       ${CURL_INCLUDE_DIRS})
-    target_link_libraries(cai_integration_tests PRIVATE cai_static CURL::libcurl
+    target_link_libraries(cai_integration_tests PRIVATE ${_cai_internal_link_target} CURL::libcurl
       Threads::Threads ${CAI_LONEJSON_LINK})
     cai_configure_c_target(cai_integration_tests)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)
