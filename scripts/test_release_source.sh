@@ -35,7 +35,30 @@ if [[ -z "$source_root" ]]; then
   printf 'test_release_source.sh: failed to locate extracted source tree\n' >&2
   exit 1
 fi
+if [[ ! -f "$source_root/VERSION" ]]; then
+  printf 'test_release_source.sh: extracted source tree is missing VERSION\n' >&2
+  exit 1
+fi
+release_version=$(tr -d '[:space:]' <"$source_root/VERSION")
+if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+  printf 'test_release_source.sh: invalid VERSION value: %s\n' \
+    "$release_version" >&2
+  exit 1
+fi
 
 cmake -S "$source_root" -B "$build_root" -G Ninja -DCAI_BUILD_INTEGRATION_TESTS=OFF
+configured_version=$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' \
+  "$build_root/generated/include/cai/version.h")
+if [[ "$configured_version" != "$release_version" ]]; then
+  printf 'test_release_source.sh: configured version %s != VERSION %s\n' \
+    "$configured_version" "$release_version" >&2
+  exit 1
+fi
+pc_version=$(sed -n 's/^Version: //p' "$build_root/cai.pc")
+if [[ "$pc_version" != "$release_version" ]]; then
+  printf 'test_release_source.sh: pkg-config version %s != VERSION %s\n' \
+    "$pc_version" "$release_version" >&2
+  exit 1
+fi
 cmake --build "$build_root"
 ctest --test-dir "$build_root" --output-on-failure
