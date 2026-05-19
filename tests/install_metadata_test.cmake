@@ -121,6 +121,51 @@ if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
   message(FATAL_ERROR "cai.pc does not point at required dependencies")
 endif()
 
+if(DEFINED CAI_SOURCE_DIR AND NOT CAI_SOURCE_DIR STREQUAL "")
+  set(multiarch_dir "${CAI_BINARY_DIR}/pkgconfig-multiarch-test")
+  file(REMOVE_RECURSE "${multiarch_dir}")
+  set(configure_command
+    "${CMAKE_COMMAND}"
+    -S "${CAI_SOURCE_DIR}"
+    -B "${multiarch_dir}"
+    -DCAI_BUILD_STATIC=OFF
+    -DCAI_BUILD_SHARED=ON
+    -DCAI_BUILD_TESTS=OFF
+    -DCAI_BUILD_INTEGRATION_TESTS=OFF
+    -DCAI_BUILD_EXAMPLES=OFF
+    -DCAI_BUILD_LUA=OFF
+    -DCAI_BUILD_FUZZERS=OFF
+    -DCAI_INSTALL=ON
+    -DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}
+    -DCAI_DEPS_DIR=${CAI_DEPS_DIR}
+    -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu)
+  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
+    list(APPEND configure_command -G "${CAI_GENERATOR}")
+  endif()
+  execute_process(
+    COMMAND ${configure_command}
+    RESULT_VARIABLE multiarch_configure_result
+    OUTPUT_VARIABLE multiarch_configure_output
+    ERROR_VARIABLE multiarch_configure_error)
+  if(NOT multiarch_configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "multiarch pkg-config configure failed: ${multiarch_configure_error}\n${multiarch_configure_output}")
+  endif()
+  file(READ "${multiarch_dir}/cai.pc" multiarch_pc_text)
+  string(FIND "${multiarch_pc_text}"
+              "prefix=\${pcfiledir}/../../.." multiarch_prefix_pos)
+  string(FIND "${multiarch_pc_text}"
+              "libdir=\${exec_prefix}/lib/x86_64-linux-gnu"
+              multiarch_libdir_pos)
+  string(FIND "${multiarch_pc_text}" "includedir=\${prefix}/include"
+              multiarch_includedir_pos)
+  if(multiarch_prefix_pos EQUAL -1 OR multiarch_libdir_pos EQUAL -1 OR
+     multiarch_includedir_pos EQUAL -1)
+    message(FATAL_ERROR
+      "cai.pc does not derive prefix correctly for multiarch libdirs")
+  endif()
+endif()
+
 if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
     CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt") AND
    DEFINED CAI_C_PKT_SYSTEMS_PREFIX AND

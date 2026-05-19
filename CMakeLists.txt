@@ -605,11 +605,14 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_install_metadata_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DCAI_VERSION=${PROJECT_VERSION}"
         "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_RESOLVED_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
+        "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
+        "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
@@ -739,6 +742,13 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config-version.cmake"
     VERSION "${PROJECT_VERSION}"
     COMPATIBILITY SameMajorVersion)
+  set(CAI_PC_PREFIX_FROM_PKGCONFIG "..")
+  string(REPLACE "/" ";" _cai_pc_libdir_parts "${CMAKE_INSTALL_LIBDIR}")
+  foreach(_cai_pc_libdir_part IN LISTS _cai_pc_libdir_parts)
+    if(NOT _cai_pc_libdir_part STREQUAL "")
+      string(APPEND CAI_PC_PREFIX_FROM_PKGCONFIG "/..")
+    endif()
+  endforeach()
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai.pc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"

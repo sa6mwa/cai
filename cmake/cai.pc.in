@@ -1,4 +1,4 @@
-prefix=${pcfiledir}/../..
+prefix=${pcfiledir}/@CAI_PC_PREFIX_FROM_PKGCONFIG@
 exec_prefix=${prefix}
 libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@

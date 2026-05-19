@@ -152,6 +152,13 @@ typedef struct cai_pipe_stream {
   int write_fd;
   pthread_t thread;
   int thread_started;
+  pthread_mutex_t lock;
+  int lock_initialized;
+  cai_error worker_error;
+  int worker_error_initialized;
+  int worker_done;
+  int worker_rc;
+  int worker_error_reported;
 } cai_pipe_stream;
 
 static int cai_client_open_response_text_source_common(
@@ -159,6 +166,52 @@ static int cai_client_open_response_text_source_common(
     cai_response_create_params *owned_params,
     cai_stream_complete_fn on_complete, void *complete_context, cai_source **out,
     cai_error *error);
+
+static void cai_pipe_stream_finish(cai_pipe_stream *stream, int rc,
+                                   const cai_error *error) {
+  if (stream == NULL || !stream->lock_initialized) {
+    return;
+  }
+  pthread_mutex_lock(&stream->lock);
+  stream->worker_rc = rc;
+  if (rc != CAI_OK) {
+    (void)cai_set_error_http(
+        &stream->worker_error,
+        error != NULL && error->code != CAI_OK ? error->code : rc,
+        error != NULL ? error->http_status : 0L,
+        error != NULL && error->message != NULL ? error->message
+                                                : cai_status_string(rc),
+        error != NULL ? error->detail : NULL,
+        error != NULL ? error->server_code : NULL,
+        error != NULL ? error->request_id : NULL);
+  }
+  stream->worker_done = 1;
+  pthread_mutex_unlock(&stream->lock);
+}
+
+static int cai_pipe_stream_take_error(cai_pipe_stream *stream,
+                                      cai_error *error) {
+  int rc;
+
+  if (stream == NULL || !stream->lock_initialized) {
+    return CAI_OK;
+  }
+  pthread_mutex_lock(&stream->lock);
+  rc = CAI_OK;
+  if (stream->worker_done && stream->worker_rc != CAI_OK &&
+      !stream->worker_error_reported) {
+    rc = stream->worker_error.code != CAI_OK ? stream->worker_error.code
+                                             : stream->worker_rc;
+    stream->worker_error_reported = 1;
+    (void)cai_set_error_http(error, rc, stream->worker_error.http_status,
+                             stream->worker_error.message,
+                             stream->worker_error.detail,
+                             stream->worker_error.server_code,
+                             stream->worker_error.request_id);
+  }
+  pthread_mutex_unlock(&stream->lock);
+  return rc;
+}
 
 static void cai_stream_copy_usage(cai_token_usage *out,
                                   const cai_stream_usage_doc *usage) {
@@ -990,7 +1043,8 @@ static void *cai_pipe_stream_main(void *arg) {
   callbacks.write = cai_pipe_sink_write;
   callbacks.close = NULL;
   callbacks.context = &stream->write_fd;
-  if (cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK) {
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  if (rc == CAI_OK) {
     rc = cai_client_stream_response_text_with_id(
         stream->client, stream->params, sink, &stream->response_id,
         &stream->usage, &error);
@@ -998,6 +1052,7 @@ static void *cai_pipe_stream_main(void *arg) {
       stream->has_usage = 1;
     }
   }
+  cai_pipe_stream_finish(stream, rc, &error);
   cai_sink_close(sink);
   close(stream->write_fd);
   stream->write_fd = -1;
@@ -1014,6 +1069,9 @@ static size_t cai_pipe_source_read(void *context, void *buffer, size_t count,
   if (stream == NULL || stream->read_fd < 0) {
     return 0U;
   }
+  if (count == 0U) {
+    return 0U;
+  }
   do {
     got = read(stream->read_fd, buffer, count);
   } while (got < 0 && errno == EINTR);
@@ -1024,6 +1082,7 @@ static size_t cai_pipe_source_read(void *context, void *buffer, size_t count,
     return 0U;
   }
   if (got == 0) {
+    (void)cai_pipe_stream_take_error(stream, error);
     return 0U;
   }
   return (size_t)got;
@@ -1052,6 +1111,12 @@ static void cai_pipe_source_close(void *context) {
   }
   if (stream->has_params) {
     cai_response_create_params_destroy(stream->params);
+  }
+  if (stream->worker_error_initialized) {
+    cai_error_cleanup(&stream->worker_error);
+  }
+  if (stream->lock_initialized) {
+    pthread_mutex_destroy(&stream->lock);
   }
   cai_free_mem(NULL, stream->response_id);
   cai_free_mem(NULL, stream);
@@ -1133,6 +1198,18 @@ static int cai_client_open_response_text_source_common(
   stream->read_fd = fds[0];
   stream->write_fd = fds[1];
   stream->thread_started = 0;
+  stream->lock_initialized = 0;
+  cai_error_init(&stream->worker_error);
+  stream->worker_error_initialized = 1;
+  stream->worker_done = 0;
+  stream->worker_rc = CAI_OK;
+  stream->worker_error_reported = 0;
+  if (pthread_mutex_init(&stream->lock, NULL) != 0) {
+    cai_pipe_source_close(stream);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize streaming source lock");
+  }
+  stream->lock_initialized = 1;
   if (owned_params != NULL) {
     stream->params = owned_params;
     stream->has_params = 1;
