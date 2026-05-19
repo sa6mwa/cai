@@ -3385,6 +3385,7 @@ static int cai_history_source_to_array_spooled(cai_session *session,
   size_t nread;
   int has_raw;
   int has_compact;
+  int previous_error_code;
   int rc;
 
   if (out == NULL) {
@@ -3399,7 +3400,13 @@ static int cai_history_source_to_array_spooled(cai_session *session,
   cai_history_init_spooled(session, &raw);
   has_raw = 1;
   for (;;) {
+    previous_error_code = error != NULL ? error->code : CAI_OK;
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
+    if (nread == 0U && error != NULL && error->code != previous_error_code &&
+        error->code != CAI_OK) {
+      rc = error->code;
+      goto done;
+    }
     if (nread == 0U) {
       break;
     }

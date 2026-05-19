@@ -33,6 +33,16 @@ void cai_client_config_use_openrouter(cai_client_config *config) {
   config->project_id = NULL;
 }
 
+static int cai_allocator_is_empty(const cai_allocator *allocator) {
+  return allocator->malloc_fn == NULL && allocator->realloc_fn == NULL &&
+         allocator->free_fn == NULL;
+}
+
+static int cai_allocator_is_complete(const cai_allocator *allocator) {
+  return allocator->malloc_fn != NULL && allocator->realloc_fn != NULL &&
+         allocator->free_fn != NULL;
+}
+
 static void cai_client_destroy_fields(cai_client_impl *impl) {
   if (impl == NULL) {
     return;
@@ -61,6 +71,11 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     effective = &defaults;
   } else {
     effective = config;
+  }
+  if (!cai_allocator_is_empty(&effective->allocator) &&
+      !cai_allocator_is_complete(&effective->allocator)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom allocator requires malloc, realloc, and free");
   }
   client = (cai_client *)cai_alloc(&effective->allocator, sizeof(*client));
   if (client == NULL) {

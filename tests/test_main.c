@@ -35,6 +35,12 @@ typedef struct read_state {
   int closed;
 } read_state;
 
+typedef struct fail_after_eof_read_state {
+  const char *text;
+  size_t offset;
+  int failed;
+} fail_after_eof_read_state;
+
 typedef struct write_state {
   char buffer[8192];
   size_t length;
@@ -734,6 +740,41 @@ static size_t test_failing_zero_read(void *context, void *buffer, size_t count,
   (void)count;
   cai_set_error(error, CAI_ERR_TRANSPORT, "source read failed deliberately");
   return 0U;
+}
+
+static size_t test_fail_after_eof_read(void *context, void *buffer, size_t count,
+                                       cai_error *error) {
+  fail_after_eof_read_state *state;
+  size_t remaining;
+  size_t n;
+
+  state = (fail_after_eof_read_state *)context;
+  remaining = strlen(state->text) - state->offset;
+  n = remaining < count ? remaining : count;
+  if (n > 0U) {
+    memcpy(buffer, state->text + state->offset, n);
+    state->offset += n;
+    return n;
+  }
+  state->failed = 1;
+  cai_set_error(error, CAI_ERR_TRANSPORT,
+                "source read failed after complete history");
+  return 0U;
+}
+
+static void *test_allocator_malloc(void *context, size_t size) {
+  (void)context;
+  return malloc(size);
+}
+
+static void *test_allocator_realloc(void *context, void *ptr, size_t size) {
+  (void)context;
+  return realloc(ptr, size);
+}
+
+static void test_allocator_free(void *context, void *ptr) {
+  (void)context;
+  free(ptr);
 }
 
 static int test_reset(void *context, cai_error *error) {
@@ -2768,6 +2809,21 @@ static void test_client_open(test_state *state) {
              CAI_OPENROUTER_API_KEY_ENV);
   expect_str(state, "client_config_openrouter_base", config.base_url,
              CAI_OPENROUTER_BASE_URL);
+  client = NULL;
+  config.api_key = "test-key";
+  config.allocator.malloc_fn = test_allocator_malloc;
+  config.allocator.free_fn = test_allocator_free;
+  expect_int(state, "client_partial_allocator_rejected",
+             cai_client_open(&config, &client, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.allocator.realloc_fn = test_allocator_realloc;
+  expect_int(state, "client_complete_allocator_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  cai_client_close(client);
+  client = NULL;
+  cai_client_config_init(&config);
+  cai_client_config_use_openrouter(&config);
   memset(&fake_logger, 0, sizeof(fake_logger));
   fake_logger.infof = test_pslog_infof;
   fake_logger.warnf = test_pslog_warnf;
@@ -9637,6 +9693,7 @@ static void test_session_resume_and_history_import(test_state *state) {
   cai_response *response;
   cai_source_callbacks source_callbacks;
   read_state history_reader;
+  fail_after_eof_read_state failing_history_reader;
   cai_source *history_source;
   cai_source *exported_source;
   cai_source *state_source;
@@ -9740,6 +9797,32 @@ static void test_session_resume_and_history_import(test_state *state) {
   expect_int(state, "resume_import_history",
              cai_session_import_history_source(session, history_source, &error),
              CAI_OK);
+  cai_source_close(history_source);
+  history_source = NULL;
+  failing_history_reader.text = "[{\"type\":\"message\",\"role\":\"user\","
+                                "\"content\":[{\"type\":\"input_text\","
+                                "\"text\":\"should not import\"}]}]";
+  failing_history_reader.offset = 0U;
+  failing_history_reader.failed = 0;
+  source_callbacks.read = test_fail_after_eof_read;
+  source_callbacks.reset = NULL;
+  source_callbacks.close = NULL;
+  source_callbacks.context = &failing_history_reader;
+  expect_int(state, "resume_failing_history_source",
+             cai_source_from_callbacks(&source_callbacks, &history_source,
+                                       &error),
+             CAI_OK);
+  expect_int(state, "resume_import_history_read_failure",
+             cai_session_import_history_source(session, history_source, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "resume_import_history_read_failure_message", error.message,
+             "source read failed after complete history");
+  expect_int(state, "resume_import_history_read_failure_seen",
+             failing_history_reader.failed, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(history_source);
+  history_source = NULL;
   expect_int(state, "resume_export_history",
              cai_session_export_history_source(session, &exported_source,
                                                &error),
@@ -9749,7 +9832,8 @@ static void test_session_resume_and_history_import(test_state *state) {
     if (history_json[0] != '[' ||
         history_json[strlen(history_json) - 1U] != ']' ||
         strstr(history_json, "imported prompt") == NULL ||
-        strstr(history_json, "imported answer") == NULL) {
+        strstr(history_json, "imported answer") == NULL ||
+        strstr(history_json, "should not import") != NULL) {
       test_fail(state, "resume_export_value",
                 "imported history did not round trip");
     }
