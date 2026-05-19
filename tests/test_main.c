@@ -3230,7 +3230,7 @@ static void test_response_json(test_state *state) {
   cai_error_cleanup(&error);
 }
 
-static void test_response_spooled_request_fragments(test_state *state) {
+static void test_response_spooled_request_arrays(test_state *state) {
   cai_response_create_params *params;
   cai_response_create_params *cloned_params;
   lonejson_spooled raw_items;
@@ -3245,7 +3245,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
   char *json;
   size_t json_len;
 
-  static const char raw_fragment[] =
+  static const char raw_array[] =
       "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
       "\"output_text\",\"text\":\"remembered\"}]}";
   static const char response_json[] =
@@ -3275,8 +3275,8 @@ static void test_response_spooled_request_fragments(test_state *state) {
   lonejson_error_init(&json_error);
   lonejson_spooled_init(&raw_items, NULL);
   expect_int(state, "spooled_raw_append",
-             lonejson_spooled_append(&raw_items, raw_fragment,
-                                     strlen(raw_fragment), &json_error),
+             lonejson_spooled_append(&raw_items, raw_array,
+                                     strlen(raw_array), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "spooled_raw_set",
              cai_response_create_params_set_raw_input_spooled(
@@ -3376,7 +3376,7 @@ static void test_response_spooled_request_fragments(test_state *state) {
         strstr(json, "\"text\":\"remembered\"") >
             strstr(json, "\"text\":\"next\"")) {
       test_fail(state, "spooled_request_json",
-                "request did not merge fragments");
+                "request did not merge input arrays");
     }
     expect_int(state, "spooled_request_len", (long)strlen(json),
                (long)json_len);
@@ -3396,12 +3396,12 @@ static void test_response_spooled_request_fragments(test_state *state) {
   if (json == NULL) {
     test_fail(state, "spooled_output_items", "failed to read output spool");
   } else {
-    if (json[0] == '[' || strstr(json, "\"summary\":[]") == NULL ||
+    if (json[0] != '[' || strstr(json, "\"summary\":[]") == NULL ||
         strstr(json, "\"text\":\"spooled\"") == NULL ||
         strstr(json, "\"status\":null") != NULL ||
         strstr(json, "\"role\":null") != NULL) {
       test_fail(state, "spooled_output_items",
-                "output items were not spooled as array items");
+                "output items were not spooled as an array");
     }
     expect_int(state, "spooled_output_len", (long)strlen(json), (long)json_len);
     free(json);
@@ -3420,7 +3420,6 @@ static void test_response_array_serialization_invariants(test_state *state) {
   lonejson_error json_error;
   char *json;
   char *items;
-  char wrapped[2048];
   size_t json_len;
   static const char empty_response_json[] =
       "{\"id\":\"resp_empty_output\",\"status\":\"completed\",\"output\":[]}";
@@ -3499,26 +3498,25 @@ static void test_response_array_serialization_invariants(test_state *state) {
   }
   lonejson_spooled_cleanup(&array_spool);
 
-  expect_int(state, "array_serial_items_fragment",
+  expect_int(state, "array_serial_input_items_array",
              cai_response_params_input_items_spool(params, &item_spool,
                                                    &json_len, &error),
              CAI_OK);
   items = test_spooled_to_cstr(&item_spool);
   if (items == NULL) {
-    test_fail(state, "array_serial_items_fragment",
-              "failed to read input item fragment");
+    test_fail(state, "array_serial_input_items_array",
+              "failed to read input item array");
   } else {
-    if (items[0] == '[' || strstr(items, "\"array user text\"") == NULL ||
+    if (items[0] != '[' || strstr(items, "\"array user text\"") == NULL ||
         strstr(items, "\"array tool text\"") == NULL) {
-      test_fail(state, "array_serial_items_fragment_shape",
-                "input item fragment was not emitted correctly");
+      test_fail(state, "array_serial_input_items_array_shape",
+                "input item array was not emitted correctly");
     }
-    snprintf(wrapped, sizeof(wrapped), "[%s]", items);
     lonejson_error_init(&json_error);
-    expect_int(state, "array_serial_items_fragment_valid",
-               lonejson_validate_cstr(wrapped, &json_error),
+    expect_int(state, "array_serial_input_items_array_valid",
+               lonejson_validate_cstr(items, &json_error),
                LONEJSON_STATUS_OK);
-    expect_int(state, "array_serial_items_fragment_len", (long)strlen(items),
+    expect_int(state, "array_serial_input_items_array_len", (long)strlen(items),
                (long)json_len);
     free(items);
     items = NULL;
@@ -3539,7 +3537,7 @@ static void test_response_array_serialization_invariants(test_state *state) {
     test_fail(state, "array_serial_empty_output_items",
               "failed to read empty output items");
   } else {
-    expect_str(state, "array_serial_empty_output_items_value", items, "");
+    expect_str(state, "array_serial_empty_output_items_value", items, "[]");
     expect_int(state, "array_serial_empty_output_items_len", (long)strlen(items),
                (long)json_len);
     free(items);
@@ -3559,18 +3557,17 @@ static void test_response_array_serialization_invariants(test_state *state) {
   items = test_spooled_to_cstr(&item_spool);
   if (items == NULL) {
     test_fail(state, "array_serial_output_items",
-              "failed to read output item fragment");
+              "failed to read output item array");
   } else {
-    if (items[0] == '[' || strstr(items, "\"summary\":[]") == NULL ||
+    if (items[0] != '[' || strstr(items, "\"summary\":[]") == NULL ||
         strstr(items, "\"array output\"") == NULL ||
         strstr(items, "\"role\":null") != NULL) {
       test_fail(state, "array_serial_output_items_shape",
-                "output item fragment was not emitted correctly");
+                "output item array was not emitted correctly");
     }
-    snprintf(wrapped, sizeof(wrapped), "[%s]", items);
     lonejson_error_init(&json_error);
     expect_int(state, "array_serial_output_items_valid",
-               lonejson_validate_cstr(wrapped, &json_error),
+               lonejson_validate_cstr(items, &json_error),
                LONEJSON_STATUS_OK);
     expect_int(state, "array_serial_output_items_len", (long)strlen(items),
                (long)json_len);
@@ -9801,7 +9798,7 @@ int main(void) {
   test_client_open(&state);
   test_mike_mind_prompt_contract(&state);
   test_response_json(&state);
-  test_response_spooled_request_fragments(&state);
+  test_response_spooled_request_arrays(&state);
   test_response_array_serialization_invariants(&state);
   test_response_large_text_parse(&state);
   test_http_create_response(&state);

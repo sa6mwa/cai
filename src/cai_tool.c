@@ -148,17 +148,8 @@ cai_tool_writer_string_cstr(lonejson_writer *writer, const char *value,
 static lonejson_status
 cai_tool_writer_raw_json(lonejson_writer *writer, const char *json,
                          lonejson_error *json_error) {
-  lonejson_json_value value;
-  lonejson_status status;
-
-  lonejson_json_value_init(&value);
-  status = lonejson_json_value_set_buffer(&value, json, strlen(json),
-                                          json_error);
-  if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_json_value(writer, &value, json_error);
-  }
-  lonejson_json_value_cleanup(&value);
-  return status;
+  return lonejson_writer_json_value_buffer(writer, json, strlen(json), NULL,
+                                           json_error);
 }
 
 static lonejson_status
