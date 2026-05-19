@@ -767,6 +767,59 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
   return rc;
 }
 
+static int cai_tool_validate_spooled_arguments_shape(const lonejson_map *map,
+                                                     lonejson_spooled *json,
+                                                     cai_error *error) {
+  cai_tool_argument_validator validator;
+  cai_tool_spooled_reader reader;
+  lonejson_value_visitor visitor;
+  lonejson_value_limits limits;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool arguments are required");
+  }
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind tool arguments",
+                                json_error.message);
+  }
+  memset(&validator, 0, sizeof(validator));
+  validator.root_map = map;
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_tool_argument_object_begin;
+  visitor.object_end = cai_tool_argument_object_end;
+  visitor.object_key_begin = cai_tool_argument_key_begin;
+  visitor.object_key_chunk = cai_tool_argument_key_chunk;
+  visitor.object_key_end = cai_tool_argument_key_end;
+  visitor.array_begin = cai_tool_argument_array_begin;
+  visitor.array_end = cai_tool_argument_array_end;
+  visitor.string_begin = cai_tool_argument_scalar_event;
+  visitor.number_begin = cai_tool_argument_scalar_event;
+  visitor.boolean_value = cai_tool_argument_bool_event;
+  visitor.null_value = cai_tool_argument_scalar_event;
+  limits = lonejson_default_value_limits();
+  limits.max_key_bytes = 4096U;
+  lonejson_error_init(&json_error);
+  status = lonejson_visit_value_reader(cai_tool_spooled_read, &reader, &visitor,
+                                       &validator, &limits, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                              "tool arguments failed validation",
+                              json_error.message);
+  } else {
+    rc = CAI_OK;
+  }
+  cai_free_mem(NULL, validator.key);
+  return rc;
+}
+
 static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
   cai_tool_schema_impl *impl;
   cai_buffer_builder builder;
@@ -1626,6 +1679,11 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry,
     }
     return entry->raw_spooled_callback(entry->context, arguments_json, output,
                                        error);
+  }
+  rc = cai_tool_validate_spooled_arguments_shape(entry->params_map,
+                                                 arguments_json, error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   params = cai_alloc(NULL, entry->params_map->struct_size);
   if (params == NULL) {
