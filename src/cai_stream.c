@@ -1,6 +1,7 @@
 #include "cai_internal.h"
 
 #include <curl/curl.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -703,6 +704,7 @@ static int cai_client_stream_response_params_with_id(
 
   if (client == NULL || params == NULL || sinks == NULL ||
       (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
+       sinks->output_text_delta == NULL &&
        sinks->function_call_arguments_delta == NULL &&
        sinks->function_call_arguments_done == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -959,7 +961,14 @@ static int cai_pipe_sink_write(void *context, const void *bytes, size_t count,
   data = (const char *)bytes;
   offset = 0U;
   while (offset < count) {
+#ifdef MSG_NOSIGNAL
+    written = send(fd, data + offset, count - offset, MSG_NOSIGNAL);
+#else
     written = write(fd, data + offset, count - offset);
+#endif
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
     if (written <= 0) {
       return CAI_ERR_TRANSPORT;
     }
@@ -1083,10 +1092,22 @@ static int cai_client_open_response_text_source_common(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client and params are required");
   }
+#ifdef AF_UNIX
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+#else
   if (pipe(fds) != 0) {
+#endif
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to create streaming pipe");
   }
+#ifdef SO_NOSIGPIPE
+  {
+    int one;
+
+    one = 1;
+    (void)setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  }
+#endif
   stream = (cai_pipe_stream *)cai_alloc(NULL, sizeof(*stream));
   if (stream == NULL) {
     close(fds[0]);

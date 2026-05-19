@@ -7732,7 +7732,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 10);
+    mock_openai_child(pipe_fds[1], 12);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -7824,6 +7824,18 @@ static void test_stream_response_text(test_state *state) {
              2L);
   cai_sink_close(sink);
   sink = NULL;
+  memset(&output_stream, 0, sizeof(output_stream));
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text_delta = test_stream_output_delta;
+  stream_sinks.output_text_context = &output_stream;
+  expect_int(state, "stream_output_delta_only_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_output_delta_only_raw", output_stream.delta,
+             "hello");
+  expect_int(state, "stream_output_delta_only_count",
+             output_stream.delta_count, 2L);
 
   expect_int(
       state, "stream_source_open",
@@ -7840,6 +7852,12 @@ static void test_stream_response_text(test_state *state) {
   }
   read_buffer[got] = '\0';
   expect_str(state, "stream_source_value", read_buffer, "hello");
+  cai_source_close(source);
+  source = NULL;
+  expect_int(state, "stream_source_early_close_open",
+             cai_client_open_response_text_source(client, params, &source,
+                                                  &error),
+             CAI_OK);
   cai_source_close(source);
   source = NULL;
 
@@ -8010,10 +8028,10 @@ static void test_stream_response_text(test_state *state) {
              "{\"city\":\"Gothenburg\"}");
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 10L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 10L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 12L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 11L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
-  expect_int(state, "stream_log_error_count", g_test_errorf_count, 0L);
+  expect_int(state, "stream_log_error_count", g_test_errorf_count, 1L);
 
   cai_response_create_params_destroy(params);
   cai_session_destroy(session);
