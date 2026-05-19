@@ -2583,10 +2583,14 @@ static int cai_session_run_tool_round(cai_session *session,
   cai_sink *sink;
   cai_tool_output_capture capture;
   lonejson_spool_options spool_options;
+  lonejson_spooled pending_items;
+  int has_pending_items;
   size_t i;
   int rc;
 
   params = NULL;
+  memset(&pending_items, 0, sizeof(pending_items));
+  has_pending_items = 0;
   rc = cai_session_init_response_params(session, &params, error);
   spool_options = lonejson_default_spool_options();
   spool_options.memory_limit = options->tool_output_memory_limit;
@@ -2641,9 +2645,17 @@ static int cai_session_run_tool_round(cai_session *session,
     cai_capture_cleanup(&capture);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(CAI_SESSION_AGENT_IMPL(session)->client, params, out, error);
+    rc = cai_session_replay_history_with_params_input(
+        session, params, &pending_items, &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_create_response_from_params(
+        session, params, &pending_items, has_pending_items, out, error);
   }
   cai_response_create_params_destroy(params);
+  if (has_pending_items) {
+    lonejson_spooled_cleanup(&pending_items);
+  }
   return rc;
 }
 

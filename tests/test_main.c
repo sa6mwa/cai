@@ -4343,6 +4343,21 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return auto_tool_call_body;
     }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
+        strstr(request, "\"output\":\"{\\\"x\\\":1}\"") != NULL &&
+        strstr(request, "auto client history tool turn") != NULL &&
+        strstr(request, "\"type\":\"function_call\"") != NULL &&
+        strstr(request, "previous_response_id") == NULL &&
+        strstr(request, "context_management") == NULL) {
+      return auto_tool_done_body;
+    }
+    if (strstr(request, "auto client history tool turn") != NULL &&
+        strstr(request, "\"name\":\"raw_echo\"") != NULL &&
+        strstr(request, "previous_response_id") == NULL &&
+        strstr(request, "context_management") == NULL) {
+      return auto_tool_call_body;
+    }
     if (strstr(request, "large tool turn") != NULL &&
         strstr(request, "\"name\":\"large_raw\"") != NULL) {
       return large_tool_call_body;
@@ -5936,6 +5951,127 @@ static void test_agent_tool_auto_run(test_state *state) {
     test_fail(state, "agent_auto_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_auto_mock", "mock child failed");
+  }
+}
+
+static void test_agent_client_history_tool_auto_run(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_source *history_source;
+  raw_tool_state raw_state;
+  cai_error error;
+  char history_json[4096];
+  char *user_pos;
+  char *call_pos;
+  char *output_pos;
+  char *assistant_pos;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_client_history_tool_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_client_history_tool_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_client_history_tool_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  cai_run_options_init(&run_options);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+  raw_state.seen[0] = '\0';
+
+  expect_int(state, "agent_client_history_tool_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_client_history_tool_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_tool_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_tool_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_client_history_tool_add",
+             cai_session_add_user_text(session, "auto client history tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_tool_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_client_history_tool_response",
+             cai_response_output_text(response), "auto done");
+  expect_str(state, "agent_client_history_tool_seen", raw_state.seen,
+             "{\"x\":1}");
+  expect_int(state, "agent_client_history_tool_export",
+             cai_session_export_history_source(session, &history_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "agent_client_history_tool_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    user_pos = strstr(history_json, "auto client history tool turn");
+    call_pos = strstr(history_json, "\"type\":\"function_call\"");
+    output_pos = strstr(history_json, "\"type\":\"function_call_output\"");
+    assistant_pos = strstr(history_json, "auto done");
+    if (user_pos == NULL || call_pos == NULL || output_pos == NULL ||
+        assistant_pos == NULL || !(user_pos < call_pos) ||
+        !(call_pos < output_pos) || !(output_pos < assistant_pos)) {
+      test_fail(state, "agent_client_history_tool_order",
+                "client history did not preserve non-stream tool order");
+    }
+  }
+
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_client_history_tool_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_client_history_tool_mock", "mock child failed");
   }
 }
 
@@ -9948,6 +10084,7 @@ int main(void) {
   test_agent_auto_compaction(&state);
   test_http_response_limit(&state);
   test_agent_tool_auto_run(&state);
+  test_agent_client_history_tool_auto_run(&state);
   test_revgeo_tool(&state);
   test_todo_tool(&state);
   test_todo_callback_store(&state);
