@@ -782,15 +782,30 @@ static int cai_json_builder_string_spooled(cai_json_builder *builder,
                                            const lonejson_spooled *value,
                                            cai_error *error) {
   cai_response_json_builder_sink_context sink_context;
+  lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
 
-  if (value == NULL) {
-    return cai_json_builder_lit(builder, "null", error);
-  }
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
+  if (value == NULL) {
+    status = lonejson_writer_init_sink(&writer, cai_response_json_builder_sink,
+                                       &sink_context, NULL, &json_error);
+    if (status == LONEJSON_STATUS_OK) {
+      status = lonejson_writer_null(&writer, &json_error);
+    }
+    if (status == LONEJSON_STATUS_OK) {
+      status = lonejson_writer_finish(&writer, &json_error);
+    }
+    lonejson_writer_cleanup(&writer);
+    if (status != LONEJSON_STATUS_OK) {
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to serialize JSON null",
+                                  json_error.message);
+    }
+    return CAI_OK;
+  }
   status = lonejson_write_json_string_spooled_sink(
       value, cai_response_json_builder_sink, &sink_context, NULL, &json_error);
   if (status != LONEJSON_STATUS_OK) {
@@ -801,9 +816,9 @@ static int cai_json_builder_string_spooled(cai_json_builder *builder,
   return CAI_OK;
 }
 
-static int cai_json_builder_raw_spooled(cai_json_builder *builder,
-                                        const lonejson_spooled *value,
-                                        cai_error *error) {
+static int cai_spooled_copy_to_builder(cai_json_builder *builder,
+                                       const lonejson_spooled *value,
+                                       cai_error *error) {
   lonejson_spooled cursor;
   lonejson_error json_error;
   lonejson_read_result chunk;
@@ -1075,32 +1090,6 @@ static int cai_spool_mapped_object_array(const lonejson_map *map,
     *out_len = lonejson_spooled_size(out);
   }
   return CAI_OK;
-}
-
-int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
-                                  const char *value, int *need_comma,
-                                  cai_error *error) {
-  int rc;
-
-  if (*need_comma) {
-    rc = cai_json_builder_lit(builder, ",", error);
-    if (rc != CAI_OK) {
-      return rc;
-    }
-  }
-  rc = cai_json_builder_string(builder, name, error);
-  if (rc != CAI_OK) {
-    return rc;
-  }
-  rc = cai_json_builder_lit(builder, ":", error);
-  if (rc != CAI_OK) {
-    return rc;
-  }
-  rc = cai_json_builder_string(builder, value, error);
-  if (rc == CAI_OK) {
-    *need_comma = 1;
-  }
-  return rc;
 }
 
 static void cai_history_output_docs_cleanup(cai_history_output_doc *docs,
@@ -2634,45 +2623,6 @@ int cai_input_messages_spool_json_array(const lonejson_object_array *input,
   return rc;
 }
 
-int cai_serialize_input_message_items_json(cai_json_builder *builder,
-                                           const lonejson_object_array *input,
-                                           cai_error *error) {
-  lonejson_spooled spooled;
-  size_t out_len;
-  int rc;
-
-  if (builder == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "JSON builder is required");
-  }
-  if (input == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "input messages are required");
-  }
-  memset(&spooled, 0, sizeof(spooled));
-  out_len = 0U;
-  rc = cai_spool_request_input_items(input, &spooled, &out_len, error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_raw_spooled(builder, &spooled, error);
-  }
-  lonejson_spooled_cleanup(&spooled);
-  return rc;
-}
-
-int cai_serialize_input_messages_json(cai_json_builder *builder,
-                                      const char *field_name,
-                                      const lonejson_object_array *input,
-                                      cai_error *error) {
-  int rc;
-
-  rc = cai_json_builder_string(builder, field_name, error);
-  if (rc == CAI_OK) {
-    rc = cai_json_builder_lit(builder, ":", error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_serialize_input_message_items_json(builder, input, error);
-  }
-  return rc;
-}
-
 int cai_response_params_input_items_json(
     const cai_response_create_params *params, char **out_json,
     cai_error *error) {
@@ -2700,7 +2650,7 @@ int cai_response_params_input_items_json(
   builder.sink = NULL;
   builder.sink_user = NULL;
   builder.sink_error = NULL;
-  rc = cai_json_builder_raw_spooled(&builder, &spooled, error);
+  rc = cai_spooled_copy_to_builder(&builder, &spooled, error);
   lonejson_spooled_cleanup(&spooled);
   if (rc == CAI_OK) {
     *out_json = builder.data;

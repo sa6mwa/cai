@@ -277,16 +277,6 @@ int cai_json_builder_append(cai_json_builder *builder, const char *text,
                             size_t length, cai_error *error);
 int cai_json_builder_string(cai_json_builder *builder, const char *value,
                             cai_error *error);
-int cai_json_builder_field_string(cai_json_builder *builder, const char *name,
-                                  const char *value, int *need_comma,
-                                  cai_error *error);
-int cai_serialize_input_message_items_json(cai_json_builder *builder,
-                                           const lonejson_object_array *input,
-                                           cai_error *error);
-int cai_serialize_input_messages_json(cai_json_builder *builder,
-                                      const char *field_name,
-                                      const lonejson_object_array *messages,
-                                      cai_error *error);
 int cai_input_messages_spool_json_array(const lonejson_object_array *messages,
                                         lonejson_spooled *out,
                                         size_t *out_len, cai_error *error);
