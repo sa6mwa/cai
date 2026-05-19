@@ -110,6 +110,7 @@ ok, err = session:add_user_text(
 assert_ok(ok, err, "session:add_user_text")
 
 local response_chunks = {}
+local response_delta_chunks = {}
 local reasoning_chunks = {}
 local function_deltas = {}
 local function_done = {}
@@ -120,6 +121,10 @@ ok, err = session:stream({
   max_tool_rounds = 3,
   response = function(chunk)
     response_chunks[#response_chunks + 1] = chunk
+    return true
+  end,
+  on_response_delta = function(chunk)
+    response_delta_chunks[#response_delta_chunks + 1] = chunk
     return true
   end,
   reasoning = function(chunk)
@@ -169,6 +174,7 @@ ok, err = session:stream({
 assert_ok(ok, err, "session:stream")
 
 local response = table.concat(response_chunks)
+local response_delta = table.concat(response_delta_chunks)
 local output = table.concat(tool_output)
 
 if tool_calls ~= 1 then
@@ -194,6 +200,14 @@ if not output:find(secret, 1, true) then
 end
 if not response:find("LUA_STREAM_TOOL_OK gothenburg " .. secret, 1, true) then
   fail("unexpected final response: " .. response)
+end
+if not response_delta:find("LUA_STREAM_TOOL_OK gothenburg " .. secret, 1, true) then
+  fail("response delta callback did not receive final response; delta=" ..
+    response_delta)
+end
+if response ~= response_delta then
+  fail("response sink and delta callback diverged; response=" .. response ..
+    "; delta=" .. response_delta)
 end
 
 session:close()

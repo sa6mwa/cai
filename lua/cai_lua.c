@@ -1979,6 +1979,7 @@ static int cai_lua_agent_stream(lua_State *L) {
   cai_sink *output_sink;
   cai_lua_sink_ctx reasoning_ctx;
   cai_lua_sink_ctx output_ctx;
+  cai_lua_sink_ctx output_delta_ctx;
   cai_lua_function_call_ctx function_ctx;
   cai_error error;
   int rc;
@@ -1990,6 +1991,7 @@ static int cai_lua_agent_stream(lua_State *L) {
   cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
   memset(&reasoning_ctx, 0, sizeof(reasoning_ctx));
   memset(&output_ctx, 0, sizeof(output_ctx));
+  memset(&output_delta_ctx, 0, sizeof(output_delta_ctx));
   memset(&function_ctx, 0, sizeof(function_ctx));
   function_ctx.L = L;
   reasoning_sink = NULL;
@@ -2022,13 +2024,11 @@ static int cai_lua_agent_stream(lua_State *L) {
   cai_lua_apply_affix(L, 2, "response_suffix", &sinks.output_text_suffix);
   lua_getfield(L, 2, "on_response_delta");
   if (lua_isfunction(L, -1)) {
-    if (output_ctx.callback_ref == LUA_NOREF || output_ctx.callback_ref == 0) {
-      lua_pushvalue(L, -1);
-      output_ctx.L = L;
-      output_ctx.callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    }
+    lua_pushvalue(L, -1);
+    output_delta_ctx.L = L;
+    output_delta_ctx.callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
     sinks.output_text_delta = cai_lua_stream_output_delta;
-    sinks.output_text_context = &output_ctx;
+    sinks.output_text_context = &output_delta_ctx;
   }
   lua_pop(L, 1);
   lua_getfield(L, 2, "on_function_call_delta");
@@ -2064,6 +2064,9 @@ static int cai_lua_agent_stream(lua_State *L) {
   }
   if (output_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, output_ctx.callback_ref);
+  }
+  if (output_delta_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, output_delta_ctx.callback_ref);
   }
   if (function_ctx.delta_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.delta_ref);
@@ -2524,6 +2527,7 @@ static int cai_lua_session_stream(lua_State *L) {
   cai_sink *output_sink;
   cai_lua_sink_ctx reasoning_ctx;
   cai_lua_sink_ctx output_ctx;
+  cai_lua_sink_ctx output_delta_ctx;
   cai_lua_function_call_ctx function_ctx;
   cai_error error;
   int rc;
@@ -2535,6 +2539,7 @@ static int cai_lua_session_stream(lua_State *L) {
   cai_lua_run_options_from_table(L, 2, &options, &event_ctx);
   memset(&reasoning_ctx, 0, sizeof(reasoning_ctx));
   memset(&output_ctx, 0, sizeof(output_ctx));
+  memset(&output_delta_ctx, 0, sizeof(output_delta_ctx));
   memset(&function_ctx, 0, sizeof(function_ctx));
   function_ctx.L = L;
   reasoning_sink = NULL;
@@ -2565,6 +2570,15 @@ static int cai_lua_session_stream(lua_State *L) {
                       &sinks.reasoning_summary_suffix);
   cai_lua_apply_affix(L, 2, "response_prefix", &sinks.output_text_prefix);
   cai_lua_apply_affix(L, 2, "response_suffix", &sinks.output_text_suffix);
+  lua_getfield(L, 2, "on_response_delta");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    output_delta_ctx.L = L;
+    output_delta_ctx.callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.output_text_delta = cai_lua_stream_output_delta;
+    sinks.output_text_context = &output_delta_ctx;
+  }
+  lua_pop(L, 1);
   lua_getfield(L, 2, "on_function_call_delta");
   if (lua_isfunction(L, -1)) {
     lua_pushvalue(L, -1);
@@ -2598,6 +2612,9 @@ static int cai_lua_session_stream(lua_State *L) {
   }
   if (output_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, output_ctx.callback_ref);
+  }
+  if (output_delta_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, output_delta_ctx.callback_ref);
   }
   if (function_ctx.delta_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.delta_ref);
