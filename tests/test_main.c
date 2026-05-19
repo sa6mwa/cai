@@ -478,6 +478,28 @@ static void test_model_capabilities(test_state *state) {
              CAI_MODEL_GPT_5_NANO);
   expect_int(state, "model_gpt_4_1_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_4_1), 1047576L);
+  expect_int(state, "model_gpt_5_nano_image_input",
+             cai_model_supports(CAI_MODEL_GPT_5_NANO,
+                                CAI_MODEL_CAP_IMAGE_INPUT),
+             1L);
+  expect_int(state, "model_gpt_4_1_image_input",
+             cai_model_supports(CAI_MODEL_GPT_4_1, CAI_MODEL_CAP_IMAGE_INPUT),
+             1L);
+  expect_int(state, "model_gpt_4_turbo_image_input",
+             cai_model_supports(CAI_MODEL_GPT_4_TURBO,
+                                CAI_MODEL_CAP_IMAGE_INPUT),
+             1L);
+  expect_int(state, "model_gpt_4_vision_preview_image_input",
+             cai_model_supports(CAI_MODEL_GPT_4_VISION_PREVIEW,
+                                CAI_MODEL_CAP_IMAGE_INPUT),
+             1L);
+  expect_int(state, "model_gpt_4_no_image_input",
+             cai_model_supports(CAI_MODEL_GPT_4, CAI_MODEL_CAP_IMAGE_INPUT),
+             0L);
+  expect_int(state, "model_gpt_35_no_image_input",
+             cai_model_supports(CAI_MODEL_GPT_3_5_TURBO,
+                                CAI_MODEL_CAP_IMAGE_INPUT),
+             0L);
   expect_int(state, "model_gpt_5_5_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_compact_limit",
