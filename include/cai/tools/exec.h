@@ -19,8 +19,12 @@ typedef struct cai_exec_tool_config {
   int allow_network;
   int allow_pty;
   int allow_login_shell;
+  int enable_cgroup_limits;
   long timeout_ms;
   long max_timeout_ms;
+  long long pids_max;
+  long long memory_max_bytes;
+  const char *cgroup_parent_path;
   size_t output_memory_limit;
   size_t output_max_bytes;
   const char *output_spool_dir;

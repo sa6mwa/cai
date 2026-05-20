@@ -31,6 +31,9 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS 60000L
 #define CAI_EXEC_DEFAULT_OUTPUT_MEMORY_LIMIT (128U * 1024U)
 #define CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES (1024U * 1024U)
+#define CAI_EXEC_DEFAULT_PIDS_MAX 64LL
+#define CAI_EXEC_DEFAULT_MEMORY_MAX_BYTES (256LL * 1024LL * 1024LL)
+#define CAI_EXEC_DEFAULT_CGROUP_PARENT "/sys/fs/cgroup"
 
 typedef struct cai_exec_context {
   char *root_path;
@@ -40,8 +43,12 @@ typedef struct cai_exec_context {
   int allow_network;
   int allow_pty;
   int allow_login_shell;
+  int enable_cgroup_limits;
   long timeout_ms;
   long max_timeout_ms;
+  long long pids_max;
+  long long memory_max_bytes;
+  char *cgroup_parent_path;
   size_t output_memory_limit;
   size_t output_max_bytes;
   char *output_spool_dir;
@@ -101,6 +108,11 @@ typedef struct cai_exec_proc_result {
   int timed_out;
   long duration_ms;
 } cai_exec_proc_result;
+
+typedef struct cai_exec_cgroup {
+  int enabled;
+  char path[PATH_MAX];
+} cai_exec_cgroup;
 
 static const lonejson_field cai_exec_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_exec_args, cmd, "cmd"),
@@ -198,6 +210,7 @@ static void cai_exec_context_cleanup(void *context) {
   cai_free_mem(NULL, ctx->default_workdir);
   cai_free_mem(NULL, ctx->shell_path);
   cai_free_mem(NULL, ctx->bwrap_path);
+  cai_free_mem(NULL, ctx->cgroup_parent_path);
   cai_free_mem(NULL, ctx->output_spool_dir);
   cai_free_mem(NULL, ctx);
 }
@@ -278,6 +291,12 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
         config != NULL ? config->output_spool_dir : NULL,
         "failed to allocate exec output spool directory", error);
   }
+  if (rc == CAI_OK) {
+    rc = cai_exec_strdup_optional(
+        &ctx->cgroup_parent_path,
+        config != NULL ? config->cgroup_parent_path : NULL,
+        "failed to allocate exec cgroup parent path", error);
+  }
   if (rc != CAI_OK) {
     cai_exec_context_cleanup(ctx);
     return rc;
@@ -286,12 +305,21 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   ctx->allow_pty = config != NULL && config->allow_pty ? 1 : 0;
   ctx->allow_login_shell =
       config != NULL && config->allow_login_shell ? 1 : 0;
+  ctx->enable_cgroup_limits =
+      config != NULL && config->enable_cgroup_limits ? 1 : 0;
   ctx->timeout_ms =
       config != NULL && config->timeout_ms > 0L ? config->timeout_ms
                                                 : CAI_EXEC_DEFAULT_TIMEOUT_MS;
   ctx->max_timeout_ms = config != NULL && config->max_timeout_ms > 0L
                             ? config->max_timeout_ms
                             : CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS;
+  ctx->pids_max = config != NULL && config->pids_max > 0LL
+                      ? config->pids_max
+                      : CAI_EXEC_DEFAULT_PIDS_MAX;
+  ctx->memory_max_bytes =
+      config != NULL && config->memory_max_bytes > 0LL
+          ? config->memory_max_bytes
+          : CAI_EXEC_DEFAULT_MEMORY_MAX_BYTES;
   if (ctx->timeout_ms > ctx->max_timeout_ms) {
     ctx->timeout_ms = ctx->max_timeout_ms;
   }
@@ -501,6 +529,114 @@ static int cai_exec_set_cloexec(int fd) {
   return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
+static int cai_exec_write_file_text(const char *path, const char *text,
+                                    cai_error *error) {
+  int fd;
+  size_t len;
+  ssize_t nwritten;
+
+  fd = open(path, O_WRONLY);
+  if (fd < 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to open cgroup control file",
+                                strerror(errno));
+  }
+  len = strlen(text);
+  nwritten = write(fd, text, len);
+  close(fd);
+  if (nwritten != (ssize_t)len) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to write cgroup control file",
+                                strerror(errno));
+  }
+  return CAI_OK;
+}
+
+static int cai_exec_cgroup_join(char *out, size_t out_size, const char *dir,
+                                const char *name, cai_error *error) {
+  if (strlen(dir) + 1U + strlen(name) + 1U > out_size) {
+    return cai_set_error(error, CAI_ERR_INVALID, "cgroup path is too long");
+  }
+  strcpy(out, dir);
+  strcat(out, "/");
+  strcat(out, name);
+  return CAI_OK;
+}
+
+static int cai_exec_cgroup_prepare(const cai_exec_context *ctx,
+                                   cai_exec_cgroup *cgroup,
+                                   cai_error *error) {
+#if defined(__linux__)
+  const char *parent;
+  char control_path[PATH_MAX];
+  char value[64];
+
+  memset(cgroup, 0, sizeof(*cgroup));
+  if (!ctx->enable_cgroup_limits) {
+    return CAI_OK;
+  }
+  parent = ctx->cgroup_parent_path != NULL ? ctx->cgroup_parent_path
+                                           : CAI_EXEC_DEFAULT_CGROUP_PARENT;
+  if (snprintf(cgroup->path, sizeof(cgroup->path), "%s/cai-exec-%ld-%ld",
+               parent, (long)getpid(), cai_exec_now_ms()) >=
+      (int)sizeof(cgroup->path)) {
+    return cai_set_error(error, CAI_ERR_INVALID, "cgroup path is too long");
+  }
+  if (mkdir(cgroup->path, 0700) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to create exec cgroup",
+                                strerror(errno));
+  }
+  cgroup->enabled = 1;
+  if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
+                           "pids.max", error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
+  snprintf(value, sizeof(value), "%lld", ctx->pids_max);
+  if (cai_exec_write_file_text(control_path, value, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
+                           "memory.max", error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
+  snprintf(value, sizeof(value), "%lld", ctx->memory_max_bytes);
+  if (cai_exec_write_file_text(control_path, value, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  return CAI_OK;
+#else
+  (void)ctx;
+  (void)cgroup;
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "exec cgroup limits require Linux cgroup v2");
+#endif
+}
+
+static int cai_exec_cgroup_add_pid(const cai_exec_cgroup *cgroup, pid_t pid,
+                                   cai_error *error) {
+  char control_path[PATH_MAX];
+  char value[64];
+
+  if (cgroup == NULL || !cgroup->enabled) {
+    return CAI_OK;
+  }
+  if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
+                           "cgroup.procs", error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
+  snprintf(value, sizeof(value), "%ld", (long)pid);
+  return cai_exec_write_file_text(control_path, value, error);
+}
+
+static void cai_exec_cgroup_cleanup(cai_exec_cgroup *cgroup) {
+  if (cgroup != NULL && cgroup->enabled) {
+    rmdir(cgroup->path);
+    cgroup->enabled = 0;
+    cgroup->path[0] = '\0';
+  }
+}
+
 static void cai_exec_bwrap_arg(const char **argv, size_t *i, size_t cap,
                                const char *arg) {
   if (*i + 1U < cap) {
@@ -569,14 +705,36 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   *dir_count = 0U;
   cai_exec_bwrap_arg(argv, &i, argv_cap, bwrap_path);
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--die-with-parent");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--new-session");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-pid");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-ipc");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-uts");
   if (!ctx->allow_network) {
     cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-net");
   }
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--clearenv");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "PATH");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/usr/local/bin:/usr/bin:/bin");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "HOME");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "TMPDIR");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/tmp");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "LANG");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "C");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--dev");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "/dev");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--proc");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "/proc");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--tmpfs");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/tmp");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--dir");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/var");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--tmpfs");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/var/tmp");
   cai_exec_bwrap_parent_dirs(argv, &i, argv_cap, ctx->root_path, dirs,
                              dir_count, dir_cap);
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--bind");
@@ -641,29 +799,43 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
 
 static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args,
                           const char *workdir, const char *bwrap_path,
-                          int use_sandbox, int stdout_fd[2], int stderr_fd[2],
-                          int *pty_master, pid_t *pid_out, cai_error *error) {
+                          int use_sandbox, const cai_exec_cgroup *cgroup,
+                          int stdout_fd[2], int stderr_fd[2], int *pty_master,
+                          pid_t *pid_out, cai_error *error) {
   int stdin_fd;
   int slave_fd;
+  int sync_fd[2];
   pid_t pid;
 
   stdin_fd = -1;
   slave_fd = -1;
+  sync_fd[0] = sync_fd[1] = -1;
   *pty_master = -1;
   stdout_fd[0] = stdout_fd[1] = -1;
   stderr_fd[0] = stderr_fd[1] = -1;
+  if (pipe(sync_fd) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to create command sync pipe",
+                                strerror(errno));
+  }
+  cai_exec_set_cloexec(sync_fd[0]);
+  cai_exec_set_cloexec(sync_fd[1]);
   if (args->has_tty && args->tty) {
     if (!ctx->allow_pty) {
       return cai_set_error(error, CAI_ERR_INVALID,
                            "exec tool PTY use is disabled by config");
     }
     if (openpty(pty_master, &slave_fd, NULL, NULL, NULL) != 0) {
+      cai_exec_close_fd(&sync_fd[0]);
+      cai_exec_close_fd(&sync_fd[1]);
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to allocate PTY", strerror(errno));
     }
     cai_exec_set_cloexec(*pty_master);
   } else {
     if (pipe(stdout_fd) != 0 || pipe(stderr_fd) != 0) {
+      cai_exec_close_fd(&sync_fd[0]);
+      cai_exec_close_fd(&sync_fd[1]);
       cai_exec_close_fd(&stdout_fd[0]);
       cai_exec_close_fd(&stdout_fd[1]);
       cai_exec_close_fd(&stderr_fd[0]);
@@ -675,6 +847,8 @@ static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args
   }
   stdin_fd = open("/dev/null", O_RDONLY);
   if (stdin_fd < 0) {
+    cai_exec_close_fd(&sync_fd[0]);
+    cai_exec_close_fd(&sync_fd[1]);
     cai_exec_close_fd(pty_master);
     cai_exec_close_fd(&slave_fd);
     cai_exec_close_fd(&stdout_fd[0]);
@@ -687,6 +861,8 @@ static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args
   pid = fork();
   if (pid < 0) {
     close(stdin_fd);
+    cai_exec_close_fd(&sync_fd[0]);
+    cai_exec_close_fd(&sync_fd[1]);
     cai_exec_close_fd(pty_master);
     cai_exec_close_fd(&slave_fd);
     cai_exec_close_fd(&stdout_fd[0]);
@@ -697,7 +873,10 @@ static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args
                                 "failed to fork command", strerror(errno));
   }
   if (pid == 0) {
+    char start_byte;
+
     setpgid(0, 0);
+    cai_exec_close_fd(&sync_fd[1]);
     if (args->has_tty && args->tty) {
       close(*pty_master);
       dup2(stdin_fd, STDIN_FILENO);
@@ -714,10 +893,37 @@ static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args
       cai_exec_close_fd(&stderr_fd[1]);
     }
     close(stdin_fd);
+    if (read(sync_fd[0], &start_byte, 1U) != 1) {
+      _exit(126);
+    }
+    close(sync_fd[0]);
     cai_exec_child_exec(ctx, args, workdir, bwrap_path, use_sandbox);
   }
   setpgid(pid, pid);
   close(stdin_fd);
+  cai_exec_close_fd(&sync_fd[0]);
+  if (cai_exec_cgroup_add_pid(cgroup, pid, error) != CAI_OK) {
+    cai_exec_close_fd(&sync_fd[1]);
+    kill(-pid, SIGKILL);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    cai_exec_close_fd(pty_master);
+    cai_exec_close_fd(&slave_fd);
+    cai_exec_close_fd(&stdout_fd[0]);
+    cai_exec_close_fd(&stdout_fd[1]);
+    cai_exec_close_fd(&stderr_fd[0]);
+    cai_exec_close_fd(&stderr_fd[1]);
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  if (write(sync_fd[1], "x", 1U) != 1) {
+    cai_exec_close_fd(&sync_fd[1]);
+    kill(-pid, SIGKILL);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to start command", strerror(errno));
+  }
+  cai_exec_close_fd(&sync_fd[1]);
   if (args->has_tty && args->tty) {
     cai_exec_close_fd(&slave_fd);
   } else {
@@ -865,10 +1071,12 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
   int stdout_fd[2];
   int stderr_fd[2];
   int pty_master;
+  cai_exec_cgroup cgroup;
   pid_t pid;
   long timeout_ms;
   int rc;
 
+  memset(&cgroup, 0, sizeof(cgroup));
   timeout_ms = ctx->timeout_ms;
   if (args->has_timeout_ms && args->timeout_ms > 0) {
     timeout_ms = (long)args->timeout_ms;
@@ -876,9 +1084,15 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
   if (timeout_ms > ctx->max_timeout_ms) {
     timeout_ms = ctx->max_timeout_ms;
   }
-  rc = cai_exec_spawn(ctx, args, workdir, bwrap_path, use_sandbox, stdout_fd,
-                      stderr_fd, &pty_master, &pid, error);
+  rc = cai_exec_cgroup_prepare(ctx, &cgroup, error);
   if (rc != CAI_OK) {
+    cai_exec_cgroup_cleanup(&cgroup);
+    return rc;
+  }
+  rc = cai_exec_spawn(ctx, args, workdir, bwrap_path, use_sandbox, &cgroup,
+                      stdout_fd, stderr_fd, &pty_master, &pid, error);
+  if (rc != CAI_OK) {
+    cai_exec_cgroup_cleanup(&cgroup);
     return rc;
   }
   rc = cai_exec_drain(capture, stdout_fd[0], stderr_fd[0], pty_master, pid,
@@ -888,6 +1102,7 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
   }
+  cai_exec_cgroup_cleanup(&cgroup);
   return rc;
 }
 

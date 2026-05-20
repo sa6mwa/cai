@@ -7266,6 +7266,58 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  setenv("CAI_EXEC_SHOULD_NOT_LEAK", "leaked", 1);
+  if (run_exec_tool_case(state, "exec_hardened_environment", &config,
+                         "{\"cmd\":\"printf env:${CAI_EXEC_SHOULD_NOT_LEAK-"
+                         "unset}:$HOME:$TMPDIR:$LANG\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_env_cleared", writer.buffer,
+                  "env:unset:");
+    expect_substr(state, "exec_env_home", writer.buffer, dir_template);
+    expect_substr(state, "exec_env_tmpdir", writer.buffer, ":/tmp:");
+    expect_substr(state, "exec_env_lang", writer.buffer, ":C");
+    if (strstr(writer.buffer, "leaked") != NULL) {
+      test_fail(state, "exec_env_no_leak", "host environment leaked");
+    }
+    expect_valid_json(state, "exec_hardened_environment_json", writer.buffer);
+  }
+  unsetenv("CAI_EXEC_SHOULD_NOT_LEAK");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  snprintf(alpha_path, sizeof(alpha_path), "/tmp/cai-exec-host-leak-%ld",
+           (long)getpid());
+  alpha_file = fopen(alpha_path, "wb");
+  if (alpha_file != NULL) {
+    fputs("host tmp marker", alpha_file);
+    fclose(alpha_file);
+    if (run_exec_tool_case(state, "exec_tmp_isolated", &config,
+                           "{\"cmd\":\"if ls /tmp/cai-exec-host-leak-* "
+                           ">/dev/null 2>&1; then printf leak; else printf isolated; "
+                           "fi; printf ok >/tmp/sandbox-created\"}",
+                           CAI_OK, &writer, &error) == CAI_OK) {
+      if (strstr(writer.buffer, "leak") != NULL) {
+        test_fail(state, "exec_tmp_no_host_file", "host /tmp leaked");
+      }
+      expect_substr(state, "exec_tmp_isolated_output", writer.buffer,
+                    "isolated");
+      expect_valid_json(state, "exec_tmp_isolated_json", writer.buffer);
+    }
+    unlink(alpha_path);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.enable_cgroup_limits = 1;
+  config.cgroup_parent_path = dir_template;
+  run_exec_tool_case(state, "exec_cgroup_fail_closed", &config,
+                     "{\"cmd\":\"printf should-not-run\"}", CAI_ERR_TRANSPORT,
+                     &writer, &error);
+  config.enable_cgroup_limits = 0;
+  config.cgroup_parent_path = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   if (run_exec_tool_case(
           state, "exec_standard_commands", &config,
           "{\"cmd\":\"ls -1; uname -s; cat alpha.txt; grep beta alpha.txt; "

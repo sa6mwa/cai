@@ -713,6 +713,17 @@ Command execution is never registered by default. Callers must provide a
 `root_path`; every requested `workdir` is resolved under that root before
 execution. On Linux the sandbox backend is `bwrap`; when `bwrap` is not
 available, the tool fails closed. There is no non-sandboxed execution fallback.
+The bwrap profile keeps the caller UID/GID, clears the inherited environment,
+sets only `PATH`, `HOME`, `TMPDIR`, and `LANG`, isolates `/tmp` and
+`/var/tmp`, unshares PID/IPC/UTS/network namespaces by default, and starts a
+new session while binding only the configured root writable plus read-only
+system paths needed to run normal commands. Set `allow_network` only when the
+tool should have network access.
+Linux cgroup v2 pids/memory limits are available with
+`enable_cgroup_limits`; zero `pids_max` and `memory_max_bytes` use cai's
+internal defaults. If cgroup setup cannot be applied, the tool fails closed
+instead of running unbounded. `cgroup_parent_path` can point at a host-owned
+writable cgroup subtree; otherwise cai uses `/sys/fs/cgroup`.
 Output is captured through bounded `lonejson_spooled` fields and serialized as
 structured JSON with `stdout`, `stderr`, combined `output`, exit/signal
 metadata, timeout state, truncation flags, effective cwd, and the sandbox

@@ -2463,9 +2463,16 @@ static void cai_lua_exec_config(lua_State *L, int index,
   config->allow_pty = cai_lua_opt_bool_field(L, index, "allow_pty", 0);
   config->allow_login_shell =
       cai_lua_opt_bool_field(L, index, "allow_login_shell", 0);
+  config->enable_cgroup_limits =
+      cai_lua_opt_bool_field(L, index, "enable_cgroup_limits", 0);
   config->timeout_ms = cai_lua_opt_long_field(L, index, "timeout_ms", 0);
   config->max_timeout_ms =
       cai_lua_opt_long_field(L, index, "max_timeout_ms", 0);
+  config->pids_max = cai_lua_opt_ll_field(L, index, "pids_max", 0);
+  config->memory_max_bytes =
+      cai_lua_opt_ll_field(L, index, "memory_max_bytes", 0);
+  config->cgroup_parent_path =
+      cai_lua_opt_string_field(L, index, "cgroup_parent_path", NULL);
   config->output_memory_limit =
       cai_lua_opt_size_field(L, index, "output_memory_limit", 0u);
   config->output_max_bytes =

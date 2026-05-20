@@ -1958,8 +1958,10 @@ static int run_exec_tool_llm_regression(void) {
       strstr(event_state.output.buffer, "Linux") == NULL ||
       strstr(event_state.output.buffer, "TAR:alpha.txt") == NULL ||
       strstr(writer.buffer, "EXEC_TOOL_OK") == NULL ||
-      strstr(writer.buffer, "saw_alpha=yes") == NULL ||
-      strstr(writer.buffer, "saw_tar=yes") == NULL) {
+      (strstr(writer.buffer, "saw_alpha=yes") == NULL &&
+       strstr(writer.buffer, "saw_alpha=<yes>") == NULL) ||
+      (strstr(writer.buffer, "saw_tar=yes") == NULL &&
+       strstr(writer.buffer, "saw_tar=<yes>") == NULL)) {
     fprintf(stderr,
             "exec tool first turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
@@ -1990,7 +1992,8 @@ static int run_exec_tool_llm_regression(void) {
       strstr(event_state.output.buffer, "\"stdout\":\"\"") == NULL ||
       strstr(event_state.output.buffer, "No such file") == NULL ||
       strstr(writer.buffer, "EXEC_ESCAPE_DENIED") == NULL ||
-      strstr(writer.buffer, "saw_root=no") == NULL) {
+      (strstr(writer.buffer, "saw_root=no") == NULL &&
+       strstr(writer.buffer, "saw_root=<no>") == NULL)) {
     fprintf(stderr,
             "exec tool escape turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
