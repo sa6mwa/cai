@@ -265,6 +265,23 @@ static int cai_revgeo_append_param(CURL *curl, cai_buffer_builder *url,
   return rc;
 }
 
+static void cai_revgeo_format_decimal(char *buffer, size_t capacity,
+                                      double value) {
+  char *cursor;
+
+  if (capacity == 0U) {
+    return;
+  }
+  snprintf(buffer, capacity, "%.8f", value);
+  buffer[capacity - 1U] = '\0';
+  for (cursor = buffer; *cursor != '\0'; cursor++) {
+    if (*cursor == ',') {
+      *cursor = '.';
+      return;
+    }
+  }
+}
+
 static int cai_revgeo_build_url(CURL *curl, const cai_revgeo_context *ctx,
                                 const cai_revgeo_args *args, char **out,
                                 cai_error *error) {
@@ -282,11 +299,11 @@ static int cai_revgeo_build_url(CURL *curl, const cai_revgeo_context *ctx,
                                  error);
   }
   if (rc == CAI_OK) {
-    snprintf(number, sizeof(number), "%.8f", args->latitude);
+    cai_revgeo_format_decimal(number, sizeof(number), args->latitude);
     rc = cai_revgeo_append_param(curl, &url, "lat", number, &need_amp, error);
   }
   if (rc == CAI_OK) {
-    snprintf(number, sizeof(number), "%.8f", args->longitude);
+    cai_revgeo_format_decimal(number, sizeof(number), args->longitude);
     rc = cai_revgeo_append_param(curl, &url, "lon", number, &need_amp, error);
   }
   if (rc == CAI_OK) {

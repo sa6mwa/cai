@@ -305,8 +305,6 @@ endif()
 set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "")
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_SHA256}")
-else()
-  cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE)
 endif()
 
 find_package(CURL REQUIRED)
@@ -627,6 +625,16 @@ if(CAI_BUILD_TESTS)
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
+    add_test(NAME cai_host_dependency_mode_unsupported_target
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
+        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+        "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
+        "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
   endif()
 
   if(CAI_BUILD_LUA)

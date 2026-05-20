@@ -9,6 +9,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <locale.h>
 #include <netinet/in.h>
 #include <pslog.h>
 #include <limits.h>
@@ -6543,6 +6544,43 @@ static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
   return rc;
 }
 
+static void test_revgeo_tool_decimal_locale(test_state *state,
+                                            write_state *writer,
+                                            cai_error *error) {
+  static const char *const comma_locales[] = {
+      "sv_SE.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8",
+      "it_IT.UTF-8", "nl_NL.UTF-8", "da_DK.UTF-8", "fi_FI.UTF-8"};
+  char saved_locale[128];
+  const char *current_locale;
+  const char *selected_locale;
+  size_t i;
+
+  current_locale = setlocale(LC_NUMERIC, NULL);
+  if (current_locale != NULL) {
+    snprintf(saved_locale, sizeof(saved_locale), "%s", current_locale);
+    saved_locale[sizeof(saved_locale) - 1U] = '\0';
+  } else {
+    snprintf(saved_locale, sizeof(saved_locale), "%s", "C");
+  }
+  selected_locale = NULL;
+  for (i = 0U; i < sizeof(comma_locales) / sizeof(comma_locales[0]); i++) {
+    if (setlocale(LC_NUMERIC, comma_locales[i]) != NULL) {
+      if (localeconv() != NULL && localeconv()->decimal_point != NULL &&
+          strcmp(localeconv()->decimal_point, ",") == 0) {
+        selected_locale = comma_locales[i];
+        break;
+      }
+    }
+  }
+  if (selected_locale == NULL) {
+    setlocale(LC_NUMERIC, saved_locale);
+    return;
+  }
+  run_mock_revgeo_tool(state, "revgeo_decimal_locale", 0, 0U, CAI_OK, writer,
+                       error);
+  setlocale(LC_NUMERIC, saved_locale);
+}
+
 static void test_revgeo_tool(test_state *state) {
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -6568,6 +6606,7 @@ static void test_revgeo_tool(test_state *state) {
               "reverse-geocoding result missing expected fields");
   }
   expect_valid_json(state, "revgeo_success_json", writer.buffer);
+  test_revgeo_tool_decimal_locale(state, &writer, &error);
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
