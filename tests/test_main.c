@@ -576,11 +576,9 @@ static void test_model_capabilities(test_state *state) {
   expect_int(state, "agent_config_compact_threshold_default",
              agent_config.compact_threshold_tokens, 0L);
   expect_int(state, "agent_config_compact_percent_default",
-             (long)agent_config.compact_threshold_percent, 80L);
+             (long)agent_config.compact_threshold_percent, 0L);
   expect_int(state, "agent_config_continuity_default",
              agent_config.session_continuity, CAI_SESSION_CONTINUITY_SERVER);
-  expect_int(state, "agent_config_compact_limit_default",
-             agent_config.auto_compact_token_limit, 0L);
   expect_int(state, "agent_config_local_history_default",
              agent_config.enable_local_history, 0L);
 }
@@ -2858,7 +2856,7 @@ static void test_mcp_handler(test_state *state) {
 
   cai_mcp_handler_destroy(handler);
   handler = NULL;
-  config.allow_legacy_no_version = 0;
+  config.require_protocol_version = 1;
   expect_int(state, "mcp_strict_handler_new",
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
   expect_int(state, "mcp_reject_missing_version",
@@ -2874,7 +2872,7 @@ static void test_mcp_handler(test_state *state) {
 
   cai_mcp_handler_destroy(handler);
   handler = NULL;
-  config.allow_legacy_no_version = 1;
+  config.require_protocol_version = 0;
   config.tool_output_max_bytes = 16U;
   expect_int(state, "mcp_limited_handler_new",
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
@@ -3040,7 +3038,7 @@ static void test_mcp_handler(test_state *state) {
   session_callbacks.cleanup = test_mcp_session_cleanup;
   config.request_max_bytes = 1024U * 1024U;
   config.tool_output_max_bytes = 1024U;
-  config.stateless = 0;
+  config.enable_sessions = 1;
   config.session = NULL;
   expect_int(state, "mcp_stateful_requires_callbacks",
              cai_mcp_handler_new(&config, &handler, &error), CAI_ERR_INVALID);
@@ -3115,7 +3113,7 @@ static void test_mcp_handler(test_state *state) {
   handler = NULL;
   expect_int(state, "mcp_stateful_cleanup_count", session_store.cleanups, 1L);
 
-  config.stateless = 1;
+  config.enable_sessions = 0;
   config.session = NULL;
   config.session_context = NULL;
   expect_int(state, "mcp_sink_handler_new",
@@ -3148,8 +3146,11 @@ static void test_client_open(test_state *state) {
 
   cai_error_init(&error);
   cai_client_config_init(&config);
-  expect_str(state, "client_config_api_key_env_default", config.api_key_env,
-             CAI_OPENAI_API_KEY_ENV);
+  if (config.api_key_env != NULL || config.base_url != NULL ||
+      config.json_response_limit_bytes != 0U) {
+    test_fail(state, "client_config_zero_defaults",
+              "client config init should leave defaulted fields zero");
+  }
   cai_client_config_use_openrouter(&config);
   expect_str(state, "client_config_openrouter_env", config.api_key_env,
              CAI_OPENROUTER_API_KEY_ENV);
@@ -6202,7 +6203,7 @@ static void test_agent_session(test_state *state) {
       "\"required\":[\"answer\"],\"additionalProperties\":false}";
   agent_config.text_format_strict = 1;
   agent_config.max_output_tokens = 64;
-  agent_config.parallel_tool_calls = 0;
+  agent_config.disable_parallel_tool_calls = 1;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -8412,7 +8413,7 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
-  run_options.max_tool_rounds = 0;
+  run_options.disable_tool_auto_run = 1;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -10385,7 +10386,7 @@ static void test_session_stream_auto_round_limit(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
-  run_options.max_tool_rounds = 0;
+  run_options.disable_tool_auto_run = 1;
   client = NULL;
   agent = NULL;
   session = NULL;

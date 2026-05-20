@@ -100,15 +100,11 @@ typedef struct cai_agent_config {
   int text_format_strict;
   int max_output_tokens;
   int max_tool_calls;
-  int parallel_tool_calls;
+  int disable_parallel_tool_calls;
   int session_continuity;
   int disable_auto_compaction;
   long long compact_threshold_tokens;
   unsigned int compact_threshold_percent;
-  /* Deprecated compatibility fields; use disable_auto_compaction and
-     compact_threshold_tokens for new code. */
-  int auto_compact;
-  long long auto_compact_token_limit;
   int enable_local_history;
   size_t history_memory_limit;
   const char *history_spool_dir;
@@ -185,6 +181,7 @@ typedef struct cai_list_params {
 
 typedef struct cai_run_options {
   int max_tool_rounds;
+  int disable_tool_auto_run;
   size_t tool_output_memory_limit;
   size_t tool_output_max_bytes;
   const char *tool_spool_dir;

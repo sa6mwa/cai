@@ -48,12 +48,12 @@ typedef struct cai_mcp_handler_config {
   size_t request_max_bytes;
   size_t response_spool_memory_limit;
   size_t tool_output_max_bytes;
-  int stateless;
-  int validate_origin;
+  int enable_sessions;
+  int disable_origin_validation;
   const char **allowed_origins;
   size_t allowed_origin_count;
   const char *protocol_version;
-  int allow_legacy_no_version;
+  int require_protocol_version;
   const cai_mcp_session_callbacks *session;
   void *session_context;
   void *user_context;

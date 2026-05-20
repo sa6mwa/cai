@@ -195,29 +195,7 @@ void cai_agent_config_init(cai_agent_config *config) {
   if (config == NULL) {
     return;
   }
-  config->model = NULL;
-  config->developer_instructions = NULL;
-  config->prompt_cache_key = NULL;
-  config->tool_choice = NULL;
-  config->tool_choice_json = NULL;
-  config->reasoning_effort = NULL;
-  config->reasoning_summary = NULL;
-  config->text_format_name = NULL;
-  config->text_format_description = NULL;
-  config->text_format_schema_json = NULL;
-  config->text_format_strict = 0;
-  config->max_output_tokens = 0;
-  config->max_tool_calls = 0;
-  config->parallel_tool_calls = -1;
-  config->session_continuity = CAI_SESSION_CONTINUITY_SERVER;
-  config->disable_auto_compaction = 0;
-  config->compact_threshold_tokens = 0LL;
-  config->compact_threshold_percent = 80U;
-  config->auto_compact = 0;
-  config->auto_compact_token_limit = 0LL;
-  config->enable_local_history = 0;
-  config->history_memory_limit = 128U * 1024U;
-  config->history_spool_dir = NULL;
+  memset(config, 0, sizeof(*config));
 }
 
 static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
@@ -233,16 +211,27 @@ static void cai_agent_warn_openrouter_server_continuity(
   cai_log_openrouter_server_continuity(client);
 }
 
+static int cai_run_options_effective_max_tool_rounds(
+    const cai_run_options *options) {
+  if (options == NULL || options->disable_tool_auto_run) {
+    return 0;
+  }
+  return options->max_tool_rounds > 0 ? options->max_tool_rounds : 4;
+}
+
+static size_t cai_run_options_effective_tool_output_memory_limit(
+    const cai_run_options *options) {
+  if (options == NULL || options->tool_output_memory_limit == 0U) {
+    return 1024U * 1024U;
+  }
+  return options->tool_output_memory_limit;
+}
+
 void cai_run_options_init(cai_run_options *options) {
   if (options == NULL) {
     return;
   }
-  options->max_tool_rounds = 4;
-  options->tool_output_memory_limit = 1024U * 1024U;
-  options->tool_output_max_bytes = 0U;
-  options->tool_spool_dir = NULL;
-  options->tool_event = NULL;
-  options->tool_event_context = NULL;
+  memset(options, 0, sizeof(*options));
 }
 
 int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
@@ -301,7 +290,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   impl->text_format_strict = config->text_format_strict;
   impl->max_output_tokens = config->max_output_tokens;
   impl->max_tool_calls = config->max_tool_calls;
-  impl->parallel_tool_calls = config->parallel_tool_calls;
+  impl->parallel_tool_calls = config->disable_parallel_tool_calls ? 0 : -1;
   if (config->session_continuity != CAI_SESSION_CONTINUITY_SERVER &&
       config->session_continuity != CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       config->session_continuity != CAI_SESSION_CONTINUITY_AUTO) {
@@ -335,8 +324,6 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
           : 80U;
   if (config->compact_threshold_tokens > 0LL) {
     impl->auto_compact_token_limit = config->compact_threshold_tokens;
-  } else if (config->auto_compact_token_limit > 0LL) {
-    impl->auto_compact_token_limit = config->auto_compact_token_limit;
   } else if (impl->auto_compact) {
     long long context_window;
 
@@ -385,8 +372,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          "compact_threshold_tokens or disable auto compaction");
   }
   if (impl->auto_compact && impl->compact_threshold_percent > 95U &&
-      config->compact_threshold_tokens <= 0LL &&
-      config->auto_compact_token_limit <= 0LL) {
+      config->compact_threshold_tokens <= 0LL) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "compact threshold percent must be 1..95");
@@ -2783,7 +2769,8 @@ static int cai_session_run_tool_round(cai_session *session,
   has_pending_items = 0;
   rc = cai_session_init_response_params(session, &params, error);
   spool_options = lonejson_default_spool_options();
-  spool_options.memory_limit = options->tool_output_memory_limit;
+  spool_options.memory_limit =
+      cai_run_options_effective_tool_output_memory_limit(options);
   spool_options.max_bytes = options->tool_output_max_bytes;
   spool_options.temp_dir = options->tool_spool_dir;
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
@@ -2876,7 +2863,7 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
   rc = cai_session_run(session, &current, error);
   rounds = 0;
   while (rc == CAI_OK && cai_response_tool_call_count(current) > 0U &&
-         rounds < effective->max_tool_rounds) {
+         rounds < cai_run_options_effective_max_tool_rounds(effective)) {
     if (cai_session_remember_response(session, current, error) != CAI_OK) {
       rc = error != NULL ? error->code : CAI_ERR_NOMEM;
       break;
@@ -3038,7 +3025,8 @@ static int cai_session_add_stream_tool_outputs(
     return CAI_OK;
   }
   spool_options = lonejson_default_spool_options();
-  spool_options.memory_limit = options->tool_output_memory_limit;
+  spool_options.memory_limit =
+      cai_run_options_effective_tool_output_memory_limit(options);
   spool_options.max_bytes = options->tool_output_max_bytes;
   spool_options.temp_dir = options->tool_spool_dir;
   rc = CAI_OK;
@@ -3197,7 +3185,7 @@ int cai_session_stream_auto(cai_session *session, const cai_run_options *options
   rc = cai_session_stream_once(session, sinks, &current_calls, error);
   rounds = 0;
   while (rc == CAI_OK && current_calls.count > 0U &&
-         rounds < effective->max_tool_rounds) {
+         rounds < cai_run_options_effective_max_tool_rounds(effective)) {
     cai_stream_tool_call_list_cleanup(&next_calls);
     memset(&next_calls, 0, sizeof(next_calls));
     rc = cai_session_stream_tool_round(session, effective, sinks,

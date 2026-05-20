@@ -70,7 +70,8 @@ shape, but may still change before the initial tag.
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
 - `cai_client_open` resolves API keys only from explicit `config.api_key` or
-  `getenv(config.api_key_env)`. It does not implicitly load dotenv files.
+  `getenv(config.api_key_env)`. If `api_key_env` is NULL, cai uses
+  `OPENAI_API_KEY`. It does not implicitly load dotenv files.
 - `CAI_DEFAULT_DOTENV_PATH` is `.env` for callers that explicitly want cai's
   dotenv parser. Call `cai_load_dotenv_api_key(path, env_name, &key, &error)`,
   pass the returned key to `config.api_key`, then release it with
@@ -80,6 +81,9 @@ shape, but may still change before the initial tag.
   unterminated quoted values, empty keys, and control characters in key values.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
   uses `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`.
+- Public config structs are zero-defaultable. A memset-zero config means "use
+  cai defaults" for omitted knobs; fields are named so nonzero values opt into
+  behavior or override a limit/path.
 - Session continuity defaults to OpenAI-style server-side continuation.
   Client-side history replay is available for stateless compatible providers
   such as OpenRouter.
@@ -415,14 +419,14 @@ tool-call output to bounded spooling so it can fail closed before committing a
 partial JSON-RPC response. `GET`/SSE streams, resources, prompts, and sampling
 are not implemented yet.
 
-MCP session persistence is storage-neutral. Leave `config.stateless` at its
-default nonzero value for stateless operation. Set `config.stateless = 0` and
-provide `cai_mcp_session_callbacks` to let the host create, load, save, and
-destroy protocol sessions. cai returns `Mcp-Session-Id` on `initialize`, loads
-and saves session state for later requests carrying that header, marks the
-session initialized on `notifications/initialized`, and calls `destroy` for
-`DELETE` requests with a session id. Tool state remains tool-owned; MCP session
-state only tracks protocol lifecycle and client metadata.
+MCP session persistence is storage-neutral. The zero/default MCP config is
+stateless. Set `config.enable_sessions = 1` and provide
+`cai_mcp_session_callbacks` to let the host create, load, save, and destroy
+protocol sessions. cai returns `Mcp-Session-Id` on `initialize`, loads and
+saves session state for later requests carrying that header, marks the session
+initialized on `notifications/initialized`, and calls `destroy` for `DELETE`
+requests with a session id. Tool state remains tool-owned; MCP session state
+only tracks protocol lifecycle and client metadata.
 
 Minimal route adapter shape:
 

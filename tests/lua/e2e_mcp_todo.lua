@@ -79,7 +79,7 @@ local handler = assert_ok(cai.mcp_handler({
   name = "cai-lua-mcp-todo-test",
   version = "0.0.0",
   tools = registry,
-  allow_legacy_no_version = 1,
+  require_protocol_version = 1,
 }), nil, "cai.mcp_handler")
 
 local response, body = mcp_request(handler,

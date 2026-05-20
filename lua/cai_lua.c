@@ -1139,8 +1139,9 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
       L, index, "max_output_tokens", config->max_output_tokens);
   config->max_tool_calls = cai_lua_opt_int_field(
       L, index, "max_tool_calls", config->max_tool_calls);
-  config->parallel_tool_calls = cai_lua_opt_int_field(
-      L, index, "parallel_tool_calls", config->parallel_tool_calls);
+  config->disable_parallel_tool_calls = cai_lua_opt_int_field(
+      L, index, "disable_parallel_tool_calls",
+      config->disable_parallel_tool_calls);
   config->session_continuity = cai_lua_opt_int_field(
       L, index, "session_continuity", config->session_continuity);
   config->disable_auto_compaction = cai_lua_opt_int_field(
@@ -1861,6 +1862,8 @@ static void cai_lua_run_options_from_table(lua_State *L, int index,
   }
   options->max_tool_rounds = cai_lua_opt_int_field(L, index, "max_tool_rounds",
                                                    options->max_tool_rounds);
+  options->disable_tool_auto_run = cai_lua_opt_int_field(
+      L, index, "disable_tool_auto_run", options->disable_tool_auto_run);
   options->tool_output_memory_limit = cai_lua_opt_size_field(
       L, index, "tool_output_memory_limit", options->tool_output_memory_limit);
   options->tool_output_max_bytes = cai_lua_opt_size_field(
@@ -4001,13 +4004,15 @@ static int cai_lua_mcp_new(lua_State *L) {
       L, 1, "response_spool_memory_limit", config.response_spool_memory_limit);
   config.tool_output_max_bytes = cai_lua_opt_size_field(
       L, 1, "tool_output_max_bytes", config.tool_output_max_bytes);
-  config.stateless = cai_lua_opt_int_field(L, 1, "stateless", config.stateless);
-  config.validate_origin =
-      cai_lua_opt_int_field(L, 1, "validate_origin", config.validate_origin);
+  config.enable_sessions = cai_lua_opt_int_field(L, 1, "enable_sessions",
+                                                 config.enable_sessions);
+  config.disable_origin_validation =
+      cai_lua_opt_int_field(L, 1, "disable_origin_validation",
+                            config.disable_origin_validation);
   config.protocol_version = cai_lua_opt_string_field(L, 1, "protocol_version",
                                                      config.protocol_version);
-  config.allow_legacy_no_version = cai_lua_opt_int_field(
-      L, 1, "allow_legacy_no_version", config.allow_legacy_no_version);
+  config.require_protocol_version = cai_lua_opt_int_field(
+      L, 1, "require_protocol_version", config.require_protocol_version);
   lua_getfield(L, 1, "session");
   if (!lua_isnil(L, -1)) {
     luaL_checktype(L, -1, LUA_TTABLE);
@@ -4044,7 +4049,7 @@ static int cai_lua_mcp_new(lua_State *L) {
     session_callbacks.cleanup = cai_lua_mcp_session_cleanup;
     config.session = &session_callbacks;
     config.session_context = session_ctx;
-    config.stateless = 0;
+    config.enable_sessions = 1;
   }
   lua_pop(L, 1);
   lua_getfield(L, 1, "tools");

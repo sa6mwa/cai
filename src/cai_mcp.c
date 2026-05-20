@@ -63,13 +63,13 @@ struct cai_mcp_handler {
   size_t request_max_bytes;
   size_t response_spool_memory_limit;
   size_t tool_output_max_bytes;
-  int stateless;
-  int validate_origin;
+  int enable_sessions;
+  int disable_origin_validation;
   char **allowed_origins;
   size_t allowed_origin_count;
   char *protocol_version;
   char *last_session_id;
-  int allow_legacy_no_version;
+  int require_protocol_version;
   cai_mcp_session_callbacks session;
   void *session_context;
   void *user_context;
@@ -200,7 +200,7 @@ static int cai_mcp_copy_fixed(char *dst, size_t capacity, const char *src,
 }
 
 static int cai_mcp_session_enabled(const cai_mcp_handler *handler) {
-  return handler != NULL && !handler->stateless &&
+  return handler != NULL && handler->enable_sessions &&
          handler->session.create != NULL && handler->session.load != NULL &&
          handler->session.save != NULL;
 }
@@ -1012,14 +1012,6 @@ void cai_mcp_handler_config_init(cai_mcp_handler_config *config) {
     return;
   }
   memset(config, 0, sizeof(*config));
-  config->name = "cai";
-  config->version = CAI_VERSION_STRING;
-  config->request_max_bytes = 1024U * 1024U;
-  config->response_spool_memory_limit = 128U * 1024U;
-  config->stateless = 1;
-  config->validate_origin = 1;
-  config->protocol_version = CAI_MCP_PROTOCOL_VERSION;
-  config->allow_legacy_no_version = 1;
 }
 
 int cai_mcp_handler_new(const cai_mcp_handler_config *config,
@@ -1041,7 +1033,7 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP handler requires a tool registry");
   }
-  if (!config->stateless &&
+  if (config->enable_sessions &&
       (config->session == NULL || config->session->create == NULL ||
        config->session->load == NULL || config->session->save == NULL)) {
     return cai_set_error(
@@ -1068,12 +1060,17 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
                          "failed to allocate MCP handler strings");
   }
   handler->tools = config->tools;
-  handler->request_max_bytes = config->request_max_bytes;
-  handler->response_spool_memory_limit = config->response_spool_memory_limit;
+  handler->request_max_bytes = config->request_max_bytes != 0U
+                                    ? config->request_max_bytes
+                                    : 1024U * 1024U;
+  handler->response_spool_memory_limit =
+      config->response_spool_memory_limit != 0U
+          ? config->response_spool_memory_limit
+          : 128U * 1024U;
   handler->tool_output_max_bytes = config->tool_output_max_bytes;
-  handler->stateless = config->stateless ? 1 : 0;
-  handler->validate_origin = config->validate_origin ? 1 : 0;
-  handler->allow_legacy_no_version = config->allow_legacy_no_version ? 1 : 0;
+  handler->enable_sessions = config->enable_sessions ? 1 : 0;
+  handler->disable_origin_validation = config->disable_origin_validation ? 1 : 0;
+  handler->require_protocol_version = config->require_protocol_version ? 1 : 0;
   if (config->session != NULL) {
     handler->session = *config->session;
   }
@@ -1159,7 +1156,8 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     return CAI_OK;
   }
   origin = cai_mcp_header(request, "origin");
-  if (handler->validate_origin && !cai_mcp_origin_allowed(handler, origin)) {
+  if (!handler->disable_origin_validation &&
+      !cai_mcp_origin_allowed(handler, origin)) {
     response->status = 403;
     cai_mcp_set_header(response, "content-type", "application/json", error);
     return cai_mcp_write_error(response->body, NULL, -32000,
@@ -1190,7 +1188,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
   }
   version = cai_mcp_header(request, "mcp-protocol-version");
   if ((version == NULL || version[0] == '\0') &&
-      !handler->allow_legacy_no_version) {
+      handler->require_protocol_version) {
     response->status = 400;
     cai_mcp_set_header(response, "content-type", "application/json", error);
     return cai_mcp_write_error(response->body, NULL, -32600,

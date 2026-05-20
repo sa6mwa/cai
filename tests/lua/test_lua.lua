@@ -488,7 +488,7 @@ local mcp = assert_ok(cai.mcp_handler({
   name = "cai-lua-test",
   version = "0.0.0",
   tools = registry,
-  allow_legacy_no_version = 1,
+  require_protocol_version = 1,
 }))
 
 assert_throws(function()
