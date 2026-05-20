@@ -7259,6 +7259,23 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  if (run_exec_tool_case(state, "exec_pty_output_only", &config,
+                         "{\"cmd\":\"if test -t 1; then printf out-tty; fi; "
+                         "if test -t 0; then printf in-tty; else printf "
+                         "in-notty; fi; read x || printf read-eof\","
+                         "\"tty\":true}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_pty_stdout_is_tty", writer.buffer, "out-tty");
+    expect_substr(state, "exec_pty_stdin_not_tty", writer.buffer, "in-notty");
+    expect_substr(state, "exec_pty_read_eof", writer.buffer, "read-eof");
+    if (strstr(writer.buffer, "in-tty") != NULL) {
+      test_fail(state, "exec_pty_no_interactive_stdin",
+                "PTY mode exposed stdin as a tty");
+    }
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   config.sandbox_mode = CAI_EXEC_SANDBOX_REQUIRED;
   if (run_exec_tool_case(state, "exec_sandbox_required", &config,
                          "{\"cmd\":\"printf sandbox\"}", CAI_OK, &writer,

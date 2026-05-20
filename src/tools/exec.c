@@ -615,8 +615,7 @@ static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args
     setpgid(0, 0);
     if (args->has_tty && args->tty) {
       close(*pty_master);
-      setsid();
-      dup2(slave_fd, STDIN_FILENO);
+      dup2(stdin_fd, STDIN_FILENO);
       dup2(slave_fd, STDOUT_FILENO);
       dup2(slave_fd, STDERR_FILENO);
       close(slave_fd);

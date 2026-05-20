@@ -702,7 +702,8 @@ shape. Its required input is `cmd`; optional inputs are `workdir`, `shell`,
 `tty`, `login`, `timeout_ms`, `yield_time_ms`, and `max_output_tokens`.
 `yield_time_ms` and `max_output_tokens` are accepted for compatibility, but
 this preset returns after the process exits and enforces byte caps from
-`cai_exec_tool_config`.
+`cai_exec_tool_config`. When `tty=true` is allowed, cai uses the PTY only for
+stdout/stderr capture; child stdin remains `/dev/null` and is not a terminal.
 
 Command execution is never registered by default. Callers must provide a
 `root_path`; every requested `workdir` is resolved under that root before
