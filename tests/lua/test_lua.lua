@@ -502,6 +502,104 @@ assert(response_json:match('"jsonrpc"'))
 assert(body_index > 1, "request body should be consumed in chunks")
 
 mcp:close()
+
+local sessions = {}
+local session_events = { creates = 0, loads = 0, saves = 0, destroys = 0 }
+local stateful_mcp = assert_ok(cai.mcp_handler({
+  name = "cai-lua-stateful-test",
+  tools = registry,
+  session = {
+    create = function(state)
+      session_events.creates = session_events.creates + 1
+      assert(state.client_name == "lua-client")
+      sessions["lua-session-1"] = state
+      return "lua-session-1"
+    end,
+    load = function(id)
+      session_events.loads = session_events.loads + 1
+      return sessions[id]
+    end,
+    save = function(id, state)
+      session_events.saves = session_events.saves + 1
+      sessions[id] = state
+      return true
+    end,
+    destroy = function(id)
+      session_events.destroys = session_events.destroys + 1
+      sessions[id] = nil
+      return true
+    end,
+  },
+}))
+local stateful_chunks = {}
+local init_response = assert_ok(stateful_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = '{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"' ..
+      cai.MCP_PROTOCOL_VERSION ..
+      '","clientInfo":{"name":"lua-client","version":"1.0"}}}',
+  write = function(chunk)
+    stateful_chunks[#stateful_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(init_response.status, 200, "stateful mcp initialize status")
+assert_eq(init_response.headers["mcp-session-id"], "lua-session-1",
+  "stateful mcp session header")
+assert_eq(session_events.creates, 1, "stateful mcp create count")
+
+stateful_chunks = {}
+local ping_response = assert_ok(stateful_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = init_response.headers["mcp-session-id"],
+  },
+  body = '{"jsonrpc":"2.0","id":"ping","method":"ping"}',
+  write = function(chunk)
+    stateful_chunks[#stateful_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(ping_response.status, 200, "stateful mcp ping status")
+assert_eq(session_events.loads, 1, "stateful mcp load count")
+assert_eq(session_events.saves, 1, "stateful mcp save count")
+assert(table.concat(stateful_chunks):match('"id":"ping"'))
+
+stateful_chunks = {}
+local missing_response = assert_ok(stateful_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = '{"jsonrpc":"2.0","id":"missing","method":"ping"}',
+  write = function(chunk)
+    stateful_chunks[#stateful_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(missing_response.status, 400, "stateful mcp missing session status")
+
+local delete_response = assert_ok(stateful_mcp:handle_http({
+  method = "DELETE",
+  headers = {
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = init_response.headers["mcp-session-id"],
+  },
+  body = "{}",
+  write = function()
+    return true
+  end,
+}))
+assert_eq(delete_response.status, 202, "stateful mcp delete status")
+assert_eq(session_events.destroys, 1, "stateful mcp destroy count")
+stateful_mcp:close()
+
 registry:close()
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")

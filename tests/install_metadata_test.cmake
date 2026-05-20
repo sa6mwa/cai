@@ -239,6 +239,8 @@ int main(void) {
   int (*mcp_handle)(cai_mcp_handler *, const cai_mcp_http_request *,
                     cai_mcp_http_response *, cai_error *);
   void (*mcp_destroy)(cai_mcp_handler *);
+  cai_mcp_session_callbacks session_callbacks;
+  cai_mcp_session_state session_state;
   (void)sizeof(error);
   register_revgeo = cai_tool_registry_register_revgeo_tool;
   register_searxng = cai_tool_registry_register_searxng_tool;
@@ -251,6 +253,8 @@ int main(void) {
   mcp_new = cai_mcp_handler_new;
   mcp_handle = cai_mcp_handler_handle_http;
   mcp_destroy = cai_mcp_handler_destroy;
+  (void)sizeof(session_callbacks);
+  (void)sizeof(session_state);
   if (register_revgeo == 0 || register_searxng == 0 || register_todo == 0 ||
       register_raw_spooled == 0 || set_tool_choice_json == 0 ||
       set_max_tool_calls == 0 || count_input_tokens == 0 ||

@@ -403,6 +403,7 @@ First implemented scope:
 - `ping`
 - `tools/list`
 - `tools/call`
+- optional stateful `Mcp-Session-Id` lifecycle through host-owned callbacks
 
 The request body is a `cai_source` and the response body is a `cai_sink`.
 The JSON-RPC envelope is parsed with lonejson while `id`, `params`, and
@@ -411,8 +412,17 @@ arguments are parsed from that spool. By default, successful `tools/call`
 results stream directly into the MCP response body as `structuredContent`.
 If `tool_output_max_bytes` is configured, cai intentionally switches that
 tool-call output to bounded spooling so it can fail closed before committing a
-partial JSON-RPC response. `GET`/SSE streams, stateful `Mcp-Session-Id`
-lifecycle, resources, prompts, and sampling are not implemented yet.
+partial JSON-RPC response. `GET`/SSE streams, resources, prompts, and sampling
+are not implemented yet.
+
+MCP session persistence is storage-neutral. Leave `config.stateless` at its
+default nonzero value for stateless operation. Set `config.stateless = 0` and
+provide `cai_mcp_session_callbacks` to let the host create, load, save, and
+destroy protocol sessions. cai returns `Mcp-Session-Id` on `initialize`, loads
+and saves session state for later requests carrying that header, marks the
+session initialized on `notifications/initialized`, and calls `destroy` for
+`DELETE` requests with a session id. Tool state remains tool-owned; MCP session
+state only tracks protocol lifecycle and client metadata.
 
 Minimal route adapter shape:
 

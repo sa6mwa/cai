@@ -49,6 +49,8 @@ Implemented:
 - SearXNG, reverse-geocoding, and todo/kanban tool presets.
 - Transport-neutral MCP Streamable HTTP handler for serving cai tool
   registries from host-owned HTTP servers.
+- Optional MCP `Mcp-Session-Id` lifecycle persistence through host-owned
+  create/load/save/destroy callbacks.
 - Test/example MCP HTTP servers. These are not linked into `libcai`.
 - Example MCP server exposing reverse geocoding, todo/kanban, and Linux/X11
   clipboard when `xclip` is present.
@@ -214,7 +216,6 @@ Implemented MCP methods:
 Future MCP work:
 
 - GET/SSE stream support if needed by host integrations.
-- Stateful `Mcp-Session-Id` lifecycle.
 - Resources.
 - Prompts.
 - Sampling.

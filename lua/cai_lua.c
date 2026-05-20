@@ -87,6 +87,14 @@ typedef struct cai_lua_mcp {
   cai_mcp_handler *ptr;
 } cai_lua_mcp;
 
+typedef struct cai_lua_mcp_session_ctx {
+  lua_State *L;
+  int create_ref;
+  int load_ref;
+  int save_ref;
+  int destroy_ref;
+} cai_lua_mcp_session_ctx;
+
 typedef struct cai_lua_schema {
   cai_tool_schema *ptr;
 } cai_lua_schema;
@@ -3692,12 +3700,227 @@ static int cai_lua_mcp_header_set(void *context, const char *name,
   return CAI_OK;
 }
 
+static void cai_lua_push_mcp_session_state(lua_State *L,
+                                           const cai_mcp_session_state *state) {
+  lua_newtable(L);
+  lua_pushboolean(L, state->initialized ? 1 : 0);
+  lua_setfield(L, -2, "initialized");
+  lua_pushstring(L, state->protocol_version);
+  lua_setfield(L, -2, "protocol_version");
+  lua_pushstring(L, state->client_name);
+  lua_setfield(L, -2, "client_name");
+  lua_pushstring(L, state->client_version);
+  lua_setfield(L, -2, "client_version");
+  lua_pushinteger(L, (lua_Integer)state->created_at);
+  lua_setfield(L, -2, "created_at");
+  lua_pushinteger(L, (lua_Integer)state->last_seen_at);
+  lua_setfield(L, -2, "last_seen_at");
+}
+
+static int cai_lua_mcp_copy_state_string(lua_State *L, int index,
+                                         const char *field, char *dst,
+                                         size_t capacity, cai_error *error) {
+  const char *value;
+  size_t len;
+
+  lua_getfield(L, index, field);
+  value = lua_tostring(L, -1);
+  if (value == NULL) {
+    dst[0] = '\0';
+    lua_pop(L, 1);
+    return CAI_OK;
+  }
+  len = strlen(value);
+  if (len >= capacity) {
+    lua_pop(L, 1);
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua MCP session field is too large");
+  }
+  memcpy(dst, value, len + 1U);
+  lua_pop(L, 1);
+  return CAI_OK;
+}
+
+static int cai_lua_read_mcp_session_state(lua_State *L, int index,
+                                          cai_mcp_session_state *state,
+                                          cai_error *error) {
+  int abs_index;
+  int rc;
+
+  if (!lua_istable(L, index)) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua MCP session callback must return a table");
+  }
+  abs_index = lua_absindex(L, index);
+  memset(state, 0, sizeof(*state));
+  lua_getfield(L, abs_index, "initialized");
+  state->initialized = lua_toboolean(L, -1) ? 1 : 0;
+  lua_pop(L, 1);
+  rc = cai_lua_mcp_copy_state_string(L, abs_index, "protocol_version",
+                                     state->protocol_version,
+                                     sizeof(state->protocol_version), error);
+  if (rc == CAI_OK) {
+    rc = cai_lua_mcp_copy_state_string(L, abs_index, "client_name",
+                                       state->client_name,
+                                       sizeof(state->client_name), error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_lua_mcp_copy_state_string(L, abs_index, "client_version",
+                                       state->client_version,
+                                       sizeof(state->client_version), error);
+  }
+  lua_getfield(L, abs_index, "created_at");
+  if (lua_isnumber(L, -1)) {
+    state->created_at = (long long)lua_tointeger(L, -1);
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, abs_index, "last_seen_at");
+  if (lua_isnumber(L, -1)) {
+    state->last_seen_at = (long long)lua_tointeger(L, -1);
+  }
+  lua_pop(L, 1);
+  return rc;
+}
+
+static int cai_lua_mcp_callback_error(lua_State *L, cai_error *error,
+                                      const char *message) {
+  const char *detail;
+
+  detail = lua_tostring(L, -1);
+  return cai_lua_set_error_detail(error, CAI_ERR_INVALID, message, detail);
+}
+
+static int cai_lua_mcp_session_create(void *context,
+                                      const cai_mcp_session_state *initial,
+                                      char *session_id,
+                                      size_t session_id_capacity,
+                                      cai_error *error) {
+  cai_lua_mcp_session_ctx *ctx;
+  const char *id;
+  size_t len;
+
+  ctx = (cai_lua_mcp_session_ctx *)context;
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->create_ref);
+  cai_lua_push_mcp_session_state(ctx->L, initial);
+  if (lua_pcall(ctx->L, 1, 1, 0) != LUA_OK) {
+    return cai_lua_mcp_callback_error(ctx->L, error,
+                                      "Lua MCP session create failed");
+  }
+  id = lua_tostring(ctx->L, -1);
+  if (id == NULL) {
+    lua_pop(ctx->L, 1);
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua MCP session create must return a session id");
+  }
+  len = strlen(id);
+  if (len == 0U || len >= session_id_capacity) {
+    lua_pop(ctx->L, 1);
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua MCP session id is invalid");
+  }
+  memcpy(session_id, id, len + 1U);
+  lua_pop(ctx->L, 1);
+  return CAI_OK;
+}
+
+static int cai_lua_mcp_session_load(void *context, const char *session_id,
+                                    cai_mcp_session_state *state,
+                                    cai_error *error) {
+  cai_lua_mcp_session_ctx *ctx;
+  int rc;
+
+  ctx = (cai_lua_mcp_session_ctx *)context;
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->load_ref);
+  lua_pushstring(ctx->L, session_id);
+  if (lua_pcall(ctx->L, 1, 1, 0) != LUA_OK) {
+    return cai_lua_mcp_callback_error(ctx->L, error,
+                                      "Lua MCP session load failed");
+  }
+  if (lua_isnil(ctx->L, -1) || lua_isboolean(ctx->L, -1)) {
+    lua_pop(ctx->L, 1);
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua MCP session was not found");
+  }
+  rc = cai_lua_read_mcp_session_state(ctx->L, -1, state, error);
+  lua_pop(ctx->L, 1);
+  return rc;
+}
+
+static int cai_lua_mcp_session_save(void *context, const char *session_id,
+                                    const cai_mcp_session_state *state,
+                                    cai_error *error) {
+  cai_lua_mcp_session_ctx *ctx;
+  int ok;
+
+  ctx = (cai_lua_mcp_session_ctx *)context;
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->save_ref);
+  lua_pushstring(ctx->L, session_id);
+  cai_lua_push_mcp_session_state(ctx->L, state);
+  if (lua_pcall(ctx->L, 2, 1, 0) != LUA_OK) {
+    return cai_lua_mcp_callback_error(ctx->L, error,
+                                      "Lua MCP session save failed");
+  }
+  ok = lua_isnil(ctx->L, -1) || lua_toboolean(ctx->L, -1);
+  lua_pop(ctx->L, 1);
+  return ok ? CAI_OK
+            : cai_lua_set_error(error, CAI_ERR_INVALID,
+                                "Lua MCP session save rejected the session");
+}
+
+static int cai_lua_mcp_session_destroy(void *context, const char *session_id,
+                                       cai_error *error) {
+  cai_lua_mcp_session_ctx *ctx;
+  int ok;
+
+  ctx = (cai_lua_mcp_session_ctx *)context;
+  if (ctx->destroy_ref == LUA_NOREF || ctx->destroy_ref == 0) {
+    return CAI_OK;
+  }
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->destroy_ref);
+  lua_pushstring(ctx->L, session_id);
+  if (lua_pcall(ctx->L, 1, 1, 0) != LUA_OK) {
+    return cai_lua_mcp_callback_error(ctx->L, error,
+                                      "Lua MCP session destroy failed");
+  }
+  ok = lua_isnil(ctx->L, -1) || lua_toboolean(ctx->L, -1);
+  lua_pop(ctx->L, 1);
+  return ok ? CAI_OK
+            : cai_lua_set_error(error, CAI_ERR_INVALID,
+                                "Lua MCP session destroy rejected the session");
+}
+
+static void cai_lua_mcp_session_cleanup(void *context) {
+  cai_lua_mcp_session_ctx *ctx;
+
+  ctx = (cai_lua_mcp_session_ctx *)context;
+  if (ctx == NULL) {
+    return;
+  }
+  if (ctx->create_ref != LUA_NOREF) {
+    luaL_unref(ctx->L, LUA_REGISTRYINDEX, ctx->create_ref);
+  }
+  if (ctx->load_ref != LUA_NOREF) {
+    luaL_unref(ctx->L, LUA_REGISTRYINDEX, ctx->load_ref);
+  }
+  if (ctx->save_ref != LUA_NOREF) {
+    luaL_unref(ctx->L, LUA_REGISTRYINDEX, ctx->save_ref);
+  }
+  if (ctx->destroy_ref != LUA_NOREF) {
+    luaL_unref(ctx->L, LUA_REGISTRYINDEX, ctx->destroy_ref);
+  }
+  free(ctx);
+}
+
 static int cai_lua_mcp_new(lua_State *L) {
   cai_mcp_handler_config config;
+  cai_mcp_session_callbacks session_callbacks;
+  cai_lua_mcp_session_ctx *session_ctx;
   cai_lua_registry *registry;
   cai_mcp_handler *handler;
   cai_error error;
   int rc;
+
+  session_ctx = NULL;
   luaL_checktype(L, 1, LUA_TTABLE);
   cai_mcp_handler_config_init(&config);
   config.name = cai_lua_opt_string_field(L, 1, "name", config.name);
@@ -3715,6 +3938,45 @@ static int cai_lua_mcp_new(lua_State *L) {
                                                      config.protocol_version);
   config.allow_legacy_no_version = cai_lua_opt_int_field(
       L, 1, "allow_legacy_no_version", config.allow_legacy_no_version);
+  lua_getfield(L, 1, "session");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TTABLE);
+    session_ctx = (cai_lua_mcp_session_ctx *)calloc(1U, sizeof(*session_ctx));
+    if (session_ctx == NULL) {
+      lua_pop(L, 1);
+      return luaL_error(L, "failed to allocate MCP session context");
+    }
+    session_ctx->L = L;
+    session_ctx->create_ref = LUA_NOREF;
+    session_ctx->load_ref = LUA_NOREF;
+    session_ctx->save_ref = LUA_NOREF;
+    session_ctx->destroy_ref = LUA_NOREF;
+    lua_getfield(L, -1, "create");
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+    session_ctx->create_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_getfield(L, -1, "load");
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+    session_ctx->load_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_getfield(L, -1, "save");
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+    session_ctx->save_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_getfield(L, -1, "destroy");
+    if (lua_isfunction(L, -1)) {
+      session_ctx->destroy_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    } else {
+      lua_pop(L, 1);
+    }
+    memset(&session_callbacks, 0, sizeof(session_callbacks));
+    session_callbacks.create = cai_lua_mcp_session_create;
+    session_callbacks.load = cai_lua_mcp_session_load;
+    session_callbacks.save = cai_lua_mcp_session_save;
+    session_callbacks.destroy = cai_lua_mcp_session_destroy;
+    session_callbacks.cleanup = cai_lua_mcp_session_cleanup;
+    config.session = &session_callbacks;
+    config.session_context = session_ctx;
+    config.stateless = 0;
+  }
+  lua_pop(L, 1);
   lua_getfield(L, 1, "tools");
   registry = cai_lua_check_registry(L, -1);
   config.tools = registry->ptr;
@@ -3722,6 +3984,9 @@ static int cai_lua_mcp_new(lua_State *L) {
   rc = cai_mcp_handler_new(&config, &handler, &error);
   lua_pop(L, 1);
   if (rc != CAI_OK) {
+    if (session_ctx != NULL) {
+      cai_lua_mcp_session_cleanup(session_ctx);
+    }
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_mcp(L, handler);

@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct cai_mcp_jsonrpc_doc {
   lonejson_json_value id;
@@ -11,6 +12,16 @@ typedef struct cai_mcp_jsonrpc_doc {
   char *method;
   lonejson_json_value params;
 } cai_mcp_jsonrpc_doc;
+
+typedef struct cai_mcp_initialize_client_info_doc {
+  char *name;
+  char *version;
+} cai_mcp_initialize_client_info_doc;
+
+typedef struct cai_mcp_initialize_params_doc {
+  char *protocol_version;
+  cai_mcp_initialize_client_info_doc client_info;
+} cai_mcp_initialize_params_doc;
 
 typedef struct cai_mcp_call_params_doc {
   char *name;
@@ -57,7 +68,10 @@ struct cai_mcp_handler {
   char **allowed_origins;
   size_t allowed_origin_count;
   char *protocol_version;
+  char *last_session_id;
   int allow_legacy_no_version;
+  cai_mcp_session_callbacks session;
+  void *session_context;
   void *user_context;
 };
 
@@ -68,6 +82,25 @@ static const lonejson_field cai_mcp_jsonrpc_fields[] = {
     LONEJSON_FIELD_JSON_VALUE(cai_mcp_jsonrpc_doc, params, "params")};
 LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_map, cai_mcp_jsonrpc_doc,
                     cai_mcp_jsonrpc_fields);
+
+static const lonejson_field cai_mcp_initialize_client_info_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_client_info_doc, name,
+                                "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_client_info_doc, version,
+                                "version")};
+LONEJSON_MAP_DEFINE(cai_mcp_initialize_client_info_map,
+                    cai_mcp_initialize_client_info_doc,
+                    cai_mcp_initialize_client_info_fields);
+
+static const lonejson_field cai_mcp_initialize_params_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_params_doc,
+                                protocol_version, "protocolVersion"),
+    LONEJSON_FIELD_OBJECT(cai_mcp_initialize_params_doc, client_info,
+                          "clientInfo",
+                          &cai_mcp_initialize_client_info_map)};
+LONEJSON_MAP_DEFINE(cai_mcp_initialize_params_map,
+                    cai_mcp_initialize_params_doc,
+                    cai_mcp_initialize_params_fields);
 
 static const lonejson_field cai_mcp_call_params_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_call_params_doc, name, "name"),
@@ -146,6 +179,33 @@ static int cai_mcp_spool_write(void *context, const void *bytes, size_t count,
   sink_context->total += count;
   return CAI_OK;
 }
+
+static int cai_mcp_copy_fixed(char *dst, size_t capacity, const char *src,
+                              const char *message, cai_error *error) {
+  size_t len;
+
+  if (dst == NULL || capacity == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID, message);
+  }
+  dst[0] = '\0';
+  if (src == NULL || src[0] == '\0') {
+    return CAI_OK;
+  }
+  len = strlen(src);
+  if (len >= capacity) {
+    return cai_set_error(error, CAI_ERR_INVALID, message);
+  }
+  memcpy(dst, src, len + 1U);
+  return CAI_OK;
+}
+
+static int cai_mcp_session_enabled(const cai_mcp_handler *handler) {
+  return handler != NULL && !handler->stateless &&
+         handler->session.create != NULL && handler->session.load != NULL &&
+         handler->session.save != NULL;
+}
+
+static long long cai_mcp_now(void) { return (long long)time(NULL); }
 
 static lonejson_status cai_mcp_lonejson_sink(void *user, const void *data,
                                              size_t len,
@@ -914,6 +974,39 @@ static int cai_mcp_parse_request(cai_source *source, size_t limit,
   return CAI_OK;
 }
 
+static int cai_mcp_parse_initialize_params(
+    const lonejson_spooled *params_spool, cai_mcp_initialize_params_doc *params,
+    cai_error *error) {
+  cai_mcp_spooled_reader reader;
+  lonejson_parse_options options;
+  lonejson_error json_error;
+
+  memset(params, 0, sizeof(*params));
+  lonejson_init(&cai_mcp_initialize_params_map, params);
+  if (params_spool == NULL || lonejson_spooled_size(params_spool) == 0U) {
+    return CAI_OK;
+  }
+  reader.cursor = *params_spool;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&cai_mcp_initialize_params_map, params);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind MCP initialize params",
+                                json_error.message);
+  }
+  options = lonejson_default_parse_options();
+  if (lonejson_parse_reader(&cai_mcp_initialize_params_map, params,
+                            cai_mcp_spooled_read, &reader, &options,
+                            &json_error) != LONEJSON_STATUS_OK) {
+    lonejson_cleanup(&cai_mcp_initialize_params_map, params);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse MCP initialize params",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
 void cai_mcp_handler_config_init(cai_mcp_handler_config *config) {
   if (config == NULL) {
     return;
@@ -948,6 +1041,13 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP handler requires a tool registry");
   }
+  if (!config->stateless &&
+      (config->session == NULL || config->session->create == NULL ||
+       config->session->load == NULL || config->session->save == NULL)) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "stateful MCP handler requires create, load, and save callbacks");
+  }
   handler = (cai_mcp_handler *)cai_alloc(NULL, sizeof(*handler));
   if (handler == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -974,6 +1074,10 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
   handler->stateless = config->stateless ? 1 : 0;
   handler->validate_origin = config->validate_origin ? 1 : 0;
   handler->allow_legacy_no_version = config->allow_legacy_no_version ? 1 : 0;
+  if (config->session != NULL) {
+    handler->session = *config->session;
+  }
+  handler->session_context = config->session_context;
   handler->user_context = config->user_context;
   if (config->allowed_origin_count > 0U) {
     handler->allowed_origins = (char **)cai_alloc(
@@ -1003,12 +1107,16 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                 cai_mcp_http_response *response,
                                 cai_error *error) {
   cai_mcp_jsonrpc_doc doc;
+  cai_mcp_session_state session_state;
   lonejson_spooled id_spool;
   lonejson_spooled params_spool;
   const char *accept;
   const char *content_type;
   const char *origin;
+  const char *session_id;
   const char *version;
+  char created_session_id[CAI_MCP_SESSION_ID_MAX];
+  int have_session;
   int rc;
 
   if (handler == NULL || request == NULL || response == NULL ||
@@ -1021,6 +1129,34 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                           handler->protocol_version, error);
   if (rc != CAI_OK) {
     return rc;
+  }
+  session_id = cai_mcp_header(request, "mcp-session-id");
+  if (request->method != NULL && strcmp(request->method, "DELETE") == 0) {
+    if (!cai_mcp_session_enabled(handler)) {
+      response->status = 405;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      return cai_mcp_write_error(response->body, NULL, -32600,
+                                 "MCP handler only supports POST", error);
+    }
+    if (session_id == NULL || session_id[0] == '\0') {
+      response->status = 400;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      return cai_mcp_write_error(response->body, NULL, -32600,
+                                 "Missing MCP session id", error);
+    }
+    if (handler->session.destroy != NULL) {
+      rc = handler->session.destroy(handler->session_context, session_id,
+                                    error);
+      if (rc != CAI_OK) {
+        response->status = 404;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        return cai_mcp_write_error(response->body, NULL, -32001,
+                                   "MCP session not found", error);
+      }
+    }
+    response->status = 202;
+    return CAI_OK;
   }
   origin = cai_mcp_header(request, "origin");
   if (handler->validate_origin && !cai_mcp_origin_allowed(handler, origin)) {
@@ -1075,8 +1211,11 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                "Missing MCP request body", error);
   }
   memset(&doc, 0, sizeof(doc));
+  memset(&session_state, 0, sizeof(session_state));
   lonejson_spooled_init(&id_spool, NULL);
   lonejson_spooled_init(&params_spool, NULL);
+  created_session_id[0] = '\0';
+  have_session = 0;
   rc = cai_mcp_parse_request(request->body, handler->request_max_bytes, &doc,
                              &id_spool, &params_spool, error);
   if (rc != CAI_OK) {
@@ -1093,7 +1232,40 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                              "Invalid JSON-RPC version", error);
     goto done;
   }
+  if (cai_mcp_session_enabled(handler) && strcmp(doc.method, "initialize") != 0) {
+    if (session_id == NULL || session_id[0] == '\0') {
+      response->status = 400;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      rc = cai_mcp_write_error(response->body, &id_spool, -32001,
+                               "Missing MCP session id", error);
+      goto done;
+    }
+    rc = handler->session.load(handler->session_context, session_id,
+                               &session_state, error);
+    if (rc != CAI_OK) {
+      response->status = 404;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      rc = cai_mcp_write_error(response->body, &id_spool, -32001,
+                               "MCP session not found", error);
+      goto done;
+    }
+    have_session = 1;
+    session_state.last_seen_at = cai_mcp_now();
+  }
   if (strcmp(doc.method, "notifications/initialized") == 0) {
+    if (have_session) {
+      session_state.initialized = 1;
+      rc = handler->session.save(handler->session_context, session_id,
+                                 &session_state, error);
+      if (rc != CAI_OK) {
+        response->status = 500;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        rc = cai_mcp_write_error(response->body, &id_spool, -32000,
+                                 "Failed to save MCP session", error);
+        goto done;
+      }
+    }
     response->status = 202;
     rc = CAI_OK;
     goto done;
@@ -1105,6 +1277,78 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     goto done;
   }
   if (strcmp(doc.method, "initialize") == 0) {
+    if (cai_mcp_session_enabled(handler)) {
+      cai_mcp_initialize_params_doc init_params;
+
+      rc = cai_mcp_parse_initialize_params(&params_spool, &init_params, error);
+      if (rc != CAI_OK) {
+        response->status = 400;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        rc = cai_mcp_write_error(response->body, &id_spool, -32602,
+                                 "Invalid initialize params", error);
+        goto done;
+      }
+      memset(&session_state, 0, sizeof(session_state));
+      session_state.initialized = 0;
+      session_state.created_at = cai_mcp_now();
+      session_state.last_seen_at = session_state.created_at;
+      rc = cai_mcp_copy_fixed(
+          session_state.protocol_version,
+          sizeof(session_state.protocol_version),
+          init_params.protocol_version != NULL ? init_params.protocol_version
+                                               : handler->protocol_version,
+          "MCP protocol version is too large", error);
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_fixed(session_state.client_name,
+                                sizeof(session_state.client_name),
+                                init_params.client_info.name,
+                                "MCP client name is too large", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_fixed(session_state.client_version,
+                                sizeof(session_state.client_version),
+                                init_params.client_info.version,
+                                "MCP client version is too large", error);
+      }
+      if (rc == CAI_OK) {
+        rc = handler->session.create(handler->session_context, &session_state,
+                                     created_session_id,
+                                     sizeof(created_session_id), error);
+      }
+      lonejson_cleanup(&cai_mcp_initialize_params_map, &init_params);
+      if (rc != CAI_OK) {
+        response->status = 500;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        rc = cai_mcp_write_error(response->body, &id_spool, -32000,
+                                 "Failed to create MCP session", error);
+        goto done;
+      }
+      if (created_session_id[0] == '\0') {
+        response->status = 500;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        rc = cai_mcp_write_error(response->body, &id_spool, -32000,
+                                 "MCP session id is empty", error);
+        goto done;
+      }
+      cai_free_mem(NULL, handler->last_session_id);
+      handler->last_session_id = cai_strdup(NULL, created_session_id);
+      if (handler->last_session_id == NULL) {
+        response->status = 500;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        rc = cai_mcp_write_error(response->body, &id_spool, -32000,
+                                 "Failed to allocate MCP session id", error);
+        goto done;
+      }
+      rc = cai_mcp_set_header(response, "mcp-session-id",
+                              handler->last_session_id, error);
+      if (rc != CAI_OK) {
+        goto done;
+      }
+    }
     rc = cai_mcp_write_initialize(handler, response->body, &id_spool, error);
   } else if (strcmp(doc.method, "ping") == 0) {
     rc = cai_mcp_write_ping(response->body, &id_spool, error);
@@ -1116,6 +1360,10 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
   } else {
     rc = cai_mcp_write_error(response->body, &id_spool, -32601,
                              "Method not found", error);
+  }
+  if (rc == CAI_OK && have_session) {
+    rc = handler->session.save(handler->session_context, session_id,
+                               &session_state, error);
   }
 
 done:
@@ -1134,11 +1382,15 @@ void cai_mcp_handler_destroy(cai_mcp_handler *handler) {
   cai_free_mem(NULL, handler->name);
   cai_free_mem(NULL, handler->version);
   cai_free_mem(NULL, handler->protocol_version);
+  cai_free_mem(NULL, handler->last_session_id);
   if (handler->allowed_origins != NULL) {
     for (i = 0U; i < handler->allowed_origin_count; i++) {
       cai_free_mem(NULL, handler->allowed_origins[i]);
     }
     cai_free_mem(NULL, handler->allowed_origins);
+  }
+  if (handler->session.cleanup != NULL) {
+    handler->session.cleanup(handler->session_context);
   }
   cai_free_mem(NULL, handler);
 }

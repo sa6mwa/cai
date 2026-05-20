@@ -77,6 +77,21 @@ typedef struct mcp_header_state {
   size_t response_count;
 } mcp_header_state;
 
+typedef struct mcp_session_test_store {
+  char id[CAI_MCP_SESSION_ID_MAX];
+  cai_mcp_session_state state;
+  int exists;
+  int creates;
+  int loads;
+  int saves;
+  int destroys;
+  int cleanups;
+  int fail_create;
+  int fail_load;
+  int fail_save;
+  int empty_create_id;
+} mcp_session_test_store;
+
 typedef struct stream_tool_state {
   char delta[64];
   char item_id[32];
@@ -877,6 +892,88 @@ static int test_mcp_header_set(void *context, const char *name,
   state->response[state->response_count].value = value;
   state->response_count++;
   return CAI_OK;
+}
+
+static int test_mcp_session_create(void *context,
+                                   const cai_mcp_session_state *initial_state,
+                                   char *session_id,
+                                   size_t session_id_capacity,
+                                   cai_error *error) {
+  mcp_session_test_store *store;
+  const char id[] = "sess-test-1";
+
+  store = (mcp_session_test_store *)context;
+  store->creates++;
+  if (store->fail_create) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session create failed deliberately");
+  }
+  if (store->empty_create_id) {
+    session_id[0] = '\0';
+    return CAI_OK;
+  }
+  if (session_id_capacity <= sizeof(id) - 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session id buffer too small");
+  }
+  memcpy(session_id, id, sizeof(id));
+  memcpy(store->id, id, sizeof(id));
+  store->state = *initial_state;
+  store->exists = 1;
+  return CAI_OK;
+}
+
+static int test_mcp_session_load(void *context, const char *session_id,
+                                 cai_mcp_session_state *state,
+                                 cai_error *error) {
+  mcp_session_test_store *store;
+
+  store = (mcp_session_test_store *)context;
+  store->loads++;
+  if (store->fail_load || !store->exists ||
+      strcmp(session_id, store->id) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session load failed deliberately");
+  }
+  *state = store->state;
+  return CAI_OK;
+}
+
+static int test_mcp_session_save(void *context, const char *session_id,
+                                 const cai_mcp_session_state *state,
+                                 cai_error *error) {
+  mcp_session_test_store *store;
+
+  store = (mcp_session_test_store *)context;
+  store->saves++;
+  if (store->fail_save || !store->exists ||
+      strcmp(session_id, store->id) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session save failed deliberately");
+  }
+  store->state = *state;
+  return CAI_OK;
+}
+
+static int test_mcp_session_destroy(void *context, const char *session_id,
+                                    cai_error *error) {
+  mcp_session_test_store *store;
+
+  store = (mcp_session_test_store *)context;
+  store->destroys++;
+  if (!store->exists || strcmp(session_id, store->id) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session destroy failed deliberately");
+  }
+  store->exists = 0;
+  return CAI_OK;
+}
+
+static void test_mcp_session_cleanup(void *context) {
+  mcp_session_test_store *store;
+
+  store = (mcp_session_test_store *)context;
+  store->cleanups++;
 }
 
 static const char *test_mcp_response_header(mcp_header_state *state,
@@ -2596,6 +2693,9 @@ static void test_mcp_handler(test_state *state) {
       {"content-type", "application/json"},
       {"accept", "application/json"},
       {"mcp-protocol-version", "1900-01-01"}};
+  mcp_header_pair stateful_headers[4];
+  cai_mcp_session_callbacks session_callbacks;
+  mcp_session_test_store session_store;
   const char *allowed_origins[1];
   cai_tool_registry *registry;
   cai_mcp_handler_config config;
@@ -2926,6 +3026,98 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_source_failure_status", status, 400L);
   expect_valid_json(state, "mcp_source_failure_json", sink_state.buffer);
+
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  memset(&session_store, 0, sizeof(session_store));
+  memset(&session_callbacks, 0, sizeof(session_callbacks));
+  session_callbacks.create = test_mcp_session_create;
+  session_callbacks.load = test_mcp_session_load;
+  session_callbacks.save = test_mcp_session_save;
+  session_callbacks.destroy = test_mcp_session_destroy;
+  session_callbacks.cleanup = test_mcp_session_cleanup;
+  config.request_max_bytes = 1024U * 1024U;
+  config.tool_output_max_bytes = 1024U;
+  config.stateless = 0;
+  config.session = NULL;
+  expect_int(state, "mcp_stateful_requires_callbacks",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.session = &session_callbacks;
+  config.session_context = &session_store;
+  expect_int(state, "mcp_stateful_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_stateful_initialize",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"init-stateful\","
+                 "\"method\":\"initialize\",\"params\":{\"protocolVersion\":"
+                 "\"2025-11-25\",\"clientInfo\":{\"name\":\"unit-client\","
+                 "\"version\":\"1.2.3\"}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_initialize_status", status, 200L);
+  expect_str(state, "mcp_stateful_session_header",
+             test_mcp_response_header(&header_state, "mcp-session-id"),
+             "sess-test-1");
+  expect_int(state, "mcp_stateful_create_count", session_store.creates, 1L);
+  expect_int(state, "mcp_stateful_exists", session_store.exists, 1L);
+  expect_str(state, "mcp_stateful_client_name",
+             session_store.state.client_name, "unit-client");
+  expect_str(state, "mcp_stateful_client_version",
+             session_store.state.client_version, "1.2.3");
+  stateful_headers[0] = headers[0];
+  stateful_headers[1] = headers[1];
+  stateful_headers[2] = headers[2];
+  stateful_headers[3].name = "mcp-session-id";
+  stateful_headers[3].value =
+      test_mcp_response_header(&header_state, "mcp-session-id");
+  expect_int(state, "mcp_stateful_ping",
+             test_mcp_handle(handler, stateful_headers, 4U,
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"ping-stateful\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_ping_status", status, 200L);
+  expect_int(state, "mcp_stateful_load_count", session_store.loads, 1L);
+  expect_int(state, "mcp_stateful_save_count", session_store.saves, 1L);
+  expect_valid_json(state, "mcp_stateful_ping_json", writer.buffer);
+  expect_int(state, "mcp_stateful_initialized",
+             test_mcp_handle(handler, stateful_headers, 4U,
+                             "{\"jsonrpc\":\"2.0\","
+                             "\"method\":\"notifications/initialized\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_initialized_status", status, 202L);
+  expect_int(state, "mcp_stateful_initialized_flag",
+             session_store.state.initialized, 1L);
+  expect_int(state, "mcp_stateful_missing_session",
+             test_mcp_handle(handler, headers, sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"missing-session\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_missing_session_status", status, 400L);
+  expect_valid_json(state, "mcp_stateful_missing_session_json", writer.buffer);
+  expect_int(state, "mcp_stateful_destroy",
+             test_mcp_handle_stream(
+                 handler, stateful_headers, 4U, "DELETE",
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"delete\"}", 0U, 0, 0,
+                 &source_state, &sink_state, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_destroy_status", status, 202L);
+  expect_int(state, "mcp_stateful_destroy_count", session_store.destroys, 1L);
+  expect_int(state, "mcp_stateful_destroyed_exists", session_store.exists, 0L);
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  expect_int(state, "mcp_stateful_cleanup_count", session_store.cleanups, 1L);
+
+  config.stateless = 1;
+  config.session = NULL;
+  config.session_context = NULL;
+  expect_int(state, "mcp_sink_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
   expect_int(state, "mcp_sink_failure",
              test_mcp_handle_stream(
                  handler, headers, sizeof(headers) / sizeof(headers[0]),
