@@ -644,7 +644,9 @@ enums, field descriptions, and WIP-limit semantics. Agents can call
 When `board_id` and `board_name` are omitted, the tool uses the configured
 default board and lazily creates it if needed. This means an agent can add an
 item with just `operation=add_item` and `title=...` in the common single-board
-case.
+case. `list_boards` returns board records in a `boards` array with
+`board_count`; item-listing operations return work records in an `items` array
+with `item_count`.
 
 By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
 `$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.

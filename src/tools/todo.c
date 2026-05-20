@@ -70,6 +70,13 @@ typedef struct cai_todo_result_item {
   char *status;
 } cai_todo_result_item;
 
+typedef struct cai_todo_result_board {
+  char *id;
+  char *name;
+  long long wip_limit;
+  int has_wip_limit;
+} cai_todo_result_board;
+
 typedef struct cai_todo_result {
   int ok;
   int has_ok;
@@ -86,9 +93,12 @@ typedef struct cai_todo_result {
   int has_in_process_count;
   long long item_count;
   int has_item_count;
+  long long board_count;
+  int has_board_count;
   int truncated;
   int has_truncated;
   lonejson_object_array items;
+  lonejson_object_array boards;
 } cai_todo_result;
 
 typedef struct cai_todo_board {
@@ -228,6 +238,14 @@ static const lonejson_field cai_todo_result_item_fields[] = {
 LONEJSON_MAP_DEFINE(cai_todo_result_item_map, cai_todo_result_item,
                     cai_todo_result_item_fields);
 
+static const lonejson_field cai_todo_result_board_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_result_board, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_result_board, name, "name"),
+    LONEJSON_FIELD_I64_PRESENT(cai_todo_result_board, wip_limit,
+                               has_wip_limit, "wip_limit")};
+LONEJSON_MAP_DEFINE(cai_todo_result_board_map, cai_todo_result_board,
+                    cai_todo_result_board_fields);
+
 static const lonejson_field cai_todo_result_fields[] = {
     LONEJSON_FIELD_BOOL_PRESENT(cai_todo_result, ok, has_ok, "ok"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_result, operation, "operation"),
@@ -245,11 +263,17 @@ static const lonejson_field cai_todo_result_fields[] = {
                                has_in_process_count, "in_process_count"),
     LONEJSON_FIELD_I64_PRESENT(cai_todo_result, item_count, has_item_count,
                                "item_count"),
+    LONEJSON_FIELD_I64_PRESENT(cai_todo_result, board_count, has_board_count,
+                               "board_count"),
     LONEJSON_FIELD_BOOL_PRESENT(cai_todo_result, truncated, has_truncated,
                                 "truncated"),
     LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(cai_todo_result, items, "items",
                                            cai_todo_result_item,
                                            &cai_todo_result_item_map,
+                                           LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(cai_todo_result, boards, "boards",
+                                           cai_todo_result_board,
+                                           &cai_todo_result_board_map,
                                            LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_todo_result_map, cai_todo_result,
                     cai_todo_result_fields);
@@ -1185,37 +1209,32 @@ static int cai_todo_add_result_item(cai_todo_result *result,
 static int cai_todo_add_result_board(cai_todo_result *result,
                                      const cai_todo_board *board,
                                      size_t max_items, cai_error *error) {
-  cai_todo_result_item *item;
+  cai_todo_result_board *result_board;
   int rc;
 
-  if (result->items.count >= max_items) {
+  if (result->boards.count >= max_items) {
     result->truncated = 1;
     result->has_truncated = 1;
     return CAI_OK;
   }
-  rc = cai_todo_array_grow(&result->items, sizeof(*item), error);
+  rc = cai_todo_array_grow(&result->boards, sizeof(*result_board), error);
   if (rc != CAI_OK) {
     return rc;
   }
-  item = (cai_todo_result_item *)result->items.items + result->items.count;
-  memset(item, 0, sizeof(*item));
-  rc = cai_todo_copy_string(&item->id, board->id, error);
+  result_board = (cai_todo_result_board *)result->boards.items +
+                 result->boards.count;
+  memset(result_board, 0, sizeof(*result_board));
+  rc = cai_todo_copy_string(&result_board->id, board->id, error);
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&item->board_id, board->id, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&item->board_name,
+    rc = cai_todo_copy_string(&result_board->name,
                               board->name != NULL ? board->name : "", error);
   }
-  if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&item->title,
-                              board->name != NULL ? board->name : "", error);
+  if (rc == CAI_OK && board->has_wip_limit && board->wip_limit >= 0) {
+    result_board->wip_limit = board->wip_limit;
+    result_board->has_wip_limit = 1;
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&item->status, "board", error);
-  }
-  if (rc == CAI_OK) {
-    result->items.count++;
+    result->boards.count++;
   }
   return rc;
 }
@@ -2224,8 +2243,8 @@ static int cai_todo_list_boards(cai_todo_context *ctx,
   if (rc == CAI_OK) {
     rc = state.rc;
   }
-  result->item_count = state.count;
-  result->has_item_count = 1;
+  result->board_count = state.count;
+  result->has_board_count = 1;
   return rc;
 }
 

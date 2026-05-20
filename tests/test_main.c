@@ -6957,11 +6957,13 @@ static void test_todo_tool(test_state *state) {
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
       strstr(writer.buffer, "boards listed") == NULL ||
-      strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
-      strstr(writer.buffer, "\"item_count\":1") == NULL) {
+      strstr(writer.buffer, "\"boards\":[") == NULL ||
+      strstr(writer.buffer, "\"name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"board_count\":1") == NULL ||
+      strstr(writer.buffer, "\"items\"") != NULL) {
     test_fail(state, "todo_list_boards_strict_null_output",
-              "strict-schema null optional arguments should list the default "
-              "board");
+              "strict-schema null optional arguments should list only default "
+              "board records");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -6988,11 +6990,13 @@ static void test_todo_tool(test_state *state) {
     lonejson_spooled_cleanup(&spooled_args);
     if (strstr(writer.buffer, "\"ok\":true") == NULL ||
         strstr(writer.buffer, "boards listed") == NULL ||
-        strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
-        strstr(writer.buffer, "\"item_count\":1") == NULL) {
+        strstr(writer.buffer, "\"boards\":[") == NULL ||
+        strstr(writer.buffer, "\"name\":\"main\"") == NULL ||
+        strstr(writer.buffer, "\"board_count\":1") == NULL ||
+        strstr(writer.buffer, "\"items\"") != NULL) {
       test_fail(state, "todo_spooled_list_boards_strict_null_output",
                 "spooled strict-schema null optional arguments should list "
-                "the default board");
+                "only default board records");
     }
     writer.buffer[0] = '\0';
     writer.length = 0U;
@@ -7312,7 +7316,9 @@ static void test_todo_tool(test_state *state) {
                                    &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"truncated\":true") == NULL ||
-      strstr(writer.buffer, "\"item_count\":3") == NULL) {
+      strstr(writer.buffer, "\"board_count\":3") == NULL ||
+      strstr(writer.buffer, "\"boards\":[") == NULL ||
+      strstr(writer.buffer, "\"status\":\"board\"") != NULL) {
     test_fail(state, "todo_list_boards_truncated_output",
               "board listing did not report truncation and total count");
   }

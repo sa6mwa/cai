@@ -364,8 +364,10 @@ assert_ok(registry:run(
 local list_json = table.concat(chunks)
 assert(list_json:match('"ok":true'))
 assert(list_json:match("boards listed"))
-assert(list_json:match('"board_name":"lua"'))
-assert(list_json:match('"item_count":1'))
+assert(list_json:match('"boards"%s*:'))
+assert(list_json:match('"name":"lua"'))
+assert(list_json:match('"board_count":1'))
+assert(not list_json:match('"items"%s*:'))
 
 chunks = {}
 assert_ok(registry:run(

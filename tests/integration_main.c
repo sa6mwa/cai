@@ -636,6 +636,15 @@ static int run_todo_workflow_regression(void) {
                                           writer.buffer, "\"main\"");
   failures += integration_expect_contains("todo list boards ops",
                                           writer.buffer, "\"ops\"");
+  failures += integration_expect_contains("todo list boards array",
+                                          writer.buffer, "\"boards\":[");
+  failures += integration_expect_contains("todo list boards count",
+                                          writer.buffer, "\"board_count\":");
+  if (strstr(writer.buffer, "\"status\":\"board\"") != NULL) {
+    fprintf(stderr, "todo list_boards returned pseudo-item boards\n%s\n",
+            writer.buffer);
+    failures++;
+  }
 
   failures += todo_run(registry, sink, &writer, "todo board missing",
                        "{\"operation\":\"add_item\","
