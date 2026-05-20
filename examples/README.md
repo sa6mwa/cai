@@ -195,13 +195,23 @@ tokens to stdout, uses a stable `prompt_cache_key` for OpenAI prompt-cache
 bucketing, and prints token usage plus context window percentage and estimated
 cumulative USD cost to stderr after each turn. Cost is estimated locally from
 model pricing metadata and response usage; it is not a billing-grade invoice
-value. The chat agent registers the SearXNG search preset and can call it when
-it needs current or external information; start local SearXNG with
-`make searxng-up`. Tool calls are printed with `[tool]` input and output lines
-so search activity is visible while a turn is running. Exit with Ctrl-D at an
-empty prompt, `/quit`, or `/exit`.
+value. The chat agent registers the SearXNG search preset and the persisted
+`todo_kanban` preset. It can search when it needs current or external
+information; start local SearXNG with `make searxng-up`. It can also manage
+local kanban boards when asked to remember, plan, list, move, limit, or archive
+work. Tool calls are printed with `[tool]` input and output lines so activity
+is visible while a turn is running. Exit with Ctrl-D at an empty prompt,
+`/quit`, or `/exit`.
 
 ```sh
+OPENAI_API_KEY=... make -C examples run-terminal-chat
+```
+
+Optional local todo isolation:
+
+```sh
+CAI_TODO_STORE=/tmp/cai-todo.json \
+CAI_TODO_LOCK=/tmp/cai-todo.lock \
 OPENAI_API_KEY=... make -C examples run-terminal-chat
 ```
 

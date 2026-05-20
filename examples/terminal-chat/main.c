@@ -1,5 +1,6 @@
 #include <cai/cai.h>
 #include <cai/tools/searxng.h>
+#include <cai/tools/todo.h>
 
 #include "../common.h"
 
@@ -143,6 +144,7 @@ int main(void) {
   cai_client_config client_config;
   cai_run_options run_options;
   cai_searxng_tool_config searxng_config;
+  cai_todo_tool_config todo_config;
   cai_stream_sinks stream_sinks;
   cai_client *client;
   cai_agent *agent;
@@ -164,18 +166,28 @@ int main(void) {
   cai_agent_config_init(&agent_config);
   cai_run_options_init(&run_options);
   memset(&searxng_config, 0, sizeof(searxng_config));
+  memset(&todo_config, 0, sizeof(todo_config));
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   agent_config.developer_instructions =
       "You are a concise terminal chat assistant. Answer plainly. You have "
-      "access to searxng_search for web search. Use it when the user asks "
-      "for current, external, or source-backed information, and cite the URL "
-      "from the tool result when you use it.";
+      "access to searxng_search for web search and todo_kanban for managing "
+      "a local kanban board. Use search when the user asks for current, "
+      "external, or source-backed information, and cite the URL from the tool "
+      "result when you use it. Use todo_kanban when the user asks you to "
+      "remember, plan, list, move, limit, or archive work.";
   agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   run_options.max_tool_rounds = 10;
   searxng_config.base_url = searxng_base_url();
   searxng_config.engine = getenv("CAI_SEARXNG_ENGINE");
+  todo_config.store_path = getenv("CAI_TODO_STORE");
+  todo_config.lock_path = getenv("CAI_TODO_LOCK");
+  todo_config.default_board = getenv("CAI_TODO_BOARD");
+  if (todo_config.default_board == NULL ||
+      todo_config.default_board[0] == '\0') {
+    todo_config.default_board = "default";
+  }
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -204,6 +216,11 @@ int main(void) {
   rc = cai_agent_register_searxng_tool(agent, &searxng_config, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_agent_register_searxng_tool", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_register_todo_tool(agent, &todo_config, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_agent_register_todo_tool", rc, &error);
     goto done;
   }
   rc = agent->new_session(agent, &session, &error);
