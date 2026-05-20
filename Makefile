@@ -80,7 +80,7 @@ test-debug: build-debug
 	$(CTEST) --preset debug
 
 test-release: build-release
-	$(CTEST) --preset release
+	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure
 
 test-integration:
 	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
