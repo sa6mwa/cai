@@ -114,6 +114,7 @@ local response_delta_chunks = {}
 local reasoning_chunks = {}
 local function_deltas = {}
 local function_done = {}
+local output_items = {}
 local tool_events = {}
 local tool_output = {}
 
@@ -147,6 +148,10 @@ ok, err = session:stream({
       name = name,
       arguments = arguments,
     }
+    return true
+  end,
+  on_output_item_done = function(item)
+    output_items[#output_items + 1] = item
     return true
   end,
   tool_event = function(event)
@@ -185,6 +190,16 @@ if tool_calls ~= 1 then
 end
 if #function_done < 1 then
   fail("expected function-call done callback")
+end
+if #output_items < 1 then
+  fail("expected output-item done callback")
+end
+if output_items[#output_items].type ~= "function_call" then
+  fail("expected function_call output item, got " ..
+    tostring(output_items[#output_items].type))
+end
+if not output_items[#output_items].json:match('"function_call"') then
+  fail("output-item callback did not include raw json")
 end
 if not function_done[#function_done].arguments:match("gothenburg") then
   fail("function-call done arguments did not include gothenburg")

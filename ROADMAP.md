@@ -35,6 +35,8 @@ Implemented:
 - Preserved response output-item JSON with sink streaming helpers, so callers
   can handle hosted-tool, image, code, and future output item variants even when
   cai only types common metadata fields.
+- Streamed output-item done callbacks with raw item JSON for hosted-tool,
+  image/code, and future streamed output variants.
 - Model constants and curated metadata for current OpenAI/OpenRouter models
   used by the SDK and tests.
 - External binary dependencies through `CAI_DEPENDENCY_MODE=cpkt`: official

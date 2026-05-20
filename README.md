@@ -481,10 +481,14 @@ build/fuzz/cai_tool_fuzz
 Streaming callers that need function-call arguments can attach callbacks to
 `cai_stream_sinks.function_call_arguments_delta` and
 `cai_stream_sinks.function_call_arguments_done`. Callers that need raw streamed
-assistant text deltas before any terminal/UI affixes can attach
+output-item events for hosted tools, image/code outputs, and future item types
+can attach `cai_stream_sinks.output_item_done`; cai passes common metadata plus
+the raw item JSON and byte length. Callers that need raw streamed assistant text
+deltas before any terminal/UI affixes can attach
 `cai_stream_sinks.output_text_delta`. `stream_text` remains text-only; the
 callback surface is for callers that want to observe streamed tool-call
-argument deltas directly and decide their own orchestration policy.
+argument deltas and output items directly and decide their own orchestration
+policy.
 
 The ASAN preset is part of the local quality gate:
 

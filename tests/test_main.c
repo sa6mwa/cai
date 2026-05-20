@@ -88,6 +88,14 @@ typedef struct stream_tool_state {
   int done_count;
 } stream_tool_state;
 
+typedef struct stream_output_item_state {
+  char item_id[32];
+  char type[32];
+  char json[256];
+  int output_index;
+  int done_count;
+} stream_output_item_state;
+
 typedef struct stream_output_state {
   char delta[128];
   char item_id[32];
@@ -1005,6 +1013,30 @@ static int test_stream_tool_done(void *context, const char *item_id,
   snprintf(state->name, sizeof(state->name), "%s", name != NULL ? name : "");
   snprintf(state->arguments, sizeof(state->arguments), "%s",
            arguments != NULL ? arguments : "");
+  return CAI_OK;
+}
+
+static int test_stream_output_item_done(
+    void *context, const char *item_id, int output_index, const char *type,
+    const char *item_json, size_t item_json_len, cai_error *error) {
+  stream_output_item_state *state;
+  size_t copy_len;
+
+  (void)error;
+  state = (stream_output_item_state *)context;
+  state->done_count++;
+  snprintf(state->item_id, sizeof(state->item_id), "%s",
+           item_id != NULL ? item_id : "");
+  state->output_index = output_index;
+  snprintf(state->type, sizeof(state->type), "%s", type != NULL ? type : "");
+  copy_len = item_json_len;
+  if (copy_len >= sizeof(state->json)) {
+    copy_len = sizeof(state->json) - 1U;
+  }
+  if (item_json != NULL && copy_len > 0U) {
+    memcpy(state->json, item_json, copy_len);
+  }
+  state->json[copy_len] = '\0';
   return CAI_OK;
 }
 
@@ -4301,6 +4333,13 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_client_history_2\",\"usage\":{\"input_tokens\":18,"
       "\"output_tokens\":5,\"total_tokens\":23}}}\n\n";
+  static const char stream_output_item_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"ws_stream_1\",\"type\":\"web_search_call\","
+      "\"status\":\"completed\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_output_item_1\",\"usage\":{\"input_tokens\":7,"
+      "\"output_tokens\":2,\"total_tokens\":9}}}\n\n";
   static char stream_openrouter_metadata_body[1024];
   static char stream_tool_body[1024];
   static char stream_source_tool_body[1024];
@@ -4494,6 +4533,9 @@ static const char *mock_response_for_request(const char *request) {
                  "\"output_tokens\":1,\"total_tokens\":10}}}\n\n");
         }
         return stream_tool_body;
+      }
+      if (strstr(request, "stream output item turn") != NULL) {
+        return stream_output_item_body;
       }
       if (strstr(request, "stream source tool turn") != NULL) {
         if (stream_source_tool_body[0] == '\0') {
@@ -8073,6 +8115,7 @@ static void test_stream_response_text(test_state *state) {
   write_state writer;
   write_state reasoning_writer;
   stream_tool_state tool_stream;
+  stream_output_item_state output_item_stream;
   stream_output_state output_stream;
   cai_error error;
   pslog_logger fake_logger;
@@ -8136,6 +8179,7 @@ static void test_stream_response_text(test_state *state) {
   reasoning_writer.closed = 0;
   reasoning_writer.buffer[0] = '\0';
   memset(&tool_stream, 0, sizeof(tool_stream));
+  memset(&output_item_stream, 0, sizeof(output_item_stream));
   memset(&output_stream, 0, sizeof(output_stream));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
@@ -8369,6 +8413,8 @@ static void test_stream_response_text(test_state *state) {
   stream_sinks.function_call_arguments_delta = test_stream_tool_delta;
   stream_sinks.function_call_arguments_done = test_stream_tool_done;
   stream_sinks.function_call_context = &tool_stream;
+  stream_sinks.output_item_done = test_stream_output_item_done;
+  stream_sinks.output_item_context = &output_item_stream;
   expect_int(state, "stream_session_tool_callbacks",
              session->stream(session, &stream_sinks, &error), CAI_OK);
   expect_int(state, "stream_session_tool_delta_count",
@@ -8384,6 +8430,22 @@ static void test_stream_response_text(test_state *state) {
              "{\"city\":\"Gothenburg\"}");
   expect_str(state, "stream_session_tool_arguments", tool_stream.arguments,
              "{\"city\":\"Gothenburg\"}");
+  expect_int(state, "stream_session_output_item_done_count",
+             output_item_stream.done_count, 1L);
+  expect_str(state, "stream_session_output_item_id",
+             output_item_stream.item_id, "fc_stream_1");
+  expect_str(state, "stream_session_output_item_type",
+             output_item_stream.type, "function_call");
+  expect_int(state, "stream_session_output_item_index",
+             output_item_stream.output_index, 0L);
+  expect_valid_json(state, "stream_session_output_item_json",
+                    output_item_stream.json);
+  if (strstr(output_item_stream.json, "\"call_id\":\"call_stream_1\"") ==
+      NULL) {
+    test_fail(state, "stream_session_output_item_json_call_id",
+              "missing call id");
+  }
+
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
   expect_int(state, "stream_log_trace_count", g_test_tracef_count, 12L);
@@ -8401,6 +8463,103 @@ static void test_stream_response_text(test_state *state) {
     test_fail(state, "stream_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "stream_mock", "mock child failed");
+  }
+}
+
+static void test_stream_non_function_output_item(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_stream_sinks stream_sinks;
+  stream_output_item_state output_item_stream;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_non_function_item_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_non_function_item_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_non_function_item_mock", "failed to read port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  memset(&output_item_stream, 0, sizeof(output_item_stream));
+
+  expect_int(state, "stream_non_function_item_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_non_function_item_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_non_function_item_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(
+      state, "stream_non_function_item_add",
+      cai_session_add_user_text(session, "stream output item turn", &error),
+      CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_item_done = test_stream_output_item_done;
+  stream_sinks.output_item_context = &output_item_stream;
+  expect_int(state, "stream_non_function_item_run",
+             session->stream(session, &stream_sinks, &error), CAI_OK);
+  expect_int(state, "stream_non_function_item_count",
+             output_item_stream.done_count, 1L);
+  expect_str(state, "stream_non_function_item_id",
+             output_item_stream.item_id, "ws_stream_1");
+  expect_str(state, "stream_non_function_item_type",
+             output_item_stream.type, "web_search_call");
+  expect_int(state, "stream_non_function_item_index",
+             output_item_stream.output_index, 0L);
+  expect_valid_json(state, "stream_non_function_item_json",
+                    output_item_stream.json);
+  if (strstr(output_item_stream.json, "\"status\":\"completed\"") == NULL) {
+    test_fail(state, "stream_non_function_item_json_status",
+              "missing status");
+  }
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_non_function_item_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_non_function_item_mock", "mock child failed");
   }
 }
 
@@ -10647,6 +10806,7 @@ int main(void) {
   test_agent_tool_output_max_bytes(&state);
   test_conversations(&state);
   test_stream_response_text(&state);
+  test_stream_non_function_output_item(&state);
   test_stream_output_delta_failure(&state);
   test_stream_http_error_preserves_openai_error(&state);
   test_stream_source_error_preserves_openai_error(&state);

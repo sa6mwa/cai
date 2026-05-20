@@ -151,6 +151,7 @@ typedef struct cai_lua_function_call_ctx {
   lua_State *L;
   int delta_ref;
   int done_ref;
+  int item_ref;
 } cai_lua_function_call_ctx;
 
 static int cai_lua_make_sink(lua_State *L, int index, cai_lua_sink_ctx *ctx,
@@ -1978,6 +1979,40 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
   return CAI_OK;
 }
 
+static int cai_lua_stream_output_item_done(
+    void *context, const char *item_id, int output_index, const char *type,
+    const char *item_json, size_t item_json_len, cai_error *error) {
+  cai_lua_function_call_ctx *ctx;
+  int rc;
+
+  (void)error;
+  ctx = (cai_lua_function_call_ctx *)context;
+  if (ctx == NULL || ctx->item_ref == 0) {
+    return CAI_OK;
+  }
+  lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->item_ref);
+  lua_newtable(ctx->L);
+  lua_pushstring(ctx->L, item_id != NULL ? item_id : "");
+  lua_setfield(ctx->L, -2, "id");
+  lua_pushinteger(ctx->L, output_index);
+  lua_setfield(ctx->L, -2, "output_index");
+  lua_pushstring(ctx->L, type != NULL ? type : "");
+  lua_setfield(ctx->L, -2, "type");
+  lua_pushlstring(ctx->L, item_json != NULL ? item_json : "", item_json_len);
+  lua_setfield(ctx->L, -2, "json");
+  rc = lua_pcall(ctx->L, 1, 1, 0);
+  if (rc != LUA_OK) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_INVALID;
+  }
+  if (lua_isboolean(ctx->L, -1) && !lua_toboolean(ctx->L, -1)) {
+    lua_pop(ctx->L, 1);
+    return CAI_ERR_CANCELLED;
+  }
+  lua_pop(ctx->L, 1);
+  return CAI_OK;
+}
+
 static void cai_lua_apply_affix(lua_State *L, int index, const char *field,
                                 cai_stream_affix *affix) {
   index = lua_absindex(L, index);
@@ -2067,6 +2102,14 @@ static int cai_lua_agent_stream(lua_State *L) {
     }
   }
   lua_pop(L, 1);
+  lua_getfield(L, 2, "on_output_item_done");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    function_ctx.item_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.output_item_done = cai_lua_stream_output_item_done;
+    sinks.output_item_context = &function_ctx;
+  }
+  lua_pop(L, 1);
   rc = self->ptr->stream_auto(self->ptr, &options, &sinks, &error);
   if (event_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
@@ -2091,6 +2134,9 @@ static int cai_lua_agent_stream(lua_State *L) {
   }
   if (function_ctx.done_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.done_ref);
+  }
+  if (function_ctx.item_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.item_ref);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -2641,6 +2687,14 @@ static int cai_lua_session_stream(lua_State *L) {
     }
   }
   lua_pop(L, 1);
+  lua_getfield(L, 2, "on_output_item_done");
+  if (lua_isfunction(L, -1)) {
+    lua_pushvalue(L, -1);
+    function_ctx.item_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    sinks.output_item_done = cai_lua_stream_output_item_done;
+    sinks.output_item_context = &function_ctx;
+  }
+  lua_pop(L, 1);
   rc = cai_session_stream_auto(self->ptr, &options, &sinks, &error);
   if (event_ctx.callback_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, event_ctx.callback_ref);
@@ -2665,6 +2719,9 @@ static int cai_lua_session_stream(lua_State *L) {
   }
   if (function_ctx.done_ref != 0) {
     luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.done_ref);
+  }
+  if (function_ctx.item_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, function_ctx.item_ref);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
