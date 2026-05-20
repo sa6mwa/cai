@@ -3099,10 +3099,18 @@ static void test_response_json(test_state *state) {
   parsed_output_doc parsed;
   write_state writer;
   cai_hosted_mcp_tool_config mcp_config;
+  cai_response_create_params *mcp_params;
+  cai_hosted_mcp_tool_config invalid_mcp_config;
   char response_json[1024];
   char *json;
+  char *allow_all_pos;
+  char *next_tool_pos;
+  char saved_next_tool;
   size_t json_len;
   static const char *mcp_allowed_names[] = {"roll", "status"};
+  static const char *mcp_one_allowed_name[] = {"ask"};
+  static const char *mcp_null_allowed_name[] = {NULL};
+  static const char *mcp_empty_allowed_name[] = {""};
   static const char structured_response_json[] =
       "{\"id\":\"resp_json\",\"status\":\"completed\",\"output\":[{\"type\":"
       "\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
@@ -3133,6 +3141,7 @@ static void test_response_json(test_state *state) {
 
   cai_error_init(&error);
   params = NULL;
+  mcp_params = NULL;
   output = NULL;
   json = NULL;
   expect_int(state, "params_new",
@@ -3419,6 +3428,199 @@ static void test_response_json(test_state *state) {
   }
   cai_response_create_params_destroy(params);
   params = NULL;
+
+  expect_int(state, "mcp_params_new",
+             cai_response_create_params_new(&mcp_params, &error), CAI_OK);
+  expect_int(state, "mcp_params_model",
+             cai_response_create_params_set_model(
+                 mcp_params, CAI_MODEL_GPT_5_NANO, &error),
+             CAI_OK);
+  expect_int(state, "mcp_params_text",
+             cai_response_create_params_add_text(mcp_params, "user",
+                                                 "remote tool policy", &error),
+             CAI_OK);
+  cai_hosted_mcp_tool_config_init(&mcp_config);
+  mcp_config.server_label = "allow_all";
+  mcp_config.server_url = "https://example.test/mcp";
+  expect_int(state, "mcp_add_allow_all",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &mcp_config, &error),
+             CAI_OK);
+  cai_hosted_mcp_tool_config_init(&mcp_config);
+  mcp_config.server_label = "connector";
+  mcp_config.connector_id = "conn_123";
+  mcp_config.headers_json = "{\"Authorization\":\"Bearer token\"}";
+  mcp_config.allowed_tools_json =
+      "{\"tool_names\":[\"ask\"],\"read_only\":true}";
+  mcp_config.require_approval_json = "{\"never\":{\"tool_names\":[\"ask\"]}}";
+  expect_int(state, "mcp_add_connector_policy",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &mcp_config, &error),
+             CAI_OK);
+  expect_int(state, "mcp_serialize",
+             cai_response_create_params_serialize_json(
+                 mcp_params, &json, &json_len, &error),
+             CAI_OK);
+  if (json == NULL) {
+    test_fail(state, "mcp_serialize", "no JSON returned");
+  } else {
+    if (strstr(json, "\"server_label\":\"allow_all\"") == NULL ||
+        strstr(json, "\"server_url\":\"https://example.test/mcp\"") == NULL) {
+      test_fail(state, "mcp_serialize", "allow-all MCP tool missing");
+    }
+    if (strstr(json, "\"connector_id\":\"conn_123\"") == NULL ||
+        strstr(json, "\"headers\":{\"Authorization\":\"Bearer token\"}") ==
+            NULL ||
+        strstr(json, "\"allowed_tools\":{\"tool_names\":[\"ask\"],"
+                     "\"read_only\":true}") == NULL ||
+        strstr(json, "\"require_approval\":{\"never\":{\"tool_names\":["
+                     "\"ask\"]}}") == NULL) {
+      test_fail(state, "mcp_serialize", "connector MCP policy missing");
+    }
+    if (strstr(json, "\"allow_all\"") != NULL) {
+      allow_all_pos = strstr(json, "\"server_label\":\"allow_all\"");
+      if (allow_all_pos != NULL) {
+        next_tool_pos = strstr(allow_all_pos + 1, "\"type\":\"mcp\"");
+        if (next_tool_pos != NULL) {
+          saved_next_tool = *next_tool_pos;
+          *next_tool_pos = '\0';
+        } else {
+          saved_next_tool = '\0';
+        }
+        if (strstr(allow_all_pos, "\"allowed_tools\"") != NULL) {
+          test_fail(state, "mcp_serialize",
+                    "allow-all MCP tool should omit allowed_tools");
+        }
+        if (next_tool_pos != NULL) {
+          *next_tool_pos = saved_next_tool;
+        }
+      }
+    }
+    expect_int(state, "mcp_serialize_len", (long)strlen(json),
+               (long)json_len);
+    free(json);
+    json = NULL;
+  }
+  cai_response_create_params_destroy(mcp_params);
+  mcp_params = NULL;
+
+  expect_int(state, "mcp_bad_null_params",
+             cai_response_create_params_add_hosted_mcp_tool(NULL, &mcp_config,
+                                                            &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_bad_new_params_for_null_config",
+             cai_response_create_params_new(&mcp_params, &error), CAI_OK);
+  expect_int(state, "mcp_bad_null_config",
+             cai_response_create_params_add_hosted_mcp_tool(mcp_params, NULL,
+                                                            &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_hosted_mcp_tool_config_init(&invalid_mcp_config);
+  invalid_mcp_config.server_url = "https://example.test/mcp";
+  expect_int(state, "mcp_bad_missing_label",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_hosted_mcp_tool_config_init(&invalid_mcp_config);
+  invalid_mcp_config.server_label = "missing_endpoint";
+  expect_int(state, "mcp_bad_missing_endpoint",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.server_url = "https://example.test/mcp";
+  invalid_mcp_config.connector_id = "conn_123";
+  expect_int(state, "mcp_bad_two_endpoints",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.connector_id = NULL;
+  invalid_mcp_config.allowed_tool_name_count = 1U;
+  invalid_mcp_config.allowed_tool_names = NULL;
+  expect_int(state, "mcp_bad_missing_allowed_names",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.allowed_tool_names = mcp_null_allowed_name;
+  expect_int(state, "mcp_bad_null_allowed_name",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.allowed_tool_names = mcp_empty_allowed_name;
+  expect_int(state, "mcp_bad_empty_allowed_name",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.allowed_tool_names = mcp_one_allowed_name;
+  invalid_mcp_config.allowed_tools_json = "[\"ask\"]";
+  expect_int(state, "mcp_bad_allowed_conflict",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.allowed_tool_names = NULL;
+  invalid_mcp_config.allowed_tool_name_count = 0U;
+  invalid_mcp_config.allowed_tools_json = "\"ask\"";
+  expect_int(state, "mcp_bad_allowed_scalar",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.allowed_tools_json = "[";
+  expect_int(state, "mcp_bad_allowed_json",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.allowed_tools_json = NULL;
+  invalid_mcp_config.headers_json = "[]";
+  expect_int(state, "mcp_bad_headers_array",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.headers_json = "{";
+  expect_int(state, "mcp_bad_headers_json",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.headers_json = NULL;
+  invalid_mcp_config.require_approval_json = "true";
+  expect_int(state, "mcp_bad_approval_bool",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  invalid_mcp_config.require_approval_json = "[";
+  expect_int(state, "mcp_bad_approval_json",
+             cai_response_create_params_add_hosted_mcp_tool(
+                 mcp_params, &invalid_mcp_config, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_response_create_params_destroy(mcp_params);
+  mcp_params = NULL;
 
   expect_int(state, "json_object_params_new",
              cai_response_create_params_new(&params, &error), CAI_OK);

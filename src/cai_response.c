@@ -211,6 +211,7 @@ typedef struct cai_response_json_root_check {
   int root_seen;
   int root_is_object;
   int root_is_array;
+  int root_is_string;
 } cai_response_json_root_check;
 
 struct cai_response_request_upload {
@@ -884,6 +885,7 @@ static lonejson_status cai_response_root_object_begin(void *user,
     check->root_seen = 1;
     check->root_is_object = 1;
     check->root_is_array = 0;
+    check->root_is_string = 0;
   }
   check->depth++;
   return LONEJSON_STATUS_OK;
@@ -911,6 +913,7 @@ static lonejson_status cai_response_root_array_begin(void *user,
     check->root_seen = 1;
     check->root_is_object = 0;
     check->root_is_array = 1;
+    check->root_is_string = 0;
   }
   check->depth++;
   return LONEJSON_STATUS_OK;
@@ -931,6 +934,22 @@ static lonejson_status cai_response_root_scalar(void *user,
     check->root_seen = 1;
     check->root_is_object = 0;
     check->root_is_array = 0;
+    check->root_is_string = 0;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_response_root_string(void *user,
+                                                lonejson_error *error) {
+  cai_response_json_root_check *check;
+
+  (void)error;
+  check = (cai_response_json_root_check *)user;
+  if (check->depth == 0) {
+    check->root_seen = 1;
+    check->root_is_object = 0;
+    check->root_is_array = 0;
+    check->root_is_string = 1;
   }
   return LONEJSON_STATUS_OK;
 }
@@ -971,7 +990,7 @@ static int cai_response_spooled_root_is_array(const lonejson_spooled *spool,
   visitor.object_end = cai_response_root_object_end;
   visitor.array_begin = cai_response_root_array_begin;
   visitor.array_end = cai_response_root_array_end;
-  visitor.string_begin = cai_response_root_scalar;
+  visitor.string_begin = cai_response_root_string;
   visitor.number_begin = cai_response_root_scalar;
   visitor.boolean_value = cai_response_root_bool;
   visitor.null_value = cai_response_root_scalar;
@@ -988,8 +1007,8 @@ static int cai_response_spooled_root_is_array(const lonejson_spooled *spool,
 }
 
 static int cai_response_json_root_kind(const char *json, int *out_is_object,
-                                       int *out_is_array, const char *message,
-                                       cai_error *error) {
+                                       int *out_is_array, int *out_is_string,
+                                       const char *message, cai_error *error) {
   lonejson_spooled spool;
   lonejson_error json_error;
   cai_response_spooled_reader_context reader_context;
@@ -1002,6 +1021,9 @@ static int cai_response_json_root_kind(const char *json, int *out_is_object,
   }
   if (out_is_array != NULL) {
     *out_is_array = 0;
+  }
+  if (out_is_string != NULL) {
+    *out_is_string = 0;
   }
   if (json == NULL || json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, message);
@@ -1030,7 +1052,7 @@ static int cai_response_json_root_kind(const char *json, int *out_is_object,
     visitor.object_end = cai_response_root_object_end;
     visitor.array_begin = cai_response_root_array_begin;
     visitor.array_end = cai_response_root_array_end;
-    visitor.string_begin = cai_response_root_scalar;
+    visitor.string_begin = cai_response_root_string;
     visitor.number_begin = cai_response_root_scalar;
     visitor.boolean_value = cai_response_root_bool;
     visitor.null_value = cai_response_root_scalar;
@@ -1046,6 +1068,9 @@ static int cai_response_json_root_kind(const char *json, int *out_is_object,
       }
       if (out_is_array != NULL) {
         *out_is_array = check.root_seen && check.root_is_array;
+      }
+      if (out_is_string != NULL) {
+        *out_is_string = check.root_seen && check.root_is_string;
       }
     }
   }
@@ -1500,7 +1525,8 @@ static int cai_response_params_set_json_object_string(
   }
   if (json != NULL) {
     is_object = 0;
-    rc = cai_response_json_root_kind(json, &is_object, NULL, message, error);
+    rc = cai_response_json_root_kind(json, &is_object, NULL, NULL, message,
+                                     error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -1523,7 +1549,8 @@ static int cai_response_params_set_json_array_string(
   }
   if (json != NULL) {
     is_array = 0;
-    rc = cai_response_json_root_kind(json, NULL, &is_array, message, error);
+    rc = cai_response_json_root_kind(json, NULL, &is_array, NULL, message,
+                                     error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -2057,7 +2084,7 @@ int cai_response_create_params_add_hosted_tool_json(
   }
   is_object = 0;
   rc = cai_response_json_root_kind(
-      tool_json, &is_object, NULL,
+      tool_json, &is_object, NULL, NULL,
       "hosted tool must be a valid JSON object", error);
   if (rc != CAI_OK) {
     return rc;
@@ -2207,6 +2234,7 @@ int cai_response_create_params_add_hosted_mcp_tool(
   int has_connector_id;
   int is_object;
   int is_array;
+  int is_string;
   size_t i;
   int rc;
 
@@ -2256,7 +2284,7 @@ int cai_response_create_params_add_hosted_mcp_tool(
   if (config->headers_json != NULL && config->headers_json[0] != '\0') {
     is_object = 0;
     rc = cai_response_json_root_kind(
-        config->headers_json, &is_object, NULL,
+        config->headers_json, &is_object, NULL, NULL,
         "hosted MCP headers must be a valid JSON object", error);
     if (rc != CAI_OK) {
       return rc;
@@ -2271,7 +2299,7 @@ int cai_response_create_params_add_hosted_mcp_tool(
     is_object = 0;
     is_array = 0;
     rc = cai_response_json_root_kind(
-        config->allowed_tools_json, &is_object, &is_array,
+        config->allowed_tools_json, &is_object, &is_array, NULL,
         "hosted MCP allowed_tools must be a valid JSON array or object", error);
     if (rc != CAI_OK) {
       return rc;
@@ -2280,6 +2308,23 @@ int cai_response_create_params_add_hosted_mcp_tool(
       return cai_set_error(error, CAI_ERR_INVALID,
                            "hosted MCP allowed_tools must be a JSON array or "
                            "object");
+    }
+  }
+  if (config->require_approval_json != NULL &&
+      config->require_approval_json[0] != '\0') {
+    is_object = 0;
+    is_string = 0;
+    rc = cai_response_json_root_kind(
+        config->require_approval_json, &is_object, NULL, &is_string,
+        "hosted MCP require_approval must be a valid JSON string or object",
+        error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (!is_object && !is_string) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "hosted MCP require_approval must be a JSON string "
+                           "or object");
     }
   }
 
