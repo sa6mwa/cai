@@ -56,6 +56,39 @@ static const char *openrouter_tool_integration_model(void) {
   return model;
 }
 
+static int integration_flag_enabled(const char *value) {
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static int integration_apply_dotenv_api_key(const char *env_name) {
+  cai_error error;
+  char *api_key;
+  int rc;
+
+  cai_error_init(&error);
+  api_key = NULL;
+  rc = cai_load_dotenv_api_key(CAI_DEFAULT_DOTENV_PATH, env_name, &api_key,
+                               &error);
+  if (rc == CAI_ERR_CANCELLED) {
+    cai_error_cleanup(&error);
+    return 0;
+  }
+  if (rc != CAI_OK) {
+    print_error("load dotenv api key", rc, &error);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  if (setenv(env_name, api_key, 1) != 0) {
+    fprintf(stderr, "failed to set %s from dotenv\n", env_name);
+    cai_string_destroy(api_key);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_string_destroy(api_key);
+  cai_error_cleanup(&error);
+  return 0;
+}
+
 typedef struct integration_lookup_args {
   char *city;
   char *code;
@@ -2214,91 +2247,118 @@ int main(void) {
   const char *tool_security;
 
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
-  if (openrouter_dotenv != NULL && openrouter_dotenv[0] != '\0' &&
-      strcmp(openrouter_dotenv, "0") != 0) {
+  if (integration_flag_enabled(openrouter_dotenv)) {
     return run_openrouter_dotenv_response();
   }
   openrouter_e2e = getenv("CAI_INTEGRATION_OPENROUTER_E2E");
-  if (openrouter_e2e != NULL && openrouter_e2e[0] != '\0' &&
-      strcmp(openrouter_e2e, "0") != 0) {
+  if (integration_flag_enabled(openrouter_e2e)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_e2e_session_regression();
   }
   openrouter_session = getenv("CAI_INTEGRATION_OPENROUTER_SESSION");
-  if (openrouter_session != NULL && openrouter_session[0] != '\0' &&
-      strcmp(openrouter_session, "0") != 0) {
+  if (integration_flag_enabled(openrouter_session)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_session_regression();
   }
   openrouter_tool = getenv("CAI_INTEGRATION_OPENROUTER_TOOL");
-  if (openrouter_tool != NULL && openrouter_tool[0] != '\0' &&
-      strcmp(openrouter_tool, "0") != 0) {
+  if (integration_flag_enabled(openrouter_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_tool_regression();
   }
   openrouter_stream_tool = getenv("CAI_INTEGRATION_OPENROUTER_STREAM_TOOL");
-  if (openrouter_stream_tool != NULL && openrouter_stream_tool[0] != '\0' &&
-      strcmp(openrouter_stream_tool, "0") != 0) {
+  if (integration_flag_enabled(openrouter_stream_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_stream_tool_regression();
   }
   openrouter_stream_history =
       getenv("CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY");
-  if (openrouter_stream_history != NULL &&
-      openrouter_stream_history[0] != '\0' &&
-      strcmp(openrouter_stream_history, "0") != 0) {
+  if (integration_flag_enabled(openrouter_stream_history)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_stream_history_regression();
   }
   openrouter_tool_security = getenv("CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY");
-  if (openrouter_tool_security != NULL &&
-      openrouter_tool_security[0] != '\0' &&
-      strcmp(openrouter_tool_security, "0") != 0) {
+  if (integration_flag_enabled(openrouter_tool_security)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_tool_security_regression();
   }
   openrouter = getenv("CAI_INTEGRATION_OPENROUTER");
-  if (openrouter != NULL && openrouter[0] != '\0' &&
-      strcmp(openrouter, "0") != 0) {
+  if (integration_flag_enabled(openrouter)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_openrouter_basic_response();
   }
   hosted_web_search = getenv("CAI_INTEGRATION_HOSTED_WEB_SEARCH");
-  if (hosted_web_search != NULL && hosted_web_search[0] != '\0' &&
-      strcmp(hosted_web_search, "0") != 0) {
+  if (integration_flag_enabled(hosted_web_search)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_hosted_web_search_regression();
   }
   tool_security = getenv("CAI_INTEGRATION_TOOL_SECURITY");
-  if (tool_security != NULL && tool_security[0] != '\0' &&
-      strcmp(tool_security, "0") != 0) {
+  if (integration_flag_enabled(tool_security)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_tool_security_regression();
   }
   searxng_tool = getenv("CAI_INTEGRATION_SEARXNG_TOOL");
-  if (searxng_tool != NULL && searxng_tool[0] != '\0' &&
-      strcmp(searxng_tool, "0") != 0) {
+  if (integration_flag_enabled(searxng_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_searxng_tool_regression();
   }
   searxng_stream_tool = getenv("CAI_INTEGRATION_SEARXNG_STREAM_TOOL");
-  if (searxng_stream_tool != NULL && searxng_stream_tool[0] != '\0' &&
-      strcmp(searxng_stream_tool, "0") != 0) {
+  if (integration_flag_enabled(searxng_stream_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_searxng_stream_tool_regression();
   }
   revgeo_provider = getenv("CAI_INTEGRATION_REVGEO_PROVIDER");
-  if (revgeo_provider != NULL && revgeo_provider[0] != '\0' &&
-      strcmp(revgeo_provider, "0") != 0) {
+  if (integration_flag_enabled(revgeo_provider)) {
     return run_revgeo_provider_regression();
   }
   todo_workflow = getenv("CAI_INTEGRATION_TODO_WORKFLOW");
-  if (todo_workflow != NULL && todo_workflow[0] != '\0' &&
-      strcmp(todo_workflow, "0") != 0) {
+  if (integration_flag_enabled(todo_workflow)) {
     return run_todo_workflow_regression();
   }
   e2e = getenv("CAI_INTEGRATION_E2E");
-  if (e2e != NULL && e2e[0] != '\0' && strcmp(e2e, "0") != 0) {
+  if (integration_flag_enabled(e2e)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_e2e_session_regression();
   }
   state_restore = getenv("CAI_INTEGRATION_STATE_RESTORE");
-  if (state_restore != NULL && state_restore[0] != '\0' &&
-      strcmp(state_restore, "0") != 0) {
+  if (integration_flag_enabled(state_restore)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_state_restore_regression();
   }
   compaction = getenv("CAI_INTEGRATION_COMPACTION");
-  if (compaction != NULL && compaction[0] != '\0' &&
-      strcmp(compaction, "0") != 0) {
+  if (integration_flag_enabled(compaction)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
     return run_compaction_recall();
+  }
+  if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+    return 1;
   }
   return run_basic_response();
 }
