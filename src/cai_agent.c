@@ -920,6 +920,50 @@ static void cai_stream_tool_call_list_cleanup(
   memset(list, 0, sizeof(*list));
 }
 
+static lonejson_status cai_agent_spool_sink(void *user, const void *data,
+                                            size_t len,
+                                            lonejson_error *error);
+
+static int cai_stream_tool_call_set_final_arguments(
+    cai_response_tool_call *call, const char *arguments, cai_error *error) {
+  lonejson_json_value value;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *copy;
+
+  if (call == NULL || arguments == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  copy = cai_strdup(NULL, arguments);
+  if (copy == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate stream tool arguments");
+  }
+  cai_free_mem(NULL, call->arguments);
+  call->arguments = copy;
+  if (call->has_arguments_spooled) {
+    lonejson_spooled_cleanup(&call->arguments_spooled);
+    call->has_arguments_spooled = 0;
+  }
+  lonejson_spooled_init(&call->arguments_spooled, NULL);
+  call->has_arguments_spooled = 1;
+  lonejson_error_init(&json_error);
+  lonejson_json_value_init(&value);
+  status = lonejson_json_value_set_buffer(&value, arguments, strlen(arguments),
+                                          &json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_json_value_write_to_sink(
+        &value, cai_agent_spool_sink, &call->arguments_spooled, &json_error);
+  }
+  lonejson_json_value_cleanup(&value);
+  if (status != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to spool streamed tool arguments",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
 static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
                                             const char *item_id,
                                             int output_index,
@@ -928,7 +972,6 @@ static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
                                             const char *arguments,
                                             cai_error *error) {
   cai_response_tool_call *call;
-  lonejson_error json_error;
   int rc;
   int appended;
   size_t i;
@@ -939,7 +982,8 @@ static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
   for (i = 0U; i < list->count; i++) {
     if (list->items[i].call_id != NULL &&
         strcmp(list->items[i].call_id, call_id) == 0) {
-      return CAI_OK;
+      return cai_stream_tool_call_set_final_arguments(&list->items[i],
+                                                      arguments, error);
     }
   }
   call = cai_stream_tool_call_list_find(list, item_id, output_index);
@@ -960,30 +1004,20 @@ static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
   }
   call->call_id = cai_strdup(NULL, call_id);
   call->name = cai_strdup(NULL, name);
-  call->arguments = cai_strdup(NULL, arguments);
-  if (call->id == NULL || call->call_id == NULL || call->name == NULL ||
-      call->arguments == NULL) {
+  if (call->id == NULL || call->call_id == NULL || call->name == NULL) {
     cai_stream_tool_call_cleanup(call);
     if (appended) {
       list->count--;
     }
     return CAI_ERR_NOMEM;
   }
-  if (!call->has_arguments_spooled) {
-    lonejson_spooled_init(&call->arguments_spooled, NULL);
-    call->has_arguments_spooled = 1;
-    lonejson_error_init(&json_error);
-    if (lonejson_spooled_append(&call->arguments_spooled, arguments,
-                                strlen(arguments), &json_error) !=
-        LONEJSON_STATUS_OK) {
-      cai_stream_tool_call_cleanup(call);
-      if (appended) {
-        list->count--;
-      }
-      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                  "failed to spool streamed tool arguments",
-                                  json_error.message);
+  rc = cai_stream_tool_call_set_final_arguments(call, arguments, error);
+  if (rc != CAI_OK) {
+    cai_stream_tool_call_cleanup(call);
+    if (appended) {
+      list->count--;
     }
+    return rc;
   }
   return CAI_OK;
 }

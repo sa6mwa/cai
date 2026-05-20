@@ -194,11 +194,13 @@ end
 if #output_items < 1 then
   fail("expected output-item done callback")
 end
-if output_items[#output_items].type ~= "function_call" then
-  fail("expected function_call output item, got " ..
-    tostring(output_items[#output_items].type))
+local found_function_item = false
+for _, item in ipairs(output_items) do
+  if item.type == "function_call" and item.json:match('"function_call"') then
+    found_function_item = true
+  end
 end
-if not output_items[#output_items].json:match('"function_call"') then
+if not found_function_item then
   fail("output-item callback did not include raw json")
 end
 if not function_done[#function_done].arguments:match("gothenburg") then

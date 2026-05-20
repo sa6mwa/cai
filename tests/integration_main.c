@@ -94,6 +94,13 @@ typedef struct integration_write_state {
   size_t length;
 } integration_write_state;
 
+typedef struct integration_stream_debug_state {
+  char deltas[4096];
+  size_t deltas_length;
+  char done_arguments[4096];
+  char output_item_json[4096];
+} integration_stream_debug_state;
+
 static const lonejson_field integration_lookup_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, city, "city"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(integration_lookup_args, code, "code")};
@@ -209,6 +216,78 @@ static int integration_write(void *context, const void *bytes, size_t count,
 static void integration_write_reset(integration_write_state *state) {
   state->buffer[0] = '\0';
   state->length = 0U;
+}
+
+static int integration_stream_delta_debug(void *context, const char *item_id,
+                                          int output_index, const char *delta,
+                                          cai_error *error) {
+  integration_stream_debug_state *state;
+  size_t length;
+  size_t space;
+
+  (void)item_id;
+  (void)output_index;
+  (void)error;
+  state = (integration_stream_debug_state *)context;
+  if (state == NULL || delta == NULL) {
+    return CAI_OK;
+  }
+  length = strlen(delta);
+  space = sizeof(state->deltas) - state->deltas_length - 1U;
+  if (length > space) {
+    length = space;
+  }
+  if (length > 0U) {
+    memcpy(state->deltas + state->deltas_length, delta, length);
+    state->deltas_length += length;
+    state->deltas[state->deltas_length] = '\0';
+  }
+  return CAI_OK;
+}
+
+static int integration_stream_done_debug(void *context, const char *item_id,
+                                         int output_index, const char *call_id,
+                                         const char *name,
+                                         const char *arguments,
+                                         cai_error *error) {
+  integration_stream_debug_state *state;
+
+  (void)item_id;
+  (void)output_index;
+  (void)call_id;
+  (void)name;
+  (void)error;
+  state = (integration_stream_debug_state *)context;
+  if (state != NULL && arguments != NULL) {
+    snprintf(state->done_arguments, sizeof(state->done_arguments), "%s",
+             arguments);
+  }
+  return CAI_OK;
+}
+
+static int integration_stream_item_debug(
+    void *context, const char *item_id, int output_index, const char *type,
+    const char *item_json, size_t item_json_len, cai_error *error) {
+  integration_stream_debug_state *state;
+  size_t copy_len;
+
+  (void)item_id;
+  (void)output_index;
+  (void)type;
+  (void)error;
+  state = (integration_stream_debug_state *)context;
+  if (state == NULL || item_json == NULL) {
+    return CAI_OK;
+  }
+  copy_len = item_json_len;
+  if (copy_len >= sizeof(state->output_item_json)) {
+    copy_len = sizeof(state->output_item_json) - 1U;
+  }
+  if (copy_len > 0U) {
+    memcpy(state->output_item_json, item_json, copy_len);
+  }
+  state->output_item_json[copy_len] = '\0';
+  return CAI_OK;
 }
 
 static int integration_expect_contains(const char *name, const char *haystack,
@@ -979,6 +1058,7 @@ static int run_openrouter_stream_tool_regression(void) {
   integration_lookup_state tool_state;
   integration_tool_event_state event_state;
   integration_write_state writer;
+  integration_stream_debug_state stream_debug;
   const char *answer;
   int rc;
 
@@ -997,6 +1077,7 @@ static int run_openrouter_stream_tool_regression(void) {
   memset(&tool_state, 0, sizeof(tool_state));
   memset(&event_state, 0, sizeof(event_state));
   memset(&writer, 0, sizeof(writer));
+  memset(&stream_debug, 0, sizeof(stream_debug));
 
   agent_config.model = openrouter_tool_integration_model();
   fprintf(stderr, "[integration-openrouter-stream-tool] model=%s\n",
@@ -1045,10 +1126,20 @@ static int run_openrouter_stream_tool_regression(void) {
   }
   if (rc == CAI_OK) {
     stream_sinks.output_text = sink;
+    stream_sinks.function_call_arguments_delta = integration_stream_delta_debug;
+    stream_sinks.function_call_arguments_done = integration_stream_done_debug;
+    stream_sinks.function_call_context = &stream_debug;
+    stream_sinks.output_item_done = integration_stream_item_debug;
+    stream_sinks.output_item_context = &stream_debug;
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter stream tool regression", rc, &error);
+    fprintf(stderr,
+            "stream debug deltas=[%s]\ndone_arguments=[%s]\n"
+            "output_item_json=[%s]\n",
+            stream_debug.deltas, stream_debug.done_arguments,
+            stream_debug.output_item_json);
     goto done;
   }
   if (tool_state.called == 0 || event_state.starts != 1 ||

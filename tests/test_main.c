@@ -4342,6 +4342,7 @@ static const char *mock_response_for_request(const char *request) {
       "\"output_tokens\":2,\"total_tokens\":9}}}\n\n";
   static char stream_openrouter_metadata_body[1024];
   static char stream_tool_body[1024];
+  static char stream_malformed_delta_tool_body[1024];
   static char stream_source_tool_body[1024];
   static char stream_tool_reasoning_body[1024];
   static char stream_tool_reasoning_duplicate_body[1400];
@@ -4490,6 +4491,11 @@ static const char *mock_response_for_request(const char *request) {
         return stream_openrouter_metadata_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
+          strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL) {
+        return stream_tool_done_body;
+      }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_1\"") != NULL &&
           strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
           strstr(request, "stream tool call turn") != NULL &&
@@ -4533,6 +4539,26 @@ static const char *mock_response_for_request(const char *request) {
                  "\"output_tokens\":1,\"total_tokens\":10}}}\n\n");
         }
         return stream_tool_body;
+      }
+      if (strstr(request, "stream malformed delta tool turn") != NULL) {
+        if (stream_malformed_delta_tool_body[0] == '\0') {
+          strcpy(stream_malformed_delta_tool_body,
+                 "data: {\"type\":\"response.function_call_arguments.delta\","
+                 "\"item_id\":\"fc_stream_malformed\",\"output_index\":0,");
+          strcat(stream_malformed_delta_tool_body,
+                 "\"delta\":\"not-json\"}\n\n");
+          strcat(stream_malformed_delta_tool_body,
+                 "data: {\"type\":\"response.output_item.done\","
+                 "\"output_index\":0,\"item\":{\"id\":\"fc_stream_malformed\","
+                 "\"type\":\"function_call\",\"call_id\":\"call_stream_malformed\","
+                 "\"name\":\"weather\",\"arguments\":"
+                 "\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}}\n\n");
+          strcat(stream_malformed_delta_tool_body,
+                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+                 "\"resp_stream_malformed_tool_1\",\"usage\":{\"input_tokens\":9,"
+                 "\"output_tokens\":1,\"total_tokens\":10}}}\n\n");
+        }
+        return stream_malformed_delta_tool_body;
       }
       if (strstr(request, "stream output item turn") != NULL) {
         return stream_output_item_body;
@@ -8936,8 +8962,8 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   stream_sinks.function_call_arguments_done = test_stream_tool_done;
   stream_sinks.function_call_context = &tool_stream;
   expect_int(state, "stream_auto_tool_add",
-             cai_session_add_user_text(session, "stream tool call turn",
-                                       &error),
+             cai_session_add_user_text(
+                 session, "stream malformed delta tool turn", &error),
              CAI_OK);
   expect_int(state, "stream_auto_tool_run",
              cai_session_stream_auto(session, &run_options, &stream_sinks,
@@ -8951,8 +8977,9 @@ static void test_session_stream_auto_tool_run(test_state *state) {
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_auto_tool_usage_total", usage.total_tokens, 22L);
   expect_int(state, "stream_auto_tool_delta_count", tool_stream.delta_count,
-             2L);
+             1L);
   expect_int(state, "stream_auto_tool_done_count", tool_stream.done_count, 1L);
+  expect_str(state, "stream_auto_tool_delta", tool_stream.delta, "not-json");
   expect_str(state, "stream_auto_tool_arguments", tool_stream.arguments,
              "{\"city\":\"Gothenburg\"}");
   expect_int(state, "stream_auto_tool_event_starts", event_state.starts, 1L);
