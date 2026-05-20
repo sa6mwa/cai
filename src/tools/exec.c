@@ -231,6 +231,7 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   const char *root;
   const char *workdir;
   const char *shell;
+  size_t root_len;
   int rc;
 
   if (out == NULL) {
@@ -301,8 +302,10 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   ctx->output_max_bytes = config != NULL && config->output_max_bytes != 0U
                               ? config->output_max_bytes
                               : CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES;
-  if (strncmp(ctx->default_workdir, ctx->root_path, strlen(ctx->root_path)) !=
-      0) {
+  root_len = strlen(ctx->root_path);
+  if (strncmp(ctx->default_workdir, ctx->root_path, root_len) != 0 ||
+      (ctx->default_workdir[root_len] != '\0' &&
+       ctx->default_workdir[root_len] != '/')) {
     cai_exec_context_cleanup(ctx);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec default_workdir must be under root_path");
@@ -380,6 +383,26 @@ static int cai_exec_resolve_workdir(const cai_exec_context *ctx,
   }
   *out = resolved;
   return CAI_OK;
+}
+
+static int cai_exec_shell_allowed(const cai_exec_context *ctx,
+                                  const char *shell_path) {
+  if (shell_path == NULL || shell_path[0] == '\0') {
+    return 1;
+  }
+  if (strcmp(shell_path, ctx->shell_path) == 0) {
+    return 1;
+  }
+  if (strcmp(shell_path, "/bin/sh") == 0 && access(shell_path, X_OK) == 0) {
+    return 1;
+  }
+  if (strcmp(shell_path, "/bin/bash") == 0 && access(shell_path, X_OK) == 0) {
+    return 1;
+  }
+  if (strcmp(shell_path, "/usr/bin/bash") == 0 && access(shell_path, X_OK) == 0) {
+    return 1;
+  }
+  return 0;
 }
 
 static int cai_exec_append_spool(lonejson_spooled *spool, const char *data,
@@ -478,40 +501,108 @@ static int cai_exec_set_cloexec(int fd) {
   return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
+static void cai_exec_bwrap_arg(const char **argv, size_t *i, size_t cap,
+                               const char *arg) {
+  if (*i + 1U < cap) {
+    argv[*i] = arg;
+    (*i)++;
+  }
+}
+
+static void cai_exec_bwrap_bind_if_exists(const char **argv, size_t *i,
+                                          size_t cap, const char *flag,
+                                          const char *path) {
+  if (path != NULL && access(path, F_OK) == 0) {
+    cai_exec_bwrap_arg(argv, i, cap, flag);
+    cai_exec_bwrap_arg(argv, i, cap, path);
+    cai_exec_bwrap_arg(argv, i, cap, path);
+  }
+}
+
+static void cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
+                                       size_t cap, const char *path,
+                                       char dirs[][PATH_MAX],
+                                       size_t *dir_count, size_t dir_cap) {
+  char current[PATH_MAX];
+  const char *cursor;
+  const char *slash;
+  size_t len;
+
+  if (path == NULL || path[0] != '/') {
+    return;
+  }
+  cursor = path + 1;
+  while (*cursor != '\0') {
+    slash = strchr(cursor, '/');
+    if (slash == NULL) {
+      break;
+    }
+    len = (size_t)(slash - path);
+    if (len == 0U || len >= sizeof(current)) {
+      break;
+    }
+    memcpy(current, path, len);
+    current[len] = '\0';
+    if (strcmp(current, "/") != 0 && *dir_count < dir_cap) {
+      strcpy(dirs[*dir_count], current);
+      cai_exec_bwrap_arg(argv, i, cap, "--dir");
+      cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]);
+      (*dir_count)++;
+    }
+    cursor = slash + 1;
+  }
+}
+
 static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
                                      const char *workdir,
                                      const char *shell_path,
                                      const char *cmd, const char *bwrap_path,
-                                     const char **argv, size_t argv_cap) {
+                                     const char **argv, size_t argv_cap,
+                                     char dirs[][PATH_MAX],
+                                     size_t *dir_count, size_t dir_cap) {
   size_t i;
 
-  if (argv_cap < 24U) {
+  if (argv_cap < 48U) {
     return -1;
   }
   i = 0U;
-  argv[i++] = bwrap_path;
-  argv[i++] = "--die-with-parent";
-  argv[i++] = "--unshare-pid";
+  *dir_count = 0U;
+  cai_exec_bwrap_arg(argv, &i, argv_cap, bwrap_path);
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--die-with-parent");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-pid");
   if (!ctx->allow_network) {
-    argv[i++] = "--unshare-net";
+    cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-net");
   }
-  argv[i++] = "--ro-bind";
-  argv[i++] = "/";
-  argv[i++] = "/";
-  argv[i++] = "--dev";
-  argv[i++] = "/dev";
-  argv[i++] = "--proc";
-  argv[i++] = "/proc";
-  argv[i++] = "--bind";
-  argv[i++] = ctx->root_path;
-  argv[i++] = ctx->root_path;
-  argv[i++] = "--chdir";
-  argv[i++] = workdir;
-  argv[i++] = "--";
-  argv[i++] = shell_path;
-  argv[i++] = "-c";
-  argv[i++] = cmd;
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--dev");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/dev");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--proc");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "/proc");
+  cai_exec_bwrap_parent_dirs(argv, &i, argv_cap, ctx->root_path, dirs,
+                             dir_count, dir_cap);
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--bind");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
+  cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
+  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/usr");
+  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/bin");
+  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib");
+  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib64");
+  if (access("/etc/ld.so.cache", F_OK) == 0) {
+    cai_exec_bwrap_arg(argv, &i, argv_cap, "--dir");
+    cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc");
+    cai_exec_bwrap_arg(argv, &i, argv_cap, "--ro-bind");
+    cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc/ld.so.cache");
+    cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc/ld.so.cache");
+  }
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--chdir");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, workdir);
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "--");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, shell_path);
+  cai_exec_bwrap_arg(argv, &i, argv_cap, "-c");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, cmd);
   argv[i] = NULL;
+  if (i + 1U >= argv_cap) {
+    return -1;
+  }
   return 0;
 }
 
@@ -519,7 +610,9 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
                                 const cai_exec_args *args,
                                 const char *workdir, const char *bwrap_path,
                                 int use_sandbox) {
-  const char *argv[32];
+  const char *argv[96];
+  char dirs[32][PATH_MAX];
+  size_t dir_count;
   const char *shell_path;
 
   shell_path = args->shell != NULL && args->shell[0] != '\0' ? args->shell
@@ -530,7 +623,9 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
   if (use_sandbox) {
     if (cai_exec_build_bwrap_argv(ctx, workdir, shell_path, args->cmd,
                                   bwrap_path, argv,
-                                  sizeof(argv) / sizeof(argv[0])) != 0) {
+                                  sizeof(argv) / sizeof(argv[0]), dirs,
+                                  &dir_count,
+                                  sizeof(dirs) / sizeof(dirs[0])) != 0) {
       _exit(127);
     }
     execv(bwrap_path, (char *const *)(void *)argv);
@@ -850,10 +945,9 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec command must not be empty");
   }
-  if (args->shell != NULL && args->shell[0] != '\0' &&
-      strcmp(args->shell, ctx->shell_path) != 0) {
+  if (!cai_exec_shell_allowed(ctx, args->shell)) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "exec shell override is disabled by config");
+                         "exec shell must be /bin/sh or bash");
   }
   workdir = NULL;
   rc = cai_exec_resolve_workdir(ctx, args->workdir, &workdir, error);

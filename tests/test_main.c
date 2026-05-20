@@ -7218,6 +7218,22 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  if (access("/bin/bash", X_OK) == 0 &&
+      run_exec_tool_case(state, "exec_bash_shell", &config,
+                         "{\"cmd\":\"printf ${BASH_VERSION:+bash-ok}\","
+                         "\"shell\":\"/bin/bash\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_bash_shell_output", writer.buffer, "bash-ok");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_exec_tool_case(state, "exec_reject_unknown_shell", &config,
+                     "{\"cmd\":\"printf nope\",\"shell\":\"/tmp/fake-sh\"}",
+                     CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   if (run_exec_tool_case(state, "exec_workdir_relative", &config,
                          "{\"cmd\":\"pwd\",\"workdir\":\"sub\"}", CAI_OK,
                          &writer, &error) == CAI_OK) {
@@ -7230,6 +7246,22 @@ static void test_exec_tool(test_state *state) {
   run_exec_tool_case(state, "exec_reject_escape", &config,
                      "{\"cmd\":\"pwd\",\"workdir\":\"/tmp\"}",
                      CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_exec_tool_case(state, "exec_reject_host_file", &config,
+                         "{\"cmd\":\"cat /etc/passwd\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    if (strstr(writer.buffer, "root:x:") != NULL) {
+      test_fail(state, "exec_reject_host_file_contents",
+                "sandbox exposed host /etc/passwd");
+    }
+    if (strstr(writer.buffer, "\"exit_code\":0") != NULL) {
+      test_fail(state, "exec_reject_host_file_exit",
+                "sandbox allowed reading host /etc/passwd");
+    }
+    expect_valid_json(state, "exec_reject_host_file_json", writer.buffer);
+  }
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
