@@ -13,12 +13,19 @@ CAI_SMHI_LOCATION ?= Gothenburg
 CAI_SEARXNG_QUERY ?= OpenAI Responses API
 CAI_MCP_EXAMPLE_PORT ?= 18766
 CAI_EXEC_TOOL_DIR ?=
+CAI_READ_TOOL_DIR ?=
 
 ifneq ($(strip $(CAI_EXEC_TOOL_DIR)),)
 EXEC_TOOL_ARGS := --exec-tool-dir "$(CAI_EXEC_TOOL_DIR)"
 else
 EXEC_TOOL_ARGS :=
 endif
+ifneq ($(strip $(CAI_READ_TOOL_DIR)),)
+READ_TOOL_ARGS := --read-tool-dir "$(CAI_READ_TOOL_DIR)"
+else
+READ_TOOL_ARGS :=
+endif
+TERMINAL_TOOL_ARGS := $(EXEC_TOOL_ARGS) $(READ_TOOL_ARGS)
 
 define run_c_example
 	cd "$(ROOT)" && \
@@ -45,10 +52,10 @@ help:
 		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
 		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
-		'  make run-terminal-chat' \
+		'  make run-terminal-chat [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-mike-mind' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat' \
+		'  make run-lua-terminal-chat [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
 		'' \
@@ -89,7 +96,7 @@ run-searxng-search:
 	$(call run_c_example,cai_example_searxng_search,"$(CAI_SEARXNG_QUERY)")
 
 run-terminal-chat:
-	$(call run_c_example,cai_example_terminal_chat,$(EXEC_TOOL_ARGS))
+	$(call run_c_example,cai_example_terminal_chat,$(TERMINAL_TOOL_ARGS))
 
 run-mike-mind:
 	$(call run_c_example,cai_example_mike_mind,)
@@ -98,7 +105,7 @@ run-lua-basic:
 	$(call run_lua_example,examples/lua-basic/main.lua,)
 
 run-lua-terminal-chat:
-	$(call run_lua_example,examples/lua-terminal-chat/main.lua,$(EXEC_TOOL_ARGS))
+	$(call run_lua_example,examples/lua-terminal-chat/main.lua,$(TERMINAL_TOOL_ARGS))
 
 run-lua-conversation:
 	$(call run_lua_example,examples/lua-conversation/main.lua,)

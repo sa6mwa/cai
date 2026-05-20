@@ -1,6 +1,7 @@
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -2481,6 +2482,25 @@ static void cai_lua_exec_config(lua_State *L, int index,
       cai_lua_opt_string_field(L, index, "output_spool_dir", NULL);
 }
 
+static void cai_lua_read_config(lua_State *L, int index,
+                                cai_read_tool_config *config) {
+  memset(config, 0, sizeof(*config));
+  if (!lua_istable(L, index)) {
+    return;
+  }
+  config->name = cai_lua_opt_string_field(L, index, "name", NULL);
+  config->description = cai_lua_opt_string_field(L, index, "description", NULL);
+  config->root_path = cai_lua_opt_string_field(L, index, "root_path", NULL);
+  config->default_workdir =
+      cai_lua_opt_string_field(L, index, "default_workdir", NULL);
+  config->content_memory_limit =
+      cai_lua_opt_size_field(L, index, "content_memory_limit", 0u);
+  config->content_max_bytes =
+      cai_lua_opt_size_field(L, index, "content_max_bytes", 0u);
+  config->content_spool_dir =
+      cai_lua_opt_string_field(L, index, "content_spool_dir", NULL);
+}
+
 static int cai_lua_agent_register_revgeo(lua_State *L) {
   cai_lua_agent *self;
   cai_revgeo_tool_config config;
@@ -2526,6 +2546,18 @@ static int cai_lua_agent_register_exec(lua_State *L) {
   cai_lua_exec_config(L, 2, &config);
   cai_error_init(&error);
   rc = cai_agent_register_exec_tool(self->ptr, &config, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_register_read(lua_State *L) {
+  cai_lua_agent *self;
+  cai_read_tool_config config;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_lua_read_config(L, 2, &config);
+  cai_error_init(&error);
+  rc = cai_agent_register_read_tool(self->ptr, &config, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -3614,6 +3646,18 @@ static int cai_lua_registry_register_exec(lua_State *L) {
   cai_lua_exec_config(L, 2, &config);
   cai_error_init(&error);
   rc = cai_tool_registry_register_exec_tool(self->ptr, &config, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_registry_register_read(lua_State *L) {
+  cai_lua_registry *self;
+  cai_read_tool_config config;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_registry(L, 1);
+  cai_lua_read_config(L, 2, &config);
+  cai_error_init(&error);
+  rc = cai_tool_registry_register_read_tool(self->ptr, &config, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5179,6 +5223,7 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"add_simple_hosted_tool", cai_lua_agent_add_simple_hosted_tool},
     {"add_hosted_mcp_tool", cai_lua_agent_add_hosted_mcp_tool},
     {"register_exec_tool", cai_lua_agent_register_exec},
+    {"register_read_tool", cai_lua_agent_register_read},
     {"register_revgeo_tool", cai_lua_agent_register_revgeo},
     {"register_searxng_tool", cai_lua_agent_register_searxng},
     {"register_todo_tool", cai_lua_agent_register_todo},
@@ -5255,6 +5300,7 @@ static const luaL_Reg cai_lua_registry_methods[] = {
     {"register_raw_tool", cai_lua_registry_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_registry_register_raw_spooled_tool},
     {"register_exec_tool", cai_lua_registry_register_exec},
+    {"register_read_tool", cai_lua_registry_register_read},
     {"register_revgeo_tool", cai_lua_registry_register_revgeo},
     {"register_searxng_tool", cai_lua_registry_register_searxng},
     {"register_todo_tool", cai_lua_registry_register_todo},

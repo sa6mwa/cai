@@ -1,5 +1,6 @@
 #include <cai/cai.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -2075,6 +2076,181 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_read_tool_llm_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_read_tool_config read_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  integration_exec_tool_event_state event_state;
+  integration_write_state writer;
+  char dir_template[] = "/tmp/cai-read-llm-e2e-XXXXXX";
+  char file_path[PATH_MAX];
+  char outside_path[PATH_MAX];
+  char symlink_path[PATH_MAX];
+  FILE *fp;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&read_config, 0, sizeof(read_config));
+  memset(&event_state, 0, sizeof(event_state));
+  memset(&writer, 0, sizeof(writer));
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  fp = NULL;
+  rc = CAI_OK;
+
+  if (mkdtemp(dir_template) == NULL) {
+    fprintf(stderr, "mkdtemp failed for read integration root\n");
+    return 1;
+  }
+  snprintf(file_path, sizeof(file_path), "%s/notes.txt", dir_template);
+  fp = fopen(file_path, "wb");
+  if (fp == NULL) {
+    fprintf(stderr, "failed to create read integration fixture\n");
+    rmdir(dir_template);
+    return 1;
+  }
+  fputs("alpha secret\nbeta visible\ngamma visible\n", fp);
+  fclose(fp);
+  fp = NULL;
+  snprintf(outside_path, sizeof(outside_path),
+           "/tmp/cai-read-llm-outside-%ld.txt", (long)getpid());
+  fp = fopen(outside_path, "wb");
+  if (fp != NULL) {
+    fputs("outside secret\n", fp);
+    fclose(fp);
+    fp = NULL;
+  }
+  snprintf(symlink_path, sizeof(symlink_path), "%s/outside-link",
+           dir_template);
+  if (symlink(outside_path, symlink_path) != 0) {
+    fprintf(stderr, "failed to create read integration symlink fixture\n");
+  }
+
+  read_config.root_path = dir_template;
+  read_config.default_workdir = dir_template;
+  read_config.content_memory_limit = 16U;
+  read_config.content_max_bytes = 65536U;
+
+  agent_config.model = integration_model();
+  fprintf(stderr, "[integration-read-tool] model=%s root=%s\n",
+          agent_config.model, dir_template);
+  agent_config.developer_instructions =
+      "Strict read_file test. For each READ_TEST_N, call read_file once with "
+      "the requested arguments. Then answer exactly in the requested format. "
+      "Replace each placeholder with yes or no. Do not copy angle brackets. "
+      "Do not add bullets or explanations.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 192;
+  run_options.max_tool_rounds = 3;
+  run_options.tool_event = integration_exec_tool_event;
+  run_options.tool_event_context = &event_state;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_read_tool(agent, &read_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "READ_TEST_1: read notes.txt with start_line=2 and end_line=3. Then "
+        "answer exactly: READ_TOOL_OK saw_beta=<yes/no> saw_alpha=<yes/no>",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    stream_sinks.output_text = sink;
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("read tool llm regression first turn", rc, &error);
+    goto done;
+  }
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
+      strstr(event_state.output.buffer, "beta visible") == NULL ||
+      strstr(event_state.output.buffer, "gamma visible") == NULL ||
+      strstr(event_state.output.buffer, "alpha secret") != NULL ||
+      strstr(writer.buffer, "READ_TOOL_OK") == NULL ||
+      (strstr(writer.buffer, "saw_beta=yes") == NULL &&
+       strstr(writer.buffer, "saw_beta=<yes>") == NULL) ||
+      (strstr(writer.buffer, "saw_alpha=no") == NULL &&
+       strstr(writer.buffer, "saw_alpha=<no>") == NULL)) {
+    fprintf(stderr,
+            "read tool first turn failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs,
+            event_state.output.buffer, writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  rc = cai_session_add_user_text(
+      session,
+      "READ_TEST_2: read /etc/passwd. Then answer exactly: "
+      "READ_ESCAPE_DENIED tool_failed=<yes/no> saw_root=<yes/no>",
+      &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc == CAI_OK) {
+    fprintf(stderr,
+            "read tool escape turn unexpectedly succeeded; starts=%d "
+            "outputs=%d\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs, writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (error.message == NULL ||
+      strstr(error.message, "escapes configured root") == NULL) {
+    print_error("read tool llm regression escape turn", rc, &error);
+    goto done;
+  }
+  rc = CAI_OK;
+
+done:
+  if (rc != CAI_OK) {
+    print_error("read tool llm regression", rc, &error);
+  }
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  unlink(symlink_path);
+  unlink(outside_path);
+  unlink(file_path);
+  rmdir(dir_template);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static double integration_spend_limit_usd(void) {
   const char *value;
   double parsed;
@@ -2514,6 +2690,7 @@ int main(void) {
   const char *revgeo_provider;
   const char *todo_workflow;
   const char *tool_security;
+  const char *read_tool;
 
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
   if (integration_flag_enabled(openrouter_dotenv)) {
@@ -2589,6 +2766,13 @@ int main(void) {
       return 1;
     }
     return run_exec_tool_llm_regression();
+  }
+  read_tool = getenv("CAI_INTEGRATION_READ_TOOL");
+  if (integration_flag_enabled(read_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
+    return run_read_tool_llm_regression();
   }
   searxng_tool = getenv("CAI_INTEGRATION_SEARXNG_TOOL");
   if (integration_flag_enabled(searxng_tool)) {

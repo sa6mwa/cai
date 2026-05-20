@@ -25,6 +25,7 @@ set(required_files
   "${prefix}/include/cai/mcp.h"
   "${prefix}/include/cai/models.h"
   "${prefix}/include/cai/tools/exec.h"
+  "${prefix}/include/cai/tools/read.h"
   "${prefix}/include/cai/tools/revgeo.h"
   "${prefix}/include/cai/tools/searxng.h"
   "${prefix}/include/cai/tools/todo.h"
@@ -213,6 +214,7 @@ endif()
 "#include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -222,6 +224,8 @@ int main(void) {
   cai_error error;
   cai_tool_registry *registry = 0;
   int (*register_exec)(cai_tool_registry *, const cai_exec_tool_config *,
+                       cai_error *);
+  int (*register_read)(cai_tool_registry *, const cai_read_tool_config *,
                        cai_error *);
   int (*register_revgeo)(cai_tool_registry *, const cai_revgeo_tool_config *,
                          cai_error *);
@@ -247,6 +251,7 @@ int main(void) {
   cai_mcp_session_state session_state;
   (void)sizeof(error);
   register_exec = cai_tool_registry_register_exec_tool;
+  register_read = cai_tool_registry_register_read_tool;
   register_revgeo = cai_tool_registry_register_revgeo_tool;
   register_searxng = cai_tool_registry_register_searxng_tool;
   register_todo = cai_tool_registry_register_todo_tool;
@@ -260,7 +265,7 @@ int main(void) {
   mcp_destroy = cai_mcp_handler_destroy;
   (void)sizeof(session_callbacks);
   (void)sizeof(session_state);
-  if (register_exec == 0 || register_revgeo == 0 ||
+  if (register_exec == 0 || register_read == 0 || register_revgeo == 0 ||
       register_searxng == 0 || register_todo == 0 ||
       register_raw_spooled == 0 || set_tool_choice_json == 0 ||
       set_max_tool_calls == 0 || count_input_tokens == 0 ||

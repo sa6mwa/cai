@@ -1,5 +1,6 @@
 #include <cai/cai.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/read.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
 
@@ -94,15 +95,18 @@ static const char *searxng_base_url(void) {
 
 static void print_help(const char *program) {
   fprintf(stderr,
-          "usage: %s [--exec-tool-dir <path>]\n\n"
-          "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n",
+          "usage: %s [--exec-tool-dir <path>] [--read-tool-dir <path>]\n\n"
+          "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
+          "  --read-tool-dir <path>  Register read_file rooted to <path>.\n",
           program != NULL ? program : "cai_example_terminal_chat");
 }
 
-static int parse_args(int argc, char **argv, const char **exec_tool_dir) {
+static int parse_args(int argc, char **argv, const char **exec_tool_dir,
+                      const char **read_tool_dir) {
   int i;
 
   *exec_tool_dir = NULL;
+  *read_tool_dir = NULL;
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--exec-tool-dir") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
@@ -110,6 +114,14 @@ static int parse_args(int argc, char **argv, const char **exec_tool_dir) {
         return 0;
       }
       *exec_tool_dir = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--read-tool-dir") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--read-tool-dir requires a path\n");
+        return 0;
+      }
+      *read_tool_dir = argv[++i];
       continue;
     }
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -176,6 +188,7 @@ int main(int argc, char **argv) {
   cai_client_config client_config;
   cai_run_options run_options;
   cai_exec_tool_config exec_config;
+  cai_read_tool_config read_config;
   cai_searxng_tool_config searxng_config;
   cai_todo_tool_config todo_config;
   cai_stream_sinks stream_sinks;
@@ -190,6 +203,7 @@ int main(int argc, char **argv) {
   double total_spent_usd;
   char *dotenv_api_key;
   const char *exec_tool_dir;
+  const char *read_tool_dir;
   int has_context_percent;
   char line[4096];
   int exit_code;
@@ -200,9 +214,10 @@ int main(int argc, char **argv) {
   cai_agent_config_init(&agent_config);
   cai_run_options_init(&run_options);
   memset(&exec_config, 0, sizeof(exec_config));
+  memset(&read_config, 0, sizeof(read_config));
   memset(&searxng_config, 0, sizeof(searxng_config));
   memset(&todo_config, 0, sizeof(todo_config));
-  rc = parse_args(argc, argv, &exec_tool_dir);
+  rc = parse_args(argc, argv, &exec_tool_dir, &read_tool_dir);
   if (rc < 0) {
     return 0;
   }
@@ -211,15 +226,15 @@ int main(int argc, char **argv) {
   }
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
-  if (exec_tool_dir != NULL) {
+  if (exec_tool_dir != NULL || read_tool_dir != NULL) {
     agent_config.developer_instructions =
-        "You are a concise terminal chat assistant. Answer plainly. Tools: "
-        "searxng_search for web search, todo_kanban for a local kanban board, "
-        "and exec_command for command execution rooted to the configured "
-        "sandbox directory. Cite search result URLs. todo_kanban has a "
-        "default board; omit board_id and board_name for ordinary use. Use "
-        "exec_command only when explicitly asked to inspect or run commands; "
-        "set workdir when a directory matters and do not assume network.";
+        "You are a concise terminal chat assistant. Tools: searxng_search for "
+        "web search, todo_kanban for a local kanban board, read_file for "
+        "sandboxed file reads, and optionally exec_command for sandboxed "
+        "commands. Cite search URLs. todo_kanban has a default board; omit "
+        "board_id and board_name for ordinary use. Prefer read_file for file "
+        "contents. Use exec_command only when explicitly asked; set workdir "
+        "when a directory matters and do not assume network.";
   } else {
     agent_config.developer_instructions =
         "You are a concise terminal chat assistant. Answer plainly. You have "
@@ -252,6 +267,12 @@ int main(int argc, char **argv) {
     exec_config.output_max_bytes = 1024U * 1024U;
     exec_config.allow_pty = 1;
   }
+  if (read_tool_dir != NULL) {
+    read_config.root_path = read_tool_dir;
+    read_config.default_workdir = read_tool_dir;
+    read_config.content_memory_limit = 128U * 1024U;
+    read_config.content_max_bytes = 1024U * 1024U;
+  }
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -268,6 +289,13 @@ int main(int argc, char **argv) {
             "to that path\n");
   } else {
     fprintf(stderr, "exec_command enabled with root: %s\n", exec_tool_dir);
+  }
+  if (read_tool_dir == NULL) {
+    fprintf(stderr,
+            "hint: pass --read-tool-dir <path> to enable read_file rooted "
+            "to that path\n");
+  } else {
+    fprintf(stderr, "read_file enabled with root: %s\n", read_tool_dir);
   }
 
   rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
@@ -299,6 +327,13 @@ int main(int argc, char **argv) {
     rc = cai_agent_register_exec_tool(agent, &exec_config, &error);
     if (rc != CAI_OK) {
       exit_code = print_error("cai_agent_register_exec_tool", rc, &error);
+      goto done;
+    }
+  }
+  if (read_tool_dir != NULL) {
+    rc = cai_agent_register_read_tool(agent, &read_config, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_agent_register_read_tool", rc, &error);
       goto done;
     }
   }

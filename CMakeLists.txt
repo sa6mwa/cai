@@ -437,6 +437,7 @@ set(CAI_SOURCES
   src/cai_stream.c
   src/cai_tool.c
   src/tools/exec.c
+  src/tools/read.c
   src/tools/revgeo.c
   src/tools/searxng.c
   src/tools/todo.c)
@@ -715,6 +716,13 @@ if(CAI_BUILD_TESTS)
         "CAI_INTEGRATION_EXEC_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_exec_tool PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_read_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_READ_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_read_tool PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME cai_integration_openrouter_basic

@@ -1,6 +1,7 @@
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -7164,6 +7165,176 @@ static int run_exec_tool_case(test_state *state, const char *name,
   return rc;
 }
 
+static int run_read_tool_case(test_state *state, const char *name,
+                              const cai_read_tool_config *config,
+                              const char *arguments, int expected_rc,
+                              write_state *writer, cai_error *error) {
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  registry = NULL;
+  sink = NULL;
+  writer->buffer[0] = '\0';
+  writer->length = 0U;
+  writer->closed = 0;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = writer;
+  rc = cai_tool_registry_new(&registry, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_read_tool(registry, config, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_READ_DEFAULT_TOOL_NAME, arguments,
+                               sink, error);
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  expect_int(state, name, rc, expected_rc);
+  return rc;
+}
+
+static void test_read_tool(test_state *state) {
+  char dir_template[] = "/tmp/cai-read-test-XXXXXX";
+  char sub_dir[PATH_MAX];
+  char file_path[PATH_MAX];
+  char outside_path[PATH_MAX];
+  char symlink_path[PATH_MAX];
+  cai_read_tool_config config;
+  write_state writer;
+  cai_error error;
+  cai_tool_registry *registry;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "read_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  snprintf(sub_dir, sizeof(sub_dir), "%s/sub", dir_template);
+  if (mkdir(sub_dir, 0700) != 0) {
+    test_fail(state, "read_mkdir", "mkdir failed");
+    rmdir(dir_template);
+    return;
+  }
+  snprintf(file_path, sizeof(file_path), "%s/sub/alpha.txt", dir_template);
+  write_file_or_die(file_path, "one\ntwo\nthree\nfour\n");
+  snprintf(outside_path, sizeof(outside_path),
+           "/tmp/cai-read-outside-%ld.txt", (long)getpid());
+  write_file_or_die(outside_path, "outside\n");
+  snprintf(symlink_path, sizeof(symlink_path), "%s/sub/outside-link",
+           dir_template);
+  if (symlink(outside_path, symlink_path) != 0) {
+    test_fail(state, "read_symlink_fixture", "symlink failed");
+  }
+
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = sub_dir;
+  config.content_memory_limit = 8U;
+  config.content_max_bytes = 64U;
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_success", &config,
+                         "{\"path\":\"alpha.txt\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    expect_substr(state, "read_success_content", writer.buffer,
+                  "\"content\":\"one\\ntwo\\nthree\\nfour\\n\"");
+    expect_substr(state, "read_success_path", writer.buffer,
+                  "\"path\":\"alpha.txt\"");
+    expect_substr(state, "read_success_truncated", writer.buffer,
+                  "\"truncated\":false");
+    expect_valid_json(state, "read_success_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_line_range", &config,
+                         "{\"path\":\"alpha.txt\",\"start_line\":2,"
+                         "\"end_line\":3}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_line_range_content", writer.buffer,
+                  "\"content\":\"two\\nthree\\n\"");
+    expect_substr(state, "read_line_range_start", writer.buffer,
+                  "\"start_line\":2");
+    expect_substr(state, "read_line_range_end", writer.buffer,
+                  "\"end_line\":3");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_max_bytes", &config,
+                         "{\"path\":\"alpha.txt\",\"max_bytes\":5}", CAI_OK,
+                         &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_max_bytes_content", writer.buffer,
+                  "\"content\":\"one\\nt\"");
+    expect_substr(state, "read_max_bytes_truncated", writer.buffer,
+                  "\"truncated\":true");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_start_zero", &config,
+                     "{\"path\":\"alpha.txt\",\"start_line\":0}",
+                     CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_bad_range", &config,
+                     "{\"path\":\"alpha.txt\",\"start_line\":3,"
+                     "\"end_line\":2}",
+                     CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_relative_escape", &config,
+                     "{\"path\":\"../../etc/passwd\"}", CAI_ERR_INVALID,
+                     &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_absolute_escape", &config,
+                     "{\"path\":\"/etc/passwd\"}", CAI_ERR_INVALID, &writer,
+                     &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_symlink_escape", &config,
+                     "{\"path\":\"outside-link\"}", CAI_ERR_INVALID, &writer,
+                     &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_directory", &config,
+                     "{\"path\":\".\"}", CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  registry = NULL;
+  expect_int(state, "read_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "read_registry_register",
+             cai_tool_registry_register_read_tool(registry, &config, &error),
+             CAI_OK);
+  if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"path\"") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"start_line\"") ==
+          NULL) {
+    test_fail(state, "read_schema", "schema missing read fields");
+  }
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+
+  unlink(symlink_path);
+  unlink(outside_path);
+  unlink(file_path);
+  rmdir(sub_dir);
+  rmdir(dir_template);
+}
+
 static void test_exec_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-exec-test-XXXXXX";
   char child_dir[PATH_MAX];
@@ -11668,6 +11839,7 @@ int main(void) {
   test_todo_callback_store(&state);
   test_searxng_registry_tool(&state);
   test_exec_tool(&state);
+  test_read_tool(&state);
   test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);

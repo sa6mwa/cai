@@ -457,6 +457,39 @@ local tty_output = table.concat(chunks)
 assert(tty_output:match("in%-notty"), "exec PTY mode must not expose stdin as tty")
 assert(tty_output:match("read%-eof"), "exec PTY stdin must be closed")
 
+local read_root = "/tmp/cai-lua-read-test"
+os.execute("rm -rf " .. read_root)
+assert(os.execute("mkdir -p " .. read_root .. "/sub"))
+local read_file = assert(io.open(read_root .. "/sub/alpha.txt", "w"))
+read_file:write("one\ntwo\nthree\n")
+read_file:close()
+assert_ok(registry:register_read_tool({
+  root_path = read_root,
+  default_workdir = read_root .. "/sub",
+  content_memory_limit = 8,
+  content_max_bytes = 64,
+}))
+chunks = {}
+assert_ok(registry:run("read_file", '{"path":"alpha.txt","start_line":2,"end_line":2}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local read_json = table.concat(chunks)
+assert(read_json:match('"content":"two\\n"'), "read_file must return selected line content")
+assert(read_json:match('"truncated":false'), "read_file must report non-truncated reads")
+chunks = {}
+assert_ok(registry:run("read_file", '{"path":"alpha.txt","max_bytes":4}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match('"truncated":true'), "read_file must report max byte truncation")
+assert_not_ok(registry:run("read_file", '{"path":"/etc/passwd"}', function()
+  return true
+end), "read_file must reject absolute escapes")
+assert_not_ok(registry:run("read_file", '{"path":"../missing/../../etc/passwd"}', function()
+  return true
+end), "read_file must reject relative escapes")
+
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
 assert_ok(registry:register_todo_tool({

@@ -156,11 +156,13 @@ registers the persisted `todo_kanban` tool preset. The Lua binding also exposes
 spooled large-value methods such as `add_user_text_spooled()` and
 `register_raw_spooled_tool()` for lonejson-backed payloads. Command execution is
 not enabled by default. Pass `--exec-tool-dir <path>` to register
-`exec_command` rooted to that path.
+`exec_command` rooted to that path. File reading is also opt-in; pass
+`--read-tool-dir <path>` to register `read_file` rooted to that path.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 ```
 
 Optional local todo isolation:
@@ -205,11 +207,14 @@ local kanban boards when asked to remember, plan, list, move, limit, or archive
 work. Tool calls are printed with `[tool]` input and output lines so activity
 is visible while a turn is running. Exit with Ctrl-D at an empty prompt,
 `/quit`, or `/exit`. Command execution is not enabled by default. Pass
-`--exec-tool-dir <path>` to register `exec_command` rooted to that path.
+`--exec-tool-dir <path>` to register `exec_command` rooted to that path. File
+reading is also opt-in; pass `--read-tool-dir <path>` to register `read_file`
+rooted to that path.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-terminal-chat
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
+OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 ```
 
 Optional local todo isolation:

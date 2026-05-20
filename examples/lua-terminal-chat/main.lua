@@ -59,6 +59,7 @@ local searxng_base_url = os.getenv("CAI_SEARXNG_BASE_URL") or "http://127.0.0.1:
 local todo_store = os.getenv("CAI_LUA_TODO_STORE")
 local todo_lock = os.getenv("CAI_LUA_TODO_LOCK")
 local exec_tool_dir = nil
+local read_tool_dir = nil
 
 local i = 1
 while i <= #arg do
@@ -69,8 +70,15 @@ while i <= #arg do
     end
     exec_tool_dir = arg[i + 1]
     i = i + 2
+  elseif arg[i] == "--read-tool-dir" then
+    if not arg[i + 1] or arg[i + 1] == "" then
+      io.stderr:write("--read-tool-dir requires a path\n")
+      os.exit(2)
+    end
+    read_tool_dir = arg[i + 1]
+    i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--exec-tool-dir <path>]\n")
+    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--exec-tool-dir <path>] [--read-tool-dir <path>]\n")
     os.exit(0)
   else
     io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
@@ -83,6 +91,11 @@ if exec_tool_dir then
 else
   io.stderr:write("hint: pass --exec-tool-dir <path> to enable exec_command rooted to that path\n")
 end
+if read_tool_dir then
+  io.stderr:write("read_file enabled with root: " .. read_tool_dir .. "\n")
+else
+  io.stderr:write("hint: pass --read-tool-dir <path> to enable read_file rooted to that path\n")
+end
 
 local instructions =
   "You are a concise terminal chat assistant. Answer plainly. " ..
@@ -93,17 +106,20 @@ local instructions =
   "limit, or archive work. todo_kanban has a default board; omit " ..
   "board_id and board_name for ordinary single-board usage."
 
-if exec_tool_dir then
+if exec_tool_dir or read_tool_dir then
   instructions =
     "You are a concise terminal chat assistant. Answer plainly. " ..
     "You have access to searxng_search for web search, todo_kanban for " ..
-    "managing a local kanban board, and exec_command for Linux/Darwin " ..
-    "command execution rooted to the configured sandbox directory. Use " ..
+    "managing a local kanban board, read_file for reading files rooted to " ..
+    "the configured read directory, and optionally exec_command for " ..
+    "Linux/Darwin command execution rooted to the configured sandbox " ..
+    "directory. Use " ..
     "search for current, external, or source-backed information and cite " ..
     "URLs from tool results. Use todo_kanban when the user asks you to " ..
     "remember, plan, list, move, limit, or archive work. todo_kanban has " ..
     "a default board; omit board_id and board_name for ordinary " ..
-    "single-board usage. Use exec_command only when the user explicitly " ..
+    "single-board usage. Prefer read_file over exec_command when the user " ..
+    "asks to inspect file contents. Use exec_command only when the user explicitly " ..
     "asks you to inspect or run commands, always set workdir when a " ..
     "specific directory matters, and do not assume network access."
 end
@@ -138,6 +154,15 @@ if exec_tool_dir then
     output_max_bytes = 1024 * 1024,
     allow_pty = true,
   }), nil, "agent:register_exec_tool")
+end
+
+if read_tool_dir then
+  ok(agent:register_read_tool({
+    root_path = read_tool_dir,
+    default_workdir = read_tool_dir,
+    content_memory_limit = 128 * 1024,
+    content_max_bytes = 1024 * 1024,
+  }), nil, "agent:register_read_tool")
 end
 
 local session = ok(agent:new_session(), nil, "agent:new_session")
