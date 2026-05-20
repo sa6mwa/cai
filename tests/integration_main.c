@@ -425,6 +425,7 @@ static int run_hosted_web_search_regression(void) {
   cai_response *response;
   cai_client *client;
   cai_error error;
+  cai_token_usage token_count;
   char *items_json;
   int rc;
 
@@ -451,11 +452,14 @@ static int run_hosted_web_search_regression(void) {
         params, CAI_REASONING_EFFORT_LOW, NULL, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_tool_choice(
-        params, CAI_TOOL_CHOICE_REQUIRED, &error);
+    rc = cai_response_create_params_set_tool_choice_json(
+        params, "{\"type\":\"web_search\"}", &error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_max_output_tokens(params, 512, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_max_tool_calls(params, 1, &error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_add_hosted_tool_json(
@@ -469,6 +473,15 @@ static int run_hosted_web_search_regression(void) {
         "Use web search and answer in one sentence: what is the latest "
         "OpenAI model family mentioned in OpenAI docs?",
         &error);
+  }
+  if (rc == CAI_OK) {
+    memset(&token_count, 0, sizeof(token_count));
+    rc = cai_client_count_response_input_tokens(client, params, &token_count,
+                                                &error);
+  }
+  if (rc == CAI_OK && token_count.input_tokens <= 0LL) {
+    fprintf(stderr, "hosted web search input token count was empty\n");
+    rc = CAI_ERR_PROTOCOL;
   }
   if (rc == CAI_OK) {
     rc = cai_client_create_response(client, params, &response, &error);

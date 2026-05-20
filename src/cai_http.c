@@ -29,6 +29,11 @@ typedef struct cai_api_error_doc {
   cai_api_error_body error;
 } cai_api_error_doc;
 
+typedef struct cai_input_token_count_doc {
+  char *object;
+  long long input_tokens;
+} cai_input_token_count_doc;
+
 typedef enum cai_http_response_mode {
   CAI_HTTP_RESPONSE_PARSE = 0,
   CAI_HTTP_RESPONSE_IGNORE = 1
@@ -44,6 +49,13 @@ LONEJSON_MAP_DEFINE(cai_api_error_body_map, cai_api_error_body,
 static const lonejson_field cai_api_error_fields[] = {LONEJSON_FIELD_OBJECT(
     cai_api_error_doc, error, "error", &cai_api_error_body_map)};
 LONEJSON_MAP_DEFINE(cai_api_error_map, cai_api_error_doc, cai_api_error_fields);
+
+static const lonejson_field cai_input_token_count_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_input_token_count_doc, object, "object"),
+    LONEJSON_FIELD_I64(cai_input_token_count_doc, input_tokens,
+                       "input_tokens")};
+LONEJSON_MAP_DEFINE(cai_input_token_count_map, cai_input_token_count_doc,
+                    cai_input_token_count_fields);
 
 static size_t cai_http_write(char *ptr, size_t size, size_t nmemb,
                              void *userdata) {
@@ -870,6 +882,69 @@ int cai_client_create_response(cai_client *client,
     cai_free_mem(NULL, body);
     cai_free_mem(NULL, request_id);
   }
+  return rc;
+}
+
+int cai_client_count_response_input_tokens(
+    cai_client *client, const cai_response_create_params *params,
+    cai_token_usage *out, cai_error *error) {
+  cai_response_create_params *count_params;
+  char *body;
+  char *request_id;
+  long http_status;
+  int rc;
+  cai_input_token_count_doc doc;
+  lonejson_error json_error;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "token usage output pointer is required");
+  }
+  memset(out, 0, sizeof(*out));
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  count_params = NULL;
+  body = NULL;
+  request_id = NULL;
+  rc = cai_response_create_params_clone(params, &count_params, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  /*
+   * /responses/input_tokens counts rendered input. The live endpoint accepts
+   * input-shaping fields such as tools and tool_choice, but rejects
+   * generation/execution controls that are valid for /responses.
+   */
+  count_params->max_output_tokens = 0;
+  count_params->max_tool_calls = 0;
+  rc = cai_http_response_params_request(client, "responses/input_tokens",
+                                        count_params, 0, &body, &http_status,
+                                        &request_id, error);
+  if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
+    rc = cai_set_openai_error(error, http_status, body, request_id);
+  }
+  if (rc == CAI_OK) {
+    memset(&doc, 0, sizeof(doc));
+    lonejson_error_init(&json_error);
+    if (lonejson_parse_buffer(&cai_input_token_count_map, &doc,
+                              body != NULL ? body : "",
+                              body != NULL ? strlen(body) : 0U, NULL,
+                              &json_error) !=
+        LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse input token count response",
+                                json_error.message);
+    } else {
+      out->input_tokens = doc.input_tokens;
+      out->total_tokens = doc.input_tokens;
+    }
+    lonejson_cleanup(&cai_input_token_count_map, &doc);
+  }
+  cai_free_mem(NULL, body);
+  cai_free_mem(NULL, request_id);
+  cai_response_create_params_destroy(count_params);
   return rc;
 }
 

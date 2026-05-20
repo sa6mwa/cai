@@ -3207,6 +3207,16 @@ static void test_response_json(test_state *state) {
              cai_response_create_params_set_tool_choice(
                  params, CAI_TOOL_CHOICE_REQUIRED, &error),
              CAI_OK);
+  expect_int(state, "params_set_tool_choice_json",
+             cai_response_create_params_set_tool_choice_json(
+                 params, "{\"type\":\"web_search\"}", &error),
+             CAI_OK);
+  expect_int(state, "params_set_bad_tool_choice_json",
+             cai_response_create_params_set_tool_choice_json(params, "[",
+                                                             &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_set_bad_tool_choice",
              cai_response_create_params_set_tool_choice(params, "sometimes",
                                                         &error),
@@ -3221,6 +3231,9 @@ static void test_response_json(test_state *state) {
       state, "params_set_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, 128, &error),
       CAI_OK);
+  expect_int(state, "params_set_max_tool_calls",
+             cai_response_create_params_set_max_tool_calls(params, 3, &error),
+             CAI_OK);
   expect_int(
       state, "params_set_reasoning",
       cai_response_create_params_set_reasoning(
@@ -3276,6 +3289,11 @@ static void test_response_json(test_state *state) {
       state, "params_set_bad_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, -1, &error),
       CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "params_set_bad_max_tool_calls",
+             cai_response_create_params_set_max_tool_calls(params, -1, &error),
+             CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(
@@ -3375,6 +3393,9 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"max_output_tokens\":128") == NULL) {
       test_fail(state, "params_serialize",
                 "max output tokens missing from JSON");
+    }
+    if (strstr(json, "\"max_tool_calls\":3") == NULL) {
+      test_fail(state, "params_serialize", "max tool calls missing from JSON");
     }
     if (strstr(json,
                "\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"}") ==
@@ -4343,6 +4364,8 @@ static const char *mock_response_for_request(const char *request) {
       "\"role\":\"user\"},{\"id\":\"msg_2\",\"type\":\"message\",\"role\":"
       "\"assistant\"}],\"first_id\":\"msg_1\",\"last_id\":\"msg_2\","
       "\"has_more\":true}";
+  static const char input_tokens_body[] =
+      "{\"object\":\"response.input_tokens\",\"input_tokens\":42}";
   static const char conversation_create_body[] =
       "{\"id\":\"conv_mock\",\"object\":\"conversation\",\"created_at\":1}";
   static const char conversation_get_body[] =
@@ -4639,6 +4662,15 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "compact first") != NULL &&
         strstr(request, "before compact") != NULL) {
       return compact_body;
+    }
+    return NULL;
+  }
+  if (strncmp(request, "POST /v1/responses/input_tokens HTTP/", 37U) == 0) {
+    if (strstr(request, "\"model\":\"gpt-5-nano\"") != NULL &&
+        strstr(request, "\"input\"") != NULL &&
+        strstr(request, "\"max_output_tokens\"") == NULL &&
+        strstr(request, "\"max_tool_calls\"") == NULL) {
+      return input_tokens_body;
     }
     return NULL;
   }
@@ -5472,6 +5504,7 @@ static void test_http_create_response(test_state *state) {
   cai_response_create_params *params;
   cai_response *response;
   cai_input_item_list *items;
+  cai_token_usage usage;
   cai_list_params list_params;
   cai_error error;
   pslog_logger fake_logger;
@@ -5489,7 +5522,7 @@ static void test_http_create_response(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 5);
+    mock_openai_child(pipe_fds[1], 6);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -5564,6 +5597,13 @@ static void test_http_create_response(test_state *state) {
   cai_response_destroy(response);
   expect_int(state, "http_delete",
              cai_client_delete_response(client, "resp_get", &error), CAI_OK);
+  memset(&usage, 0, sizeof(usage));
+  expect_int(state, "http_input_tokens",
+             cai_client_count_response_input_tokens(client, params, &usage,
+                                                    &error),
+             CAI_OK);
+  expect_int(state, "http_input_tokens_value", usage.input_tokens, 42L);
+  expect_int(state, "http_input_tokens_total", usage.total_tokens, 42L);
   cai_list_params_init(&list_params);
   list_params.after = "msg_0 x";
   list_params.limit = 2;
@@ -5588,8 +5628,8 @@ static void test_http_create_response(test_state *state) {
              cai_input_item_role(items, 1U), "assistant");
   cai_input_item_list_destroy(items);
   expect_int(state, "http_log_client_open_info_count", g_test_infof_count, 1L);
-  expect_int(state, "http_log_trace_count", g_test_tracef_count, 5L);
-  expect_int(state, "http_log_debug_count", g_test_debugf_count, 5L);
+  expect_int(state, "http_log_trace_count", g_test_tracef_count, 6L);
+  expect_int(state, "http_log_debug_count", g_test_debugf_count, 6L);
   expect_int(state, "http_log_warn_count", g_test_warnf_count, 0L);
   expect_int(state, "http_log_error_count", g_test_errorf_count, 0L);
   cai_response_create_params_destroy(params);

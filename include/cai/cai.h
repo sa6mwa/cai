@@ -91,6 +91,7 @@ typedef struct cai_agent_config {
   const char *developer_instructions;
   const char *prompt_cache_key;
   const char *tool_choice;
+  const char *tool_choice_json;
   const char *reasoning_effort;
   const char *reasoning_summary;
   const char *text_format_name;
@@ -98,6 +99,7 @@ typedef struct cai_agent_config {
   const char *text_format_schema_json;
   int text_format_strict;
   int max_output_tokens;
+  int max_tool_calls;
   int parallel_tool_calls;
   int session_continuity;
   int disable_auto_compaction;
@@ -721,9 +723,14 @@ int cai_response_create_params_set_prompt_json(
 int cai_response_create_params_set_tool_choice(
     cai_response_create_params *params, const char *tool_choice,
     cai_error *error);
+int cai_response_create_params_set_tool_choice_json(
+    cai_response_create_params *params, const char *tool_choice_json,
+    cai_error *error);
 int cai_response_create_params_set_max_output_tokens(
     cai_response_create_params *params, int max_output_tokens,
     cai_error *error);
+int cai_response_create_params_set_max_tool_calls(
+    cai_response_create_params *params, int max_tool_calls, cai_error *error);
 int cai_response_create_params_set_reasoning(cai_response_create_params *params,
                                              const char *effort,
                                              const char *summary,
@@ -798,6 +805,9 @@ int cai_response_create_params_add_function_call_output_file_data_spooled(
 int cai_client_create_response(cai_client *client,
                                const cai_response_create_params *params,
                                cai_response **out, cai_error *error);
+int cai_client_count_response_input_tokens(
+    cai_client *client, const cai_response_create_params *params,
+    cai_token_usage *out, cai_error *error);
 int cai_client_stream_response_text(cai_client *client,
                                     const cai_response_create_params *params,
                                     cai_sink *sink, cai_error *error);

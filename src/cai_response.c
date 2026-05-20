@@ -165,9 +165,11 @@ typedef struct cai_response_request_doc {
   lonejson_json_value metadata;
   lonejson_json_value include;
   lonejson_json_value prompt;
-  const char *tool_choice;
+  lonejson_json_value tool_choice;
   long long max_output_tokens;
   int has_max_output_tokens;
+  long long max_tool_calls;
+  int has_max_tool_calls;
   bool background;
   int has_background;
   bool store;
@@ -504,10 +506,12 @@ static const lonejson_field cai_response_request_fields[] = {
                                         "include"),
     LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_response_request_doc, prompt,
                                         "prompt"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_response_request_doc,
-                                          tool_choice, "tool_choice"),
+    LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_response_request_doc, tool_choice,
+                                        "tool_choice"),
     LONEJSON_FIELD_I64_PRESENT(cai_response_request_doc, max_output_tokens,
                                has_max_output_tokens, "max_output_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_response_request_doc, max_tool_calls,
+                               has_max_tool_calls, "max_tool_calls"),
     LONEJSON_FIELD_BOOL_PRESENT(cai_response_request_doc, background,
                                 has_background, "background"),
     LONEJSON_FIELD_BOOL_PRESENT(cai_response_request_doc, store, has_store,
@@ -1330,6 +1334,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->include_json = NULL;
   params->prompt_json = NULL;
   params->tool_choice = NULL;
+  params->tool_choice_json = NULL;
   params->reasoning_effort = NULL;
   params->reasoning_summary = NULL;
   params->text_format_type = NULL;
@@ -1339,6 +1344,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->text_verbosity = NULL;
   params->text_format_strict = 0;
   params->max_output_tokens = 0;
+  params->max_tool_calls = 0;
   params->parallel_tool_calls = -1;
   params->background = 0;
   params->has_background = 0;
@@ -1372,6 +1378,7 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->include_json);
   cai_free_mem(&params->allocator, params->prompt_json);
   cai_free_mem(&params->allocator, params->tool_choice);
+  cai_free_mem(&params->allocator, params->tool_choice_json);
   cai_free_mem(&params->allocator, params->reasoning_effort);
   cai_free_mem(&params->allocator, params->reasoning_summary);
   cai_free_mem(&params->allocator, params->text_format_type);
@@ -1599,8 +1606,37 @@ int cai_response_create_params_set_tool_choice(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "tool choice must be auto, none, or required");
   }
+  if (params->tool_choice_json != NULL) {
+    cai_free_mem(&params->allocator, params->tool_choice_json);
+    params->tool_choice_json = NULL;
+  }
   return cai_replace_string(&params->allocator, &params->tool_choice,
                             tool_choice, error);
+}
+
+int cai_response_create_params_set_tool_choice_json(
+    cai_response_create_params *params, const char *tool_choice_json,
+    cai_error *error) {
+  int rc;
+
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (tool_choice_json != NULL) {
+    rc = cai_response_validate_json_value(
+        tool_choice_json, "tool choice must be valid JSON", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  rc = cai_replace_string(&params->allocator, &params->tool_choice_json,
+                          tool_choice_json, error);
+  if (rc == CAI_OK && params->tool_choice_json != NULL) {
+    cai_free_mem(&params->allocator, params->tool_choice);
+    params->tool_choice = NULL;
+  }
+  return rc;
 }
 
 int cai_response_create_params_set_max_output_tokens(
@@ -1615,6 +1651,20 @@ int cai_response_create_params_set_max_output_tokens(
                          "max output tokens cannot be negative");
   }
   params->max_output_tokens = max_output_tokens;
+  return CAI_OK;
+}
+
+int cai_response_create_params_set_max_tool_calls(
+    cai_response_create_params *params, int max_tool_calls, cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (max_tool_calls < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max tool calls cannot be negative");
+  }
+  params->max_tool_calls = max_tool_calls;
   return CAI_OK;
 }
 
@@ -2617,8 +2667,13 @@ int cai_response_create_params_clone(const cai_response_create_params *params,
                                                     error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_tool_choice(clone, params->tool_choice,
-                                                    error);
+    if (params->tool_choice_json != NULL) {
+      rc = cai_response_create_params_set_tool_choice_json(
+          clone, params->tool_choice_json, error);
+    } else {
+      rc = cai_response_create_params_set_tool_choice(
+          clone, params->tool_choice, error);
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_reasoning(
@@ -2642,6 +2697,7 @@ int cai_response_create_params_clone(const cai_response_create_params *params,
   }
   if (rc == CAI_OK) {
     clone->max_output_tokens = params->max_output_tokens;
+    clone->max_tool_calls = params->max_tool_calls;
     clone->parallel_tool_calls = params->parallel_tool_calls;
     clone->compact_threshold_tokens = params->compact_threshold_tokens;
     clone->background = params->background;
@@ -3592,6 +3648,7 @@ static void cai_response_request_state_init(cai_response_request_state *state) {
   lonejson_json_value_init(&state->doc.metadata);
   lonejson_json_value_init(&state->doc.include);
   lonejson_json_value_init(&state->doc.prompt);
+  lonejson_json_value_init(&state->doc.tool_choice);
   lonejson_json_value_init(&state->doc.input);
   lonejson_json_value_init(&state->doc.tools);
 }
@@ -3602,6 +3659,7 @@ cai_response_request_state_cleanup(cai_response_request_state *state) {
   lonejson_json_value_cleanup(&state->doc.metadata);
   lonejson_json_value_cleanup(&state->doc.include);
   lonejson_json_value_cleanup(&state->doc.prompt);
+  lonejson_json_value_cleanup(&state->doc.tool_choice);
   lonejson_json_value_cleanup(&state->doc.input);
   if (state->has_input_json) {
     lonejson_spooled_cleanup(&state->input_json);
@@ -3676,10 +3734,50 @@ static int cai_response_request_state_prepare(
                                   json_error.message);
     }
   }
-  state->doc.tool_choice = params->tool_choice;
+  if (params->tool_choice_json != NULL) {
+    lonejson_error_init(&json_error);
+    if (lonejson_json_value_set_buffer(&state->doc.tool_choice,
+                                       params->tool_choice_json,
+                                       strlen(params->tool_choice_json),
+                                       &json_error) != LONEJSON_STATUS_OK) {
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "tool choice must be valid JSON",
+                                  json_error.message);
+    }
+  } else if (params->tool_choice != NULL) {
+    cai_buffer_builder choice_builder;
+
+    choice_builder.data = NULL;
+    choice_builder.length = 0U;
+    choice_builder.capacity = 0U;
+    choice_builder.sink = NULL;
+    choice_builder.sink_user = NULL;
+    choice_builder.sink_error = NULL;
+    if (cai_buffer_append_json_string(&choice_builder, params->tool_choice,
+                                      error) != CAI_OK) {
+      cai_free_mem(NULL, choice_builder.data);
+      return error != NULL && error->message != NULL ? error->code
+                                                     : CAI_ERR_TRANSPORT;
+    }
+    lonejson_error_init(&json_error);
+    if (lonejson_json_value_set_buffer(&state->doc.tool_choice,
+                                       choice_builder.data,
+                                       choice_builder.length,
+                                       &json_error) != LONEJSON_STATUS_OK) {
+      cai_free_mem(NULL, choice_builder.data);
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "tool choice must be valid JSON",
+                                  json_error.message);
+    }
+    cai_free_mem(NULL, choice_builder.data);
+  }
   if (params->max_output_tokens > 0) {
     state->doc.max_output_tokens = params->max_output_tokens;
     state->doc.has_max_output_tokens = 1;
+  }
+  if (params->max_tool_calls > 0) {
+    state->doc.max_tool_calls = params->max_tool_calls;
+    state->doc.has_max_tool_calls = 1;
   }
   if (params->has_background) {
     state->doc.background = params->background ? true : false;

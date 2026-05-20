@@ -87,7 +87,12 @@ shape, but may still change before the initial tag.
   request controls used by modern Responses workflows: background mode, store,
   service tier, truncation, metadata, include, prompt-template JSON, text
   verbosity, reasoning, structured text format, server-side compaction,
-  local function tools, and raw hosted tool objects.
+  local function tools, raw hosted tool objects, raw JSON `tool_choice`, and
+  `max_tool_calls`. `cai_client_count_response_input_tokens` wraps
+  `/responses/input_tokens` and sends a counting-safe request clone, because
+  the live endpoint accepts input-shaping fields such as tools and
+  `tool_choice` but rejects generation/execution limits such as
+  `max_output_tokens` and `max_tool_calls`.
 - `lonejson` is the JSON layer and is linked as an external library, not
   compiled into cai. That keeps cai compatible with host applications such as
   Vectis that already provide their own lonejson instance.
@@ -753,10 +758,13 @@ the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
 
 `CAI_INTEGRATION_HOSTED_WEB_SEARCH=1` runs a real OpenAI-hosted `web_search`
 regression. It uses the generic hosted-tool JSON path, requires a hosted tool
-call, and fails unless the response output items include `web_search_call`.
+call, validates structured raw JSON `tool_choice`, verifies
+`max_tool_calls`, checks `/responses/input_tokens`, and fails unless the
+response output items include `web_search_call`.
 `CAI_LUA_HOSTED_WEB_SEARCH_E2E=1` runs the same hosted-tool path from Lua using
 low-level `response_params` and fails unless the Lua response wrapper exposes a
-`web_search_call` output item and token usage from the real API response.
+`web_search_call` output item, `/responses/input_tokens` returns a positive
+count, and token usage is present in the real API response.
 
 `CAI_INTEGRATION_REVGEO_PROVIDER=1` runs the reverse-geocoding preset directly
 against the default provider and asserts known Gothenburg coordinates resolve

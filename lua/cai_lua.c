@@ -43,6 +43,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_SPOOL_READER "cai.spooled_reader"
 
 int luaopen_cai(lua_State *L);
+static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
 
 typedef struct cai_lua_tool_ref cai_lua_tool_ref;
 
@@ -1102,12 +1103,16 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
       L, index, "prompt_cache_key", config->prompt_cache_key);
   config->tool_choice =
       cai_lua_opt_string_field(L, index, "tool_choice", config->tool_choice);
+  config->tool_choice_json = cai_lua_opt_string_field(
+      L, index, "tool_choice_json", config->tool_choice_json);
   config->reasoning_effort = cai_lua_opt_string_field(
       L, index, "reasoning_effort", config->reasoning_effort);
   config->reasoning_summary = cai_lua_opt_string_field(
       L, index, "reasoning_summary", config->reasoning_summary);
   config->max_output_tokens = cai_lua_opt_int_field(
       L, index, "max_output_tokens", config->max_output_tokens);
+  config->max_tool_calls = cai_lua_opt_int_field(
+      L, index, "max_tool_calls", config->max_tool_calls);
   config->parallel_tool_calls = cai_lua_opt_int_field(
       L, index, "parallel_tool_calls", config->parallel_tool_calls);
   config->session_continuity = cai_lua_opt_int_field(
@@ -1321,6 +1326,27 @@ static int cai_lua_client_create_response(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_response(L, response);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_count_response_input_tokens(lua_State *L) {
+  cai_lua_client *self;
+  cai_lua_params *params;
+  cai_token_usage usage;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_client(L, 1);
+  params = cai_lua_check_params(L, 2);
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  rc = cai_client_count_response_input_tokens(self->ptr, params->ptr, &usage,
+                                              &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_usage(L, &usage);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -4221,6 +4247,17 @@ static int cai_lua_params_set_tool_choice(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_params_set_tool_choice_json(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_tool_choice_json(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_params_set_max_output_tokens(lua_State *L) {
   cai_lua_params *self;
   cai_error error;
@@ -4228,6 +4265,17 @@ static int cai_lua_params_set_max_output_tokens(lua_State *L) {
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
   rc = cai_response_create_params_set_max_output_tokens(
+      self->ptr, (int)luaL_checkinteger(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_max_tool_calls(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_max_tool_calls(
       self->ptr, (int)luaL_checkinteger(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -4741,6 +4789,7 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
     {"create_response", cai_lua_client_create_response},
+    {"count_response_input_tokens", cai_lua_client_count_response_input_tokens},
     {"stream_response_text", cai_lua_client_stream_response_text},
     {"retrieve_response", cai_lua_client_retrieve_response},
     {"cancel_response", cai_lua_client_cancel_response},
@@ -4897,7 +4946,9 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"set_include_json", cai_lua_params_set_include_json},
     {"set_prompt_json", cai_lua_params_set_prompt_json},
     {"set_tool_choice", cai_lua_params_set_tool_choice},
+    {"set_tool_choice_json", cai_lua_params_set_tool_choice_json},
     {"set_max_output_tokens", cai_lua_params_set_max_output_tokens},
+    {"set_max_tool_calls", cai_lua_params_set_max_tool_calls},
     {"set_parallel_tool_calls", cai_lua_params_set_parallel_tool_calls},
     {"set_compact_threshold", cai_lua_params_set_compact_threshold},
     {"set_reasoning", cai_lua_params_set_reasoning},

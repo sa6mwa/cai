@@ -57,10 +57,11 @@ local params = assert_ok(cai.response_params(), nil, "cai.response_params")
 assert_ok(params:set_model(model), nil, "params:set_model")
 assert_ok(params:set_reasoning(cai.REASONING_EFFORT_LOW), nil,
   "params:set_reasoning")
-assert_ok(params:set_tool_choice(cai.TOOL_CHOICE_REQUIRED), nil,
-  "params:set_tool_choice")
+assert_ok(params:set_tool_choice_json('{"type":"web_search"}'), nil,
+  "params:set_tool_choice_json")
 assert_ok(params:set_max_output_tokens(512), nil,
   "params:set_max_output_tokens")
+assert_ok(params:set_max_tool_calls(1), nil, "params:set_max_tool_calls")
 assert_ok(params:add_hosted_tool_json(
   '{"type":"web_search","search_context_size":"low"}'
 ), nil, "params:add_hosted_tool_json")
@@ -69,6 +70,12 @@ assert_ok(params:add_text(
   "Use web search and answer in one sentence: what is the latest OpenAI " ..
     "model family mentioned in OpenAI docs?"
 ), nil, "params:add_text")
+
+local token_count = assert_ok(client:count_response_input_tokens(params), nil,
+  "client:count_response_input_tokens")
+if (token_count.input_tokens or 0) <= 0 then
+  fail("hosted web search input token count was empty")
+end
 
 local response = assert_ok(client:create_response(params), nil,
   "client:create_response")

@@ -29,7 +29,8 @@ Implemented:
 - Low-level non-WebSocket Responses request controls for background mode,
   store, service tier, truncation, metadata, include, prompt-template JSON,
   text verbosity, structured text output, reasoning, server-side compaction,
-  and raw OpenAI-hosted tool objects.
+  raw JSON `tool_choice`, `max_tool_calls`, `/responses/input_tokens`, and raw
+  OpenAI-hosted tool objects.
 - Agent facade support for OpenAI-hosted tools through validated raw tool JSON
   and simple `{ "type": ... }` hosted-tool helpers. Remote MCP hosted tools
   also have a generic config helper for server identity, allowed tool names or
@@ -58,9 +59,9 @@ Implemented:
   sinks, streamed tool output callbacks, function-call argument stream
   callbacks, raw and raw-spooled Lua callback tools, lonejson-style spooled
   large-value inputs, public tool presets, hosted-tool helpers, MCP handler
-  exposure, low-level Responses and Conversations handles, model
-  constants/metadata, offline tests, Lua examples, and local/release LuaRock
-  build targets.
+  exposure, low-level Responses and Conversations handles, raw JSON
+  `tool_choice`, input-token counting, model constants/metadata, offline tests,
+  Lua examples, and local/release LuaRock build targets.
 - Release matrix packaging for Linux x86_64/aarch64/armhf with GNU and musl
   variants plus Darwin arm64 when osxcross is available.
 - Source archive packaging.
@@ -86,6 +87,10 @@ Recent prerelease gates run successfully:
 - Lua MCP todo/kanban facade e2e.
 - Lua OpenAI streamed-tool e2e.
 - Lua OpenAI streamed session-continuity e2e.
+- OpenAI hosted `web_search` e2e covering raw hosted-tool JSON, structured
+  `tool_choice`, `max_tool_calls`, and `/responses/input_tokens`.
+- Lua OpenAI hosted `web_search` e2e covering the same hosted-tool and
+  input-token-counting path.
 - Full `make release` gate, including release CTest, binary/source archive
   packaging, Lua rock artifacts, checksums, and archive verification.
 

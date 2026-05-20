@@ -36,6 +36,7 @@ typedef struct cai_agent_impl {
   char *developer_instructions;
   char *prompt_cache_key;
   char *tool_choice;
+  char *tool_choice_json;
   char *service_tier;
   char *truncation;
   char *reasoning_effort;
@@ -45,6 +46,7 @@ typedef struct cai_agent_impl {
   char *text_format_schema_json;
   int text_format_strict;
   int max_output_tokens;
+  int max_tool_calls;
   int parallel_tool_calls;
   int session_continuity;
   int auto_compact;
@@ -174,6 +176,7 @@ struct cai_response_create_params {
   char *include_json;
   char *prompt_json;
   char *tool_choice;
+  char *tool_choice_json;
   char *reasoning_effort;
   char *reasoning_summary;
   char *text_format_type;
@@ -183,6 +186,7 @@ struct cai_response_create_params {
   char *text_verbosity;
   int text_format_strict;
   int max_output_tokens;
+  int max_tool_calls;
   int parallel_tool_calls;
   int background;
   int has_background;
