@@ -332,6 +332,12 @@ for `mcp`, `file_search`, `code_interpreter`, `computer_use_preview`,
 `image_generation`, `tool_search`, and future hosted tools, because their
 schemas evolve faster than a C SDK should hard-code. cai validates the supplied
 tool JSON with lonejson and streams it into the request body as a JSON value.
+For remote MCP hosted tools, `cai_hosted_mcp_tool_config` is only a request
+helper for server identity and exposure policy. Omit `allowed_tools` to expose
+all remote tools from that MCP server, or provide `allowed_tool_names` /
+`allowed_tools_json` to expose only named tools. `require_approval_json`,
+`headers_json`, and the raw hosted-tool JSON path remain pass-through so cai
+does not mirror or freeze remote tool schemas.
 
 For large typed tool results, callbacks can put source-backed or spooled fields
 into their result struct instead of building a raw JSON string. Use
@@ -689,6 +695,7 @@ CAI_INTEGRATION_OPENROUTER_STREAM_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
@@ -742,6 +749,10 @@ limits.
 against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the
 explicit `wikipedia` engine. Start it with `make searxng-up` before running
 the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
+
+`CAI_INTEGRATION_HOSTED_WEB_SEARCH=1` runs a real OpenAI-hosted `web_search`
+regression. It uses the generic hosted-tool JSON path, requires a hosted tool
+call, and fails unless the response output items include `web_search_call`.
 
 `CAI_INTEGRATION_REVGEO_PROVIDER=1` runs the reverse-geocoding preset directly
 against the default provider and asserts known Gothenburg coordinates resolve

@@ -2141,6 +2141,232 @@ int cai_response_create_params_add_simple_hosted_tool(
   return rc;
 }
 
+void cai_hosted_mcp_tool_config_init(cai_hosted_mcp_tool_config *config) {
+  if (config != NULL) {
+    memset(config, 0, sizeof(*config));
+  }
+}
+
+static lonejson_status cai_response_write_json_member(
+    lonejson_writer *writer, const char *key, const char *json,
+    const char *message, lonejson_error *json_error, cai_error *error) {
+  int rc;
+
+  rc = cai_response_validate_json_value(json, message, error);
+  if (rc != CAI_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  if (lonejson_writer_key(writer, key, strlen(key), json_error) !=
+      LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return lonejson_writer_json_value_buffer(writer, json, strlen(json), NULL,
+                                           json_error);
+}
+
+static lonejson_status cai_response_write_string_member(
+    lonejson_writer *writer, const char *key, const char *value,
+    lonejson_error *json_error) {
+  if (lonejson_writer_key(writer, key, strlen(key), json_error) !=
+      LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return lonejson_writer_string(writer, value, strlen(value), json_error);
+}
+
+static lonejson_status cai_response_write_string_array_member(
+    lonejson_writer *writer, const char *key, const char *const *values,
+    size_t count, lonejson_error *json_error) {
+  lonejson_status status;
+  size_t i;
+
+  status = lonejson_writer_key(writer, key, strlen(key), json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_writer_begin_array(writer, json_error);
+  }
+  for (i = 0U; status == LONEJSON_STATUS_OK && i < count; i++) {
+    status =
+        lonejson_writer_string(writer, values[i], strlen(values[i]), json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_writer_end_array(writer, json_error);
+  }
+  return status;
+}
+
+int cai_response_create_params_add_hosted_mcp_tool(
+    cai_response_create_params *params,
+    const cai_hosted_mcp_tool_config *config, cai_error *error) {
+  cai_buffer_builder builder;
+  cai_response_buffer_sink_context sink_context;
+  lonejson_writer writer;
+  lonejson_error json_error;
+  lonejson_status status;
+  int writer_initialized;
+  int has_server_url;
+  int has_connector_id;
+  int is_object;
+  int is_array;
+  size_t i;
+  int rc;
+
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "params are required");
+  }
+  if (config == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "hosted MCP tool config is required");
+  }
+  if (config->server_label == NULL || config->server_label[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "hosted MCP server label is required");
+  }
+  has_server_url =
+      config->server_url != NULL && config->server_url[0] != '\0';
+  has_connector_id =
+      config->connector_id != NULL && config->connector_id[0] != '\0';
+  if (!has_server_url && !has_connector_id) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "hosted MCP server_url or connector_id is required");
+  }
+  if (has_server_url && has_connector_id) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "hosted MCP server_url and connector_id are mutually "
+                         "exclusive");
+  }
+  if (config->allowed_tools_json != NULL &&
+      config->allowed_tools_json[0] != '\0' &&
+      config->allowed_tool_name_count > 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "hosted MCP allowed_tools_json and "
+                         "allowed_tool_names are mutually exclusive");
+  }
+  if (config->allowed_tool_name_count > 0U &&
+      config->allowed_tool_names == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "hosted MCP allowed tool names are required");
+  }
+  for (i = 0U; i < config->allowed_tool_name_count; i++) {
+    if (config->allowed_tool_names[i] == NULL ||
+        config->allowed_tool_names[i][0] == '\0') {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "hosted MCP allowed tool name is required");
+    }
+  }
+  if (config->headers_json != NULL && config->headers_json[0] != '\0') {
+    is_object = 0;
+    rc = cai_response_json_root_kind(
+        config->headers_json, &is_object, NULL,
+        "hosted MCP headers must be a valid JSON object", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (!is_object) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "hosted MCP headers must be a JSON object");
+    }
+  }
+  if (config->allowed_tools_json != NULL &&
+      config->allowed_tools_json[0] != '\0') {
+    is_object = 0;
+    is_array = 0;
+    rc = cai_response_json_root_kind(
+        config->allowed_tools_json, &is_object, &is_array,
+        "hosted MCP allowed_tools must be a valid JSON array or object", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (!is_object && !is_array) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "hosted MCP allowed_tools must be a JSON array or "
+                           "object");
+    }
+  }
+
+  lonejson_error_init(&json_error);
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
+  sink_context.builder = &builder;
+  sink_context.error = error;
+  writer_initialized = 0;
+  status = lonejson_writer_init_sink(&writer, cai_response_buffer_sink,
+                                     &sink_context, NULL, &json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    writer_initialized = 1;
+    status = lonejson_writer_begin_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = cai_response_write_string_member(&writer, "type",
+                                              CAI_HOSTED_TOOL_MCP, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = cai_response_write_string_member(
+        &writer, "server_label", config->server_label, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK && has_server_url) {
+    status = cai_response_write_string_member(
+        &writer, "server_url", config->server_url, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK && has_connector_id) {
+    status = cai_response_write_string_member(
+        &writer, "connector_id", config->connector_id, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK && config->server_description != NULL &&
+      config->server_description[0] != '\0') {
+    status = cai_response_write_string_member(
+        &writer, "server_description", config->server_description, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK && config->headers_json != NULL &&
+      config->headers_json[0] != '\0') {
+    status = cai_response_write_json_member(
+        &writer, "headers", config->headers_json,
+        "hosted MCP headers must be valid JSON", &json_error, error);
+  }
+  if (status == LONEJSON_STATUS_OK && config->allowed_tool_name_count > 0U) {
+    status = cai_response_write_string_array_member(
+        &writer, "allowed_tools", config->allowed_tool_names,
+        config->allowed_tool_name_count, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK && config->allowed_tools_json != NULL &&
+      config->allowed_tools_json[0] != '\0') {
+    status = cai_response_write_json_member(
+        &writer, "allowed_tools", config->allowed_tools_json,
+        "hosted MCP allowed_tools must be valid JSON", &json_error, error);
+  }
+  if (status == LONEJSON_STATUS_OK && config->require_approval_json != NULL &&
+      config->require_approval_json[0] != '\0') {
+    status = cai_response_write_json_member(
+        &writer, "require_approval", config->require_approval_json,
+        "hosted MCP require_approval must be valid JSON", &json_error, error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_writer_end_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_writer_finish(&writer, &json_error);
+  }
+  if (writer_initialized) {
+    lonejson_writer_cleanup(&writer);
+  }
+  if (status != LONEJSON_STATUS_OK) {
+    cai_free_mem(NULL, builder.data);
+    if (error != NULL && error->message != NULL) {
+      return error->code;
+    }
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize hosted MCP tool",
+                                json_error.message);
+  }
+  rc = cai_response_create_params_add_hosted_tool_json(params, builder.data,
+                                                       error);
+  cai_free_mem(NULL, builder.data);
+  return rc;
+}
+
 static int cai_response_spooled_clone(const lonejson_spooled *src,
                                       lonejson_spooled *dst,
                                       cai_error *error) {

@@ -2257,6 +2257,76 @@ static int cai_lua_agent_add_simple_hosted_tool(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static void cai_lua_hosted_mcp_config(lua_State *L, int index,
+                                      cai_hosted_mcp_tool_config *config,
+                                      const char ***names_out) {
+  const char **names;
+  lua_Integer len;
+  lua_Integer i;
+  int abs_index;
+
+  cai_hosted_mcp_tool_config_init(config);
+  *names_out = NULL;
+  abs_index = lua_absindex(L, index);
+  luaL_checktype(L, abs_index, LUA_TTABLE);
+  config->server_label =
+      cai_lua_opt_string_field(L, abs_index, "server_label", NULL);
+  config->server_url =
+      cai_lua_opt_string_field(L, abs_index, "server_url", NULL);
+  config->connector_id =
+      cai_lua_opt_string_field(L, abs_index, "connector_id", NULL);
+  config->server_description =
+      cai_lua_opt_string_field(L, abs_index, "server_description", NULL);
+  config->headers_json =
+      cai_lua_opt_string_field(L, abs_index, "headers_json", NULL);
+  config->allowed_tools_json =
+      cai_lua_opt_string_field(L, abs_index, "allowed_tools_json", NULL);
+  config->require_approval_json =
+      cai_lua_opt_string_field(L, abs_index, "require_approval_json", NULL);
+
+  lua_getfield(L, abs_index, "allowed_tool_names");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TTABLE);
+    len = luaL_len(L, -1);
+    if (len < 0) {
+      lua_pop(L, 1);
+      luaL_error(L, "allowed_tool_names length is invalid");
+    }
+    if (len > 0) {
+      names = (const char **)calloc((size_t)len, sizeof(*names));
+      if (names == NULL) {
+        lua_pop(L, 1);
+        luaL_error(L, "out of memory");
+      }
+      for (i = 1; i <= len; i++) {
+        lua_rawgeti(L, -1, i);
+        names[i - 1] = luaL_checkstring(L, -1);
+        lua_pop(L, 1);
+      }
+      config->allowed_tool_names = names;
+      config->allowed_tool_name_count = (size_t)len;
+      *names_out = names;
+    }
+  }
+  lua_pop(L, 1);
+}
+
+static int cai_lua_agent_add_hosted_mcp_tool(lua_State *L) {
+  cai_lua_agent *self;
+  cai_hosted_mcp_tool_config config;
+  const char **names;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent(L, 1);
+  names = NULL;
+  cai_lua_hosted_mcp_config(L, 2, &config, &names);
+  cai_error_init(&error);
+  rc = cai_agent_add_hosted_mcp_tool(self->ptr, &config, &error);
+  free(names);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static void cai_lua_revgeo_config(lua_State *L, int index,
                                   cai_revgeo_tool_config *config) {
   memset(config, 0, sizeof(*config));
@@ -4437,6 +4507,23 @@ static int cai_lua_params_add_simple_hosted_tool(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_params_add_hosted_mcp_tool(lua_State *L) {
+  cai_lua_params *self;
+  cai_hosted_mcp_tool_config config;
+  const char **names;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_params(L, 1);
+  names = NULL;
+  cai_lua_hosted_mcp_config(L, 2, &config, &names);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_hosted_mcp_tool(self->ptr, &config,
+                                                      &error);
+  free(names);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_params_add_function_call_output(lua_State *L) {
   cai_lua_params *self;
   cai_error error;
@@ -4694,6 +4781,7 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"register_raw_spooled_tool", cai_lua_agent_register_raw_spooled_tool},
     {"add_hosted_tool_json", cai_lua_agent_add_hosted_tool_json},
     {"add_simple_hosted_tool", cai_lua_agent_add_simple_hosted_tool},
+    {"add_hosted_mcp_tool", cai_lua_agent_add_hosted_mcp_tool},
     {"register_revgeo_tool", cai_lua_agent_register_revgeo},
     {"register_searxng_tool", cai_lua_agent_register_searxng},
     {"register_todo_tool", cai_lua_agent_register_todo},
@@ -4826,6 +4914,7 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"add_function_tool", cai_lua_params_add_function_tool},
     {"add_hosted_tool_json", cai_lua_params_add_hosted_tool_json},
     {"add_simple_hosted_tool", cai_lua_params_add_simple_hosted_tool},
+    {"add_hosted_mcp_tool", cai_lua_params_add_hosted_mcp_tool},
     {"add_function_call_output", cai_lua_params_add_function_call_output},
     {"add_function_call_output_text",
      cai_lua_params_add_function_call_output_text},

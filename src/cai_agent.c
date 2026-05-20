@@ -594,6 +594,29 @@ int cai_agent_add_simple_hosted_tool(cai_agent *agent, const char *type,
   return rc;
 }
 
+int cai_agent_add_hosted_mcp_tool(cai_agent *agent,
+                                  const cai_hosted_mcp_tool_config *config,
+                                  cai_error *error) {
+  cai_response_create_params *params;
+  struct cai_function_tool *tools;
+  const char *tool_json;
+  int rc;
+
+  params = NULL;
+  rc = cai_response_create_params_new(&params, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_hosted_mcp_tool(params, config, error);
+  }
+  if (rc == CAI_OK) {
+    tools = (struct cai_function_tool *)params->tools.items;
+    tool_json = tools != NULL && params->tools.count == 1U ? tools[0].raw_json
+                                                           : NULL;
+    rc = cai_agent_add_hosted_tool_json(agent, tool_json, error);
+  }
+  cai_response_create_params_destroy(params);
+  return rc;
+}
+
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error) {
   cai_session *session;
@@ -3917,6 +3940,7 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_raw_spooled_tool = cai_agent_register_raw_spooled_tool;
   agent->add_hosted_tool_json = cai_agent_add_hosted_tool_json;
   agent->add_simple_hosted_tool = cai_agent_add_simple_hosted_tool;
+  agent->add_hosted_mcp_tool = cai_agent_add_hosted_mcp_tool;
   agent->new_session = cai_agent_new_session;
   agent->new_conversation_session = cai_agent_new_conversation_session;
   agent->new_session_for_conversation = cai_agent_new_session_for_conversation;

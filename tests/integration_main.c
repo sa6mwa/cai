@@ -418,6 +418,92 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_hosted_web_search_regression(void) {
+  const char *model;
+  cai_client_config client_config;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_client *client;
+  cai_error error;
+  char *items_json;
+  int rc;
+
+  model = integration_model();
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  client = NULL;
+  params = NULL;
+  response = NULL;
+  items_json = NULL;
+
+  fprintf(stderr, "[integration-hosted-web-search] model=%s\n", model);
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("client open", rc, &error);
+    goto done;
+  }
+  rc = cai_response_create_params_new(&params, &error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_model(params, model, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_reasoning(
+        params, CAI_REASONING_EFFORT_LOW, NULL, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_tool_choice(
+        params, CAI_TOOL_CHOICE_REQUIRED, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_max_output_tokens(params, 512, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_hosted_tool_json(
+        params,
+        "{\"type\":\"web_search\",\"search_context_size\":\"low\"}",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_text(
+        params, "user",
+        "Use web search and answer in one sentence: what is the latest "
+        "OpenAI model family mentioned in OpenAI docs?",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_create_response(client, params, &response, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("hosted web search regression", rc, &error);
+    goto done;
+  }
+  rc = cai_response_output_items_json(response, &items_json, &error);
+  if (rc != CAI_OK) {
+    print_error("hosted web search output items", rc, &error);
+    goto done;
+  }
+  if (items_json == NULL || strstr(items_json, "\"web_search_call\"") == NULL) {
+    fprintf(stderr, "hosted web search did not produce web_search_call:\n%s\n",
+            items_json != NULL ? items_json : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (cai_response_output_text(response) == NULL ||
+      cai_response_output_text(response)[0] == '\0') {
+    fprintf(stderr, "hosted web search response had no output text\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_string_destroy(items_json);
+  cai_response_destroy(response);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int todo_run(cai_tool_registry *registry, cai_sink *sink,
                     integration_write_state *writer, const char *name,
                     const char *args, int expected_rc, cai_error *error) {
@@ -2106,6 +2192,7 @@ int main(void) {
   const char *openrouter_stream_history;
   const char *openrouter_stream_tool;
   const char *openrouter_tool_security;
+  const char *hosted_web_search;
   const char *searxng_tool;
   const char *searxng_stream_tool;
   const char *state_restore;
@@ -2155,6 +2242,11 @@ int main(void) {
   if (openrouter != NULL && openrouter[0] != '\0' &&
       strcmp(openrouter, "0") != 0) {
     return run_openrouter_basic_response();
+  }
+  hosted_web_search = getenv("CAI_INTEGRATION_HOSTED_WEB_SEARCH");
+  if (hosted_web_search != NULL && hosted_web_search[0] != '\0' &&
+      strcmp(hosted_web_search, "0") != 0) {
+    return run_hosted_web_search_regression();
   }
   tool_security = getenv("CAI_INTEGRATION_TOOL_SECURITY");
   if (tool_security != NULL && tool_security[0] != '\0' &&

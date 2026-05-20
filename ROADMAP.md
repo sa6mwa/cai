@@ -31,7 +31,9 @@ Implemented:
   text verbosity, structured text output, reasoning, server-side compaction,
   and raw OpenAI-hosted tool objects.
 - Agent facade support for OpenAI-hosted tools through validated raw tool JSON
-  and simple `{ "type": ... }` hosted-tool helpers.
+  and simple `{ "type": ... }` hosted-tool helpers. Remote MCP hosted tools
+  also have a generic config helper for server identity, allowed tool names or
+  raw `allowed_tools` policy JSON, and raw approval/header JSON pass-through.
 - Preserved response output-item JSON with sink streaming helpers, so callers
   can handle hosted-tool, image, code, and future output item variants even when
   cai only types common metadata fields.

@@ -3098,9 +3098,11 @@ static void test_response_json(test_state *state) {
   cai_token_usage usage;
   parsed_output_doc parsed;
   write_state writer;
+  cai_hosted_mcp_tool_config mcp_config;
   char response_json[1024];
   char *json;
   size_t json_len;
+  static const char *mcp_allowed_names[] = {"roll", "status"};
   static const char structured_response_json[] =
       "{\"id\":\"resp_json\",\"status\":\"completed\",\"output\":[{\"type\":"
       "\"message\",\"role\":\"assistant\",\"content\":[{\"type\":"
@@ -3301,6 +3303,30 @@ static void test_response_json(test_state *state) {
                  "\"auto\",\"memory_limit\":\"4g\"}}",
                  &error),
              CAI_OK);
+  cai_hosted_mcp_tool_config_init(&mcp_config);
+  mcp_config.server_label = "dice";
+  mcp_config.server_url = "https://example.test/mcp";
+  mcp_config.server_description = "Dice tools";
+  mcp_config.allowed_tool_names = mcp_allowed_names;
+  mcp_config.allowed_tool_name_count =
+      sizeof(mcp_allowed_names) / sizeof(mcp_allowed_names[0]);
+  mcp_config.require_approval_json = "\"never\"";
+  expect_int(state, "params_add_hosted_mcp_tool",
+             cai_response_create_params_add_hosted_mcp_tool(params,
+                                                            &mcp_config,
+                                                            &error),
+             CAI_OK);
+  cai_hosted_mcp_tool_config_init(&mcp_config);
+  mcp_config.server_label = "bad";
+  mcp_config.server_url = "https://example.test/mcp";
+  mcp_config.allowed_tools_json = "[";
+  expect_int(state, "params_add_bad_hosted_mcp_tool",
+             cai_response_create_params_add_hosted_mcp_tool(params,
+                                                            &mcp_config,
+                                                            &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_add_bad_hosted_tool",
              cai_response_create_params_add_hosted_tool_json(params, "[]",
                                                              &error),
@@ -3376,7 +3402,11 @@ static void test_response_json(test_state *state) {
         strstr(json, "\"parameters\":{\"type\":\"object\"") == NULL ||
         strstr(json, "\"type\":\"web_search\"") == NULL ||
         strstr(json, "\"type\":\"code_interpreter\"") == NULL ||
-        strstr(json, "\"container\":{\"type\":\"auto\"") == NULL) {
+        strstr(json, "\"container\":{\"type\":\"auto\"") == NULL ||
+        strstr(json, "\"type\":\"mcp\"") == NULL ||
+        strstr(json, "\"server_label\":\"dice\"") == NULL ||
+        strstr(json, "\"allowed_tools\":[\"roll\",\"status\"]") == NULL ||
+        strstr(json, "\"require_approval\":\"never\"") == NULL) {
       test_fail(state, "params_serialize", "tools missing from JSON");
     }
     if (strstr(json, ":null") != NULL) {
@@ -5686,8 +5716,10 @@ static void test_agent_session(test_state *state) {
   cai_source *failing_source;
   read_state source_state;
   mcp_source_state failing_source_state;
+  cai_hosted_mcp_tool_config mcp_config;
   char file_path[] = "/tmp/cai-session-file-XXXXXX";
   int file_fd;
+  static const char *mcp_allowed_names[] = {"roll"};
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "agent_mock", "pipe failed");
@@ -5758,6 +5790,7 @@ static void test_agent_session(test_state *state) {
       agent->register_raw_spooled_tool == NULL ||
       agent->add_hosted_tool_json == NULL ||
       agent->add_simple_hosted_tool == NULL ||
+      agent->add_hosted_mcp_tool == NULL ||
       agent->add_user_text == NULL || agent->add_user_text_spooled == NULL ||
       agent->add_user_text_source == NULL ||
       agent->add_user_file_path == NULL ||
@@ -5771,6 +5804,14 @@ static void test_agent_session(test_state *state) {
              agent->add_simple_hosted_tool(agent, CAI_HOSTED_TOOL_WEB_SEARCH,
                                            &error),
              CAI_OK);
+  cai_hosted_mcp_tool_config_init(&mcp_config);
+  mcp_config.server_label = "dice";
+  mcp_config.server_url = "https://example.test/mcp";
+  mcp_config.allowed_tool_names = mcp_allowed_names;
+  mcp_config.allowed_tool_name_count =
+      sizeof(mcp_allowed_names) / sizeof(mcp_allowed_names[0]);
+  expect_int(state, "agent_add_hosted_mcp_tool",
+             agent->add_hosted_mcp_tool(agent, &mcp_config, &error), CAI_OK);
   expect_int(state, "agent_add_bad_hosted_tool",
              agent->add_hosted_tool_json(agent, "[]", &error),
              CAI_ERR_INVALID);

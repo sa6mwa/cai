@@ -133,6 +133,11 @@ local dummy_agent = assert_ok(dummy_client:new_agent({
   history_memory_limit = 128,
 }))
 assert_ok(dummy_agent:add_simple_hosted_tool(cai.HOSTED_TOOL_WEB_SEARCH))
+assert_ok(dummy_agent:add_hosted_mcp_tool({
+  server_label = "dice",
+  server_url = "https://example.test/mcp",
+  allowed_tool_names = { "roll" },
+}))
 assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
   "agent hosted tool JSON must be an object")
 local dummy_session = assert_ok(dummy_agent:new_session())
@@ -239,6 +244,18 @@ assert_ok(params:add_file_url("user", "https://example.com/file.txt"))
 assert_ok(params:add_function_tool("noop", "No-op test tool", '{"type":"object","properties":{},"additionalProperties":false}', true))
 assert_ok(params:add_simple_hosted_tool(cai.HOSTED_TOOL_WEB_SEARCH))
 assert_ok(params:add_hosted_tool_json('{"type":"code_interpreter","container":{"type":"auto"}}'))
+assert_ok(params:add_hosted_mcp_tool({
+  server_label = "dice",
+  server_url = "https://example.test/mcp",
+  server_description = "Lua dice tools",
+  allowed_tool_names = { "roll", "status" },
+  require_approval_json = '"never"',
+}))
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  allowed_tools_json = "[",
+}), "invalid Lua hosted MCP policy JSON must fail")
 assert_ok(params:add_function_call_output("call_test", '{"ok":true}'))
 assert_ok(params:add_function_call_output_text("call_text", "plain tool result"))
 assert_ok(params:add_function_call_output_image_url("call_image", "https://example.com/out.png", "low"))

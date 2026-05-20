@@ -147,6 +147,18 @@ typedef struct cai_agent_config {
 #define CAI_TOOL_CHOICE_NONE "none"
 #define CAI_TOOL_CHOICE_REQUIRED "required"
 
+typedef struct cai_hosted_mcp_tool_config {
+  const char *server_label;
+  const char *server_url;
+  const char *connector_id;
+  const char *server_description;
+  const char *headers_json;
+  const char *allowed_tools_json;
+  const char *const *allowed_tool_names;
+  size_t allowed_tool_name_count;
+  const char *require_approval_json;
+} cai_hosted_mcp_tool_config;
+
 #define CAI_TOOL_EVENT_START 1
 #define CAI_TOOL_EVENT_OUTPUT 2
 #define CAI_TOOL_EVENT_ERROR 3
@@ -302,6 +314,9 @@ struct cai_agent {
                               cai_error *error);
   int (*add_simple_hosted_tool)(cai_agent *agent, const char *type,
                                 cai_error *error);
+  int (*add_hosted_mcp_tool)(cai_agent *agent,
+                             const cai_hosted_mcp_tool_config *config,
+                             cai_error *error);
   int (*new_session)(cai_agent *agent, cai_session **out, cai_error *error);
   int (*new_conversation_session)(cai_agent *agent, cai_session **out,
                                   cai_error *error);
@@ -482,6 +497,9 @@ int cai_agent_add_hosted_tool_json(cai_agent *agent, const char *tool_json,
                                    cai_error *error);
 int cai_agent_add_simple_hosted_tool(cai_agent *agent, const char *type,
                                      cai_error *error);
+int cai_agent_add_hosted_mcp_tool(cai_agent *agent,
+                                  const cai_hosted_mcp_tool_config *config,
+                                  cai_error *error);
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
@@ -757,6 +775,10 @@ int cai_response_create_params_add_hosted_tool_json(
     cai_error *error);
 int cai_response_create_params_add_simple_hosted_tool(
     cai_response_create_params *params, const char *type, cai_error *error);
+void cai_hosted_mcp_tool_config_init(cai_hosted_mcp_tool_config *config);
+int cai_response_create_params_add_hosted_mcp_tool(
+    cai_response_create_params *params, const cai_hosted_mcp_tool_config *config,
+    cai_error *error);
 int cai_response_create_params_add_function_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error);
