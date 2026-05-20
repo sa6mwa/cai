@@ -335,6 +335,33 @@ local help_json = table.concat(chunks)
 assert(help_json:match("todo_kanban"))
 assert(help_json:match("operation"))
 
+chunks = {}
+assert_ok(registry:run(
+  "todo_kanban",
+  '{"operation":"list_boards","board_id":null,"board_name":null,"item_id":null,"title":null,"description":null,"status":null,"wip_limit":null}',
+  function(chunk)
+    chunks[#chunks + 1] = chunk
+    return true
+  end
+))
+local list_json = table.concat(chunks)
+assert(list_json:match('"ok":true'))
+assert(list_json:match("boards listed"))
+
+chunks = {}
+assert_ok(registry:run(
+  "todo_kanban",
+  '{"operation":"set_wip_limit","board_id":null,"board_name":null,"item_id":null,"title":null,"description":null,"status":null,"wip_limit":null}',
+  function(chunk)
+    chunks[#chunks + 1] = chunk
+    return true
+  end
+))
+local invalid_wip_json = table.concat(chunks)
+assert(invalid_wip_json:match('"ok":false'))
+assert(invalid_wip_json:match("invalid_request"))
+assert(invalid_wip_json:match("wip_limit is required"))
+
 local mcp = assert_ok(cai.mcp_handler({
   name = "cai-lua-test",
   version = "0.0.0",

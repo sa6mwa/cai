@@ -6709,12 +6709,77 @@ static void test_todo_tool(test_state *state) {
              "\"item_id\",\"title\",\"description\",\"status\","
              "\"wip_limit\"]") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
-             "\"board_id\":{\"anyOf\"") == NULL) {
+             "\"board_id\":{\"anyOf\"") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "\"wip_limit\":{\"anyOf\"") == NULL) {
     test_fail(state, "todo_schema_usage",
               "todo tool schema does not provide agent usage guidance");
   }
   expect_int(state, "todo_sink",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "todo_list_boards_strict_null_arguments",
+             cai_tool_registry_run(
+                 registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                 "{\"operation\":\"list_boards\","
+                 "\"board_id\":null,\"board_name\":null,\"item_id\":null,"
+                 "\"title\":null,\"description\":null,\"status\":null,"
+                 "\"wip_limit\":null}",
+                 sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "boards listed") == NULL) {
+    test_fail(state, "todo_list_boards_strict_null_output",
+              "strict-schema null optional arguments should list boards");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  {
+    static const char spooled_json[] =
+        "{\"operation\":\"list_boards\","
+        "\"board_id\":null,\"board_name\":null,\"item_id\":null,"
+        "\"title\":null,\"description\":null,\"status\":null,"
+        "\"wip_limit\":null}";
+    lonejson_spooled spooled_args;
+    lonejson_error json_error;
+
+    lonejson_spooled_init(&spooled_args, NULL);
+    lonejson_error_init(&json_error);
+    expect_int(state, "todo_spooled_null_arguments_append",
+               lonejson_spooled_append(&spooled_args, spooled_json,
+                                       strlen(spooled_json), &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "todo_spooled_list_boards_strict_null_arguments",
+               cai_tool_registry_run_spooled(
+                   registry, CAI_TODO_DEFAULT_TOOL_NAME, &spooled_args, sink,
+                   &error),
+               CAI_OK);
+    lonejson_spooled_cleanup(&spooled_args);
+    if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+        strstr(writer.buffer, "boards listed") == NULL) {
+      test_fail(state, "todo_spooled_list_boards_strict_null_output",
+                "spooled strict-schema null optional arguments should list "
+                "boards");
+    }
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+  }
+  expect_int(state, "todo_set_wip_limit_null_argument",
+             cai_tool_registry_run(
+                 registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                 "{\"operation\":\"set_wip_limit\","
+                 "\"board_id\":null,\"board_name\":null,\"item_id\":null,"
+                 "\"title\":null,\"description\":null,\"status\":null,"
+                 "\"wip_limit\":null}",
+                 sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"invalid_request\"") == NULL ||
+      strstr(writer.buffer, "wip_limit is required") == NULL) {
+    test_fail(state, "todo_set_wip_limit_null_output",
+              "null wip_limit should reach structured tool validation");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
   expect_int(state, "todo_help",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"help\"}", sink, &error),

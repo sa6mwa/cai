@@ -213,8 +213,8 @@ static const lonejson_field cai_todo_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_args, description,
                                           "description"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_args, status, "status"),
-    LONEJSON_FIELD_I64_PRESENT(cai_todo_args, wip_limit, has_wip_limit,
-                               "wip_limit")};
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_todo_args, wip_limit,
+                                        has_wip_limit, "wip_limit")};
 LONEJSON_MAP_DEFINE(cai_todo_args_map, cai_todo_args, cai_todo_arg_fields);
 
 static const lonejson_field cai_todo_result_item_fields[] = {
@@ -2330,13 +2330,13 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
         "{\"type\":\"string\",\"enum\":[\"todo\",\"in_process\"]}", 0, error);
   }
   if (rc == CAI_OK) {
-    rc = schema->describe(
+    rc = schema->raw_property(
         schema, "wip_limit",
         "Non-negative limit for the board's in_process lane. Required for "
         "set_wip_limit; optional for create_board. When reached, moving or "
         "adding more in_process work returns ok=false with "
         "code=wip_limit_exceeded.",
-        error);
+        "{\"type\":\"integer\"}", 0, error);
   }
   if (rc != CAI_OK) {
     cai_tool_schema_destroy(schema);
