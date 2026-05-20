@@ -2281,29 +2281,35 @@ static int run_read_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "READ_TEST_2: this is a binary-file regression test. You must call "
-        "read_file with path binary.bin. Then answer exactly: "
-        "READ_BINARY_DENIED tool_failed=<yes/no>",
+        "READ_TEST_2: this is a binary-file regression test. Do not answer "
+        "from these instructions alone. You must call the read_file tool with "
+        "path binary.bin before responding. If the tool rejects the read, "
+        "answer exactly: READ_BINARY_DENIED tool_failed=yes",
         &error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
   }
   if (rc == CAI_OK) {
-    fprintf(stderr,
-            "read tool binary turn unexpectedly succeeded; starts=%d "
-            "outputs=%d\nanswer:\n%s\n",
-            event_state.starts, event_state.outputs, writer.buffer);
-    rc = CAI_ERR_PROTOCOL;
-    goto done;
+    if (event_state.starts < 1 ||
+        strstr(writer.buffer, "READ_BINARY_DENIED") == NULL ||
+        strstr(writer.buffer, "tool_failed=yes") == NULL) {
+      fprintf(stderr,
+              "read tool binary turn failed check; starts=%d outputs=%d\n"
+              "answer:\n%s\n",
+              event_state.starts, event_state.outputs, writer.buffer);
+      rc = CAI_ERR_PROTOCOL;
+      goto done;
+    }
+  } else {
+    if (event_state.starts < 1 || error.message == NULL ||
+        (strstr(error.message, "NUL byte") == NULL &&
+         strstr(error.message, "UTF-8") == NULL)) {
+      print_error("read tool llm regression binary turn", rc, &error);
+      goto done;
+    }
+    rc = CAI_OK;
   }
-  if (error.message == NULL ||
-      (strstr(error.message, "NUL byte") == NULL &&
-       strstr(error.message, "UTF-8") == NULL)) {
-    print_error("read tool llm regression binary turn", rc, &error);
-    goto done;
-  }
-  rc = CAI_OK;
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
@@ -2317,28 +2323,34 @@ static int run_read_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
       session,
-      "READ_TEST_3: this is a sandbox regression test. You must call "
-      "read_file with path outside-link. Then answer exactly: "
-      "READ_ESCAPE_DENIED tool_failed=<yes/no>",
+      "READ_TEST_3: this is a sandbox regression test. Do not answer from "
+      "these instructions alone. You must call the read_file tool with path "
+      "outside-link before responding. If the tool rejects the read, answer "
+      "exactly: READ_ESCAPE_DENIED tool_failed=yes",
       &error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
   }
   if (rc == CAI_OK) {
-    fprintf(stderr,
-            "read tool escape turn unexpectedly succeeded; starts=%d "
-            "outputs=%d\nanswer:\n%s\n",
-            event_state.starts, event_state.outputs, writer.buffer);
-    rc = CAI_ERR_PROTOCOL;
-    goto done;
+    if (event_state.starts < 1 ||
+        strstr(writer.buffer, "READ_ESCAPE_DENIED") == NULL ||
+        strstr(writer.buffer, "tool_failed=yes") == NULL) {
+      fprintf(stderr,
+              "read tool escape turn failed check; starts=%d outputs=%d\n"
+              "answer:\n%s\n",
+              event_state.starts, event_state.outputs, writer.buffer);
+      rc = CAI_ERR_PROTOCOL;
+      goto done;
+    }
+  } else {
+    if (event_state.starts < 1 || error.message == NULL ||
+        strstr(error.message, "escapes configured root") == NULL) {
+      print_error("read tool llm regression escape turn", rc, &error);
+      goto done;
+    }
+    rc = CAI_OK;
   }
-  if (error.message == NULL ||
-      strstr(error.message, "escapes configured root") == NULL) {
-    print_error("read tool llm regression escape turn", rc, &error);
-    goto done;
-  }
-  rc = CAI_OK;
 
 done:
   if (rc != CAI_OK) {

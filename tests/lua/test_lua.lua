@@ -470,6 +470,9 @@ deep_file:close()
 local hidden_file = assert(io.open(read_root .. "/sub/.hidden", "w"))
 hidden_file:write("hidden\n")
 hidden_file:close()
+local utf8_file = assert(io.open(read_root .. "/sub/utf8.txt", "wb"))
+utf8_file:write("a", string.char(0xc3), string.char(0xa9), "\n")
+utf8_file:close()
 local binary_file = assert(io.open(read_root .. "/sub/binary.bin", "wb"))
 binary_file:write("text", string.char(0), "x")
 binary_file:close()
@@ -502,6 +505,14 @@ assert_ok(registry:run("read_file", '{"path":"alpha.txt","max_bytes":4}', functi
   return true
 end))
 assert(table.concat(chunks):match('"truncated":true'), "read_file must report max byte truncation")
+chunks = {}
+assert_ok(registry:run("read_file", '{"path":"utf8.txt","max_bytes":2}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local utf8_json = table.concat(chunks)
+assert(utf8_json:match('"content":"a"'), "read_file must not split UTF-8 characters")
+assert(utf8_json:match('"truncated":true'), "read_file must report UTF-8 boundary truncation")
 assert_not_ok(registry:run("read_file", '{"path":"/etc/passwd"}', function()
   return true
 end), "read_file must reject absolute escapes")

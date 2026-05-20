@@ -7257,6 +7257,7 @@ static void test_read_tool(test_state *state) {
   char file_path[PATH_MAX];
   char nested_path[PATH_MAX];
   char hidden_path[PATH_MAX];
+  char utf8_path[PATH_MAX];
   char binary_path[PATH_MAX];
   char invalid_utf8_path[PATH_MAX];
   char outside_path[PATH_MAX];
@@ -7264,6 +7265,7 @@ static void test_read_tool(test_state *state) {
   static const unsigned char binary_bytes[] = {'t', 'e', 'x', 't', 0U, 'x'};
   static const unsigned char invalid_utf8_bytes[] = {'b', 'a', 'd', 0xC3U,
                                                      0x28U};
+  static const unsigned char utf8_bytes[] = {'a', 0xC3U, 0xA9U, '\n'};
   cai_read_tool_config config;
   write_state writer;
   cai_error error;
@@ -7294,6 +7296,8 @@ static void test_read_tool(test_state *state) {
   write_file_or_die(nested_path, "deep\n");
   snprintf(hidden_path, sizeof(hidden_path), "%s/sub/.hidden", dir_template);
   write_file_or_die(hidden_path, "hidden\n");
+  snprintf(utf8_path, sizeof(utf8_path), "%s/sub/utf8.txt", dir_template);
+  write_bytes_or_die(utf8_path, utf8_bytes, sizeof(utf8_bytes));
   snprintf(binary_path, sizeof(binary_path), "%s/sub/binary.bin",
            dir_template);
   write_bytes_or_die(binary_path, binary_bytes, sizeof(binary_bytes));
@@ -7408,6 +7412,18 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  if (run_read_tool_case(state, "read_max_bytes_utf8_boundary", &config,
+                         "{\"path\":\"utf8.txt\",\"max_bytes\":2}", CAI_OK,
+                         &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_max_bytes_utf8_content", writer.buffer,
+                  "\"content\":\"a\"");
+    expect_substr(state, "read_max_bytes_utf8_truncated", writer.buffer,
+                  "\"truncated\":true");
+    expect_valid_json(state, "read_max_bytes_utf8_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   run_read_tool_case(state, "read_reject_start_zero", &config,
                      "{\"path\":\"alpha.txt\",\"start_line\":0}",
                      CAI_ERR_INVALID, &writer, &error);
@@ -7494,6 +7510,7 @@ static void test_read_tool(test_state *state) {
   unlink(outside_path);
   unlink(invalid_utf8_path);
   unlink(binary_path);
+  unlink(utf8_path);
   unlink(hidden_path);
   unlink(nested_path);
   unlink(file_path);

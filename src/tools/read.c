@@ -497,6 +497,79 @@ static int cai_read_validate_text_chunk(cai_read_text_validator *validator,
   return CAI_OK;
 }
 
+static size_t
+cai_read_text_complete_prefix(const cai_read_text_validator *validator,
+                              const char *data, size_t len) {
+  cai_read_text_validator probe;
+  size_t i;
+  size_t prefix;
+
+  probe = *validator;
+  prefix = 0U;
+  for (i = 0U; i < len; i++) {
+    unsigned char b;
+
+    b = (unsigned char)data[i];
+    if (b == 0U) {
+      break;
+    }
+    if (probe.expected == 0U) {
+      if (b < 0x80U) {
+        prefix = i + 1U;
+        continue;
+      }
+      if (b >= 0xC2U && b <= 0xDFU) {
+        probe.expected = 1U;
+        probe.codepoint = (unsigned int)(b & 0x1FU);
+        probe.min_codepoint = 0x80U;
+        continue;
+      }
+      if (b >= 0xE0U && b <= 0xEFU) {
+        probe.expected = 2U;
+        probe.codepoint = (unsigned int)(b & 0x0FU);
+        probe.min_codepoint = 0x800U;
+        continue;
+      }
+      if (b >= 0xF0U && b <= 0xF4U) {
+        probe.expected = 3U;
+        probe.codepoint = (unsigned int)(b & 0x07U);
+        probe.min_codepoint = 0x10000U;
+        continue;
+      }
+      break;
+    }
+    if ((b & 0xC0U) != 0x80U) {
+      break;
+    }
+    probe.codepoint = (probe.codepoint << 6U) | (unsigned int)(b & 0x3FU);
+    probe.expected--;
+    if (probe.expected == 0U) {
+      if (probe.codepoint < probe.min_codepoint ||
+          (probe.codepoint >= 0xD800U && probe.codepoint <= 0xDFFFU) ||
+          probe.codepoint > 0x10FFFFU) {
+        break;
+      }
+      probe.codepoint = 0U;
+      probe.min_codepoint = 0U;
+      prefix = i + 1U;
+    }
+  }
+  return prefix;
+}
+
+static int cai_read_append_text(lonejson_spooled *spool,
+                                cai_read_text_validator *validator,
+                                const char *data, size_t len,
+                                cai_error *error) {
+  int rc;
+
+  rc = cai_read_validate_text_chunk(validator, data, len, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_read_append(spool, data, len, error);
+}
+
 static int cai_list_array_grow(lonejson_object_array *array, size_t elem_size,
                                cai_error *error) {
   size_t new_capacity;
@@ -674,7 +747,8 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   long long current_line;
   long long last_line;
   long long written;
-  cai_read_text_validator validator;
+  cai_read_text_validator file_validator;
+  cai_read_text_validator output_validator;
   size_t nread;
   size_t i;
   size_t start;
@@ -727,9 +801,10 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   stop = 0;
   saw_any = 0;
   rc = CAI_OK;
-  cai_read_text_validator_init(&validator);
+  cai_read_text_validator_init(&file_validator);
+  cai_read_text_validator_init(&output_validator);
   while (!stop && (nread = fread(buffer, 1U, sizeof(buffer), fp)) > 0U) {
-    rc = cai_read_validate_text_chunk(&validator, buffer, nread, error);
+    rc = cai_read_validate_text_chunk(&file_validator, buffer, nread, error);
     if (rc != CAI_OK) {
       break;
     }
@@ -741,12 +816,15 @@ static int cai_read_stream_file(const cai_read_context *ctx,
         if (include) {
           size_t len;
           len = i + 1U - start;
-          if (written + (long long)len > max_bytes) {
-            len = (size_t)(max_bytes - written);
+          if (written + (long long)len >= max_bytes) {
+            len = cai_read_text_complete_prefix(
+                &output_validator, buffer + start,
+                (size_t)(max_bytes - written));
             *truncated = 1;
             stop = 1;
           }
-          rc = cai_read_append(content, buffer + start, len, error);
+          rc = cai_read_append_text(content, &output_validator, buffer + start,
+                                    len, error);
           if (rc != CAI_OK) {
             stop = 1;
             break;
@@ -772,12 +850,15 @@ static int cai_read_stream_file(const cai_read_context *ctx,
       if (include) {
         size_t len;
         len = nread - start;
-        if (written + (long long)len > max_bytes) {
-          len = (size_t)(max_bytes - written);
+        if (written + (long long)len >= max_bytes) {
+          len = cai_read_text_complete_prefix(&output_validator,
+                                              buffer + start,
+                                              (size_t)(max_bytes - written));
           *truncated = 1;
           stop = 1;
         }
-        rc = cai_read_append(content, buffer + start, len, error);
+        rc = cai_read_append_text(content, &output_validator, buffer + start,
+                                  len, error);
         if (rc != CAI_OK) {
           stop = 1;
         } else {
@@ -797,7 +878,10 @@ static int cai_read_stream_file(const cai_read_context *ctx,
                               "failed while reading file", strerror(errno));
   }
   if (rc == CAI_OK) {
-    rc = cai_read_text_validator_finish(&validator, error);
+    rc = cai_read_text_validator_finish(&file_validator, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_text_validator_finish(&output_validator, error);
   }
   fclose(fp);
   if (rc != CAI_OK) {
