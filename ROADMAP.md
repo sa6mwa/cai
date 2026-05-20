@@ -32,6 +32,9 @@ Implemented:
   and raw OpenAI-hosted tool objects.
 - Agent facade support for OpenAI-hosted tools through validated raw tool JSON
   and simple `{ "type": ... }` hosted-tool helpers.
+- Preserved response output-item JSON with sink streaming helpers, so callers
+  can handle hosted-tool, image, code, and future output item variants even when
+  cai only types common metadata fields.
 - Model constants and curated metadata for current OpenAI/OpenRouter models
   used by the SDK and tests.
 - External binary dependencies through `CAI_DEPENDENCY_MODE=cpkt`: official

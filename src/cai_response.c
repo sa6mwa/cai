@@ -4072,6 +4072,47 @@ int cai_response_output_items_json(const cai_response *response,
   return CAI_OK;
 }
 
+int cai_response_write_output_items_json(const cai_response *response,
+                                         cai_sink *sink, cai_error *error) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result chunk;
+  unsigned char buffer[4096];
+  int rc;
+
+  if (response == NULL || sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response and sink are required");
+  }
+  if (!response->has_output_items_json) {
+    return CAI_OK;
+  }
+  cursor = response->output_items_json;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind output items JSON",
+                                json_error.message);
+  }
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read output items JSON");
+    }
+    if (chunk.bytes_read > 0U) {
+      rc = cai_sink_write(sink, buffer, chunk.bytes_read, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  return CAI_OK;
+}
+
 int cai_response_output_items_spool(const cai_response *response,
                                     lonejson_spooled *out, size_t *out_len,
                                     cai_error *error) {

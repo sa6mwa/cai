@@ -3475,6 +3475,30 @@ static void test_response_json(test_state *state) {
   if (strstr(cai_response_raw_json(response), "\"id\":\"resp_123\"") == NULL) {
     test_fail(state, "response_raw_json", "raw JSON missing response id");
   }
+  expect_int(state, "response_output_items_json",
+             cai_response_output_items_json(response, &json, &error), CAI_OK);
+  if (json == NULL || strstr(json, "\"type\":\"function_call\"") == NULL) {
+    test_fail(state, "response_output_items_json",
+              "output item JSON missing function call");
+  }
+  free(json);
+  json = NULL;
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink = NULL;
+  expect_int(state, "response_output_items_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "response_write_output_items_json",
+             cai_response_write_output_items_json(response, sink, &error),
+             CAI_OK);
+  cai_sink_close(sink);
+  sink = NULL;
+  if (strstr(writer.buffer, "\"type\":\"message\"") == NULL ||
+      strstr(writer.buffer, "\"type\":\"function_call\"") == NULL) {
+    test_fail(state, "response_write_output_items_json",
+              "streamed output item JSON missing expected items");
+  }
   expect_int(state, "output_from_response",
              cai_output_from_response(response, &output, &error), CAI_OK);
   response = NULL;

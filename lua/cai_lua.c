@@ -2879,6 +2879,49 @@ static int cai_lua_response_raw_json(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_response_output_items_json(lua_State *L) {
+  cai_lua_response *self;
+  cai_error error;
+  char *value;
+  int rc;
+
+  self = cai_lua_check_response(L, 1);
+  value = NULL;
+  cai_error_init(&error);
+  rc = cai_response_output_items_json(self->ptr, &value, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, value != NULL ? value : "");
+  cai_string_destroy(value);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_response_write_output_items_json(lua_State *L) {
+  cai_lua_response *self;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_response(L, 1);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_response_write_output_items_json(self->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_response_id(lua_State *L) {
   cai_lua_response *self;
   const char *value;
@@ -4639,6 +4682,8 @@ static const luaL_Reg cai_lua_response_methods[] = {
     {"write_output_text", cai_lua_response_write_output_text},
     {"write_refusal", cai_lua_response_write_refusal},
     {"raw_json", cai_lua_response_raw_json},
+    {"output_items_json", cai_lua_response_output_items_json},
+    {"write_output_items_json", cai_lua_response_write_output_items_json},
     {"usage", cai_lua_response_usage},
     {"tool_calls", cai_lua_response_tool_calls},
     {"output_items", cai_lua_response_output_items},

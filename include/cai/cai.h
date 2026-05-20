@@ -798,6 +798,10 @@ int cai_response_write_output_text(const cai_response *response, cai_sink *sink,
 int cai_response_write_refusal(const cai_response *response, cai_sink *sink,
                                cai_error *error);
 const char *cai_response_raw_json(const cai_response *response);
+int cai_response_output_items_json(const cai_response *response,
+                                   char **out_json, cai_error *error);
+int cai_response_write_output_items_json(const cai_response *response,
+                                         cai_sink *sink, cai_error *error);
 const char *cai_response_error_code(const cai_response *response);
 const char *cai_response_error_message(const cai_response *response);
 const char *cai_response_incomplete_reason(const cai_response *response);

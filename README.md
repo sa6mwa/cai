@@ -283,6 +283,12 @@ through those handles instead of being manually appended by application code.
 Structured output text can be decoded into a caller-owned lonejson struct with
 `cai_output_write_json`. The function parses `cai_output_text(output)` as JSON;
 it does not inspect arbitrary response metadata or raw response JSON.
+For non-text output items such as hosted-tool, image, code, or future item
+types, use `cai_response_output_items_json` for a materialized JSON array or
+`cai_response_write_output_items_json` to stream the preserved output item array
+into a sink. The per-item accessors expose common metadata fields, while the
+preserved JSON is the compatibility path for item variants cai does not type
+yet.
 
 Tools are agent capabilities. The default `register_tool` path is a typed
 lonejson callback; `register_raw_tool` is the full-string JSON escape hatch;
