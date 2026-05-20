@@ -7293,8 +7293,8 @@ static void test_exec_tool(test_state *state) {
     fclose(alpha_file);
     if (run_exec_tool_case(state, "exec_tmp_isolated", &config,
                            "{\"cmd\":\"if ls /tmp/cai-exec-host-leak-* "
-                           ">/dev/null 2>&1; then printf leak; else printf isolated; "
-                           "fi; printf ok >/tmp/sandbox-created\"}",
+                           ">/dev/null 2>&1; then printf leak; else printf "
+                           "isolated; fi; printf ok >/tmp/sandbox-created\"}",
                            CAI_OK, &writer, &error) == CAI_OK) {
       if (strstr(writer.buffer, "leak") != NULL) {
         test_fail(state, "exec_tmp_no_host_file", "host /tmp leaked");
@@ -7304,6 +7304,60 @@ static void test_exec_tool(test_state *state) {
       expect_valid_json(state, "exec_tmp_isolated_json", writer.buffer);
     }
     unlink(alpha_path);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  snprintf(alpha_path, sizeof(alpha_path), "/var/tmp/cai-exec-host-leak-%ld",
+           (long)getpid());
+  alpha_file = fopen(alpha_path, "wb");
+  if (alpha_file != NULL) {
+    fputs("host var tmp marker", alpha_file);
+    fclose(alpha_file);
+    if (run_exec_tool_case(
+            state, "exec_var_tmp_isolated", &config,
+            "{\"cmd\":\"if ls /var/tmp/cai-exec-host-leak-* >/dev/null "
+            "2>&1; then printf leak; else printf isolated; fi; "
+            "printf ok >/var/tmp/sandbox-created\"}",
+            CAI_OK, &writer, &error) == CAI_OK) {
+      if (strstr(writer.buffer, "leak") != NULL) {
+        test_fail(state, "exec_var_tmp_no_host_file",
+                  "host /var/tmp leaked");
+      }
+      expect_substr(state, "exec_var_tmp_isolated_output", writer.buffer,
+                    "isolated");
+      expect_valid_json(state, "exec_var_tmp_isolated_json", writer.buffer);
+    }
+    unlink(alpha_path);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_exec_tool_case(
+          state, "exec_proc_private", &config,
+          "{\"cmd\":\"printf self=; cat /proc/self/status | "
+          "grep '^NSpid:'; printf net=; cat /proc/net/dev\"}",
+          CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_proc_private_nspid", writer.buffer, "NSpid:");
+    expect_substr(state, "exec_proc_private_net_loopback", writer.buffer,
+                  "lo:");
+    expect_valid_json(state, "exec_proc_private_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (access("/bin/bash", X_OK) == 0 &&
+      run_exec_tool_case(state, "exec_network_denied", &config,
+                         "{\"cmd\":\"bash -lc 'cat < /dev/tcp/1.1.1.1/80 "
+                         "> /dev/null 2>&1 && printf net-open || printf "
+                         "net-closed'\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_network_denied_output", writer.buffer,
+                  "net-closed");
+    if (strstr(writer.buffer, "net-open") != NULL) {
+      test_fail(state, "exec_network_not_denied",
+                "network access was available by default");
+    }
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);

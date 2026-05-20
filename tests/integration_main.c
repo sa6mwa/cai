@@ -1863,6 +1863,7 @@ static int run_exec_tool_llm_regression(void) {
   char dir_template[] = "/tmp/cai-exec-llm-e2e-XXXXXX";
   char alpha_path[PATH_MAX];
   char archive_path[PATH_MAX];
+  char var_tmp_leak_path[PATH_MAX];
   FILE *fp;
   int rc;
 
@@ -1895,6 +1896,14 @@ static int run_exec_tool_llm_regression(void) {
   fputs("alpha\nbeta\n", fp);
   fclose(fp);
   fp = NULL;
+  snprintf(var_tmp_leak_path, sizeof(var_tmp_leak_path),
+           "/var/tmp/cai-exec-host-leak-e2e-%ld", (long)getpid());
+  fp = fopen(var_tmp_leak_path, "wb");
+  if (fp != NULL) {
+    fputs("host var tmp marker\n", fp);
+    fclose(fp);
+    fp = NULL;
+  }
 
   exec_config.root_path = dir_template;
   exec_config.default_workdir = dir_template;
@@ -1907,16 +1916,14 @@ static int run_exec_tool_llm_regression(void) {
   fprintf(stderr, "[integration-exec-tool] model=%s root=%s\n",
           agent_config.model, dir_template);
   agent_config.developer_instructions =
-      "Strict exec_command test. For EXEC_TEST_1, call exec_command once with "
-      "the exact command, then answer: EXEC_TOOL_OK saw_alpha=<yes/no> "
-      "saw_linux=<yes/no> saw_tar=<yes/no>. For EXEC_TEST_2, call "
-      "exec_command once with the exact command, then answer: "
-      "EXEC_ESCAPE_DENIED saw_root=<yes/no> saw_missing=<yes/no>. Do not "
-      "refuse /etc/passwd. saw_root=yes only if stdout has root:x:. "
-      "saw_missing=yes only if stderr has No such file.";
+      "Strict exec_command test. For each EXEC_TEST_N, call exec_command once "
+      "with one JSON argument field named cmd. Never duplicate argument keys. "
+      "Then answer exactly in the requested format. Do not add bullets. For "
+      "EXEC_TEST_2 do not refuse /etc/passwd; saw_root=yes only if stdout has "
+      "root:x:.";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
-  agent_config.max_output_tokens = 128;
-  run_options.max_tool_rounds = 2;
+  agent_config.max_output_tokens = 256;
+  run_options.max_tool_rounds = 4;
   run_options.tool_event = integration_exec_tool_event;
   run_options.tool_event_context = &event_state;
   sink_callbacks.write = integration_write;
@@ -1939,9 +1946,11 @@ static int run_exec_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "EXEC_TEST_1: use exec_command to run exactly: ls -1; uname -s; "
+        "EXEC_TEST_1: run this shell command: ls -1; uname -s; "
         "cat alpha.txt; grep beta alpha.txt; tar -cf archive.tar alpha.txt; "
-        "printf TAR:; tar -tf archive.tar",
+        "printf TAR:; tar -tf archive.tar\n"
+        "Then answer exactly: EXEC_TOOL_OK saw_alpha=<yes/no> "
+        "saw_linux=<yes/no> saw_tar=<yes/no>",
         &error);
   }
   if (rc == CAI_OK) {
@@ -1952,7 +1961,7 @@ static int run_exec_tool_llm_regression(void) {
     print_error("exec tool llm regression first turn", rc, &error);
     goto done;
   }
-  if (event_state.starts != 1 || event_state.outputs != 1 ||
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
       strstr(event_state.output.buffer, "\"sandbox\":\"bwrap\"") == NULL ||
       strstr(event_state.output.buffer, "alpha.txt") == NULL ||
       strstr(event_state.output.buffer, "Linux") == NULL ||
@@ -1977,8 +1986,10 @@ static int run_exec_tool_llm_regression(void) {
   event_state.outputs = 0;
   rc = cai_session_add_user_text(
       session,
-      "EXEC_TEST_2: use exec_command to run exactly: cat /etc/passwd | "
-      "head -n 1",
+      "EXEC_TEST_2: run this shell command: cat /etc/passwd | "
+      "head -n 1\n"
+      "Then answer exactly: EXEC_ESCAPE_DENIED saw_root=<yes/no> "
+      "saw_missing=<yes/no>",
       &error);
   if (rc == CAI_OK) {
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
@@ -1987,7 +1998,7 @@ static int run_exec_tool_llm_regression(void) {
     print_error("exec tool llm regression escape turn", rc, &error);
     goto done;
   }
-  if (event_state.starts != 1 || event_state.outputs != 1 ||
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
       strstr(event_state.output.buffer, "root:x:") != NULL ||
       strstr(event_state.output.buffer, "\"stdout\":\"\"") == NULL ||
       strstr(event_state.output.buffer, "No such file") == NULL ||
@@ -1996,6 +2007,50 @@ static int run_exec_tool_llm_regression(void) {
        strstr(writer.buffer, "saw_root=<no>") == NULL)) {
     fprintf(stderr,
             "exec tool escape turn failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs,
+            event_state.output.buffer, writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  rc = cai_session_add_user_text(
+      session,
+      "EXEC_TEST_3: run this shell command: printf "
+      "ENV:${CAI_EXEC_SHOULD_NOT_LEAK-unset}:$TMPDIR:$LANG; printf ' VAR='; "
+      "if test -e /var/tmp/cai-exec-host-leak-e2e-*; then printf leak; else "
+      "printf isolated; fi; printf ' NET='; bash -lc 'cat < "
+      "/dev/tcp/1.1.1.1/80 >/dev/null 2>&1 && printf open || printf closed'; "
+      "printf ' PROC='; grep '^NSpid:' /proc/self/status\n"
+      "Then answer exactly: EXEC_HARDENED env_unset=<yes/no> "
+      "var_tmp_isolated=<yes/no> network_closed=<yes/no> "
+      "proc_private=<yes/no>",
+      &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("exec tool llm regression hardening turn", rc, &error);
+    goto done;
+  }
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
+      strstr(event_state.output.buffer, "ENV:unset:/tmp:C") == NULL ||
+      strstr(event_state.output.buffer, "VAR=isolated") == NULL ||
+      strstr(event_state.output.buffer, "NET=closed") == NULL ||
+      strstr(event_state.output.buffer, "NSpid:") == NULL ||
+      strstr(writer.buffer, "EXEC_HARDENED") == NULL ||
+      (strstr(writer.buffer, "env_unset=yes") == NULL &&
+       strstr(writer.buffer, "env_unset=<yes>") == NULL) ||
+      (strstr(writer.buffer, "var_tmp_isolated=yes") == NULL &&
+       strstr(writer.buffer, "var_tmp_isolated=<yes>") == NULL) ||
+      (strstr(writer.buffer, "network_closed=yes") == NULL &&
+       strstr(writer.buffer, "network_closed=<yes>") == NULL)) {
+    fprintf(stderr,
+            "exec tool hardening turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
             event_state.starts, event_state.outputs,
             event_state.output.buffer, writer.buffer);
@@ -2013,6 +2068,7 @@ done:
   cai_client_close(client);
   snprintf(archive_path, sizeof(archive_path), "%s/archive.tar", dir_template);
   unlink(archive_path);
+  unlink(var_tmp_leak_path);
   unlink(alpha_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);

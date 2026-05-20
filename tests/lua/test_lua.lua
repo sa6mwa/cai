@@ -421,6 +421,41 @@ assert(table.concat(chunks):match("/sub"))
 assert_not_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"/tmp"}', function()
   return true
 end), "exec tool must reject workdir outside root")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"cat /etc/passwd"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local host_passwd_attempt = table.concat(chunks)
+assert(not host_passwd_attempt:match("root:x:"), "exec tool must not expose host /etc/passwd")
+local leak = io.open("/var/tmp/cai-lua-host-leak", "w")
+if leak then
+  leak:write("host")
+  leak:close()
+end
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"if test -e /var/tmp/cai-lua-host-leak; then printf leak; else printf isolated; fi; printf ok >/var/tmp/sandbox-created"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("isolated"), "exec tool must isolate /var/tmp")
+os.remove("/var/tmp/cai-lua-host-leak")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"printf env:${CAI_LUA_EXEC_SHOULD_NOT_LEAK-unset}:$HOME:$TMPDIR:$LANG"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local env_output = table.concat(chunks)
+assert(env_output:match("env:unset:"), "exec tool must clear host environment")
+assert(env_output:match(":/tmp:"), "exec tool must set sandbox TMPDIR")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"if test -t 0; then printf in-tty; else printf in-notty; fi; read x || printf read-eof","tty":true}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local tty_output = table.concat(chunks)
+assert(tty_output:match("in%-notty"), "exec PTY mode must not expose stdin as tty")
+assert(tty_output:match("read%-eof"), "exec PTY stdin must be closed")
 
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
