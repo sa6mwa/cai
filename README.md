@@ -700,6 +700,7 @@ CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
+CAI_LUA_HOSTED_WEB_SEARCH_E2E=1 ctest --preset integration -R cai_lua_hosted_web_search_e2e --output-on-failure
 CAI_LUA_TOOL_STREAM_E2E=1 ctest --preset integration -R cai_lua_tool_stream_e2e --output-on-failure
 CAI_LUA_SESSION_E2E=1 ctest --preset integration -R cai_lua_session_continuity_e2e --output-on-failure
 ```
@@ -753,6 +754,9 @@ the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
 `CAI_INTEGRATION_HOSTED_WEB_SEARCH=1` runs a real OpenAI-hosted `web_search`
 regression. It uses the generic hosted-tool JSON path, requires a hosted tool
 call, and fails unless the response output items include `web_search_call`.
+`CAI_LUA_HOSTED_WEB_SEARCH_E2E=1` runs the same hosted-tool path from Lua using
+low-level `response_params` and fails unless the Lua response wrapper exposes a
+`web_search_call` output item and token usage from the real API response.
 
 `CAI_INTEGRATION_REVGEO_PROVIDER=1` runs the reverse-geocoding preset directly
 against the default provider and asserts known Gothenburg coordinates resolve

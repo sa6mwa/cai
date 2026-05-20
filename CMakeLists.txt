@@ -689,6 +689,13 @@ if(CAI_BUILD_TESTS)
         LABELS integration
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      add_test(NAME cai_lua_hosted_web_search_e2e
+        COMMAND "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_hosted_web_search.lua")
+      set_tests_properties(cai_lua_hosted_web_search_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
   endif()
 endif()
