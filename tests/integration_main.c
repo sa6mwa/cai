@@ -1,4 +1,5 @@
 #include <cai/cai.h>
+#include <cai/tools/exec.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -127,6 +128,12 @@ typedef struct integration_write_state {
   size_t length;
 } integration_write_state;
 
+typedef struct integration_exec_tool_event_state {
+  int starts;
+  int outputs;
+  integration_write_state output;
+} integration_exec_tool_event_state;
+
 typedef struct integration_stream_debug_state {
   char deltas[4096];
   size_t deltas_length;
@@ -249,6 +256,38 @@ static int integration_write(void *context, const void *bytes, size_t count,
 static void integration_write_reset(integration_write_state *state) {
   state->buffer[0] = '\0';
   state->length = 0U;
+}
+
+static int integration_exec_tool_event(void *context,
+                                       const cai_tool_event *event,
+                                       cai_error *error) {
+  integration_exec_tool_event_state *state;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  state = (integration_exec_tool_event_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_START) {
+    state->starts++;
+    return CAI_OK;
+  }
+  if (event->type != CAI_TOOL_EVENT_OUTPUT) {
+    return CAI_OK;
+  }
+  state->outputs++;
+  callbacks.write = integration_write;
+  callbacks.close = NULL;
+  callbacks.context = &state->output;
+  sink = NULL;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_event_write_output(event, sink, error);
+  }
+  cai_sink_close(sink);
+  return rc;
 }
 
 static int integration_stream_delta_debug(void *context, const char *item_id,
@@ -1112,7 +1151,7 @@ static int run_openrouter_tool_regression(void) {
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
   agent_config.max_output_tokens = 96;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
-  run_options.max_tool_rounds = 2;
+  run_options.max_tool_rounds = 1;
 
   rc = cai_client_open(&client_config, &client, &error);
   if (rc == CAI_OK) {
@@ -1807,6 +1846,176 @@ static int send_and_destroy(cai_session *session, const char *text,
   return rc;
 }
 
+static int run_exec_tool_llm_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_exec_tool_config exec_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  integration_exec_tool_event_state event_state;
+  integration_write_state writer;
+  char dir_template[] = "/tmp/cai-exec-llm-e2e-XXXXXX";
+  char alpha_path[PATH_MAX];
+  char archive_path[PATH_MAX];
+  FILE *fp;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&exec_config, 0, sizeof(exec_config));
+  memset(&event_state, 0, sizeof(event_state));
+  memset(&writer, 0, sizeof(writer));
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  fp = NULL;
+  rc = CAI_OK;
+
+  if (mkdtemp(dir_template) == NULL) {
+    fprintf(stderr, "mkdtemp failed for exec integration root\n");
+    return 1;
+  }
+  snprintf(alpha_path, sizeof(alpha_path), "%s/alpha.txt", dir_template);
+  fp = fopen(alpha_path, "wb");
+  if (fp == NULL) {
+    fprintf(stderr, "failed to create exec integration fixture\n");
+    rmdir(dir_template);
+    return 1;
+  }
+  fputs("alpha\nbeta\n", fp);
+  fclose(fp);
+  fp = NULL;
+
+  exec_config.root_path = dir_template;
+  exec_config.default_workdir = dir_template;
+  exec_config.timeout_ms = 5000L;
+  exec_config.max_timeout_ms = 5000L;
+  exec_config.output_memory_limit = 4096U;
+  exec_config.output_max_bytes = 65536U;
+
+  agent_config.model = integration_model();
+  fprintf(stderr, "[integration-exec-tool] model=%s root=%s\n",
+          agent_config.model, dir_template);
+  agent_config.developer_instructions =
+      "Strict exec_command test. For EXEC_TEST_1, call exec_command once with "
+      "the exact command, then answer: EXEC_TOOL_OK saw_alpha=<yes/no> "
+      "saw_linux=<yes/no> saw_tar=<yes/no>. For EXEC_TEST_2, call "
+      "exec_command once with the exact command, then answer: "
+      "EXEC_ESCAPE_DENIED saw_root=<yes/no> saw_missing=<yes/no>. Do not "
+      "refuse /etc/passwd. saw_root=yes only if stdout has root:x:. "
+      "saw_missing=yes only if stderr has No such file.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 128;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_exec_tool_event;
+  run_options.tool_event_context = &event_state;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_exec_tool(agent, &exec_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "EXEC_TEST_1: use exec_command to run exactly: ls -1; uname -s; "
+        "cat alpha.txt; grep beta alpha.txt; tar -cf archive.tar alpha.txt; "
+        "printf TAR:; tar -tf archive.tar",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    stream_sinks.output_text = sink;
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("exec tool llm regression first turn", rc, &error);
+    goto done;
+  }
+  if (event_state.starts != 1 || event_state.outputs != 1 ||
+      strstr(event_state.output.buffer, "\"sandbox\":\"bwrap\"") == NULL ||
+      strstr(event_state.output.buffer, "alpha.txt") == NULL ||
+      strstr(event_state.output.buffer, "Linux") == NULL ||
+      strstr(event_state.output.buffer, "TAR:alpha.txt") == NULL ||
+      strstr(writer.buffer, "EXEC_TOOL_OK") == NULL ||
+      strstr(writer.buffer, "saw_alpha=yes") == NULL ||
+      strstr(writer.buffer, "saw_tar=yes") == NULL) {
+    fprintf(stderr,
+            "exec tool first turn failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs,
+            event_state.output.buffer, writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  rc = cai_session_add_user_text(
+      session,
+      "EXEC_TEST_2: use exec_command to run exactly: cat /etc/passwd | "
+      "head -n 1",
+      &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("exec tool llm regression escape turn", rc, &error);
+    goto done;
+  }
+  if (event_state.starts != 1 || event_state.outputs != 1 ||
+      strstr(event_state.output.buffer, "root:x:") != NULL ||
+      strstr(event_state.output.buffer, "\"stdout\":\"\"") == NULL ||
+      strstr(event_state.output.buffer, "No such file") == NULL ||
+      strstr(writer.buffer, "EXEC_ESCAPE_DENIED") == NULL ||
+      strstr(writer.buffer, "saw_root=no") == NULL) {
+    fprintf(stderr,
+            "exec tool escape turn failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs,
+            event_state.output.buffer, writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  if (rc != CAI_OK) {
+    print_error("exec tool llm regression", rc, &error);
+  }
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  snprintf(archive_path, sizeof(archive_path), "%s/archive.tar", dir_template);
+  unlink(archive_path);
+  unlink(alpha_path);
+  rmdir(dir_template);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static double integration_spend_limit_usd(void) {
   const char *value;
   double parsed;
@@ -2230,6 +2439,7 @@ done:
 int main(void) {
   const char *compaction;
   const char *e2e;
+  const char *exec_tool;
   const char *openrouter;
   const char *openrouter_dotenv;
   const char *openrouter_e2e;
@@ -2313,6 +2523,13 @@ int main(void) {
       return 1;
     }
     return run_tool_security_regression();
+  }
+  exec_tool = getenv("CAI_INTEGRATION_EXEC_TOOL");
+  if (integration_flag_enabled(exec_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
+    return run_exec_tool_llm_regression();
   }
   searxng_tool = getenv("CAI_INTEGRATION_SEARXNG_TOOL");
   if (integration_flag_enabled(searxng_tool)) {

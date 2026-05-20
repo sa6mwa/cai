@@ -675,6 +675,97 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_todo_workflow PROPERTIES
       LABELS "integration;offline"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openai_e2e
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_E2E=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openai_e2e PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_state_restore
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_STATE_RESTORE=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_state_restore PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_compaction
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_COMPACTION=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_compaction PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_tool_security
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_TOOL_SECURITY=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_tool_security PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_hosted_web_search
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_HOSTED_WEB_SEARCH=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_hosted_web_search PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_exec_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_EXEC_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_exec_tool PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_basic
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_basic PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_e2e
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_E2E=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_e2e PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_session
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_SESSION=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_session PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_tool PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_stream_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_STREAM_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_stream_tool PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_stream_history
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_stream_history PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_tool_security
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_tool_security PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     if(CAI_BUILD_LUA)
       add_test(NAME cai_lua_tool_stream_e2e
         COMMAND "${CAI_LUA_EXECUTABLE}"

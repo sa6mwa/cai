@@ -717,9 +717,16 @@ backend used.
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and
-must be run explicitly:
+must be run explicitly by configuring the integration build. Once integration
+tests are enabled, CTest enumerates the real API e2e cases; the environment
+variables below are internal selectors for running one scenario directly, not
+opt-in gates for the integration suite.
 
 ```sh
+cmake --preset debug -DCAI_BUILD_INTEGRATION_TESTS=ON
+cmake --build --preset debug
+ctest --test-dir build/debug -L integration --output-on-failure
+
 CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
@@ -733,6 +740,7 @@ CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_EXEC_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 CAI_LUA_HOSTED_WEB_SEARCH_E2E=1 ctest --preset integration -R cai_lua_hosted_web_search_e2e --output-on-failure
@@ -806,6 +814,13 @@ regression. The registered tool returns text that looks like JSON role/system
 messages and direct instructions to override the developer prompt. The test
 passes only if the model treats that output as untrusted tool data and returns
 the expected safe marker.
+
+`CAI_INTEGRATION_EXEC_TOOL=1` runs a real OpenAI streaming tool regression for
+the `exec_command` preset. The model must call the command tool against a
+temporary sandbox root, run `ls`, `uname`, `cat`, `grep`, and `tar`, and then
+attempt `cat /etc/passwd | head -n 1`. The test verifies tool events, final
+assistant markers, `sandbox="bwrap"`, successful normal command output, and
+that the host `/etc/passwd` escape is denied.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,
