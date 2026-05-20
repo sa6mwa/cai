@@ -26,6 +26,12 @@ Implemented:
 - Tool registry with typed lonejson callbacks, raw JSON escape hatches,
   spooled raw arguments, source/spooled typed result fields, auto-run tool
   loops, and streamed tool-call argument capture.
+- Low-level non-WebSocket Responses request controls for background mode,
+  store, service tier, truncation, metadata, include, prompt-template JSON,
+  text verbosity, structured text output, reasoning, server-side compaction,
+  and raw OpenAI-hosted tool objects.
+- Agent facade support for OpenAI-hosted tools through validated raw tool JSON
+  and simple `{ "type": ... }` hosted-tool helpers.
 - Model constants and curated metadata for current OpenAI/OpenRouter models
   used by the SDK and tests.
 - External binary dependencies through `CAI_DEPENDENCY_MODE=cpkt`: official
@@ -44,9 +50,10 @@ Implemented:
 - Lua 5.5 binding with client/agent/session/response/output handles, streaming
   sinks, streamed tool output callbacks, function-call argument stream
   callbacks, raw and raw-spooled Lua callback tools, lonejson-style spooled
-  large-value inputs, public tool presets, MCP handler exposure, low-level
-  Responses and Conversations handles, model constants/metadata, offline tests,
-  Lua examples, and local/release LuaRock build targets.
+  large-value inputs, public tool presets, hosted-tool helpers, MCP handler
+  exposure, low-level Responses and Conversations handles, model
+  constants/metadata, offline tests, Lua examples, and local/release LuaRock
+  build targets.
 - Release matrix packaging for Linux x86_64/aarch64/armhf with GNU and musl
   variants plus Darwin arm64 when osxcross is available.
 - Source archive packaging.

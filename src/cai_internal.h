@@ -36,6 +36,8 @@ typedef struct cai_agent_impl {
   char *developer_instructions;
   char *prompt_cache_key;
   char *tool_choice;
+  char *service_tier;
+  char *truncation;
   char *reasoning_effort;
   char *reasoning_summary;
   char *text_format_name;
@@ -51,6 +53,7 @@ typedef struct cai_agent_impl {
   int local_history_enabled;
   size_t history_memory_limit;
   char *history_spool_dir;
+  lonejson_object_array hosted_tools;
   cai_tool_registry *tools;
   cai_session *default_session;
 } cai_agent_impl;
@@ -153,7 +156,9 @@ struct cai_function_tool {
   char *name;
   char *description;
   char *parameters_json;
+  char *raw_json;
   int strict;
+  int is_raw;
 };
 
 struct cai_response_create_params {
@@ -163,6 +168,11 @@ struct cai_response_create_params {
   char *instructions;
   char *previous_response_id;
   char *prompt_cache_key;
+  char *service_tier;
+  char *truncation;
+  char *metadata_json;
+  char *include_json;
+  char *prompt_json;
   char *tool_choice;
   char *reasoning_effort;
   char *reasoning_summary;
@@ -170,9 +180,14 @@ struct cai_response_create_params {
   char *text_format_name;
   char *text_format_description;
   char *text_format_schema_json;
+  char *text_verbosity;
   int text_format_strict;
   int max_output_tokens;
   int parallel_tool_calls;
+  int background;
+  int has_background;
+  int store;
+  int has_store;
   long long compact_threshold_tokens;
   char *raw_input_json;
   lonejson_spooled raw_input_spooled;

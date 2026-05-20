@@ -2189,6 +2189,28 @@ static int cai_lua_agent_register_raw_spooled_tool(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_agent_add_hosted_tool_json(lua_State *L) {
+  cai_lua_agent *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_error_init(&error);
+  rc = cai_agent_add_hosted_tool_json(self->ptr, luaL_checkstring(L, 2),
+                                      &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_add_simple_hosted_tool(lua_State *L) {
+  cai_lua_agent *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_error_init(&error);
+  rc = cai_agent_add_simple_hosted_tool(self->ptr, luaL_checkstring(L, 2),
+                                        &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static void cai_lua_revgeo_config(lua_State *L, int index,
                                   cai_revgeo_tool_config *config) {
   memset(config, 0, sizeof(*config));
@@ -4205,6 +4227,116 @@ static int cai_lua_params_add_function_tool(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_params_set_background(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_background(self->ptr, lua_toboolean(L, 2),
+                                                 &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_store(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_store(self->ptr, lua_toboolean(L, 2),
+                                            &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_service_tier(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_service_tier(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_truncation(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_truncation(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_metadata_json(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_metadata_json(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_include_json(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_include_json(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_prompt_json(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_prompt_json(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_set_text_verbosity(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_set_text_verbosity(
+      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_hosted_tool_json(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_hosted_tool_json(
+      self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_params_add_simple_hosted_tool(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = cai_response_create_params_add_simple_hosted_tool(
+      self->ptr, luaL_checkstring(L, 2), &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_params_add_function_call_output(lua_State *L) {
   cai_lua_params *self;
   cai_error error;
@@ -4460,6 +4592,8 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"context_percent", cai_lua_agent_context_percent},
     {"register_raw_tool", cai_lua_agent_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_agent_register_raw_spooled_tool},
+    {"add_hosted_tool_json", cai_lua_agent_add_hosted_tool_json},
+    {"add_simple_hosted_tool", cai_lua_agent_add_simple_hosted_tool},
     {"register_revgeo_tool", cai_lua_agent_register_revgeo},
     {"register_searxng_tool", cai_lua_agent_register_searxng},
     {"register_todo_tool", cai_lua_agent_register_todo},
@@ -4565,6 +4699,13 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"set_previous_response_id", cai_lua_params_set_previous_response_id},
     {"set_conversation_id", cai_lua_params_set_conversation_id},
     {"set_prompt_cache_key", cai_lua_params_set_prompt_cache_key},
+    {"set_background", cai_lua_params_set_background},
+    {"set_store", cai_lua_params_set_store},
+    {"set_service_tier", cai_lua_params_set_service_tier},
+    {"set_truncation", cai_lua_params_set_truncation},
+    {"set_metadata_json", cai_lua_params_set_metadata_json},
+    {"set_include_json", cai_lua_params_set_include_json},
+    {"set_prompt_json", cai_lua_params_set_prompt_json},
     {"set_tool_choice", cai_lua_params_set_tool_choice},
     {"set_max_output_tokens", cai_lua_params_set_max_output_tokens},
     {"set_parallel_tool_calls", cai_lua_params_set_parallel_tool_calls},
@@ -4572,6 +4713,7 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"set_reasoning", cai_lua_params_set_reasoning},
     {"set_text_format_json_object", cai_lua_params_set_text_format_json_object},
     {"set_text_format_json_schema", cai_lua_params_set_text_format_json_schema},
+    {"set_text_verbosity", cai_lua_params_set_text_verbosity},
     {"add_text", cai_lua_params_add_text},
     {"add_text_spooled", cai_lua_params_add_text_spooled},
     {"add_image_url", cai_lua_params_add_image_url},
@@ -4580,6 +4722,8 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"add_file_data_spooled", cai_lua_params_add_file_data_spooled},
     {"add_file_url", cai_lua_params_add_file_url},
     {"add_function_tool", cai_lua_params_add_function_tool},
+    {"add_hosted_tool_json", cai_lua_params_add_hosted_tool_json},
+    {"add_simple_hosted_tool", cai_lua_params_add_simple_hosted_tool},
     {"add_function_call_output", cai_lua_params_add_function_call_output},
     {"add_function_call_output_text",
      cai_lua_params_add_function_call_output_text},
@@ -4700,6 +4844,27 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("OPENAI_API_KEY_ENV", CAI_OPENAI_API_KEY_ENV);
   CAI_LUA_SET_STRING("OPENROUTER_API_KEY_ENV", CAI_OPENROUTER_API_KEY_ENV);
+  CAI_LUA_SET_STRING("TEXT_VERBOSITY_LOW", CAI_TEXT_VERBOSITY_LOW);
+  CAI_LUA_SET_STRING("TEXT_VERBOSITY_MEDIUM", CAI_TEXT_VERBOSITY_MEDIUM);
+  CAI_LUA_SET_STRING("TEXT_VERBOSITY_HIGH", CAI_TEXT_VERBOSITY_HIGH);
+  CAI_LUA_SET_STRING("RESPONSE_TRUNCATION_AUTO",
+                     CAI_RESPONSE_TRUNCATION_AUTO);
+  CAI_LUA_SET_STRING("RESPONSE_TRUNCATION_DISABLED",
+                     CAI_RESPONSE_TRUNCATION_DISABLED);
+  CAI_LUA_SET_STRING("SERVICE_TIER_AUTO", CAI_SERVICE_TIER_AUTO);
+  CAI_LUA_SET_STRING("SERVICE_TIER_DEFAULT", CAI_SERVICE_TIER_DEFAULT);
+  CAI_LUA_SET_STRING("SERVICE_TIER_FLEX", CAI_SERVICE_TIER_FLEX);
+  CAI_LUA_SET_STRING("SERVICE_TIER_PRIORITY", CAI_SERVICE_TIER_PRIORITY);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_WEB_SEARCH", CAI_HOSTED_TOOL_WEB_SEARCH);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_FILE_SEARCH", CAI_HOSTED_TOOL_FILE_SEARCH);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_MCP", CAI_HOSTED_TOOL_MCP);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_COMPUTER_USE",
+                     CAI_HOSTED_TOOL_COMPUTER_USE);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_IMAGE_GENERATION",
+                     CAI_HOSTED_TOOL_IMAGE_GENERATION);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_CODE_INTERPRETER",
+                     CAI_HOSTED_TOOL_CODE_INTERPRETER);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_TOOL_SEARCH", CAI_HOSTED_TOOL_TOOL_SEARCH);
   CAI_LUA_SET_STRING("TOOL_CHOICE_AUTO", CAI_TOOL_CHOICE_AUTO);
   CAI_LUA_SET_STRING("TOOL_CHOICE_NONE", CAI_TOOL_CHOICE_NONE);
   CAI_LUA_SET_STRING("TOOL_CHOICE_REQUIRED", CAI_TOOL_CHOICE_REQUIRED);

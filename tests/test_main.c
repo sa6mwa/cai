@@ -3119,6 +3119,47 @@ static void test_response_json(test_state *state) {
              cai_response_create_params_set_prompt_cache_key(
                  params, "cai:test:params:v1", &error),
              CAI_OK);
+  expect_int(state, "params_set_background",
+             cai_response_create_params_set_background(params, 1, &error),
+             CAI_OK);
+  expect_int(state, "params_set_store",
+             cai_response_create_params_set_store(params, 0, &error), CAI_OK);
+  expect_int(state, "params_set_service_tier",
+             cai_response_create_params_set_service_tier(
+                 params, CAI_SERVICE_TIER_FLEX, &error),
+             CAI_OK);
+  expect_int(state, "params_set_truncation",
+             cai_response_create_params_set_truncation(
+                 params, CAI_RESPONSE_TRUNCATION_AUTO, &error),
+             CAI_OK);
+  expect_int(state, "params_set_metadata",
+             cai_response_create_params_set_metadata_json(
+                 params, "{\"tenant\":\"vectis\"}", &error),
+             CAI_OK);
+  expect_int(state, "params_set_include",
+             cai_response_create_params_set_include_json(
+                 params, "[\"reasoning.encrypted_content\"]", &error),
+             CAI_OK);
+  expect_int(state, "params_set_prompt_json",
+             cai_response_create_params_set_prompt_json(
+                 params, "{\"id\":\"pmpt_123\",\"variables\":{\"topic\":\"cai\"}}",
+                 &error),
+             CAI_OK);
+  expect_int(state, "params_set_bad_background",
+             cai_response_create_params_set_background(params, 2, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "params_set_bad_metadata",
+             cai_response_create_params_set_metadata_json(params, "[]", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "params_set_bad_include",
+             cai_response_create_params_set_include_json(params, "{}", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_set_tool_choice",
              cai_response_create_params_set_tool_choice(
                  params, CAI_TOOL_CHOICE_REQUIRED, &error),
@@ -3178,6 +3219,16 @@ static void test_response_json(test_state *state) {
                  "\"additionalProperties\":false}",
                  1, &error),
              CAI_OK);
+  expect_int(state, "params_set_text_verbosity",
+             cai_response_create_params_set_text_verbosity(
+                 params, CAI_TEXT_VERBOSITY_LOW, &error),
+             CAI_OK);
+  expect_int(state, "params_set_bad_text_verbosity",
+             cai_response_create_params_set_text_verbosity(params, "giant",
+                                                           &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(
       state, "params_set_bad_max_output_tokens",
       cai_response_create_params_set_max_output_tokens(params, -1, &error),
@@ -3207,6 +3258,23 @@ static void test_response_json(test_state *state) {
                  "\"string\"}},\"required\":[\"city\"]}",
                  1, &error),
              CAI_OK);
+  expect_int(state, "params_add_hosted_tool",
+             cai_response_create_params_add_simple_hosted_tool(
+                 params, CAI_HOSTED_TOOL_WEB_SEARCH, &error),
+             CAI_OK);
+  expect_int(state, "params_add_raw_hosted_tool",
+             cai_response_create_params_add_hosted_tool_json(
+                 params,
+                 "{\"type\":\"code_interpreter\",\"container\":{\"type\":"
+                 "\"auto\",\"memory_limit\":\"4g\"}}",
+                 &error),
+             CAI_OK);
+  expect_int(state, "params_add_bad_hosted_tool",
+             cai_response_create_params_add_hosted_tool_json(params, "[]",
+                                                             &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_serialize",
              cai_response_create_params_serialize_json(params, &json, &json_len,
                                                        &error),
@@ -3223,6 +3291,16 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"prompt_cache_key\":\"cai:test:params:v1\"") == NULL) {
       test_fail(state, "params_serialize",
                 "prompt cache key missing from JSON");
+    }
+    if (strstr(json, "\"background\":true") == NULL ||
+        strstr(json, "\"store\":false") == NULL ||
+        strstr(json, "\"service_tier\":\"flex\"") == NULL ||
+        strstr(json, "\"truncation\":\"auto\"") == NULL ||
+        strstr(json, "\"metadata\":{\"tenant\":\"vectis\"}") == NULL ||
+        strstr(json, "\"include\":[\"reasoning.encrypted_content\"]") == NULL ||
+        strstr(json, "\"prompt\":{\"id\":\"pmpt_123\"") == NULL) {
+      test_fail(state, "params_serialize",
+                "advanced response request fields missing from JSON");
     }
     if (strstr(json, "\"tool_choice\":\"required\"") == NULL) {
       test_fail(state, "params_serialize", "tool choice missing from JSON");
@@ -3250,7 +3328,8 @@ static void test_response_json(test_state *state) {
         strstr(json, "\"name\":\"answer\"") == NULL ||
         strstr(json, "\"description\":\"Answer payload\"") == NULL ||
         strstr(json, "\"schema\":{\"type\":\"object\"") == NULL ||
-        strstr(json, "\"strict\":true") == NULL) {
+        strstr(json, "\"strict\":true") == NULL ||
+        strstr(json, "\"verbosity\":\"low\"") == NULL) {
       test_fail(state, "params_serialize", "text format missing from JSON");
     }
     if (strstr(json, "\"type\":\"input_text\"") == NULL) {
@@ -3262,8 +3341,11 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"tools\":[") == NULL ||
         strstr(json, "\"name\":\"get_weather\"") == NULL ||
         strstr(json, "\"strict\":true") == NULL ||
-        strstr(json, "\"parameters\":{\"type\":\"object\"") == NULL) {
-      test_fail(state, "params_serialize", "function tool missing from JSON");
+        strstr(json, "\"parameters\":{\"type\":\"object\"") == NULL ||
+        strstr(json, "\"type\":\"web_search\"") == NULL ||
+        strstr(json, "\"type\":\"code_interpreter\"") == NULL ||
+        strstr(json, "\"container\":{\"type\":\"auto\"") == NULL) {
+      test_fail(state, "params_serialize", "tools missing from JSON");
     }
     if (strstr(json, ":null") != NULL) {
       test_fail(state, "params_serialize", "unexpected null field in JSON");
@@ -4594,6 +4676,7 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"context_management\":[{\"type\":\"compaction\","
                         "\"compact_threshold\":320000}]") != NULL &&
         strstr(request, "\"parallel_tool_calls\":false") != NULL &&
+        strstr(request, "\"type\":\"web_search\"") != NULL &&
         strstr(request, "previous_response_id") == NULL) {
       return session_first_body;
     }
@@ -5581,6 +5664,8 @@ static void test_agent_session(test_state *state) {
   if (client->new_agent == NULL || client->close == NULL ||
       agent->register_tool == NULL || agent->register_raw_tool == NULL ||
       agent->register_raw_spooled_tool == NULL ||
+      agent->add_hosted_tool_json == NULL ||
+      agent->add_simple_hosted_tool == NULL ||
       agent->add_user_text == NULL || agent->add_user_text_spooled == NULL ||
       agent->add_user_text_source == NULL ||
       agent->add_user_file_path == NULL ||
@@ -5590,6 +5675,15 @@ static void test_agent_session(test_state *state) {
       agent->new_session == NULL || agent->close == NULL) {
     test_fail(state, "agent_methods", "method facade not initialized");
   }
+  expect_int(state, "agent_add_hosted_tool",
+             agent->add_simple_hosted_tool(agent, CAI_HOSTED_TOOL_WEB_SEARCH,
+                                           &error),
+             CAI_OK);
+  expect_int(state, "agent_add_bad_hosted_tool",
+             agent->add_hosted_tool_json(agent, "[]", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(
       state, "agent_default_first",
       agent->send_text(agent, "session first", &response, &error), CAI_OK);

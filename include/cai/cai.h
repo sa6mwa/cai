@@ -112,6 +112,26 @@ typedef struct cai_agent_config {
   const char *history_spool_dir;
 } cai_agent_config;
 
+#define CAI_TEXT_VERBOSITY_LOW "low"
+#define CAI_TEXT_VERBOSITY_MEDIUM "medium"
+#define CAI_TEXT_VERBOSITY_HIGH "high"
+
+#define CAI_RESPONSE_TRUNCATION_AUTO "auto"
+#define CAI_RESPONSE_TRUNCATION_DISABLED "disabled"
+
+#define CAI_SERVICE_TIER_AUTO "auto"
+#define CAI_SERVICE_TIER_DEFAULT "default"
+#define CAI_SERVICE_TIER_FLEX "flex"
+#define CAI_SERVICE_TIER_PRIORITY "priority"
+
+#define CAI_HOSTED_TOOL_WEB_SEARCH "web_search"
+#define CAI_HOSTED_TOOL_FILE_SEARCH "file_search"
+#define CAI_HOSTED_TOOL_MCP "mcp"
+#define CAI_HOSTED_TOOL_COMPUTER_USE "computer_use_preview"
+#define CAI_HOSTED_TOOL_IMAGE_GENERATION "image_generation"
+#define CAI_HOSTED_TOOL_CODE_INTERPRETER "code_interpreter"
+#define CAI_HOSTED_TOOL_TOOL_SEARCH "tool_search"
+
 #define CAI_REASONING_EFFORT_NONE "none"
 #define CAI_REASONING_EFFORT_MINIMAL "minimal"
 #define CAI_REASONING_EFFORT_LOW "low"
@@ -269,6 +289,10 @@ struct cai_agent {
                                    const char *schema_json, int strict,
                                    cai_tool_raw_spooled_fn callback,
                                    void *context, cai_error *error);
+  int (*add_hosted_tool_json)(cai_agent *agent, const char *tool_json,
+                              cai_error *error);
+  int (*add_simple_hosted_tool)(cai_agent *agent, const char *type,
+                                cai_error *error);
   int (*new_session)(cai_agent *agent, cai_session **out, cai_error *error);
   int (*new_conversation_session)(cai_agent *agent, cai_session **out,
                                   cai_error *error);
@@ -445,6 +469,10 @@ int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
                                         const char *schema_json, int strict,
                                         cai_tool_raw_spooled_fn callback,
                                         void *context, cai_error *error);
+int cai_agent_add_hosted_tool_json(cai_agent *agent, const char *tool_json,
+                                   cai_error *error);
+int cai_agent_add_simple_hosted_tool(cai_agent *agent, const char *type,
+                                     cai_error *error);
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
                           cai_error *error);
 int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
@@ -644,6 +672,25 @@ int cai_response_create_params_set_conversation_id(
 int cai_response_create_params_set_prompt_cache_key(
     cai_response_create_params *params, const char *prompt_cache_key,
     cai_error *error);
+int cai_response_create_params_set_background(cai_response_create_params *params,
+                                              int enabled, cai_error *error);
+int cai_response_create_params_set_store(cai_response_create_params *params,
+                                         int enabled, cai_error *error);
+int cai_response_create_params_set_service_tier(
+    cai_response_create_params *params, const char *service_tier,
+    cai_error *error);
+int cai_response_create_params_set_truncation(
+    cai_response_create_params *params, const char *truncation,
+    cai_error *error);
+int cai_response_create_params_set_metadata_json(
+    cai_response_create_params *params, const char *metadata_json,
+    cai_error *error);
+int cai_response_create_params_set_include_json(
+    cai_response_create_params *params, const char *include_json,
+    cai_error *error);
+int cai_response_create_params_set_prompt_json(
+    cai_response_create_params *params, const char *prompt_json,
+    cai_error *error);
 int cai_response_create_params_set_tool_choice(
     cai_response_create_params *params, const char *tool_choice,
     cai_error *error);
@@ -664,6 +711,9 @@ int cai_response_create_params_set_text_format_json_object(
 int cai_response_create_params_set_text_format_json_schema(
     cai_response_create_params *params, const char *name,
     const char *description, const char *schema_json, int strict,
+    cai_error *error);
+int cai_response_create_params_set_text_verbosity(
+    cai_response_create_params *params, const char *verbosity,
     cai_error *error);
 int cai_response_create_params_add_text(cai_response_create_params *params,
                                         const char *role, const char *text,
@@ -693,6 +743,11 @@ int cai_response_create_params_add_function_tool(
     cai_response_create_params *params, const char *name,
     const char *description, const char *parameters_json, int strict,
     cai_error *error);
+int cai_response_create_params_add_hosted_tool_json(
+    cai_response_create_params *params, const char *tool_json,
+    cai_error *error);
+int cai_response_create_params_add_simple_hosted_tool(
+    cai_response_create_params *params, const char *type, cai_error *error);
 int cai_response_create_params_add_function_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error);

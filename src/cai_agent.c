@@ -349,6 +349,11 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                                    : 128U * 1024U;
   impl->history_spool_dir =
       cai_strdup(&client_impl->allocator, config->history_spool_dir);
+  impl->hosted_tools.items = NULL;
+  impl->hosted_tools.count = 0U;
+  impl->hosted_tools.capacity = 0U;
+  impl->hosted_tools.elem_size = sizeof(struct cai_function_tool);
+  impl->hosted_tools.flags = 0U;
   impl->tools = NULL;
   impl->default_session = NULL;
   if (impl->model == NULL ||
@@ -416,6 +421,16 @@ void cai_agent_destroy(cai_agent *agent) {
   cai_free_mem(allocator, impl->text_format_description);
   cai_free_mem(allocator, impl->text_format_schema_json);
   cai_free_mem(allocator, impl->history_spool_dir);
+  if (impl->hosted_tools.items != NULL) {
+    struct cai_function_tool *hosted_tools;
+    size_t i;
+
+    hosted_tools = (struct cai_function_tool *)impl->hosted_tools.items;
+    for (i = 0U; i < impl->hosted_tools.count; i++) {
+      cai_free_mem(allocator, hosted_tools[i].raw_json);
+    }
+    cai_free_mem(allocator, impl->hosted_tools.items);
+  }
   cai_tool_registry_destroy(impl->tools);
   cai_free_mem(allocator, impl);
   agent->impl = NULL;
@@ -488,6 +503,95 @@ int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
   return cai_tool_registry_register_raw_spooled(
       impl->tools, name, description, schema_json, strict, callback, context,
       error);
+}
+
+static int cai_agent_hosted_tools_grow(cai_agent_impl *impl,
+                                       cai_error *error) {
+  cai_client_impl *client_impl;
+  size_t new_capacity;
+  void *items;
+
+  if (impl->hosted_tools.count < impl->hosted_tools.capacity) {
+    return CAI_OK;
+  }
+  client_impl = CAI_CLIENT_IMPL(impl->client);
+  new_capacity =
+      impl->hosted_tools.capacity == 0U ? 2U : impl->hosted_tools.capacity * 2U;
+  items = cai_realloc_mem(&client_impl->allocator, impl->hosted_tools.items,
+                          new_capacity * sizeof(struct cai_function_tool));
+  if (items == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to grow hosted tools");
+  }
+  impl->hosted_tools.items = items;
+  impl->hosted_tools.capacity = new_capacity;
+  return CAI_OK;
+}
+
+int cai_agent_add_hosted_tool_json(cai_agent *agent, const char *tool_json,
+                                   cai_error *error) {
+  cai_agent_impl *impl;
+  cai_client_impl *client_impl;
+  cai_response_create_params *params;
+  struct cai_function_tool *tools;
+  struct cai_function_tool *tool;
+  int rc;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  params = NULL;
+  rc = cai_response_create_params_new(&params, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_hosted_tool_json(params, tool_json,
+                                                        error);
+  }
+  cai_response_create_params_destroy(params);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_agent_hosted_tools_grow(impl, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  client_impl = CAI_CLIENT_IMPL(impl->client);
+  tools = (struct cai_function_tool *)impl->hosted_tools.items;
+  tool = &tools[impl->hosted_tools.count];
+  memset(tool, 0, sizeof(*tool));
+  tool->raw_json = cai_strdup(&client_impl->allocator, tool_json);
+  tool->is_raw = 1;
+  if (tool->raw_json == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate hosted tool");
+  }
+  impl->hosted_tools.count++;
+  return CAI_OK;
+}
+
+int cai_agent_add_simple_hosted_tool(cai_agent *agent, const char *type,
+                                     cai_error *error) {
+  cai_response_create_params *params;
+  struct cai_function_tool *tools;
+  const char *tool_json;
+  int rc;
+
+  params = NULL;
+  rc = cai_response_create_params_new(&params, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_simple_hosted_tool(params, type, error);
+  }
+  if (rc == CAI_OK) {
+    tools = (struct cai_function_tool *)params->tools.items;
+    tool_json = tools != NULL && params->tools.count == 1U ? tools[0].raw_json
+                                                           : NULL;
+    rc = cai_agent_add_hosted_tool_json(agent, tool_json, error);
+  }
+  cai_response_create_params_destroy(params);
+  return rc;
 }
 
 int cai_agent_new_session(cai_agent *agent, cai_session **out,
@@ -2562,6 +2666,19 @@ static int cai_session_init_response_params(cai_session *session,
     rc = cai_response_create_params_set_previous_response_id(
         params, CAI_SESSION_IMPL(session)->previous_response_id, error);
   }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->hosted_tools.count > 0U) {
+    struct cai_function_tool *hosted_tools;
+    size_t i;
+
+    hosted_tools = (struct cai_function_tool *)
+                       CAI_SESSION_AGENT_IMPL(session)->hosted_tools.items;
+    for (i = 0U; rc == CAI_OK &&
+                i < CAI_SESSION_AGENT_IMPL(session)->hosted_tools.count;
+         i++) {
+      rc = cai_response_create_params_add_hosted_tool_json(
+          params, hosted_tools[i].raw_json, error);
+    }
+  }
   if (rc == CAI_OK) {
     rc = cai_tool_registry_add_to_response_params(CAI_SESSION_AGENT_IMPL(session)->tools, params,
                                                   error);
@@ -3762,6 +3879,8 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
   agent->register_raw_spooled_tool = cai_agent_register_raw_spooled_tool;
+  agent->add_hosted_tool_json = cai_agent_add_hosted_tool_json;
+  agent->add_simple_hosted_tool = cai_agent_add_simple_hosted_tool;
   agent->new_session = cai_agent_new_session;
   agent->new_conversation_session = cai_agent_new_conversation_session;
   agent->new_session_for_conversation = cai_agent_new_session_for_conversation;

@@ -83,6 +83,11 @@ shape, but may still change before the initial tag.
 - Session continuity defaults to OpenAI-style server-side continuation.
   Client-side history replay is available for stateless compatible providers
   such as OpenRouter.
+- The low-level Responses params surface exposes current non-WebSocket
+  request controls used by modern Responses workflows: background mode, store,
+  service tier, truncation, metadata, include, prompt-template JSON, text
+  verbosity, reasoning, structured text format, server-side compaction,
+  local function tools, and raw hosted tool objects.
 - `lonejson` is the JSON layer and is linked as an external library, not
   compiled into cai. That keeps cai compatible with host applications such as
   Vectis that already provide their own lonejson instance.
@@ -310,6 +315,17 @@ agent->register_tool(agent, "lookup_customer", "Look up a customer.",
                      &lookup_customer_result_map, lookup_customer, ctx,
                      &error);
 ```
+
+OpenAI-hosted tools are different from local callback tools: OpenAI executes
+them, so cai should not register a local callback for them. Use
+`cai_response_create_params_add_simple_hosted_tool` or
+`cai_response_create_params_add_hosted_tool_json` on low-level Responses
+params, or `agent->add_simple_hosted_tool` / `agent->add_hosted_tool_json` on
+the facade. The raw JSON hosted-tool path is intentionally the primary surface
+for `mcp`, `file_search`, `code_interpreter`, `computer_use_preview`,
+`image_generation`, `tool_search`, and future hosted tools, because their
+schemas evolve faster than a C SDK should hard-code. cai validates the supplied
+tool JSON with lonejson and streams it into the request body as a JSON value.
 
 For large typed tool results, callbacks can put source-backed or spooled fields
 into their result struct instead of building a raw JSON string. Use
