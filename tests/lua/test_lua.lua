@@ -470,6 +470,12 @@ deep_file:close()
 local hidden_file = assert(io.open(read_root .. "/sub/.hidden", "w"))
 hidden_file:write("hidden\n")
 hidden_file:close()
+local binary_file = assert(io.open(read_root .. "/sub/binary.bin", "wb"))
+binary_file:write("text", string.char(0), "x")
+binary_file:close()
+local invalid_utf8_file = assert(io.open(read_root .. "/sub/invalid-utf8.txt", "wb"))
+invalid_utf8_file:write("bad", string.char(0xc3), "(")
+invalid_utf8_file:close()
 assert_ok(registry:register_read_tool({
   root_path = read_root,
   default_workdir = read_root .. "/sub",
@@ -502,6 +508,12 @@ end), "read_file must reject absolute escapes")
 assert_not_ok(registry:run("read_file", '{"path":"../missing/../../etc/passwd"}', function()
   return true
 end), "read_file must reject relative escapes")
+assert_not_ok(registry:run("read_file", '{"path":"binary.bin"}', function()
+  return true
+end), "read_file must reject binary content")
+assert_not_ok(registry:run("read_file", '{"path":"invalid-utf8.txt"}', function()
+  return true
+end), "read_file must reject invalid UTF-8 content")
 chunks = {}
 assert_ok(registry:run("list_files", '{"path":"."}', function(chunk)
   chunks[#chunks + 1] = chunk

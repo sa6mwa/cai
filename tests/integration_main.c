@@ -2094,9 +2094,11 @@ static int run_read_tool_llm_regression(void) {
   char nested_dir[PATH_MAX];
   char file_path[PATH_MAX];
   char nested_path[PATH_MAX];
+  char binary_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   FILE *fp;
+  static const unsigned char binary_bytes[] = {'b', 'i', 'n', 0U, 'x'};
   int rc;
 
   cai_error_init(&error);
@@ -2154,6 +2156,29 @@ static int run_read_tool_llm_regression(void) {
     return 1;
   }
   fputs("discovered value\n", fp);
+  fclose(fp);
+  fp = NULL;
+  snprintf(binary_path, sizeof(binary_path), "%s/binary.bin", dir_template);
+  fp = fopen(binary_path, "wb");
+  if (fp == NULL) {
+    fprintf(stderr, "failed to create read integration binary fixture\n");
+    unlink(nested_path);
+    unlink(file_path);
+    rmdir(nested_dir);
+    rmdir(dir_template);
+    return 1;
+  }
+  if (fwrite(binary_bytes, 1U, sizeof(binary_bytes), fp) !=
+      sizeof(binary_bytes)) {
+    fprintf(stderr, "failed to write read integration binary fixture\n");
+    fclose(fp);
+    unlink(binary_path);
+    unlink(nested_path);
+    unlink(file_path);
+    rmdir(nested_dir);
+    rmdir(dir_template);
+    return 1;
+  }
   fclose(fp);
   fp = NULL;
   snprintf(outside_path, sizeof(outside_path),
@@ -2250,12 +2275,53 @@ static int run_read_tool_llm_regression(void) {
   integration_write_reset(&event_state.output);
   event_state.starts = 0;
   event_state.outputs = 0;
-  rc = cai_session_add_user_text(
+  cai_session_destroy(session);
+  session = NULL;
+  rc = cai_agent_new_session(agent, &session, &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "READ_TEST_2: this is a binary-file regression test. You must call "
+        "read_file with path binary.bin. Then answer exactly: "
+        "READ_BINARY_DENIED tool_failed=<yes/no>",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc == CAI_OK) {
+    fprintf(stderr,
+            "read tool binary turn unexpectedly succeeded; starts=%d "
+            "outputs=%d\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs, writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (error.message == NULL ||
+      (strstr(error.message, "NUL byte") == NULL &&
+       strstr(error.message, "UTF-8") == NULL)) {
+    print_error("read tool llm regression binary turn", rc, &error);
+    goto done;
+  }
+  rc = CAI_OK;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  cai_session_destroy(session);
+  session = NULL;
+  rc = cai_agent_new_session(agent, &session, &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
       session,
-      "READ_TEST_2: this is a sandbox regression test. You must call "
+      "READ_TEST_3: this is a sandbox regression test. You must call "
       "read_file with path outside-link. Then answer exactly: "
       "READ_ESCAPE_DENIED tool_failed=<yes/no>",
       &error);
+  }
   if (rc == CAI_OK) {
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
   }
@@ -2284,6 +2350,7 @@ done:
   cai_client_close(client);
   unlink(symlink_path);
   unlink(outside_path);
+  unlink(binary_path);
   unlink(nested_path);
   unlink(file_path);
   rmdir(nested_dir);

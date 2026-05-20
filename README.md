@@ -743,7 +743,9 @@ and symlink/path traversal escapes are rejected after canonicalization.
 directories. `read_file` rejects directories and streams file content into a
 bounded `lonejson_spooled` result field with `path`, `resolved_path`, line
 range, `byte_count`, `file_size`, and `truncated` metadata. Prefer these tools
-over `exec_command` when an agent only needs to inspect files.
+over `exec_command` when an agent only needs to inspect files. `read_file` is
+text-only: NUL bytes and invalid UTF-8 are rejected instead of being serialized
+back through the model context.
 
 ## Integration Tests
 

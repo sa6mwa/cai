@@ -49,6 +49,12 @@ typedef struct cai_read_result {
   lonejson_spooled content;
 } cai_read_result;
 
+typedef struct cai_read_text_validator {
+  unsigned int expected;
+  unsigned int codepoint;
+  unsigned int min_codepoint;
+} cai_read_text_validator;
+
 typedef struct cai_list_files_args {
   char *path;
   int recursive;
@@ -417,6 +423,80 @@ static int cai_read_append(lonejson_spooled *spool, const char *data,
   return CAI_OK;
 }
 
+static void cai_read_text_validator_init(cai_read_text_validator *validator) {
+  memset(validator, 0, sizeof(*validator));
+}
+
+static int cai_read_text_validator_finish(cai_read_text_validator *validator,
+                                          cai_error *error) {
+  if (validator->expected != 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read_file only supports complete UTF-8 text");
+  }
+  return CAI_OK;
+}
+
+static int cai_read_validate_text_chunk(cai_read_text_validator *validator,
+                                        const char *data, size_t len,
+                                        cai_error *error) {
+  size_t i;
+
+  for (i = 0U; i < len; i++) {
+    unsigned char b;
+
+    b = (unsigned char)data[i];
+    if (b == 0U) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read_file only supports text files; NUL byte "
+                           "found");
+    }
+    if (validator->expected == 0U) {
+      if (b < 0x80U) {
+        continue;
+      }
+      if (b >= 0xC2U && b <= 0xDFU) {
+        validator->expected = 1U;
+        validator->codepoint = (unsigned int)(b & 0x1FU);
+        validator->min_codepoint = 0x80U;
+        continue;
+      }
+      if (b >= 0xE0U && b <= 0xEFU) {
+        validator->expected = 2U;
+        validator->codepoint = (unsigned int)(b & 0x0FU);
+        validator->min_codepoint = 0x800U;
+        continue;
+      }
+      if (b >= 0xF0U && b <= 0xF4U) {
+        validator->expected = 3U;
+        validator->codepoint = (unsigned int)(b & 0x07U);
+        validator->min_codepoint = 0x10000U;
+        continue;
+      }
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read_file only supports UTF-8 text files");
+    }
+    if ((b & 0xC0U) != 0x80U) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read_file only supports UTF-8 text files");
+    }
+    validator->codepoint =
+        (validator->codepoint << 6U) | (unsigned int)(b & 0x3FU);
+    validator->expected--;
+    if (validator->expected == 0U) {
+      if (validator->codepoint < validator->min_codepoint ||
+          (validator->codepoint >= 0xD800U &&
+           validator->codepoint <= 0xDFFFU) ||
+          validator->codepoint > 0x10FFFFU) {
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "read_file only supports UTF-8 text files");
+      }
+      validator->codepoint = 0U;
+      validator->min_codepoint = 0U;
+    }
+  }
+  return CAI_OK;
+}
+
 static int cai_list_array_grow(lonejson_object_array *array, size_t elem_size,
                                cai_error *error) {
   size_t new_capacity;
@@ -594,6 +674,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   long long current_line;
   long long last_line;
   long long written;
+  cai_read_text_validator validator;
   size_t nread;
   size_t i;
   size_t start;
@@ -646,7 +727,12 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   stop = 0;
   saw_any = 0;
   rc = CAI_OK;
+  cai_read_text_validator_init(&validator);
   while (!stop && (nread = fread(buffer, 1U, sizeof(buffer), fp)) > 0U) {
+    rc = cai_read_validate_text_chunk(&validator, buffer, nread, error);
+    if (rc != CAI_OK) {
+      break;
+    }
     start = 0U;
     for (i = 0U; i < nread && !stop; i++) {
       include = current_line >= start_line &&
@@ -709,6 +795,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   if (rc == CAI_OK && ferror(fp)) {
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "failed while reading file", strerror(errno));
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_text_validator_finish(&validator, error);
   }
   fclose(fp);
   if (rc != CAI_OK) {

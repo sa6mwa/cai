@@ -419,6 +419,23 @@ static void write_file_or_die(const char *path, const char *text) {
   fclose(fp);
 }
 
+static void write_bytes_or_die(const char *path, const unsigned char *data,
+                               size_t len) {
+  FILE *fp;
+
+  fp = fopen(path, "wb");
+  if (fp == NULL) {
+    perror(path);
+    exit(2);
+  }
+  if (len != 0U && fwrite(data, 1U, len, fp) != len) {
+    perror(path);
+    fclose(fp);
+    exit(2);
+  }
+  fclose(fp);
+}
+
 static char *test_spooled_to_cstr(lonejson_spooled *spool) {
   lonejson_spooled cursor;
   lonejson_error json_error;
@@ -7240,8 +7257,13 @@ static void test_read_tool(test_state *state) {
   char file_path[PATH_MAX];
   char nested_path[PATH_MAX];
   char hidden_path[PATH_MAX];
+  char binary_path[PATH_MAX];
+  char invalid_utf8_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char symlink_path[PATH_MAX];
+  static const unsigned char binary_bytes[] = {'t', 'e', 'x', 't', 0U, 'x'};
+  static const unsigned char invalid_utf8_bytes[] = {'b', 'a', 'd', 0xC3U,
+                                                     0x28U};
   cai_read_tool_config config;
   write_state writer;
   cai_error error;
@@ -7272,6 +7294,13 @@ static void test_read_tool(test_state *state) {
   write_file_or_die(nested_path, "deep\n");
   snprintf(hidden_path, sizeof(hidden_path), "%s/sub/.hidden", dir_template);
   write_file_or_die(hidden_path, "hidden\n");
+  snprintf(binary_path, sizeof(binary_path), "%s/sub/binary.bin",
+           dir_template);
+  write_bytes_or_die(binary_path, binary_bytes, sizeof(binary_bytes));
+  snprintf(invalid_utf8_path, sizeof(invalid_utf8_path),
+           "%s/sub/invalid-utf8.txt", dir_template);
+  write_bytes_or_die(invalid_utf8_path, invalid_utf8_bytes,
+                     sizeof(invalid_utf8_bytes));
   snprintf(outside_path, sizeof(outside_path),
            "/tmp/cai-read-outside-%ld.txt", (long)getpid());
   write_file_or_die(outside_path, "outside\n");
@@ -7415,6 +7444,26 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  run_read_tool_case(state, "read_reject_binary_nul", &config,
+                     "{\"path\":\"binary.bin\"}", CAI_ERR_INVALID, &writer,
+                     &error);
+  if (error.message == NULL || strstr(error.message, "NUL byte") == NULL) {
+    test_fail(state, "read_reject_binary_nul_message",
+              "missing binary rejection detail");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_read_tool_case(state, "read_reject_invalid_utf8", &config,
+                     "{\"path\":\"invalid-utf8.txt\"}", CAI_ERR_INVALID,
+                     &writer, &error);
+  if (error.message == NULL || strstr(error.message, "UTF-8") == NULL) {
+    test_fail(state, "read_reject_invalid_utf8_message",
+              "missing UTF-8 rejection detail");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   registry = NULL;
   expect_int(state, "read_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
@@ -7443,6 +7492,8 @@ static void test_read_tool(test_state *state) {
 
   unlink(symlink_path);
   unlink(outside_path);
+  unlink(invalid_utf8_path);
+  unlink(binary_path);
   unlink(hidden_path);
   unlink(nested_path);
   unlink(file_path);
