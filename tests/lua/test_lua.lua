@@ -391,6 +391,38 @@ assert_not_ok(registry:run("lua_spooled_weather", '{"city":', function()
   return true
 end), "registry run must reject invalid arguments JSON")
 
+local exec_root = "/tmp/cai-lua-exec-test"
+os.execute("rm -rf " .. exec_root)
+assert(os.execute("mkdir -p " .. exec_root .. "/sub"))
+assert_ok(registry:register_exec_tool({
+  root_path = exec_root,
+  default_workdir = exec_root,
+  sandbox_mode = cai.EXEC_SANDBOX_DISABLED,
+  timeout_ms = 1000,
+  max_timeout_ms = 1000,
+  output_memory_limit = 8,
+  output_max_bytes = 4096,
+  allow_pty = true,
+}))
+local chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"printf lua-out; printf lua-err >&2"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local exec_json = table.concat(chunks)
+assert(exec_json:match('"stdout":"lua%-out"'))
+assert(exec_json:match('"stderr":"lua%-err"'))
+assert(exec_json:match('"exit_code":0'))
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"sub","tty":null}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("/sub"))
+assert_not_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"/tmp"}', function()
+  return true
+end), "exec tool must reject workdir outside root")
+
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
 assert_ok(registry:register_todo_tool({
@@ -399,7 +431,7 @@ assert_ok(registry:register_todo_tool({
   default_board = "lua",
 }))
 
-local chunks = {}
+chunks = {}
 assert_ok(registry:run("todo_kanban", '{"operation":"help"}', function(chunk)
   chunks[#chunks + 1] = chunk
   return true

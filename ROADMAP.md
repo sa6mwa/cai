@@ -46,7 +46,11 @@ Implemented:
   `c.pkt.systems`, `lonejson`, and `libpslog` release artifacts.
 - Host dependency mode for already-installed curl/lonejson/pslog.
 - libpslog-backed client logging.
-- SearXNG, reverse-geocoding, and todo/kanban tool presets.
+- SearXNG, reverse-geocoding, todo/kanban, and opt-in command execution tool
+  presets. The command preset uses a Codex-compatible `exec_command` schema,
+  requires an embedding-owned root path, captures output into bounded
+  lonejson-spooled fields, and fails closed when configured sandboxing cannot
+  be applied.
 - Transport-neutral MCP Streamable HTTP handler for serving cai tool
   registries from host-owned HTTP servers.
 - Optional MCP `Mcp-Session-Id` lifecycle persistence through host-owned

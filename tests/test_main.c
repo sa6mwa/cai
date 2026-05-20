@@ -1,5 +1,6 @@
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/tools/exec.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -18,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -7127,6 +7129,167 @@ static void test_searxng_registry_tool(test_state *state) {
   }
 }
 
+static int run_exec_tool_case(test_state *state, const char *name,
+                              const cai_exec_tool_config *config,
+                              const char *arguments, int expected_rc,
+                              write_state *writer, cai_error *error) {
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  registry = NULL;
+  sink = NULL;
+  writer->buffer[0] = '\0';
+  writer->length = 0U;
+  writer->closed = 0;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = writer;
+  rc = cai_tool_registry_new(&registry, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_exec_tool(registry, config, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_EXEC_DEFAULT_TOOL_NAME, arguments,
+                               sink, error);
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  expect_int(state, name, rc, expected_rc);
+  return rc;
+}
+
+static void test_exec_tool(test_state *state) {
+  char dir_template[] = "/tmp/cai-exec-test-XXXXXX";
+  char child_dir[PATH_MAX];
+  cai_exec_tool_config config;
+  write_state writer;
+  cai_error error;
+  cai_tool_registry *registry;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "exec_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  snprintf(child_dir, sizeof(child_dir), "%s/sub", dir_template);
+  if (mkdir(child_dir, 0700) != 0) {
+    test_fail(state, "exec_mkdir", "mkdir failed");
+    rmdir(dir_template);
+    return;
+  }
+  cai_error_init(&error);
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.sandbox_mode = CAI_EXEC_SANDBOX_DISABLED;
+  config.timeout_ms = 1000L;
+  config.max_timeout_ms = 1000L;
+  config.output_memory_limit = 8U;
+  config.output_max_bytes = 4096U;
+
+  if (run_exec_tool_case(state, "exec_success", &config,
+                         "{\"cmd\":\"printf stdout; printf stderr >&2\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_success_stdout", writer.buffer,
+                  "\"stdout\":\"stdout\"");
+    expect_substr(state, "exec_success_stderr", writer.buffer,
+                  "\"stderr\":\"stderr\"");
+    expect_substr(state, "exec_success_exit", writer.buffer,
+                  "\"exit_code\":0");
+    expect_substr(state, "exec_success_sandbox", writer.buffer,
+                  "\"sandbox\":\"disabled\"");
+    expect_valid_json(state, "exec_success_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_exec_tool_case(state, "exec_workdir_relative", &config,
+                         "{\"cmd\":\"pwd\",\"workdir\":\"sub\"}", CAI_OK,
+                         &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_workdir_relative_output", writer.buffer,
+                  "/sub");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_exec_tool_case(state, "exec_reject_escape", &config,
+                     "{\"cmd\":\"pwd\",\"workdir\":\"/tmp\"}",
+                     CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.timeout_ms = 50L;
+  config.max_timeout_ms = 50L;
+  if (run_exec_tool_case(state, "exec_timeout", &config,
+                         "{\"cmd\":\"sleep 1\"}", CAI_OK, &writer, &error) ==
+      CAI_OK) {
+    expect_substr(state, "exec_timeout_flag", writer.buffer,
+                  "\"timed_out\":true");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.timeout_ms = 1000L;
+  config.max_timeout_ms = 1000L;
+  config.output_max_bytes = 4U;
+  if (run_exec_tool_case(state, "exec_output_cap", &config,
+                         "{\"cmd\":\"printf 123456789\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    expect_substr(state, "exec_output_cap_stdout", writer.buffer,
+                  "\"stdout\":\"1234\"");
+    expect_substr(state, "exec_output_cap_truncated", writer.buffer,
+                  "\"stdout_truncated\":true");
+    expect_substr(state, "exec_output_cap_original", writer.buffer,
+                  "\"original_byte_count\":9");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.output_max_bytes = 4096U;
+  config.allow_pty = 1;
+  if (run_exec_tool_case(state, "exec_pty", &config,
+                         "{\"cmd\":\"printf pty-ok\",\"tty\":true}", CAI_OK,
+                         &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_pty_output", writer.buffer, "pty-ok");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.sandbox_mode = CAI_EXEC_SANDBOX_REQUIRED;
+  if (run_exec_tool_case(state, "exec_sandbox_required", &config,
+                         "{\"cmd\":\"printf sandbox\"}", CAI_OK, &writer,
+                         &error) != CAI_OK) {
+    expect_substr(state, "exec_sandbox_required_error", error.message,
+                  "bubblewrap");
+  } else {
+    expect_substr(state, "exec_sandbox_required_mode", writer.buffer,
+                  "\"sandbox\":\"bwrap\"");
+  }
+  cai_error_cleanup(&error);
+
+  registry = NULL;
+  cai_error_init(&error);
+  config.sandbox_mode = CAI_EXEC_SANDBOX_DISABLED;
+  expect_int(state, "exec_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "exec_registry_register",
+             cai_tool_registry_register_exec_tool(registry, &config, &error),
+             CAI_OK);
+  if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"cmd\"") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"tty\"") == NULL) {
+    test_fail(state, "exec_schema", "schema missing Codex-compatible fields");
+  }
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(child_dir);
+  rmdir(dir_template);
+}
+
 static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
                                 size_t max_bytes, int expected_rc,
                                 write_state *writer, cai_error *error) {
@@ -11332,6 +11495,7 @@ int main(void) {
   test_todo_tool(&state);
   test_todo_callback_store(&state);
   test_searxng_registry_tool(&state);
+  test_exec_tool(&state);
   test_agent_searxng_tool_auto_run(&state);
   test_agent_multi_tool_auto_run(&state);
   test_agent_tool_auto_round_limit(&state);

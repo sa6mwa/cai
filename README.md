@@ -694,6 +694,26 @@ Moving an item into `in_process` respects the board's WIP limit and reports
 `ok=false` with `code="wip_limit_exceeded"` as a normal structured tool result,
 not as a transport failure.
 
+Agents or registries can register the opt-in command execution preset by
+including `<cai/tools/exec.h>` and calling `cai_agent_register_exec_tool` or
+`cai_tool_registry_register_exec_tool`. The default tool name is
+`exec_command`, intentionally matching the Codex-compatible model-facing
+shape. Its required input is `cmd`; optional inputs are `workdir`, `shell`,
+`tty`, `login`, `timeout_ms`, `yield_time_ms`, and `max_output_tokens`.
+`yield_time_ms` and `max_output_tokens` are accepted for compatibility, but
+this preset returns after the process exits and enforces byte caps from
+`cai_exec_tool_config`.
+
+Command execution is never registered by default. Callers must provide a
+`root_path`; every requested `workdir` is resolved under that root before
+execution. `sandbox_mode` defaults to `CAI_EXEC_SANDBOX_REQUIRED`. On Linux the
+first sandbox backend is `bwrap`; when sandboxing is required and `bwrap` is
+not available, the tool fails closed. `CAI_EXEC_SANDBOX_DISABLED` is an
+explicit opt-in for trusted embeddings. Output is captured through bounded
+`lonejson_spooled` fields and serialized as structured JSON with `stdout`,
+`stderr`, combined `output`, exit/signal metadata, timeout state, truncation
+flags, effective cwd, and the sandbox backend used.
+
 ## Integration Tests
 
 The default test suite is offline. Integration tests intentionally spend API tokens and

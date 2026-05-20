@@ -1,5 +1,6 @@
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/tools/exec.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
@@ -294,6 +295,23 @@ static int cai_lua_opt_int_field(lua_State *L, int index, const char *name,
   lua_getfield(L, index, name);
   if (!lua_isnil(L, -1)) {
     value = (int)luaL_checkinteger(L, -1);
+  }
+  lua_pop(L, 1);
+  return value;
+}
+
+static int cai_lua_opt_bool_field(lua_State *L, int index, const char *name,
+                                  int fallback) {
+  int value;
+  index = lua_absindex(L, index);
+  value = fallback;
+  lua_getfield(L, index, name);
+  if (!lua_isnil(L, -1)) {
+    if (lua_isboolean(L, -1)) {
+      value = lua_toboolean(L, -1) ? 1 : 0;
+    } else {
+      value = (int)luaL_checkinteger(L, -1);
+    }
   }
   lua_pop(L, 1);
   return value;
@@ -2425,6 +2443,36 @@ static void cai_lua_todo_config(lua_State *L, int index,
       cai_lua_opt_size_field(L, index, "max_result_items", 0u);
 }
 
+static void cai_lua_exec_config(lua_State *L, int index,
+                                cai_exec_tool_config *config) {
+  memset(config, 0, sizeof(*config));
+  if (!lua_istable(L, index)) {
+    return;
+  }
+  config->name = cai_lua_opt_string_field(L, index, "name", NULL);
+  config->description = cai_lua_opt_string_field(L, index, "description", NULL);
+  config->root_path = cai_lua_opt_string_field(L, index, "root_path", NULL);
+  config->default_workdir =
+      cai_lua_opt_string_field(L, index, "default_workdir", NULL);
+  config->shell_path = cai_lua_opt_string_field(L, index, "shell_path", NULL);
+  config->bwrap_path = cai_lua_opt_string_field(L, index, "bwrap_path", NULL);
+  config->sandbox_mode =
+      cai_lua_opt_int_field(L, index, "sandbox_mode", CAI_EXEC_SANDBOX_REQUIRED);
+  config->allow_network = cai_lua_opt_bool_field(L, index, "allow_network", 0);
+  config->allow_pty = cai_lua_opt_bool_field(L, index, "allow_pty", 0);
+  config->allow_login_shell =
+      cai_lua_opt_bool_field(L, index, "allow_login_shell", 0);
+  config->timeout_ms = cai_lua_opt_long_field(L, index, "timeout_ms", 0);
+  config->max_timeout_ms =
+      cai_lua_opt_long_field(L, index, "max_timeout_ms", 0);
+  config->output_memory_limit =
+      cai_lua_opt_size_field(L, index, "output_memory_limit", 0u);
+  config->output_max_bytes =
+      cai_lua_opt_size_field(L, index, "output_max_bytes", 0u);
+  config->output_spool_dir =
+      cai_lua_opt_string_field(L, index, "output_spool_dir", NULL);
+}
+
 static int cai_lua_agent_register_revgeo(lua_State *L) {
   cai_lua_agent *self;
   cai_revgeo_tool_config config;
@@ -2458,6 +2506,18 @@ static int cai_lua_agent_register_todo(lua_State *L) {
   cai_lua_todo_config(L, 2, &config);
   cai_error_init(&error);
   rc = cai_agent_register_todo_tool(self->ptr, &config, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_register_exec(lua_State *L) {
+  cai_lua_agent *self;
+  cai_exec_tool_config config;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_lua_exec_config(L, 2, &config);
+  cai_error_init(&error);
+  rc = cai_agent_register_exec_tool(self->ptr, &config, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -3534,6 +3594,18 @@ static int cai_lua_registry_register_todo(lua_State *L) {
   cai_lua_todo_config(L, 2, &config);
   cai_error_init(&error);
   rc = cai_tool_registry_register_todo_tool(self->ptr, &config, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_registry_register_exec(lua_State *L) {
+  cai_lua_registry *self;
+  cai_exec_tool_config config;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_registry(L, 1);
+  cai_lua_exec_config(L, 2, &config);
+  cai_error_init(&error);
+  rc = cai_tool_registry_register_exec_tool(self->ptr, &config, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5096,6 +5168,7 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"add_hosted_tool_json", cai_lua_agent_add_hosted_tool_json},
     {"add_simple_hosted_tool", cai_lua_agent_add_simple_hosted_tool},
     {"add_hosted_mcp_tool", cai_lua_agent_add_hosted_mcp_tool},
+    {"register_exec_tool", cai_lua_agent_register_exec},
     {"register_revgeo_tool", cai_lua_agent_register_revgeo},
     {"register_searxng_tool", cai_lua_agent_register_searxng},
     {"register_todo_tool", cai_lua_agent_register_todo},
@@ -5171,6 +5244,7 @@ static const luaL_Reg cai_lua_spool_reader_methods[] = {
 static const luaL_Reg cai_lua_registry_methods[] = {
     {"register_raw_tool", cai_lua_registry_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_registry_register_raw_spooled_tool},
+    {"register_exec_tool", cai_lua_registry_register_exec},
     {"register_revgeo_tool", cai_lua_registry_register_revgeo},
     {"register_searxng_tool", cai_lua_registry_register_searxng},
     {"register_todo_tool", cai_lua_registry_register_todo},
@@ -5348,6 +5422,9 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("CONTINUITY_CLIENT_HISTORY",
                       CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
+  CAI_LUA_SET_INTEGER("EXEC_SANDBOX_REQUIRED", CAI_EXEC_SANDBOX_REQUIRED);
+  CAI_LUA_SET_INTEGER("EXEC_SANDBOX_BEST_EFFORT", CAI_EXEC_SANDBOX_BEST_EFFORT);
+  CAI_LUA_SET_INTEGER("EXEC_SANDBOX_DISABLED", CAI_EXEC_SANDBOX_DISABLED);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("OPENAI_API_KEY_ENV", CAI_OPENAI_API_KEY_ENV);
   CAI_LUA_SET_STRING("OPENROUTER_API_KEY_ENV", CAI_OPENROUTER_API_KEY_ENV);
