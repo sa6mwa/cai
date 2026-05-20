@@ -2079,12 +2079,15 @@ done:
 static int run_read_tool_llm_regression(void) {
   cai_agent_config agent_config;
   cai_run_options run_options;
+  cai_run_options list_run_options;
   cai_client_config client_config;
   cai_read_tool_config read_config;
   cai_stream_sinks stream_sinks;
   cai_sink_callbacks sink_callbacks;
   cai_client *client;
   cai_agent *agent;
+  cai_agent *list_hint_agent;
+  cai_agent *forced_read_agent;
   cai_session *session;
   cai_sink *sink;
   cai_error error;
@@ -2105,12 +2108,15 @@ static int run_read_tool_llm_regression(void) {
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
   cai_run_options_init(&run_options);
+  cai_run_options_init(&list_run_options);
   cai_stream_sinks_init(&stream_sinks);
   memset(&read_config, 0, sizeof(read_config));
   memset(&event_state, 0, sizeof(event_state));
   memset(&writer, 0, sizeof(writer));
   client = NULL;
   agent = NULL;
+  list_hint_agent = NULL;
+  forced_read_agent = NULL;
   session = NULL;
   sink = NULL;
   fp = NULL;
@@ -2238,7 +2244,7 @@ static int run_read_tool_llm_regression(void) {
         "READ_TEST_1: list files recursively from '.', find notes.txt, then "
         "read notes.txt with start_line=2 and end_line=3. Then answer "
         "exactly: READ_TOOL_OK saw_notes=<yes/no> saw_beta=<yes/no> "
-        "saw_alpha=<yes/no>",
+        "saw_gamma=<yes/no>",
         &error);
   }
   if (rc == CAI_OK) {
@@ -2260,8 +2266,8 @@ static int run_read_tool_llm_regression(void) {
        strstr(writer.buffer, "saw_notes=<yes>") == NULL) ||
       (strstr(writer.buffer, "saw_beta=yes") == NULL &&
        strstr(writer.buffer, "saw_beta=<yes>") == NULL) ||
-      (strstr(writer.buffer, "saw_alpha=no") == NULL &&
-       strstr(writer.buffer, "saw_alpha=<no>") == NULL)) {
+      (strstr(writer.buffer, "saw_gamma=yes") == NULL &&
+       strstr(writer.buffer, "saw_gamma=<yes>") == NULL)) {
     fprintf(stderr,
             "read tool first turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
@@ -2277,11 +2283,70 @@ static int run_read_tool_llm_regression(void) {
   event_state.outputs = 0;
   cai_session_destroy(session);
   session = NULL;
-  rc = cai_agent_new_session(agent, &session, &error);
+  agent_config.tool_choice_json = NULL;
+  agent_config.max_tool_calls = 0;
+  agent_config.disable_parallel_tool_calls = 0;
+  rc = cai_client_new_agent(client, &agent_config, &list_hint_agent, &error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_list_files_tool(list_hint_agent, &read_config,
+                                            &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(list_hint_agent, &session, &error);
+  }
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "READ_TEST_2: this is a binary-file regression test. Do not answer "
+        "READ_TEST_2: call list_files recursively from '.', inspect the "
+        "metadata for binary.bin, and answer exactly: "
+        "READ_LIST_HINT binary_candidate=yes read_attempted=no",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    list_run_options = run_options;
+    rc = cai_session_stream_auto(session, &list_run_options, &stream_sinks,
+                                 &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("read tool llm regression list hint turn", rc, &error);
+    goto done;
+  }
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
+      strstr(event_state.output.buffer, "binary.bin") == NULL ||
+      strstr(event_state.output.buffer, "\"binary_candidate\":true") == NULL ||
+      strstr(writer.buffer, "READ_LIST_HINT") == NULL ||
+      strstr(writer.buffer, "binary_candidate=yes") == NULL ||
+      strstr(writer.buffer, "read_attempted=no") == NULL) {
+    fprintf(stderr,
+            "read tool list hint turn failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  cai_session_destroy(session);
+  session = NULL;
+  agent_config.tool_choice_json =
+      "{\"type\":\"function\",\"name\":\"read_file\"}";
+  agent_config.max_tool_calls = 1;
+  agent_config.disable_parallel_tool_calls = 1;
+  rc = cai_client_new_agent(client, &agent_config, &forced_read_agent, &error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_read_tool(forced_read_agent, &read_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(forced_read_agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "READ_TEST_3: this is a binary-file regression test. Do not answer "
         "from these instructions alone. You must call the read_file tool with "
         "path binary.bin before responding. If the tool rejects the read, "
         "answer exactly: READ_BINARY_DENIED tool_failed=yes",
@@ -2323,7 +2388,7 @@ static int run_read_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
       session,
-      "READ_TEST_3: this is a sandbox regression test. Do not answer from "
+      "READ_TEST_4: this is a sandbox regression test. Do not answer from "
       "these instructions alone. You must call the read_file tool with path "
       "outside-link before responding. If the tool rejects the read, answer "
       "exactly: READ_ESCAPE_DENIED tool_failed=yes",
@@ -2358,6 +2423,8 @@ done:
   }
   cai_sink_close(sink);
   cai_session_destroy(session);
+  cai_agent_destroy(forced_read_agent);
+  cai_agent_destroy(list_hint_agent);
   cai_agent_destroy(agent);
   cai_client_close(client);
   unlink(symlink_path);

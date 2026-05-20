@@ -740,12 +740,15 @@ Both tools require a `root_path`. Relative paths are resolved from
 `default_workdir` or the root, absolute paths must already be inside the root,
 and symlink/path traversal escapes are rejected after canonicalization.
 `list_files` returns bounded file metadata entries and does not follow symlink
-directories. `read_file` rejects directories and streams file content into a
-bounded `lonejson_spooled` result field with `path`, `resolved_path`, line
-range, `byte_count`, `file_size`, and `truncated` metadata. Prefer these tools
-over `exec_command` when an agent only needs to inspect files. `read_file` is
-text-only: NUL bytes and invalid UTF-8 are rejected instead of being serialized
-back through the model context.
+directories. Regular files include `text_candidate` and `binary_candidate`
+hints from a bounded prefix scan so an agent can avoid reading obvious binary
+or control-character payloads. `read_file` rejects directories and streams file
+content into a bounded `lonejson_spooled` result field with `path`,
+`resolved_path`, line range, `byte_count`, `file_size`, and `truncated`
+metadata. Prefer these tools over `exec_command` when an agent only needs to
+inspect files. `read_file` is text-only: NUL bytes, invalid UTF-8, and control
+characters other than tab/newline/carriage return/form feed are rejected instead
+of being serialized back through the model context.
 
 ## Integration Tests
 

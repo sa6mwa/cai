@@ -19,6 +19,7 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_READ_DEFAULT_CONTENT_MEMORY_LIMIT (128U * 1024U)
 #define CAI_READ_DEFAULT_CONTENT_MAX_BYTES (1024U * 1024U)
 #define CAI_LIST_FILES_DEFAULT_MAX_ENTRIES 200LL
+#define CAI_LIST_FILES_TEXT_SCAN_BYTES 4096U
 
 typedef struct cai_read_context {
   char *root_path;
@@ -72,6 +73,10 @@ typedef struct cai_list_files_entry {
   char *type;
   long long size;
   int has_size;
+  int text_candidate;
+  int has_text_candidate;
+  int binary_candidate;
+  int has_binary_candidate;
 } cai_list_files_entry;
 
 typedef struct cai_list_files_result {
@@ -122,7 +127,11 @@ static const lonejson_field cai_list_files_entry_fields[] = {
                                     "resolved_path"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, type, "type"),
-    LONEJSON_FIELD_I64_PRESENT(cai_list_files_entry, size, has_size, "size")};
+    LONEJSON_FIELD_I64_PRESENT(cai_list_files_entry, size, has_size, "size"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_list_files_entry, text_candidate,
+                                has_text_candidate, "text_candidate"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_list_files_entry, binary_candidate,
+                                has_binary_candidate, "binary_candidate")};
 LONEJSON_MAP_DEFINE(cai_list_files_entry_map, cai_list_files_entry,
                     cai_list_files_entry_fields);
 
@@ -153,9 +162,12 @@ static const char cai_read_schema_json[] =
     "}";
 
 static const char cai_read_default_description[] =
-    "Reads a UTF-8/text file from the configured sandbox root. Use start_line "
-    "and end_line for large files. Paths must stay inside the configured root; "
-    "symlink and absolute-path escapes are rejected.";
+    "Reads a UTF-8 text file from the configured sandbox root. Use start_line "
+    "and end_line for large files. Use list_files first when discovering "
+    "paths and avoid read_file when list_files reports binary_candidate=true. "
+    "NUL bytes, invalid UTF-8, and control characters other than tab/newline/"
+    "carriage return/form feed are rejected. Paths must stay inside the "
+    "configured root; symlink and absolute-path escapes are rejected.";
 
 static const char cai_list_files_schema_json[] =
     "{"
@@ -174,7 +186,9 @@ static const char cai_list_files_default_description[] =
     "Lists files and directories from the configured sandbox root. Use this "
     "before read_file when you need to discover paths. Paths must stay inside "
     "the configured root; symlink and absolute-path escapes are rejected. "
-    "Recursive listing is bounded by max_entries.";
+    "Recursive listing is bounded by max_entries. Regular files include "
+    "text_candidate and binary_candidate hints from a bounded prefix scan; "
+    "avoid read_file for entries with binary_candidate=true.";
 
 static const char *cai_read_default_string(const char *value,
                                            const char *fallback) {
@@ -436,6 +450,23 @@ static int cai_read_text_validator_finish(cai_read_text_validator *validator,
   return CAI_OK;
 }
 
+static int cai_read_codepoint_allowed(unsigned int codepoint) {
+  if (codepoint == 0x09U || codepoint == 0x0AU || codepoint == 0x0DU ||
+      codepoint == 0x0CU) {
+    return 1;
+  }
+  if (codepoint < 0x20U || (codepoint >= 0x7FU && codepoint <= 0x9FU)) {
+    return 0;
+  }
+  return 1;
+}
+
+static int cai_read_reject_control(cai_error *error) {
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "read_file only supports text files without control "
+                       "characters");
+}
+
 static int cai_read_validate_text_chunk(cai_read_text_validator *validator,
                                         const char *data, size_t len,
                                         cai_error *error) {
@@ -452,6 +483,9 @@ static int cai_read_validate_text_chunk(cai_read_text_validator *validator,
     }
     if (validator->expected == 0U) {
       if (b < 0x80U) {
+        if (!cai_read_codepoint_allowed((unsigned int)b)) {
+          return cai_read_reject_control(error);
+        }
         continue;
       }
       if (b >= 0xC2U && b <= 0xDFU) {
@@ -490,6 +524,9 @@ static int cai_read_validate_text_chunk(cai_read_text_validator *validator,
         return cai_set_error(error, CAI_ERR_INVALID,
                              "read_file only supports UTF-8 text files");
       }
+      if (!cai_read_codepoint_allowed(validator->codepoint)) {
+        return cai_read_reject_control(error);
+      }
       validator->codepoint = 0U;
       validator->min_codepoint = 0U;
     }
@@ -515,6 +552,9 @@ cai_read_text_complete_prefix(const cai_read_text_validator *validator,
     }
     if (probe.expected == 0U) {
       if (b < 0x80U) {
+        if (!cai_read_codepoint_allowed((unsigned int)b)) {
+          break;
+        }
         prefix = i + 1U;
         continue;
       }
@@ -547,6 +587,9 @@ cai_read_text_complete_prefix(const cai_read_text_validator *validator,
       if (probe.codepoint < probe.min_codepoint ||
           (probe.codepoint >= 0xD800U && probe.codepoint <= 0xDFFFU) ||
           probe.codepoint > 0x10FFFFU) {
+        break;
+      }
+      if (!cai_read_codepoint_allowed(probe.codepoint)) {
         break;
       }
       probe.codepoint = 0U;
@@ -620,6 +663,43 @@ static const char *cai_list_relative_path(const cai_read_context *ctx,
   return resolved_path;
 }
 
+static void cai_list_classify_regular_file(cai_list_files_entry *entry,
+                                           const char *resolved_path) {
+  cai_read_text_validator validator;
+  FILE *fp;
+  char buffer[CAI_LIST_FILES_TEXT_SCAN_BYTES];
+  size_t nread;
+  cai_error ignored;
+  int text;
+
+  entry->has_text_candidate = 1;
+  entry->has_binary_candidate = 1;
+  entry->text_candidate = 0;
+  entry->binary_candidate = 1;
+
+  fp = fopen(resolved_path, "rb");
+  if (fp == NULL) {
+    return;
+  }
+
+  cai_error_init(&ignored);
+  cai_read_text_validator_init(&validator);
+  nread = fread(buffer, 1U, sizeof(buffer), fp);
+  text = 0;
+  if (ferror(fp) == 0) {
+    text = cai_read_validate_text_chunk(&validator, buffer, nread, &ignored) ==
+           CAI_OK;
+    if (text && feof(fp)) {
+      text = cai_read_text_validator_finish(&validator, &ignored) == CAI_OK;
+    }
+  }
+  cai_error_cleanup(&ignored);
+  fclose(fp);
+
+  entry->text_candidate = text ? 1 : 0;
+  entry->binary_candidate = text ? 0 : 1;
+}
+
 static int cai_list_add_entry(const cai_read_context *ctx,
                               cai_list_files_result *out, const char *name,
                               const char *resolved_path, const struct stat *st,
@@ -655,6 +735,7 @@ static int cai_list_add_entry(const cai_read_context *ctx,
   if (rc == CAI_OK && S_ISREG(st->st_mode)) {
     entry->size = (long long)st->st_size;
     entry->has_size = 1;
+    cai_list_classify_regular_file(entry, resolved_path);
   }
   if (rc == CAI_OK) {
     out->entries.count++;

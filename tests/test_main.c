@@ -7259,10 +7259,13 @@ static void test_read_tool(test_state *state) {
   char hidden_path[PATH_MAX];
   char utf8_path[PATH_MAX];
   char binary_path[PATH_MAX];
+  char control_path[PATH_MAX];
   char invalid_utf8_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   static const unsigned char binary_bytes[] = {'t', 'e', 'x', 't', 0U, 'x'};
+  static const unsigned char control_bytes[] = {'t', 'e', 'x', 't', 0x1BU,
+                                                'x'};
   static const unsigned char invalid_utf8_bytes[] = {'b', 'a', 'd', 0xC3U,
                                                      0x28U};
   static const unsigned char utf8_bytes[] = {'a', 0xC3U, 0xA9U, '\n'};
@@ -7301,6 +7304,9 @@ static void test_read_tool(test_state *state) {
   snprintf(binary_path, sizeof(binary_path), "%s/sub/binary.bin",
            dir_template);
   write_bytes_or_die(binary_path, binary_bytes, sizeof(binary_bytes));
+  snprintf(control_path, sizeof(control_path), "%s/sub/control.txt",
+           dir_template);
+  write_bytes_or_die(control_path, control_bytes, sizeof(control_bytes));
   snprintf(invalid_utf8_path, sizeof(invalid_utf8_path),
            "%s/sub/invalid-utf8.txt", dir_template);
   write_bytes_or_die(invalid_utf8_path, invalid_utf8_bytes,
@@ -7340,6 +7346,16 @@ static void test_read_tool(test_state *state) {
                                &error) == CAI_OK) {
     expect_substr(state, "list_files_alpha", writer.buffer,
                   "\"path\":\"sub/alpha.txt\"");
+    expect_substr(state, "list_files_alpha_text_candidate", writer.buffer,
+                  "\"text_candidate\":true");
+    expect_substr(state, "list_files_alpha_binary_candidate", writer.buffer,
+                  "\"binary_candidate\":false");
+    expect_substr(state, "list_files_binary_path", writer.buffer,
+                  "\"path\":\"sub/binary.bin\"");
+    expect_substr(state, "list_files_binary_candidate", writer.buffer,
+                  "\"binary_candidate\":true");
+    expect_substr(state, "list_files_control_path", writer.buffer,
+                  "\"path\":\"sub/control.txt\"");
     expect_substr(state, "list_files_nested_dir", writer.buffer,
                   "\"type\":\"directory\"");
     if (strstr(writer.buffer, ".hidden") != NULL) {
@@ -7470,6 +7486,16 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  run_read_tool_case(state, "read_reject_control_char", &config,
+                     "{\"path\":\"control.txt\"}", CAI_ERR_INVALID, &writer,
+                     &error);
+  if (error.message == NULL || strstr(error.message, "control") == NULL) {
+    test_fail(state, "read_reject_control_char_message",
+              "missing control-character rejection detail");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   run_read_tool_case(state, "read_reject_invalid_utf8", &config,
                      "{\"path\":\"invalid-utf8.txt\"}", CAI_ERR_INVALID,
                      &writer, &error);
@@ -7509,6 +7535,7 @@ static void test_read_tool(test_state *state) {
   unlink(symlink_path);
   unlink(outside_path);
   unlink(invalid_utf8_path);
+  unlink(control_path);
   unlink(binary_path);
   unlink(utf8_path);
   unlink(hidden_path);
