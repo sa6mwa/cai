@@ -68,7 +68,8 @@ local agent = ok(client:new_agent({
     "for managing a local kanban board. Use search for current, external, " ..
     "or source-backed information and cite URLs from tool results. Use " ..
     "todo_kanban when the user asks you to remember, plan, list, move, " ..
-    "limit, or archive work.",
+    "limit, or archive work. todo_kanban has a default board; omit " ..
+    "board_id and board_name for ordinary single-board usage.",
   reasoning_effort = cai.REASONING_EFFORT_LOW,
   reasoning_summary = cai.REASONING_SUMMARY_AUTO,
   prompt_cache_key = "cai:example:lua-terminal-chat:v1",

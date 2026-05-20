@@ -25,20 +25,21 @@
 #define CAI_TODO_INITIAL_STORE "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}"
 #define CAI_TODO_DESCRIPTION                                                  \
   "Persistent kanban board tool for planning work. Start with operation=help "\
-  "when uncertain. Use list_boards to discover board IDs, add_item to add "   \
-  "work, current_work to inspect in_process work, move_item to move between " \
-  "todo/in_process, complete_item to archive done work, and set_wip_limit to "\
-  "limit WIP. Prefer returned board_id/item_id. wip_limit_exceeded is a "     \
-  "normal structured result."
+  "when uncertain. A configured default board always exists and is used when "\
+  "board_id/board_name are omitted. Use list_boards to discover board IDs, "  \
+  "add_item to add work, current_work to inspect in_process work, move_item " \
+  "to move between todo/in_process, complete_item to archive done work, and " \
+  "set_wip_limit to limit WIP. Prefer returned board_id/item_id. "            \
+  "wip_limit_exceeded is a normal structured result."
 #define CAI_TODO_HELP_TEXT                                                    \
-  "todo_kanban usage: list_boards discovers boards and IDs. create_board "    \
-  "accepts board_name and optional wip_limit. add_item requires title and "   \
-  "accepts board_id or board_name, description, status=todo|in_process. "     \
-  "current_work lists only in_process items; list_board lists all active "    \
-  "items. move_item requires item_id and status. "                            \
-  "complete_item archives done work. set_wip_limit requires board and "       \
-  "wip_limit. WIP denial returns code=wip_limit_exceeded. "                   \
-  "Always use returned board_id/item_id."
+  "todo_kanban usage: default board always exists; omit board_id and "        \
+  "board_name to use it, so add_item can be called with only operation and "  \
+  "title. list_boards discovers boards and IDs. create_board accepts "        \
+  "board_name and optional wip_limit. add_item accepts description and "       \
+  "status=todo|in_process. current_work lists in_process; list_board lists "  \
+  "active items. move_item requires item_id and status. complete_item "       \
+  "archives done work. WIP denial is code=wip_limit_exceeded. Always "        \
+  "use returned board_id/item_id."
 
 typedef struct cai_todo_context {
   cai_todo_store_callbacks store;
@@ -1704,6 +1705,96 @@ static lonejson_status cai_todo_append_board_cb(
   return emit(emit_user, &source, error);
 }
 
+static int cai_todo_board_arg_is_default(cai_todo_context *ctx,
+                                         const cai_todo_args *args) {
+  const char *board_name;
+
+  if (ctx == NULL || args == NULL ||
+      (args->board_id != NULL && args->board_id[0] != '\0')) {
+    return 0;
+  }
+  board_name = cai_todo_arg_string(args->board_name, ctx->default_board);
+  return cai_todo_streq(board_name, ctx->default_board);
+}
+
+static int cai_todo_ensure_board(cai_todo_context *ctx, void *txn,
+                                 const char *name, cai_todo_board *out,
+                                 long long *in_process, long long *items,
+                                 long long wip_limit, int has_wip_limit,
+                                 int *created, cai_error *error) {
+  cai_todo_rewrite_state state;
+  lonejson_array_rewrite_options options;
+  char id[32];
+  int rc;
+
+  if (created != NULL) {
+    *created = 0;
+  }
+  rc = cai_todo_find_board(ctx, txn, NULL, name, out, in_process, items, error);
+  if (rc != CAI_TODO_FOUND_NONE) {
+    return rc;
+  }
+
+  memset(&state, 0, sizeof(state));
+  memset(&options, 0, sizeof(options));
+  cai_todo_board_init(&state.board);
+  rc = cai_todo_generate_id(ctx, txn, id, error);
+  if (rc == CAI_OK) {
+    rc = cai_todo_set_board(&state.board, id, name, wip_limit, has_wip_limit,
+                            (long long)time(NULL), error);
+  }
+  if (rc == CAI_OK) {
+    options.append = cai_todo_append_board_cb;
+    options.user = &state;
+    rc = cai_todo_rewrite(ctx, txn, "boards", &options, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_todo_copy_board(out, &state.board, error);
+  }
+  if (rc == CAI_OK) {
+    *in_process = 0;
+    *items = 0;
+    if (created != NULL) {
+      *created = 1;
+    }
+  }
+  cai_todo_board_cleanup(&state.board);
+  return rc;
+}
+
+static int cai_todo_ensure_default_board_committed(cai_todo_context *ctx,
+                                                   cai_error *error) {
+  cai_todo_board board;
+  cai_todo_rewrite_state update_state;
+  lonejson_array_rewrite_options update_options;
+  long long in_process;
+  long long items;
+  void *txn;
+  int created;
+  int rc;
+
+  cai_todo_board_init(&board);
+  memset(&update_state, 0, sizeof(update_state));
+  memset(&update_options, 0, sizeof(update_options));
+  in_process = 0;
+  items = 0;
+  txn = NULL;
+  rc = cai_todo_store_begin(ctx, &txn, error);
+  if (rc == CAI_OK) {
+    rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &board,
+                               &in_process, &items, -1, 0, &created, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_todo_store_commit(ctx, txn, error);
+    txn = NULL;
+  }
+  if (txn != NULL) {
+    cai_todo_store_rollback(ctx, txn);
+  }
+  cai_todo_board_cleanup(&board);
+  return rc;
+}
+
 static lonejson_status cai_todo_append_item_cb(
     void *user, const lonejson_array_rewrite_context *context,
     lonejson_array_rewrite_emit_fn emit, void *emit_user,
@@ -1809,55 +1900,76 @@ static lonejson_status cai_todo_move_item_cb(
 static int cai_todo_create_board(cai_todo_context *ctx,
                                  const cai_todo_args *args,
                                  cai_todo_result *result, cai_error *error) {
-  cai_todo_rewrite_state state;
-  lonejson_array_rewrite_options options;
-  char id[32];
+  cai_todo_board board;
+  cai_todo_rewrite_state update_state;
+  lonejson_array_rewrite_options update_options;
+  long long in_process;
+  long long items;
   const char *name;
   void *txn;
+  int created;
   int rc;
 
-  memset(&state, 0, sizeof(state));
-  memset(&options, 0, sizeof(options));
-  cai_todo_board_init(&state.board);
+  cai_todo_board_init(&board);
+  memset(&update_state, 0, sizeof(update_state));
+  memset(&update_options, 0, sizeof(update_options));
+  in_process = 0;
+  items = 0;
   txn = NULL;
+  created = 0;
   rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc != CAI_OK) {
-    cai_todo_board_cleanup(&state.board);
+    cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_generate_id(ctx, txn, id, error);
   name = cai_todo_arg_string(args->board_name, ctx->default_board);
   if (rc == CAI_OK) {
-    rc = cai_todo_set_board(&state.board, id, name, args->wip_limit,
-                            args->has_wip_limit, (long long)time(NULL), error);
+    rc = cai_todo_ensure_board(ctx, txn, name, &board, &in_process, &items,
+                               args->wip_limit, args->has_wip_limit, &created,
+                               error);
   }
-  if (rc == CAI_OK) {
-    options.append = cai_todo_append_board_cb;
-    options.user = &state;
-    rc = cai_todo_rewrite(ctx, txn, "boards", &options, error);
+  if (rc == CAI_OK && !created && args->has_wip_limit) {
+    update_state.ctx = ctx;
+    update_state.args = args;
+    update_state.now_unix = (long long)time(NULL);
+    update_options.item_map = &cai_todo_board_map;
+    update_options.item_dst = &update_state.board;
+    update_options.item = cai_todo_update_board_cb;
+    update_options.user = &update_state;
+    rc = cai_todo_rewrite(ctx, txn, "boards", &update_options, error);
+    if (rc == CAI_OK && update_state.found) {
+      board.wip_limit = args->wip_limit;
+      board.has_wip_limit = 1;
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_todo_store_commit(ctx, txn, error);
     txn = NULL;
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_set_result(result, args->operation, 1, "ok", "board created",
+    rc = cai_todo_set_result(result, args->operation, 1, "ok",
+                             created ? "board created"
+                                     : "board already exists",
                              error);
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&result->board_id, id, error);
+    rc = cai_todo_copy_string(&result->board_id, board.id, error);
   }
   if (rc == CAI_OK) {
     rc = cai_todo_copy_string(&result->board_name, name, error);
   }
-  if (rc == CAI_OK && args->has_wip_limit) {
-    result->wip_limit = args->wip_limit;
+  if (rc == CAI_OK && board.has_wip_limit && board.wip_limit >= 0) {
+    result->wip_limit = board.wip_limit;
     result->has_wip_limit = 1;
   }
+  result->item_count = items;
+  result->has_item_count = 1;
+  result->in_process_count = in_process;
+  result->has_in_process_count = 1;
   if (txn != NULL) {
     cai_todo_store_rollback(ctx, txn);
   }
-  cai_todo_board_cleanup(&state.board);
+  cai_todo_board_cleanup(&board);
   return rc;
 }
 
@@ -1902,10 +2014,15 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(ctx, txn, args->board_id,
-                           cai_todo_arg_string(args->board_name,
-                                               ctx->default_board),
-                           &board, &in_process, &items, error);
+  if (cai_todo_board_arg_is_default(ctx, args)) {
+    rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &board,
+                               &in_process, &items, -1, 0, NULL, error);
+  } else {
+    rc = cai_todo_find_board(ctx, txn, args->board_id,
+                             cai_todo_arg_string(args->board_name,
+                                                 ctx->default_board),
+                             &board, &in_process, &items, error);
+  }
   if (rc == CAI_TODO_FOUND_NONE) {
     rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
                              "board was not found", error);
@@ -2011,6 +2128,13 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
   int rc;
 
   cai_todo_board_init(&board);
+  if (cai_todo_board_arg_is_default(ctx, args)) {
+    rc = cai_todo_ensure_default_board_committed(ctx, error);
+    if (rc != CAI_OK) {
+      cai_todo_board_cleanup(&board);
+      return rc;
+    }
+  }
   rc = cai_todo_set_result(result, args->operation, 1, "ok", "items listed",
                            error);
   if (rc != CAI_OK) {
@@ -2087,6 +2211,10 @@ static int cai_todo_list_boards(cai_todo_context *ctx,
   state.max_items = ctx->max_result_items;
   state.error = error;
   state.rc = CAI_OK;
+  rc = cai_todo_ensure_default_board_committed(ctx, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   rc = cai_todo_set_result(result, args->operation, 1, "ok", "boards listed",
                            error);
   if (rc != CAI_OK) {
@@ -2218,6 +2346,17 @@ static int cai_todo_set_wip_limit(cai_todo_context *ctx,
   memset(&options, 0, sizeof(options));
   txn = NULL;
   rc = cai_todo_store_begin(ctx, &txn, error);
+  if (rc == CAI_OK && cai_todo_board_arg_is_default(ctx, args)) {
+    long long in_process;
+    long long items;
+
+    in_process = 0;
+    items = 0;
+    cai_todo_board_init(&state.board);
+    rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &state.board,
+                               &in_process, &items, -1, 0, NULL, error);
+    cai_todo_board_cleanup(&state.board);
+  }
   if (rc == CAI_OK) {
     state.ctx = ctx;
     state.args = args;
@@ -2282,10 +2421,12 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
     rc = schema->string_enum(
         schema, "operation",
         "Required operation. Use help first when unsure. help returns a usage "
-        "guide. create_board creates a board. list_boards discovers boards "
-        "and IDs. set_wip_limit configures in_process concurrency. add_item "
-        "adds active work. list_board lists all active work. current_work "
-        "lists only in_process work. move_item moves an item between todo and "
+        "guide. The configured default board always exists and is used when "
+        "board_id/board_name are omitted. create_board creates or returns a "
+        "board. list_boards discovers boards and IDs. set_wip_limit "
+        "configures in_process concurrency. add_item adds active work. "
+        "list_board lists all active work. current_work lists only "
+        "in_process work. move_item moves an item between todo and "
         "in_process. complete_item archives an item to done.",
         operations, sizeof(operations) / sizeof(operations[0]), 1, error);
   }
@@ -2300,7 +2441,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
     rc = schema->describe(
         schema, "board_name",
         "Human board name. Used to create or find a board when board_id is not "
-        "available. Defaults to the configured default board.",
+        "available. Omit board_id and board_name to use the configured "
+        "default board; cai creates it lazily if needed.",
         error);
   }
   if (rc == CAI_OK) {

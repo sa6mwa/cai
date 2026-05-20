@@ -175,7 +175,9 @@ int main(void) {
       "a local kanban board. Use search when the user asks for current, "
       "external, or source-backed information, and cite the URL from the tool "
       "result when you use it. Use todo_kanban when the user asks you to "
-      "remember, plan, list, move, limit, or archive work.";
+      "remember, plan, list, move, limit, or archive work. todo_kanban has a "
+      "default board; omit board_id and board_name for ordinary single-board "
+      "usage.";
   agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   run_options.max_tool_rounds = 10;

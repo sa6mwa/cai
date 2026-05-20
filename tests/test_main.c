@@ -6916,6 +6916,8 @@ static void test_todo_tool(test_state *state) {
       strstr(cai_tool_registry_description_at(registry, 0U),
              "Start with operation=help") == NULL ||
       strstr(cai_tool_registry_description_at(registry, 0U),
+             "default board always exists") == NULL ||
+      strstr(cai_tool_registry_description_at(registry, 0U),
              "wip_limit_exceeded") == NULL) {
     test_fail(state, "todo_description",
               "todo tool description does not explain agent usage");
@@ -6925,6 +6927,8 @@ static void test_todo_tool(test_state *state) {
              "\"enum\":[\"help\",\"create_board\"") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "Use help first when unsure") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "default board always exists") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "Opaque item ID") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
@@ -6952,9 +6956,12 @@ static void test_todo_tool(test_state *state) {
                  sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
-      strstr(writer.buffer, "boards listed") == NULL) {
+      strstr(writer.buffer, "boards listed") == NULL ||
+      strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"item_count\":1") == NULL) {
     test_fail(state, "todo_list_boards_strict_null_output",
-              "strict-schema null optional arguments should list boards");
+              "strict-schema null optional arguments should list the default "
+              "board");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -6980,10 +6987,12 @@ static void test_todo_tool(test_state *state) {
                CAI_OK);
     lonejson_spooled_cleanup(&spooled_args);
     if (strstr(writer.buffer, "\"ok\":true") == NULL ||
-        strstr(writer.buffer, "boards listed") == NULL) {
+        strstr(writer.buffer, "boards listed") == NULL ||
+        strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
+        strstr(writer.buffer, "\"item_count\":1") == NULL) {
       test_fail(state, "todo_spooled_list_boards_strict_null_output",
                 "spooled strict-schema null optional arguments should list "
-                "boards");
+                "the default board");
     }
     writer.buffer[0] = '\0';
     writer.length = 0U;
@@ -7011,6 +7020,7 @@ static void test_todo_tool(test_state *state) {
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
       strstr(writer.buffer, "current_work") == NULL ||
+      strstr(writer.buffer, "default board always exists") == NULL ||
       strstr(writer.buffer, "wip_limit_exceeded") == NULL ||
       strstr(writer.buffer, "Always use returned board_id/item_id") == NULL) {
     test_fail(state, "todo_help_output",
@@ -7039,6 +7049,20 @@ static void test_todo_tool(test_state *state) {
       memcpy(board_id, id_start, (size_t)(id_end - id_start));
       board_id[id_end - id_start] = '\0';
     }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_default_board_item",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"title\":\"default task\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"item_id\"") == NULL) {
+    test_fail(state, "todo_add_default_board_item_output",
+              "add_item without board should use the default board");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;

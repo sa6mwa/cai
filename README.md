@@ -641,6 +641,10 @@ including `<cai/tools/todo.h>` and calling `cai_agent_register_todo_tool` or
 tool description and JSON schema include agent-facing usage guidance, operation
 enums, field descriptions, and WIP-limit semantics. Agents can call
 `operation=help` when they need an in-band reminder of the workflow.
+When `board_id` and `board_name` are omitted, the tool uses the configured
+default board and lazily creates it if needed. This means an agent can add an
+item with just `operation=add_item` and `title=...` in the common single-board
+case.
 
 By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
 `$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.

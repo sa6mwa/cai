@@ -364,6 +364,22 @@ assert_ok(registry:run(
 local list_json = table.concat(chunks)
 assert(list_json:match('"ok":true'))
 assert(list_json:match("boards listed"))
+assert(list_json:match('"board_name":"lua"'))
+assert(list_json:match('"item_count":1'))
+
+chunks = {}
+assert_ok(registry:run(
+  "todo_kanban",
+  '{"operation":"add_item","title":"lua default task"}',
+  function(chunk)
+    chunks[#chunks + 1] = chunk
+    return true
+  end
+))
+local default_add_json = table.concat(chunks)
+assert(default_add_json:match('"ok":true'))
+assert(default_add_json:match('"board_name":"lua"'))
+assert(default_add_json:match('"item_id"'))
 
 chunks = {}
 assert_ok(registry:run(
