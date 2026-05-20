@@ -2456,8 +2456,6 @@ static void cai_lua_exec_config(lua_State *L, int index,
       cai_lua_opt_string_field(L, index, "default_workdir", NULL);
   config->shell_path = cai_lua_opt_string_field(L, index, "shell_path", NULL);
   config->bwrap_path = cai_lua_opt_string_field(L, index, "bwrap_path", NULL);
-  config->sandbox_mode =
-      cai_lua_opt_int_field(L, index, "sandbox_mode", CAI_EXEC_SANDBOX_REQUIRED);
   config->allow_network = cai_lua_opt_bool_field(L, index, "allow_network", 0);
   config->allow_pty = cai_lua_opt_bool_field(L, index, "allow_pty", 0);
   config->allow_login_shell =
@@ -5422,9 +5420,6 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("CONTINUITY_CLIENT_HISTORY",
                       CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
-  CAI_LUA_SET_INTEGER("EXEC_SANDBOX_REQUIRED", CAI_EXEC_SANDBOX_REQUIRED);
-  CAI_LUA_SET_INTEGER("EXEC_SANDBOX_BEST_EFFORT", CAI_EXEC_SANDBOX_BEST_EFFORT);
-  CAI_LUA_SET_INTEGER("EXEC_SANDBOX_DISABLED", CAI_EXEC_SANDBOX_DISABLED);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("OPENAI_API_KEY_ENV", CAI_OPENAI_API_KEY_ENV);
   CAI_LUA_SET_STRING("OPENROUTER_API_KEY_ENV", CAI_OPENROUTER_API_KEY_ENV);

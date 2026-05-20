@@ -37,7 +37,6 @@ typedef struct cai_exec_context {
   char *default_workdir;
   char *shell_path;
   char *bwrap_path;
-  int sandbox_mode;
   int allow_network;
   int allow_pty;
   int allow_login_shell;
@@ -281,15 +280,6 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   if (rc != CAI_OK) {
     cai_exec_context_cleanup(ctx);
     return rc;
-  }
-  ctx->sandbox_mode =
-      config != NULL ? config->sandbox_mode : CAI_EXEC_SANDBOX_REQUIRED;
-  if (ctx->sandbox_mode != CAI_EXEC_SANDBOX_REQUIRED &&
-      ctx->sandbox_mode != CAI_EXEC_SANDBOX_BEST_EFFORT &&
-      ctx->sandbox_mode != CAI_EXEC_SANDBOX_DISABLED) {
-    cai_exec_context_cleanup(ctx);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "invalid exec tool sandbox_mode");
   }
   ctx->allow_network = config != NULL && config->allow_network ? 1 : 0;
   ctx->allow_pty = config != NULL && config->allow_pty ? 1 : 0;
@@ -813,9 +803,6 @@ static int cai_exec_prepare_bwrap(const cai_exec_context *ctx, char *buffer,
   const char *path;
 
   *use_sandbox = 0;
-  if (ctx->sandbox_mode == CAI_EXEC_SANDBOX_DISABLED) {
-    return CAI_OK;
-  }
   path = ctx->bwrap_path;
   if (path != NULL && path[0] != '\0') {
     if (access(path, X_OK) == 0) {
@@ -827,19 +814,13 @@ static int cai_exec_prepare_bwrap(const cai_exec_context *ctx, char *buffer,
     *use_sandbox = 1;
     return CAI_OK;
   }
-  if (ctx->sandbox_mode == CAI_EXEC_SANDBOX_BEST_EFFORT) {
-    return CAI_OK;
-  }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "exec sandbox requires bubblewrap (bwrap) on Linux");
 #else
   *use_sandbox = 0;
-  if (ctx->sandbox_mode == CAI_EXEC_SANDBOX_DISABLED ||
-      ctx->sandbox_mode == CAI_EXEC_SANDBOX_BEST_EFFORT) {
-    return CAI_OK;
-  }
   (void)buffer;
   (void)buffer_size;
+  (void)ctx;
   return cai_set_error(error, CAI_ERR_INVALID,
                        "exec sandbox is not implemented on this platform");
 #endif
@@ -906,7 +887,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     out->original_byte_count =
         (long long)(capture.stdout_bytes + capture.stderr_bytes);
     out->cwd = cai_strdup(NULL, workdir);
-    out->sandbox = cai_strdup(NULL, use_sandbox ? "bwrap" : "disabled");
+    out->sandbox = cai_strdup(NULL, use_sandbox ? "bwrap" : "unavailable");
     if (out->cwd == NULL || out->sandbox == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate exec result metadata");

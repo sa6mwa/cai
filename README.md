@@ -707,13 +707,12 @@ stdout/stderr capture; child stdin remains `/dev/null` and is not a terminal.
 
 Command execution is never registered by default. Callers must provide a
 `root_path`; every requested `workdir` is resolved under that root before
-execution. `sandbox_mode` defaults to `CAI_EXEC_SANDBOX_REQUIRED`. On Linux the
-first sandbox backend is `bwrap`; when sandboxing is required and `bwrap` is
-not available, the tool fails closed. `CAI_EXEC_SANDBOX_DISABLED` is an
-explicit opt-in for trusted embeddings. Output is captured through bounded
-`lonejson_spooled` fields and serialized as structured JSON with `stdout`,
-`stderr`, combined `output`, exit/signal metadata, timeout state, truncation
-flags, effective cwd, and the sandbox backend used.
+execution. On Linux the sandbox backend is `bwrap`; when `bwrap` is not
+available, the tool fails closed. There is no non-sandboxed execution fallback.
+Output is captured through bounded `lonejson_spooled` fields and serialized as
+structured JSON with `stdout`, `stderr`, combined `output`, exit/signal
+metadata, timeout state, truncation flags, effective cwd, and the sandbox
+backend used.
 
 ## Integration Tests
 

@@ -7166,10 +7166,12 @@ static int run_exec_tool_case(test_state *state, const char *name,
 static void test_exec_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-exec-test-XXXXXX";
   char child_dir[PATH_MAX];
+  char alpha_path[PATH_MAX];
   cai_exec_tool_config config;
   write_state writer;
   cai_error error;
   cai_tool_registry *registry;
+  FILE *alpha_file;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "exec_mkdtemp", "mkdtemp failed");
@@ -7181,11 +7183,20 @@ static void test_exec_tool(test_state *state) {
     rmdir(dir_template);
     return;
   }
+  snprintf(alpha_path, sizeof(alpha_path), "%s/alpha.txt", dir_template);
+  alpha_file = fopen(alpha_path, "wb");
+  if (alpha_file == NULL) {
+    test_fail(state, "exec_fixture_file", "fopen failed");
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  fputs("alpha\nbeta\n", alpha_file);
+  fclose(alpha_file);
   cai_error_init(&error);
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
   config.default_workdir = dir_template;
-  config.sandbox_mode = CAI_EXEC_SANDBOX_DISABLED;
   config.timeout_ms = 1000L;
   config.max_timeout_ms = 1000L;
   config.output_memory_limit = 8U;
@@ -7201,7 +7212,7 @@ static void test_exec_tool(test_state *state) {
     expect_substr(state, "exec_success_exit", writer.buffer,
                   "\"exit_code\":0");
     expect_substr(state, "exec_success_sandbox", writer.buffer,
-                  "\"sandbox\":\"disabled\"");
+                  "\"sandbox\":\"bwrap\"");
     expect_valid_json(state, "exec_success_json", writer.buffer);
   }
   cai_error_cleanup(&error);
@@ -7219,6 +7230,21 @@ static void test_exec_tool(test_state *state) {
   run_exec_tool_case(state, "exec_reject_escape", &config,
                      "{\"cmd\":\"pwd\",\"workdir\":\"/tmp\"}",
                      CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_exec_tool_case(
+          state, "exec_standard_commands", &config,
+          "{\"cmd\":\"ls -1; uname -s; cat alpha.txt; grep beta alpha.txt; "
+          "tar -cf archive.tar alpha.txt; printf TAR:; tar -tf archive.tar\"}",
+          CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_standard_ls", writer.buffer, "alpha.txt");
+    expect_substr(state, "exec_standard_uname", writer.buffer, "Linux");
+    expect_substr(state, "exec_standard_cat", writer.buffer, "alpha");
+    expect_substr(state, "exec_standard_grep", writer.buffer, "beta");
+    expect_substr(state, "exec_standard_tar", writer.buffer, "TAR:alpha.txt");
+    expect_valid_json(state, "exec_standard_json", writer.buffer);
+  }
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
@@ -7276,21 +7302,8 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
-  config.sandbox_mode = CAI_EXEC_SANDBOX_REQUIRED;
-  if (run_exec_tool_case(state, "exec_sandbox_required", &config,
-                         "{\"cmd\":\"printf sandbox\"}", CAI_OK, &writer,
-                         &error) != CAI_OK) {
-    expect_substr(state, "exec_sandbox_required_error", error.message,
-                  "bubblewrap");
-  } else {
-    expect_substr(state, "exec_sandbox_required_mode", writer.buffer,
-                  "\"sandbox\":\"bwrap\"");
-  }
-  cai_error_cleanup(&error);
-
   registry = NULL;
   cai_error_init(&error);
-  config.sandbox_mode = CAI_EXEC_SANDBOX_DISABLED;
   expect_int(state, "exec_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
   expect_int(state, "exec_registry_register",
@@ -7303,6 +7316,9 @@ static void test_exec_tool(test_state *state) {
   }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
+  unlink(alpha_path);
+  snprintf(alpha_path, sizeof(alpha_path), "%s/archive.tar", dir_template);
+  unlink(alpha_path);
   rmdir(child_dir);
   rmdir(dir_template);
 }

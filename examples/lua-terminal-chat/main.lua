@@ -58,18 +58,60 @@ local model_info = cai.model_info(model)
 local searxng_base_url = os.getenv("CAI_SEARXNG_BASE_URL") or "http://127.0.0.1:8888"
 local todo_store = os.getenv("CAI_LUA_TODO_STORE")
 local todo_lock = os.getenv("CAI_LUA_TODO_LOCK")
+local exec_tool_dir = nil
+
+local i = 1
+while i <= #arg do
+  if arg[i] == "--exec-tool-dir" then
+    if not arg[i + 1] or arg[i + 1] == "" then
+      io.stderr:write("--exec-tool-dir requires a path\n")
+      os.exit(2)
+    end
+    exec_tool_dir = arg[i + 1]
+    i = i + 2
+  elseif arg[i] == "--help" or arg[i] == "-h" then
+    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--exec-tool-dir <path>]\n")
+    os.exit(0)
+  else
+    io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
+    os.exit(2)
+  end
+end
+
+if exec_tool_dir then
+  io.stderr:write("exec_command enabled with root: " .. exec_tool_dir .. "\n")
+else
+  io.stderr:write("hint: pass --exec-tool-dir <path> to enable exec_command rooted to that path\n")
+end
+
+local instructions =
+  "You are a concise terminal chat assistant. Answer plainly. " ..
+  "You have access to searxng_search for web search and todo_kanban " ..
+  "for managing a local kanban board. Use search for current, external, " ..
+  "or source-backed information and cite URLs from tool results. Use " ..
+  "todo_kanban when the user asks you to remember, plan, list, move, " ..
+  "limit, or archive work. todo_kanban has a default board; omit " ..
+  "board_id and board_name for ordinary single-board usage."
+
+if exec_tool_dir then
+  instructions =
+    "You are a concise terminal chat assistant. Answer plainly. " ..
+    "You have access to searxng_search for web search, todo_kanban for " ..
+    "managing a local kanban board, and exec_command for Linux/Darwin " ..
+    "command execution rooted to the configured sandbox directory. Use " ..
+    "search for current, external, or source-backed information and cite " ..
+    "URLs from tool results. Use todo_kanban when the user asks you to " ..
+    "remember, plan, list, move, limit, or archive work. todo_kanban has " ..
+    "a default board; omit board_id and board_name for ordinary " ..
+    "single-board usage. Use exec_command only when the user explicitly " ..
+    "asks you to inspect or run commands, always set workdir when a " ..
+    "specific directory matters, and do not assume network access."
+end
 
 local client = ok(cai.open(common.client_config(cai)), nil, "cai.open")
 local agent = ok(client:new_agent({
   model = model,
-  instructions =
-    "You are a concise terminal chat assistant. Answer plainly. " ..
-    "You have access to searxng_search for web search and todo_kanban " ..
-    "for managing a local kanban board. Use search for current, external, " ..
-    "or source-backed information and cite URLs from tool results. Use " ..
-    "todo_kanban when the user asks you to remember, plan, list, move, " ..
-    "limit, or archive work. todo_kanban has a default board; omit " ..
-    "board_id and board_name for ordinary single-board usage.",
+  instructions = instructions,
   reasoning_effort = cai.REASONING_EFFORT_LOW,
   reasoning_summary = cai.REASONING_SUMMARY_AUTO,
   prompt_cache_key = "cai:example:lua-terminal-chat:v1",
@@ -85,6 +127,18 @@ ok(agent:register_todo_tool({
   lock_path = todo_lock,
   default_board = os.getenv("CAI_LUA_TODO_BOARD") or "default",
 }), nil, "agent:register_todo_tool")
+
+if exec_tool_dir then
+  ok(agent:register_exec_tool({
+    root_path = exec_tool_dir,
+    default_workdir = exec_tool_dir,
+    timeout_ms = 10000,
+    max_timeout_ms = 60000,
+    output_memory_limit = 128 * 1024,
+    output_max_bytes = 1024 * 1024,
+    allow_pty = true,
+  }), nil, "agent:register_exec_tool")
+end
 
 local session = ok(agent:new_session(), nil, "agent:new_session")
 local total_cost = 0

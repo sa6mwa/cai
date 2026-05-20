@@ -12,6 +12,13 @@ CAI_LUA_SESSION_STATE_PATH ?= /tmp/cai-lua-state.json
 CAI_SMHI_LOCATION ?= Gothenburg
 CAI_SEARXNG_QUERY ?= OpenAI Responses API
 CAI_MCP_EXAMPLE_PORT ?= 18766
+CAI_EXEC_TOOL_DIR ?=
+
+ifneq ($(strip $(CAI_EXEC_TOOL_DIR)),)
+EXEC_TOOL_ARGS := --exec-tool-dir "$(CAI_EXEC_TOOL_DIR)"
+else
+EXEC_TOOL_ARGS :=
+endif
 
 define run_c_example
 	cd "$(ROOT)" && \
@@ -82,7 +89,7 @@ run-searxng-search:
 	$(call run_c_example,cai_example_searxng_search,"$(CAI_SEARXNG_QUERY)")
 
 run-terminal-chat:
-	$(call run_c_example,cai_example_terminal_chat,)
+	$(call run_c_example,cai_example_terminal_chat,$(EXEC_TOOL_ARGS))
 
 run-mike-mind:
 	$(call run_c_example,cai_example_mike_mind,)
@@ -91,7 +98,7 @@ run-lua-basic:
 	$(call run_lua_example,examples/lua-basic/main.lua,)
 
 run-lua-terminal-chat:
-	$(call run_lua_example,examples/lua-terminal-chat/main.lua,)
+	$(call run_lua_example,examples/lua-terminal-chat/main.lua,$(EXEC_TOOL_ARGS))
 
 run-lua-conversation:
 	$(call run_lua_example,examples/lua-conversation/main.lua,)

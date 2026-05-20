@@ -8,9 +8,6 @@ extern "C" {
 #endif
 
 #define CAI_EXEC_DEFAULT_TOOL_NAME "exec_command"
-#define CAI_EXEC_SANDBOX_REQUIRED 0
-#define CAI_EXEC_SANDBOX_BEST_EFFORT 1
-#define CAI_EXEC_SANDBOX_DISABLED 2
 
 typedef struct cai_exec_tool_config {
   const char *name;
@@ -19,7 +16,6 @@ typedef struct cai_exec_tool_config {
   const char *default_workdir;
   const char *shell_path;
   const char *bwrap_path;
-  int sandbox_mode;
   int allow_network;
   int allow_pty;
   int allow_login_shell;

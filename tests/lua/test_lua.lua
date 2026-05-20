@@ -397,7 +397,6 @@ assert(os.execute("mkdir -p " .. exec_root .. "/sub"))
 assert_ok(registry:register_exec_tool({
   root_path = exec_root,
   default_workdir = exec_root,
-  sandbox_mode = cai.EXEC_SANDBOX_DISABLED,
   timeout_ms = 1000,
   max_timeout_ms = 1000,
   output_memory_limit = 8,

@@ -1,4 +1,5 @@
 #include <cai/cai.h>
+#include <cai/tools/exec.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
 
@@ -91,6 +92,37 @@ static const char *searxng_base_url(void) {
   return base_url;
 }
 
+static void print_help(const char *program) {
+  fprintf(stderr,
+          "usage: %s [--exec-tool-dir <path>]\n\n"
+          "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n",
+          program != NULL ? program : "cai_example_terminal_chat");
+}
+
+static int parse_args(int argc, char **argv, const char **exec_tool_dir) {
+  int i;
+
+  *exec_tool_dir = NULL;
+  for (i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--exec-tool-dir") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--exec-tool-dir requires a path\n");
+        return 0;
+      }
+      *exec_tool_dir = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      print_help(argv[0]);
+      return -1;
+    }
+    fprintf(stderr, "unknown argument: %s\n", argv[i]);
+    print_help(argv[0]);
+    return 0;
+  }
+  return 1;
+}
+
 typedef struct terminal_tool_trace {
   FILE *fp;
   cai_sink *sink;
@@ -139,10 +171,11 @@ static int print_tool_event(void *context, const cai_tool_event *event,
   return CAI_OK;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   cai_agent_config agent_config;
   cai_client_config client_config;
   cai_run_options run_options;
+  cai_exec_tool_config exec_config;
   cai_searxng_tool_config searxng_config;
   cai_todo_tool_config todo_config;
   cai_stream_sinks stream_sinks;
@@ -156,6 +189,7 @@ int main(void) {
   double context_percent;
   double total_spent_usd;
   char *dotenv_api_key;
+  const char *exec_tool_dir;
   int has_context_percent;
   char line[4096];
   int exit_code;
@@ -165,19 +199,38 @@ int main(void) {
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
   cai_run_options_init(&run_options);
+  memset(&exec_config, 0, sizeof(exec_config));
   memset(&searxng_config, 0, sizeof(searxng_config));
   memset(&todo_config, 0, sizeof(todo_config));
+  rc = parse_args(argc, argv, &exec_tool_dir);
+  if (rc < 0) {
+    return 0;
+  }
+  if (rc == 0) {
+    return 2;
+  }
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
-  agent_config.developer_instructions =
-      "You are a concise terminal chat assistant. Answer plainly. You have "
-      "access to searxng_search for web search and todo_kanban for managing "
-      "a local kanban board. Use search when the user asks for current, "
-      "external, or source-backed information, and cite the URL from the tool "
-      "result when you use it. Use todo_kanban when the user asks you to "
-      "remember, plan, list, move, limit, or archive work. todo_kanban has a "
-      "default board; omit board_id and board_name for ordinary single-board "
-      "usage.";
+  if (exec_tool_dir != NULL) {
+    agent_config.developer_instructions =
+        "You are a concise terminal chat assistant. Answer plainly. Tools: "
+        "searxng_search for web search, todo_kanban for a local kanban board, "
+        "and exec_command for command execution rooted to the configured "
+        "sandbox directory. Cite search result URLs. todo_kanban has a "
+        "default board; omit board_id and board_name for ordinary use. Use "
+        "exec_command only when explicitly asked to inspect or run commands; "
+        "set workdir when a directory matters and do not assume network.";
+  } else {
+    agent_config.developer_instructions =
+        "You are a concise terminal chat assistant. Answer plainly. You have "
+        "access to searxng_search for web search and todo_kanban for managing "
+        "a local kanban board. Use search when the user asks for current, "
+        "external, or source-backed information, and cite the URL from the tool "
+        "result when you use it. Use todo_kanban when the user asks you to "
+        "remember, plan, list, move, limit, or archive work. todo_kanban has a "
+        "default board; omit board_id and board_name for ordinary single-board "
+        "usage.";
+  }
   agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   run_options.max_tool_rounds = 10;
@@ -190,6 +243,15 @@ int main(void) {
       todo_config.default_board[0] == '\0') {
     todo_config.default_board = "default";
   }
+  if (exec_tool_dir != NULL) {
+    exec_config.root_path = exec_tool_dir;
+    exec_config.default_workdir = exec_tool_dir;
+    exec_config.timeout_ms = 10000L;
+    exec_config.max_timeout_ms = 60000L;
+    exec_config.output_memory_limit = 128U * 1024U;
+    exec_config.output_max_bytes = 1024U * 1024U;
+    exec_config.allow_pty = 1;
+  }
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -199,6 +261,14 @@ int main(void) {
   dotenv_api_key = NULL;
   exit_code = 1;
   total_spent_usd = 0.0;
+
+  if (exec_tool_dir == NULL) {
+    fprintf(stderr,
+            "hint: pass --exec-tool-dir <path> to enable exec_command rooted "
+            "to that path\n");
+  } else {
+    fprintf(stderr, "exec_command enabled with root: %s\n", exec_tool_dir);
+  }
 
   rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
   if (rc != CAI_OK) {
@@ -224,6 +294,13 @@ int main(void) {
   if (rc != CAI_OK) {
     exit_code = print_error("cai_agent_register_todo_tool", rc, &error);
     goto done;
+  }
+  if (exec_tool_dir != NULL) {
+    rc = cai_agent_register_exec_tool(agent, &exec_config, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_agent_register_exec_tool", rc, &error);
+      goto done;
+    }
   }
   rc = agent->new_session(agent, &session, &error);
   if (rc != CAI_OK) {
