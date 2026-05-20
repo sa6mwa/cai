@@ -729,17 +729,21 @@ structured JSON with `stdout`, `stderr`, combined `output`, exit/signal
 metadata, timeout state, truncation flags, effective cwd, and the sandbox
 backend used.
 
-Agents or registries can register the opt-in read-file preset by including
-`<cai/tools/read.h>` and calling `cai_agent_register_read_tool` or
-`cai_tool_registry_register_read_tool`. The default tool name is `read_file`.
-Its required input is `path`; optional inputs are `start_line`, `end_line`, and
-`max_bytes`. Callers must provide a `root_path`; relative paths are resolved
-from `default_workdir` or the root, absolute paths must already be inside the
-root, and symlink/path traversal escapes are rejected after canonicalization.
-Directories are rejected. File content is streamed into a bounded
-`lonejson_spooled` result field with `path`, `resolved_path`, line range,
-`byte_count`, `file_size`, and `truncated` metadata. Prefer this tool over
-`exec_command` when an agent only needs to inspect file contents.
+Agents or registries can register the opt-in file inspection presets by
+including `<cai/tools/read.h>`. `cai_agent_register_read_tool` or
+`cai_tool_registry_register_read_tool` registers `read_file`; its required
+input is `path`, with optional `start_line`, `end_line`, and `max_bytes`.
+`cai_agent_register_list_files_tool` or
+`cai_tool_registry_register_list_files_tool` registers `list_files`; its inputs
+are optional `path`, `recursive`, `include_hidden`, and `max_entries`.
+Both tools require a `root_path`. Relative paths are resolved from
+`default_workdir` or the root, absolute paths must already be inside the root,
+and symlink/path traversal escapes are rejected after canonicalization.
+`list_files` returns bounded file metadata entries and does not follow symlink
+directories. `read_file` rejects directories and streams file content into a
+bounded `lonejson_spooled` result field with `path`, `resolved_path`, line
+range, `byte_count`, `file_size`, and `truncated` metadata. Prefer these tools
+over `exec_command` when an agent only needs to inspect files.
 
 ## Integration Tests
 

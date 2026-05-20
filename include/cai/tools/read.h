@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 #define CAI_READ_DEFAULT_TOOL_NAME "read_file"
+#define CAI_LIST_FILES_DEFAULT_TOOL_NAME "list_files"
 
 typedef struct cai_read_tool_config {
   const char *name;
@@ -25,6 +26,12 @@ int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
 int cai_agent_register_read_tool(cai_agent *agent,
                                  const cai_read_tool_config *config,
                                  cai_error *error);
+int cai_tool_registry_register_list_files_tool(cai_tool_registry *registry,
+                                               const cai_read_tool_config *config,
+                                               cai_error *error);
+int cai_agent_register_list_files_tool(cai_agent *agent,
+                                       const cai_read_tool_config *config,
+                                       cai_error *error);
 
 #ifdef __cplusplus
 }

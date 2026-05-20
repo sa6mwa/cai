@@ -228,13 +228,12 @@ int main(int argc, char **argv) {
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   if (exec_tool_dir != NULL || read_tool_dir != NULL) {
     agent_config.developer_instructions =
-        "You are a concise terminal chat assistant. Tools: searxng_search for "
-        "web search, todo_kanban for a local kanban board, read_file for "
-        "sandboxed file reads, and optionally exec_command for sandboxed "
-        "commands. Cite search URLs. todo_kanban has a default board; omit "
-        "board_id and board_name for ordinary use. Prefer read_file for file "
-        "contents. Use exec_command only when explicitly asked; set workdir "
-        "when a directory matters and do not assume network.";
+        "You are a concise terminal chat assistant. Tools: searxng_search, "
+        "todo_kanban, list_files, read_file, and optionally exec_command. Cite "
+        "search URLs. todo_kanban has a default board; omit board_id and "
+        "board_name for ordinary use. Use list_files before read_file when "
+        "discovering paths. Prefer read_file for file contents. Use "
+        "exec_command only when explicitly asked; set workdir when needed.";
   } else {
     agent_config.developer_instructions =
         "You are a concise terminal chat assistant. Answer plainly. You have "
@@ -331,6 +330,11 @@ int main(int argc, char **argv) {
     }
   }
   if (read_tool_dir != NULL) {
+    rc = cai_agent_register_list_files_tool(agent, &read_config, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_agent_register_list_files_tool", rc, &error);
+      goto done;
+    }
     rc = cai_agent_register_read_tool(agent, &read_config, &error);
     if (rc != CAI_OK) {
       exit_code = print_error("cai_agent_register_read_tool", rc, &error);

@@ -7199,10 +7199,47 @@ static int run_read_tool_case(test_state *state, const char *name,
   return rc;
 }
 
+static int run_list_files_tool_case(test_state *state, const char *name,
+                                    const cai_read_tool_config *config,
+                                    const char *arguments, int expected_rc,
+                                    write_state *writer, cai_error *error) {
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  registry = NULL;
+  sink = NULL;
+  writer->buffer[0] = '\0';
+  writer->length = 0U;
+  writer->closed = 0;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = writer;
+  rc = cai_tool_registry_new(&registry, error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_list_files_tool(registry, config, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_LIST_FILES_DEFAULT_TOOL_NAME,
+                               arguments, sink, error);
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  expect_int(state, name, rc, expected_rc);
+  return rc;
+}
+
 static void test_read_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-read-test-XXXXXX";
   char sub_dir[PATH_MAX];
+  char nested_dir[PATH_MAX];
   char file_path[PATH_MAX];
+  char nested_path[PATH_MAX];
+  char hidden_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   cai_read_tool_config config;
@@ -7222,6 +7259,19 @@ static void test_read_tool(test_state *state) {
   }
   snprintf(file_path, sizeof(file_path), "%s/sub/alpha.txt", dir_template);
   write_file_or_die(file_path, "one\ntwo\nthree\nfour\n");
+  snprintf(nested_dir, sizeof(nested_dir), "%s/sub/nested", dir_template);
+  if (mkdir(nested_dir, 0700) != 0) {
+    test_fail(state, "read_nested_mkdir", "mkdir failed");
+  }
+  if (strlen(nested_dir) + strlen("/deep.txt") + 1U > sizeof(nested_path)) {
+    test_fail(state, "read_nested_path", "path too long");
+  } else {
+    strcpy(nested_path, nested_dir);
+    strcat(nested_path, "/deep.txt");
+  }
+  write_file_or_die(nested_path, "deep\n");
+  snprintf(hidden_path, sizeof(hidden_path), "%s/sub/.hidden", dir_template);
+  write_file_or_die(hidden_path, "hidden\n");
   snprintf(outside_path, sizeof(outside_path),
            "/tmp/cai-read-outside-%ld.txt", (long)getpid());
   write_file_or_die(outside_path, "outside\n");
@@ -7249,6 +7299,58 @@ static void test_read_tool(test_state *state) {
                   "\"truncated\":false");
     expect_valid_json(state, "read_success_json", writer.buffer);
   }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_list_files_tool_case(state, "list_files_success", &config,
+                               "{\"path\":\".\"}", CAI_OK, &writer,
+                               &error) == CAI_OK) {
+    expect_substr(state, "list_files_alpha", writer.buffer,
+                  "\"path\":\"sub/alpha.txt\"");
+    expect_substr(state, "list_files_nested_dir", writer.buffer,
+                  "\"type\":\"directory\"");
+    if (strstr(writer.buffer, ".hidden") != NULL) {
+      test_fail(state, "list_files_hidden_default",
+                "hidden file listed by default");
+    }
+    expect_valid_json(state, "list_files_success_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_list_files_tool_case(
+          state, "list_files_recursive", &config,
+          "{\"path\":\".\",\"recursive\":true,\"include_hidden\":true}",
+          CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "list_files_recursive_deep", writer.buffer,
+                  "\"path\":\"sub/nested/deep.txt\"");
+    expect_substr(state, "list_files_include_hidden", writer.buffer,
+                  "\"path\":\"sub/.hidden\"");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_list_files_tool_case(
+          state, "list_files_truncated", &config,
+          "{\"path\":\".\",\"recursive\":true,\"max_entries\":1}",
+          CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "list_files_truncated_flag", writer.buffer,
+                  "\"truncated\":true");
+    expect_substr(state, "list_files_truncated_count", writer.buffer,
+                  "\"entry_count\":1");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_list_files_tool_case(state, "list_reject_file", &config,
+                           "{\"path\":\"alpha.txt\"}", CAI_ERR_INVALID,
+                           &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_list_files_tool_case(state, "list_reject_escape", &config,
+                           "{\"path\":\"/etc\"}", CAI_ERR_INVALID, &writer,
+                           &error);
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
@@ -7319,18 +7421,32 @@ static void test_read_tool(test_state *state) {
   expect_int(state, "read_registry_register",
              cai_tool_registry_register_read_tool(registry, &config, &error),
              CAI_OK);
+  expect_int(state, "list_registry_register",
+             cai_tool_registry_register_list_files_tool(registry, &config,
+                                                        &error),
+             CAI_OK);
   if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"path\"") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"start_line\"") ==
           NULL) {
     test_fail(state, "read_schema", "schema missing read fields");
   }
+  if (cai_tool_registry_schema_at(registry, 1U) == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 1U), "\"recursive\"") ==
+          NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 1U), "\"max_entries\"") ==
+          NULL) {
+    test_fail(state, "list_schema", "schema missing list fields");
+  }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
 
   unlink(symlink_path);
   unlink(outside_path);
+  unlink(hidden_path);
+  unlink(nested_path);
   unlink(file_path);
+  rmdir(nested_dir);
   rmdir(sub_dir);
   rmdir(dir_template);
 }

@@ -3,6 +3,7 @@
 #include <cai/tools/read.h>
 
 #include <errno.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@ extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_READ_DEFAULT_CONTENT_MEMORY_LIMIT (128U * 1024U)
 #define CAI_READ_DEFAULT_CONTENT_MAX_BYTES (1024U * 1024U)
+#define CAI_LIST_FILES_DEFAULT_MAX_ENTRIES 200LL
 
 typedef struct cai_read_context {
   char *root_path;
@@ -47,6 +49,33 @@ typedef struct cai_read_result {
   lonejson_spooled content;
 } cai_read_result;
 
+typedef struct cai_list_files_args {
+  char *path;
+  int recursive;
+  int has_recursive;
+  int include_hidden;
+  int has_include_hidden;
+  long long max_entries;
+  int has_max_entries;
+} cai_list_files_args;
+
+typedef struct cai_list_files_entry {
+  char *path;
+  char *resolved_path;
+  char *name;
+  char *type;
+  long long size;
+  int has_size;
+} cai_list_files_entry;
+
+typedef struct cai_list_files_result {
+  char *path;
+  char *resolved_path;
+  long long entry_count;
+  int truncated;
+  lonejson_object_array entries;
+} cai_list_files_result;
+
 static const lonejson_field cai_read_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_read_args, path, "path"),
     LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, start_line,
@@ -70,6 +99,40 @@ static const lonejson_field cai_read_result_fields[] = {
 LONEJSON_MAP_DEFINE(cai_read_result_map, cai_read_result,
                     cai_read_result_fields);
 
+static const lonejson_field cai_list_files_arg_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_list_files_args, path, "path"),
+    LONEJSON_FIELD_BOOL_PRESENT_NULLABLE(cai_list_files_args, recursive,
+                                         has_recursive, "recursive"),
+    LONEJSON_FIELD_BOOL_PRESENT_NULLABLE(cai_list_files_args, include_hidden,
+                                         has_include_hidden, "include_hidden"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_list_files_args, max_entries,
+                                        has_max_entries, "max_entries")};
+LONEJSON_MAP_DEFINE(cai_list_files_args_map, cai_list_files_args,
+                    cai_list_files_arg_fields);
+
+static const lonejson_field cai_list_files_entry_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, path, "path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, resolved_path,
+                                    "resolved_path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, type, "type"),
+    LONEJSON_FIELD_I64_PRESENT(cai_list_files_entry, size, has_size, "size")};
+LONEJSON_MAP_DEFINE(cai_list_files_entry_map, cai_list_files_entry,
+                    cai_list_files_entry_fields);
+
+static const lonejson_field cai_list_files_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_result, path, "path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_result, resolved_path,
+                                    "resolved_path"),
+    LONEJSON_FIELD_I64_REQ(cai_list_files_result, entry_count, "entry_count"),
+    LONEJSON_FIELD_BOOL_REQ(cai_list_files_result, truncated, "truncated"),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(cai_list_files_result, entries,
+                                           "entries", cai_list_files_entry,
+                                           &cai_list_files_entry_map,
+                                           LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_list_files_result_map, cai_list_files_result,
+                    cai_list_files_result_fields);
+
 static const char cai_read_schema_json[] =
     "{"
     "\"type\":\"object\","
@@ -87,6 +150,25 @@ static const char cai_read_default_description[] =
     "Reads a UTF-8/text file from the configured sandbox root. Use start_line "
     "and end_line for large files. Paths must stay inside the configured root; "
     "symlink and absolute-path escapes are rejected.";
+
+static const char cai_list_files_schema_json[] =
+    "{"
+    "\"type\":\"object\","
+    "\"properties\":{"
+    "\"path\":{\"type\":[\"string\",\"null\"]},"
+    "\"recursive\":{\"type\":[\"boolean\",\"null\"]},"
+    "\"include_hidden\":{\"type\":[\"boolean\",\"null\"]},"
+    "\"max_entries\":{\"type\":[\"integer\",\"null\"]}"
+    "},"
+    "\"required\":[],"
+    "\"additionalProperties\":false"
+    "}";
+
+static const char cai_list_files_default_description[] =
+    "Lists files and directories from the configured sandbox root. Use this "
+    "before read_file when you need to discover paths. Paths must stay inside "
+    "the configured root; symlink and absolute-path escapes are rejected. "
+    "Recursive listing is bounded by max_entries.";
 
 static const char *cai_read_default_string(const char *value,
                                            const char *fallback) {
@@ -208,6 +290,49 @@ static int cai_read_resolve_file(const cai_read_context *ctx,
   return CAI_OK;
 }
 
+static int cai_read_resolve_dir(const cai_read_context *ctx,
+                                const char *request_path, char **resolved_path,
+                                cai_error *error) {
+  char candidate[PATH_MAX];
+  char *resolved;
+  struct stat st;
+  int rc;
+
+  resolved = NULL;
+  if (request_path == NULL || request_path[0] == '\0') {
+    rc = cai_read_strdup_field(&resolved, ctx->default_workdir,
+                               "failed to allocate list path", error);
+  } else if (request_path[0] == '/') {
+    rc = cai_read_realpath_dup(request_path, &resolved, error);
+  } else {
+    rc = cai_read_join(candidate, sizeof(candidate), ctx->default_workdir,
+                       request_path, error);
+    if (rc == CAI_OK) {
+      rc = cai_read_realpath_dup(candidate, &resolved, error);
+    }
+  }
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list path escapes configured root");
+  }
+  if (stat(resolved, &st) != 0) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to stat directory", strerror(errno));
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list path must be a directory");
+  }
+  *resolved_path = resolved;
+  return CAI_OK;
+}
+
 static int cai_read_context_new(const cai_read_tool_config *config,
                                 cai_read_context **out, cai_error *error) {
   cai_read_context *ctx;
@@ -290,6 +415,166 @@ static int cai_read_append(lonejson_spooled *spool, const char *data,
                                 json_error.message);
   }
   return CAI_OK;
+}
+
+static int cai_list_array_grow(lonejson_object_array *array, size_t elem_size,
+                               cai_error *error) {
+  size_t new_capacity;
+  void *new_items;
+
+  if (array->count < array->capacity) {
+    return CAI_OK;
+  }
+  new_capacity = array->capacity == 0U ? 16U : array->capacity * 2U;
+  new_items = cai_realloc_mem(NULL, array->items, new_capacity * elem_size);
+  if (new_items == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to grow list_files entries");
+  }
+  array->items = new_items;
+  array->capacity = new_capacity;
+  array->elem_size = elem_size;
+  return CAI_OK;
+}
+
+static const char *cai_list_type_from_mode(mode_t mode) {
+  if (S_ISREG(mode)) {
+    return "file";
+  }
+  if (S_ISDIR(mode)) {
+    return "directory";
+  }
+  if (S_ISLNK(mode)) {
+    return "symlink";
+  }
+  return "other";
+}
+
+static const char *cai_list_relative_path(const cai_read_context *ctx,
+                                          const char *resolved_path) {
+  size_t root_len;
+
+  root_len = strlen(ctx->root_path);
+  if (strncmp(ctx->root_path, resolved_path, root_len) != 0) {
+    return resolved_path;
+  }
+  if (resolved_path[root_len] == '\0') {
+    return ".";
+  }
+  if (resolved_path[root_len] == '/') {
+    return resolved_path + root_len + 1U;
+  }
+  return resolved_path;
+}
+
+static int cai_list_add_entry(const cai_read_context *ctx,
+                              cai_list_files_result *out, const char *name,
+                              const char *resolved_path, const struct stat *st,
+                              long long max_entries, cai_error *error) {
+  cai_list_files_entry *entry;
+  int rc;
+
+  if (out->entries.count >= (size_t)max_entries) {
+    out->truncated = 1;
+    return CAI_OK;
+  }
+  rc = cai_list_array_grow(&out->entries, sizeof(*entry), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  entry = (cai_list_files_entry *)out->entries.items + out->entries.count;
+  memset(entry, 0, sizeof(*entry));
+  rc = cai_read_strdup_field(&entry->path,
+                             cai_list_relative_path(ctx, resolved_path),
+                             "failed to allocate list entry path", error);
+  if (rc == CAI_OK) {
+    rc = cai_read_strdup_field(&entry->resolved_path, resolved_path,
+                               "failed to allocate list resolved path", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_strdup_field(&entry->name, name,
+                               "failed to allocate list entry name", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_strdup_field(&entry->type, cai_list_type_from_mode(st->st_mode),
+                               "failed to allocate list entry type", error);
+  }
+  if (rc == CAI_OK && S_ISREG(st->st_mode)) {
+    entry->size = (long long)st->st_size;
+    entry->has_size = 1;
+  }
+  if (rc == CAI_OK) {
+    out->entries.count++;
+    out->entry_count = (long long)out->entries.count;
+  }
+  return rc;
+}
+
+static int cai_list_scan_dir(const cai_read_context *ctx,
+                             cai_list_files_result *out,
+                             const char *resolved_dir, int recursive,
+                             int include_hidden, long long max_entries,
+                             cai_error *error) {
+  DIR *dir;
+  struct dirent *entry;
+  char child_path[PATH_MAX];
+  char real_child[PATH_MAX];
+  struct stat st;
+  int rc;
+  int n;
+
+  dir = opendir(resolved_dir);
+  if (dir == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to open directory", strerror(errno));
+  }
+  rc = CAI_OK;
+  while (rc == CAI_OK && (entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    if (!include_hidden && entry->d_name[0] == '.') {
+      continue;
+    }
+    if (out->entries.count >= (size_t)max_entries) {
+      out->truncated = 1;
+      break;
+    }
+    n = snprintf(child_path, sizeof(child_path), "%s/%s", resolved_dir,
+                 entry->d_name);
+    if (n < 0 || (size_t)n >= sizeof(child_path)) {
+      rc = cai_set_error(error, CAI_ERR_INVALID, "list entry path is too long");
+      break;
+    }
+    if (lstat(child_path, &st) != 0) {
+      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to stat list entry", strerror(errno));
+      break;
+    }
+    if (S_ISLNK(st.st_mode)) {
+      rc = cai_list_add_entry(ctx, out, entry->d_name, child_path, &st,
+                              max_entries, error);
+      continue;
+    }
+    if (realpath(child_path, real_child) == NULL) {
+      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to resolve list entry",
+                                strerror(errno));
+      break;
+    }
+    if (!cai_read_path_is_under_root(ctx->root_path, real_child)) {
+      continue;
+    }
+    rc = cai_list_add_entry(ctx, out, entry->d_name, real_child, &st,
+                            max_entries, error);
+    if (rc == CAI_OK && recursive && S_ISDIR(st.st_mode) &&
+        out->entries.count < (size_t)max_entries) {
+      rc = cai_list_scan_dir(ctx, out, real_child, recursive, include_hidden,
+                             max_entries, error);
+    }
+  }
+  closedir(dir);
+  return rc;
 }
 
 static int cai_read_stream_file(const cai_read_context *ctx,
@@ -498,6 +783,51 @@ static int cai_read_callback(void *context, const void *params, void *result,
   return rc;
 }
 
+static int cai_list_files_callback(void *context, const void *params,
+                                   void *result, cai_error *error) {
+  const cai_read_context *ctx;
+  const cai_list_files_args *args;
+  cai_list_files_result *out;
+  char *resolved_path;
+  long long max_entries;
+  int recursive;
+  int include_hidden;
+  int rc;
+
+  ctx = (const cai_read_context *)context;
+  args = (const cai_list_files_args *)params;
+  out = (cai_list_files_result *)result;
+  if (ctx == NULL || args == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list_files callback received invalid state");
+  }
+  resolved_path = NULL;
+  max_entries = CAI_LIST_FILES_DEFAULT_MAX_ENTRIES;
+  if (args->has_max_entries && args->max_entries > 0LL) {
+    max_entries = args->max_entries;
+    if (max_entries > CAI_LIST_FILES_DEFAULT_MAX_ENTRIES) {
+      max_entries = CAI_LIST_FILES_DEFAULT_MAX_ENTRIES;
+    }
+  }
+  recursive = args->has_recursive && args->recursive ? 1 : 0;
+  include_hidden = args->has_include_hidden && args->include_hidden ? 1 : 0;
+  rc = cai_read_resolve_dir(ctx, args->path, &resolved_path, error);
+  if (rc == CAI_OK) {
+    out->path = cai_strdup(NULL, args->path != NULL ? args->path : ".");
+    out->resolved_path = cai_strdup(NULL, resolved_path);
+    if (out->path == NULL || out->resolved_path == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate list_files result metadata");
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_list_scan_dir(ctx, out, resolved_path, recursive, include_hidden,
+                           max_entries, error);
+  }
+  cai_free_mem(NULL, resolved_path);
+  return rc;
+}
+
 int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
                                          const cai_read_tool_config *config,
                                          cai_error *error) {
@@ -525,6 +855,29 @@ int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
   return rc;
 }
 
+int cai_tool_registry_register_list_files_tool(
+    cai_tool_registry *registry, const cai_read_tool_config *config,
+    cai_error *error) {
+  cai_read_context *ctx;
+  int rc;
+
+  ctx = NULL;
+  rc = cai_read_context_new(config, &ctx, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_tool_registry_register_lonejson_schema_owned(
+      registry, CAI_LIST_FILES_DEFAULT_TOOL_NAME,
+      cai_list_files_default_description,
+      cai_list_files_schema_json, 0, &cai_list_files_args_map,
+      &cai_list_files_result_map, cai_list_files_callback, ctx,
+      cai_read_context_cleanup, error);
+  if (rc != CAI_OK) {
+    cai_read_context_cleanup(ctx);
+  }
+  return rc;
+}
+
 int cai_agent_register_read_tool(cai_agent *agent,
                                  const cai_read_tool_config *config,
                                  cai_error *error) {
@@ -535,4 +888,16 @@ int cai_agent_register_read_tool(cai_agent *agent,
   }
   impl = CAI_AGENT_IMPL(agent);
   return cai_tool_registry_register_read_tool(impl->tools, config, error);
+}
+
+int cai_agent_register_list_files_tool(cai_agent *agent,
+                                       const cai_read_tool_config *config,
+                                       cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL || agent->impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  return cai_tool_registry_register_list_files_tool(impl->tools, config, error);
 }

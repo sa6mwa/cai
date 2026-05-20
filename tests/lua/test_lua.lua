@@ -460,10 +460,23 @@ assert(tty_output:match("read%-eof"), "exec PTY stdin must be closed")
 local read_root = "/tmp/cai-lua-read-test"
 os.execute("rm -rf " .. read_root)
 assert(os.execute("mkdir -p " .. read_root .. "/sub"))
+assert(os.execute("mkdir -p " .. read_root .. "/sub/nested"))
 local read_file = assert(io.open(read_root .. "/sub/alpha.txt", "w"))
 read_file:write("one\ntwo\nthree\n")
 read_file:close()
+local deep_file = assert(io.open(read_root .. "/sub/nested/deep.txt", "w"))
+deep_file:write("deep\n")
+deep_file:close()
+local hidden_file = assert(io.open(read_root .. "/sub/.hidden", "w"))
+hidden_file:write("hidden\n")
+hidden_file:close()
 assert_ok(registry:register_read_tool({
+  root_path = read_root,
+  default_workdir = read_root .. "/sub",
+  content_memory_limit = 8,
+  content_max_bytes = 64,
+}))
+assert_ok(registry:register_list_files_tool({
   root_path = read_root,
   default_workdir = read_root .. "/sub",
   content_memory_limit = 8,
@@ -489,6 +502,31 @@ end), "read_file must reject absolute escapes")
 assert_not_ok(registry:run("read_file", '{"path":"../missing/../../etc/passwd"}', function()
   return true
 end), "read_file must reject relative escapes")
+chunks = {}
+assert_ok(registry:run("list_files", '{"path":"."}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local list_json = table.concat(chunks)
+assert(list_json:match('"path":"sub/alpha%.txt"'), "list_files must list files")
+assert(not list_json:match("%.hidden"), "list_files must hide dotfiles by default")
+chunks = {}
+assert_ok(registry:run("list_files", '{"path":".","recursive":true,"include_hidden":true}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local recursive_list_json = table.concat(chunks)
+assert(recursive_list_json:match('"path":"sub/nested/deep%.txt"'), "list_files must recurse")
+assert(recursive_list_json:match('"path":"sub/%.hidden"'), "list_files must include hidden when requested")
+chunks = {}
+assert_ok(registry:run("list_files", '{"path":".","recursive":true,"max_entries":1}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match('"truncated":true'), "list_files must report truncation")
+assert_not_ok(registry:run("list_files", '{"path":"/etc"}', function()
+  return true
+end), "list_files must reject absolute escapes")
 
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")

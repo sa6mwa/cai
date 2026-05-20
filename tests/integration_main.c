@@ -2091,7 +2091,9 @@ static int run_read_tool_llm_regression(void) {
   integration_exec_tool_event_state event_state;
   integration_write_state writer;
   char dir_template[] = "/tmp/cai-read-llm-e2e-XXXXXX";
+  char nested_dir[PATH_MAX];
   char file_path[PATH_MAX];
+  char nested_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   FILE *fp;
@@ -2126,6 +2128,34 @@ static int run_read_tool_llm_regression(void) {
   fputs("alpha secret\nbeta visible\ngamma visible\n", fp);
   fclose(fp);
   fp = NULL;
+  snprintf(nested_dir, sizeof(nested_dir), "%s/nested", dir_template);
+  if (mkdir(nested_dir, 0700) != 0) {
+    fprintf(stderr, "failed to create read integration nested dir\n");
+    unlink(file_path);
+    rmdir(dir_template);
+    return 1;
+  }
+  if (strlen(nested_dir) + strlen("/discovered.txt") + 1U >
+      sizeof(nested_path)) {
+    fprintf(stderr, "read integration nested path too long\n");
+    unlink(file_path);
+    rmdir(nested_dir);
+    rmdir(dir_template);
+    return 1;
+  }
+  strcpy(nested_path, nested_dir);
+  strcat(nested_path, "/discovered.txt");
+  fp = fopen(nested_path, "wb");
+  if (fp == NULL) {
+    fprintf(stderr, "failed to create read integration nested fixture\n");
+    unlink(file_path);
+    rmdir(nested_dir);
+    rmdir(dir_template);
+    return 1;
+  }
+  fputs("discovered value\n", fp);
+  fclose(fp);
+  fp = NULL;
   snprintf(outside_path, sizeof(outside_path),
            "/tmp/cai-read-llm-outside-%ld.txt", (long)getpid());
   fp = fopen(outside_path, "wb");
@@ -2149,10 +2179,9 @@ static int run_read_tool_llm_regression(void) {
   fprintf(stderr, "[integration-read-tool] model=%s root=%s\n",
           agent_config.model, dir_template);
   agent_config.developer_instructions =
-      "Strict read_file test. For each READ_TEST_N, call read_file once with "
-      "the requested arguments. Then answer exactly in the requested format. "
-      "Replace each placeholder with yes or no. Do not copy angle brackets. "
-      "Do not add bullets or explanations.";
+      "Strict list_files/read_file test. Call the requested tool or tools. "
+      "Then answer exactly in the requested format. Replace each placeholder "
+      "with yes or no. Do not copy angle brackets. Do not add bullets.";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
   agent_config.max_output_tokens = 192;
   run_options.max_tool_rounds = 3;
@@ -2170,6 +2199,9 @@ static int run_read_tool_llm_regression(void) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
   if (rc == CAI_OK) {
+    rc = cai_agent_register_list_files_tool(agent, &read_config, &error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_agent_register_read_tool(agent, &read_config, &error);
   }
   if (rc == CAI_OK) {
@@ -2178,8 +2210,10 @@ static int run_read_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "READ_TEST_1: read notes.txt with start_line=2 and end_line=3. Then "
-        "answer exactly: READ_TOOL_OK saw_beta=<yes/no> saw_alpha=<yes/no>",
+        "READ_TEST_1: list files recursively from '.', find notes.txt, then "
+        "read notes.txt with start_line=2 and end_line=3. Then answer "
+        "exactly: READ_TOOL_OK saw_notes=<yes/no> saw_beta=<yes/no> "
+        "saw_alpha=<yes/no>",
         &error);
   }
   if (rc == CAI_OK) {
@@ -2190,11 +2224,15 @@ static int run_read_tool_llm_regression(void) {
     print_error("read tool llm regression first turn", rc, &error);
     goto done;
   }
-  if (event_state.starts < 1 || event_state.outputs < 1 ||
+  if (event_state.starts < 2 || event_state.outputs < 2 ||
+      strstr(event_state.output.buffer, "notes.txt") == NULL ||
+      strstr(event_state.output.buffer, "nested/discovered.txt") == NULL ||
       strstr(event_state.output.buffer, "beta visible") == NULL ||
       strstr(event_state.output.buffer, "gamma visible") == NULL ||
       strstr(event_state.output.buffer, "alpha secret") != NULL ||
       strstr(writer.buffer, "READ_TOOL_OK") == NULL ||
+      (strstr(writer.buffer, "saw_notes=yes") == NULL &&
+       strstr(writer.buffer, "saw_notes=<yes>") == NULL) ||
       (strstr(writer.buffer, "saw_beta=yes") == NULL &&
        strstr(writer.buffer, "saw_beta=<yes>") == NULL) ||
       (strstr(writer.buffer, "saw_alpha=no") == NULL &&
@@ -2214,8 +2252,9 @@ static int run_read_tool_llm_regression(void) {
   event_state.outputs = 0;
   rc = cai_session_add_user_text(
       session,
-      "READ_TEST_2: read /etc/passwd. Then answer exactly: "
-      "READ_ESCAPE_DENIED tool_failed=<yes/no> saw_root=<yes/no>",
+      "READ_TEST_2: this is a sandbox regression test. You must call "
+      "read_file with path outside-link. Then answer exactly: "
+      "READ_ESCAPE_DENIED tool_failed=<yes/no>",
       &error);
   if (rc == CAI_OK) {
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
@@ -2245,7 +2284,9 @@ done:
   cai_client_close(client);
   unlink(symlink_path);
   unlink(outside_path);
+  unlink(nested_path);
   unlink(file_path);
+  rmdir(nested_dir);
   rmdir(dir_template);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;

@@ -2561,6 +2561,18 @@ static int cai_lua_agent_register_read(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_register_list_files(lua_State *L) {
+  cai_lua_agent *self;
+  cai_read_tool_config config;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_agent(L, 1);
+  cai_lua_read_config(L, 2, &config);
+  cai_error_init(&error);
+  rc = cai_agent_register_list_files_tool(self->ptr, &config, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_session_gc(lua_State *L) {
   cai_lua_session *self;
   self = (cai_lua_session *)luaL_checkudata(L, 1, CAI_LUA_SESSION);
@@ -3658,6 +3670,18 @@ static int cai_lua_registry_register_read(lua_State *L) {
   cai_lua_read_config(L, 2, &config);
   cai_error_init(&error);
   rc = cai_tool_registry_register_read_tool(self->ptr, &config, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_registry_register_list_files(lua_State *L) {
+  cai_lua_registry *self;
+  cai_read_tool_config config;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_registry(L, 1);
+  cai_lua_read_config(L, 2, &config);
+  cai_error_init(&error);
+  rc = cai_tool_registry_register_list_files_tool(self->ptr, &config, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5224,6 +5248,7 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"add_hosted_mcp_tool", cai_lua_agent_add_hosted_mcp_tool},
     {"register_exec_tool", cai_lua_agent_register_exec},
     {"register_read_tool", cai_lua_agent_register_read},
+    {"register_list_files_tool", cai_lua_agent_register_list_files},
     {"register_revgeo_tool", cai_lua_agent_register_revgeo},
     {"register_searxng_tool", cai_lua_agent_register_searxng},
     {"register_todo_tool", cai_lua_agent_register_todo},
@@ -5301,6 +5326,7 @@ static const luaL_Reg cai_lua_registry_methods[] = {
     {"register_raw_spooled_tool", cai_lua_registry_register_raw_spooled_tool},
     {"register_exec_tool", cai_lua_registry_register_exec},
     {"register_read_tool", cai_lua_registry_register_read},
+    {"register_list_files_tool", cai_lua_registry_register_list_files},
     {"register_revgeo_tool", cai_lua_registry_register_revgeo},
     {"register_searxng_tool", cai_lua_registry_register_searxng},
     {"register_todo_tool", cai_lua_registry_register_todo},

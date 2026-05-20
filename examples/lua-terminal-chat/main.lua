@@ -110,15 +110,16 @@ if exec_tool_dir or read_tool_dir then
   instructions =
     "You are a concise terminal chat assistant. Answer plainly. " ..
     "You have access to searxng_search for web search, todo_kanban for " ..
-    "managing a local kanban board, read_file for reading files rooted to " ..
-    "the configured read directory, and optionally exec_command for " ..
+    "managing a local kanban board, list_files and read_file for inspecting " ..
+    "files rooted to the configured read directory, and optionally exec_command for " ..
     "Linux/Darwin command execution rooted to the configured sandbox " ..
     "directory. Use " ..
     "search for current, external, or source-backed information and cite " ..
     "URLs from tool results. Use todo_kanban when the user asks you to " ..
     "remember, plan, list, move, limit, or archive work. todo_kanban has " ..
     "a default board; omit board_id and board_name for ordinary " ..
-    "single-board usage. Prefer read_file over exec_command when the user " ..
+    "single-board usage. Use list_files before read_file when discovering " ..
+    "paths. Prefer read_file over exec_command when the user " ..
     "asks to inspect file contents. Use exec_command only when the user explicitly " ..
     "asks you to inspect or run commands, always set workdir when a " ..
     "specific directory matters, and do not assume network access."
@@ -157,6 +158,12 @@ if exec_tool_dir then
 end
 
 if read_tool_dir then
+  ok(agent:register_list_files_tool({
+    root_path = read_tool_dir,
+    default_workdir = read_tool_dir,
+    content_memory_limit = 128 * 1024,
+    content_max_bytes = 1024 * 1024,
+  }), nil, "agent:register_list_files_tool")
   ok(agent:register_read_tool({
     root_path = read_tool_dir,
     default_workdir = read_tool_dir,
