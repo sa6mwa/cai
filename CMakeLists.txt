@@ -626,7 +626,69 @@ if(CAI_BUILD_TESTS)
   target_link_libraries(cai_tests PRIVATE ${_cai_internal_link_target} CURL::libcurl
     Threads::Threads ${CAI_LONEJSON_LINK})
   cai_configure_c_target(cai_tests)
-  add_test(NAME cai_tests COMMAND cai_tests)
+  set(CAI_UNIT_TEST_GROUPS
+    model_capabilities
+    env_precedence
+    source_sink
+    lonejson_nested_mapped_array_stream
+    lonejson_selected_array_rewrite
+    tool_registry
+    mcp_handler
+    client_open
+    mike_mind_prompt_contract
+    response_json
+    response_spooled_request_arrays
+    response_array_serialization_invariants
+    response_large_text_parse
+    http_create_response
+    http_error_details
+    agent_session
+    agent_client_history_continuity
+    agent_tool_declarations
+    agent_tool_manual_step
+    agent_auto_compaction
+    http_response_limit
+    agent_tool_auto_run
+    agent_client_history_tool_auto_run
+    revgeo_tool
+    todo_tool
+    todo_callback_store
+    searxng_registry_tool
+    exec_tool
+    read_tool
+    agent_searxng_tool_auto_run
+    agent_multi_tool_auto_run
+    agent_tool_auto_round_limit
+    agent_tool_output_max_bytes
+    conversations
+    stream_response_text
+    stream_non_function_output_item
+    stream_output_delta_failure
+    stream_output_suffix_segments
+    stream_http_error_preserves_openai_error
+    stream_source_error_preserves_openai_error
+    stream_openrouter_metadata_events
+    session_stream_auto_tool_run
+    session_stream_auto_source_tool_run
+    session_stream_auto_reasoning_tool_response
+    session_stream_auto_multi_tool_run
+    session_stream_auto_duplicate_tool_done
+    session_stream_auto_callback_failure
+    session_stream_auto_round_limit
+    session_stream_auto_tool_output_max_bytes
+    stream_sse_event_limit
+    stream_history_preserves_pretty_json
+    stream_client_history_captures_output
+    stream_client_history_tool_order
+    local_history_opt_in
+    session_resume_and_history_import
+    session_state_validation)
+  foreach(_cai_unit_test IN LISTS CAI_UNIT_TEST_GROUPS)
+    add_test(NAME cai_tests.${_cai_unit_test}
+      COMMAND cai_tests --only ${_cai_unit_test})
+    set_tests_properties(cai_tests.${_cai_unit_test} PROPERTIES
+      TIMEOUT 180)
+  endforeach()
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
   target_include_directories(cai_mcp_http_server PRIVATE

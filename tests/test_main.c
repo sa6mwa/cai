@@ -19,8 +19,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -32,6 +34,15 @@
 typedef struct test_state {
   int failures;
 } test_state;
+
+typedef void (*test_fn)(test_state *state);
+
+typedef struct test_entry {
+  const char *name;
+  test_fn fn;
+} test_entry;
+
+static const char *g_current_test_name = NULL;
 
 typedef struct read_state {
   const char *text;
@@ -288,6 +299,56 @@ LONEJSON_MAP_DEFINE(parsed_output_map, parsed_output_doc,
 static void test_fail(test_state *state, const char *name, const char *msg) {
   state->failures++;
   fprintf(stderr, "FAIL %s: %s\n", name, msg);
+}
+
+static void test_timeout_handler(int sig) {
+  const char prefix[] = "\nTIMEOUT ";
+  const char suffix[] = "\n";
+  volatile ssize_t ignored;
+  (void)sig;
+  ignored = write(STDERR_FILENO, prefix, sizeof(prefix) - 1U);
+  if (g_current_test_name != NULL) {
+    ignored =
+        write(STDERR_FILENO, g_current_test_name, strlen(g_current_test_name));
+  } else {
+    const char unknown[] = "(unknown test)";
+    ignored = write(STDERR_FILENO, unknown, sizeof(unknown) - 1U);
+  }
+  ignored = write(STDERR_FILENO, suffix, sizeof(suffix) - 1U);
+  (void)ignored;
+  _exit(124);
+}
+
+static double test_now_seconds(void) {
+  struct timeval tv;
+
+  if (gettimeofday(&tv, NULL) != 0) {
+    return 0.0;
+  }
+  return (double)tv.tv_sec + ((double)tv.tv_usec / 1000000.0);
+}
+
+static void run_test_group(test_state *state, const char *name, test_fn fn) {
+  int failures_before;
+  double started;
+  double elapsed;
+
+  failures_before = state->failures;
+  g_current_test_name = name;
+  fprintf(stderr, "TEST %-48s ... ", name);
+  fflush(stderr);
+  alarm(120U);
+  started = test_now_seconds();
+  fn(state);
+  elapsed = test_now_seconds() - started;
+  alarm(0U);
+  if (state->failures == failures_before) {
+    fprintf(stderr, "ok %.3fs\n", elapsed);
+  } else {
+    fprintf(stderr, "failed %.3fs\n", elapsed);
+  }
+  fflush(stderr);
+  g_current_test_name = NULL;
 }
 
 static void expect_int(test_state *state, const char *name, long actual,
@@ -13225,66 +13286,136 @@ static void test_stream_openrouter_metadata_events(test_state *state) {
   }
 }
 
-int main(void) {
+static const test_entry test_entries[] = {
+    {"model_capabilities", test_model_capabilities},
+    {"env_precedence", test_env_precedence},
+    {"source_sink", test_source_sink},
+    {"lonejson_nested_mapped_array_stream",
+     test_lonejson_nested_mapped_array_stream},
+    {"lonejson_selected_array_rewrite", test_lonejson_selected_array_rewrite},
+    {"tool_registry", test_tool_registry},
+    {"mcp_handler", test_mcp_handler},
+    {"client_open", test_client_open},
+    {"mike_mind_prompt_contract", test_mike_mind_prompt_contract},
+    {"response_json", test_response_json},
+    {"response_spooled_request_arrays", test_response_spooled_request_arrays},
+    {"response_array_serialization_invariants",
+     test_response_array_serialization_invariants},
+    {"response_large_text_parse", test_response_large_text_parse},
+    {"http_create_response", test_http_create_response},
+    {"http_error_details", test_http_error_details},
+    {"agent_session", test_agent_session},
+    {"agent_client_history_continuity", test_agent_client_history_continuity},
+    {"agent_tool_declarations", test_agent_tool_declarations},
+    {"agent_tool_manual_step", test_agent_tool_manual_step},
+    {"agent_auto_compaction", test_agent_auto_compaction},
+    {"http_response_limit", test_http_response_limit},
+    {"agent_tool_auto_run", test_agent_tool_auto_run},
+    {"agent_client_history_tool_auto_run",
+     test_agent_client_history_tool_auto_run},
+    {"revgeo_tool", test_revgeo_tool},
+    {"todo_tool", test_todo_tool},
+    {"todo_callback_store", test_todo_callback_store},
+    {"searxng_registry_tool", test_searxng_registry_tool},
+    {"exec_tool", test_exec_tool},
+    {"read_tool", test_read_tool},
+    {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},
+    {"agent_multi_tool_auto_run", test_agent_multi_tool_auto_run},
+    {"agent_tool_auto_round_limit", test_agent_tool_auto_round_limit},
+    {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
+    {"conversations", test_conversations},
+    {"stream_response_text", test_stream_response_text},
+    {"stream_non_function_output_item", test_stream_non_function_output_item},
+    {"stream_output_delta_failure", test_stream_output_delta_failure},
+    {"stream_output_suffix_segments", test_stream_output_suffix_segments},
+    {"stream_http_error_preserves_openai_error",
+     test_stream_http_error_preserves_openai_error},
+    {"stream_source_error_preserves_openai_error",
+     test_stream_source_error_preserves_openai_error},
+    {"stream_openrouter_metadata_events", test_stream_openrouter_metadata_events},
+    {"session_stream_auto_tool_run", test_session_stream_auto_tool_run},
+    {"session_stream_auto_source_tool_run",
+     test_session_stream_auto_source_tool_run},
+    {"session_stream_auto_reasoning_tool_response",
+     test_session_stream_auto_reasoning_tool_response},
+    {"session_stream_auto_multi_tool_run", test_session_stream_auto_multi_tool_run},
+    {"session_stream_auto_duplicate_tool_done",
+     test_session_stream_auto_duplicate_tool_done},
+    {"session_stream_auto_callback_failure",
+     test_session_stream_auto_callback_failure},
+    {"session_stream_auto_round_limit", test_session_stream_auto_round_limit},
+    {"session_stream_auto_tool_output_max_bytes",
+     test_session_stream_auto_tool_output_max_bytes},
+    {"stream_sse_event_limit", test_stream_sse_event_limit},
+    {"stream_history_preserves_pretty_json",
+     test_stream_history_preserves_pretty_json},
+    {"stream_client_history_captures_output",
+     test_stream_client_history_captures_output},
+    {"stream_client_history_tool_order", test_stream_client_history_tool_order},
+    {"local_history_opt_in", test_local_history_opt_in},
+    {"session_resume_and_history_import", test_session_resume_and_history_import},
+    {"session_state_validation", test_session_state_validation}};
+
+static void print_test_usage(const char *argv0) {
+  fprintf(stderr, "usage: %s [--list] [--only NAME] [--filter SUBSTR]\n",
+          argv0);
+}
+
+int main(int argc, char **argv) {
   test_state state;
+  const char *only;
+  const char *filter;
+  size_t i;
+  int ran;
 
   state.failures = 0;
-  test_model_capabilities(&state);
-  test_env_precedence(&state);
-  test_source_sink(&state);
-  test_lonejson_nested_mapped_array_stream(&state);
-  test_lonejson_selected_array_rewrite(&state);
-  test_tool_registry(&state);
-  test_mcp_handler(&state);
-  test_client_open(&state);
-  test_mike_mind_prompt_contract(&state);
-  test_response_json(&state);
-  test_response_spooled_request_arrays(&state);
-  test_response_array_serialization_invariants(&state);
-  test_response_large_text_parse(&state);
-  test_http_create_response(&state);
-  test_http_error_details(&state);
-  test_agent_session(&state);
-  test_agent_client_history_continuity(&state);
-  test_agent_tool_declarations(&state);
-  test_agent_tool_manual_step(&state);
-  test_agent_auto_compaction(&state);
-  test_http_response_limit(&state);
-  test_agent_tool_auto_run(&state);
-  test_agent_client_history_tool_auto_run(&state);
-  test_revgeo_tool(&state);
-  test_todo_tool(&state);
-  test_todo_callback_store(&state);
-  test_searxng_registry_tool(&state);
-  test_exec_tool(&state);
-  test_read_tool(&state);
-  test_agent_searxng_tool_auto_run(&state);
-  test_agent_multi_tool_auto_run(&state);
-  test_agent_tool_auto_round_limit(&state);
-  test_agent_tool_output_max_bytes(&state);
-  test_conversations(&state);
-  test_stream_response_text(&state);
-  test_stream_non_function_output_item(&state);
-  test_stream_output_delta_failure(&state);
-  test_stream_output_suffix_segments(&state);
-  test_stream_http_error_preserves_openai_error(&state);
-  test_stream_source_error_preserves_openai_error(&state);
-  test_stream_openrouter_metadata_events(&state);
-  test_session_stream_auto_tool_run(&state);
-  test_session_stream_auto_source_tool_run(&state);
-  test_session_stream_auto_reasoning_tool_response(&state);
-  test_session_stream_auto_multi_tool_run(&state);
-  test_session_stream_auto_duplicate_tool_done(&state);
-  test_session_stream_auto_callback_failure(&state);
-  test_session_stream_auto_round_limit(&state);
-  test_session_stream_auto_tool_output_max_bytes(&state);
-  test_stream_sse_event_limit(&state);
-  test_stream_history_preserves_pretty_json(&state);
-  test_stream_client_history_captures_output(&state);
-  test_stream_client_history_tool_order(&state);
-  test_local_history_opt_in(&state);
-  test_session_resume_and_history_import(&state);
-  test_session_state_validation(&state);
+  only = NULL;
+  filter = NULL;
+  ran = 0;
+  for (i = 1U; i < (size_t)argc; i++) {
+    if (strcmp(argv[i], "--list") == 0) {
+      size_t j;
+      for (j = 0U; j < sizeof(test_entries) / sizeof(test_entries[0]); j++) {
+        printf("%s\n", test_entries[j].name);
+      }
+      return 0;
+    }
+    if (strcmp(argv[i], "--only") == 0) {
+      if (i + 1U >= (size_t)argc) {
+        print_test_usage(argv[0]);
+        return 2;
+      }
+      i++;
+      only = argv[i];
+      continue;
+    }
+    if (strcmp(argv[i], "--filter") == 0) {
+      if (i + 1U >= (size_t)argc) {
+        print_test_usage(argv[0]);
+        return 2;
+      }
+      i++;
+      filter = argv[i];
+      continue;
+    }
+    print_test_usage(argv[0]);
+    return 2;
+  }
+  signal(SIGALRM, test_timeout_handler);
+  for (i = 0U; i < sizeof(test_entries) / sizeof(test_entries[0]); i++) {
+    if (only != NULL && strcmp(test_entries[i].name, only) != 0) {
+      continue;
+    }
+    if (filter != NULL && strstr(test_entries[i].name, filter) == NULL) {
+      continue;
+    }
+    ran = 1;
+    run_test_group(&state, test_entries[i].name, test_entries[i].fn);
+  }
+  if (!ran) {
+    fprintf(stderr, "no tests matched\n");
+    return 2;
+  }
   if (state.failures != 0) {
     fprintf(stderr, "%d test(s) failed\n", state.failures);
     return 1;
