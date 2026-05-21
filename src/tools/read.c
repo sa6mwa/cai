@@ -836,6 +836,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   int include;
   int stop;
   int saw_any;
+  int at_limit;
   int rc;
 
   if (stat(resolved_path, &st) != 0) {
@@ -881,6 +882,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   written = 0LL;
   stop = 0;
   saw_any = 0;
+  at_limit = 0;
   rc = CAI_OK;
   cai_read_text_validator_init(&file_validator);
   cai_read_text_validator_init(&output_validator);
@@ -897,7 +899,12 @@ static int cai_read_stream_file(const cai_read_context *ctx,
         if (include) {
           size_t len;
           len = i + 1U - start;
-          if (written + (long long)len >= max_bytes) {
+          if (at_limit) {
+            *truncated = 1;
+            stop = 1;
+            break;
+          }
+          if (written + (long long)len > max_bytes) {
             len = cai_read_text_complete_prefix(
                 &output_validator, buffer + start,
                 (size_t)(max_bytes - written));
@@ -914,8 +921,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           saw_any = 1;
           last_line = current_line;
           if (written >= max_bytes) {
-            *truncated = 1;
-            stop = 1;
+            at_limit = 1;
           }
         }
         current_line++;
@@ -931,7 +937,12 @@ static int cai_read_stream_file(const cai_read_context *ctx,
       if (include) {
         size_t len;
         len = nread - start;
-        if (written + (long long)len >= max_bytes) {
+        if (at_limit) {
+          *truncated = 1;
+          stop = 1;
+          break;
+        }
+        if (written + (long long)len > max_bytes) {
           len = cai_read_text_complete_prefix(&output_validator,
                                               buffer + start,
                                               (size_t)(max_bytes - written));
@@ -947,8 +958,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           saw_any = 1;
           last_line = current_line;
           if (written >= max_bytes) {
-            *truncated = 1;
-            stop = 1;
+            at_limit = 1;
           }
         }
       }

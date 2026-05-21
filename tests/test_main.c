@@ -7417,6 +7417,18 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  if (run_read_tool_case(state, "read_line_range_exact_limit", &config,
+                         "{\"path\":\"alpha.txt\",\"start_line\":2,"
+                         "\"end_line\":2,\"max_bytes\":4}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_line_range_exact_limit_content",
+                  writer.buffer, "\"content\":\"two\\n\"");
+    expect_substr(state, "read_line_range_exact_limit_truncated",
+                  writer.buffer, "\"truncated\":false");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   if (run_read_tool_case(state, "read_max_bytes", &config,
                          "{\"path\":\"alpha.txt\",\"max_bytes\":5}", CAI_OK,
                          &writer, &error) == CAI_OK) {
@@ -7424,6 +7436,41 @@ static void test_read_tool(test_state *state) {
                   "\"content\":\"one\\nt\"");
     expect_substr(state, "read_max_bytes_truncated", writer.buffer,
                   "\"truncated\":true");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_full_file_exact_limit", &config,
+                         "{\"path\":\"nested/deep.txt\",\"max_bytes\":5}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_full_file_exact_limit_content", writer.buffer,
+                  "\"content\":\"deep\\n\"");
+    expect_substr(state, "read_full_file_exact_limit_truncated",
+                  writer.buffer, "\"truncated\":false");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_full_file_one_byte_short", &config,
+                         "{\"path\":\"nested/deep.txt\",\"max_bytes\":4}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_full_file_one_byte_short_content",
+                  writer.buffer, "\"content\":\"deep\"");
+    expect_substr(state, "read_full_file_one_byte_short_truncated",
+                  writer.buffer, "\"truncated\":true");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_utf8_full_file_exact_limit", &config,
+                         "{\"path\":\"utf8.txt\",\"max_bytes\":4}", CAI_OK,
+                         &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_utf8_full_file_exact_limit_content",
+                  writer.buffer, "\"content\":\"a");
+    expect_substr(state, "read_utf8_full_file_exact_limit_truncated",
+                  writer.buffer, "\"truncated\":false");
+    expect_valid_json(state, "read_utf8_full_file_exact_limit_json",
+                      writer.buffer);
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
