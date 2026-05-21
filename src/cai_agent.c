@@ -266,6 +266,14 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   if (client_impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
   }
+  if (config->max_output_tokens < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max output tokens must not be negative");
+  }
+  if (config->max_tool_calls < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max tool calls must not be negative");
+  }
   agent = (cai_agent *)cai_alloc(&client_impl->allocator, sizeof(*agent));
   if (agent == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
@@ -1605,6 +1613,10 @@ int cai_session_set_conversation_id(cai_session *session,
   allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
   copy = NULL;
   if (conversation_id != NULL) {
+    if (conversation_id[0] == '\0') {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "conversation id must not be empty");
+    }
     copy = cai_strdup(allocator, conversation_id);
     if (copy == NULL) {
       return cai_set_error(error, CAI_ERR_NOMEM,

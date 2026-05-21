@@ -1440,23 +1440,45 @@ int cai_response_create_params_set_instructions(
 int cai_response_create_params_set_previous_response_id(
     cai_response_create_params *params, const char *response_id,
     cai_error *error) {
+  int rc;
+
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
   }
-  return cai_replace_string(&params->allocator, &params->previous_response_id,
-                            response_id, error);
+  if (response_id != NULL && response_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "previous response id must not be empty");
+  }
+  rc = cai_replace_string(&params->allocator, &params->previous_response_id,
+                          response_id, error);
+  if (rc == CAI_OK && response_id != NULL) {
+    cai_free_mem(&params->allocator, params->conversation_id);
+    params->conversation_id = NULL;
+  }
+  return rc;
 }
 
 int cai_response_create_params_set_conversation_id(
     cai_response_create_params *params, const char *conversation_id,
     cai_error *error) {
+  int rc;
+
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
   }
-  return cai_replace_string(&params->allocator, &params->conversation_id,
-                            conversation_id, error);
+  if (conversation_id != NULL && conversation_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation id must not be empty");
+  }
+  rc = cai_replace_string(&params->allocator, &params->conversation_id,
+                          conversation_id, error);
+  if (rc == CAI_OK && conversation_id != NULL) {
+    cai_free_mem(&params->allocator, params->previous_response_id);
+    params->previous_response_id = NULL;
+  }
+  return rc;
 }
 
 int cai_response_create_params_set_prompt_cache_key(
@@ -3693,6 +3715,11 @@ static int cai_response_request_state_prepare(
        (params->raw_input_json == NULL || params->raw_input_json[0] == '\0'))) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model and at least one input message are required");
+  }
+  if (params->previous_response_id != NULL && params->conversation_id != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "previous response id and conversation id are "
+                         "mutually exclusive");
   }
 
   state->doc.model = params->model;

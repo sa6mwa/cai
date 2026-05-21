@@ -118,6 +118,14 @@ assert(model.context_window_tokens > 0)
 assert(model.auto_compact_token_limit > 0)
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+assert_not_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  max_output_tokens = -1,
+}), "negative Lua agent max output tokens must fail")
+assert_not_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  max_tool_calls = -1,
+}), "negative Lua agent max tool calls must fail")
 local dotenv_path = "/tmp/cai-lua-dotenv-test.env"
 do
   local fp = assert(io.open(dotenv_path, "w"))
@@ -148,6 +156,8 @@ assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
 local dummy_session = assert_ok(dummy_agent:new_session())
 assert_ok(dummy_session:set_previous_response_id("resp_lua_test"))
 assert_ok(dummy_session:set_conversation_id("conv_lua_test"))
+assert_not_ok(dummy_session:set_conversation_id(""),
+  "empty Lua session conversation id must fail")
 assert_ok(dummy_session:add_user_text("hello"))
 assert_ok(dummy_session:add_user_text_spooled(spool_text("spooled hello", 3)))
 assert_ok(dummy_session:add_user_file_data_spooled(
@@ -239,6 +249,10 @@ assert_ok(params:set_max_output_tokens(128))
 assert_ok(params:set_max_tool_calls(3))
 assert_not_ok(params:set_max_tool_calls(-1),
   "negative Lua max tool calls must fail")
+assert_not_ok(params:set_conversation_id(""),
+  "empty Lua params conversation id must fail")
+assert_not_ok(params:set_previous_response_id(""),
+  "empty Lua params previous response id must fail")
 assert_ok(params:set_parallel_tool_calls(true))
 assert_ok(params:set_compact_threshold(320000))
 assert_ok(params:set_reasoning("minimal", "auto"))

@@ -3251,6 +3251,7 @@ static void test_client_open(test_state *state) {
   cai_agent_config agent_config;
   cai_client *client;
   cai_agent *agent;
+  cai_session *session;
   pslog_logger fake_logger;
   struct pslog_logger *logger;
   cai_error error;
@@ -3292,6 +3293,7 @@ static void test_client_open(test_state *state) {
   g_test_infof_count = 0;
   client = NULL;
   agent = NULL;
+  session = NULL;
   expect_int(state, "client_open", cai_client_open(&config, &client, &error),
              CAI_OK);
   if (client == NULL) {
@@ -3319,8 +3321,32 @@ static void test_client_open(test_state *state) {
     expect_int(state, "agent_unknown_model_disabled_compact",
                cai_client_new_agent(client, &agent_config, &agent, &error),
                CAI_OK);
+    expect_int(state, "agent_session_for_validation",
+               cai_agent_new_session(agent, &session, &error), CAI_OK);
+    expect_int(state, "session_reject_empty_conversation_id",
+               cai_session_set_conversation_id(session, "", &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_session_destroy(session);
+    session = NULL;
     cai_agent_destroy(agent);
     agent = NULL;
+    cai_agent_config_init(&agent_config);
+    agent_config.model = CAI_MODEL_GPT_5_NANO;
+    agent_config.max_output_tokens = -1;
+    expect_int(state, "agent_reject_negative_max_output_tokens",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    agent_config.max_output_tokens = 0;
+    agent_config.max_tool_calls = -1;
+    expect_int(state, "agent_reject_negative_max_tool_calls",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
   }
   cai_client_close(client);
   client = NULL;
@@ -3406,6 +3432,7 @@ static void test_response_json(test_state *state) {
   write_state writer;
   cai_hosted_mcp_tool_config mcp_config;
   cai_response_create_params *mcp_params;
+  cai_response_create_params *continuation_params;
   cai_hosted_mcp_tool_config invalid_mcp_config;
   char response_json[1024];
   char *json;
@@ -3448,6 +3475,7 @@ static void test_response_json(test_state *state) {
   cai_error_init(&error);
   params = NULL;
   mcp_params = NULL;
+  continuation_params = NULL;
   output = NULL;
   json = NULL;
   expect_int(state, "params_new",
@@ -3602,6 +3630,52 @@ static void test_response_json(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(state, "params_continuation_new",
+             cai_response_create_params_new(&continuation_params, &error),
+             CAI_OK);
+  expect_int(state, "params_reject_empty_conversation_id",
+             cai_response_create_params_set_conversation_id(
+                 continuation_params, "", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "params_reject_empty_previous_response_id",
+             cai_response_create_params_set_previous_response_id(
+                 continuation_params, "", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "params_set_continuation_conversation",
+             cai_response_create_params_set_conversation_id(
+                 continuation_params, "conv_low", &error),
+             CAI_OK);
+  expect_int(state, "params_switch_to_previous_response",
+             cai_response_create_params_set_previous_response_id(
+                 continuation_params, "resp_low", &error),
+             CAI_OK);
+  expect_int(state, "params_continuation_model",
+             cai_response_create_params_set_model(
+                 continuation_params, CAI_MODEL_GPT_5_NANO, &error),
+             CAI_OK);
+  expect_int(state, "params_continuation_input",
+             cai_response_create_params_add_text(continuation_params, "user",
+                                                 "hello", &error),
+             CAI_OK);
+  expect_int(state, "params_continuation_serialize",
+             cai_response_create_params_serialize_json(
+                 continuation_params, &json, &json_len, &error),
+             CAI_OK);
+  if (json != NULL) {
+    if (strstr(json, "\"previous_response_id\":\"resp_low\"") == NULL ||
+        strstr(json, "\"conversation\"") != NULL) {
+      test_fail(state, "params_continuation_exclusive",
+                "continuation handles were not mutually exclusive");
+    }
+    free(json);
+    json = NULL;
+  }
+  cai_response_create_params_destroy(continuation_params);
+  continuation_params = NULL;
   expect_int(
       state, "params_add_text",
       cai_response_create_params_add_text(params, "user", "hello", &error),
