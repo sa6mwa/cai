@@ -7,12 +7,12 @@
 extern "C" {
 #endif
 
-/** @brief Default registered name for the UTF-8 text file reader preset. */
+/** Default registered name for the UTF-8 text file reader preset. */
 #define CAI_READ_DEFAULT_TOOL_NAME "read_file"
-/** @brief Default registered name for the sandboxed file listing preset. */
+/** Default registered name for the sandboxed file listing preset. */
 #define CAI_LIST_FILES_DEFAULT_TOOL_NAME "list_files"
 
-/** @brief Shared configuration for the `read_file` and `list_files` presets. */
+/** Shared configuration for the `read_file` and `list_files` presets. */
 typedef struct cai_read_tool_config {
   /** Optional override for the model-facing tool name. */
   const char *name;
@@ -30,19 +30,19 @@ typedef struct cai_read_tool_config {
   const char *content_spool_dir;
 } cai_read_tool_config;
 
-/** @brief Register the UTF-8 text-only `read_file` preset on a registry. */
+/** Register the UTF-8 text-only `read_file` preset on a registry. */
 int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
                                          const cai_read_tool_config *config,
                                          cai_error *error);
-/** @brief Register the UTF-8 text-only `read_file` preset on an agent. */
+/** Register the UTF-8 text-only `read_file` preset on an agent. */
 int cai_agent_register_read_tool(cai_agent *agent,
                                  const cai_read_tool_config *config,
                                  cai_error *error);
-/** @brief Register the sandboxed `list_files` preset on a registry. */
+/** Register the sandboxed `list_files` preset on a registry. */
 int cai_tool_registry_register_list_files_tool(cai_tool_registry *registry,
                                                const cai_read_tool_config *config,
                                                cai_error *error);
-/** @brief Register the sandboxed `list_files` preset on an agent. */
+/** Register the sandboxed `list_files` preset on an agent. */
 int cai_agent_register_list_files_tool(cai_agent *agent,
                                        const cai_read_tool_config *config,
                                        cai_error *error);

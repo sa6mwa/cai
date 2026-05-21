@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 
-/** @brief Default registered name for the sandboxed command execution tool. */
+/** Default registered name for the sandboxed command execution tool. */
 #define CAI_EXEC_DEFAULT_TOOL_NAME "exec_command"
 
-/** @brief Configuration for the opt-in `exec_command` tool preset. */
+/** Configuration for the opt-in `exec_command` tool preset. */
 typedef struct cai_exec_tool_config {
   /** Optional override for the model-facing tool name. */
   const char *name;
@@ -50,11 +50,11 @@ typedef struct cai_exec_tool_config {
   const char *output_spool_dir;
 } cai_exec_tool_config;
 
-/** @brief Register the sandboxed `exec_command` preset on a tool registry. */
+/** Register the sandboxed `exec_command` preset on a tool registry. */
 int cai_tool_registry_register_exec_tool(cai_tool_registry *registry,
                                          const cai_exec_tool_config *config,
                                          cai_error *error);
-/** @brief Register the sandboxed `exec_command` preset on an agent. */
+/** Register the sandboxed `exec_command` preset on an agent. */
 int cai_agent_register_exec_tool(cai_agent *agent,
                                  const cai_exec_tool_config *config,
                                  cai_error *error);

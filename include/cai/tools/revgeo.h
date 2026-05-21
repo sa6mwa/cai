@@ -7,12 +7,12 @@
 extern "C" {
 #endif
 
-/** @brief Default public reverse-geocoding provider base URL. */
+/** Default public reverse-geocoding provider base URL. */
 #define CAI_REVGEO_DEFAULT_BASE_URL "https://nominatim.openstreetmap.org"
-/** @brief Default reverse-geocoding endpoint path. */
+/** Default reverse-geocoding endpoint path. */
 #define CAI_REVGEO_DEFAULT_REVERSE_PATH "/reverse"
 
-/** @brief Configuration for the reverse-geocoding tool preset. */
+/** Configuration for the reverse-geocoding tool preset. */
 typedef struct cai_revgeo_tool_config {
   /** Optional override for the model-facing tool name. */
   const char *name;
@@ -38,11 +38,11 @@ typedef struct cai_revgeo_tool_config {
   const char *response_spool_dir;
 } cai_revgeo_tool_config;
 
-/** @brief Register the reverse-geocoding preset on a registry. */
+/** Register the reverse-geocoding preset on a registry. */
 int cai_tool_registry_register_revgeo_tool(
     cai_tool_registry *registry, const cai_revgeo_tool_config *config,
     cai_error *error);
-/** @brief Register the reverse-geocoding preset on an agent. */
+/** Register the reverse-geocoding preset on an agent. */
 int cai_agent_register_revgeo_tool(cai_agent *agent,
                                    const cai_revgeo_tool_config *config,
                                    cai_error *error);

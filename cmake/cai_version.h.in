@@ -1,13 +1,13 @@
 #ifndef CAI_VERSION_H
 #define CAI_VERSION_H
 
-/** @brief Major component of the compiled cai version. */
+/** Major component of the compiled cai version. */
 #define CAI_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
-/** @brief Minor component of the compiled cai version. */
+/** Minor component of the compiled cai version. */
 #define CAI_VERSION_MINOR @PROJECT_VERSION_MINOR@
-/** @brief Patch component of the compiled cai version. */
+/** Patch component of the compiled cai version. */
 #define CAI_VERSION_PATCH @PROJECT_VERSION_PATCH@
-/** @brief Full semantic version string for the compiled cai library. */
+/** Full semantic version string for the compiled cai library. */
 #define CAI_VERSION_STRING "@PROJECT_VERSION@"
 
 #endif
