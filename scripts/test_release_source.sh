@@ -61,4 +61,4 @@ if [[ "$pc_version" != "$release_version" ]]; then
   exit 1
 fi
 cmake --build "$build_root"
-ctest --test-dir "$build_root" --output-on-failure
+ctest --test-dir "$build_root" --output-on-failure --stop-on-failure

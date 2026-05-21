@@ -5,6 +5,7 @@ MAKEFLAGS += --no-builtin-rules
 ROOT := $(CURDIR)
 CMAKE := cmake
 CTEST := ctest
+CTEST_FLAGS := --stop-on-failure
 COMPOSE_FILE := docker-compose.yaml
 COMPOSE := $(shell if command -v nerdctl >/dev/null 2>&1; then printf 'nerdctl compose'; elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then printf 'docker compose'; else printf ''; fi)
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
@@ -77,10 +78,10 @@ build-release:
 test: test-debug
 
 test-debug: build-debug
-	$(CTEST) --preset debug
+	$(CTEST) --preset debug $(CTEST_FLAGS)
 
 test-release: build-release
-	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure
+	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
 
 test-integration:
 	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
@@ -89,12 +90,12 @@ test-integration:
 	fi
 	$(CMAKE) --preset integration
 	$(CMAKE) --build --preset integration
-	$(CTEST) --preset integration
+	$(CTEST) --preset integration $(CTEST_FLAGS)
 
 asan:
 	$(CMAKE) --preset asan
 	$(CMAKE) --build --preset asan
-	$(CTEST) --preset asan
+	$(CTEST) --preset asan $(CTEST_FLAGS)
 
 test-asan: asan
 
@@ -187,9 +188,9 @@ package-verify: package-checksums
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
 release:
-	$(CMAKE) -E rm -rf build dist
+	$(MAKE) clean
 	$(MAKE) build-release
-	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure
+	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
 	bash ./scripts/package_release_matrix.sh
 	$(MAKE) release-lua-artifacts
 	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
