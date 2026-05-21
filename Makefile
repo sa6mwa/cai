@@ -39,7 +39,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -56,7 +56,8 @@ help:
 		'make package      Build release and write dist/cai-*.tar.gz.' \
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
-		'make release      Build, test, package, and checksum release artifacts.' \
+		'make release-matrix Incrementally build, test, package, and checksum release artifacts.' \
+		'make release      Clean first, then run the final release artifact gate.' \
 		'make package-verify Verify release archive structure and metadata.' \
 		'make searxng-pull Pull the configured SearXNG container image.' \
 		'make searxng-up   Start local SearXNG via nerdctl compose or docker compose.' \
@@ -187,14 +188,17 @@ package-checksums: package release-lua-artifacts
 package-verify: package-checksums
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
-release:
-	$(MAKE) clean
+release-matrix:
 	$(MAKE) build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
 	bash ./scripts/package_release_matrix.sh
 	$(MAKE) release-lua-artifacts
 	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
+
+release:
+	$(MAKE) clean
+	$(MAKE) release-matrix
 
 compose-check:
 	@if [[ -z "$(COMPOSE)" ]]; then \
