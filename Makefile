@@ -244,4 +244,4 @@ format:
 	$(CMAKE) --build build/debug --target clang-format
 
 clean:
-	$(CMAKE) -E rm -rf build
+	$(CMAKE) -E rm -rf build dist .cache .luarocks-build
