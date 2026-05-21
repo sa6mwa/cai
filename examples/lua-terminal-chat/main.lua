@@ -94,7 +94,8 @@ end
 if read_tool_dir then
   io.stderr:write("read_file enabled with root: " .. read_tool_dir .. "\n")
 else
-  io.stderr:write("hint: pass --read-tool-dir <path> to enable read_file rooted to that path\n")
+  io.stderr:write("hint: pass --read-tool-dir <path> to enable list_files/read_file rooted to that path\n")
+  io.stderr:write("      list_files reports text/binary hints; read_file is UTF-8 text-only\n")
 end
 
 local instructions =

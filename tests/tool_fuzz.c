@@ -1,8 +1,17 @@
 #include <cai/cai.h>
+#include <cai/tools/read.h>
 
 #include <lonejson.h>
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 typedef struct fuzz_point_args {
   double latitude;
@@ -65,6 +74,105 @@ static int fuzz_sink_write(void *context, const void *bytes, size_t count,
   return CAI_OK;
 }
 
+static int fuzz_read_root(char *root, size_t root_size) {
+  static char cached_root[PATH_MAX];
+  static int initialized;
+  char template_path[PATH_MAX];
+
+  if (!initialized) {
+    snprintf(template_path, sizeof(template_path), "/tmp/cai-read-fuzz-%ld-XXXXXX",
+             (long)getpid());
+    if (mkdtemp(template_path) == NULL) {
+      return 0;
+    }
+    memcpy(cached_root, template_path, strlen(template_path) + 1U);
+    initialized = 1;
+  }
+  if (strlen(cached_root) + 1U > root_size) {
+    return 0;
+  }
+  memcpy(root, cached_root, strlen(cached_root) + 1U);
+  return 1;
+}
+
+static int fuzz_write_read_fixture(const char *root, const unsigned char *data,
+                                   size_t size) {
+  char path[PATH_MAX];
+  FILE *fp;
+  int n;
+
+  n = snprintf(path, sizeof(path), "%s/fuzz.bin", root);
+  if (n < 0 || (size_t)n >= sizeof(path)) {
+    return 0;
+  }
+  fp = fopen(path, "wb");
+  if (fp == NULL) {
+    return 0;
+  }
+  if (size != 0U && fwrite(data, 1U, size, fp) != size) {
+    fclose(fp);
+    return 0;
+  }
+  fclose(fp);
+  return 1;
+}
+
+static void fuzz_run_read_tools(cai_tool_registry *registry, cai_sink *sink,
+                                const unsigned char *data, size_t size,
+                                cai_error *error) {
+  static const char read_full[] = "{\"path\":\"fuzz.bin\"}";
+  static const char read_one[] = "{\"path\":\"fuzz.bin\",\"max_bytes\":1}";
+  static const char read_two[] = "{\"path\":\"fuzz.bin\",\"max_bytes\":2}";
+  static const char read_range[] =
+      "{\"path\":\"fuzz.bin\",\"start_line\":2,\"end_line\":3,"
+      "\"max_bytes\":7}";
+  static const char list_root[] =
+      "{\"path\":\".\",\"recursive\":true,\"include_hidden\":true}";
+  cai_read_tool_config config;
+  char root[PATH_MAX];
+
+  if (!fuzz_read_root(root, sizeof(root)) ||
+      !fuzz_write_read_fixture(root, data, size)) {
+    return;
+  }
+
+  memset(&config, 0, sizeof(config));
+  config.root_path = root;
+  config.default_workdir = root;
+  config.content_memory_limit = 8U;
+  config.content_max_bytes = 64U;
+
+  if (cai_tool_registry_register_read_tool(registry, &config, error) !=
+      CAI_OK) {
+    return;
+  }
+  if (cai_tool_registry_register_list_files_tool(registry, &config, error) !=
+      CAI_OK) {
+    return;
+  }
+
+  (void)cai_tool_registry_run(registry, CAI_READ_DEFAULT_TOOL_NAME, read_full,
+                              sink, error);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  (void)cai_tool_registry_run(registry, CAI_READ_DEFAULT_TOOL_NAME, read_one,
+                              sink, error);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  (void)cai_tool_registry_run(registry, CAI_READ_DEFAULT_TOOL_NAME, read_two,
+                              sink, error);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  (void)cai_tool_registry_run(registry, CAI_READ_DEFAULT_TOOL_NAME, read_range,
+                              sink, error);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  (void)cai_tool_registry_run(registry, CAI_LIST_FILES_DEFAULT_TOOL_NAME,
+                              list_root, sink, error);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+}
+
 int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) {
   static const char raw_schema[] = "{\"type\":\"object\",\"properties\":{},"
                                    "\"additionalProperties\":true}";
@@ -102,6 +210,9 @@ int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) {
     cai_error_cleanup(&error);
     cai_error_init(&error);
     (void)cai_tool_registry_run(registry, "raw", json, sink, &error);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    fuzz_run_read_tools(registry, sink, data, size, &error);
   }
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);

@@ -97,7 +97,10 @@ static void print_help(const char *program) {
   fprintf(stderr,
           "usage: %s [--exec-tool-dir <path>] [--read-tool-dir <path>]\n\n"
           "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
-          "  --read-tool-dir <path>  Register read_file rooted to <path>.\n",
+          "  --read-tool-dir <path>  Register list_files/read_file rooted to "
+          "<path>.\n"
+          "                          list_files reports text/binary hints; "
+          "read_file is UTF-8 text-only.\n",
           program != NULL ? program : "cai_example_terminal_chat");
 }
 

@@ -158,7 +158,9 @@ spooled large-value methods such as `add_user_text_spooled()` and
 not enabled by default. Pass `--exec-tool-dir <path>` to register
 `exec_command` rooted to that path. File inspection is also opt-in; pass
 `--read-tool-dir <path>` to register `list_files` and `read_file` rooted to
-that path.
+that path. `list_files` reports `text_candidate`/`binary_candidate` hints for
+regular files, and `read_file` only returns UTF-8 text without unsafe control
+characters.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
@@ -210,7 +212,9 @@ is visible while a turn is running. Exit with Ctrl-D at an empty prompt,
 `/quit`, or `/exit`. Command execution is not enabled by default. Pass
 `--exec-tool-dir <path>` to register `exec_command` rooted to that path. File
 inspection is also opt-in; pass `--read-tool-dir <path>` to register
-`list_files` and `read_file` rooted to that path.
+`list_files` and `read_file` rooted to that path. `list_files` reports
+`text_candidate`/`binary_candidate` hints for regular files, and `read_file`
+only returns UTF-8 text without unsafe control characters.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-terminal-chat

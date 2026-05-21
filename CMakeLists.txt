@@ -760,6 +760,13 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_openrouter_stream_tool PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME cai_integration_openrouter_read_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_OPENROUTER_READ_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_openrouter_read_tool PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME cai_integration_openrouter_stream_history
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1"

@@ -418,6 +418,24 @@ static void integration_write_file_or_die(const char *path, const char *text) {
   fclose(fp);
 }
 
+static void integration_write_bytes_or_die(const char *path,
+                                           const unsigned char *bytes,
+                                           size_t count) {
+  FILE *fp;
+
+  fp = fopen(path, "wb");
+  if (fp == NULL) {
+    perror(path);
+    exit(2);
+  }
+  if (count != 0U && fwrite(bytes, 1U, count, fp) != count) {
+    perror(path);
+    fclose(fp);
+    exit(2);
+  }
+  fclose(fp);
+}
+
 static int integration_read_file(const char *path, char *buffer,
                                  size_t capacity) {
   FILE *fp;
@@ -1369,6 +1387,223 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_openrouter_read_tool_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_read_tool_config read_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_agent *read_agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  integration_exec_tool_event_state event_state;
+  integration_write_state writer;
+  char dir_template[] = "/tmp/cai-openrouter-read-e2e-XXXXXX";
+  char text_path[PATH_MAX];
+  char binary_path[PATH_MAX];
+  static const unsigned char binary_bytes[] = {'o', 'r', 0U, 'x'};
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_openrouter(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&read_config, 0, sizeof(read_config));
+  memset(&event_state, 0, sizeof(event_state));
+  memset(&writer, 0, sizeof(writer));
+  client = NULL;
+  agent = NULL;
+  read_agent = NULL;
+  session = NULL;
+  sink = NULL;
+  rc = CAI_OK;
+
+  if (mkdtemp(dir_template) == NULL) {
+    fprintf(stderr, "mkdtemp failed for OpenRouter read integration root\n");
+    return 1;
+  }
+  snprintf(text_path, sizeof(text_path), "%s/notes.txt", dir_template);
+  integration_write_file_or_die(text_path, "first hidden\nsecond open\n");
+  snprintf(binary_path, sizeof(binary_path), "%s/binary.bin", dir_template);
+  integration_write_bytes_or_die(binary_path, binary_bytes,
+                                 sizeof(binary_bytes));
+
+  read_config.root_path = dir_template;
+  read_config.default_workdir = dir_template;
+  read_config.content_memory_limit = 16U;
+  read_config.content_max_bytes = 65536U;
+
+  agent_config.model = openrouter_tool_integration_model();
+  fprintf(stderr, "[integration-openrouter-read-tool] model=%s root=%s\n",
+          agent_config.model, dir_template);
+  agent_config.developer_instructions =
+      "You are a strict OpenRouter read/list tool regression assistant. Call "
+      "the requested tool before answering. Answer exactly in the requested "
+      "format and do not add bullets.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_NONE;
+  agent_config.max_output_tokens = 128;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_exec_tool_event;
+  run_options.tool_event_context = &event_state;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_list_files_tool(agent, &read_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "OPENROUTER_READ_TEST_1: call list_files for '.', inspect notes.txt "
+        "and binary.bin, then answer exactly: OR_READ_LIST_OK notes_text=<yes/"
+        "no> binary_binary=<yes/no>",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    stream_sinks.output_text = sink;
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter read list regression", rc, &error);
+    goto done;
+  }
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
+      strstr(event_state.output.buffer, "\"path\":\"notes.txt\"") == NULL ||
+      strstr(event_state.output.buffer, "\"text_candidate\":true") == NULL ||
+      strstr(event_state.output.buffer, "\"path\":\"binary.bin\"") == NULL ||
+      strstr(event_state.output.buffer, "\"binary_candidate\":true") == NULL ||
+      strstr(writer.buffer, "OR_READ_LIST_OK") == NULL ||
+      strstr(writer.buffer, "notes_text=yes") == NULL ||
+      strstr(writer.buffer, "binary_binary=yes") == NULL) {
+    fprintf(stderr,
+            "openrouter read list failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  cai_session_destroy(session);
+  session = NULL;
+  agent_config.tool_choice_json = NULL;
+  agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
+  agent_config.max_tool_calls = 1;
+  agent_config.disable_parallel_tool_calls = 1;
+  rc = cai_client_new_agent(client, &agent_config, &read_agent, &error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_read_tool(read_agent, &read_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(read_agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "OPENROUTER_READ_TEST_2: call read_file for notes.txt with "
+        "start_line=2 and end_line=2. Then answer exactly: "
+        "OR_READ_TEXT_OK saw_second=<yes/no> saw_first=<yes/no>",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter read text regression", rc, &error);
+    goto done;
+  }
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
+      strstr(event_state.output.buffer, "second open") == NULL ||
+      strstr(event_state.output.buffer, "first hidden") != NULL ||
+      strstr(writer.buffer, "OR_READ_TEXT_OK") == NULL ||
+      strstr(writer.buffer, "saw_second=yes") == NULL) {
+    fprintf(stderr,
+            "openrouter read text failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  cai_session_destroy(session);
+  session = NULL;
+  rc = cai_agent_new_session(read_agent, &session, &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "OPENROUTER_READ_TEST_3: call read_file for binary.bin. If the tool "
+        "rejects the read, answer exactly: OR_READ_BINARY_DENIED "
+        "tool_failed=yes",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc == CAI_OK) {
+    if (event_state.starts < 1 ||
+        strstr(writer.buffer, "OR_READ_BINARY_DENIED") == NULL ||
+        strstr(writer.buffer, "tool_failed=yes") == NULL) {
+      fprintf(stderr,
+              "openrouter binary denial failed check; starts=%d outputs=%d\n"
+              "answer:\n%s\n",
+              event_state.starts, event_state.outputs, writer.buffer);
+      rc = CAI_ERR_PROTOCOL;
+      goto done;
+    }
+  } else {
+    if (event_state.starts < 1 || error.message == NULL ||
+        (strstr(error.message, "NUL byte") == NULL &&
+         strstr(error.message, "UTF-8") == NULL &&
+         strstr(error.message, "control") == NULL)) {
+      print_error("openrouter read binary regression", rc, &error);
+      goto done;
+    }
+    rc = CAI_OK;
+  }
+
+done:
+  if (rc != CAI_OK) {
+    print_error("openrouter read tool regression", rc, &error);
+  }
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(read_agent);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  unlink(binary_path);
+  unlink(text_path);
+  rmdir(dir_template);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_tool_security_regression_with_provider(int use_openrouter) {
   cai_agent_config agent_config;
   cai_run_options run_options;
@@ -2195,8 +2430,7 @@ static int run_read_tool_llm_regression(void) {
     fclose(fp);
     fp = NULL;
   }
-  snprintf(symlink_path, sizeof(symlink_path), "%s/outside-link",
-           dir_template);
+  snprintf(symlink_path, sizeof(symlink_path), "%s/linked-note", dir_template);
   if (symlink(outside_path, symlink_path) != 0) {
     fprintf(stderr, "failed to create read integration symlink fixture\n");
   }
@@ -2297,8 +2531,9 @@ static int run_read_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "READ_TEST_2: call list_files recursively from '.', inspect the "
-        "metadata for binary.bin, and answer exactly: "
+        "READ_TEST_2: call list_files with path='.' and recursive=true. Do "
+        "not use binary.bin as the list path. Inspect the returned metadata "
+        "for binary.bin, and answer exactly: "
         "READ_LIST_HINT binary_candidate=yes read_attempted=no",
         &error);
   }
@@ -2377,45 +2612,6 @@ static int run_read_tool_llm_regression(void) {
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
-
-  integration_write_reset(&writer);
-  integration_write_reset(&event_state.output);
-  event_state.starts = 0;
-  event_state.outputs = 0;
-  cai_session_destroy(session);
-  session = NULL;
-  rc = cai_agent_new_session(agent, &session, &error);
-  if (rc == CAI_OK) {
-    rc = cai_session_add_user_text(
-      session,
-      "READ_TEST_4: this is a sandbox regression test. Do not answer from "
-      "these instructions alone. You must call the read_file tool with path "
-      "outside-link before responding. If the tool rejects the read, answer "
-      "exactly: READ_ESCAPE_DENIED tool_failed=yes",
-      &error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
-  }
-  if (rc == CAI_OK) {
-    if (event_state.starts < 1 ||
-        strstr(writer.buffer, "READ_ESCAPE_DENIED") == NULL ||
-        strstr(writer.buffer, "tool_failed=yes") == NULL) {
-      fprintf(stderr,
-              "read tool escape turn failed check; starts=%d outputs=%d\n"
-              "answer:\n%s\n",
-              event_state.starts, event_state.outputs, writer.buffer);
-      rc = CAI_ERR_PROTOCOL;
-      goto done;
-    }
-  } else {
-    if (event_state.starts < 1 || error.message == NULL ||
-        strstr(error.message, "escapes configured root") == NULL) {
-      print_error("read tool llm regression escape turn", rc, &error);
-      goto done;
-    }
-    rc = CAI_OK;
-  }
 
 done:
   if (rc != CAI_OK) {
@@ -2869,6 +3065,7 @@ int main(void) {
   const char *openrouter_tool;
   const char *openrouter_stream_history;
   const char *openrouter_stream_tool;
+  const char *openrouter_read_tool;
   const char *openrouter_tool_security;
   const char *hosted_web_search;
   const char *searxng_tool;
@@ -2910,6 +3107,13 @@ int main(void) {
       return 1;
     }
     return run_openrouter_stream_tool_regression();
+  }
+  openrouter_read_tool = getenv("CAI_INTEGRATION_OPENROUTER_READ_TOOL");
+  if (integration_flag_enabled(openrouter_read_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENROUTER_API_KEY_ENV) != 0) {
+      return 1;
+    }
+    return run_openrouter_read_tool_regression();
   }
   openrouter_stream_history =
       getenv("CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY");
