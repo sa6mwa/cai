@@ -10,6 +10,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/param.h>
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -275,46 +278,97 @@ static int cai_read_join(char *out, size_t out_size, const char *base,
   return CAI_OK;
 }
 
-static int cai_read_resolve_file(const cai_read_context *ctx,
-                                 const char *request_path,
-                                 char **resolved_path, cai_error *error) {
+static int cai_read_fd_realpath(int fd, char **resolved_path, cai_error *error) {
+  char path[PATH_MAX];
+#if defined(__linux__)
+  char link_path[64];
+  ssize_t nread;
+
+  snprintf(link_path, sizeof(link_path), "/proc/self/fd/%d", fd);
+  nread = readlink(link_path, path, sizeof(path) - 1U);
+  if (nread < 0 || (size_t)nread >= sizeof(path)) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to resolve opened file",
+                                nread < 0 ? strerror(errno) : "path too long");
+  }
+  path[nread] = '\0';
+#elif defined(__APPLE__)
+  if (fcntl(fd, F_GETPATH, path) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to resolve opened file",
+                                strerror(errno));
+  }
+#else
+  (void)fd;
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "opened file path verification is not supported");
+#endif
+  return cai_read_strdup_field(resolved_path, path,
+                               "failed to allocate opened path", error);
+}
+
+static int cai_read_open_file_under_root(const cai_read_context *ctx,
+                                         const char *request_path, int *out_fd,
+                                         char **out_resolved_path,
+                                         long long *out_file_size,
+                                         cai_error *error) {
   char candidate[PATH_MAX];
+  const char *open_path;
   char *resolved;
   struct stat st;
+  int fd;
   int rc;
 
-  resolved = NULL;
+  if (out_fd == NULL || out_resolved_path == NULL || out_file_size == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read file open outputs are required");
+  }
+  *out_fd = -1;
+  *out_resolved_path = NULL;
+  *out_file_size = 0LL;
   if (request_path == NULL || request_path[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "read path is required");
   }
   if (request_path[0] == '/') {
-    rc = cai_read_realpath_dup(request_path, &resolved, error);
+    open_path = request_path;
   } else {
     rc = cai_read_join(candidate, sizeof(candidate), ctx->default_workdir,
                        request_path, error);
-    if (rc == CAI_OK) {
-      rc = cai_read_realpath_dup(candidate, &resolved, error);
+    if (rc != CAI_OK) {
+      return rc;
     }
+    open_path = candidate;
   }
-  if (rc != CAI_OK) {
-    return rc;
+  fd = open(open_path, O_RDONLY | O_NOFOLLOW);
+  if (fd < 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
+                                strerror(errno));
   }
-  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
-    cai_free_mem(NULL, resolved);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "read path escapes configured root");
-  }
-  if (stat(resolved, &st) != 0) {
-    cai_free_mem(NULL, resolved);
+  if (fstat(fd, &st) != 0) {
+    close(fd);
     return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
                                 strerror(errno));
   }
   if (!S_ISREG(st.st_mode)) {
-    cai_free_mem(NULL, resolved);
+    close(fd);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read path must be a regular file");
   }
-  *resolved_path = resolved;
+  resolved = NULL;
+  rc = cai_read_fd_realpath(fd, &resolved, error);
+  if (rc != CAI_OK) {
+    close(fd);
+    return rc;
+  }
+  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
+    cai_free_mem(NULL, resolved);
+    close(fd);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path escapes configured root");
+  }
+  *out_fd = fd;
+  *out_resolved_path = resolved;
+  *out_file_size = (long long)st.st_size;
   return CAI_OK;
 }
 
@@ -820,16 +874,14 @@ static int cai_list_scan_dir(const cai_read_context *ctx,
 }
 
 static int cai_read_stream_file(const cai_read_context *ctx,
-                                const cai_read_args *args,
-                                const char *resolved_path,
+                                const cai_read_args *args, int fd,
+                                long long opened_file_size,
                                 lonejson_spooled *content,
                                 long long *byte_count,
                                 long long *end_line_out, int *truncated,
                                 long long *file_size, cai_error *error) {
   lonejson_spool_options spool_options;
-  struct stat st;
   FILE *fp;
-  int fd;
   char buffer[4096];
   long long start_line;
   long long end_line;
@@ -848,23 +900,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   int at_limit;
   int rc;
 
-  fd = -1;
   fp = NULL;
-  fd = open(resolved_path, O_RDONLY | O_NOFOLLOW);
-  if (fd < 0) {
-    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
-                                strerror(errno));
-  }
-  if (fstat(fd, &st) != 0) {
-    close(fd);
-    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
-                                strerror(errno));
-  }
-  if (!S_ISREG(st.st_mode)) {
-    close(fd);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "read path must be a regular file");
-  }
   fp = fdopen(fd, "rb");
   if (fp == NULL) {
     close(fd);
@@ -897,7 +933,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read content byte limit is invalid");
   }
-  *file_size = (long long)st.st_size;
+  *file_size = opened_file_size;
   spool_options = lonejson_default_spool_options();
   spool_options.memory_limit = ctx->content_memory_limit;
   spool_options.max_bytes = (size_t)max_bytes;
@@ -1022,6 +1058,7 @@ static int cai_read_callback(void *context, const void *params, void *result,
   long long file_size;
   int truncated;
   int has_content;
+  int fd;
   int rc;
 
   ctx = (const cai_read_context *)context;
@@ -1032,15 +1069,18 @@ static int cai_read_callback(void *context, const void *params, void *result,
                          "read tool callback received invalid state");
   }
   resolved_path = NULL;
+  fd = -1;
   truncated = 0;
   byte_count = 0LL;
   end_line = 0LL;
   file_size = 0LL;
   has_content = 0;
-  rc = cai_read_resolve_file(ctx, args->path, &resolved_path, error);
+  rc = cai_read_open_file_under_root(ctx, args->path, &fd, &resolved_path,
+                                     &file_size, error);
   if (rc == CAI_OK) {
-    rc = cai_read_stream_file(ctx, args, resolved_path, &content, &byte_count,
+    rc = cai_read_stream_file(ctx, args, fd, file_size, &content, &byte_count,
                               &end_line, &truncated, &file_size, error);
+    fd = -1;
     if (rc == CAI_OK) {
       has_content = 1;
     }
@@ -1068,6 +1108,9 @@ static int cai_read_callback(void *context, const void *params, void *result,
   }
   if (has_content) {
     lonejson_spooled_cleanup(&content);
+  }
+  if (fd >= 0) {
+    close(fd);
   }
   cai_free_mem(NULL, resolved_path);
   return rc;

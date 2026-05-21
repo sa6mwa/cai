@@ -4820,6 +4820,10 @@ static const char *mock_response_for_request(const char *request) {
       "\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens\":5,"
       "\"output_tokens_details\":{\"reasoning_tokens\":2},"
       "\"total_tokens\":30}}}\n\n";
+  static const char stream_session_missing_retrieve_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"four\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_missing_retrieve\"}}\n\n";
   static const char stream_session_source_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
@@ -4856,6 +4860,14 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_client_history_2\",\"usage\":{\"input_tokens\":18,"
       "\"output_tokens\":5,\"total_tokens\":23}}}\n\n";
+  static const char stream_client_history_refusal_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"msg_stream_refusal_1\",\"type\":\"message\","
+      "\"role\":\"assistant\",\"content\":[{\"type\":\"refusal\","
+      "\"refusal\":\"cannot stream that\"}]}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_client_history_refusal\",\"usage\":{\"input_tokens\":28,"
+      "\"output_tokens\":2,\"total_tokens\":30}}}\n\n";
   static const char stream_output_item_body[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"ws_stream_1\",\"type\":\"web_search_call\","
@@ -4983,6 +4995,11 @@ static const char *mock_response_for_request(const char *request) {
           strstr(request, "previous_response_id") == NULL) {
         return stream_history_first_body;
       }
+      if (strstr(request, "client stream refusal") != NULL &&
+          strstr(request, "client streamed second answer") != NULL &&
+          strstr(request, "previous_response_id") == NULL) {
+        return stream_client_history_refusal_body;
+      }
       if (strstr(request, "client stream history second") != NULL &&
           strstr(request, "client stream history first") != NULL &&
           strstr(request, "client streamed first answer") != NULL &&
@@ -4993,6 +5010,9 @@ static const char *mock_response_for_request(const char *request) {
           strstr(request, "client stream history second") == NULL &&
           strstr(request, "previous_response_id") == NULL) {
         return stream_client_history_first_body;
+      }
+      if (strstr(request, "session stream missing retrieve") != NULL) {
+        return stream_session_missing_retrieve_body;
       }
       if (strstr(request, "openrouter metadata stream") != NULL) {
         if (stream_openrouter_metadata_body[0] == '\0') {
@@ -5224,6 +5244,13 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "auto tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return auto_tool_call_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
+        strstr(request, "\"output\":\"{\\\"x\\\":1}\"") != NULL &&
+        strstr(request, "auto tool turn") != NULL &&
+        strstr(request, "auto client history tool turn") == NULL) {
+      return auto_tool_done_body;
     }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
@@ -5512,6 +5539,17 @@ static void mock_openai_child(int pipe_fd, int request_count) {
               "{\"error\":{\"message\":\"model is required\",\"type\":"
               "\"invalid_request_error\",\"code\":\"missing_required_"
               "parameter\"}}") != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
+    if (strstr(request,
+               "GET /v1/responses/resp_stream_missing_retrieve HTTP/") != NULL) {
+      if (mock_write_status_json_response(
+              client_fd, 503, "Service Unavailable", "req_stream_retrieve",
+              "{\"error\":{\"message\":\"retrieve unavailable\",\"type\":"
+              "\"server_error\",\"code\":\"temporary_unavailable\"}}") != 0) {
         _exit(10);
       }
       close(client_fd);
@@ -9639,7 +9677,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 12);
+    mock_openai_child(pipe_fds[1], 13);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -9952,12 +9990,31 @@ static void test_stream_response_text(test_state *state) {
               "missing call id");
   }
 
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_session_add_missing_retrieve",
+             cai_session_add_user_text(session, "session stream missing retrieve",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_session_sink_create_missing_retrieve",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_session_missing_retrieve_ok",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_session_missing_retrieve_value", writer.buffer,
+             "four");
+  expect_str(state, "stream_session_missing_retrieve_response_id",
+             cai_session_previous_response_id(session),
+             "resp_stream_missing_retrieve");
+  cai_sink_close(sink);
+  sink = NULL;
+
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 12L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 11L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 14L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 12L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
-  expect_int(state, "stream_log_error_count", g_test_errorf_count, 1L);
+  expect_int(state, "stream_log_error_count", g_test_errorf_count, 2L);
 
   cai_response_create_params_destroy(params);
   cai_session_destroy(session);
@@ -11512,7 +11569,7 @@ static void test_stream_client_history_captures_output(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 3);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -11577,6 +11634,21 @@ static void test_stream_client_history_captures_output(test_state *state) {
              cai_session_stream_text(session, sink, &error), CAI_OK);
   expect_str(state, "stream_client_history_second_value", writer.buffer,
              "client streamed second answer");
+  cai_sink_close(sink);
+  sink = NULL;
+
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_client_history_sink_create_refusal",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_client_history_add_refusal",
+             cai_session_add_user_text(session, "client stream refusal",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_refusal",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_client_history_refusal_value", writer.buffer, "");
   expect_int(state, "stream_client_history_export_source",
              cai_session_export_history_source(session, &history_source,
                                                &error),
@@ -11587,9 +11659,11 @@ static void test_stream_client_history_captures_output(test_state *state) {
     if (strstr(history_json, "client stream history first") == NULL ||
         strstr(history_json, "client streamed first answer") == NULL ||
         strstr(history_json, "client stream history second") == NULL ||
-        strstr(history_json, "client streamed second answer") == NULL) {
+        strstr(history_json, "client streamed second answer") == NULL ||
+        strstr(history_json, "client stream refusal") == NULL ||
+        strstr(history_json, "cannot stream that") == NULL) {
       test_fail(state, "stream_client_history_export_value",
-                "client stream history missed streamed transcript text");
+                "client stream history missed streamed transcript output");
     }
   }
 
@@ -12071,8 +12145,10 @@ static void test_session_state_validation(test_state *state) {
   cai_agent_config agent_config;
   cai_client *client;
   cai_agent *agent;
+  cai_agent *history_agent;
   cai_session *session;
   cai_session *restored;
+  cai_session *history_session;
   cai_source_callbacks source_callbacks;
   read_state reader;
   cai_source *source;
@@ -12087,8 +12163,10 @@ static void test_session_state_validation(test_state *state) {
   agent_config.enable_local_history = 0;
   client = NULL;
   agent = NULL;
+  history_agent = NULL;
   session = NULL;
   restored = NULL;
+  history_session = NULL;
   source = NULL;
 
   expect_int(state, "state_validation_client_open",
@@ -12160,8 +12238,40 @@ static void test_session_state_validation(test_state *state) {
   cai_error_init(&error);
 
   cai_source_close(source);
+  source = NULL;
+
+  agent_config.enable_local_history = 1;
+  expect_int(state, "state_validation_history_agent_new",
+             cai_client_new_agent(client, &agent_config, &history_agent, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_history_session_new",
+             cai_agent_new_session(history_agent, &history_session, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_history_set_previous",
+             cai_session_set_previous_response_id(history_session,
+                                                  "resp_original", &error),
+             CAI_OK);
+  reader.text =
+      "{\"version\":1,\"previous_response_id\":\"resp_bad\","
+      "\"history\":{\"not\":\"an array\"}}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_bad_history_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_bad_history",
+             cai_session_import_state_source(history_session, source, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "state_validation_bad_history_preserved_previous",
+             cai_session_previous_response_id(history_session), "resp_original");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  cai_source_close(source);
+  cai_session_destroy(history_session);
   cai_session_destroy(restored);
   cai_session_destroy(session);
+  cai_agent_destroy(history_agent);
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
