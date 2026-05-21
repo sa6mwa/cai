@@ -687,7 +687,9 @@ static int cai_http_response_request(cai_client *client, const char *method,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response output pointer is required");
   }
-  rc = cai_response_parse_json(body != NULL ? body : "", out, error);
+  rc = cai_response_parse_json_with_allocator(
+      &CAI_CLIENT_IMPL(client)->allocator, body != NULL ? body : "", out,
+      error);
   cai_free_mem(NULL, body);
   return rc;
 }
@@ -877,7 +879,9 @@ int cai_client_create_response(cai_client *client,
       rc = cai_set_openai_error(error, http_status, body, request_id);
     }
     if (rc == CAI_OK) {
-      rc = cai_response_parse_json(body != NULL ? body : "", out, error);
+      rc = cai_response_parse_json_with_allocator(
+          &CAI_CLIENT_IMPL(client)->allocator, body != NULL ? body : "", out,
+          error);
     }
     cai_free_mem(NULL, body);
     cai_free_mem(NULL, request_id);

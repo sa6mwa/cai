@@ -4007,7 +4007,8 @@ static int cai_response_copy_spooled_string(lonejson_spooled *value,
   return CAI_OK;
 }
 
-static char *cai_response_collect_text(cai_response_doc *doc,
+static char *cai_response_collect_text(const cai_allocator *allocator,
+                                       cai_response_doc *doc,
                                        cai_error *error) {
   cai_response_output_doc *outputs;
   cai_response_content_doc *content;
@@ -4034,7 +4035,7 @@ static char *cai_response_collect_text(cai_response_doc *doc,
       }
     }
   }
-  text = (char *)cai_alloc(NULL, total + 1U);
+  text = (char *)cai_alloc(allocator, total + 1U);
   if (text == NULL) {
     cai_set_error(error, CAI_ERR_NOMEM,
                   "failed to allocate response output text");
@@ -4047,7 +4048,7 @@ static char *cai_response_collect_text(cai_response_doc *doc,
       len = lonejson_spooled_size(&content[j].text);
       if (len > 0U && cai_response_copy_spooled_string(
                           &content[j].text, &cursor, error) != CAI_OK) {
-        cai_free_mem(NULL, text);
+        cai_free_mem(allocator, text);
         return NULL;
       }
     }
@@ -4056,7 +4057,8 @@ static char *cai_response_collect_text(cai_response_doc *doc,
   return text;
 }
 
-static char *cai_response_collect_refusal(cai_response_doc *doc, int *present,
+static char *cai_response_collect_refusal(const cai_allocator *allocator,
+                                          cai_response_doc *doc, int *present,
                                           cai_error *error) {
   cai_response_output_doc *outputs;
   cai_response_content_doc *content;
@@ -4088,7 +4090,7 @@ static char *cai_response_collect_refusal(cai_response_doc *doc, int *present,
   if (!*present) {
     return NULL;
   }
-  text = (char *)cai_alloc(NULL, total + 1U);
+  text = (char *)cai_alloc(allocator, total + 1U);
   if (text == NULL) {
     cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate response refusal");
     return NULL;
@@ -4100,7 +4102,7 @@ static char *cai_response_collect_refusal(cai_response_doc *doc, int *present,
       len = lonejson_spooled_size(&content[j].refusal);
       if (len > 0U && cai_response_copy_spooled_string(
                           &content[j].refusal, &cursor, error) != CAI_OK) {
-        cai_free_mem(NULL, text);
+        cai_free_mem(allocator, text);
         return NULL;
       }
     }
@@ -4138,7 +4140,8 @@ static int cai_response_copy_tool_calls(cai_response *response,
     return CAI_OK;
   }
   response->tool_calls = (cai_response_tool_call *)cai_alloc(
-      NULL, response->tool_call_count * sizeof(response->tool_calls[0]));
+      &response->allocator,
+      response->tool_call_count * sizeof(response->tool_calls[0]));
   if (response->tool_calls == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate response tool calls");
@@ -4152,11 +4155,14 @@ static int cai_response_copy_tool_calls(cai_response *response,
         strcmp(outputs[i].type, "function_call") != 0) {
       continue;
     }
-    response->tool_calls[index].id = cai_strdup(NULL, outputs[i].id);
-    response->tool_calls[index].call_id = cai_strdup(NULL, outputs[i].call_id);
-    response->tool_calls[index].name = cai_strdup(NULL, outputs[i].name);
+    response->tool_calls[index].id =
+        cai_strdup(&response->allocator, outputs[i].id);
+    response->tool_calls[index].call_id =
+        cai_strdup(&response->allocator, outputs[i].call_id);
+    response->tool_calls[index].name =
+        cai_strdup(&response->allocator, outputs[i].name);
     response->tool_calls[index].arguments =
-        cai_strdup(NULL, outputs[i].arguments);
+        cai_strdup(&response->allocator, outputs[i].arguments);
     if ((outputs[i].id != NULL && response->tool_calls[index].id == NULL) ||
         (outputs[i].call_id != NULL &&
          response->tool_calls[index].call_id == NULL) ||
@@ -4183,7 +4189,8 @@ static int cai_response_copy_output_items(cai_response *response,
     return CAI_OK;
   }
   response->output_items = (cai_response_output_item *)cai_alloc(
-      NULL, response->output_item_count * sizeof(response->output_items[0]));
+      &response->allocator,
+      response->output_item_count * sizeof(response->output_items[0]));
   if (response->output_items == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate response output items");
@@ -4192,12 +4199,18 @@ static int cai_response_copy_output_items(cai_response *response,
          response->output_item_count * sizeof(response->output_items[0]));
   outputs = (cai_response_output_doc *)doc->output.items;
   for (i = 0U; i < doc->output.count; i++) {
-    response->output_items[i].id = cai_strdup(NULL, outputs[i].id);
-    response->output_items[i].type = cai_strdup(NULL, outputs[i].type);
-    response->output_items[i].status = cai_strdup(NULL, outputs[i].status);
-    response->output_items[i].role = cai_strdup(NULL, outputs[i].role);
-    response->output_items[i].call_id = cai_strdup(NULL, outputs[i].call_id);
-    response->output_items[i].name = cai_strdup(NULL, outputs[i].name);
+    response->output_items[i].id =
+        cai_strdup(&response->allocator, outputs[i].id);
+    response->output_items[i].type =
+        cai_strdup(&response->allocator, outputs[i].type);
+    response->output_items[i].status =
+        cai_strdup(&response->allocator, outputs[i].status);
+    response->output_items[i].role =
+        cai_strdup(&response->allocator, outputs[i].role);
+    response->output_items[i].call_id =
+        cai_strdup(&response->allocator, outputs[i].call_id);
+    response->output_items[i].name =
+        cai_strdup(&response->allocator, outputs[i].name);
     if ((outputs[i].id != NULL && response->output_items[i].id == NULL) ||
         (outputs[i].type != NULL && response->output_items[i].type == NULL) ||
         (outputs[i].status != NULL &&
@@ -4213,8 +4226,9 @@ static int cai_response_copy_output_items(cai_response *response,
   return CAI_OK;
 }
 
-int cai_response_parse_json(const char *json, cai_response **out,
-                            cai_error *error) {
+int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
+                                           const char *json, cai_response **out,
+                                           cai_error *error) {
   cai_response_doc doc;
   cai_response *response;
   lonejson_spooled output_items_json;
@@ -4260,7 +4274,7 @@ int cai_response_parse_json(const char *json, cai_response **out,
     return error != NULL ? error->code : CAI_ERR_PROTOCOL;
   }
   have_output_items_json = 1;
-  response = (cai_response *)cai_alloc(NULL, sizeof(*response));
+  response = (cai_response *)cai_alloc(allocator, sizeof(*response));
   if (response == NULL) {
     if (have_output_items_json) {
       lonejson_spooled_cleanup(&output_items_json);
@@ -4269,19 +4283,26 @@ int cai_response_parse_json(const char *json, cai_response **out,
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate response");
   }
   memset(response, 0, sizeof(*response));
+  if (allocator != NULL) {
+    response->allocator = *allocator;
+  }
   response->raw_json = NULL;
-  response->id = cai_strdup(NULL, doc.id);
+  response->id = cai_strdup(&response->allocator, doc.id);
   response->status = cai_strdup(
-      NULL, doc.status != NULL ? doc.status : "completed");
-  response->model = cai_strdup(NULL, doc.model);
-  response->conversation_id = cai_strdup(NULL, doc.conversation.id);
-  response->output_text = cai_response_collect_text(&doc, error);
+      &response->allocator, doc.status != NULL ? doc.status : "completed");
+  response->model = cai_strdup(&response->allocator, doc.model);
+  response->conversation_id =
+      cai_strdup(&response->allocator, doc.conversation.id);
+  response->output_text =
+      cai_response_collect_text(&response->allocator, &doc, error);
   response->refusal =
-      cai_response_collect_refusal(&doc, &refusal_present, error);
-  response->raw_json = cai_strdup(NULL, json);
-  response->error_code = cai_strdup(NULL, doc.error.code);
-  response->error_message = cai_strdup(NULL, doc.error.message);
-  response->incomplete_reason = cai_strdup(NULL, doc.incomplete_details.reason);
+      cai_response_collect_refusal(&response->allocator, &doc, &refusal_present,
+                                   error);
+  response->raw_json = cai_strdup(&response->allocator, json);
+  response->error_code = cai_strdup(&response->allocator, doc.error.code);
+  response->error_message = cai_strdup(&response->allocator, doc.error.message);
+  response->incomplete_reason =
+      cai_strdup(&response->allocator, doc.incomplete_details.reason);
   response->output_items_json = output_items_json;
   response->has_output_items_json = 1;
   have_output_items_json = 0;
@@ -4331,6 +4352,11 @@ int cai_response_parse_json(const char *json, cai_response **out,
     lonejson_spooled_cleanup(&output_items_json);
   }
   return CAI_OK;
+}
+
+int cai_response_parse_json(const char *json, cai_response **out,
+                            cai_error *error) {
+  return cai_response_parse_json_with_allocator(NULL, json, out, error);
 }
 
 const char *cai_response_id(const cai_response *response) {
@@ -4631,39 +4657,41 @@ const char *cai_response_output_item_name(const cai_response *response,
 }
 
 void cai_response_destroy(cai_response *response) {
+  cai_allocator allocator;
   size_t i;
 
   if (response == NULL) {
     return;
   }
+  allocator = response->allocator;
   for (i = 0U; i < response->tool_call_count; i++) {
-    cai_free_mem(NULL, response->tool_calls[i].id);
-    cai_free_mem(NULL, response->tool_calls[i].call_id);
-    cai_free_mem(NULL, response->tool_calls[i].name);
-    cai_free_mem(NULL, response->tool_calls[i].arguments);
+    cai_free_mem(&allocator, response->tool_calls[i].id);
+    cai_free_mem(&allocator, response->tool_calls[i].call_id);
+    cai_free_mem(&allocator, response->tool_calls[i].name);
+    cai_free_mem(&allocator, response->tool_calls[i].arguments);
   }
-  cai_free_mem(NULL, response->tool_calls);
+  cai_free_mem(&allocator, response->tool_calls);
   for (i = 0U; i < response->output_item_count; i++) {
-    cai_free_mem(NULL, response->output_items[i].id);
-    cai_free_mem(NULL, response->output_items[i].type);
-    cai_free_mem(NULL, response->output_items[i].status);
-    cai_free_mem(NULL, response->output_items[i].role);
-    cai_free_mem(NULL, response->output_items[i].call_id);
-    cai_free_mem(NULL, response->output_items[i].name);
+    cai_free_mem(&allocator, response->output_items[i].id);
+    cai_free_mem(&allocator, response->output_items[i].type);
+    cai_free_mem(&allocator, response->output_items[i].status);
+    cai_free_mem(&allocator, response->output_items[i].role);
+    cai_free_mem(&allocator, response->output_items[i].call_id);
+    cai_free_mem(&allocator, response->output_items[i].name);
   }
-  cai_free_mem(NULL, response->output_items);
-  cai_free_mem(NULL, response->id);
-  cai_free_mem(NULL, response->status);
-  cai_free_mem(NULL, response->model);
-  cai_free_mem(NULL, response->conversation_id);
-  cai_free_mem(NULL, response->output_text);
-  cai_free_mem(NULL, response->refusal);
-  cai_free_mem(NULL, response->raw_json);
+  cai_free_mem(&allocator, response->output_items);
+  cai_free_mem(&allocator, response->id);
+  cai_free_mem(&allocator, response->status);
+  cai_free_mem(&allocator, response->model);
+  cai_free_mem(&allocator, response->conversation_id);
+  cai_free_mem(&allocator, response->output_text);
+  cai_free_mem(&allocator, response->refusal);
+  cai_free_mem(&allocator, response->raw_json);
   if (response->has_output_items_json) {
     lonejson_spooled_cleanup(&response->output_items_json);
   }
-  cai_free_mem(NULL, response->error_code);
-  cai_free_mem(NULL, response->error_message);
-  cai_free_mem(NULL, response->incomplete_reason);
-  cai_free_mem(NULL, response);
+  cai_free_mem(&allocator, response->error_code);
+  cai_free_mem(&allocator, response->error_message);
+  cai_free_mem(&allocator, response->incomplete_reason);
+  cai_free_mem(&allocator, response);
 }

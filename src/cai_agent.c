@@ -1384,8 +1384,7 @@ static int cai_stream_capture_output_item_done(
   rc = CAI_OK;
   if (capture != NULL && capture->output_text != NULL &&
       (type == NULL || strcmp(type, "function_call") != 0) &&
-      lonejson_spooled_size(capture->output_text) == 0U && item_json != NULL &&
-      item_json_len > 0U) {
+      item_json != NULL && item_json_len > 0U) {
     rc = cai_stream_capture_output_items_start(capture->session, capture, error);
     if (rc == CAI_OK) {
       lonejson_error_init(&json_error);
@@ -1457,7 +1456,7 @@ static int cai_session_after_stream_tool_calls(
     rc = cai_history_append_array_record_spooled(session, stream_output_items,
                                                 error);
   }
-  if (rc == CAI_OK && output_text != NULL &&
+  if (rc == CAI_OK && stream_output_items_count == 0U && output_text != NULL &&
       lonejson_spooled_size(output_text) > 0U) {
     rc = cai_stream_output_text_spool(session, output_text, &output_items,
                                      &output_items_len, error);
@@ -2484,7 +2483,9 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     rc = cai_set_openai_error(error, http_status, body, request_id);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_parse_json(body != NULL ? body : "", &response, error);
+    rc = cai_response_parse_json_with_allocator(
+        &CAI_SESSION_CLIENT_IMPL(session)->allocator, body != NULL ? body : "",
+        &response, error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_output_items_spool(response, &output_items,

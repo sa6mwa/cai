@@ -225,6 +225,7 @@ typedef struct cai_response_output_item {
 } cai_response_output_item;
 
 struct cai_response {
+  cai_allocator allocator;
   char *id;
   char *status;
   char *model;
@@ -343,6 +344,9 @@ int cai_response_output_items_spool(const cai_response *response,
                                     cai_error *error);
 int cai_response_parse_json(const char *json, cai_response **out,
                             cai_error *error);
+int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
+                                           const char *json, cai_response **out,
+                                           cai_error *error);
 int cai_response_output_items_json(const cai_response *response,
                                    char **out_json, cai_error *error);
 int cai_output_from_response(cai_response *response, cai_output **out,

@@ -383,6 +383,7 @@ static int cai_sse_finish_output(cai_sse_state *state) {
                               &state->sinks.output_text_suffix);
   if (rc == CAI_OK) {
     state->output_text_suffixed = 1;
+    state->output_text_started = 0;
   }
   return rc;
 }
@@ -435,6 +436,7 @@ static int cai_sse_write_output_delta(cai_sse_state *state,
     }
     state->output_text_started = 1;
   }
+  state->output_text_suffixed = 0;
   return cai_sink_write(state->sinks.output_text, delta, length, NULL);
 }
 

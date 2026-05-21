@@ -45,6 +45,11 @@ typedef struct fail_after_eof_read_state {
   int failed;
 } fail_after_eof_read_state;
 
+typedef struct alloc_count_state {
+  size_t allocs;
+  size_t frees;
+} alloc_count_state;
+
 typedef struct write_state {
   char buffer[8192];
   size_t length;
@@ -827,18 +832,51 @@ static size_t test_fail_after_eof_read(void *context, void *buffer, size_t count
 }
 
 static void *test_allocator_malloc(void *context, size_t size) {
-  (void)context;
+  alloc_count_state *state;
+
+  state = (alloc_count_state *)context;
+  if (state != NULL) {
+    state->allocs++;
+  }
   return malloc(size);
 }
 
 static void *test_allocator_realloc(void *context, void *ptr, size_t size) {
-  (void)context;
+  alloc_count_state *state;
+
+  state = (alloc_count_state *)context;
+  if (state != NULL && ptr == NULL) {
+    state->allocs++;
+  }
   return realloc(ptr, size);
 }
 
 static void test_allocator_free(void *context, void *ptr) {
-  (void)context;
+  alloc_count_state *state;
+
+  state = (alloc_count_state *)context;
+  if (state != NULL && ptr != NULL) {
+    state->frees++;
+  }
   free(ptr);
+}
+
+static size_t test_count_substrings(const char *haystack, const char *needle) {
+  size_t count;
+  size_t needle_len;
+  const char *cursor;
+
+  if (haystack == NULL || needle == NULL || needle[0] == '\0') {
+    return 0U;
+  }
+  count = 0U;
+  needle_len = strlen(needle);
+  cursor = haystack;
+  while ((cursor = strstr(cursor, needle)) != NULL) {
+    count++;
+    cursor += needle_len;
+  }
+  return count;
 }
 
 static int test_reset(void *context, cai_error *error) {
@@ -4851,6 +4889,11 @@ static const char *mock_response_for_request(const char *request) {
   static const char stream_client_history_first_body[] =
       "data: {\"type\":\"response.output_text.delta\","
       "\"delta\":\"client streamed first answer\"}\n\n"
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"m1\",\"type\":\"message\","
+      "\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"client streamed first answer\",\"annotations\":[{"
+      "\"type\":\"url_citation\",\"url\":\"https://e.test/s\"}]}]}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_client_history_1\",\"usage\":{\"input_tokens\":8,"
       "\"output_tokens\":4,\"total_tokens\":12}}}\n\n";
@@ -4875,6 +4918,14 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_output_item_1\",\"usage\":{\"input_tokens\":7,"
       "\"output_tokens\":2,\"total_tokens\":9}}}\n\n";
+  static const char stream_output_segments_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"alpha\"}\n\n"
+      "data: {\"type\":\"response.output_text.done\"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"beta\"}\n\n"
+      "data: {\"type\":\"response.output_text.done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_output_segments\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
   static char stream_openrouter_metadata_body[1024];
   static char stream_tool_body[1024];
   static char stream_malformed_delta_tool_body[1024];
@@ -5041,6 +5092,9 @@ static const char *mock_response_for_request(const char *request) {
           strcat(stream_openrouter_metadata_body, "data: [DONE]\n\n");
         }
         return stream_openrouter_metadata_body;
+      }
+      if (strstr(request, "stream output segments") != NULL) {
+        return stream_output_segments_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
@@ -5814,6 +5868,7 @@ static void test_http_create_response(test_state *state) {
   cai_list_params list_params;
   cai_error error;
   pslog_logger fake_logger;
+  alloc_count_state alloc_state;
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "http_mock", "pipe failed");
@@ -5848,6 +5903,11 @@ static void test_http_create_response(test_state *state) {
   config.project_id = "proj_mock";
   config.http_2_disabled = 1;
   config.timeout_ms = 5000L;
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  config.allocator.malloc_fn = test_allocator_malloc;
+  config.allocator.realloc_fn = test_allocator_realloc;
+  config.allocator.free_fn = test_allocator_free;
+  config.allocator.context = &alloc_state;
   memset(&fake_logger, 0, sizeof(fake_logger));
   fake_logger.infof = test_pslog_infof;
   fake_logger.tracef = test_pslog_tracef;
@@ -5940,6 +6000,8 @@ static void test_http_create_response(test_state *state) {
   expect_int(state, "http_log_error_count", g_test_errorf_count, 0L);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
+  expect_int(state, "http_custom_allocator_balanced",
+             (long)(alloc_state.allocs - alloc_state.frees), 0L);
   cai_error_cleanup(&error);
 
   if (waitpid(pid, &child_status, 0) != pid) {
@@ -10374,6 +10436,99 @@ static void test_stream_output_delta_failure(test_state *state) {
   }
 }
 
+static void test_stream_output_suffix_segments(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_output_suffix_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_output_suffix_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_output_suffix_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  params = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_output_suffix_client_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_output_suffix_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_output_suffix_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(state, "stream_output_suffix_text",
+             cai_response_create_params_add_text(params, "user",
+                                                 "stream output segments",
+                                                 &error),
+             CAI_OK);
+  expect_int(state, "stream_output_suffix_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.output_text_prefix.text = "[o] ";
+  stream_sinks.output_text_suffix.text = "\n";
+  expect_int(state, "stream_output_suffix_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, NULL, &error),
+             CAI_OK);
+  expect_str(state, "stream_output_suffix_value", writer.buffer,
+             "[o] alpha\n[o] beta\n");
+
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_output_suffix_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_output_suffix_mock", "mock child failed");
+  }
+}
+
 static void test_stream_http_error_preserves_openai_error(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -11576,7 +11731,7 @@ static void test_stream_history_preserves_pretty_json(test_state *state) {
   cai_source *history_source;
   write_state writer;
   cai_error error;
-  char history_json[2048];
+  char history_json[4096];
 
   if (pipe(pipe_fds) != 0) {
     test_fail(state, "stream_history_mock", "pipe failed");
@@ -11806,17 +11961,22 @@ static void test_stream_client_history_captures_output(test_state *state) {
              cai_session_export_history_source(session, &history_source,
                                                &error),
              CAI_OK);
-  if (read_source_text(state, "stream_client_history_export_read",
-                       history_source, history_json, sizeof(history_json),
-                       &error)) {
+  if (read_source_text(state, "stream_client_history_export_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
     if (strstr(history_json, "client stream history first") == NULL ||
         strstr(history_json, "client streamed first answer") == NULL ||
+        strstr(history_json, "https://e.test/s") == NULL ||
         strstr(history_json, "client stream history second") == NULL ||
         strstr(history_json, "client streamed second answer") == NULL ||
         strstr(history_json, "client stream refusal") == NULL ||
         strstr(history_json, "cannot stream that") == NULL) {
       test_fail(state, "stream_client_history_export_value",
                 "client stream history missed streamed transcript output");
+    }
+    if (test_count_substrings(history_json, "client streamed first answer") !=
+        1U) {
+      test_fail(state, "stream_client_history_no_duplicate",
+                "client stream history duplicated synthesized output text");
     }
   }
 
@@ -12625,6 +12785,7 @@ int main(void) {
   test_stream_response_text(&state);
   test_stream_non_function_output_item(&state);
   test_stream_output_delta_failure(&state);
+  test_stream_output_suffix_segments(&state);
   test_stream_http_error_preserves_openai_error(&state);
   test_stream_source_error_preserves_openai_error(&state);
   test_stream_openrouter_metadata_events(&state);
