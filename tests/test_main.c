@@ -8875,8 +8875,7 @@ static void test_todo_tool(test_state *state) {
       strstr(writer.buffer, "current_work") == NULL ||
       strstr(writer.buffer, "default board always exists") == NULL ||
       strstr(writer.buffer, "wip_limit_exceeded") == NULL ||
-      strstr(writer.buffer,
-             "Always use returned board_id/board_key/item_id") == NULL) {
+      strstr(writer.buffer, "Refs accept DEF-001") == NULL) {
     test_fail(state, "todo_help_output",
               "todo help operation did not return usage guidance");
   }
@@ -9101,14 +9100,61 @@ static void test_todo_tool(test_state *state) {
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
+  expect_int(state, "todo_move_item_alias_short",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"move_item\","
+                                   "\"item_id\":\"DEF4\","
+                                   "\"board_name\":\"main\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"DEF-004\"") == NULL ||
+      strstr(writer.buffer, "\"status\":\"in_process\"") == NULL) {
+    test_fail(state, "todo_move_item_alias_short_output",
+              "move_item did not accept short item_id alias DEF4");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_move_item_alias_compact",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"move_item\","
+                                   "\"item_id\":\"DEF004\","
+                                   "\"board_name\":\"main\","
+                                   "\"status\":\"todo\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"DEF-004\"") == NULL ||
+      strstr(writer.buffer, "\"status\":\"todo\"") == NULL) {
+    test_fail(state, "todo_move_item_alias_compact_output",
+              "move_item did not accept compact item_id alias DEF004");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_complete_item_alias_hash",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"complete_item\","
+                                   "\"item_id\":\"DEF#4\","
+                                   "\"board_name\":\"main\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"DEF-004\"") == NULL ||
+      strstr(writer.buffer, "item completed") == NULL) {
+    test_fail(state, "todo_complete_item_alias_hash_output",
+              "complete_item did not accept hash item_id alias DEF#4");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
   expect_int(state, "todo_add_after_move",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
                                    "\"board_name\":\"main\","
                                    "\"title\":\"fourth task\","
                                    "\"status\":\"in_process\"}",
-	                                   sink, &error),
-	             CAI_OK);
+                                   sink, &error),
+             CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL) {
     test_fail(state, "todo_add_after_move_output",
               "WIP lane did not free after move_item");

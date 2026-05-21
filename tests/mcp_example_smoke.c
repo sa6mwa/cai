@@ -325,8 +325,7 @@ int main(int argc, char **argv) {
     failures += expect_contains("tools/call help status", response,
                                 "HTTP/1.1 200");
     failures += expect_contains("tools/call help content", response,
-                                "Always use returned board_id/board_key/"
-                                "item_id");
+                                "Refs accept DEF-001");
   }
   if (http_post(port,
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","

@@ -683,9 +683,11 @@ existing board with a new unique `board_key` updates that board key. Item
 sequence numbers are never caller-settable. `add_item` allocates a readable
 public item reference from the board key and next sequence, for example
 `DEF-001`, `DEF-087`, or `OPS-194`, while cai keeps its opaque internal ID in
-storage. `list_boards` returns board records in a `boards` array with
-`board_count`; item-listing operations return work records in an `items` array
-with `item_count`.
+storage. Tool input is lenient for item references: `DEF-001`, `DEF#1`,
+`DEF001`, and `DEF1` all resolve to the same item, and results still return
+the canonical dashed form. `list_boards` returns board records in a `boards`
+array with `board_count`; item-listing operations return work records in an
+`items` array with `item_count`.
 
 By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
 `$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.

@@ -43,10 +43,11 @@
   "optional unique board_key, and wip_limit. "
 #define CAI_TODO_HELP_TEXT_3                                                  \
   "add_item assigns item_id like DEF-001; callers cannot set sequence "       \
-  "numbers. current_work lists in_process; list_board lists active items. "
+  "numbers. Refs accept DEF-001, DEF#1, DEF001, or DEF1. "                   \
+  "current_work lists in_process; list_board lists active items. "
 #define CAI_TODO_HELP_TEXT_4                                                  \
   "move_item/complete_item require item_id. WIP denial is "                   \
-  "code=wip_limit_exceeded. Always use returned board_id/board_key/item_id."
+  "code=wip_limit_exceeded. Use returned IDs and keys."
 #define CAI_TODO_HELP_TEXT                                                    \
   CAI_TODO_HELP_TEXT_1 CAI_TODO_HELP_TEXT_2 CAI_TODO_HELP_TEXT_3             \
       CAI_TODO_HELP_TEXT_4
@@ -457,14 +458,21 @@ static long long cai_todo_parse_item_sequence(const char *item_id,
                                               const char *board_key) {
   const char *p;
   size_t key_len;
+  size_t i;
   long long value;
 
   if (item_id == NULL || board_key == NULL) {
     return 0LL;
   }
   key_len = strlen(board_key);
-  if (key_len == 0U || strncmp(item_id, board_key, key_len) != 0) {
+  if (key_len == 0U) {
     return 0LL;
+  }
+  for (i = 0U; i < key_len; i++) {
+    if (cai_todo_char_upper((unsigned char)item_id[i]) !=
+        cai_todo_char_upper((unsigned char)board_key[i])) {
+      return 0LL;
+    }
   }
   p = item_id + key_len;
   if (*p == '-' || *p == '#') {
@@ -482,6 +490,25 @@ static long long cai_todo_parse_item_sequence(const char *item_id,
     p++;
   }
   return *p == '\0' ? value : 0LL;
+}
+
+static int cai_todo_item_ref_matches(const cai_todo_item *item,
+                                     const char *input) {
+  long long stored_sequence;
+  long long input_sequence;
+
+  if (item == NULL || input == NULL) {
+    return 0;
+  }
+  if (cai_todo_streq(item->id, input) || cai_todo_streq(item->item_id, input)) {
+    return 1;
+  }
+  if (item->board_key == NULL || item->board_key[0] == '\0') {
+    return 0;
+  }
+  stored_sequence = cai_todo_parse_item_sequence(item->item_id, item->board_key);
+  input_sequence = cai_todo_parse_item_sequence(input, item->board_key);
+  return stored_sequence > 0LL && input_sequence == stored_sequence;
 }
 
 static int cai_todo_copy_string(char **out, const char *value,
@@ -1782,8 +1809,7 @@ static lonejson_status cai_todo_id_item_cb(void *user, void *dst) {
 
   state = (cai_todo_id_state *)user;
   item = (cai_todo_item *)dst;
-  if (cai_todo_streq(item->id, state->id) ||
-      cai_todo_streq(item->item_id, state->id)) {
+  if (cai_todo_item_ref_matches(item, state->id)) {
     state->found = 1;
   }
   return LONEJSON_STATUS_OK;
@@ -2418,8 +2444,7 @@ static lonejson_status cai_todo_move_item_cb(
   (void)context;
   state = (cai_todo_rewrite_state *)user;
   src = (cai_todo_item *)item;
-  if (!cai_todo_streq(src->item_id, state->args->item_id) &&
-      !cai_todo_streq(src->id, state->args->item_id)) {
+  if (!cai_todo_item_ref_matches(src, state->args->item_id)) {
     return LONEJSON_STATUS_OK;
   }
   state->found = 1;
@@ -3217,7 +3242,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
         schema, "item_id",
         "Readable board-key sequence reference such as DEF-001 returned by "
         "add_item, list_board, or current_work. Required for move_item and "
-        "complete_item.",
+        "complete_item. Input is lenient: DEF-001, DEF#1, DEF001, and DEF1 "
+        "refer to the same item.",
         error);
   }
   if (rc == CAI_OK) {
