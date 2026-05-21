@@ -733,6 +733,55 @@ static int cai_exec_path_is_under_mount(const char *path) {
          cai_exec_path_is_under_root("/lib64", path);
 }
 
+static int cai_exec_shell_runtime_prefix(const char *shell_path, char *out,
+                                         size_t out_size) {
+  const char *bin;
+  size_t len;
+
+  if (shell_path == NULL || shell_path[0] != '/') {
+    return 0;
+  }
+  if (strncmp(shell_path, "/nix/store/", 11U) == 0) {
+    len = strlen("/nix/store");
+  } else {
+    bin = strstr(shell_path, "/bin/");
+    if (bin == NULL || bin == shell_path) {
+      return 0;
+    }
+    len = (size_t)(bin - shell_path);
+  }
+  if (len == 0U || len >= out_size) {
+    return 0;
+  }
+  memcpy(out, shell_path, len);
+  out[len] = '\0';
+  return 1;
+}
+
+static int cai_exec_bwrap_bind_custom_shell_prefix(
+    const cai_exec_context *ctx, const char **argv, size_t *i, size_t cap,
+    const char *shell_path, char dirs[][PATH_MAX], size_t *dir_count,
+    size_t dir_cap) {
+  char prefix[PATH_MAX];
+
+  if (!cai_exec_shell_runtime_prefix(shell_path, prefix, sizeof(prefix)) ||
+      cai_exec_path_is_under_root(ctx->root_path, prefix) ||
+      cai_exec_path_is_under_mount(prefix) || access(prefix, F_OK) != 0 ||
+      *dir_count >= dir_cap) {
+    return 0;
+  }
+  cai_exec_bwrap_parent_dirs(argv, i, cap, prefix, dirs, dir_count, dir_cap);
+  if (*dir_count >= dir_cap) {
+    return 0;
+  }
+  strcpy(dirs[*dir_count], prefix);
+  cai_exec_bwrap_arg(argv, i, cap, "--ro-bind");
+  cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]);
+  cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]);
+  (*dir_count)++;
+  return 1;
+}
+
 static void cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
                                              const char **argv, size_t *i,
                                              size_t cap,
@@ -743,6 +792,10 @@ static void cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
   if (shell_path == NULL || shell_path[0] != '/' ||
       cai_exec_path_is_under_root(ctx->root_path, shell_path) ||
       cai_exec_path_is_under_mount(shell_path)) {
+    return;
+  }
+  if (cai_exec_bwrap_bind_custom_shell_prefix(ctx, argv, i, cap, shell_path,
+                                              dirs, dir_count, dir_cap)) {
     return;
   }
   cai_exec_bwrap_parent_dirs(argv, i, cap, shell_path, dirs, dir_count,

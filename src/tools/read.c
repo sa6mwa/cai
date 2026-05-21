@@ -339,7 +339,7 @@ static int cai_read_open_file_under_root(const cai_read_context *ctx,
     }
     open_path = candidate;
   }
-  fd = open(open_path, O_RDONLY | O_NOFOLLOW);
+  fd = open(open_path, O_RDONLY);
   if (fd < 0) {
     return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
                                 strerror(errno));

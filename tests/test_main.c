@@ -7356,6 +7356,7 @@ static void test_read_tool(test_state *state) {
   char invalid_utf8_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char symlink_path[PATH_MAX];
+  char inside_symlink_path[PATH_MAX];
   static const unsigned char binary_bytes[] = {'t', 'e', 'x', 't', 0U, 'x'};
   static const unsigned char control_bytes[] = {'t', 'e', 'x', 't', 0x1BU,
                                                 'x'};
@@ -7412,6 +7413,11 @@ static void test_read_tool(test_state *state) {
   if (symlink(outside_path, symlink_path) != 0) {
     test_fail(state, "read_symlink_fixture", "symlink failed");
   }
+  snprintf(inside_symlink_path, sizeof(inside_symlink_path),
+           "%s/sub/inside-link", dir_template);
+  if (symlink(file_path, inside_symlink_path) != 0) {
+    test_fail(state, "read_inside_symlink_fixture", "symlink failed");
+  }
 
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -7430,6 +7436,18 @@ static void test_read_tool(test_state *state) {
     expect_substr(state, "read_success_truncated", writer.buffer,
                   "\"truncated\":false");
     expect_valid_json(state, "read_success_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_inside_symlink", &config,
+                         "{\"path\":\"inside-link\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    expect_substr(state, "read_inside_symlink_content", writer.buffer,
+                  "\"content\":\"one\\ntwo\\nthree\\nfour\\n\"");
+    expect_substr(state, "read_inside_symlink_truncated", writer.buffer,
+                  "\"truncated\":false");
+    expect_valid_json(state, "read_inside_symlink_json", writer.buffer);
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
@@ -7739,6 +7757,7 @@ static void test_read_tool(test_state *state) {
     cai_error_cleanup(&error);
   }
 
+  unlink(inside_symlink_path);
   unlink(symlink_path);
   unlink(outside_path);
   unlink(invalid_utf8_path);
