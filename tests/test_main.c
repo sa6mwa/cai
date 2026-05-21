@@ -7413,6 +7413,7 @@ static void test_read_tool(test_state *state) {
   char nested_path[PATH_MAX];
   char hidden_path[PATH_MAX];
   char utf8_path[PATH_MAX];
+  char cr_path[PATH_MAX];
   char binary_path[PATH_MAX];
   char control_path[PATH_MAX];
   char invalid_utf8_path[PATH_MAX];
@@ -7459,6 +7460,8 @@ static void test_read_tool(test_state *state) {
   write_file_or_die(hidden_path, "hidden\n");
   snprintf(utf8_path, sizeof(utf8_path), "%s/sub/utf8.txt", dir_template);
   write_bytes_or_die(utf8_path, utf8_bytes, sizeof(utf8_bytes));
+  snprintf(cr_path, sizeof(cr_path), "%s/sub/classic-cr.txt", dir_template);
+  write_file_or_die(cr_path, "uno\rdos\rtres\r");
   snprintf(binary_path, sizeof(binary_path), "%s/sub/binary.bin",
            dir_template);
   write_bytes_or_die(binary_path, binary_bytes, sizeof(binary_bytes));
@@ -7658,6 +7661,23 @@ static void test_read_tool(test_state *state) {
                   writer.buffer, "\"content\":\"two\\n\"");
     expect_substr(state, "read_line_range_exact_limit_truncated",
                   writer.buffer, "\"truncated\":false");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_classic_cr_line_range", &config,
+                         "{\"path\":\"classic-cr.txt\",\"start_line\":2,"
+                         "\"end_line\":2}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_classic_cr_line_range_content", writer.buffer,
+                  "\"content\":\"dos\\r\"");
+    expect_substr(state, "read_classic_cr_line_range_start", writer.buffer,
+                  "\"start_line\":2");
+    expect_substr(state, "read_classic_cr_line_range_end", writer.buffer,
+                  "\"end_line\":2");
+    expect_substr(state, "read_classic_cr_line_range_truncated",
+                  writer.buffer, "\"truncated\":false");
+    expect_valid_json(state, "read_classic_cr_line_range_json", writer.buffer);
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);

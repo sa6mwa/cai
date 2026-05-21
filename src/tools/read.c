@@ -711,6 +711,20 @@ static int cai_read_append_text(lonejson_spooled *spool,
   return cai_read_append(spool, data, len, error);
 }
 
+static int cai_read_is_line_break(const char *buffer, size_t nread, size_t i,
+                                  size_t *len) {
+  if (buffer[i] == '\n') {
+    *len = 1U;
+    return 1;
+  }
+  if (buffer[i] == '\r') {
+    *len = i + 1U < nread && buffer[i + 1U] == '\n' ? 2U : 1U;
+    return 1;
+  }
+  *len = 0U;
+  return 0;
+}
+
 static int cai_list_array_grow(lonejson_object_array *array, size_t elem_size,
                                cai_error *error) {
   size_t new_capacity;
@@ -933,6 +947,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   size_t nread;
   size_t i;
   size_t start;
+  size_t line_break_len;
   int include;
   int stop;
   int saw_any;
@@ -996,10 +1011,10 @@ static int cai_read_stream_file(const cai_read_context *ctx,
     for (i = 0U; i < nread && !stop; i++) {
       include = current_line >= start_line &&
                 (end_line == 0LL || current_line <= end_line);
-      if (buffer[i] == '\n') {
+      if (cai_read_is_line_break(buffer, nread, i, &line_break_len)) {
         if (include) {
           size_t len;
-          len = i + 1U - start;
+          len = i + line_break_len - start;
           if (at_limit) {
             *truncated = 1;
             stop = 1;
@@ -1024,6 +1039,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           if (written >= max_bytes) {
             at_limit = 1;
           }
+        }
+        if (line_break_len > 1U) {
+          i += line_break_len - 1U;
         }
         current_line++;
         start = i + 1U;

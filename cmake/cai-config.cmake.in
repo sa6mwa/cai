@@ -31,24 +31,12 @@ else()
       INTERFACE_INCLUDE_DIRECTORIES "${cai_LONEJSON_INCLUDE_DIR}")
   endif()
 endif()
-if(TARGET pslog::pslog_shared)
-  get_target_property(cai_PSLOG_INCLUDE_DIR pslog::pslog_shared
-                      INTERFACE_INCLUDE_DIRECTORIES)
-elseif(TARGET pslog::pslog_static)
-  get_target_property(cai_PSLOG_INCLUDE_DIR pslog::pslog_static
-                      INTERFACE_INCLUDE_DIRECTORIES)
-else()
-  find_path(cai_PSLOG_INCLUDE_DIR pslog.h
-            HINTS "@CAI_CONFIG_PSLOG_INCLUDE_HINT@")
-endif()
-if(NOT cai_LONEJSON_INCLUDE_DIR OR NOT cai_PSLOG_INCLUDE_DIR OR
-   NOT TARGET lonejson::lonejson)
+if(NOT cai_LONEJSON_INCLUDE_DIR OR NOT TARGET lonejson::lonejson)
   message(FATAL_ERROR
-    "cai requires CURL, lonejson.h, pslog.h, and liblonejson. "
+    "cai requires CURL, lonejson.h, and liblonejson. "
     "For native curl/OpenSSL dependencies, use ${cai_C_PKT_SYSTEMS_URL}.")
 endif()
-list(APPEND _cai_dependency_includes
-     "${cai_LONEJSON_INCLUDE_DIR}" "${cai_PSLOG_INCLUDE_DIR}")
+list(APPEND _cai_dependency_includes "${cai_LONEJSON_INCLUDE_DIR}")
 
 foreach(_cai_target cai::cai_static cai::cai_shared)
   if(TARGET "${_cai_target}" AND _cai_dependency_includes)

@@ -892,7 +892,7 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
-  set(CAI_PACKAGE_REQUIRES "lonejson pslog")
+  set(CAI_PACKAGE_REQUIRES "lonejson")
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     set(CAI_PACKAGE_REQUIRES_PRIVATE "libcurl")
     set(CAI_PC_DEPENDENCY_CFLAGS "")
