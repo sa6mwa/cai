@@ -923,6 +923,8 @@ static int cai_exec_build_sandbox_exec_profile(const cai_exec_context *ctx,
   }
   if (cai_exec_profile_allow_subpath(profile, profile_size, &offset,
                                      ctx->root_path) != 0 ||
+      cai_exec_profile_allow_literal(profile, profile_size, &offset,
+                                     ctx->shell_path) != 0 ||
       cai_exec_profile_allow_subpath(profile, profile_size, &offset,
                                      "/bin") != 0 ||
       cai_exec_profile_allow_subpath(profile, profile_size, &offset,

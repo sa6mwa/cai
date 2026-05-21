@@ -68,14 +68,37 @@ endif()
 if(CAI_TARGET_ID STREQUAL "")
   string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_system_name_lower)
   string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _cai_processor_lower)
-  if(_cai_system_name_lower STREQUAL "linux" AND
-     (_cai_processor_lower STREQUAL "x86_64" OR
-      _cai_processor_lower STREQUAL "amd64"))
-    set(CAI_TARGET_ID "x86_64-linux-gnu")
-  elseif(_cai_system_name_lower STREQUAL "darwin" AND
-         (_cai_processor_lower STREQUAL "arm64" OR
-          _cai_processor_lower STREQUAL "aarch64"))
-    set(CAI_TARGET_ID "arm64-apple-darwin")
+  if(_cai_system_name_lower STREQUAL "linux")
+    set(_cai_linux_abi "gnu")
+    execute_process(
+      COMMAND "${CMAKE_C_COMPILER}" -dumpmachine
+      OUTPUT_VARIABLE _cai_compiler_machine
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_cai_compiler_machine MATCHES "musl")
+      set(_cai_linux_abi "musl")
+    endif()
+    if(_cai_processor_lower STREQUAL "x86_64" OR
+       _cai_processor_lower STREQUAL "amd64")
+      set(CAI_TARGET_ID "x86_64-linux-${_cai_linux_abi}")
+    elseif(_cai_processor_lower STREQUAL "aarch64" OR
+           _cai_processor_lower STREQUAL "arm64")
+      set(CAI_TARGET_ID "aarch64-linux-${_cai_linux_abi}")
+    elseif(_cai_processor_lower MATCHES "^(armv7|armv6|armhf)")
+      set(CAI_TARGET_ID "armhf-linux-${_cai_linux_abi}")
+    else()
+      set(CAI_TARGET_ID "${_cai_processor_lower}-linux-${_cai_linux_abi}")
+    endif()
+  elseif(_cai_system_name_lower STREQUAL "darwin")
+    if(_cai_processor_lower STREQUAL "arm64" OR
+       _cai_processor_lower STREQUAL "aarch64")
+      set(CAI_TARGET_ID "arm64-apple-darwin")
+    elseif(_cai_processor_lower STREQUAL "x86_64" OR
+           _cai_processor_lower STREQUAL "amd64")
+      set(CAI_TARGET_ID "x86_64-apple-darwin")
+    else()
+      set(CAI_TARGET_ID "${_cai_processor_lower}-apple-darwin")
+    endif()
   else()
     set(CAI_TARGET_ID "${_cai_processor_lower}-${_cai_system_name_lower}")
   endif()
