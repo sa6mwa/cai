@@ -1397,6 +1397,7 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
   int rc;
 
   memset(&cgroup, 0, sizeof(cgroup));
+  pid = (pid_t)-1;
   timeout_ms = ctx->timeout_ms;
   if (args->has_timeout_ms && args->timeout_ms > 0) {
     timeout_ms = (long)args->timeout_ms;
