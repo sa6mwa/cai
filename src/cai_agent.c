@@ -2922,6 +2922,8 @@ static int cai_session_run_tool_round(cai_session *session,
   cai_tool_output_capture capture;
   lonejson_spool_options spool_options;
   lonejson_spooled pending_items;
+  lonejson_spooled arguments_cursor;
+  const lonejson_spooled *spooled_arguments;
   int has_pending_items;
   size_t i;
   int rc;
@@ -2942,6 +2944,8 @@ static int cai_session_run_tool_round(cai_session *session,
     memset(&event, 0, sizeof(event));
     event.name = cai_response_tool_call_name(response, i);
     event.arguments_json = cai_response_tool_call_arguments(response, i);
+    event.arguments_json_spooled =
+        cai_response_tool_call_arguments_spooled(response, i);
     if (options->tool_event != NULL) {
       event.type = CAI_TOOL_EVENT_START;
       rc = options->tool_event(options->tool_event_context, &event, error);
@@ -2956,9 +2960,19 @@ static int cai_session_run_tool_round(cai_session *session,
     sink = NULL;
     rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK) {
-      rc = cai_tool_registry_run(
-          CAI_SESSION_AGENT_IMPL(session)->tools, cai_response_tool_call_name(response, i),
-          cai_response_tool_call_arguments(response, i), sink, error);
+      spooled_arguments = cai_response_tool_call_arguments_spooled(response, i);
+      if (spooled_arguments != NULL) {
+        arguments_cursor = *spooled_arguments;
+        rc = cai_tool_registry_run_spooled(
+            CAI_SESSION_AGENT_IMPL(session)->tools,
+            cai_response_tool_call_name(response, i), &arguments_cursor, sink,
+            error);
+      } else {
+        rc = cai_tool_registry_run(
+            CAI_SESSION_AGENT_IMPL(session)->tools,
+            cai_response_tool_call_name(response, i),
+            cai_response_tool_call_arguments(response, i), sink, error);
+      }
     }
     cai_sink_close(sink);
     if (options->tool_event != NULL) {

@@ -15,6 +15,7 @@ typedef union cai_zero_alloc_header {
   long double align_long_double;
 } cai_zero_alloc_header;
 
+enum { CAI_INLINE_TOOL_ARGUMENTS_LIMIT = 64 * 1024 };
 enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
 
 typedef struct cai_response_content_doc {
@@ -30,7 +31,7 @@ typedef struct cai_response_output_doc {
   char *role;
   char *call_id;
   char *name;
-  char *arguments;
+  lonejson_spooled arguments;
   char *created_by;
   lonejson_spooled encrypted_content;
   lonejson_object_array summary;
@@ -73,6 +74,8 @@ typedef struct cai_response_doc {
   char *object;
   char *status;
   char *model;
+  lonejson_spooled instructions;
+  lonejson_spooled output_text;
   long long created_at;
   cai_response_error_doc error;
   cai_response_incomplete_doc incomplete_details;
@@ -144,7 +147,7 @@ typedef struct cai_history_output_doc {
   const char *role;
   const char *call_id;
   const char *name;
-  const char *arguments;
+  lonejson_spooled arguments;
   const char *created_by;
   lonejson_spooled encrypted_content;
   lonejson_json_value summary;
@@ -251,8 +254,8 @@ static const lonejson_field cai_response_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, role, "role"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, call_id, "call_id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, name, "name"),
-    LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, arguments,
-                                "arguments"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_response_output_doc,
+                                            arguments, "arguments"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, created_by,
                                 "created_by"),
     LONEJSON_FIELD_STRING_STREAM(cai_response_output_doc, encrypted_content,
@@ -313,8 +316,8 @@ static const lonejson_field cai_history_output_fields[] = {
                                           "call_id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, name,
                                           "name"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, arguments,
-                                          "arguments"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_history_output_doc, arguments,
+                                            "arguments"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, created_by,
                                           "created_by"),
     {"encrypted_content",
@@ -392,6 +395,10 @@ static const lonejson_field cai_response_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, object, "object"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, status, "status"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_doc, model, "model"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_response_doc, instructions,
+                                            "instructions"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_response_doc, output_text,
+                                            "output_text"),
     LONEJSON_FIELD_I64(cai_response_doc, created_at, "created_at"),
     LONEJSON_FIELD_OBJECT(cai_response_doc, error, "error",
                           &cai_response_error_map),
@@ -859,6 +866,43 @@ static int cai_spooled_copy_to_builder(cai_buffer_builder *builder,
     if (chunk.eof) {
       break;
     }
+  }
+  return CAI_OK;
+}
+
+static int cai_spooled_copy_to_cstr(const cai_allocator *allocator,
+                                    const lonejson_spooled *value,
+                                    char **out, cai_error *error) {
+  cai_buffer_builder builder;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "string output pointer is required");
+  }
+  *out = NULL;
+  builder.data = NULL;
+  builder.length = 0U;
+  builder.capacity = 0U;
+  builder.sink = NULL;
+  builder.sink_user = NULL;
+  builder.sink_error = NULL;
+  rc = cai_spooled_copy_to_builder(&builder, value, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, builder.data);
+    return rc;
+  }
+  if (allocator != NULL && allocator->malloc_fn != NULL) {
+    char *copy;
+
+    copy = cai_strdup(allocator, builder.data != NULL ? builder.data : "");
+    cai_free_mem(NULL, builder.data);
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate string");
+    }
+    *out = copy;
+  } else {
+    *out = builder.data;
   }
   return CAI_OK;
 }
@@ -4188,14 +4232,34 @@ static int cai_response_copy_tool_calls(cai_response *response,
         cai_strdup(&response->allocator, outputs[i].call_id);
     response->tool_calls[index].name =
         cai_strdup(&response->allocator, outputs[i].name);
-    response->tool_calls[index].arguments =
-        cai_strdup(&response->allocator, outputs[i].arguments);
+    if (lonejson_spooled_size(&outputs[i].arguments) > 0U) {
+      int clone_rc;
+
+      clone_rc = cai_response_spooled_clone(
+          &outputs[i].arguments,
+          &response->tool_calls[index].arguments_spooled, error);
+      if (clone_rc != CAI_OK) {
+        return clone_rc;
+      }
+      response->tool_calls[index].has_arguments_spooled = 1;
+      if (lonejson_spooled_size(&outputs[i].arguments) <=
+          CAI_INLINE_TOOL_ARGUMENTS_LIMIT) {
+        int copy_rc;
+
+        copy_rc = cai_spooled_copy_to_cstr(&response->allocator,
+                                           &outputs[i].arguments,
+                                           &response->tool_calls[index]
+                                                .arguments,
+                                           error);
+        if (copy_rc != CAI_OK) {
+          return copy_rc;
+        }
+      }
+    }
     if ((outputs[i].id != NULL && response->tool_calls[index].id == NULL) ||
         (outputs[i].call_id != NULL &&
          response->tool_calls[index].call_id == NULL) ||
-        (outputs[i].name != NULL && response->tool_calls[index].name == NULL) ||
-        (outputs[i].arguments != NULL &&
-         response->tool_calls[index].arguments == NULL)) {
+        (outputs[i].name != NULL && response->tool_calls[index].name == NULL)) {
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to allocate response tool call fields");
     }
@@ -4631,6 +4695,16 @@ const char *cai_response_tool_call_arguments(const cai_response *response,
   return response->tool_calls[index].arguments;
 }
 
+const struct lonejson_spooled *
+cai_response_tool_call_arguments_spooled(const cai_response *response,
+                                         size_t index) {
+  if (response == NULL || index >= response->tool_call_count ||
+      !response->tool_calls[index].has_arguments_spooled) {
+    return NULL;
+  }
+  return &response->tool_calls[index].arguments_spooled;
+}
+
 size_t cai_response_output_item_count(const cai_response *response) {
   return response != NULL ? response->output_item_count : 0U;
 }
@@ -4696,6 +4770,9 @@ void cai_response_destroy(cai_response *response) {
     cai_free_mem(&allocator, response->tool_calls[i].call_id);
     cai_free_mem(&allocator, response->tool_calls[i].name);
     cai_free_mem(&allocator, response->tool_calls[i].arguments);
+    if (response->tool_calls[i].has_arguments_spooled) {
+      lonejson_spooled_cleanup(&response->tool_calls[i].arguments_spooled);
+    }
   }
   cai_free_mem(&allocator, response->tool_calls);
   for (i = 0U; i < response->output_item_count; i++) {

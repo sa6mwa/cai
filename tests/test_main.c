@@ -3518,6 +3518,28 @@ static int mike_mind_prompt_contains(const char *needle) {
   return 0;
 }
 
+static size_t mike_mind_prompt_part_count(void) {
+  const char *const *part;
+  size_t count;
+
+  count = 0U;
+  for (part = cai_mike_mind_developer_prompt_parts; *part != NULL; part++) {
+    count++;
+  }
+  return count;
+}
+
+static size_t mike_mind_prompt_total_length(void) {
+  const char *const *part;
+  size_t length;
+
+  length = 0U;
+  for (part = cai_mike_mind_developer_prompt_parts; *part != NULL; part++) {
+    length += strlen(*part);
+  }
+  return length;
+}
+
 static void test_mike_mind_prompt_contract(test_state *state) {
   if (!mike_mind_prompt_contains("Speak as Mike in first person")) {
     test_fail(state, "mike_mind_prompt_first_person",
@@ -3526,6 +3548,29 @@ static void test_mike_mind_prompt_contract(test_state *state) {
   if (!mike_mind_prompt_contains("Do not claim to read files")) {
     test_fail(state, "mike_mind_prompt_no_files",
               "prompt does not prohibit runtime file claims");
+  }
+  if (CAI_MIKE_MIND_SOURCE_FILE_COUNT < 30U) {
+    test_fail(state, "mike_mind_prompt_source_count",
+              "prompt does not embed the full mike-mind skill file set");
+  }
+  if (mike_mind_prompt_part_count() < 650U) {
+    test_fail(state, "mike_mind_prompt_part_count",
+              "prompt is too small to be the full mike-mind corpus");
+  }
+  if (mike_mind_prompt_total_length() < 150000U) {
+    test_fail(state, "mike_mind_prompt_total_length",
+              "prompt text is too small to be the full mike-mind corpus");
+  }
+  if (!mike_mind_prompt_contains(
+          "===== BEGIN mike-mind/references/source-index.md =====")) {
+    test_fail(state, "mike_mind_prompt_source_index",
+              "prompt does not include the source index");
+  }
+  if (!mike_mind_prompt_contains(
+          "===== BEGIN mike-mind/references/source-syntheses/"
+          "career-profile-authority.md =====")) {
+    test_fail(state, "mike_mind_prompt_career_profile",
+              "prompt does not include the career profile source synthesis");
   }
 }
 
@@ -4905,10 +4950,44 @@ static int mock_write_oversized_sse_response(int fd) {
     return -1;
   }
   memset(chunk, 'x', sizeof(chunk));
-  for (i = 0U; i < 300U; i++) {
+  for (i = 0U; i < 4200U; i++) {
     if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
       return -1;
     }
+  }
+  return 0;
+}
+
+static int mock_write_large_instructions_sse_response(int fd) {
+  static const char header[] =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n";
+  static const char prefix[] =
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+      "\"resp_large_instructions\",\"usage\":null,\"instructions\":\"";
+  static const char middle[] =
+      "\"}}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_large_instructions\",\"usage\":{\"input_tokens\":1,"
+      "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":0},"
+      "\"total_tokens\":2}}}\n\n";
+  char chunk[1024];
+  size_t i;
+
+  if (mock_write_all(fd, header, sizeof(header) - 1U) != 0 ||
+      mock_write_all(fd, prefix, sizeof(prefix) - 1U) != 0) {
+    return -1;
+  }
+  memset(chunk, 'i', sizeof(chunk));
+  for (i = 0U; i < 16U; i++) {
+    if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
+      return -1;
+    }
+  }
+  if (mock_write_all(fd, middle, sizeof(middle) - 1U) != 0) {
+    return -1;
   }
   return 0;
 }
@@ -5939,6 +6018,13 @@ static void mock_openai_child(int pipe_fd, int request_count) {
       close(client_fd);
       continue;
     }
+    if (strstr(request, "large stream instructions turn") != NULL) {
+      if (mock_write_large_instructions_sse_response(client_fd) != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
     body = mock_response_for_request(request);
     if (body == NULL) {
       _exit(9);
@@ -6366,6 +6452,117 @@ static void test_response_large_text_parse(test_state *state) {
   }
   cai_response_destroy(response);
   free(expected);
+  free(json);
+  cai_error_cleanup(&error);
+}
+
+static void test_response_large_instructions_parse(test_state *state) {
+  static const char prefix[] =
+      "{\"id\":\"resp_large_instructions\",\"status\":\"completed\","
+      "\"model\":\"gpt-5-nano\",\"instructions\":\"";
+  static const char suffix[] =
+      "\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}";
+  cai_response *response;
+  cai_error error;
+  char *json;
+  size_t instructions_len;
+  size_t json_len;
+  size_t i;
+
+  cai_error_init(&error);
+  response = NULL;
+  instructions_len = 16U * 1024U;
+  json_len = strlen(prefix) + instructions_len + strlen(suffix);
+  json = (char *)malloc(json_len + 1U);
+  if (json == NULL) {
+    test_fail(state, "response_large_instructions_alloc",
+              "allocation failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  memcpy(json, prefix, strlen(prefix));
+  for (i = 0U; i < instructions_len; i++) {
+    json[strlen(prefix) + i] = 'i';
+  }
+  memcpy(json + strlen(prefix) + instructions_len, suffix,
+         strlen(suffix) + 1U);
+  expect_int(state, "response_large_instructions_parse",
+             cai_response_parse_json(json, &response, &error), CAI_OK);
+  expect_str(state, "response_large_instructions_text",
+             cai_response_output_text(response), "ok");
+  cai_response_destroy(response);
+  free(json);
+  cai_error_cleanup(&error);
+}
+
+static void test_response_large_tool_arguments_spooled(test_state *state) {
+  static const char prefix[] =
+      "{\"id\":\"resp_large_args\",\"status\":\"completed\","
+      "\"model\":\"gpt-5-nano\",\"output\":[{\"id\":\"fc_large\","
+      "\"type\":\"function_call\",\"call_id\":\"call_large\","
+      "\"name\":\"large_tool\",\"arguments\":\"{\\\"payload\\\":\\\"";
+  static const char suffix[] =
+      "\\\"}\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,"
+      "\"total_tokens\":2}}";
+  cai_response *response;
+  const lonejson_spooled *arguments;
+  lonejson_spooled cursor;
+  lonejson_read_result read_result;
+  cai_error error;
+  char *json;
+  unsigned char buffer[64];
+  size_t payload_len;
+  size_t json_len;
+  size_t i;
+
+  cai_error_init(&error);
+  response = NULL;
+  payload_len = 80U * 1024U;
+  json_len = strlen(prefix) + payload_len + strlen(suffix);
+  json = (char *)malloc(json_len + 1U);
+  if (json == NULL) {
+    test_fail(state, "response_large_args_alloc", "allocation failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  memcpy(json, prefix, strlen(prefix));
+  for (i = 0U; i < payload_len; i++) {
+    json[strlen(prefix) + i] = 'a';
+  }
+  memcpy(json + strlen(prefix) + payload_len, suffix, strlen(suffix) + 1U);
+
+  expect_int(state, "response_large_args_parse",
+             cai_response_parse_json(json, &response, &error), CAI_OK);
+  expect_int(state, "response_large_args_count",
+             (long)cai_response_tool_call_count(response), 1L);
+  if (cai_response_tool_call_arguments(response, 0U) != NULL) {
+    test_fail(state, "response_large_args_inline",
+              "large arguments should not be materialized as a C string");
+  }
+  arguments = cai_response_tool_call_arguments_spooled(response, 0U);
+  if (arguments == NULL) {
+    test_fail(state, "response_large_args_spooled",
+              "large arguments were not retained in a spooled value");
+  }
+  if (arguments != NULL) {
+    lonejson_error json_error;
+
+    cursor = *arguments;
+    lonejson_error_init(&json_error);
+    if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+      test_fail(state, "response_large_args_rewind", json_error.message);
+    }
+    read_result = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (read_result.error_code != 0 || read_result.bytes_read < 12U ||
+        memcmp(buffer, "{\"payload\":\"", 12U) != 0) {
+      test_fail(state, "response_large_args_read",
+                "large arguments were not readable as JSON");
+    }
+  }
+
+  cai_response_destroy(response);
   free(json);
   cai_error_cleanup(&error);
 }
@@ -12737,6 +12934,103 @@ static void test_stream_sse_event_limit(test_state *state) {
   }
 }
 
+static void test_stream_large_instructions_field(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  write_state writer;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_token_usage usage;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_large_instructions_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_large_instructions_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_large_instructions_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_large_instructions_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_large_instructions_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_large_instructions_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_large_instructions_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_large_instructions_add",
+             cai_session_add_user_text(session,
+                                       "large stream instructions turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_large_instructions_run",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "stream_large_instructions_output", writer.buffer, "ok");
+  expect_int(state, "stream_large_instructions_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_large_instructions_usage_total",
+             usage.total_tokens, 2L);
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_large_instructions_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_large_instructions_mock", "mock child failed");
+  }
+}
+
 static void test_stream_history_preserves_pretty_json(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -13783,6 +14077,10 @@ static const test_entry test_entries[] = {
     {"response_array_serialization_invariants",
      test_response_array_serialization_invariants},
     {"response_large_text_parse", test_response_large_text_parse},
+    {"response_large_instructions_parse",
+     test_response_large_instructions_parse},
+    {"response_large_tool_arguments_spooled",
+     test_response_large_tool_arguments_spooled},
     {"http_create_response", test_http_create_response},
     {"http_retrieve_response", test_http_retrieve_response},
     {"http_cancel_response", test_http_cancel_response},
@@ -13835,6 +14133,7 @@ static const test_entry test_entries[] = {
     {"session_stream_auto_tool_output_max_bytes",
      test_session_stream_auto_tool_output_max_bytes},
     {"stream_sse_event_limit", test_stream_sse_event_limit},
+    {"stream_large_instructions_field", test_stream_large_instructions_field},
     {"stream_history_preserves_pretty_json",
      test_stream_history_preserves_pretty_json},
     {"stream_client_history_captures_output",

@@ -12,7 +12,7 @@ struct curl_slist;
 
 #define CAI_DEFAULT_BASE_URL CAI_OPENAI_BASE_URL
 #define CAI_DEFAULT_JSON_RESPONSE_LIMIT (1024UL * 1024UL)
-#define CAI_DEFAULT_SSE_EVENT_LIMIT (256UL * 1024UL)
+#define CAI_DEFAULT_SSE_EVENT_LIMIT (4UL * 1024UL * 1024UL)
 
 typedef struct cai_client_impl {
   cai_allocator allocator;

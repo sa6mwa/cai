@@ -120,7 +120,7 @@ int main(void) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
-  agent_config.prompt_cache_key = "cai:example:mike-mind:v2";
+  agent_config.prompt_cache_key = "cai:example:mike-mind:v3";
   developer_prompt = NULL;
   client = NULL;
   agent = NULL;

@@ -1320,6 +1320,10 @@ const char *cai_response_tool_call_name(const cai_response *response,
 /** Return tool call arguments JSON by index, or NULL. */
 const char *cai_response_tool_call_arguments(const cai_response *response,
                                              size_t index);
+/** Return spooled tool call arguments JSON by index, or NULL. */
+const struct lonejson_spooled *
+cai_response_tool_call_arguments_spooled(const cai_response *response,
+                                         size_t index);
 /** Return output item count. */
 size_t cai_response_output_item_count(const cai_response *response);
 /** Return output item id by index, or NULL. */

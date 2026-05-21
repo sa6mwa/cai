@@ -29,7 +29,8 @@ typedef struct cai_stream_usage_doc {
 
 typedef struct cai_stream_response_doc {
   char *id;
-  lonejson_json_value usage;
+  lonejson_spooled instructions;
+  cai_stream_usage_doc usage;
 } cai_stream_response_doc;
 
 typedef struct cai_stream_output_item_doc {
@@ -49,7 +50,7 @@ typedef struct cai_stream_delta_doc {
   char *name;
   char *arguments;
   lonejson_json_value item;
-  lonejson_json_value response;
+  cai_stream_response_doc response;
 } cai_stream_delta_doc;
 
 static const lonejson_field cai_stream_input_tokens_details_fields[] = {
@@ -84,9 +85,11 @@ LONEJSON_MAP_DEFINE(cai_stream_usage_map, cai_stream_usage_doc,
                     cai_stream_usage_fields);
 
 static const lonejson_field cai_stream_response_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(cai_stream_response_doc, id, "id"),
-    LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_stream_response_doc, usage,
-                                        "usage")};
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_stream_response_doc, id, "id"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_stream_response_doc,
+                                            instructions, "instructions"),
+    LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_stream_response_doc, usage, "usage",
+                                     &cai_stream_usage_map)};
 LONEJSON_MAP_DEFINE(cai_stream_response_map, cai_stream_response_doc,
                     cai_stream_response_fields);
 
@@ -112,8 +115,8 @@ static const lonejson_field cai_stream_delta_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC(cai_stream_delta_doc, arguments, "arguments"),
     LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_stream_delta_doc, item, "item"),
-    LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_stream_delta_doc, response,
-                                        "response")};
+    LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_stream_delta_doc, response,
+                                     "response", &cai_stream_response_map)};
 LONEJSON_MAP_DEFINE(cai_stream_delta_map, cai_stream_delta_doc,
                     cai_stream_delta_fields);
 
@@ -241,73 +244,11 @@ static lonejson_status cai_stream_doc_init(cai_stream_delta_doc *doc,
       LONEJSON_STATUS_OK) {
     return LONEJSON_STATUS_ALLOCATION_FAILED;
   }
-  lonejson_json_value_init(&doc->response);
-  return lonejson_json_value_enable_parse_capture(&doc->response, error);
+  return LONEJSON_STATUS_OK;
 }
 
 static void cai_stream_doc_cleanup(cai_stream_delta_doc *doc) {
   lonejson_cleanup(&cai_stream_delta_map, doc);
-}
-
-static int cai_stream_copy_usage_value(cai_token_usage *out,
-                                       const lonejson_json_value *value) {
-  cai_stream_usage_doc usage;
-  lonejson_error json_error;
-  lonejson_status status;
-
-  if (out == NULL || value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL ||
-      value->json == NULL || value->len == 0U) {
-    return CAI_OK;
-  }
-  memset(&usage, 0, sizeof(usage));
-  lonejson_init(&cai_stream_usage_map, &usage);
-  lonejson_error_init(&json_error);
-  status = lonejson_parse_buffer(&cai_stream_usage_map, &usage, value->json,
-                                 value->len, NULL, &json_error);
-  if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_stream_usage_map, &usage);
-    return CAI_ERR_PROTOCOL;
-  }
-  cai_stream_copy_usage(out, &usage);
-  lonejson_cleanup(&cai_stream_usage_map, &usage);
-  return CAI_OK;
-}
-
-static lonejson_status
-cai_stream_response_doc_init(cai_stream_response_doc *doc,
-                             lonejson_error *error) {
-  memset(doc, 0, sizeof(*doc));
-  lonejson_init(&cai_stream_response_map, doc);
-  lonejson_json_value_init(&doc->usage);
-  return lonejson_json_value_enable_parse_capture(&doc->usage, error);
-}
-
-static int cai_stream_parse_response_value(
-    const lonejson_json_value *value, cai_stream_response_doc *response) {
-  lonejson_parse_options options;
-  lonejson_error json_error;
-  lonejson_status status;
-
-  if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL ||
-      value->json == NULL || value->len == 0U) {
-    return CAI_OK;
-  }
-  lonejson_error_init(&json_error);
-  if (cai_stream_response_doc_init(response, &json_error) !=
-      LONEJSON_STATUS_OK) {
-    return CAI_ERR_NOMEM;
-  }
-  options = lonejson_default_parse_options();
-  options.clear_destination = 0;
-  lonejson_error_init(&json_error);
-  status = lonejson_parse_buffer(&cai_stream_response_map, response,
-                                 value->json, value->len, &options,
-                                 &json_error);
-  if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_stream_response_map, response);
-    return CAI_ERR_PROTOCOL;
-  }
-  return CAI_OK;
 }
 
 static int cai_stream_parse_output_item_value(
@@ -490,7 +431,6 @@ static int cai_sse_emit_output_item_done(
 
 static int cai_sse_emit_doc(cai_sse_state *state,
                             const cai_stream_delta_doc *doc) {
-  cai_stream_response_doc response;
   cai_stream_output_item_doc item;
   int has_response;
   int has_item;
@@ -499,17 +439,10 @@ static int cai_sse_emit_doc(cai_sse_state *state,
   if (doc == NULL) {
     return CAI_OK;
   }
-  memset(&response, 0, sizeof(response));
   memset(&item, 0, sizeof(item));
-  has_response = 0;
+  has_response = doc->response.id != NULL;
   has_item = 0;
   rc = CAI_OK;
-  if (doc->response.kind != LONEJSON_JSON_VALUE_NULL) {
-    rc = cai_stream_parse_response_value(&doc->response, &response);
-    if (rc == CAI_OK) {
-      has_response = 1;
-    }
-  }
   if (rc == CAI_OK && doc->type != NULL &&
       strcmp(doc->type, "response.output_item.done") == 0 &&
       doc->item.kind != LONEJSON_JSON_VALUE_NULL) {
@@ -566,8 +499,9 @@ static int cai_sse_emit_doc(cai_sse_state *state,
     rc = cai_sse_emit_function_call_done(state, &item_doc);
   }
   if (rc == CAI_OK && state->out_response_id != NULL &&
-      *state->out_response_id == NULL && has_response && response.id != NULL) {
-    *state->out_response_id = cai_strdup(NULL, response.id);
+      *state->out_response_id == NULL && has_response &&
+      doc->response.id != NULL) {
+    *state->out_response_id = cai_strdup(NULL, doc->response.id);
     if (*state->out_response_id == NULL) {
       rc = CAI_ERR_NOMEM;
     }
@@ -579,18 +513,10 @@ static int cai_sse_emit_doc(cai_sse_state *state,
       rc = cai_sse_finish_output(state);
     }
     if (rc == CAI_OK && state->out_usage != NULL) {
-      rc = cai_stream_copy_usage_value(state->out_usage, &response.usage);
-      if (rc != CAI_OK) {
-        state->failed = 1;
-        state->failed_code = rc;
-        state->failed_message = "failed to parse streaming response usage";
-      }
+      cai_stream_copy_usage(state->out_usage, &doc->response.usage);
     }
   }
 done:
-  if (has_response) {
-    lonejson_cleanup(&cai_stream_response_map, &response);
-  }
   if (has_item) {
     lonejson_cleanup(&cai_stream_output_item_map, &item);
   }
