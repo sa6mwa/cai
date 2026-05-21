@@ -625,8 +625,10 @@ static int cai_exec_cgroup_prepare(const cai_exec_context *ctx,
   }
   return CAI_OK;
 #else
-  (void)ctx;
-  (void)cgroup;
+  memset(cgroup, 0, sizeof(*cgroup));
+  if (!ctx->enable_cgroup_limits) {
+    return CAI_OK;
+  }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "exec cgroup limits require Linux cgroup v2");
 #endif
