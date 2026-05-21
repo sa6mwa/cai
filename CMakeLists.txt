@@ -641,6 +641,11 @@ if(CAI_BUILD_TESTS)
     response_array_serialization_invariants
     response_large_text_parse
     http_create_response
+    http_retrieve_response
+    http_cancel_response
+    http_delete_response
+    http_count_response_input_tokens
+    http_list_response_input_items
     http_error_details
     agent_session
     agent_client_history_continuity

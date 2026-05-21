@@ -4684,6 +4684,22 @@ static int mock_write_all(int fd, const char *data, size_t length) {
   return 0;
 }
 
+static int mock_set_socket_deadline(int fd) {
+  struct timeval tv;
+
+  tv.tv_sec = 2;
+  tv.tv_usec = 0;
+  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void *)&tv,
+                 (socklen_t)sizeof(tv)) != 0) {
+    return -1;
+  }
+  if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const void *)&tv,
+                 (socklen_t)sizeof(tv)) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
 static int mock_read_request(int fd, char *request, size_t capacity) {
   size_t length;
   char *headers_end;
@@ -5745,6 +5761,9 @@ static void mock_openai_child(int pipe_fd, int request_count) {
   if (listen(server_fd, 1) != 0) {
     _exit(4);
   }
+  if (mock_set_socket_deadline(server_fd) != 0) {
+    _exit(12);
+  }
   addr_len = (socklen_t)sizeof(addr);
   if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
     _exit(5);
@@ -5758,6 +5777,10 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     client_fd = accept(server_fd, NULL, NULL);
     if (client_fd < 0) {
       _exit(7);
+    }
+    if (mock_set_socket_deadline(client_fd) != 0) {
+      close(client_fd);
+      _exit(12);
     }
     if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
       _exit(8);
@@ -5817,6 +5840,96 @@ static void mock_openai_child(int pipe_fd, int request_count) {
   }
   close(server_fd);
   _exit(0);
+}
+
+typedef struct http_mock_client {
+  pid_t pid;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_client *client;
+  cai_error error;
+  pslog_logger logger;
+  alloc_count_state alloc_state;
+} http_mock_client;
+
+static int http_mock_client_open(test_state *state, const char *name,
+                                 int request_count, http_mock_client *mock) {
+  int pipe_fds[2];
+  int port;
+  ssize_t nread;
+
+  memset(mock, 0, sizeof(*mock));
+  mock->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  mock->pid = fork();
+  if (mock->pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return -1;
+  }
+  if (mock->pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], request_count);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, mock->pid, &mock->child_status);
+    mock->pid = -1;
+    return -1;
+  }
+
+  cai_error_init(&mock->error);
+  snprintf(mock->base_url, sizeof(mock->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  cai_client_config_init(&mock->config);
+  mock->config.api_key = "mock-key";
+  mock->config.base_url = mock->base_url;
+  mock->config.organization_id = "org_mock";
+  mock->config.project_id = "proj_mock";
+  mock->config.http_2_disabled = 1;
+  mock->config.timeout_ms = 2000L;
+  mock->config.allocator.malloc_fn = test_allocator_malloc;
+  mock->config.allocator.realloc_fn = test_allocator_realloc;
+  mock->config.allocator.free_fn = test_allocator_free;
+  mock->config.allocator.context = &mock->alloc_state;
+  mock->logger.infof = test_pslog_infof;
+  mock->logger.tracef = test_pslog_tracef;
+  mock->logger.debugf = test_pslog_debugf;
+  mock->logger.warnf = test_pslog_warnf;
+  mock->logger.errorf = test_pslog_errorf;
+  mock->config.logger = &mock->logger;
+  if (cai_client_open(&mock->config, &mock->client, &mock->error) != CAI_OK) {
+    test_fail(state, name, "client open failed");
+    cai_error_cleanup(&mock->error);
+    expect_child_exit(state, name, mock->pid, &mock->child_status);
+    mock->pid = -1;
+    return -1;
+  }
+  return 0;
+}
+
+static void http_mock_client_close(test_state *state, const char *name,
+                                   http_mock_client *mock) {
+  if (mock->client != NULL) {
+    cai_client_close(mock->client);
+    mock->client = NULL;
+  }
+  if ((mock->alloc_state.allocs - mock->alloc_state.frees) != 0U) {
+    test_fail(state, name, "custom allocator imbalance");
+  }
+  cai_error_cleanup(&mock->error);
+  if (mock->pid > 0) {
+    expect_child_exit(state, name, mock->pid, &mock->child_status);
+    mock->pid = -1;
+  }
 }
 
 static void mock_searxng_child(int pipe_fd) {
@@ -6033,130 +6146,146 @@ static void test_response_large_text_parse(test_state *state) {
 }
 
 static void test_http_create_response(test_state *state) {
-  int pipe_fds[2];
-  pid_t pid;
-  int port;
-  ssize_t nread;
-  int child_status;
-  char base_url[128];
-  cai_client_config config;
-  cai_client *client;
   cai_response_create_params *params;
   cai_response *response;
-  cai_input_item_list *items;
-  cai_token_usage usage;
-  cai_list_params list_params;
-  cai_error error;
-  pslog_logger fake_logger;
-  alloc_count_state alloc_state;
+  http_mock_client mock;
 
-  if (pipe(pipe_fds) != 0) {
-    test_fail(state, "http_mock", "pipe failed");
-    return;
-  }
-  pid = fork();
-  if (pid < 0) {
-    test_fail(state, "http_mock", "fork failed");
-    close(pipe_fds[0]);
-    close(pipe_fds[1]);
-    return;
-  }
-  if (pid == 0) {
-    close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 6);
-  }
-  close(pipe_fds[1]);
-  nread = read(pipe_fds[0], &port, sizeof(port));
-  close(pipe_fds[0]);
-  if (nread != (ssize_t)sizeof(port)) {
-    test_fail(state, "http_mock", "failed to read mock port");
-    expect_child_exit(state, "http_mock", pid, &child_status);
-    return;
-  }
-
-  cai_error_init(&error);
-  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
-  cai_client_config_init(&config);
-  config.api_key = "mock-key";
-  config.base_url = base_url;
-  config.organization_id = "org_mock";
-  config.project_id = "proj_mock";
-  config.http_2_disabled = 1;
-  config.timeout_ms = 5000L;
-  memset(&alloc_state, 0, sizeof(alloc_state));
-  config.allocator.malloc_fn = test_allocator_malloc;
-  config.allocator.realloc_fn = test_allocator_realloc;
-  config.allocator.free_fn = test_allocator_free;
-  config.allocator.context = &alloc_state;
-  memset(&fake_logger, 0, sizeof(fake_logger));
-  fake_logger.infof = test_pslog_infof;
-  fake_logger.tracef = test_pslog_tracef;
-  fake_logger.debugf = test_pslog_debugf;
-  fake_logger.warnf = test_pslog_warnf;
-  fake_logger.errorf = test_pslog_errorf;
-  config.logger = &fake_logger;
   g_test_infof_count = 0;
   g_test_tracef_count = 0;
   g_test_debugf_count = 0;
   g_test_warnf_count = 0;
   g_test_errorf_count = 0;
-  client = NULL;
+  if (http_mock_client_open(state, "http_create_mock", 1, &mock) != 0) {
+    return;
+  }
   params = NULL;
   response = NULL;
-  items = NULL;
-  expect_int(state, "http_client_open",
-             cai_client_open(&config, &client, &error), CAI_OK);
   expect_int(state, "http_params_new",
-             cai_response_create_params_new(&params, &error), CAI_OK);
+             cai_response_create_params_new(&params, &mock.error), CAI_OK);
   expect_int(state, "http_params_model",
              cai_response_create_params_set_model(
-                 params, CAI_MODEL_GPT_5_NANO, &error),
+                 params, CAI_MODEL_GPT_5_NANO, &mock.error),
              CAI_OK);
   expect_int(
       state, "http_params_input",
-      cai_response_create_params_add_text(params, "user", "hello", &error),
+      cai_response_create_params_add_text(params, "user", "hello",
+                                          &mock.error),
       CAI_OK);
   expect_int(state, "http_create",
-             cai_client_create_response(client, params, &response, &error),
+             cai_client_create_response(mock.client, params, &response,
+                                        &mock.error),
              CAI_OK);
   expect_str(state, "http_response_id", cai_response_id(response), "resp_mock");
   expect_str(state, "http_response_text", cai_response_output_text(response),
              "mock ok");
   cai_response_destroy(response);
+  cai_response_create_params_destroy(params);
+  expect_int(state, "http_log_client_open_info_count", g_test_infof_count, 1L);
+  expect_int(state, "http_log_trace_count", g_test_tracef_count, 1L);
+  expect_int(state, "http_log_debug_count", g_test_debugf_count, 1L);
+  expect_int(state, "http_log_warn_count", g_test_warnf_count, 0L);
+  expect_int(state, "http_log_error_count", g_test_errorf_count, 0L);
+  http_mock_client_close(state, "http_create_mock", &mock);
+}
+
+static void test_http_retrieve_response(test_state *state) {
+  cai_response *response;
+  http_mock_client mock;
+
+  if (http_mock_client_open(state, "http_retrieve_mock", 1, &mock) != 0) {
+    return;
+  }
   response = NULL;
-  expect_int(
-      state, "http_retrieve",
-      cai_client_retrieve_response(client, "resp_get", &response, &error),
-      CAI_OK);
+  expect_int(state, "http_retrieve",
+             cai_client_retrieve_response(mock.client, "resp_get", &response,
+                                          &mock.error),
+             CAI_OK);
   expect_str(state, "http_retrieve_id", cai_response_id(response), "resp_get");
   expect_str(state, "http_retrieve_text", cai_response_output_text(response),
              "get ok");
   cai_response_destroy(response);
+  http_mock_client_close(state, "http_retrieve_mock", &mock);
+}
+
+static void test_http_cancel_response(test_state *state) {
+  cai_response *response;
+  http_mock_client mock;
+
+  if (http_mock_client_open(state, "http_cancel_mock", 1, &mock) != 0) {
+    return;
+  }
   response = NULL;
   expect_int(state, "http_cancel",
-             cai_client_cancel_response(client, "resp_get", &response, &error),
+             cai_client_cancel_response(mock.client, "resp_get", &response,
+                                        &mock.error),
              CAI_OK);
   expect_str(state, "http_cancel_status", cai_response_status(response),
              "cancelled");
   expect_str(state, "http_cancel_text", cai_response_output_text(response),
              "cancel ok");
   cai_response_destroy(response);
+  http_mock_client_close(state, "http_cancel_mock", &mock);
+}
+
+static void test_http_delete_response(test_state *state) {
+  http_mock_client mock;
+
+  if (http_mock_client_open(state, "http_delete_mock", 1, &mock) != 0) {
+    return;
+  }
   expect_int(state, "http_delete",
-             cai_client_delete_response(client, "resp_get", &error), CAI_OK);
+             cai_client_delete_response(mock.client, "resp_get", &mock.error),
+             CAI_OK);
+  http_mock_client_close(state, "http_delete_mock", &mock);
+}
+
+static void test_http_count_response_input_tokens(test_state *state) {
+  cai_response_create_params *params;
+  cai_token_usage usage;
+  http_mock_client mock;
+
+  if (http_mock_client_open(state, "http_count_tokens_mock", 1, &mock) != 0) {
+    return;
+  }
+  params = NULL;
+  expect_int(state, "http_count_params_new",
+             cai_response_create_params_new(&params, &mock.error), CAI_OK);
+  expect_int(state, "http_count_params_model",
+             cai_response_create_params_set_model(
+                 params, CAI_MODEL_GPT_5_NANO, &mock.error),
+             CAI_OK);
+  expect_int(state, "http_count_params_input",
+             cai_response_create_params_add_text(params, "user", "hello",
+                                                 &mock.error),
+             CAI_OK);
   memset(&usage, 0, sizeof(usage));
   expect_int(state, "http_input_tokens",
-             cai_client_count_response_input_tokens(client, params, &usage,
-                                                    &error),
+             cai_client_count_response_input_tokens(mock.client, params, &usage,
+                                                    &mock.error),
              CAI_OK);
   expect_int(state, "http_input_tokens_value", usage.input_tokens, 42L);
   expect_int(state, "http_input_tokens_total", usage.total_tokens, 42L);
+  cai_response_create_params_destroy(params);
+  http_mock_client_close(state, "http_count_tokens_mock", &mock);
+}
+
+static void test_http_list_response_input_items(test_state *state) {
+  cai_input_item_list *items;
+  cai_list_params list_params;
+  http_mock_client mock;
+
+  if (http_mock_client_open(state, "http_list_items_mock", 1, &mock) != 0) {
+    return;
+  }
+  items = NULL;
   cai_list_params_init(&list_params);
   list_params.after = "msg_0 x";
   list_params.limit = 2;
   list_params.order = "asc";
   expect_int(state, "http_list_input_items",
-             cai_client_list_response_input_items(client, "resp_get",
-                                                  &list_params, &items, &error),
+             cai_client_list_response_input_items(mock.client, "resp_get",
+                                                  &list_params, &items,
+                                                  &mock.error),
              CAI_OK);
   expect_int(state, "http_list_input_items_count",
              (long)cai_input_item_list_count(items), 2L);
@@ -6173,18 +6302,7 @@ static void test_http_create_response(test_state *state) {
   expect_str(state, "http_list_input_items_role",
              cai_input_item_role(items, 1U), "assistant");
   cai_input_item_list_destroy(items);
-  expect_int(state, "http_log_client_open_info_count", g_test_infof_count, 1L);
-  expect_int(state, "http_log_trace_count", g_test_tracef_count, 6L);
-  expect_int(state, "http_log_debug_count", g_test_debugf_count, 6L);
-  expect_int(state, "http_log_warn_count", g_test_warnf_count, 0L);
-  expect_int(state, "http_log_error_count", g_test_errorf_count, 0L);
-  cai_response_create_params_destroy(params);
-  cai_client_close(client);
-  expect_int(state, "http_custom_allocator_balanced",
-             (long)(alloc_state.allocs - alloc_state.frees), 0L);
-  cai_error_cleanup(&error);
-
-  expect_child_exit(state, "http_mock", pid, &child_status);
+  http_mock_client_close(state, "http_list_items_mock", &mock);
 }
 
 static void test_http_error_details(test_state *state) {
@@ -13344,6 +13462,11 @@ static const test_entry test_entries[] = {
      test_response_array_serialization_invariants},
     {"response_large_text_parse", test_response_large_text_parse},
     {"http_create_response", test_http_create_response},
+    {"http_retrieve_response", test_http_retrieve_response},
+    {"http_cancel_response", test_http_cancel_response},
+    {"http_delete_response", test_http_delete_response},
+    {"http_count_response_input_tokens", test_http_count_response_input_tokens},
+    {"http_list_response_input_items", test_http_list_response_input_items},
     {"http_error_details", test_http_error_details},
     {"agent_session", test_agent_session},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
