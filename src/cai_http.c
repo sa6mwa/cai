@@ -564,6 +564,10 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   if (strcmp(method, "POST") == 0) {
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    if (request_json == NULL) {
+      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
+      curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)0);
+    }
   } else {
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
   }

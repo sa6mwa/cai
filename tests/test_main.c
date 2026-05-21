@@ -6471,9 +6471,11 @@ static void test_http_retrieve_response(test_state *state) {
 static void test_http_cancel_response(test_state *state) {
   cai_response *response;
   http_mock_client mock;
+  static const char *required[] = {"Content-Length: 0"};
   static const mock_http_expectation script[] = {
-      {"POST /v1/responses/resp_get/cancel HTTP/", NULL, 0U, NULL, 0U, 200,
-       "OK", "application/json", NULL, http_cancel_body}};
+      {"POST /v1/responses/resp_get/cancel HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, http_cancel_body}};
 
   if (http_mock_client_open_script(state, "http_cancel_mock", script,
                                    sizeof(script) / sizeof(script[0]),
