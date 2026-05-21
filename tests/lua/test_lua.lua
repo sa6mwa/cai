@@ -89,6 +89,8 @@ end
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.mcp_handler) == "function")
+assert(cai.MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES > 0)
+assert_eq(cai.MCP_TOOL_OUTPUT_UNLIMITED, -1, "mcp unlimited sentinel")
 assert(type(cai.tool_schema) == "function")
 assert(type(cai.load_dotenv_api_key) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
@@ -627,6 +629,7 @@ local mcp = assert_ok(cai.mcp_handler({
   version = "0.0.0",
   tools = registry,
   require_protocol_version = 1,
+  tool_output_max_bytes = cai.MCP_TOOL_OUTPUT_UNLIMITED,
 }))
 
 assert_throws(function()

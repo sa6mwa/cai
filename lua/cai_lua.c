@@ -361,6 +361,27 @@ static size_t cai_lua_opt_size_field(lua_State *L, int index, const char *name,
   return (size_t)n;
 }
 
+static size_t cai_lua_opt_mcp_tool_output_max_bytes(lua_State *L, int index,
+                                                    size_t fallback) {
+  lua_Integer n;
+
+  index = lua_absindex(L, index);
+  lua_getfield(L, index, "tool_output_max_bytes");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return fallback;
+  }
+  n = luaL_checkinteger(L, -1);
+  lua_pop(L, 1);
+  if (n == -1) {
+    return CAI_MCP_TOOL_OUTPUT_UNLIMITED;
+  }
+  if (n < 0) {
+    luaL_error(L, "tool_output_max_bytes must be non-negative or -1");
+  }
+  return (size_t)n;
+}
+
 static cai_lua_client *cai_lua_check_client(lua_State *L, int index) {
   cai_lua_client *self;
   self = (cai_lua_client *)luaL_checkudata(L, index, CAI_LUA_CLIENT);
@@ -2460,6 +2481,8 @@ static void cai_lua_exec_config(lua_State *L, int index,
       cai_lua_opt_string_field(L, index, "default_workdir", NULL);
   config->shell_path = cai_lua_opt_string_field(L, index, "shell_path", NULL);
   config->bwrap_path = cai_lua_opt_string_field(L, index, "bwrap_path", NULL);
+  config->sandbox_exec_path =
+      cai_lua_opt_string_field(L, index, "sandbox_exec_path", NULL);
   config->allow_network = cai_lua_opt_bool_field(L, index, "allow_network", 0);
   config->allow_pty = cai_lua_opt_bool_field(L, index, "allow_pty", 0);
   config->allow_login_shell =
@@ -4077,8 +4100,9 @@ static int cai_lua_mcp_new(lua_State *L) {
                                                     config.request_max_bytes);
   config.response_spool_memory_limit = cai_lua_opt_size_field(
       L, 1, "response_spool_memory_limit", config.response_spool_memory_limit);
-  config.tool_output_max_bytes = cai_lua_opt_size_field(
-      L, 1, "tool_output_max_bytes", config.tool_output_max_bytes);
+  config.tool_output_max_bytes =
+      cai_lua_opt_mcp_tool_output_max_bytes(L, 1,
+                                            config.tool_output_max_bytes);
   config.enable_sessions = cai_lua_opt_int_field(L, 1, "enable_sessions",
                                                  config.enable_sessions);
   config.disable_origin_validation =
@@ -5507,6 +5531,9 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("OPENAI_API_KEY_ENV", CAI_OPENAI_API_KEY_ENV);
   CAI_LUA_SET_STRING("OPENROUTER_API_KEY_ENV", CAI_OPENROUTER_API_KEY_ENV);
+  CAI_LUA_SET_INTEGER("MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES",
+                      CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES);
+  CAI_LUA_SET_INTEGER("MCP_TOOL_OUTPUT_UNLIMITED", -1);
   CAI_LUA_SET_STRING("TEXT_VERBOSITY_LOW", CAI_TEXT_VERBOSITY_LOW);
   CAI_LUA_SET_STRING("TEXT_VERBOSITY_MEDIUM", CAI_TEXT_VERBOSITY_MEDIUM);
   CAI_LUA_SET_STRING("TEXT_VERBOSITY_HIGH", CAI_TEXT_VERBOSITY_HIGH);

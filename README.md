@@ -412,12 +412,14 @@ First implemented scope:
 The request body is a `cai_source` and the response body is a `cai_sink`.
 The JSON-RPC envelope is parsed with lonejson while `id`, `params`, and
 `params.arguments` are validated into spooled JSON values. Typed tool
-arguments are parsed from that spool. By default, successful `tools/call`
-results stream directly into the MCP response body as `structuredContent`.
-If `tool_output_max_bytes` is configured, cai intentionally switches that
-tool-call output to bounded spooling so it can fail closed before committing a
-partial JSON-RPC response. `GET`/SSE streams, resources, prompts, and sampling
-are not implemented yet.
+arguments are parsed from that spool. Successful `tools/call` results are
+bounded by `tool_output_max_bytes`, defaulting to
+`CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES`, and cai intentionally uses bounded
+spooling for that tool-call output so it can fail closed before committing a
+partial JSON-RPC response. Set `tool_output_max_bytes` to
+`CAI_MCP_TOOL_OUTPUT_UNLIMITED` only when the embedding route deliberately
+accepts direct unbounded tool-output streaming. `GET`/SSE streams, resources,
+prompts, and sampling are not implemented yet.
 
 MCP session persistence is storage-neutral. The zero/default MCP config is
 stateless. Set `config.enable_sessions = 1` and provide
@@ -717,7 +719,12 @@ stdout/stderr capture; child stdin remains `/dev/null` and is not a terminal.
 Command execution is never registered by default. Callers must provide a
 `root_path`; every requested `workdir` is resolved under that root before
 execution. On Linux the sandbox backend is `bwrap`; when `bwrap` is not
-available, the tool fails closed. There is no non-sandboxed execution fallback.
+available, the tool fails closed. On Darwin/macOS, cai uses experimental
+`sandbox-exec` support with a generated seatbelt profile that allows command
+execution, system binary/library reads, file access under `root_path`, and
+optional network access. Darwin support is intentionally weaker than the Linux
+`bwrap` path and should be treated as experimental until validated on the
+target macOS release. There is no non-sandboxed execution fallback.
 The bwrap profile keeps the caller UID/GID, clears the inherited environment,
 sets only `PATH`, `HOME`, `TMPDIR`, and `LANG`, isolates `/tmp` and
 `/var/tmp`, unshares PID/IPC/UTS/network namespaces by default, and starts a

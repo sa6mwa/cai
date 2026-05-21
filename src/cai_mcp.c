@@ -868,7 +868,7 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
                                "Invalid tool call parameters", error);
   }
 
-  if (handler->tool_output_max_bytes == 0U) {
+  if (handler->tool_output_max_bytes == CAI_MCP_TOOL_OUTPUT_UNLIMITED) {
     memset(&stream_context, 0, sizeof(stream_context));
     stream_context.response = sink;
     stream_context.id = id;
@@ -1067,7 +1067,10 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
       config->response_spool_memory_limit != 0U
           ? config->response_spool_memory_limit
           : 128U * 1024U;
-  handler->tool_output_max_bytes = config->tool_output_max_bytes;
+  handler->tool_output_max_bytes =
+      config->tool_output_max_bytes != 0U
+          ? config->tool_output_max_bytes
+          : CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES;
   handler->enable_sessions = config->enable_sessions ? 1 : 0;
   handler->disable_origin_validation = config->disable_origin_validation ? 1 : 0;
   handler->require_protocol_version = config->require_protocol_version ? 1 : 0;

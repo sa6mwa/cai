@@ -40,6 +40,7 @@ typedef struct cai_exec_context {
   char *default_workdir;
   char *shell_path;
   char *bwrap_path;
+  char *sandbox_exec_path;
   int allow_network;
   int allow_pty;
   int allow_login_shell;
@@ -171,9 +172,10 @@ static const char cai_exec_schema_json[] =
     "}";
 
 static const char cai_exec_default_description[] =
-    "Runs a Linux or Darwin shell command non-interactively and returns its "
-    "output. Always set workdir when a specific directory matters; do not use "
-    "cd unless absolutely necessary. The embedding application controls "
+    "Runs a sandboxed shell command non-interactively and returns its output. "
+    "Linux uses bubblewrap; Darwin uses experimental sandbox-exec support. "
+    "Always set workdir when a specific directory matters; do not use cd "
+    "unless absolutely necessary. The embedding application controls "
     "sandboxing, writable roots, timeout caps, PTY support, and shell policy.";
 
 static const char *cai_exec_default_string(const char *value,
@@ -210,6 +212,7 @@ static void cai_exec_context_cleanup(void *context) {
   cai_free_mem(NULL, ctx->default_workdir);
   cai_free_mem(NULL, ctx->shell_path);
   cai_free_mem(NULL, ctx->bwrap_path);
+  cai_free_mem(NULL, ctx->sandbox_exec_path);
   cai_free_mem(NULL, ctx->cgroup_parent_path);
   cai_free_mem(NULL, ctx->output_spool_dir);
   cai_free_mem(NULL, ctx);
@@ -284,6 +287,12 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
     rc = cai_exec_strdup_optional(
         &ctx->bwrap_path, config != NULL ? config->bwrap_path : NULL,
         "failed to allocate bwrap path", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_exec_strdup_optional(
+        &ctx->sandbox_exec_path,
+        config != NULL ? config->sandbox_exec_path : NULL,
+        "failed to allocate sandbox-exec path", error);
   }
   if (rc == CAI_OK) {
     rc = cai_exec_strdup_optional(
@@ -374,6 +383,16 @@ static int cai_exec_find_on_path(const char *name, char *out, size_t out_size) {
     start = end + 1;
   }
   return 0;
+}
+
+static const char *cai_exec_sandbox_name(void) {
+#if defined(__linux__)
+  return "bwrap";
+#elif defined(__APPLE__)
+  return "sandbox-exec";
+#else
+  return "unavailable";
+#endif
 }
 
 static int cai_exec_resolve_workdir(const cai_exec_context *ctx,
@@ -764,12 +783,157 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   return 0;
 }
 
+#if defined(__APPLE__)
+static int cai_exec_profile_append(char *profile, size_t profile_size,
+                                   size_t *offset, const char *text) {
+  size_t len;
+
+  len = strlen(text);
+  if (*offset > profile_size || len >= profile_size - *offset) {
+    return -1;
+  }
+  memcpy(profile + *offset, text, len);
+  *offset += len;
+  profile[*offset] = '\0';
+  return 0;
+}
+
+static int cai_exec_profile_append_quoted(char *profile, size_t profile_size,
+                                          size_t *offset, const char *text) {
+  const char *p;
+
+  if (cai_exec_profile_append(profile, profile_size, offset, "\"") != 0) {
+    return -1;
+  }
+  for (p = text; p != NULL && *p != '\0'; p++) {
+    if (*p == '"' || *p == '\\') {
+      if (cai_exec_profile_append(profile, profile_size, offset, "\\") != 0) {
+        return -1;
+      }
+    }
+    if (*offset + 1U >= profile_size) {
+      return -1;
+    }
+    profile[*offset] = *p;
+    (*offset)++;
+    profile[*offset] = '\0';
+  }
+  return cai_exec_profile_append(profile, profile_size, offset, "\"");
+}
+
+static int cai_exec_profile_allow_subpath(char *profile, size_t profile_size,
+                                          size_t *offset, const char *path) {
+  if (cai_exec_profile_append(profile, profile_size, offset, " (subpath ") !=
+      0) {
+    return -1;
+  }
+  if (cai_exec_profile_append_quoted(profile, profile_size, offset, path) !=
+      0) {
+    return -1;
+  }
+  return cai_exec_profile_append(profile, profile_size, offset, ")");
+}
+
+static int cai_exec_profile_allow_literal(char *profile, size_t profile_size,
+                                          size_t *offset, const char *path) {
+  if (cai_exec_profile_append(profile, profile_size, offset, " (literal ") !=
+      0) {
+    return -1;
+  }
+  if (cai_exec_profile_append_quoted(profile, profile_size, offset, path) !=
+      0) {
+    return -1;
+  }
+  return cai_exec_profile_append(profile, profile_size, offset, ")");
+}
+
+static int cai_exec_build_sandbox_exec_profile(const cai_exec_context *ctx,
+                                               char *profile,
+                                               size_t profile_size) {
+  size_t offset;
+
+  offset = 0U;
+  profile[0] = '\0';
+  if (cai_exec_profile_append(
+          profile, profile_size, &offset,
+          "(version 1)\n"
+          "(deny default)\n"
+          "(allow process*)\n"
+          "(allow sysctl-read)\n"
+          "(allow mach-lookup)\n"
+          "(allow file-read-metadata)\n"
+          "(allow file-read-data") != 0) {
+    return -1;
+  }
+  if (cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     ctx->root_path) != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     "/bin") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     "/sbin") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     "/usr/bin") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     "/usr/sbin") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     "/usr/lib") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     "/System/Library") != 0 ||
+      cai_exec_profile_allow_literal(profile, profile_size, &offset,
+                                     "/dev/null") != 0) {
+    return -1;
+  }
+  if (cai_exec_profile_append(profile, profile_size, &offset,
+                              ")\n(allow file-write*") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
+                                     ctx->root_path) != 0 ||
+      cai_exec_profile_append(profile, profile_size, &offset, ")\n") != 0) {
+    return -1;
+  }
+  if (ctx->allow_network) {
+    if (cai_exec_profile_append(profile, profile_size, &offset,
+                                "(allow network*)\n") != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static int cai_exec_build_sandbox_exec_argv(
+    const cai_exec_context *ctx, const cai_exec_args *args,
+    const char *shell_path, const char *cmd, const char *sandbox_exec_path,
+    const char **argv, size_t argv_cap, char *profile, size_t profile_size) {
+  size_t i;
+
+  if (argv_cap < 8U ||
+      cai_exec_build_sandbox_exec_profile(ctx, profile, profile_size) != 0) {
+    return -1;
+  }
+  i = 0U;
+  argv[i++] = sandbox_exec_path;
+  argv[i++] = "-p";
+  argv[i++] = profile;
+  argv[i++] = shell_path;
+  if (args->has_login && args->login && ctx->allow_login_shell) {
+    argv[i++] = "-lc";
+  } else {
+    argv[i++] = "-c";
+  }
+  argv[i++] = cmd;
+  argv[i] = NULL;
+  return 0;
+}
+#endif
+
 static void cai_exec_child_exec(const cai_exec_context *ctx,
                                 const cai_exec_args *args,
-                                const char *workdir, const char *bwrap_path,
+                                const char *workdir, const char *sandbox_path,
                                 int use_sandbox) {
   const char *argv[96];
   char dirs[32][PATH_MAX];
+#if defined(__APPLE__)
+  char sandbox_profile[8192];
+#endif
   size_t dir_count;
   const char *shell_path;
 
@@ -779,15 +943,34 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
     _exit(126);
   }
   if (use_sandbox) {
+#if defined(__linux__)
     if (cai_exec_build_bwrap_argv(ctx, workdir, shell_path, args->cmd,
-                                  bwrap_path, argv,
+                                  sandbox_path, argv,
                                   sizeof(argv) / sizeof(argv[0]), dirs,
                                   &dir_count,
                                   sizeof(dirs) / sizeof(dirs[0])) != 0) {
       _exit(127);
     }
-    execv(bwrap_path, (char *const *)(void *)argv);
+    execv(sandbox_path, (char *const *)(void *)argv);
     _exit(127);
+#elif defined(__APPLE__)
+    (void)dirs;
+    dir_count = 0U;
+    if (cai_exec_build_sandbox_exec_argv(
+            ctx, args, shell_path, args->cmd, sandbox_path, argv,
+            sizeof(argv) / sizeof(argv[0]), sandbox_profile,
+            sizeof(sandbox_profile)) != 0) {
+      _exit(127);
+    }
+    (void)dir_count;
+    execv(sandbox_path, (char *const *)(void *)argv);
+    _exit(127);
+#else
+    (void)argv;
+    (void)dirs;
+    (void)dir_count;
+    _exit(127);
+#endif
   }
   if (args->has_login && args->login && ctx->allow_login_shell) {
     execl(shell_path, shell_path, "-lc", args->cmd, (char *)NULL);
@@ -1106,9 +1289,9 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
   return rc;
 }
 
-static int cai_exec_prepare_bwrap(const cai_exec_context *ctx, char *buffer,
-                                  size_t buffer_size, int *use_sandbox,
-                                  cai_error *error) {
+static int cai_exec_prepare_sandbox(const cai_exec_context *ctx, char *buffer,
+                                    size_t buffer_size, int *use_sandbox,
+                                    cai_error *error) {
 #if defined(__linux__)
   const char *path;
 
@@ -1126,6 +1309,24 @@ static int cai_exec_prepare_bwrap(const cai_exec_context *ctx, char *buffer,
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "exec sandbox requires bubblewrap (bwrap) on Linux");
+#elif defined(__APPLE__)
+  const char *path;
+
+  *use_sandbox = 0;
+  path = ctx->sandbox_exec_path;
+  if (path != NULL && path[0] != '\0') {
+    if (access(path, X_OK) == 0) {
+      snprintf(buffer, buffer_size, "%s", path);
+      *use_sandbox = 1;
+      return CAI_OK;
+    }
+  } else if (cai_exec_find_on_path("sandbox-exec", buffer, buffer_size)) {
+    *use_sandbox = 1;
+    return CAI_OK;
+  }
+  return cai_set_error(
+      error, CAI_ERR_INVALID,
+      "exec sandbox requires sandbox-exec on Darwin (experimental)");
 #else
   *use_sandbox = 0;
   (void)buffer;
@@ -1145,7 +1346,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   lonejson_spool_options spool_options;
   cai_exec_proc_result proc;
   char *workdir;
-  char bwrap_path[PATH_MAX];
+  char sandbox_path[PATH_MAX];
   int use_sandbox;
   int rc;
 
@@ -1170,9 +1371,9 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     return rc;
   }
   use_sandbox = 0;
-  bwrap_path[0] = '\0';
-  rc = cai_exec_prepare_bwrap(ctx, bwrap_path, sizeof(bwrap_path),
-                              &use_sandbox, error);
+  sandbox_path[0] = '\0';
+  rc = cai_exec_prepare_sandbox(ctx, sandbox_path, sizeof(sandbox_path),
+                                &use_sandbox, error);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, workdir);
     return rc;
@@ -1186,7 +1387,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   lonejson_spooled_init(&capture.stdout_data, &spool_options);
   lonejson_spooled_init(&capture.stderr_data, &spool_options);
   lonejson_spooled_init(&capture.output, &spool_options);
-  rc = cai_exec_run_process(ctx, args, workdir, bwrap_path, use_sandbox,
+  rc = cai_exec_run_process(ctx, args, workdir, sandbox_path, use_sandbox,
                             &capture, &proc, error);
   if (rc == CAI_OK) {
     out->wall_time_seconds = (double)proc.duration_ms / 1000.0;
@@ -1196,7 +1397,8 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     out->original_byte_count =
         (long long)(capture.stdout_bytes + capture.stderr_bytes);
     out->cwd = cai_strdup(NULL, workdir);
-    out->sandbox = cai_strdup(NULL, use_sandbox ? "bwrap" : "unavailable");
+    out->sandbox = cai_strdup(NULL, use_sandbox ? cai_exec_sandbox_name()
+                                                : "unavailable");
     if (out->cwd == NULL || out->sandbox == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate exec result metadata");

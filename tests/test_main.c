@@ -1446,6 +1446,29 @@ static int test_large_raw_tool(void *context, const char *arguments_json,
   return cai_sink_write(output, payload, sizeof(payload) - 1U, error);
 }
 
+static int test_huge_raw_tool(void *context, const char *arguments_json,
+                              cai_sink *output, cai_error *error) {
+  char payload[4096];
+  size_t remaining;
+  size_t count;
+  size_t i;
+
+  (void)context;
+  (void)arguments_json;
+  for (i = 0U; i < sizeof(payload); i++) {
+    payload[i] = 'z';
+  }
+  remaining = CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES + 1U;
+  while (remaining > 0U) {
+    count = remaining < sizeof(payload) ? remaining : sizeof(payload);
+    if (cai_sink_write(output, payload, count, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+    remaining -= count;
+  }
+  return CAI_OK;
+}
+
 static int test_chunked_json_tool(void *context, const char *arguments_json,
                                   cai_sink *output, cai_error *error) {
   static const char *chunks[] = {"{\"value\":\"", "alpha", "-", "beta",
@@ -2747,13 +2770,19 @@ static void test_mcp_handler(test_state *state) {
                  "{\"type\":\"object\",\"properties\":{}}", 0,
                  test_chunked_json_tool, NULL, &error),
              CAI_OK);
+  expect_int(state, "mcp_register_huge_tool",
+             cai_tool_registry_register_raw(
+                 registry, "huge_json", "Write too much JSON",
+                 "{\"type\":\"object\",\"properties\":{}}", 0,
+                 test_huge_raw_tool, NULL, &error),
+             CAI_OK);
   cai_mcp_handler_config_init(&config);
   allowed_origins[0] = "https://app.example";
   config.name = "cai-test";
   config.tools = registry;
   config.allowed_origins = allowed_origins;
   config.allowed_origin_count = 1U;
-  config.tool_output_max_bytes = 0U;
+  config.tool_output_max_bytes = CAI_MCP_TOOL_OUTPUT_UNLIMITED;
   expect_int(state, "mcp_handler_new",
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
   expect_int(state, "mcp_initialize",
@@ -2825,6 +2854,32 @@ static void test_mcp_handler(test_state *state) {
               "chunked MCP tool response was incomplete");
   }
   expect_valid_json(state, "mcp_chunked_tool_json", sink_state.buffer);
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.tool_output_max_bytes = 0U;
+  expect_int(state, "mcp_default_limit_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_default_tool_output_limit",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"default-limit\","
+                 "\"method\":\"tools/call\",\"params\":{\"name\":"
+                 "\"huge_json\",\"arguments\":{}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_default_tool_output_limit_status", status, 200L);
+  if (strstr(writer.buffer, "\"isError\":true") == NULL ||
+      strstr(writer.buffer, "MCP tool output exceeded configured limit") ==
+          NULL) {
+    test_fail(state, "mcp_default_tool_output_limit_body",
+              "default MCP tool output cap did not fail closed");
+  }
+  expect_valid_json(state, "mcp_default_tool_output_limit_json", writer.buffer);
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.tool_output_max_bytes = CAI_MCP_TOOL_OUTPUT_UNLIMITED;
+  expect_int(state, "mcp_stream_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
   expect_int(state, "mcp_streamed_large_tool_call",
              test_mcp_handle_stream(
                  handler, headers, sizeof(headers) / sizeof(headers[0]),

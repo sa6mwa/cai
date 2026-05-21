@@ -24,6 +24,8 @@ typedef struct cai_exec_tool_config {
   const char *shell_path;
   /** Optional bubblewrap executable path; defaults to `bwrap`. */
   const char *bwrap_path;
+  /** Optional Darwin sandbox-exec path; defaults to `sandbox-exec`. */
+  const char *sandbox_exec_path;
   /** Non-zero to allow network access inside the sandbox. */
   int allow_network;
   /** Non-zero to allow PTY output mode when requested by tool arguments. */

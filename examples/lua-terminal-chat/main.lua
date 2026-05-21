@@ -113,7 +113,7 @@ if exec_tool_dir or read_tool_dir then
     "You have access to searxng_search for web search, todo_kanban for " ..
     "managing a local kanban board, list_files and read_file for inspecting " ..
     "files rooted to the configured read directory, and optionally exec_command for " ..
-    "Linux/Darwin command execution rooted to the configured sandbox " ..
+    "sandboxed command execution rooted to the configured sandbox " ..
     "directory. Use " ..
     "search for current, external, or source-backed information and cite " ..
     "URLs from tool results. Use todo_kanban when the user asks you to " ..

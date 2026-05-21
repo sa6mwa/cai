@@ -17,6 +17,10 @@ extern "C" {
 #define CAI_MCP_SESSION_CLIENT_NAME_MAX 128
 /** Maximum bytes, including terminator, for session client version. */
 #define CAI_MCP_SESSION_CLIENT_VERSION_MAX 64
+/** Default maximum bytes accepted from one MCP tool call result. */
+#define CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES (1024U * 1024U)
+/** Explicit value for unbounded MCP tool output streaming. */
+#define CAI_MCP_TOOL_OUTPUT_UNLIMITED ((size_t)-1)
 
 /** Opaque MCP route handler instance. */
 typedef struct cai_mcp_handler cai_mcp_handler;
