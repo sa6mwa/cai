@@ -185,6 +185,14 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   unset(_cai_auto_pslog_include CACHE)
   unset(_cai_auto_lonejson_library CACHE)
 endif()
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
+   CAI_TARGET_ID STREQUAL "x86_64-apple-darwin")
+  message(WARNING
+    "No pinned cpkt dependency package exists for x86_64-apple-darwin; "
+    "falling back to host dependencies. Use arm64-apple-darwin for cpkt "
+    "Darwin release builds.")
+  set(CAI_RESOLVED_DEPENDENCY_MODE "host")
+endif()
 
 function(cai_download_tarball name url archive prefix sha256 stamp_file)
   file(MAKE_DIRECTORY "${CAI_DEPS_DIR}")

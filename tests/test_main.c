@@ -7779,6 +7779,9 @@ static void test_exec_tool(test_state *state) {
   char alpha_path[PATH_MAX];
   char marker_path[PATH_MAX];
   char custom_shell_path[PATH_MAX];
+  char fake_bwrap_path[PATH_MAX];
+  const char *saved_path;
+  char *saved_path_copy;
   cai_exec_tool_config config;
   write_state writer;
   cai_error error;
@@ -7847,6 +7850,22 @@ static void test_exec_tool(test_state *state) {
         alpha_file);
   fclose(alpha_file);
   chmod(custom_shell_path, 0700);
+  snprintf(fake_bwrap_path, sizeof(fake_bwrap_path), "%s/bwrap", dir_template);
+  alpha_file = fopen(fake_bwrap_path, "wb");
+  if (alpha_file == NULL) {
+    test_fail(state, "exec_fake_bwrap_fixture", "fopen failed");
+    unlink(custom_shell_path);
+    unlink(marker_path);
+    rmdir(child_tests_dir);
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  fputs("#!/bin/sh\nprintf fake-bwrap\nexit 0\n", alpha_file);
+  fclose(alpha_file);
+  chmod(fake_bwrap_path, 0700);
+  saved_path = getenv("PATH");
+  saved_path_copy = saved_path != NULL ? cai_strdup(NULL, saved_path) : NULL;
   cai_error_init(&error);
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -7905,6 +7924,28 @@ static void test_exec_tool(test_state *state) {
     }
     config.allow_login_shell = 0;
     config.shell_path = NULL;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  setenv("PATH", dir_template, 1);
+  if (run_exec_tool_case(state, "exec_ignores_untrusted_path_bwrap", &config,
+                         "{\"cmd\":\"printf trusted\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    expect_substr(state, "exec_ignores_untrusted_path_output", writer.buffer,
+                  "trusted");
+    if (strstr(writer.buffer, "fake-bwrap") != NULL) {
+      test_fail(state, "exec_used_untrusted_path_bwrap",
+                "exec used repo-controlled bwrap from PATH");
+    }
+    expect_valid_json(state, "exec_ignores_untrusted_path_json",
+                      writer.buffer);
+  }
+  if (saved_path_copy != NULL) {
+    setenv("PATH", saved_path_copy, 1);
+    cai_free_mem(NULL, saved_path_copy);
+  } else {
+    unsetenv("PATH");
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
@@ -8178,6 +8219,7 @@ static void test_exec_tool(test_state *state) {
   }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
+  unlink(fake_bwrap_path);
   unlink(custom_shell_path);
   unlink(alpha_path);
   snprintf(alpha_path, sizeof(alpha_path), "%s/archive.tar", dir_template);

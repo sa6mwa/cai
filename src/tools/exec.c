@@ -367,36 +367,20 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   return CAI_OK;
 }
 
-static int cai_exec_find_on_path(const char *name, char *out, size_t out_size) {
-  const char *path;
-  const char *start;
-  const char *end;
-  size_t dir_len;
+static int cai_exec_find_trusted(const char *const *candidates, char *out,
+                                 size_t out_size) {
+  size_t i;
+  size_t len;
 
-  if (name == NULL || strchr(name, '/') != NULL || out == NULL ||
-      out_size == 0U) {
+  if (candidates == NULL || out == NULL || out_size == 0U) {
     return 0;
   }
-  path = getenv("PATH");
-  if (path == NULL) {
-    path = "/usr/local/bin:/usr/bin:/bin";
-  }
-  start = path;
-  while (*start != '\0') {
-    end = strchr(start, ':');
-    dir_len = end != NULL ? (size_t)(end - start) : strlen(start);
-    if (dir_len > 0U && dir_len + 1U + strlen(name) + 1U <= out_size) {
-      memcpy(out, start, dir_len);
-      out[dir_len] = '/';
-      strcpy(out + dir_len + 1U, name);
-      if (access(out, X_OK) == 0) {
-        return 1;
-      }
+  for (i = 0U; candidates[i] != NULL; i++) {
+    len = strlen(candidates[i]);
+    if (len + 1U <= out_size && access(candidates[i], X_OK) == 0) {
+      memcpy(out, candidates[i], len + 1U);
+      return 1;
     }
-    if (end == NULL) {
-      break;
-    }
-    start = end + 1;
   }
   return 0;
 }
@@ -1407,6 +1391,8 @@ static int cai_exec_prepare_sandbox(const cai_exec_context *ctx, char *buffer,
                                     size_t buffer_size, int *use_sandbox,
                                     cai_error *error) {
 #if defined(__linux__)
+  static const char *const bwrap_candidates[] = {
+      "/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap", NULL};
   const char *path;
 
   *use_sandbox = 0;
@@ -1417,13 +1403,15 @@ static int cai_exec_prepare_sandbox(const cai_exec_context *ctx, char *buffer,
       *use_sandbox = 1;
       return CAI_OK;
     }
-  } else if (cai_exec_find_on_path("bwrap", buffer, buffer_size)) {
+  } else if (cai_exec_find_trusted(bwrap_candidates, buffer, buffer_size)) {
     *use_sandbox = 1;
     return CAI_OK;
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "exec sandbox requires bubblewrap (bwrap) on Linux");
 #elif defined(__APPLE__)
+  static const char *const sandbox_exec_candidates[] = {
+      "/usr/bin/sandbox-exec", NULL};
   const char *path;
 
   *use_sandbox = 0;
@@ -1434,7 +1422,8 @@ static int cai_exec_prepare_sandbox(const cai_exec_context *ctx, char *buffer,
       *use_sandbox = 1;
       return CAI_OK;
     }
-  } else if (cai_exec_find_on_path("sandbox-exec", buffer, buffer_size)) {
+  } else if (cai_exec_find_trusted(sandbox_exec_candidates, buffer,
+                                   buffer_size)) {
     *use_sandbox = 1;
     return CAI_OK;
   }
