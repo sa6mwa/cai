@@ -174,9 +174,10 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   find_path(_cai_auto_lonejson_include lonejson.h)
   find_path(_cai_auto_pslog_include pslog.h)
   find_library(_cai_auto_lonejson_library NAMES lonejson)
+  find_library(_cai_auto_pslog_library NAMES pslog)
   find_package(CURL QUIET)
   if(CURL_FOUND AND _cai_auto_lonejson_include AND _cai_auto_pslog_include AND
-     _cai_auto_lonejson_library)
+     _cai_auto_lonejson_library AND _cai_auto_pslog_library)
     set(CAI_RESOLVED_DEPENDENCY_MODE "host")
   else()
     set(CAI_RESOLVED_DEPENDENCY_MODE "cpkt")
@@ -184,6 +185,7 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   unset(_cai_auto_lonejson_include CACHE)
   unset(_cai_auto_pslog_include CACHE)
   unset(_cai_auto_lonejson_library CACHE)
+  unset(_cai_auto_pslog_library CACHE)
 endif()
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
    CAI_TARGET_ID STREQUAL "x86_64-apple-darwin")
@@ -679,6 +681,9 @@ if(CAI_BUILD_TESTS)
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
+    add_test(NAME cai_release_lua_version_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_lua_version_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
 
   if(CAI_BUILD_LUA)

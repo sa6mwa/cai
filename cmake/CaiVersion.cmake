@@ -24,6 +24,8 @@ function(cai_detect_version out_var)
 
   if(DEFINED CAI_VERSION_OVERRIDE AND NOT CAI_VERSION_OVERRIDE STREQUAL "")
     set(_cai_version "${CAI_VERSION_OVERRIDE}")
+  elseif(DEFINED ENV{CAI_VERSION_OVERRIDE} AND NOT "$ENV{CAI_VERSION_OVERRIDE}" STREQUAL "")
+    set(_cai_version "$ENV{CAI_VERSION_OVERRIDE}")
   endif()
 
   set(${out_var} "${_cai_version}" PARENT_SCOPE)

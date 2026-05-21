@@ -10,7 +10,7 @@ COMPOSE := $(shell if command -v nerdctl >/dev/null 2>&1; then printf 'nerdctl c
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
-RELEASE_VERSION := $(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/debug/generated/include/cai/version.h 2>/dev/null || printf '0.0.0')
+RELEASE_VERSION ?= $(shell ./scripts/detect_release_version.sh "$(CURDIR)")
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
 CAI_C_PKT_SYSTEMS_VERSION ?= 0.1.0
 CAI_LONEJSON_VERSION ?= 0.20.0
@@ -38,7 +38,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -166,6 +166,9 @@ $(RELEASE_LUA_SRC_ROCK): $(RELEASE_LUA_PACK_ROCKSPEC) $(RELEASE_LUA_ROCKSPEC)
 	rm -rf "$(RELEASE_LUA_PACK_DIR)"
 
 release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC) $(RELEASE_LUA_SRC_ROCK)
+
+print-release-version:
+	@printf '%s\n' "$(RELEASE_VERSION)"
 
 package: build-release
 	bash ./scripts/package_release_matrix.sh

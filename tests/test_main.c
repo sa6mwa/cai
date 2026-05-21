@@ -7488,6 +7488,7 @@ static void test_read_tool(test_state *state) {
   char hidden_path[PATH_MAX];
   char utf8_path[PATH_MAX];
   char cr_path[PATH_MAX];
+  char crlf_boundary_path[PATH_MAX];
   char binary_path[PATH_MAX];
   char control_path[PATH_MAX];
   char invalid_utf8_path[PATH_MAX];
@@ -7536,6 +7537,23 @@ static void test_read_tool(test_state *state) {
   write_bytes_or_die(utf8_path, utf8_bytes, sizeof(utf8_bytes));
   snprintf(cr_path, sizeof(cr_path), "%s/sub/classic-cr.txt", dir_template);
   write_file_or_die(cr_path, "uno\rdos\rtres\r");
+  snprintf(crlf_boundary_path, sizeof(crlf_boundary_path),
+           "%s/sub/crlf-boundary.txt", dir_template);
+  {
+    FILE *fp;
+    size_t i;
+
+    fp = fopen(crlf_boundary_path, "wb");
+    if (fp == NULL) {
+      test_fail(state, "read_crlf_boundary_fixture", "failed to create file");
+    } else {
+      for (i = 0U; i < 4095U; i++) {
+        fputc('a', fp);
+      }
+      fputs("\r\nsecond\r\nthird\r\n", fp);
+      fclose(fp);
+    }
+  }
   snprintf(binary_path, sizeof(binary_path), "%s/sub/binary.bin",
            dir_template);
   write_bytes_or_die(binary_path, binary_bytes, sizeof(binary_bytes));
@@ -7752,6 +7770,23 @@ static void test_read_tool(test_state *state) {
     expect_substr(state, "read_classic_cr_line_range_truncated",
                   writer.buffer, "\"truncated\":false");
     expect_valid_json(state, "read_classic_cr_line_range_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_read_tool_case(state, "read_crlf_boundary_line_range", &config,
+                         "{\"path\":\"crlf-boundary.txt\",\"start_line\":2,"
+                         "\"end_line\":2}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "read_crlf_boundary_content", writer.buffer,
+                  "\"content\":\"second\\r\\n\"");
+    expect_substr(state, "read_crlf_boundary_start", writer.buffer,
+                  "\"start_line\":2");
+    expect_substr(state, "read_crlf_boundary_end", writer.buffer,
+                  "\"end_line\":2");
+    expect_substr(state, "read_crlf_boundary_truncated", writer.buffer,
+                  "\"truncated\":false");
+    expect_valid_json(state, "read_crlf_boundary_json", writer.buffer);
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);

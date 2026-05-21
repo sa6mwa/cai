@@ -57,3 +57,44 @@ if(pc_text MATCHES "c_pkt_systems_sha256=[^\n]+")
   message(FATAL_ERROR
     "host dependency mode should not emit a bundled c.pkt.systems checksum")
 endif()
+
+set(auto_dir "${CAI_BINARY_DIR}/auto-dependency-mode-partial-pslog")
+set(fake_prefix "${auto_dir}/fake-host")
+file(REMOVE_RECURSE "${auto_dir}")
+file(MAKE_DIRECTORY "${fake_prefix}/include" "${fake_prefix}/lib")
+file(WRITE "${fake_prefix}/include/pslog.h" "/* fake pslog header */\n")
+file(WRITE "${fake_prefix}/include/lonejson.h" "/* fake lonejson header */\n")
+file(WRITE "${fake_prefix}/lib/liblonejson.a" "")
+
+set(auto_configure_command
+  "${CMAKE_COMMAND}"
+  -S "${CAI_SOURCE_DIR}"
+  -B "${auto_dir}"
+  -DCAI_BUILD_STATIC=OFF
+  -DCAI_BUILD_SHARED=ON
+  -DCAI_BUILD_TESTS=OFF
+  -DCAI_BUILD_INTEGRATION_TESTS=OFF
+  -DCAI_BUILD_EXAMPLES=ON
+  -DCAI_BUILD_LUA=OFF
+  -DCAI_BUILD_FUZZERS=OFF
+  -DCAI_INSTALL=ON
+  -DCAI_DEPENDENCY_MODE=auto
+  -DCAI_TARGET_ID=x86_64-linux-gnu
+  "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
+  "-DCMAKE_INCLUDE_PATH=${fake_prefix}/include"
+  "-DCMAKE_LIBRARY_PATH=${fake_prefix}/lib")
+if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
+  list(APPEND auto_configure_command -G "${CAI_GENERATOR}")
+endif()
+
+execute_process(
+  COMMAND ${auto_configure_command}
+  RESULT_VARIABLE auto_configure_result
+  OUTPUT_VARIABLE auto_configure_output
+  ERROR_VARIABLE auto_configure_error)
+if(NOT auto_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "auto dependency mode should fall back to cpkt when pslog.h exists "
+    "without a linkable libpslog:\n${auto_configure_error}\n"
+    "${auto_configure_output}")
+endif()
