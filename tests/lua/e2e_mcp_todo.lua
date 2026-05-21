@@ -94,7 +94,7 @@ response, body = mcp_request(handler,
 assert_status("help", response, 200)
 assert_contains("help", body, "current_work")
 assert_contains("help", body, "wip_limit_exceeded")
-assert_contains("help", body, "Always use returned board_id/item_id")
+assert_contains("help", body, "Always use returned board_id/board_key/item_id")
 
 response, body = mcp_request(handler,
   '{"jsonrpc":"2.0","id":"board","method":"tools/call","params":{"name":"todo_kanban","arguments":{"operation":"create_board","board_name":"main","wip_limit":1}}}')

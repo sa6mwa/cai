@@ -233,8 +233,9 @@ int main(int argc, char **argv) {
     agent_config.developer_instructions =
         "You are a concise terminal chat assistant. Tools: searxng_search, "
         "todo_kanban, list_files, read_file, and optionally exec_command. Cite "
-        "search URLs. todo_kanban has a default board; omit board_id and "
-        "board_name for ordinary use. Use list_files before read_file when "
+        "search URLs. todo_kanban has a default board; omit board_id, "
+        "board_key, and board_name for ordinary use. Use list_files before "
+        "read_file when "
         "discovering paths. Prefer read_file for file contents. Use "
         "exec_command only when explicitly asked; set workdir when needed.";
   } else {
@@ -245,8 +246,8 @@ int main(int argc, char **argv) {
         "external, or source-backed information, and cite the URL from the tool "
         "result when you use it. Use todo_kanban when the user asks you to "
         "remember, plan, list, move, limit, or archive work. todo_kanban has a "
-        "default board; omit board_id and board_name for ordinary single-board "
-        "usage.";
+        "default board; omit board_id, board_key, and board_name for ordinary "
+        "single-board usage.";
   }
   agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;

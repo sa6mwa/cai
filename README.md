@@ -675,10 +675,15 @@ including `<cai/tools/todo.h>` and calling `cai_agent_register_todo_tool` or
 tool description and JSON schema include agent-facing usage guidance, operation
 enums, field descriptions, and WIP-limit semantics. Agents can call
 `operation=help` when they need an in-band reminder of the workflow.
-When `board_id` and `board_name` are omitted, the tool uses the configured
-default board and lazily creates it if needed. This means an agent can add an
-item with just `operation=add_item` and `title=...` in the common single-board
-case. `list_boards` returns board records in a `boards` array with
+When `board_id`, `board_key`, and `board_name` are omitted, the tool uses the
+configured default board and lazily creates it if needed. The default board key
+is `DEF`; other board keys are derived from board names unless `create_board`
+is called with an explicit unique `board_key`. Calling `create_board` for an
+existing board with a new unique `board_key` updates that board key. Item
+sequence numbers are never caller-settable. `add_item` allocates a readable
+public item reference from the board key and next sequence, for example
+`DEF-001`, `DEF-087`, or `OPS-194`, while cai keeps its opaque internal ID in
+storage. `list_boards` returns board records in a `boards` array with
 `board_count`; item-listing operations return work records in an `items` array
 with `item_count`.
 

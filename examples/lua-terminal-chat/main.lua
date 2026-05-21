@@ -105,7 +105,7 @@ local instructions =
   "or source-backed information and cite URLs from tool results. Use " ..
   "todo_kanban when the user asks you to remember, plan, list, move, " ..
   "limit, or archive work. todo_kanban has a default board; omit " ..
-  "board_id and board_name for ordinary single-board usage."
+  "board_id, board_key, and board_name for ordinary single-board usage."
 
 if exec_tool_dir or read_tool_dir then
   instructions =
@@ -118,7 +118,7 @@ if exec_tool_dir or read_tool_dir then
     "search for current, external, or source-backed information and cite " ..
     "URLs from tool results. Use todo_kanban when the user asks you to " ..
     "remember, plan, list, move, limit, or archive work. todo_kanban has " ..
-    "a default board; omit board_id and board_name for ordinary " ..
+    "a default board; omit board_id, board_key, and board_name for ordinary " ..
     "single-board usage. Use list_files before read_file when discovering " ..
     "paths. Prefer read_file over exec_command when the user " ..
     "asks to inspect file contents. Use exec_command only when the user explicitly " ..

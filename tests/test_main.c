@@ -8716,6 +8716,7 @@ static void test_todo_tool(test_state *state) {
   cai_error error;
   char item_id[64];
   char board_id[64];
+  char default_item_id[64];
   char second_item_id[64];
   char third_item_id[64];
   char store_text[4096];
@@ -8733,6 +8734,7 @@ static void test_todo_tool(test_state *state) {
   writer.closed = 0;
   item_id[0] = '\0';
   board_id[0] = '\0';
+  default_item_id[0] = '\0';
   second_item_id[0] = '\0';
   third_item_id[0] = '\0';
   if (mkdtemp(dir_template) == NULL) {
@@ -8773,13 +8775,15 @@ static void test_todo_tool(test_state *state) {
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "default board always exists") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
-             "Opaque item ID") == NULL ||
+             "Readable board-key sequence reference") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "default board key is DEF") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "\"enum\":[\"todo\",\"in_process\"]") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
-             "\"required\":[\"operation\",\"board_id\",\"board_name\","
-             "\"item_id\",\"title\",\"description\",\"status\","
-             "\"wip_limit\"]") == NULL ||
+             "\"required\":[\"operation\",\"board_id\",\"board_key\","
+             "\"board_name\",\"item_id\",\"title\",\"description\","
+             "\"status\",\"wip_limit\"]") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "\"board_id\":{\"anyOf\"") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
@@ -8802,6 +8806,7 @@ static void test_todo_tool(test_state *state) {
       strstr(writer.buffer, "boards listed") == NULL ||
       strstr(writer.buffer, "\"boards\":[") == NULL ||
       strstr(writer.buffer, "\"name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"key\":\"DEF\"") == NULL ||
       strstr(writer.buffer, "\"board_count\":1") == NULL ||
       strstr(writer.buffer, "\"items\"") != NULL) {
     test_fail(state, "todo_list_boards_strict_null_output",
@@ -8835,6 +8840,7 @@ static void test_todo_tool(test_state *state) {
         strstr(writer.buffer, "boards listed") == NULL ||
         strstr(writer.buffer, "\"boards\":[") == NULL ||
         strstr(writer.buffer, "\"name\":\"main\"") == NULL ||
+        strstr(writer.buffer, "\"key\":\"DEF\"") == NULL ||
         strstr(writer.buffer, "\"board_count\":1") == NULL ||
         strstr(writer.buffer, "\"items\"") != NULL) {
       test_fail(state, "todo_spooled_list_boards_strict_null_output",
@@ -8869,7 +8875,8 @@ static void test_todo_tool(test_state *state) {
       strstr(writer.buffer, "current_work") == NULL ||
       strstr(writer.buffer, "default board always exists") == NULL ||
       strstr(writer.buffer, "wip_limit_exceeded") == NULL ||
-      strstr(writer.buffer, "Always use returned board_id/item_id") == NULL) {
+      strstr(writer.buffer,
+             "Always use returned board_id/board_key/item_id") == NULL) {
     test_fail(state, "todo_help_output",
               "todo help operation did not return usage guidance");
   }
@@ -8883,7 +8890,8 @@ static void test_todo_tool(test_state *state) {
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
-      strstr(writer.buffer, "\"board_id\"") == NULL) {
+      strstr(writer.buffer, "\"board_id\"") == NULL ||
+      strstr(writer.buffer, "\"board_key\":\"DEF\"") == NULL) {
     test_fail(state, "todo_create_board_output",
               "create_board did not return structured success");
   }
@@ -8907,9 +8915,17 @@ static void test_todo_tool(test_state *state) {
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
       strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"board_key\":\"DEF\"") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"DEF-001\"") == NULL ||
       strstr(writer.buffer, "\"item_id\"") == NULL) {
     test_fail(state, "todo_add_default_board_item_output",
               "add_item without board should use the default board");
+  }
+  if (!extract_json_string_field(writer.buffer, "item_id", default_item_id,
+                                 sizeof(default_item_id)) ||
+      strcmp(default_item_id, "DEF-001") != 0) {
+    test_fail(state, "todo_default_item_id",
+              "default board first item did not use DEF-001");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -8922,7 +8938,8 @@ static void test_todo_tool(test_state *state) {
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
-      strstr(writer.buffer, "\"item_id\"") == NULL) {
+      strstr(writer.buffer, "\"board_key\":\"DEF\"") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"DEF-002\"") == NULL) {
     test_fail(state, "todo_add_item_output",
               "add_item did not return structured success");
   }
@@ -8959,6 +8976,7 @@ static void test_todo_tool(test_state *state) {
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"items\"") == NULL ||
+      strstr(writer.buffer, "\"id\":\"DEF-002\"") == NULL ||
       strstr(writer.buffer, "first task") == NULL ||
       strstr(writer.buffer, "\"in_process\"") == NULL) {
     test_fail(state, "todo_list_board_output",
@@ -9002,6 +9020,9 @@ static void test_todo_tool(test_state *state) {
   if (!extract_json_string_field(writer.buffer, "item_id", second_item_id,
                                  sizeof(second_item_id))) {
     test_fail(state, "todo_second_item_id", "failed to capture second item id");
+  } else if (strcmp(second_item_id, "DEF-003") != 0) {
+    test_fail(state, "todo_second_item_sequence",
+              "item sequence should not reuse completed item refs");
   }
   if (!read_text_file(store_path, store_text, sizeof(store_text))) {
     test_fail(state, "todo_store_read", "failed to read todo store");
@@ -9042,6 +9063,9 @@ static void test_todo_tool(test_state *state) {
                                  sizeof(third_item_id))) {
     test_fail(state, "todo_add_third_output",
               "third in-process item was not accepted");
+  } else if (strcmp(third_item_id, "DEF-004") != 0) {
+    test_fail(state, "todo_third_item_sequence",
+              "third in-process item did not use the next board sequence");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -9143,6 +9167,75 @@ static void test_todo_tool(test_state *state) {
                                    "\"board_name\":\"aux\"}",
                                    sink, &error),
              CAI_OK);
+  if (strstr(writer.buffer, "\"board_key\":\"AUX\"") == NULL) {
+    test_fail(state, "todo_create_aux_board_key",
+              "aux board did not derive expected board key");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_add_aux_item",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_key\":\"AUX\","
+                                   "\"title\":\"aux task\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"item_id\":\"AUX-001\"") == NULL) {
+    test_fail(state, "todo_add_aux_item_output",
+              "aux board item did not use AUX-001");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_duplicate_board_key",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"defiant\","
+                                   "\"board_key\":\"DEF\"}",
+                                   sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_update_board_key",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"aux\","
+                                   "\"board_key\":\"AX\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"board_key\":\"AX\"") == NULL) {
+    test_fail(state, "todo_update_board_key_output",
+              "create_board did not update an existing board key");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_set_wip_by_board_key",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"set_wip_limit\","
+                                   "\"board_key\":\"AX\","
+                                   "\"wip_limit\":2}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"wip_limit\":2") == NULL) {
+    test_fail(state, "todo_set_wip_by_board_key_output",
+              "set_wip_limit did not match board_key");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_list_updated_board_key",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"board_key\":\"AX\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"id\":\"AX-001\"") == NULL ||
+      strstr(writer.buffer, "\"board_key\":\"AX\"") == NULL ||
+      strstr(writer.buffer, "AUX-001") != NULL) {
+    test_fail(state, "todo_updated_board_key_items",
+              "board key update did not rewrite existing item refs");
+  }
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(state, "todo_create_ops_board",
@@ -9167,6 +9260,93 @@ static void test_todo_tool(test_state *state) {
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
+  expect_int(state, "todo_create_normalized_board_key",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"qa\","
+                                   "\"board_key\":\"qa-1\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"board_key\":\"QA1\"") == NULL) {
+    test_fail(state, "todo_create_normalized_board_key_output",
+              "explicit board_key was not normalized");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_lookup_normalized_board_key",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"set_wip_limit\","
+                                   "\"board_key\":\"qa-1\","
+                                   "\"wip_limit\":1}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"wip_limit\":1") == NULL) {
+    test_fail(state, "todo_lookup_normalized_board_key_output",
+              "board_key lookup did not normalize caller input");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  write_file_or_die(store_path,
+                    "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}");
+  expect_int(state, "todo_auto_key_reserves_def",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"defiant\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"board_key\":\"DEF\"") != NULL ||
+      strstr(writer.buffer, "\"board_key\":\"DEFI\"") == NULL) {
+    test_fail(state, "todo_auto_key_reserves_def_output",
+              "non-default board should not auto-claim DEF");
+  }
+  if (!extract_json_string_field(writer.buffer, "board_id", board_id,
+                                 sizeof(board_id))) {
+    test_fail(state, "todo_auto_key_board_id",
+              "failed to capture defiant board id");
+  }
+  if (board_id[0] != '\0') {
+    snprintf(todo_args, sizeof(todo_args),
+             "{\"operation\":\"create_board\",\"board_id\":\"%s\","
+             "\"board_key\":\"dx\"}",
+             board_id);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_update_key_by_board_id",
+               cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                     todo_args, sink, &error),
+               CAI_OK);
+    if (strstr(writer.buffer, "\"board_key\":\"DX\"") == NULL) {
+      test_fail(state, "todo_update_key_by_board_id_output",
+                "create_board did not honor board_id as update target");
+    }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_create_key_only_missing",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_key\":\"OPS\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"board_not_found\"") == NULL) {
+    test_fail(state, "todo_create_key_only_missing_output",
+              "create_board with only an unknown key should not target default");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_explicit_def_reserved",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"create_board\","
+                                   "\"board_name\":\"other\","
+                                   "\"board_key\":\"DEF\"}",
+                                   sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
   expect_int(state, "todo_unknown_operation",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"explode\"}", sink,
@@ -9187,6 +9367,83 @@ static void test_todo_tool(test_state *state) {
              CAI_ERR_PROTOCOL);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  write_file_or_die(
+      store_path,
+      "{\"version\":1,\"boards\":[{\"id\":\"legacy-board\",\"name\":\"main\"},"
+      "{\"id\":\"legacy-aux-board\",\"name\":\"aux\"}],\"items\":["
+      "{\"id\":\"legacy-active\",\"board_id\":\"legacy-board\","
+      "\"board_name\":\"main\",\"status\":\"todo\","
+      "\"title\":\"legacy active\",\"description\":\"\"},"
+      "{\"id\":\"legacy-aux-active\",\"board_id\":\"legacy-aux-board\","
+      "\"board_name\":\"aux\",\"status\":\"todo\",\"title\":\"legacy aux\","
+      "\"description\":\"\"}],\"done\":[{\"id\":\"legacy-done\","
+      "\"board_id\":\"legacy-board\",\"board_name\":\"main\","
+      "\"status\":\"done\",\"title\":\"legacy done\",\"description\":\"\"}]}");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_legacy_backfill_list",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\"}", sink,
+                                   &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"id\":\"DEF-001\"") == NULL ||
+      strstr(writer.buffer, "legacy-active") != NULL) {
+    test_fail(state, "todo_legacy_backfill_list_output",
+              "legacy active item did not receive a public DEF ref");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_legacy_opaque_move_returns_public_ref",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"move_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"item_id\":\"legacy-active\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"item_id\":\"DEF-001\"") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"legacy-active\"") != NULL) {
+    test_fail(state, "todo_legacy_opaque_move_returns_public_ref_output",
+              "move_item should return the canonical public item ref");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_legacy_backfill_next_sequence",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"title\":\"after legacy\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"item_id\":\"DEF-003\"") == NULL) {
+    test_fail(state, "todo_legacy_backfill_next_sequence_output",
+              "legacy done item was not counted in the next sequence");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_legacy_non_default_list",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"board_name\":\"aux\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"id\":\"AUX-001\"") == NULL ||
+      strstr(writer.buffer, "legacy-aux-active") != NULL) {
+    test_fail(state, "todo_legacy_non_default_list_output",
+              "legacy non-default board did not backfill item refs");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_legacy_non_default_add",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"add_item\","
+                                   "\"board_name\":\"aux\","
+                                   "\"title\":\"after legacy aux\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"item_id\":\"AUX-002\"") == NULL) {
+    test_fail(state, "todo_legacy_non_default_add_output",
+              "legacy non-default board did not continue its sequence");
+  }
   {
     static const mcp_header_pair mcp_headers[] = {
         {"content-type", "application/json"},
@@ -9354,6 +9611,9 @@ static void test_todo_callback_store(test_state *state) {
   if (!extract_json_string_field(writer.buffer, "item_id", item_id,
                                  sizeof(item_id))) {
     test_fail(state, "todo_callback_item_id", "failed to capture item id");
+  } else if (strcmp(item_id, "DEF-001") != 0) {
+    test_fail(state, "todo_callback_item_ref",
+              "callback store default board item did not use DEF-001");
   }
   if (item_id[0] != '\0') {
     snprintf(args, sizeof(args),

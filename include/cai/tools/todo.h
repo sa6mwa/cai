@@ -52,7 +52,12 @@ typedef struct cai_todo_tool_config {
   const char *store_path;
   /** File-backed lock path, or NULL for the cai config default. */
   const char *lock_path;
-  /** Optional default board name for frictionless add/list operations. */
+  /** Optional default board name for frictionless add/list operations.
+   *
+   * The default board uses the public key `DEF`; item references are assigned
+   * as board-key sequence values such as `DEF-001`. Sequence numbers are owned
+   * by cai and cannot be supplied by callers.
+   */
   const char *default_board;
   /** Maximum title size in bytes; zero uses the preset default. */
   size_t max_title_bytes;
