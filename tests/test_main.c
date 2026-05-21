@@ -7972,6 +7972,7 @@ static void test_exec_tool(test_state *state) {
   char marker_path[PATH_MAX];
   char custom_shell_path[PATH_MAX];
   char fake_bwrap_path[PATH_MAX];
+  char deep_dirs[40][PATH_MAX];
   const char *saved_path;
   char *saved_path_copy;
   cai_exec_tool_config config;
@@ -7979,7 +7980,11 @@ static void test_exec_tool(test_state *state) {
   cai_error error;
   cai_tool_registry *registry;
   FILE *alpha_file;
+  size_t deep_count;
+  size_t deep_i;
+  int n;
 
+  deep_count = 0U;
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "exec_mkdtemp", "mkdtemp failed");
     return;
@@ -8079,6 +8084,43 @@ static void test_exec_tool(test_state *state) {
     expect_substr(state, "exec_success_sandbox", writer.buffer,
                   "\"sandbox\":\"bwrap\"");
     expect_valid_json(state, "exec_success_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (access("/bin/true", X_OK) == 0) {
+    strcpy(deep_dirs[0], dir_template);
+    deep_count = 0U;
+    for (deep_i = 0U; deep_i < sizeof(deep_dirs) / sizeof(deep_dirs[0]);
+         deep_i++) {
+      n = snprintf(deep_dirs[deep_i], sizeof(deep_dirs[deep_i]), "%s/d%02lu",
+                   deep_i == 0U ? dir_template : deep_dirs[deep_i - 1U],
+                   (unsigned long)deep_i);
+      if (n < 0 || (size_t)n >= sizeof(deep_dirs[deep_i]) ||
+          mkdir(deep_dirs[deep_i], 0700) != 0) {
+        test_fail(state, "exec_deep_root_fixture",
+                  "failed to create deep sandbox root");
+        break;
+      }
+      deep_count++;
+    }
+    if (deep_count == sizeof(deep_dirs) / sizeof(deep_dirs[0])) {
+      config.root_path = deep_dirs[deep_count - 1U];
+      config.default_workdir = deep_dirs[deep_count - 1U];
+      config.bwrap_path = "/bin/true";
+      run_exec_tool_case(state, "exec_reject_oversize_bwrap_argv", &config,
+                         "{\"cmd\":\"printf should-not-run\"}",
+                         CAI_ERR_INVALID, &writer, &error);
+      if (error.message == NULL ||
+          strstr(error.message, "bubblewrap argument list is too large") ==
+              NULL) {
+        test_fail(state, "exec_reject_oversize_bwrap_argv_message",
+                  "oversize bubblewrap setup did not return actionable error");
+      }
+      config.root_path = dir_template;
+      config.default_workdir = dir_template;
+      config.bwrap_path = NULL;
+    }
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
@@ -8444,6 +8486,10 @@ static void test_exec_tool(test_state *state) {
   snprintf(alpha_path, sizeof(alpha_path), "%s/archive.tar", dir_template);
   unlink(alpha_path);
   unlink(marker_path);
+  while (deep_count > 0U) {
+    deep_count--;
+    rmdir(deep_dirs[deep_count]);
+  }
   rmdir(child_tests_dir);
   rmdir(child_dir);
   rmdir(dir_template);

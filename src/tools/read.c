@@ -307,6 +307,14 @@ static int cai_read_fd_realpath(int fd, char **resolved_path, cai_error *error) 
                                "failed to allocate opened path", error);
 }
 
+static int cai_read_fd_verification_supported(void) {
+#if defined(__linux__) || defined(__APPLE__)
+  return 1;
+#else
+  return 0;
+#endif
+}
+
 static int cai_read_open_file_under_root(const cai_read_context *ctx,
                                          const char *request_path, int *out_fd,
                                          char **out_resolved_path,
@@ -1227,6 +1235,11 @@ int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
   int rc;
 
   ctx = NULL;
+  if (!cai_read_fd_verification_supported()) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "read_file requires opened file path verification on this platform");
+  }
   rc = cai_read_context_new(config, &ctx, error);
   if (rc != CAI_OK) {
     return rc;

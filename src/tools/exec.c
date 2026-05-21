@@ -641,44 +641,52 @@ static void cai_exec_cgroup_cleanup(cai_exec_cgroup *cgroup) {
   }
 }
 
-static void cai_exec_bwrap_arg(const char **argv, size_t *i, size_t cap,
-                               const char *arg) {
-  if (*i + 1U < cap) {
-    argv[*i] = arg;
-    (*i)++;
+static int cai_exec_bwrap_arg(const char **argv, size_t *i, size_t cap,
+                              const char *arg) {
+  if (*i + 1U >= cap) {
+    return -1;
   }
+  argv[*i] = arg;
+  (*i)++;
+  return 0;
 }
 
-static void cai_exec_bwrap_bind_if_exists(const char **argv, size_t *i,
-                                          size_t cap, const char *flag,
-                                          const char *path) {
+static int cai_exec_bwrap_bind_if_exists(const char **argv, size_t *i,
+                                         size_t cap, const char *flag,
+                                         const char *path) {
   if (path != NULL && access(path, F_OK) == 0) {
-    cai_exec_bwrap_arg(argv, i, cap, flag);
-    cai_exec_bwrap_arg(argv, i, cap, path);
-    cai_exec_bwrap_arg(argv, i, cap, path);
+    if (cai_exec_bwrap_arg(argv, i, cap, flag) != 0 ||
+        cai_exec_bwrap_arg(argv, i, cap, path) != 0 ||
+        cai_exec_bwrap_arg(argv, i, cap, path) != 0) {
+      return -1;
+    }
   }
+  return 0;
 }
 
-static void cai_exec_bwrap_bind_file_if_exists(const char **argv, size_t *i,
-                                               size_t cap, const char *path) {
+static int cai_exec_bwrap_bind_file_if_exists(const char **argv, size_t *i,
+                                              size_t cap, const char *path) {
   if (path != NULL && access(path, F_OK) == 0) {
-    cai_exec_bwrap_arg(argv, i, cap, "--ro-bind");
-    cai_exec_bwrap_arg(argv, i, cap, path);
-    cai_exec_bwrap_arg(argv, i, cap, path);
+    if (cai_exec_bwrap_arg(argv, i, cap, "--ro-bind") != 0 ||
+        cai_exec_bwrap_arg(argv, i, cap, path) != 0 ||
+        cai_exec_bwrap_arg(argv, i, cap, path) != 0) {
+      return -1;
+    }
   }
+  return 0;
 }
 
-static void cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
-                                       size_t cap, const char *path,
-                                       char dirs[][PATH_MAX],
-                                       size_t *dir_count, size_t dir_cap) {
+static int cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
+                                      size_t cap, const char *path,
+                                      char dirs[][PATH_MAX],
+                                      size_t *dir_count, size_t dir_cap) {
   char current[PATH_MAX];
   const char *cursor;
   const char *slash;
   size_t len;
 
   if (path == NULL || path[0] != '/') {
-    return;
+    return 0;
   }
   cursor = path + 1;
   while (*cursor != '\0') {
@@ -692,14 +700,20 @@ static void cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
     }
     memcpy(current, path, len);
     current[len] = '\0';
-    if (strcmp(current, "/") != 0 && *dir_count < dir_cap) {
+    if (strcmp(current, "/") != 0) {
+      if (*dir_count >= dir_cap) {
+        return -1;
+      }
       strcpy(dirs[*dir_count], current);
-      cai_exec_bwrap_arg(argv, i, cap, "--dir");
-      cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]);
+      if (cai_exec_bwrap_arg(argv, i, cap, "--dir") != 0 ||
+          cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]) != 0) {
+        return -1;
+      }
       (*dir_count)++;
     }
     cursor = slash + 1;
   }
+  return 0;
 }
 
 static int cai_exec_path_is_under_mount(const char *path) {
@@ -789,37 +803,47 @@ static int cai_exec_bwrap_bind_custom_shell_prefix(
       *dir_count >= dir_cap) {
     return 0;
   }
-  cai_exec_bwrap_parent_dirs(argv, i, cap, prefix, dirs, dir_count, dir_cap);
+  if (cai_exec_bwrap_parent_dirs(argv, i, cap, prefix, dirs, dir_count,
+                                 dir_cap) != 0) {
+    return -1;
+  }
   if (*dir_count >= dir_cap) {
-    return 0;
+    return -1;
   }
   strcpy(dirs[*dir_count], prefix);
-  cai_exec_bwrap_arg(argv, i, cap, "--ro-bind");
-  cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]);
-  cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]);
+  if (cai_exec_bwrap_arg(argv, i, cap, "--ro-bind") != 0 ||
+      cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]) != 0 ||
+      cai_exec_bwrap_arg(argv, i, cap, dirs[*dir_count]) != 0) {
+    return -1;
+  }
   (*dir_count)++;
   return 1;
 }
 
-static void cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
-                                             const char **argv, size_t *i,
-                                             size_t cap,
-                                             const char *shell_path,
-                                             char dirs[][PATH_MAX],
-                                             size_t *dir_count,
-                                             size_t dir_cap) {
+static int cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
+                                            const char **argv, size_t *i,
+                                            size_t cap,
+                                            const char *shell_path,
+                                            char dirs[][PATH_MAX],
+                                            size_t *dir_count,
+                                            size_t dir_cap) {
+  int prefix_result;
+
   if (shell_path == NULL || shell_path[0] != '/' ||
       cai_exec_path_is_under_root(ctx->root_path, shell_path) ||
       cai_exec_path_is_under_mount(shell_path)) {
-    return;
+    return 0;
   }
-  if (cai_exec_bwrap_bind_custom_shell_prefix(ctx, argv, i, cap, shell_path,
-                                              dirs, dir_count, dir_cap)) {
-    return;
+  prefix_result = cai_exec_bwrap_bind_custom_shell_prefix(
+      ctx, argv, i, cap, shell_path, dirs, dir_count, dir_cap);
+  if (prefix_result != 0) {
+    return prefix_result < 0 ? -1 : 0;
   }
-  cai_exec_bwrap_parent_dirs(argv, i, cap, shell_path, dirs, dir_count,
-                             dir_cap);
-  cai_exec_bwrap_bind_file_if_exists(argv, i, cap, shell_path);
+  if (cai_exec_bwrap_parent_dirs(argv, i, cap, shell_path, dirs, dir_count,
+                                 dir_cap) != 0) {
+    return -1;
+  }
+  return cai_exec_bwrap_bind_file_if_exists(argv, i, cap, shell_path);
 }
 
 static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
@@ -832,84 +856,101 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
                                      size_t *dir_count, size_t dir_cap) {
   size_t i;
 
+#define CAI_EXEC_BWRAP_ADD(arg_)                                             \
+  do {                                                                       \
+    if (cai_exec_bwrap_arg(argv, &i, argv_cap, (arg_)) != 0) {                \
+      return -1;                                                             \
+    }                                                                        \
+  } while (0)
+
   if (argv_cap < 48U) {
     return -1;
   }
   i = 0U;
   *dir_count = 0U;
-  cai_exec_bwrap_arg(argv, &i, argv_cap, bwrap_path);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--die-with-parent");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--new-session");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-pid");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-ipc");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-uts");
+  CAI_EXEC_BWRAP_ADD(bwrap_path);
+  CAI_EXEC_BWRAP_ADD("--die-with-parent");
+  CAI_EXEC_BWRAP_ADD("--new-session");
+  CAI_EXEC_BWRAP_ADD("--unshare-pid");
+  CAI_EXEC_BWRAP_ADD("--unshare-ipc");
+  CAI_EXEC_BWRAP_ADD("--unshare-uts");
   if (!ctx->allow_network) {
-    cai_exec_bwrap_arg(argv, &i, argv_cap, "--unshare-net");
+    CAI_EXEC_BWRAP_ADD("--unshare-net");
   }
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--clearenv");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "PATH");
-  cai_exec_bwrap_arg(argv, &i, argv_cap,
-                     cai_exec_bwrap_path_env(ctx, shell_path, dirs, dir_count,
+  CAI_EXEC_BWRAP_ADD("--clearenv");
+  CAI_EXEC_BWRAP_ADD("--setenv");
+  CAI_EXEC_BWRAP_ADD("PATH");
+  CAI_EXEC_BWRAP_ADD(cai_exec_bwrap_path_env(ctx, shell_path, dirs, dir_count,
                                              dir_cap));
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "HOME");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "TMPDIR");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/tmp");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "LANG");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "C");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--dev");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/dev");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--proc");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/proc");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--tmpfs");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/tmp");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--dir");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/var");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--tmpfs");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/var/tmp");
-  cai_exec_bwrap_parent_dirs(argv, &i, argv_cap, ctx->root_path, dirs,
-                             dir_count, dir_cap);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--bind");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
-  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/usr");
-  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/bin");
-  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib");
-  cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib64");
-  cai_exec_bwrap_bind_custom_shell(ctx, argv, &i, argv_cap, shell_path, dirs,
-                                   dir_count, dir_cap);
-  if (access("/etc/ld.so.cache", F_OK) == 0 || ctx->allow_network) {
-    cai_exec_bwrap_arg(argv, &i, argv_cap, "--dir");
-    cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc");
-  }
-  if (access("/etc/ld.so.cache", F_OK) == 0) {
-    cai_exec_bwrap_arg(argv, &i, argv_cap, "--ro-bind");
-    cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc/ld.so.cache");
-    cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc/ld.so.cache");
-  }
-  if (ctx->allow_network) {
-    cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap,
-                                       "/etc/resolv.conf");
-    cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap,
-                                       "/etc/nsswitch.conf");
-    cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap, "/etc/hosts");
-    cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/etc/ssl");
-    cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/etc/pki");
-  }
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--chdir");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, workdir);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "--");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, shell_path);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, login_shell ? "-lc" : "-c");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, cmd);
-  argv[i] = NULL;
-  if (i + 1U >= argv_cap) {
+  CAI_EXEC_BWRAP_ADD("--setenv");
+  CAI_EXEC_BWRAP_ADD("HOME");
+  CAI_EXEC_BWRAP_ADD(ctx->root_path);
+  CAI_EXEC_BWRAP_ADD("--setenv");
+  CAI_EXEC_BWRAP_ADD("TMPDIR");
+  CAI_EXEC_BWRAP_ADD("/tmp");
+  CAI_EXEC_BWRAP_ADD("--setenv");
+  CAI_EXEC_BWRAP_ADD("LANG");
+  CAI_EXEC_BWRAP_ADD("C");
+  CAI_EXEC_BWRAP_ADD("--dev");
+  CAI_EXEC_BWRAP_ADD("/dev");
+  CAI_EXEC_BWRAP_ADD("--proc");
+  CAI_EXEC_BWRAP_ADD("/proc");
+  CAI_EXEC_BWRAP_ADD("--tmpfs");
+  CAI_EXEC_BWRAP_ADD("/tmp");
+  CAI_EXEC_BWRAP_ADD("--dir");
+  CAI_EXEC_BWRAP_ADD("/var");
+  CAI_EXEC_BWRAP_ADD("--tmpfs");
+  CAI_EXEC_BWRAP_ADD("/var/tmp");
+  if (cai_exec_bwrap_parent_dirs(argv, &i, argv_cap, ctx->root_path, dirs,
+                                 dir_count, dir_cap) != 0) {
     return -1;
   }
+  CAI_EXEC_BWRAP_ADD("--bind");
+  CAI_EXEC_BWRAP_ADD(ctx->root_path);
+  CAI_EXEC_BWRAP_ADD(ctx->root_path);
+  if (cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/usr") !=
+          0 ||
+      cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/bin") !=
+          0 ||
+      cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib") !=
+          0 ||
+      cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind",
+                                    "/lib64") != 0 ||
+      cai_exec_bwrap_bind_custom_shell(ctx, argv, &i, argv_cap, shell_path,
+                                       dirs, dir_count, dir_cap) != 0) {
+    return -1;
+  }
+  if (access("/etc/ld.so.cache", F_OK) == 0 || ctx->allow_network) {
+    CAI_EXEC_BWRAP_ADD("--dir");
+    CAI_EXEC_BWRAP_ADD("/etc");
+  }
+  if (access("/etc/ld.so.cache", F_OK) == 0) {
+    CAI_EXEC_BWRAP_ADD("--ro-bind");
+    CAI_EXEC_BWRAP_ADD("/etc/ld.so.cache");
+    CAI_EXEC_BWRAP_ADD("/etc/ld.so.cache");
+  }
+  if (ctx->allow_network) {
+    if (cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap,
+                                           "/etc/resolv.conf") != 0 ||
+        cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap,
+                                           "/etc/nsswitch.conf") != 0 ||
+        cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap, "/etc/hosts") !=
+            0 ||
+        cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind",
+                                      "/etc/ssl") != 0 ||
+        cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind",
+                                      "/etc/pki") != 0) {
+      return -1;
+    }
+  }
+  CAI_EXEC_BWRAP_ADD("--chdir");
+  CAI_EXEC_BWRAP_ADD(workdir);
+  CAI_EXEC_BWRAP_ADD("--");
+  CAI_EXEC_BWRAP_ADD(shell_path);
+  CAI_EXEC_BWRAP_ADD(login_shell ? "-lc" : "-c");
+  CAI_EXEC_BWRAP_ADD(cmd);
+  argv[i] = NULL;
+#undef CAI_EXEC_BWRAP_ADD
   return 0;
 }
 
@@ -1113,6 +1154,60 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
     execl(shell_path, shell_path, "-c", args->cmd, (char *)NULL);
   }
   _exit(127);
+}
+
+static int cai_exec_validate_sandbox_args(const cai_exec_context *ctx,
+                                          const cai_exec_args *args,
+                                          const char *workdir,
+                                          const char *sandbox_path,
+                                          int use_sandbox,
+                                          cai_error *error) {
+  const char *argv[96];
+  char dirs[32][PATH_MAX];
+  size_t dir_count;
+  const char *shell_path;
+
+  if (!use_sandbox) {
+    return CAI_OK;
+  }
+  shell_path = args->shell != NULL && args->shell[0] != '\0' ? args->shell
+                                                             : ctx->shell_path;
+#if defined(__linux__)
+  if (cai_exec_build_bwrap_argv(ctx, workdir, shell_path, args->cmd,
+                                sandbox_path,
+                                args->has_login && args->login &&
+                                    ctx->allow_login_shell,
+                                argv, sizeof(argv) / sizeof(argv[0]), dirs,
+                                &dir_count,
+                                sizeof(dirs) / sizeof(dirs[0])) != 0) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "exec bubblewrap argument list is too large for sandbox setup");
+  }
+  return CAI_OK;
+#elif defined(__APPLE__)
+  {
+    char sandbox_profile[8192];
+
+    (void)dirs;
+    dir_count = 0U;
+    if (cai_exec_build_sandbox_exec_argv(
+            ctx, args, shell_path, args->cmd, sandbox_path, argv,
+            sizeof(argv) / sizeof(argv[0]), sandbox_profile,
+            sizeof(sandbox_profile)) != 0) {
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "exec sandbox-exec argument list is too large for sandbox setup");
+    }
+  }
+  return CAI_OK;
+#else
+  (void)argv;
+  (void)dirs;
+  (void)dir_count;
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "exec sandbox is not implemented on this platform");
+#endif
 }
 
 static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args,
@@ -1518,6 +1613,12 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   sandbox_path[0] = '\0';
   rc = cai_exec_prepare_sandbox(ctx, sandbox_path, sizeof(sandbox_path),
                                 &use_sandbox, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, workdir);
+    return rc;
+  }
+  rc = cai_exec_validate_sandbox_args(ctx, args, workdir, sandbox_path,
+                                      use_sandbox, error);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, workdir);
     return rc;
