@@ -7759,6 +7759,7 @@ static void test_exec_tool(test_state *state) {
   char child_tests_dir[PATH_MAX];
   char alpha_path[PATH_MAX];
   char marker_path[PATH_MAX];
+  char custom_shell_path[PATH_MAX];
   cai_exec_tool_config config;
   write_state writer;
   cai_error error;
@@ -7812,6 +7813,21 @@ static void test_exec_tool(test_state *state) {
   }
   fputs("alpha\nbeta\n", alpha_file);
   fclose(alpha_file);
+  snprintf(custom_shell_path, sizeof(custom_shell_path),
+           "%s-custom-shell.sh", dir_template);
+  alpha_file = fopen(custom_shell_path, "wb");
+  if (alpha_file == NULL) {
+    test_fail(state, "exec_custom_shell_fixture", "fopen failed");
+    unlink(marker_path);
+    rmdir(child_tests_dir);
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  fputs("#!/bin/sh\nprintf custom-wrapper:\nexec /bin/sh \"$@\"\n",
+        alpha_file);
+  fclose(alpha_file);
+  chmod(custom_shell_path, 0700);
   cai_error_init(&error);
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -7871,6 +7887,18 @@ static void test_exec_tool(test_state *state) {
     config.allow_login_shell = 0;
     config.shell_path = NULL;
   }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.shell_path = custom_shell_path;
+  if (run_exec_tool_case(state, "exec_custom_shell_outside_root", &config,
+                         "{\"cmd\":\"printf ok\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    expect_substr(state, "exec_custom_shell_output", writer.buffer,
+                  "custom-wrapper:ok");
+    expect_valid_json(state, "exec_custom_shell_json", writer.buffer);
+  }
+  config.shell_path = NULL;
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
@@ -8131,6 +8159,7 @@ static void test_exec_tool(test_state *state) {
   }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
+  unlink(custom_shell_path);
   unlink(alpha_path);
   snprintf(alpha_path, sizeof(alpha_path), "%s/archive.tar", dir_template);
   unlink(alpha_path);

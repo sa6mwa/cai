@@ -108,9 +108,9 @@ endif()
 file(READ "${prefix}/lib/cmake/cai/cai-config.cmake" config_text)
 string(FIND "${config_text}" "find_dependency(CURL)" curl_dep_pos)
 string(FIND "${config_text}" "find_dependency(Threads)" threads_dep_pos)
-string(FIND "${config_text}" "find_dependency(lonejson CONFIG QUIET)"
+string(FIND "${config_text}" "find_package(lonejson CONFIG QUIET)"
        lonejson_dep_pos)
-string(FIND "${config_text}" "find_dependency(pslog CONFIG QUIET)"
+string(FIND "${config_text}" "find_package(pslog CONFIG QUIET)"
        pslog_dep_pos)
 if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1 OR
    lonejson_dep_pos EQUAL -1 OR pslog_dep_pos EQUAL -1)
@@ -294,6 +294,64 @@ int main(void) {
     RESULT_VARIABLE consumer_build_result)
   if(NOT consumer_build_result EQUAL 0)
     message(FATAL_ERROR "failed to build cai installed-package consumer")
+  endif()
+
+  set(fallback_deps_dir "${CAI_BINARY_DIR}/install-metadata-fallback-deps")
+  file(REMOVE_RECURSE "${fallback_deps_dir}")
+  file(MAKE_DIRECTORY "${fallback_deps_dir}/include" "${fallback_deps_dir}/lib")
+  file(COPY "${CAI_LONEJSON_PREFIX}/include/"
+       DESTINATION "${fallback_deps_dir}/include")
+  file(COPY "${CAI_PSLOG_PREFIX}/include/"
+       DESTINATION "${fallback_deps_dir}/include")
+  file(GLOB fallback_lonejson_libs
+       "${CAI_LONEJSON_PREFIX}/lib/liblonejson.*"
+       "${CAI_LONEJSON_PREFIX}/lib/liblonejson.so*")
+  foreach(fallback_lib IN LISTS fallback_lonejson_libs)
+    file(COPY "${fallback_lib}" DESTINATION "${fallback_deps_dir}/lib"
+         FOLLOW_SYMLINK_CHAIN)
+  endforeach()
+
+  set(fallback_consumer_dir
+      "${CAI_BINARY_DIR}/install-metadata-fallback-consumer")
+  file(REMOVE_RECURSE "${fallback_consumer_dir}")
+  file(MAKE_DIRECTORY "${fallback_consumer_dir}")
+  file(WRITE "${fallback_consumer_dir}/CMakeLists.txt"
+"cmake_minimum_required(VERSION 3.21)
+project(cai_consumer_fallback_smoke LANGUAGES C)
+find_package(cai CONFIG REQUIRED)
+add_executable(cai_consumer_fallback_smoke main.c)
+if(TARGET cai::cai_shared)
+  target_link_libraries(cai_consumer_fallback_smoke PRIVATE cai::cai_shared)
+else()
+  target_link_libraries(cai_consumer_fallback_smoke PRIVATE cai::cai_static)
+endif()
+")
+  file(WRITE "${fallback_consumer_dir}/main.c"
+"#include <cai/cai.h>
+#include <lonejson.h>
+#include <pslog.h>
+int main(void) {
+  cai_client_config config;
+  cai_client_config_init(&config);
+  return sizeof(config) == 0 ? 1 : 0;
+}
+")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -S "${fallback_consumer_dir}"
+            -B "${fallback_consumer_dir}/build"
+            -G Ninja
+            "-DCMAKE_PREFIX_PATH=${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${fallback_deps_dir}"
+    RESULT_VARIABLE fallback_consumer_configure_result)
+  if(NOT fallback_consumer_configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "failed to configure cai installed-package fallback consumer")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${fallback_consumer_dir}/build"
+    RESULT_VARIABLE fallback_consumer_build_result)
+  if(NOT fallback_consumer_build_result EQUAL 0)
+    message(FATAL_ERROR
+      "failed to build cai installed-package fallback consumer")
   endif()
 
   set(build_tree_consumer_dir "${CAI_BINARY_DIR}/build-tree-static-consumer")

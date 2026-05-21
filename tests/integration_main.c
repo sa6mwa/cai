@@ -2099,6 +2099,7 @@ static int run_exec_tool_llm_regression(void) {
   char dir_template[] = "/tmp/cai-exec-llm-e2e-XXXXXX";
   char alpha_path[PATH_MAX];
   char archive_path[PATH_MAX];
+  char hardened_path[PATH_MAX];
   char var_tmp_leak_path[PATH_MAX];
   FILE *fp;
   int rc;
@@ -2132,6 +2133,30 @@ static int run_exec_tool_llm_regression(void) {
   fputs("alpha\nbeta\n", fp);
   fclose(fp);
   fp = NULL;
+  snprintf(hardened_path, sizeof(hardened_path), "%s/hardened_check.sh",
+           dir_template);
+  fp = fopen(hardened_path, "wb");
+  if (fp == NULL) {
+    fprintf(stderr, "failed to create exec hardening fixture\n");
+    unlink(alpha_path);
+    rmdir(dir_template);
+    return 1;
+  }
+  fputs("#!/bin/sh\n"
+        "printf 'ENV:%s:%s:%s' \"${CAI_EXEC_SHOULD_NOT_LEAK-unset}\" "
+        "\"$TMPDIR\" \"$LANG\"\n"
+        "printf ' VAR='\n"
+        "if test -e /var/tmp/cai-exec-host-leak-e2e-*; then printf leak; "
+        "else printf isolated; fi\n"
+        "printf ' NET='\n"
+        "bash -lc 'cat < /dev/tcp/1.1.1.1/80 >/dev/null 2>&1 && printf open "
+        "|| printf closed'\n"
+        "printf ' PROC='\n"
+        "grep '^NSpid:' /proc/self/status\n",
+        fp);
+  fclose(fp);
+  fp = NULL;
+  chmod(hardened_path, 0700);
   snprintf(var_tmp_leak_path, sizeof(var_tmp_leak_path),
            "/var/tmp/cai-exec-host-leak-e2e-%ld", (long)getpid());
   fp = fopen(var_tmp_leak_path, "wb");
@@ -2256,15 +2281,10 @@ static int run_exec_tool_llm_regression(void) {
   event_state.outputs = 0;
   rc = cai_session_add_user_text(
       session,
-      "EXEC_TEST_3: run this shell command: printf "
-      "ENV:${CAI_EXEC_SHOULD_NOT_LEAK-unset}:$TMPDIR:$LANG; printf ' VAR='; "
-      "if test -e /var/tmp/cai-exec-host-leak-e2e-*; then printf leak; else "
-      "printf isolated; fi; printf ' NET='; bash -lc 'cat < "
-      "/dev/tcp/1.1.1.1/80 >/dev/null 2>&1 && printf open || printf closed'; "
-      "printf ' PROC='; grep '^NSpid:' /proc/self/status\n"
-      "Then answer exactly: EXEC_HARDENED env_unset=<yes/no> "
-      "var_tmp_isolated=<yes/no> network_closed=<yes/no> "
-      "proc_private=<yes/no>",
+      "EXEC_TEST_3: run sh ./hardened_check.sh\n"
+      "Answer exactly: EXEC_HARDENED env_unset=<yes/no> "
+      "var_tmp_isolated=<yes/no> network_closed=<yes/no> proc_private=<yes/no>. "
+      "VAR=isolated means var_tmp_isolated=yes.",
       &error);
   if (rc == CAI_OK) {
     rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
@@ -2305,6 +2325,7 @@ done:
   snprintf(archive_path, sizeof(archive_path), "%s/archive.tar", dir_template);
   unlink(archive_path);
   unlink(var_tmp_leak_path);
+  unlink(hardened_path);
   unlink(alpha_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);

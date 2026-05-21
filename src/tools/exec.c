@@ -726,6 +726,30 @@ static void cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
   }
 }
 
+static int cai_exec_path_is_under_mount(const char *path) {
+  return cai_exec_path_is_under_root("/usr", path) ||
+         cai_exec_path_is_under_root("/bin", path) ||
+         cai_exec_path_is_under_root("/lib", path) ||
+         cai_exec_path_is_under_root("/lib64", path);
+}
+
+static void cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
+                                             const char **argv, size_t *i,
+                                             size_t cap,
+                                             const char *shell_path,
+                                             char dirs[][PATH_MAX],
+                                             size_t *dir_count,
+                                             size_t dir_cap) {
+  if (shell_path == NULL || shell_path[0] != '/' ||
+      cai_exec_path_is_under_root(ctx->root_path, shell_path) ||
+      cai_exec_path_is_under_mount(shell_path)) {
+    return;
+  }
+  cai_exec_bwrap_parent_dirs(argv, i, cap, shell_path, dirs, dir_count,
+                             dir_cap);
+  cai_exec_bwrap_bind_file_if_exists(argv, i, cap, shell_path);
+}
+
 static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
                                      const char *workdir,
                                      const char *shell_path,
@@ -782,6 +806,8 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/bin");
   cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib");
   cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib64");
+  cai_exec_bwrap_bind_custom_shell(ctx, argv, &i, argv_cap, shell_path, dirs,
+                                   dir_count, dir_cap);
   if (access("/etc/ld.so.cache", F_OK) == 0 || ctx->allow_network) {
     cai_exec_bwrap_arg(argv, &i, argv_cap, "--dir");
     cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc");
