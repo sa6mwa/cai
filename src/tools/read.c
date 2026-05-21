@@ -316,6 +316,7 @@ static int cai_read_open_file_under_root(const cai_read_context *ctx,
   const char *open_path;
   char *resolved;
   struct stat st;
+  int open_flags;
   int fd;
   int rc;
 
@@ -339,32 +340,67 @@ static int cai_read_open_file_under_root(const cai_read_context *ctx,
     }
     open_path = candidate;
   }
-  fd = open(open_path, O_RDONLY);
+  resolved = NULL;
+  rc = cai_read_realpath_dup(open_path, &resolved, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path escapes configured root");
+  }
+  if (stat(resolved, &st) != 0) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
+                                strerror(errno));
+  }
+  if (!S_ISREG(st.st_mode)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path must be a regular file");
+  }
+  open_flags = O_RDONLY;
+#ifdef O_NONBLOCK
+  open_flags |= O_NONBLOCK;
+#endif
+  fd = open(resolved, open_flags);
   if (fd < 0) {
+    cai_free_mem(NULL, resolved);
     return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
                                 strerror(errno));
   }
   if (fstat(fd, &st) != 0) {
+    cai_free_mem(NULL, resolved);
     close(fd);
     return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
                                 strerror(errno));
   }
   if (!S_ISREG(st.st_mode)) {
+    cai_free_mem(NULL, resolved);
     close(fd);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read path must be a regular file");
   }
-  resolved = NULL;
-  rc = cai_read_fd_realpath(fd, &resolved, error);
-  if (rc != CAI_OK) {
-    close(fd);
-    return rc;
-  }
-  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
+  {
+    char *opened_resolved;
+
+    opened_resolved = NULL;
+    rc = cai_read_fd_realpath(fd, &opened_resolved, error);
+    if (rc != CAI_OK) {
+      cai_free_mem(NULL, resolved);
+      close(fd);
+      return rc;
+    }
+    if (!cai_read_path_is_under_root(ctx->root_path, opened_resolved)) {
+      cai_free_mem(NULL, resolved);
+      cai_free_mem(NULL, opened_resolved);
+      close(fd);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read path escapes configured root");
+    }
     cai_free_mem(NULL, resolved);
-    close(fd);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "read path escapes configured root");
+    resolved = opened_resolved;
   }
   *out_fd = fd;
   *out_resolved_path = resolved;
@@ -847,11 +883,6 @@ static int cai_list_scan_dir(const cai_read_context *ctx,
                                 "failed to stat list entry", strerror(errno));
       break;
     }
-    if (S_ISLNK(st.st_mode)) {
-      rc = cai_list_add_entry(ctx, out, entry->d_name, child_path, &st,
-                              max_entries, error);
-      continue;
-    }
     if (realpath(child_path, real_child) == NULL) {
       rc = cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to resolve list entry",
@@ -859,6 +890,11 @@ static int cai_list_scan_dir(const cai_read_context *ctx,
       break;
     }
     if (!cai_read_path_is_under_root(ctx->root_path, real_child)) {
+      continue;
+    }
+    if (S_ISLNK(st.st_mode)) {
+      rc = cai_list_add_entry(ctx, out, entry->d_name, child_path, &st,
+                              max_entries, error);
       continue;
     }
     rc = cai_list_add_entry(ctx, out, entry->d_name, real_child, &st,

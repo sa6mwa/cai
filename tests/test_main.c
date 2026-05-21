@@ -7355,6 +7355,7 @@ static void test_read_tool(test_state *state) {
   char control_path[PATH_MAX];
   char invalid_utf8_path[PATH_MAX];
   char outside_path[PATH_MAX];
+  char outside_fifo_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   char inside_symlink_path[PATH_MAX];
   static const unsigned char binary_bytes[] = {'t', 'e', 'x', 't', 0U, 'x'};
@@ -7408,6 +7409,12 @@ static void test_read_tool(test_state *state) {
   snprintf(outside_path, sizeof(outside_path),
            "/tmp/cai-read-outside-%ld.txt", (long)getpid());
   write_file_or_die(outside_path, "outside\n");
+  snprintf(outside_fifo_path, sizeof(outside_fifo_path),
+           "/tmp/cai-read-outside-%ld.fifo", (long)getpid());
+  unlink(outside_fifo_path);
+  if (mkfifo(outside_fifo_path, 0600) != 0) {
+    test_fail(state, "read_outside_fifo_fixture", "mkfifo failed");
+  }
   snprintf(symlink_path, sizeof(symlink_path), "%s/sub/outside-link",
            dir_template);
   if (symlink(outside_path, symlink_path) != 0) {
@@ -7469,9 +7476,15 @@ static void test_read_tool(test_state *state) {
                   "\"path\":\"sub/control.txt\"");
     expect_substr(state, "list_files_nested_dir", writer.buffer,
                   "\"type\":\"directory\"");
+    expect_substr(state, "list_files_inside_symlink", writer.buffer,
+                  "\"path\":\"sub/inside-link\"");
     if (strstr(writer.buffer, ".hidden") != NULL) {
       test_fail(state, "list_files_hidden_default",
                 "hidden file listed by default");
+    }
+    if (strstr(writer.buffer, "outside-link") != NULL) {
+      test_fail(state, "list_files_symlink_escape",
+                "escaping symlink was listed");
     }
     expect_valid_json(state, "list_files_success_json", writer.buffer);
   }
@@ -7660,6 +7673,17 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  {
+    char fifo_args[PATH_MAX + 32];
+
+    snprintf(fifo_args, sizeof(fifo_args), "{\"path\":\"%s\"}",
+             outside_fifo_path);
+    run_read_tool_case(state, "read_reject_absolute_fifo_escape", &config,
+                       fifo_args, CAI_ERR_INVALID, &writer, &error);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   run_read_tool_case(state, "read_reject_symlink_escape", &config,
                      "{\"path\":\"outside-link\"}", CAI_ERR_INVALID, &writer,
                      &error);
@@ -7759,6 +7783,7 @@ static void test_read_tool(test_state *state) {
 
   unlink(inside_symlink_path);
   unlink(symlink_path);
+  unlink(outside_fifo_path);
   unlink(outside_path);
   unlink(invalid_utf8_path);
   unlink(control_path);
@@ -8179,6 +8204,12 @@ static void test_exec_tool(test_state *state) {
   cai_error_init(&error);
 
   config.output_max_bytes = 4096U;
+  run_exec_tool_case(state, "exec_reject_pty_disabled", &config,
+                     "{\"cmd\":\"printf no-pty\",\"tty\":true}",
+                     CAI_ERR_INVALID, &writer, &error);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   config.allow_pty = 1;
   if (run_exec_tool_case(state, "exec_pty", &config,
                          "{\"cmd\":\"printf pty-ok\",\"tty\":true}", CAI_OK,

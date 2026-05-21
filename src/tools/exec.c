@@ -1103,6 +1103,8 @@ static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args
   cai_exec_set_cloexec(sync_fd[1]);
   if (args->has_tty && args->tty) {
     if (!ctx->allow_pty) {
+      cai_exec_close_fd(&sync_fd[0]);
+      cai_exec_close_fd(&sync_fd[1]);
       return cai_set_error(error, CAI_ERR_INVALID,
                            "exec tool PTY use is disabled by config");
     }
