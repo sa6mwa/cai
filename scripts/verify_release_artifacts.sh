@@ -27,6 +27,8 @@ fail() {
   exit 1
 }
 
+host_home=${HOME:-}
+
 require_file() {
   local path=$1
   [[ -f "$path" ]] || fail "missing required file: $path"
@@ -56,6 +58,50 @@ require_no_member_glob() {
     printf '%s\n' "$match" >&2
     fail "archive contains forbidden member matching: $pattern"
   fi
+}
+
+verify_listing_has_no_host_paths() {
+  local listing=$1
+  local matches
+
+  matches=$(grep -E '/home/|/Users/|/opt/|\.cache/deps' "$listing" || true)
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    fail "archive member list contains host-specific paths"
+  fi
+  matches=$(grep -F "$repo_root" "$listing" || true)
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    fail "archive member list contains repository path"
+  fi
+  if [[ -n "$host_home" ]]; then
+    matches=$(grep -F "$host_home" "$listing" || true)
+    if [[ -n "$matches" ]]; then
+      printf '%s\n' "$matches" >&2
+      fail "archive member list contains HOME path"
+    fi
+  fi
+}
+
+verify_no_private_bytes() {
+  local root_dir=$1
+  local file
+  local matches
+
+  while IFS= read -r file; do
+    if [[ -n "$host_home" ]]; then
+      matches=$(strings -a "$file" 2>/dev/null | grep -n -F "$host_home" || true)
+      if [[ -n "$matches" ]]; then
+        printf '%s:%s\n' "$file" "$matches" >&2
+        fail "artifact contains HOME path"
+      fi
+    fi
+    matches=$(strings -a "$file" 2>/dev/null | grep -n -F "$repo_root" || true)
+    if [[ -n "$matches" ]]; then
+      printf '%s:%s\n' "$file" "$matches" >&2
+      fail "artifact contains repository path"
+    fi
+  done < <(find "$root_dir" -type f -print)
 }
 
 verify_no_private_text() {
@@ -150,6 +196,40 @@ verify_linux_runpath() {
   done < <(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai.so*' -print)
 }
 
+find_otool() {
+  local tool
+
+  for tool in llvm-otool-20 llvm-otool otool; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      printf '%s\n' "$tool"
+      return 0
+    fi
+  done
+  return 1
+}
+
+verify_darwin_runpath() {
+  local root_dir=$1
+  local dylib
+  local load_commands
+  local otool
+
+  otool=$(find_otool) || fail "llvm-otool or otool is required to verify Darwin runpaths"
+  while IFS= read -r dylib; do
+    [[ -L "$dylib" ]] && continue
+    load_commands=$("$otool" -l "$dylib" 2>/dev/null || true)
+    [[ -n "$load_commands" ]] || fail "could not inspect Darwin shared library: $dylib"
+    if ! grep -A2 'LC_RPATH' <<<"$load_commands" | grep -F 'path $ORIGIN' >/dev/null; then
+      printf '%s\n' "$load_commands" >&2
+      fail "Darwin shared library does not use \$ORIGIN rpath: $dylib"
+    fi
+    if grep -E '/home/|/Users/|/opt/|\.cache/deps' <<<"$load_commands" >/dev/null; then
+      printf '%s\n' "$load_commands" >&2
+      fail "Darwin shared library has host-specific load command: $dylib"
+    fi
+  done < <(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai*.dylib' -print)
+}
+
 verify_binary_archive() {
   local archive=$1
   local root=$2
@@ -174,6 +254,8 @@ verify_binary_archive() {
   verify_no_sanitizer_artifacts "$root_dir"
   if [[ "$root" == *-linux-* ]]; then
     verify_linux_runpath "$root_dir"
+  elif [[ "$root" == *-apple-darwin ]]; then
+    verify_darwin_runpath "$root_dir"
   fi
 }
 
@@ -278,6 +360,7 @@ verify_archive() {
   trap 'rm -f "$listing"; rm -rf "$extract_root"' RETURN
 
   tar -tzf "$archive" >"$listing"
+  verify_listing_has_no_host_paths "$listing"
   verify_single_root "$archive" "$expected_root" "$listing"
   tar -xzf "$archive" -C "$extract_root"
 
@@ -288,6 +371,7 @@ verify_archive() {
   else
     verify_binary_archive "$archive" "$root" "$listing" "$extract_root"
   fi
+  verify_no_private_bytes "$extract_root"
 
   rm -f "$listing"
   rm -rf "$extract_root"
