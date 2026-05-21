@@ -506,8 +506,8 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
       PUBLIC
         $<BUILD_INTERFACE:${CAI_PUBLIC_INCLUDE_DIR}>
         $<BUILD_INTERFACE:${CAI_GENERATED_INCLUDE_DIR}>
+        $<BUILD_INTERFACE:${CAI_LONEJSON_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-    target_include_directories(${_cai_target} PRIVATE "${CAI_LONEJSON_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS}
       "${CURL_INCLUDE_DIR}")

@@ -17,7 +17,7 @@
         "CAI_BUILD_SHARED": "ON",
         "CAI_BUILD_TESTS": "ON",
         "CAI_BUILD_INTEGRATION_TESTS": "OFF",
-        "CAI_BUILD_LUA": "ON",
+        "CAI_BUILD_LUA": "OFF",
         "CAI_ENABLE_COVERAGE": "OFF",
         "CAI_INSTALL": "ON"
       }
@@ -28,6 +28,13 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "debug-lua",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_LUA": "ON"
       }
     },
     {
@@ -131,6 +138,10 @@
       "configurePreset": "debug"
     },
     {
+      "name": "debug-lua",
+      "configurePreset": "debug-lua"
+    },
+    {
       "name": "release",
       "configurePreset": "release"
     },
@@ -183,6 +194,13 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-lua",
+      "configurePreset": "debug-lua",
       "output": {
         "outputOnFailure": true
       }
