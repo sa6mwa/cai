@@ -65,14 +65,11 @@ typedef struct cai_exec_args {
   int has_login;
   long long timeout_ms;
   int has_timeout_ms;
-  long long yield_time_ms;
-  int has_yield_time_ms;
   long long max_output_tokens;
   int has_max_output_tokens;
 } cai_exec_args;
 
 typedef struct cai_exec_result {
-  char *chunk_id;
   double wall_time_seconds;
   long long exit_code;
   int has_exit_code;
@@ -126,16 +123,12 @@ static const lonejson_field cai_exec_arg_fields[] = {
                                          "login"),
     LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_exec_args, timeout_ms,
                                         has_timeout_ms, "timeout_ms"),
-    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_exec_args, yield_time_ms,
-                                        has_yield_time_ms, "yield_time_ms"),
     LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_exec_args, max_output_tokens,
                                         has_max_output_tokens,
                                         "max_output_tokens")};
 LONEJSON_MAP_DEFINE(cai_exec_args_map, cai_exec_args, cai_exec_arg_fields);
 
 static const lonejson_field cai_exec_result_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_result, chunk_id,
-                                          "chunk_id"),
     LONEJSON_FIELD_F64_REQ(cai_exec_result, wall_time_seconds,
                            "wall_time_seconds"),
     LONEJSON_FIELD_I64_PRESENT(cai_exec_result, exit_code, has_exit_code,
@@ -168,7 +161,6 @@ static const char cai_exec_schema_json[] =
     "\"tty\":{\"type\":[\"boolean\",\"null\"]},"
     "\"login\":{\"type\":[\"boolean\",\"null\"]},"
     "\"timeout_ms\":{\"type\":[\"integer\",\"null\"]},"
-    "\"yield_time_ms\":{\"type\":[\"integer\",\"null\"]},"
     "\"max_output_tokens\":{\"type\":[\"integer\",\"null\"]}"
     "},"
     "\"required\":[\"cmd\"],"
@@ -742,6 +734,49 @@ static int cai_exec_shell_runtime_prefix(const char *shell_path, char *out,
   return 1;
 }
 
+static int cai_exec_shell_bin_dir(const char *shell_path, char *out,
+                                  size_t out_size) {
+  const char *bin;
+  size_t len;
+
+  if (shell_path == NULL || shell_path[0] != '/') {
+    return 0;
+  }
+  bin = strstr(shell_path, "/bin/");
+  if (bin == NULL || bin == shell_path) {
+    return 0;
+  }
+  len = (size_t)(bin - shell_path) + 4U;
+  if (len == 0U || len >= out_size) {
+    return 0;
+  }
+  memcpy(out, shell_path, len);
+  out[len] = '\0';
+  return 1;
+}
+
+static const char *cai_exec_bwrap_path_env(const cai_exec_context *ctx,
+                                           const char *shell_path,
+                                           char dirs[][PATH_MAX],
+                                           size_t *dir_count,
+                                           size_t dir_cap) {
+  char bin_dir[PATH_MAX];
+  int n;
+
+  if (cai_exec_shell_bin_dir(shell_path, bin_dir, sizeof(bin_dir)) &&
+      !cai_exec_path_is_under_root(ctx->root_path, bin_dir) &&
+      !cai_exec_path_is_under_mount(bin_dir) && access(bin_dir, F_OK) == 0 &&
+      *dir_count < dir_cap) {
+    n = snprintf(dirs[*dir_count], PATH_MAX, "%s:/usr/local/bin:/usr/bin:/bin",
+                 bin_dir);
+    if (n > 0 && (size_t)n < PATH_MAX) {
+      (*dir_count)++;
+      return dirs[*dir_count - 1U];
+    }
+  }
+  return "/usr/local/bin:/usr/bin:/bin";
+}
+
 static int cai_exec_bwrap_bind_custom_shell_prefix(
     const cai_exec_context *ctx, const char **argv, size_t *i, size_t cap,
     const char *shell_path, char dirs[][PATH_MAX], size_t *dir_count,
@@ -814,7 +849,9 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--clearenv");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "PATH");
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "/usr/local/bin:/usr/bin:/bin");
+  cai_exec_bwrap_arg(argv, &i, argv_cap,
+                     cai_exec_bwrap_path_env(ctx, shell_path, dirs, dir_count,
+                                             dir_cap));
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--setenv");
   cai_exec_bwrap_arg(argv, &i, argv_cap, "HOME");
   cai_exec_bwrap_arg(argv, &i, argv_cap, ctx->root_path);
@@ -1452,6 +1489,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   cai_exec_proc_result proc;
   char *workdir;
   char sandbox_path[PATH_MAX];
+  size_t output_max_bytes;
   int use_sandbox;
   int rc;
 
@@ -1484,11 +1522,17 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     return rc;
   }
   memset(&capture, 0, sizeof(capture));
+  output_max_bytes = ctx->output_max_bytes;
+  if (args->has_max_output_tokens && args->max_output_tokens > 0LL &&
+      (unsigned long long)args->max_output_tokens <
+          (unsigned long long)output_max_bytes) {
+    output_max_bytes = (size_t)args->max_output_tokens;
+  }
   spool_options = lonejson_default_spool_options();
   spool_options.memory_limit = ctx->output_memory_limit;
-  spool_options.max_bytes = ctx->output_max_bytes;
+  spool_options.max_bytes = output_max_bytes;
   spool_options.temp_dir = ctx->output_spool_dir;
-  capture.max_bytes = ctx->output_max_bytes;
+  capture.max_bytes = output_max_bytes;
   lonejson_spooled_init(&capture.stdout_data, &spool_options);
   lonejson_spooled_init(&capture.stderr_data, &spool_options);
   lonejson_spooled_init(&capture.output, &spool_options);

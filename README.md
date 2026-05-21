@@ -710,9 +710,9 @@ including `<cai/tools/exec.h>` and calling `cai_agent_register_exec_tool` or
 `cai_tool_registry_register_exec_tool`. The default tool name is
 `exec_command`, intentionally matching the Codex-compatible model-facing
 shape. Its required input is `cmd`; optional inputs are `workdir`, `shell`,
-`tty`, `login`, `timeout_ms`, `yield_time_ms`, and `max_output_tokens`.
-`yield_time_ms` and `max_output_tokens` are accepted for compatibility, but
-this preset returns after the process exits and enforces byte caps from
+`tty`, `login`, `timeout_ms`, and `max_output_tokens`. This preset returns
+after the process exits. `max_output_tokens` is treated as a per-call output
+budget cap against the byte-oriented capture limit configured in
 `cai_exec_tool_config`. When `tty=true` is allowed, cai uses the PTY only for
 stdout/stderr capture; child stdin remains `/dev/null` and is not a terminal.
 

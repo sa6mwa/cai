@@ -884,6 +884,9 @@ static int cai_list_scan_dir(const cai_read_context *ctx,
       break;
     }
     if (realpath(child_path, real_child) == NULL) {
+      if (S_ISLNK(st.st_mode)) {
+        continue;
+      }
       rc = cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to resolve list entry",
                                 strerror(errno));

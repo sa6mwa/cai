@@ -7358,6 +7358,7 @@ static void test_read_tool(test_state *state) {
   char outside_fifo_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   char inside_symlink_path[PATH_MAX];
+  char dangling_symlink_path[PATH_MAX];
   static const unsigned char binary_bytes[] = {'t', 'e', 'x', 't', 0U, 'x'};
   static const unsigned char control_bytes[] = {'t', 'e', 'x', 't', 0x1BU,
                                                 'x'};
@@ -7425,6 +7426,11 @@ static void test_read_tool(test_state *state) {
   if (symlink(file_path, inside_symlink_path) != 0) {
     test_fail(state, "read_inside_symlink_fixture", "symlink failed");
   }
+  snprintf(dangling_symlink_path, sizeof(dangling_symlink_path),
+           "%s/sub/dangling-link", dir_template);
+  if (symlink("/tmp/cai-read-missing-target", dangling_symlink_path) != 0) {
+    test_fail(state, "read_dangling_symlink_fixture", "symlink failed");
+  }
 
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -7485,6 +7491,10 @@ static void test_read_tool(test_state *state) {
     if (strstr(writer.buffer, "outside-link") != NULL) {
       test_fail(state, "list_files_symlink_escape",
                 "escaping symlink was listed");
+    }
+    if (strstr(writer.buffer, "dangling-link") != NULL) {
+      test_fail(state, "list_files_dangling_symlink",
+                "dangling symlink was listed");
     }
     expect_valid_json(state, "list_files_success_json", writer.buffer);
   }
@@ -7782,6 +7792,7 @@ static void test_read_tool(test_state *state) {
   }
 
   unlink(inside_symlink_path);
+  unlink(dangling_symlink_path);
   unlink(symlink_path);
   unlink(outside_fifo_path);
   unlink(outside_path);
@@ -8204,6 +8215,21 @@ static void test_exec_tool(test_state *state) {
   cai_error_init(&error);
 
   config.output_max_bytes = 4096U;
+  if (run_exec_tool_case(state, "exec_per_call_output_cap", &config,
+                         "{\"cmd\":\"printf 1234567890\","
+                         "\"max_output_tokens\":4}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_per_call_output_cap_output", writer.buffer,
+                  "\"output\":\"1234\"");
+    expect_substr(state, "exec_per_call_output_cap_truncated", writer.buffer,
+                  "\"output_truncated\":true");
+    expect_substr(state, "exec_per_call_output_cap_original", writer.buffer,
+                  "\"original_byte_count\":10");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.output_max_bytes = 4096U;
   run_exec_tool_case(state, "exec_reject_pty_disabled", &config,
                      "{\"cmd\":\"printf no-pty\",\"tty\":true}",
                      CAI_ERR_INVALID, &writer, &error);
@@ -8247,6 +8273,12 @@ static void test_exec_tool(test_state *state) {
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"cmd\"") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"tty\"") == NULL) {
     test_fail(state, "exec_schema", "schema missing Codex-compatible fields");
+  }
+  if (cai_tool_registry_schema_at(registry, 0U) != NULL &&
+      strstr(cai_tool_registry_schema_at(registry, 0U), "yield_time_ms") !=
+          NULL) {
+    test_fail(state, "exec_schema_no_yield",
+              "schema advertises unsupported process polling");
   }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
