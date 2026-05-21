@@ -12244,6 +12244,7 @@ static void test_session_state_validation(test_state *state) {
   cai_source *source;
   cai_error error;
   char state_json[512];
+  char history_json[512];
 
   cai_error_init(&error);
   cai_client_config_init(&client_config);
@@ -12358,6 +12359,50 @@ static void test_session_state_validation(test_state *state) {
   cai_error_init(&error);
 
   cai_source_close(source);
+  source = NULL;
+
+  reader.text =
+      "[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":"
+      "\"input_text\",\"text\":\"stale local history\"}]}]";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_seed_history_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_seed_history",
+             cai_session_import_history_source(history_session, source, &error),
+             CAI_OK);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"previous_response_id\":\"resp_no_history\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_no_history_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_no_history_import",
+             cai_session_import_state_source(history_session, source, &error),
+             CAI_OK);
+  expect_str(state, "state_validation_no_history_previous",
+             cai_session_previous_response_id(history_session),
+             "resp_no_history");
+  cai_source_close(source);
+  source = NULL;
+  expect_int(state, "state_validation_no_history_export",
+             cai_session_export_history_source(history_session, &source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "state_validation_no_history_read", source,
+                       history_json, sizeof(history_json), &error)) {
+    if (strcmp(history_json, "[]") != 0) {
+      test_fail(state, "state_validation_no_history_cleared",
+                "state import without history did not clear local history");
+    }
+  }
+  cai_source_close(source);
+  source = NULL;
+
   cai_session_destroy(history_session);
   cai_session_destroy(restored);
   cai_session_destroy(session);
