@@ -641,6 +641,7 @@ static void cai_exec_cgroup_cleanup(cai_exec_cgroup *cgroup) {
   }
 }
 
+#if defined(__linux__)
 static int cai_exec_bwrap_arg(const char **argv, size_t *i, size_t cap,
                               const char *arg) {
   if (*i + 1U >= cap) {
@@ -953,6 +954,7 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
 #undef CAI_EXEC_BWRAP_ADD
   return 0;
 }
+#endif
 
 #if defined(__APPLE__)
 static int cai_exec_profile_append(char *profile, size_t profile_size,
@@ -1189,8 +1191,9 @@ static int cai_exec_validate_sandbox_args(const cai_exec_context *ctx,
   {
     char sandbox_profile[8192];
 
+    (void)workdir;
     (void)dirs;
-    dir_count = 0U;
+    (void)dir_count;
     if (cai_exec_build_sandbox_exec_argv(
             ctx, args, shell_path, args->cmd, sandbox_path, argv,
             sizeof(argv) / sizeof(argv[0]), sandbox_profile,

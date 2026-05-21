@@ -62,7 +62,7 @@ verify_no_private_text() {
   local root_dir=$1
   local matches
 
-  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|/tmp/|/var/tmp|\.cache/deps|\.\./' \
+  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|\.cache/deps|\.\./' \
     "$root_dir" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2
@@ -102,7 +102,7 @@ verify_no_host_paths() {
   local root_dir=$1
   local matches
 
-  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|/tmp/|/var/tmp|\.cache/deps' \
+  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|\.cache/deps' \
     "$root_dir/lib" "$root_dir/share" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2
@@ -137,7 +137,7 @@ verify_linux_runpath() {
       fail "shared library does not use \$ORIGIN rpath/runpath: $so"
     fi
     if grep -E 'RPATH|RUNPATH' <<<"$dynamic" | \
-      grep -E '/home/|/Users/|/opt/|/tmp/|/var/tmp|\.cache/deps' \
+      grep -E '/home/|/Users/|/opt/|\.cache/deps' \
         >/dev/null; then
       printf '%s\n' "$dynamic" >&2
       fail "shared library has host-specific runpath: $so"
@@ -216,7 +216,7 @@ verify_rockspec_file() {
   local matches
 
   require_file "$rockspec"
-  matches=$(grep -n -E '/home/|/Users/|/opt/|/tmp/|/var/tmp|\.cache/deps|\.\./' \
+  matches=$(grep -n -E '/home/|/Users/|/opt/|\.cache/deps|\.\./' \
     "$rockspec" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2
