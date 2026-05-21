@@ -34,3 +34,13 @@ if ! grep -q "cai-$expected-1\\.src\\.rock" <<<"$dry_run"; then
   printf '%s\n' 'release-lua-artifacts dry run does not reference override src rock' >&2
   exit 1
 fi
+
+dry_run=$(CAI_VERSION_OVERRIDE=0.0.0 make -n -C "$repo_root" release-lua-artifacts)
+if ! grep -q 'cai-lua-0\.0\.0\.tar\.gz' <<<"$dry_run"; then
+  printf '%s\n' 'release-lua-artifacts dry run does not allow fallback source tarball' >&2
+  exit 1
+fi
+if ! grep -q 'cai-0\.0\.0-1\.src\.rock' <<<"$dry_run"; then
+  printf '%s\n' 'release-lua-artifacts dry run does not allow fallback src rock' >&2
+  exit 1
+fi

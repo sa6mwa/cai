@@ -38,7 +38,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test assert-release-version release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -165,36 +165,29 @@ $(RELEASE_LUA_SRC_ROCK): $(RELEASE_LUA_PACK_ROCKSPEC) $(RELEASE_LUA_ROCKSPEC)
 	cd "$$tmp_dir" && zip -q -u "$(CURDIR)/$(RELEASE_LUA_SRC_ROCK)" "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"
 	rm -rf "$(RELEASE_LUA_PACK_DIR)"
 
-release-lua-artifacts: assert-release-version $(RELEASE_LUA_ROCKSPEC) $(RELEASE_LUA_SRC_ROCK)
+release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC) $(RELEASE_LUA_SRC_ROCK)
 
 print-release-version:
 	@printf '%s\n' "$(RELEASE_VERSION)"
 
-assert-release-version:
-	@if [[ "$(RELEASE_VERSION)" == "0.0.0" ]]; then \
-		printf '%s\n' 'Refusing release/package with fallback version 0.0.0. Tag HEAD as vX.Y.Z or set CAI_VERSION_OVERRIDE=X.Y.Z.' >&2; \
-		exit 2; \
-	fi
-
-package: assert-release-version build-release
+package: build-release
 	bash ./scripts/package_release_matrix.sh
 
-package-source: assert-release-version
+package-source:
 	$(CMAKE) --preset x86_64-linux-gnu-release
 	$(CMAKE) --build --preset x86_64-linux-gnu-release --target cai_package_source
 
 package-source-smoke: package-source
 	bash ./scripts/test_release_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h).tar.gz"
 
-package-checksums: assert-release-version package release-lua-artifacts
+package-checksums: package release-lua-artifacts
 	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
 
-package-verify: assert-release-version package-checksums
+package-verify: package-checksums
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
 release:
 	$(CMAKE) -E rm -rf build dist
-	$(MAKE) assert-release-version
 	$(MAKE) build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure
 	bash ./scripts/package_release_matrix.sh
