@@ -351,6 +351,51 @@ static void run_test_group(test_state *state, const char *name, test_fn fn) {
   g_current_test_name = NULL;
 }
 
+static int wait_for_child_with_timeout(pid_t pid, int *status,
+                                       unsigned int timeout_ms) {
+  unsigned int waited_ms;
+
+  waited_ms = 0U;
+  for (;;) {
+    pid_t rc;
+
+    rc = waitpid(pid, status, WNOHANG);
+    if (rc == pid) {
+      return 0;
+    }
+    if (rc < 0) {
+      return -1;
+    }
+    if (waited_ms >= timeout_ms) {
+      kill(pid, SIGKILL);
+      (void)waitpid(pid, status, 0);
+      return 1;
+    }
+    {
+      struct timeval tv;
+
+      tv.tv_sec = 0;
+      tv.tv_usec = 10000;
+      (void)select(0, NULL, NULL, NULL, &tv);
+    }
+    waited_ms += 10U;
+  }
+}
+
+static void expect_child_exit(test_state *state, const char *name, pid_t pid,
+                              int *child_status) {
+  int wait_rc;
+
+  wait_rc = wait_for_child_with_timeout(pid, child_status, 2000U);
+  if (wait_rc < 0) {
+    test_fail(state, name, "waitpid failed");
+  } else if (wait_rc > 0) {
+    test_fail(state, name, "mock child timed out");
+  } else if (!WIFEXITED(*child_status) || WEXITSTATUS(*child_status) != 0) {
+    test_fail(state, name, "mock child failed");
+  }
+}
+
 static void expect_int(test_state *state, const char *name, long actual,
                        long expected) {
   if (actual != expected) {
@@ -6025,7 +6070,7 @@ static void test_http_create_response(test_state *state) {
   close(pipe_fds[0]);
   if (nread != (ssize_t)sizeof(port)) {
     test_fail(state, "http_mock", "failed to read mock port");
-    waitpid(pid, &child_status, 0);
+    expect_child_exit(state, "http_mock", pid, &child_status);
     return;
   }
 
@@ -6139,11 +6184,7 @@ static void test_http_create_response(test_state *state) {
              (long)(alloc_state.allocs - alloc_state.frees), 0L);
   cai_error_cleanup(&error);
 
-  if (waitpid(pid, &child_status, 0) != pid) {
-    test_fail(state, "http_mock", "waitpid failed");
-  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
-    test_fail(state, "http_mock", "mock child failed");
-  }
+  expect_child_exit(state, "http_mock", pid, &child_status);
 }
 
 static void test_http_error_details(test_state *state) {

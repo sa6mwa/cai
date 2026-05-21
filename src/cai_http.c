@@ -536,6 +536,9 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
     rc = cai_append_header(&headers, "Accept: application/json", error);
   }
   if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Expect:", error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_append_bearer_header(client, &headers, error);
   }
   if (rc == CAI_OK) {
