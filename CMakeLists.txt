@@ -646,6 +646,7 @@ if(CAI_BUILD_TESTS)
     http_delete_response
     http_count_response_input_tokens
     http_list_response_input_items
+    http_mock_incomplete_request_timeout
     http_error_details
     agent_session
     agent_client_history_continuity
@@ -692,7 +693,8 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_tests.${_cai_unit_test}
       COMMAND cai_tests --only ${_cai_unit_test})
     set_tests_properties(cai_tests.${_cai_unit_test} PROPERTIES
-      TIMEOUT 180)
+      LABELS "unit;local"
+      TIMEOUT 3)
   endforeach()
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
@@ -708,16 +710,25 @@ if(CAI_BUILD_TESTS)
   cai_configure_c_target(cai_mcp_http_smoke)
   add_test(NAME cai_mcp_http_smoke
     COMMAND cai_mcp_http_smoke $<TARGET_FILE:cai_mcp_http_server>)
+  set_tests_properties(cai_mcp_http_smoke PROPERTIES
+    LABELS "smoke;local"
+    TIMEOUT 3)
   add_executable(cai_mcp_example_smoke tests/mcp_example_smoke.c)
   cai_configure_c_target(cai_mcp_example_smoke)
   if(TARGET cai_example_mcp_server)
     add_test(NAME cai_mcp_example_smoke
       COMMAND cai_mcp_example_smoke $<TARGET_FILE:cai_example_mcp_server>)
+    set_tests_properties(cai_mcp_example_smoke PROPERTIES
+      LABELS "smoke;local"
+      TIMEOUT 3)
   endif()
   add_test(NAME cai_mcp_inspector_e2e
     COMMAND /bin/sh
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_inspector_e2e.sh"
       $<TARGET_FILE:cai_mcp_http_server>)
+  set_tests_properties(cai_mcp_inspector_e2e PROPERTIES
+    LABELS "smoke;local"
+    TIMEOUT 3)
 
   if(CAI_INSTALL)
     add_test(NAME cai_install_metadata_test
@@ -738,6 +749,9 @@ if(CAI_BUILD_TESTS)
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
+    set_tests_properties(cai_install_metadata_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 10)
     add_test(NAME cai_host_dependency_mode_unsupported_target
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -748,9 +762,15 @@ if(CAI_BUILD_TESTS)
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
+    set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_release_lua_version_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_lua_version_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_lua_version_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
   endif()
 
   if(CAI_BUILD_LUA)
@@ -758,14 +778,18 @@ if(CAI_BUILD_TESTS)
       COMMAND "${CAI_LUA_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/test_lua.lua")
     set_tests_properties(cai_lua_tests PROPERTIES
+      LABELS "unit;local"
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 3)
     add_test(NAME cai_lua_mcp_todo_e2e
       COMMAND "${CAI_LUA_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_mcp_todo.lua")
     set_tests_properties(cai_lua_mcp_todo_e2e PROPERTIES
+      LABELS "smoke;local"
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 3)
   endif()
 
   if(CAI_BUILD_INTEGRATION_TESTS)
@@ -782,119 +806,136 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)
     set_tests_properties(cai_integration_tests PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_todo_workflow
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_TODO_WORKFLOW=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_todo_workflow PROPERTIES
       LABELS "integration;offline"
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openai_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_E2E=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openai_e2e PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_state_restore
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_STATE_RESTORE=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_state_restore PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_compaction
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_COMPACTION=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_compaction PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_tool_security
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_TOOL_SECURITY=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_tool_security PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_hosted_web_search
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_HOSTED_WEB_SEARCH=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_hosted_web_search PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_exec_tool
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_EXEC_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_exec_tool PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_read_tool
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_READ_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_read_tool PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_basic
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_basic PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_E2E=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_e2e PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_session
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_SESSION=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_session PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_tool
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_tool PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_stream_tool
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_STREAM_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_stream_tool PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_read_tool
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_READ_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_read_tool PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_stream_history
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_stream_history PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     add_test(NAME cai_integration_openrouter_tool_security
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_openrouter_tool_security PROPERTIES
       LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 10)
     if(CAI_BUILD_LUA)
       add_test(NAME cai_lua_tool_stream_e2e
         COMMAND "${CAI_LUA_EXECUTABLE}"
@@ -902,21 +943,24 @@ if(CAI_BUILD_TESTS)
       set_tests_properties(cai_lua_tool_stream_e2e PROPERTIES
         LABELS integration
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 10)
       add_test(NAME cai_lua_session_continuity_e2e
         COMMAND "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_session_continuity.lua")
       set_tests_properties(cai_lua_session_continuity_e2e PROPERTIES
         LABELS integration
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 10)
       add_test(NAME cai_lua_hosted_web_search_e2e
         COMMAND "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_hosted_web_search.lua")
       set_tests_properties(cai_lua_hosted_web_search_e2e PROPERTIES
         LABELS integration
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 10)
     endif()
   endif()
 endif()

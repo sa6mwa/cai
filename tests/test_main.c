@@ -337,11 +337,14 @@ static void run_test_group(test_state *state, const char *name, test_fn fn) {
   g_current_test_name = name;
   fprintf(stderr, "TEST %-48s ... ", name);
   fflush(stderr);
-  alarm(120U);
+  alarm(3U);
   started = test_now_seconds();
   fn(state);
   elapsed = test_now_seconds() - started;
   alarm(0U);
+  if (elapsed > 3.0) {
+    test_fail(state, name, "test exceeded three seconds");
+  }
   if (state->failures == failures_before) {
     fprintf(stderr, "ok %.3fs\n", elapsed);
   } else {
@@ -4684,11 +4687,13 @@ static int mock_write_all(int fd, const char *data, size_t length) {
   return 0;
 }
 
+#define MOCK_IO_TIMEOUT_MS 100U
+
 static int mock_set_socket_deadline(int fd) {
   struct timeval tv;
 
-  tv.tv_sec = 2;
-  tv.tv_usec = 0;
+  tv.tv_sec = (long)(MOCK_IO_TIMEOUT_MS / 1000U);
+  tv.tv_usec = (long)((MOCK_IO_TIMEOUT_MS % 1000U) * 1000U);
   if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void *)&tv,
                  (socklen_t)sizeof(tv)) != 0) {
     return -1;
@@ -4700,6 +4705,49 @@ static int mock_set_socket_deadline(int fd) {
   return 0;
 }
 
+static int mock_wait_fd(int fd, int for_write, unsigned int timeout_ms) {
+  fd_set fds;
+  struct timeval tv;
+  int rc;
+
+  FD_ZERO(&fds);
+  FD_SET(fd, &fds);
+  tv.tv_sec = (long)(timeout_ms / 1000U);
+  tv.tv_usec = (long)((timeout_ms % 1000U) * 1000U);
+  do {
+    if (for_write) {
+      rc = select(fd + 1, NULL, &fds, NULL, &tv);
+    } else {
+      rc = select(fd + 1, &fds, NULL, NULL, &tv);
+    }
+  } while (rc < 0 && errno == EINTR);
+  return rc == 1 ? 0 : -1;
+}
+
+static int mock_accept_with_deadline(int server_fd) {
+  int client_fd;
+
+  if (mock_wait_fd(server_fd, 0, MOCK_IO_TIMEOUT_MS) != 0) {
+    return -1;
+  }
+  do {
+    client_fd = accept(server_fd, NULL, NULL);
+  } while (client_fd < 0 && errno == EINTR);
+  return client_fd;
+}
+
+static ssize_t mock_read_with_deadline(int fd, char *buffer, size_t capacity) {
+  ssize_t nread;
+
+  if (mock_wait_fd(fd, 0, MOCK_IO_TIMEOUT_MS) != 0) {
+    return -1;
+  }
+  do {
+    nread = read(fd, buffer, capacity);
+  } while (nread < 0 && errno == EINTR);
+  return nread;
+}
+
 static int mock_read_request(int fd, char *request, size_t capacity) {
   size_t length;
   char *headers_end;
@@ -4709,7 +4757,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
   while (length + 1U < capacity && headers_end == NULL) {
     ssize_t nread;
 
-    nread = read(fd, request + length, capacity - length - 1U);
+    nread = mock_read_with_deadline(fd, request + length,
+                                    capacity - length - 1U);
     if (nread <= 0) {
       return -1;
     }
@@ -4734,7 +4783,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
       while (line_end == NULL && length + 1U < capacity) {
         ssize_t nread;
 
-        nread = read(fd, request + length, capacity - length - 1U);
+        nread = mock_read_with_deadline(fd, request + length,
+                                        capacity - length - 1U);
         if (nread <= 0) {
           return -1;
         }
@@ -4752,7 +4802,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
              length + 1U < capacity) {
         ssize_t nread;
 
-        nread = read(fd, request + length, capacity - length - 1U);
+        nread = mock_read_with_deadline(fd, request + length,
+                                        capacity - length - 1U);
         if (nread <= 0) {
           return -1;
         }
@@ -4785,7 +4836,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
       while (length < header_len + body_len && length + 1U < capacity) {
         ssize_t nread;
 
-        nread = read(fd, request + length, capacity - length - 1U);
+        nread = mock_read_with_deadline(fd, request + length,
+                                        capacity - length - 1U);
         if (nread <= 0) {
           return -1;
         }
@@ -5774,7 +5826,7 @@ static void mock_openai_child(int pipe_fd, int request_count) {
   }
   close(pipe_fd);
   for (i = 0; i < request_count; i++) {
-    client_fd = accept(server_fd, NULL, NULL);
+    client_fd = mock_accept_with_deadline(server_fd);
     if (client_fd < 0) {
       _exit(7);
     }
@@ -6303,6 +6355,39 @@ static void test_http_list_response_input_items(test_state *state) {
              cai_input_item_role(items, 1U), "assistant");
   cai_input_item_list_destroy(items);
   http_mock_client_close(state, "http_list_items_mock", &mock);
+}
+
+static void test_http_mock_incomplete_request_timeout(test_state *state) {
+  int sockets[2];
+  const char partial_request[] =
+      "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      "Content-Length: 16\r\n\r\nabc";
+  char request[256];
+  double started;
+  double elapsed;
+
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+    test_fail(state, "http_mock_incomplete_socketpair", "socketpair failed");
+    return;
+  }
+  if (mock_write_all(sockets[0], partial_request,
+                     sizeof(partial_request) - 1U) != 0) {
+    test_fail(state, "http_mock_incomplete_write", "write failed");
+    close(sockets[0]);
+    close(sockets[1]);
+    return;
+  }
+  started = test_now_seconds();
+  expect_int(state, "http_mock_incomplete_read",
+             (long)mock_read_request(sockets[1], request, sizeof(request)),
+             -1L);
+  elapsed = test_now_seconds() - started;
+  if (elapsed > 3.0) {
+    test_fail(state, "http_mock_incomplete_deadline",
+              "incomplete request read exceeded deadline");
+  }
+  close(sockets[0]);
+  close(sockets[1]);
 }
 
 static void test_http_error_details(test_state *state) {
@@ -13467,6 +13552,8 @@ static const test_entry test_entries[] = {
     {"http_delete_response", test_http_delete_response},
     {"http_count_response_input_tokens", test_http_count_response_input_tokens},
     {"http_list_response_input_items", test_http_list_response_input_items},
+    {"http_mock_incomplete_request_timeout",
+     test_http_mock_incomplete_request_timeout},
     {"http_error_details", test_http_error_details},
     {"agent_session", test_agent_session},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
