@@ -730,7 +730,9 @@ sets only `PATH`, `HOME`, `TMPDIR`, and `LANG`, isolates `/tmp` and
 `/var/tmp`, unshares PID/IPC/UTS/network namespaces by default, and starts a
 new session while binding only the configured root writable plus read-only
 system paths needed to run normal commands. Set `allow_network` only when the
-tool should have network access.
+tool should have network access; in that mode cai also binds common resolver
+and trust-store files such as `/etc/resolv.conf`, `/etc/hosts`, `/etc/ssl`,
+and `/etc/pki` when present.
 Linux cgroup v2 pids/memory limits are available with
 `enable_cgroup_limits`; zero `pids_max` and `memory_max_bytes` use cai's
 internal defaults. If cgroup setup cannot be applied, the tool fails closed
@@ -738,8 +740,8 @@ instead of running unbounded. `cgroup_parent_path` can point at a host-owned
 writable cgroup subtree; otherwise cai uses `/sys/fs/cgroup`.
 Output is captured through bounded `lonejson_spooled` fields and serialized as
 structured JSON with `stdout`, `stderr`, combined `output`, exit/signal
-metadata, timeout state, truncation flags, effective cwd, and the sandbox
-backend used.
+metadata, timeout state, per-stream and combined-output truncation flags,
+effective cwd, and the sandbox backend used.
 
 Agents or registries can register the opt-in file inspection presets by
 including `<cai/tools/read.h>`. `cai_agent_register_read_tool` or

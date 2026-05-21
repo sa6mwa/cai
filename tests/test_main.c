@@ -8036,6 +8036,22 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  config.output_max_bytes = 10U;
+  if (run_exec_tool_case(state, "exec_combined_output_cap", &config,
+                         "{\"cmd\":\"printf 12345678; printf abcdefgh >&2\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_combined_output_cap_stdout", writer.buffer,
+                  "\"stdout_truncated\":false");
+    expect_substr(state, "exec_combined_output_cap_stderr", writer.buffer,
+                  "\"stderr_truncated\":false");
+    expect_substr(state, "exec_combined_output_cap_output", writer.buffer,
+                  "\"output_truncated\":true");
+    expect_substr(state, "exec_combined_output_cap_original", writer.buffer,
+                  "\"original_byte_count\":16");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   config.output_max_bytes = 4096U;
   config.allow_pty = 1;
   if (run_exec_tool_case(state, "exec_pty", &config,

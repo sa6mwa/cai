@@ -84,6 +84,7 @@ typedef struct cai_exec_result {
   long long original_byte_count;
   int stdout_truncated;
   int stderr_truncated;
+  int output_truncated;
   lonejson_spooled stdout_data;
   lonejson_spooled stderr_data;
   lonejson_spooled output;
@@ -99,6 +100,7 @@ typedef struct cai_exec_capture {
   size_t output_bytes;
   int stdout_truncated;
   int stderr_truncated;
+  int output_truncated;
 } cai_exec_capture;
 
 typedef struct cai_exec_proc_result {
@@ -148,6 +150,8 @@ static const lonejson_field cai_exec_result_fields[] = {
                             "stdout_truncated"),
     LONEJSON_FIELD_BOOL_REQ(cai_exec_result, stderr_truncated,
                             "stderr_truncated"),
+    LONEJSON_FIELD_BOOL_REQ(cai_exec_result, output_truncated,
+                            "output_truncated"),
     LONEJSON_FIELD_STRING_STREAM_REQ(cai_exec_result, stdout_data, "stdout"),
     LONEJSON_FIELD_STRING_STREAM_REQ(cai_exec_result, stderr_data, "stderr"),
     LONEJSON_FIELD_STRING_STREAM_REQ(cai_exec_result, output, "output")};
@@ -502,6 +506,9 @@ static int cai_exec_capture_append(cai_exec_capture *capture, int is_stderr,
              ? capture->max_bytes - capture->output_bytes
              : 0U;
   keep = len < room ? len : room;
+  if (keep < len) {
+    capture->output_truncated = 1;
+  }
   if (keep > 0U) {
     rc = cai_exec_append_spool(&capture->output, data, keep, error);
     if (rc != CAI_OK) {
@@ -676,6 +683,15 @@ static void cai_exec_bwrap_bind_if_exists(const char **argv, size_t *i,
   }
 }
 
+static void cai_exec_bwrap_bind_file_if_exists(const char **argv, size_t *i,
+                                               size_t cap, const char *path) {
+  if (path != NULL && access(path, F_OK) == 0) {
+    cai_exec_bwrap_arg(argv, i, cap, "--ro-bind");
+    cai_exec_bwrap_arg(argv, i, cap, path);
+    cai_exec_bwrap_arg(argv, i, cap, path);
+  }
+}
+
 static void cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
                                        size_t cap, const char *path,
                                        char dirs[][PATH_MAX],
@@ -766,12 +782,23 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/bin");
   cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib");
   cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/lib64");
-  if (access("/etc/ld.so.cache", F_OK) == 0) {
+  if (access("/etc/ld.so.cache", F_OK) == 0 || ctx->allow_network) {
     cai_exec_bwrap_arg(argv, &i, argv_cap, "--dir");
     cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc");
+  }
+  if (access("/etc/ld.so.cache", F_OK) == 0) {
     cai_exec_bwrap_arg(argv, &i, argv_cap, "--ro-bind");
     cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc/ld.so.cache");
     cai_exec_bwrap_arg(argv, &i, argv_cap, "/etc/ld.so.cache");
+  }
+  if (ctx->allow_network) {
+    cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap,
+                                       "/etc/resolv.conf");
+    cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap,
+                                       "/etc/nsswitch.conf");
+    cai_exec_bwrap_bind_file_if_exists(argv, &i, argv_cap, "/etc/hosts");
+    cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/etc/ssl");
+    cai_exec_bwrap_bind_if_exists(argv, &i, argv_cap, "--ro-bind", "/etc/pki");
   }
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--chdir");
   cai_exec_bwrap_arg(argv, &i, argv_cap, workdir);
@@ -1400,6 +1427,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     out->timed_out = proc.timed_out;
     out->stdout_truncated = capture.stdout_truncated;
     out->stderr_truncated = capture.stderr_truncated;
+    out->output_truncated = capture.output_truncated;
     out->original_byte_count =
         (long long)(capture.stdout_bytes + capture.stderr_bytes);
     out->cwd = cai_strdup(NULL, workdir);
