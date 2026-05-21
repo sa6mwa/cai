@@ -247,6 +247,9 @@ static int cai_read_path_is_under_root(const char *root, const char *path) {
     return 0;
   }
   root_len = strlen(root);
+  if (root_len == 1U && root[0] == '/') {
+    return path[0] == '/' ? 1 : 0;
+  }
   if (strncmp(root, path, root_len) != 0) {
     return 0;
   }
@@ -1123,6 +1126,8 @@ int cai_tool_registry_register_list_files_tool(
     cai_tool_registry *registry, const cai_read_tool_config *config,
     cai_error *error) {
   cai_read_context *ctx;
+  const char *name;
+  const char *description;
   int rc;
 
   ctx = NULL;
@@ -1130,10 +1135,14 @@ int cai_tool_registry_register_list_files_tool(
   if (rc != CAI_OK) {
     return rc;
   }
+  name = cai_read_default_string(config != NULL ? config->name : NULL,
+                                 CAI_LIST_FILES_DEFAULT_TOOL_NAME);
+  description = cai_read_default_string(
+      config != NULL ? config->description : NULL,
+      cai_list_files_default_description);
   rc = cai_tool_registry_register_lonejson_schema_owned(
-      registry, CAI_LIST_FILES_DEFAULT_TOOL_NAME,
-      cai_list_files_default_description,
-      cai_list_files_schema_json, 0, &cai_list_files_args_map,
+      registry, name, description, cai_list_files_schema_json, 0,
+      &cai_list_files_args_map,
       &cai_list_files_result_map, cai_list_files_callback, ctx,
       cai_read_context_cleanup, error);
   if (rc != CAI_OK) {

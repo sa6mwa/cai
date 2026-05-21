@@ -227,6 +227,22 @@ static int cai_exec_is_dir(const char *path) {
   return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 
+static int cai_exec_path_is_under_root(const char *root, const char *path) {
+  size_t root_len;
+
+  if (root == NULL || path == NULL) {
+    return 0;
+  }
+  root_len = strlen(root);
+  if (root_len == 1U && root[0] == '/') {
+    return path[0] == '/' ? 1 : 0;
+  }
+  if (strncmp(path, root, root_len) != 0) {
+    return 0;
+  }
+  return path[root_len] == '\0' || path[root_len] == '/' ? 1 : 0;
+}
+
 static int cai_exec_realpath_dup(const char *path, char **out,
                                  cai_error *error) {
   char resolved[PATH_MAX];
@@ -247,7 +263,6 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   const char *root;
   const char *workdir;
   const char *shell;
-  size_t root_len;
   int rc;
 
   if (out == NULL) {
@@ -339,10 +354,7 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   ctx->output_max_bytes = config != NULL && config->output_max_bytes != 0U
                               ? config->output_max_bytes
                               : CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES;
-  root_len = strlen(ctx->root_path);
-  if (strncmp(ctx->default_workdir, ctx->root_path, root_len) != 0 ||
-      (ctx->default_workdir[root_len] != '\0' &&
-       ctx->default_workdir[root_len] != '/')) {
+  if (!cai_exec_path_is_under_root(ctx->root_path, ctx->default_workdir)) {
     cai_exec_context_cleanup(ctx);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec default_workdir must be under root_path");
@@ -401,18 +413,17 @@ static int cai_exec_resolve_workdir(const cai_exec_context *ctx,
   char joined[PATH_MAX];
   char *resolved;
   const char *candidate;
-  size_t root_len;
 
   *out = NULL;
   candidate =
       requested != NULL && requested[0] != '\0' ? requested : ctx->default_workdir;
   if (candidate[0] != '/') {
-    if (strlen(ctx->root_path) + 1U + strlen(candidate) + 1U >
+    if (strlen(ctx->default_workdir) + 1U + strlen(candidate) + 1U >
         sizeof(joined)) {
       return cai_set_error(error, CAI_ERR_INVALID,
                            "exec workdir path is too long");
     }
-    strcpy(joined, ctx->root_path);
+    strcpy(joined, ctx->default_workdir);
     strcat(joined, "/");
     strcat(joined, candidate);
     candidate = joined;
@@ -421,9 +432,7 @@ static int cai_exec_resolve_workdir(const cai_exec_context *ctx,
   if (cai_exec_realpath_dup(candidate, &resolved, error) != CAI_OK) {
     return error != NULL ? error->code : CAI_ERR_INVALID;
   }
-  root_len = strlen(ctx->root_path);
-  if (strncmp(resolved, ctx->root_path, root_len) != 0 ||
-      (resolved[root_len] != '\0' && resolved[root_len] != '/')) {
+  if (!cai_exec_path_is_under_root(ctx->root_path, resolved)) {
     cai_free_mem(NULL, resolved);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec workdir must stay under root_path");

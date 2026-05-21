@@ -7458,6 +7458,43 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  {
+    cai_read_tool_config root_config;
+    char root_read_args[PATH_MAX + 32];
+    char root_list_args[PATH_MAX + 32];
+
+    memset(&root_config, 0, sizeof(root_config));
+    root_config.root_path = "/";
+    root_config.default_workdir = sub_dir;
+    root_config.content_memory_limit = 8U;
+    root_config.content_max_bytes = 64U;
+    snprintf(root_read_args, sizeof(root_read_args), "{\"path\":\"%s\"}",
+             file_path);
+    if (run_read_tool_case(state, "read_root_slash_absolute_child",
+                           &root_config, root_read_args, CAI_OK, &writer,
+                           &error) == CAI_OK) {
+      expect_substr(state, "read_root_slash_absolute_child_content",
+                    writer.buffer, "\"content\":\"one\\ntwo\\nthree\\nfour\\n\"");
+      expect_valid_json(state, "read_root_slash_absolute_child_json",
+                        writer.buffer);
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+
+    snprintf(root_list_args, sizeof(root_list_args), "{\"path\":\"%s\"}",
+             sub_dir);
+    if (run_list_files_tool_case(state, "list_root_slash_absolute_child",
+                                 &root_config, root_list_args, CAI_OK,
+                                 &writer, &error) == CAI_OK) {
+      expect_substr(state, "list_root_slash_absolute_child_alpha",
+                    writer.buffer, "alpha.txt");
+      expect_valid_json(state, "list_root_slash_absolute_child_json",
+                        writer.buffer);
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+
   if (run_read_tool_case(state, "read_line_range", &config,
                          "{\"path\":\"alpha.txt\",\"start_line\":2,"
                          "\"end_line\":3}",
@@ -7634,6 +7671,36 @@ static void test_read_tool(test_state *state) {
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
 
+  {
+    cai_read_tool_config custom_config;
+
+    memset(&custom_config, 0, sizeof(custom_config));
+    custom_config.root_path = dir_template;
+    custom_config.default_workdir = sub_dir;
+    custom_config.name = "custom_list_files";
+    custom_config.description = "custom list files guidance";
+    registry = NULL;
+    cai_error_init(&error);
+    expect_int(state, "list_custom_registry_new",
+               cai_tool_registry_new(&registry, &error), CAI_OK);
+    expect_int(state, "list_custom_registry_register",
+               cai_tool_registry_register_list_files_tool(registry,
+                                                          &custom_config,
+                                                          &error),
+               CAI_OK);
+    if (cai_tool_registry_name_at(registry, 0U) == NULL ||
+        strcmp(cai_tool_registry_name_at(registry, 0U),
+               "custom_list_files") != 0 ||
+        cai_tool_registry_description_at(registry, 0U) == NULL ||
+        strcmp(cai_tool_registry_description_at(registry, 0U),
+               "custom list files guidance") != 0) {
+      test_fail(state, "list_custom_metadata",
+                "list_files did not honor custom name/description");
+    }
+    cai_tool_registry_destroy(registry);
+    cai_error_cleanup(&error);
+  }
+
   unlink(symlink_path);
   unlink(outside_path);
   unlink(invalid_utf8_path);
@@ -7651,7 +7718,9 @@ static void test_read_tool(test_state *state) {
 static void test_exec_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-exec-test-XXXXXX";
   char child_dir[PATH_MAX];
+  char child_tests_dir[PATH_MAX];
   char alpha_path[PATH_MAX];
+  char marker_path[PATH_MAX];
   cai_exec_tool_config config;
   write_state writer;
   cai_error error;
@@ -7668,10 +7737,37 @@ static void test_exec_tool(test_state *state) {
     rmdir(dir_template);
     return;
   }
+  if (strlen(child_dir) + strlen("/tests") + 1U > sizeof(child_tests_dir)) {
+    test_fail(state, "exec_nested_path", "path too long");
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  strcpy(child_tests_dir, child_dir);
+  strcat(child_tests_dir, "/tests");
+  if (mkdir(child_tests_dir, 0700) != 0) {
+    test_fail(state, "exec_nested_mkdir", "mkdir failed");
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  if (strlen(child_tests_dir) + strlen("/marker.txt") + 1U >
+      sizeof(marker_path)) {
+    test_fail(state, "exec_marker_path", "path too long");
+    rmdir(child_tests_dir);
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  strcpy(marker_path, child_tests_dir);
+  strcat(marker_path, "/marker.txt");
+  write_file_or_die(marker_path, "nested-marker\n");
   snprintf(alpha_path, sizeof(alpha_path), "%s/alpha.txt", dir_template);
   alpha_file = fopen(alpha_path, "wb");
   if (alpha_file == NULL) {
     test_fail(state, "exec_fixture_file", "fopen failed");
+    unlink(marker_path);
+    rmdir(child_tests_dir);
     rmdir(child_dir);
     rmdir(dir_template);
     return;
@@ -7725,6 +7821,21 @@ static void test_exec_tool(test_state *state) {
     expect_substr(state, "exec_workdir_relative_output", writer.buffer,
                   "/sub");
   }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.default_workdir = child_dir;
+  if (run_exec_tool_case(state, "exec_workdir_relative_from_default",
+                         &config,
+                         "{\"cmd\":\"pwd; printf ':'; cat marker.txt\","
+                         "\"workdir\":\"tests\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_workdir_relative_from_default_cwd",
+                  writer.buffer, "/sub/tests");
+    expect_substr(state, "exec_workdir_relative_from_default_file",
+                  writer.buffer, "nested-marker");
+  }
+  config.default_workdir = dir_template;
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
@@ -7942,6 +8053,8 @@ static void test_exec_tool(test_state *state) {
   unlink(alpha_path);
   snprintf(alpha_path, sizeof(alpha_path), "%s/archive.tar", dir_template);
   unlink(alpha_path);
+  unlink(marker_path);
+  rmdir(child_tests_dir);
   rmdir(child_dir);
   rmdir(dir_template);
 }
