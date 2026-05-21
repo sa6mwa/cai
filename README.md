@@ -503,6 +503,11 @@ cmake --build --preset fuzz --target cai_tool_fuzz
 build/fuzz/cai_tool_fuzz
 ```
 
+The tool fuzzer covers typed/raw tool argument handling plus hostile
+`todo_kanban`, `exec_command`, `list_files`, and `read_file` inputs, including
+path escapes, truncation boundaries, invalid UTF-8, binary/NUL content, and
+control-character rejection.
+
 Streaming callers that need function-call arguments can attach callbacks to
 `cai_stream_sinks.function_call_arguments_delta` and
 `cai_stream_sinks.function_call_arguments_done`. Callers that need raw streamed
@@ -772,11 +777,13 @@ CAI_INTEGRATION_OPENROUTER_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_STREAM_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_OPENROUTER_READ_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_EXEC_TOOL=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_READ_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
 CAI_LUA_HOSTED_WEB_SEARCH_E2E=1 ctest --preset integration -R cai_lua_hosted_web_search_e2e --output-on-failure
@@ -818,6 +825,11 @@ cai's client-side history and can be recalled on the next non-streaming turn.
 regression as `CAI_INTEGRATION_TOOL_SECURITY=1`, but against OpenRouter with
 client-side history replay and the known working free tool-call model.
 
+`CAI_INTEGRATION_OPENROUTER_READ_TOOL=1` runs `list_files`/`read_file` against
+OpenRouter through the real Responses-compatible API. It verifies list hints,
+text reads, client-side continuation, and binary-file denial using the known
+working free tool-call model.
+
 `CAI_INTEGRATION_OPENROUTER_E2E=1` runs the same 20-turn continuity eval as
 `CAI_INTEGRATION_E2E=1`, but against OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
@@ -857,6 +869,12 @@ temporary sandbox root, run `ls`, `uname`, `cat`, `grep`, and `tar`, and then
 attempt `cat /etc/passwd | head -n 1`. The test verifies tool events, final
 assistant markers, `sandbox="bwrap"`, successful normal command output, and
 that the host `/etc/passwd` escape is denied.
+
+`CAI_INTEGRATION_READ_TOOL=1` runs a real OpenAI streaming tool regression for
+the `list_files` and `read_file` presets. The model must inspect a sandboxed
+test tree, read bounded UTF-8 text, avoid binary reads when list hints identify
+a binary candidate, and observe a forced denial when explicitly asked to read a
+binary file.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,

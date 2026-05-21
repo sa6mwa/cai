@@ -79,7 +79,8 @@ Recent prerelease gates run successfully:
 
 - Debug build and offline tests.
 - ASan/UBSan build and tests.
-- `cai_tool_fuzz -runs=10000`.
+- `cai_tool_fuzz -runs=10000`, covering typed/raw tools plus hostile
+  `todo_kanban`, `exec_command`, `list_files`, and `read_file` inputs.
 - Release matrix packaging and archive verification.
 - Source archive smoke build.
 - MCP Inspector container e2e.
@@ -87,7 +88,8 @@ Recent prerelease gates run successfully:
 - OpenAI 20-turn session e2e.
 - OpenAI state-restore e2e.
 - OpenAI hostile tool-output regression.
-- OpenRouter basic/session/tool/stream-tool/stream-history/tool-security e2e.
+- OpenRouter basic/session/tool/stream-tool/stream-history/tool-security and
+  read/list preset e2e.
 - OpenRouter 20-turn client-history e2e with request pacing.
 - Reverse-geocoding provider e2e.
 - SearXNG-backed OpenAI tool e2e.

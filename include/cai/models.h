@@ -5,6 +5,10 @@
 extern "C" {
 #endif
 
+/** @name OpenAI Responses model id constants
+ *  Model string constants accepted by cai APIs that take a model id.
+ *  @{
+ */
 #define CAI_MODEL_GPT_5_5 "gpt-5.5"
 #define CAI_MODEL_GPT_5_5_2026_04_23 "gpt-5.5-2026-04-23"
 #define CAI_MODEL_GPT_5_5_PRO "gpt-5.5-pro"
@@ -110,17 +114,29 @@ extern "C" {
 #define CAI_MODEL_COMPUTER_USE_PREVIEW "computer-use-preview"
 #define CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11                          \
   "computer-use-preview-2025-03-11"
+/** @} */
 
+/** @name OpenRouter model id constants
+ *  Known OpenRouter model strings used by cai examples and integration tests.
+ *  @{
+ */
 #define CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE \
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 #define CAI_OPENROUTER_MODEL_FREE_ROUTER "openrouter/free"
 #define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE                       \
   "poolside/laguna-xs.2:free"
+/** @} */
 
+/** @brief Default OpenAI Responses model used by examples and tests. */
 #define CAI_MODEL_DEFAULT_RESPONSES CAI_MODEL_GPT_5_NANO
+/** @brief Default OpenRouter Responses-compatible model used by examples/tests. */
 #define CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES                              \
   CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE
 
+/** @name Model capability flags
+ *  Bit flags returned by cai_model_info and tested with cai_model_supports.
+ *  @{
+ */
 #define CAI_MODEL_CAP_RESPONSES 0x0001u
 #define CAI_MODEL_CAP_REALTIME 0x0002u
 #define CAI_MODEL_CAP_STREAMING 0x0004u
@@ -129,29 +145,50 @@ extern "C" {
 #define CAI_MODEL_CAP_IMAGE_INPUT 0x0020u
 #define CAI_MODEL_CAP_AUDIO_INPUT 0x0040u
 #define CAI_MODEL_CAP_AUDIO_OUTPUT 0x0080u
+/** @} */
 
+/** @name Model metadata flags
+ *  Bit flags describing the source and confidence of bundled model metadata.
+ *  @{
+ */
 #define CAI_MODEL_META_VERIFIED 0x0001u
 #define CAI_MODEL_META_INCOMPLETE 0x0002u
 #define CAI_MODEL_META_INFERRED 0x0004u
 #define CAI_MODEL_META_DEPRECATED 0x0008u
 #define CAI_MODEL_META_PROVIDER_OPENROUTER 0x0010u
+/** @} */
 
+/** @brief Static metadata for a known model id. */
 typedef struct cai_model_info {
+  /** @brief Model id string. */
   const char *id;
+  /** @brief ORed CAI_MODEL_CAP_* capability flags. */
   unsigned int capabilities;
+  /** @brief ORed CAI_MODEL_META_* metadata flags. */
   unsigned int metadata_flags;
+  /** @brief Known or inferred context window in tokens, or zero if unknown. */
   long long context_window_tokens;
+  /** @brief Default server-side compaction threshold in tokens, or zero. */
   long long auto_compact_token_limit;
+  /** @brief Estimated uncached input price in USD per million tokens. */
   double input_usd_per_million;
+  /** @brief Estimated cached input price in USD per million tokens. */
   double cached_input_usd_per_million;
+  /** @brief Estimated output price in USD per million tokens. */
   double output_usd_per_million;
 } cai_model_info;
 
+/** @brief Look up bundled metadata for a model id. */
 const cai_model_info *cai_model_info_by_id(const char *model_id);
+/** @brief Return non-zero if a model has the requested CAI_MODEL_CAP_* flag. */
 int cai_model_supports(const char *model_id, unsigned int capability);
+/** @brief Return CAI_MODEL_META_* flags for a model id, or zero if unknown. */
 unsigned int cai_model_metadata_flags(const char *model_id);
+/** @brief Return the known context window for a model id, or zero if unknown. */
 long long cai_model_context_window_tokens(const char *model_id);
+/** @brief Return the default compaction threshold for a model id, or zero. */
 long long cai_model_auto_compact_token_limit(const char *model_id);
+/** @brief Estimate USD cost from token usage using bundled model pricing. */
 double cai_model_estimate_usage_usd(const char *model_id,
                                     long long input_tokens,
                                     long long input_cached_tokens,
