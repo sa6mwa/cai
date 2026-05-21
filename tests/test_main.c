@@ -4672,12 +4672,19 @@ static void test_response_array_serialization_invariants(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+#define MOCK_IO_TIMEOUT_MS 100U
+
+static int mock_wait_fd(int fd, int for_write, unsigned int timeout_ms);
+
 static int mock_write_all(int fd, const char *data, size_t length) {
   size_t offset;
   ssize_t written;
 
   offset = 0U;
   while (offset < length) {
+    if (mock_wait_fd(fd, 1, MOCK_IO_TIMEOUT_MS) != 0) {
+      return -1;
+    }
     written = write(fd, data + offset, length - offset);
     if (written <= 0) {
       return -1;
@@ -4686,8 +4693,6 @@ static int mock_write_all(int fd, const char *data, size_t length) {
   }
   return 0;
 }
-
-#define MOCK_IO_TIMEOUT_MS 100U
 
 static int mock_set_socket_deadline(int fd) {
   struct timeval tv;
@@ -4852,25 +4857,34 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
   return 0;
 }
 
-static int mock_write_status_json_response(int fd, int status,
-                                           const char *status_text,
-                                           const char *request_id,
-                                           const char *body) {
+static int mock_write_status_response(int fd, int status,
+                                      const char *status_text,
+                                      const char *content_type,
+                                      const char *request_id,
+                                      const char *body) {
   char response[1024];
   int response_len;
 
   response_len = snprintf(
-      response, sizeof(response),
-      "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
+      response, sizeof(response), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\n"
       "%s%s%s"
       "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
-      status, status_text, request_id != NULL ? "x-request-id: " : "",
+      status, status_text, content_type != NULL ? content_type : "text/plain",
+      request_id != NULL ? "x-request-id: " : "",
       request_id != NULL ? request_id : "", request_id != NULL ? "\r\n" : "",
       (unsigned long)strlen(body), body);
   if (response_len <= 0 || (size_t)response_len >= sizeof(response)) {
     return -1;
   }
   return mock_write_all(fd, response, (size_t)response_len);
+}
+
+static int mock_write_status_json_response(int fd, int status,
+                                           const char *status_text,
+                                           const char *request_id,
+                                           const char *body) {
+  return mock_write_status_response(fd, status, status_text,
+                                    "application/json", request_id, body);
 }
 
 static int mock_write_json_response(int fd, const char *body) {
@@ -4897,6 +4911,48 @@ static int mock_write_oversized_sse_response(int fd) {
     }
   }
   return 0;
+}
+
+static void mock_child_timeout_handler(int sig) {
+  (void)sig;
+  _exit(125);
+}
+
+typedef struct mock_http_expectation {
+  const char *request_prefix;
+  const char **required;
+  size_t required_count;
+  const char **forbidden;
+  size_t forbidden_count;
+  int status;
+  const char *status_text;
+  const char *content_type;
+  const char *request_id;
+  const char *body;
+} mock_http_expectation;
+
+static int mock_request_matches(const char *request,
+                                const mock_http_expectation *expectation) {
+  size_t i;
+
+  if (expectation->request_prefix != NULL &&
+      strncmp(request, expectation->request_prefix,
+              strlen(expectation->request_prefix)) != 0) {
+    return 0;
+  }
+  for (i = 0U; i < expectation->required_count; i++) {
+    if (expectation->required[i] != NULL &&
+        strstr(request, expectation->required[i]) == NULL) {
+      return 0;
+    }
+  }
+  for (i = 0U; i < expectation->forbidden_count; i++) {
+    if (expectation->forbidden[i] != NULL &&
+        strstr(request, expectation->forbidden[i]) != NULL) {
+      return 0;
+    }
+  }
+  return 1;
 }
 
 static const char *mock_response_for_request(const char *request) {
@@ -5799,6 +5855,8 @@ static void mock_openai_child(int pipe_fd, int request_count) {
   int i;
   const char *body;
 
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
     _exit(2);
@@ -5891,7 +5949,141 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     close(client_fd);
   }
   close(server_fd);
+  alarm(0U);
   _exit(0);
+}
+
+static void mock_scripted_openai_child(
+    int pipe_fd, const mock_http_expectation *expectations,
+    size_t expectation_count) {
+  char request[4096];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  size_t i;
+  const mock_http_expectation *expectation;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0) {
+    _exit(4);
+  }
+  if (mock_set_socket_deadline(server_fd) != 0) {
+    _exit(12);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  for (i = 0U; i < expectation_count; i++) {
+    expectation = &expectations[i];
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0) {
+      _exit(7);
+    }
+    if (mock_set_socket_deadline(client_fd) != 0) {
+      close(client_fd);
+      _exit(12);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      close(client_fd);
+      _exit(8);
+    }
+    if (!mock_request_matches(request, expectation)) {
+      close(client_fd);
+      _exit(9);
+    }
+    if (mock_write_status_response(
+            client_fd, expectation->status != 0 ? expectation->status : 200,
+            expectation->status_text != NULL ? expectation->status_text : "OK",
+            expectation->content_type != NULL ? expectation->content_type
+                                              : "application/json",
+            expectation->request_id, expectation->body != NULL
+                                         ? expectation->body
+                                         : "{}") != 0) {
+      close(client_fd);
+      _exit(10);
+    }
+    close(client_fd);
+  }
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+typedef struct http_mock_server {
+  pid_t pid;
+  int child_status;
+  char base_url[128];
+} http_mock_server;
+
+static int mock_read_port(int pipe_fd, int *port) {
+  ssize_t nread;
+
+  if (mock_wait_fd(pipe_fd, 0, MOCK_IO_TIMEOUT_MS) != 0) {
+    return -1;
+  }
+  do {
+    nread = read(pipe_fd, port, sizeof(*port));
+  } while (nread < 0 && errno == EINTR);
+  return nread == (ssize_t)sizeof(*port) ? 0 : -1;
+}
+
+static int http_mock_server_open_script(
+    test_state *state, const char *name,
+    const mock_http_expectation *expectations, size_t expectation_count,
+    http_mock_server *server) {
+  int pipe_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    server->pid = -1;
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    mock_scripted_openai_child(pipe_fds[1], expectations, expectation_count);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, server->pid, &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url),
+           "http://127.0.0.1:%d/v1", port);
+  return 0;
 }
 
 typedef struct http_mock_client {
@@ -5905,49 +6097,30 @@ typedef struct http_mock_client {
   alloc_count_state alloc_state;
 } http_mock_client;
 
-static int http_mock_client_open(test_state *state, const char *name,
-                                 int request_count, http_mock_client *mock) {
-  int pipe_fds[2];
-  int port;
-  ssize_t nread;
+static int http_mock_client_open_script(
+    test_state *state, const char *name,
+    const mock_http_expectation *expectations, size_t expectation_count,
+    http_mock_client *mock) {
+  http_mock_server server;
 
   memset(mock, 0, sizeof(*mock));
   mock->pid = -1;
-  if (pipe(pipe_fds) != 0) {
-    test_fail(state, name, "pipe failed");
+  if (http_mock_server_open_script(state, name, expectations, expectation_count,
+                                   &server) != 0) {
     return -1;
   }
-  mock->pid = fork();
-  if (mock->pid < 0) {
-    test_fail(state, name, "fork failed");
-    close(pipe_fds[0]);
-    close(pipe_fds[1]);
-    return -1;
-  }
-  if (mock->pid == 0) {
-    close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], request_count);
-  }
-  close(pipe_fds[1]);
-  nread = read(pipe_fds[0], &port, sizeof(port));
-  close(pipe_fds[0]);
-  if (nread != (ssize_t)sizeof(port)) {
-    test_fail(state, name, "failed to read mock port");
-    expect_child_exit(state, name, mock->pid, &mock->child_status);
-    mock->pid = -1;
-    return -1;
-  }
+  mock->pid = server.pid;
+  mock->child_status = server.child_status;
+  memcpy(mock->base_url, server.base_url, sizeof(mock->base_url));
 
   cai_error_init(&mock->error);
-  snprintf(mock->base_url, sizeof(mock->base_url), "http://127.0.0.1:%d/v1",
-           port);
   cai_client_config_init(&mock->config);
   mock->config.api_key = "mock-key";
   mock->config.base_url = mock->base_url;
   mock->config.organization_id = "org_mock";
   mock->config.project_id = "proj_mock";
   mock->config.http_2_disabled = 1;
-  mock->config.timeout_ms = 2000L;
+  mock->config.timeout_ms = 500L;
   mock->config.allocator.malloc_fn = test_allocator_malloc;
   mock->config.allocator.realloc_fn = test_allocator_realloc;
   mock->config.allocator.free_fn = test_allocator_free;
@@ -6197,17 +6370,48 @@ static void test_response_large_text_parse(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static const char http_create_body[] =
+    "{\"id\":\"resp_mock\",\"status\":\"completed\",\"output\":[{\"type\":"
+    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"mock "
+    "ok\"}]}]}";
+static const char http_retrieve_body[] =
+    "{\"id\":\"resp_get\",\"status\":\"completed\",\"output\":[{\"type\":"
+    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"get "
+    "ok\"}]}]}";
+static const char http_cancel_body[] =
+    "{\"id\":\"resp_cancel\",\"status\":\"cancelled\",\"output\":[{\"type\":"
+    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"cancel "
+    "ok\"}]}]}";
+static const char http_delete_body[] = "{\"deleted\":true,\"id\":\"resp_get\"}";
+static const char http_input_tokens_body[] =
+    "{\"object\":\"response.input_tokens\",\"input_tokens\":42}";
+static const char http_input_items_body[] =
+    "{\"object\":\"list\",\"data\":[{\"id\":\"msg_1\",\"type\":\"message\","
+    "\"role\":\"user\"},{\"id\":\"msg_2\",\"type\":\"message\",\"role\":"
+    "\"assistant\"}],\"first_id\":\"msg_1\",\"last_id\":\"msg_2\","
+    "\"has_more\":true}";
+
 static void test_http_create_response(test_state *state) {
   cai_response_create_params *params;
   cai_response *response;
   http_mock_client mock;
+  static const char *required[] = {"OpenAI-Organization: org_mock",
+                                   "OpenAI-Project: proj_mock",
+                                   "\"model\":\"gpt-5-nano\"",
+                                   "\"text\":\"hello\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, http_create_body}};
 
   g_test_infof_count = 0;
   g_test_tracef_count = 0;
   g_test_debugf_count = 0;
   g_test_warnf_count = 0;
   g_test_errorf_count = 0;
-  if (http_mock_client_open(state, "http_create_mock", 1, &mock) != 0) {
+  if (http_mock_client_open_script(state, "http_create_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   params = NULL;
@@ -6243,8 +6447,13 @@ static void test_http_create_response(test_state *state) {
 static void test_http_retrieve_response(test_state *state) {
   cai_response *response;
   http_mock_client mock;
+  static const mock_http_expectation script[] = {
+      {"GET /v1/responses/resp_get HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "application/json", NULL, http_retrieve_body}};
 
-  if (http_mock_client_open(state, "http_retrieve_mock", 1, &mock) != 0) {
+  if (http_mock_client_open_script(state, "http_retrieve_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   response = NULL;
@@ -6262,8 +6471,13 @@ static void test_http_retrieve_response(test_state *state) {
 static void test_http_cancel_response(test_state *state) {
   cai_response *response;
   http_mock_client mock;
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses/resp_get/cancel HTTP/", NULL, 0U, NULL, 0U, 200,
+       "OK", "application/json", NULL, http_cancel_body}};
 
-  if (http_mock_client_open(state, "http_cancel_mock", 1, &mock) != 0) {
+  if (http_mock_client_open_script(state, "http_cancel_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   response = NULL;
@@ -6281,8 +6495,13 @@ static void test_http_cancel_response(test_state *state) {
 
 static void test_http_delete_response(test_state *state) {
   http_mock_client mock;
+  static const mock_http_expectation script[] = {
+      {"DELETE /v1/responses/resp_get HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "application/json", NULL, http_delete_body}};
 
-  if (http_mock_client_open(state, "http_delete_mock", 1, &mock) != 0) {
+  if (http_mock_client_open_script(state, "http_delete_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   expect_int(state, "http_delete",
@@ -6295,8 +6514,16 @@ static void test_http_count_response_input_tokens(test_state *state) {
   cai_response_create_params *params;
   cai_token_usage usage;
   http_mock_client mock;
+  static const char *required[] = {"\"model\":\"gpt-5-nano\"",
+                                   "\"text\":\"hello\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses/input_tokens HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, http_input_tokens_body}};
 
-  if (http_mock_client_open(state, "http_count_tokens_mock", 1, &mock) != 0) {
+  if (http_mock_client_open_script(state, "http_count_tokens_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   params = NULL;
@@ -6325,8 +6552,16 @@ static void test_http_list_response_input_items(test_state *state) {
   cai_input_item_list *items;
   cai_list_params list_params;
   http_mock_client mock;
+  static const char *required[] = {"after=msg_0%20x", "limit=2",
+                                   "order=asc"};
+  static const mock_http_expectation script[] = {
+      {"GET /v1/responses/resp_get/input_items?", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, http_input_items_body}};
 
-  if (http_mock_client_open(state, "http_list_items_mock", 1, &mock) != 0) {
+  if (http_mock_client_open_script(state, "http_list_items_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   items = NULL;
