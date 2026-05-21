@@ -18,9 +18,7 @@ else
 fi
 
 for preset in "${presets[@]}"; do
-  cmake --fresh --preset "$preset"
   cmake --build --preset "$preset" --target cai_package_archive
 done
 
 cmake --build --preset x86_64-linux-gnu-release --target cai_package_source
-cmake --build --preset x86_64-linux-gnu-release --target cai_package_checksums

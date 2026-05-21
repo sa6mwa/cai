@@ -133,7 +133,7 @@ lua-test: lua-rock
 	LD_PRELOAD="$${asan_lib}$${LD_PRELOAD:+:$$LD_PRELOAD}" \
 	lua tests/lua/test_lua.lua
 
-$(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS) | build-debug
+$(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS)
 	rm -rf "$(RELEASE_LUA_ROCK_DIR)" "$(RELEASE_LUA_SOURCE_TARBALL)"
 	mkdir -p "$(RELEASE_LUA_ROCK_DIR)"
 	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_STAGE_DIR)" "$(RELEASE_VERSION)"
@@ -144,7 +144,7 @@ $(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS) | build-debug
 $(RELEASE_LUA_ROCKSPEC): $(RELEASE_LUA_SOURCE_TARBALL) scripts/render_release_rockspec.sh
 	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(RELEASE_LUA_ROCKSPEC)" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"
 
-$(RELEASE_LUA_PACK_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS) | build-debug
+$(RELEASE_LUA_PACK_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS)
 	rm -rf "$(RELEASE_LUA_PACK_DIR)"
 	mkdir -p "$(RELEASE_LUA_PACK_DIR)"
 	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_PACK_STAGE_DIR)" "$(RELEASE_VERSION)"
@@ -187,7 +187,7 @@ package-source-smoke: package-source
 	bash ./scripts/test_release_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h).tar.gz"
 
 package-checksums: assert-release-version package release-lua-artifacts
-	$(CMAKE) --build --preset x86_64-linux-gnu-release --target cai_package_checksums
+	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
 
 package-verify: assert-release-version package-checksums
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
@@ -195,8 +195,12 @@ package-verify: assert-release-version package-checksums
 release:
 	$(CMAKE) -E rm -rf build dist
 	$(MAKE) assert-release-version
-	$(MAKE) test-release
-	$(MAKE) package-verify
+	$(MAKE) build-release
+	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure
+	bash ./scripts/package_release_matrix.sh
+	$(MAKE) release-lua-artifacts
+	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
+	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
 compose-check:
 	@if [[ -z "$(COMPOSE)" ]]; then \
