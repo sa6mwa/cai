@@ -29,6 +29,7 @@ TERMINAL_TOOL_ARGS := $(EXEC_TOOL_ARGS) $(READ_TOOL_ARGS)
 
 define run_c_example
 	cd "$(ROOT)" && \
+	$(CMAKE) --preset debug && \
 	$(CMAKE) --build --preset debug --target $(1) && \
 	./build/debug/$(1) $(2)
 endef
