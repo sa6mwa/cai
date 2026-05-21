@@ -104,6 +104,54 @@ verify_no_private_bytes() {
   done < <(find "$root_dir" -type f -print)
 }
 
+release_expected_manifest() {
+  local output=$1
+  local ignored
+
+  git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  ignored=$(mktemp)
+  git -C "$repo_root" ls-files >"$output"
+  git -C "$repo_root" check-ignore --no-index --stdin <"$output" \
+    >"$ignored" 2>/dev/null || true
+  if [[ -s "$ignored" ]]; then
+    grep -F -x -v -f "$ignored" "$output" >"${output}.filtered"
+    mv "${output}.filtered" "$output"
+  fi
+  rm -f "$ignored"
+  printf '%s\n' VERSION RELEASE_MANIFEST >>"$output"
+  sort -u -o "$output" "$output"
+}
+
+verify_source_matches_git_manifest() {
+  local root=$1
+  local listing=$2
+  local actual
+  local expected
+  local ignored
+
+  git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  actual=$(mktemp)
+  expected=$(mktemp)
+  ignored=$(mktemp)
+  sed "s#^$root/##" "$listing" | grep -v -E '^$|/$' | sort -u >"$actual"
+  release_expected_manifest "$expected" || {
+    rm -f "$actual" "$expected" "$ignored"
+    return 0
+  }
+  if ! diff -u "$expected" "$actual" >&2; then
+    rm -f "$actual" "$expected" "$ignored"
+    fail "source archive does not match git-tracked non-ignored manifest"
+  fi
+  git -C "$repo_root" check-ignore --no-index --stdin <"$actual" \
+    >"$ignored" 2>/dev/null || true
+  if [[ -s "$ignored" ]]; then
+    cat "$ignored" >&2
+    rm -f "$actual" "$expected" "$ignored"
+    fail "source archive contains git-ignored paths"
+  fi
+  rm -f "$actual" "$expected" "$ignored"
+}
+
 verify_no_private_text() {
   local root_dir=$1
   local matches
@@ -270,6 +318,7 @@ verify_source_archive() {
   require_member "$listing" "$root/RELEASE_MANIFEST"
   require_no_member "$listing" "$root/.git/config"
   require_no_member "$listing" "$root/.env"
+  verify_source_matches_git_manifest "$root" "$listing"
 }
 
 verify_lua_source_archive() {
