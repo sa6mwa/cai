@@ -7799,12 +7799,39 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
-  if (access("/bin/bash", X_OK) == 0 &&
-      run_exec_tool_case(state, "exec_bash_shell", &config,
-                         "{\"cmd\":\"printf ${BASH_VERSION:+bash-ok}\","
-                         "\"shell\":\"/bin/bash\"}",
-                         CAI_OK, &writer, &error) == CAI_OK) {
-    expect_substr(state, "exec_bash_shell_output", writer.buffer, "bash-ok");
+  if (access("/bin/bash", X_OK) == 0) {
+    run_exec_tool_case(state, "exec_reject_bash_when_shell_policy_is_sh",
+                       &config,
+                       "{\"cmd\":\"printf nope\",\"shell\":\"/bin/bash\"}",
+                       CAI_ERR_INVALID, &writer, &error);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+
+    config.shell_path = "/bin/bash";
+    if (run_exec_tool_case(state, "exec_bash_shell", &config,
+                           "{\"cmd\":\"printf ${BASH_VERSION:+bash-ok}\","
+                           "\"shell\":\"/bin/bash\"}",
+                           CAI_OK, &writer, &error) == CAI_OK) {
+      expect_substr(state, "exec_bash_shell_output", writer.buffer, "bash-ok");
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+
+    config.allow_login_shell = 1;
+    if (run_exec_tool_case(state, "exec_bwrap_login_shell", &config,
+                           "{\"cmd\":\"shopt -q login_shell && printf login "
+                           "|| printf not-login\","
+                           "\"shell\":\"/bin/bash\",\"login\":true}",
+                           CAI_OK, &writer, &error) == CAI_OK) {
+      expect_substr(state, "exec_bwrap_login_shell_output", writer.buffer,
+                    "login");
+      if (strstr(writer.buffer, "not-login") != NULL) {
+        test_fail(state, "exec_bwrap_login_shell_flag",
+                  "login shell request was ignored");
+      }
+    }
+    config.allow_login_shell = 0;
+    config.shell_path = NULL;
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);

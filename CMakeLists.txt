@@ -316,10 +316,11 @@ endif()
 find_package(Threads REQUIRED)
 
 if(CAI_BUILD_LUA)
-  find_program(CAI_LUA_EXECUTABLE NAMES lua lua5.5 REQUIRED)
+  find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua REQUIRED)
   find_path(CAI_LUA_INCLUDE_DIR lua.h
-    PATHS /usr/local/include /usr/include /opt/homebrew/include)
-  find_library(CAI_LUA_LIBRARY NAMES lua lua5.5
+    PATHS /usr/local/include /usr/include /opt/homebrew/include
+    PATH_SUFFIXES lua5.5)
+  find_library(CAI_LUA_LIBRARY NAMES lua5.5 lua
     PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
           /opt/homebrew/lib)
   if(NOT CAI_LUA_INCLUDE_DIR OR NOT CAI_LUA_LIBRARY)

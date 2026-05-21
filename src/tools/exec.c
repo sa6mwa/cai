@@ -449,15 +449,6 @@ static int cai_exec_shell_allowed(const cai_exec_context *ctx,
   if (strcmp(shell_path, ctx->shell_path) == 0) {
     return 1;
   }
-  if (strcmp(shell_path, "/bin/sh") == 0 && access(shell_path, X_OK) == 0) {
-    return 1;
-  }
-  if (strcmp(shell_path, "/bin/bash") == 0 && access(shell_path, X_OK) == 0) {
-    return 1;
-  }
-  if (strcmp(shell_path, "/usr/bin/bash") == 0 && access(shell_path, X_OK) == 0) {
-    return 1;
-  }
   return 0;
 }
 
@@ -723,6 +714,7 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
                                      const char *workdir,
                                      const char *shell_path,
                                      const char *cmd, const char *bwrap_path,
+                                     int login_shell,
                                      const char **argv, size_t argv_cap,
                                      char dirs[][PATH_MAX],
                                      size_t *dir_count, size_t dir_cap) {
@@ -785,7 +777,7 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   cai_exec_bwrap_arg(argv, &i, argv_cap, workdir);
   cai_exec_bwrap_arg(argv, &i, argv_cap, "--");
   cai_exec_bwrap_arg(argv, &i, argv_cap, shell_path);
-  cai_exec_bwrap_arg(argv, &i, argv_cap, "-c");
+  cai_exec_bwrap_arg(argv, &i, argv_cap, login_shell ? "-lc" : "-c");
   cai_exec_bwrap_arg(argv, &i, argv_cap, cmd);
   argv[i] = NULL;
   if (i + 1U >= argv_cap) {
@@ -956,7 +948,10 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
   if (use_sandbox) {
 #if defined(__linux__)
     if (cai_exec_build_bwrap_argv(ctx, workdir, shell_path, args->cmd,
-                                  sandbox_path, argv,
+                                  sandbox_path,
+                                  args->has_login && args->login &&
+                                      ctx->allow_login_shell,
+                                  argv,
                                   sizeof(argv) / sizeof(argv[0]), dirs,
                                   &dir_count,
                                   sizeof(dirs) / sizeof(dirs[0])) != 0) {

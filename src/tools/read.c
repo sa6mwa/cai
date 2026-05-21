@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,10 @@
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
+#endif
+
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
 #endif
 
 extern char *realpath(const char *path, char *resolved_path);
@@ -824,6 +829,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   lonejson_spool_options spool_options;
   struct stat st;
   FILE *fp;
+  int fd;
   char buffer[4096];
   long long start_line;
   long long end_line;
@@ -842,18 +848,39 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   int at_limit;
   int rc;
 
-  if (stat(resolved_path, &st) != 0) {
+  fd = -1;
+  fp = NULL;
+  fd = open(resolved_path, O_RDONLY | O_NOFOLLOW);
+  if (fd < 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
+                                strerror(errno));
+  }
+  if (fstat(fd, &st) != 0) {
+    close(fd);
     return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
                                 strerror(errno));
   }
-  *file_size = (long long)st.st_size;
+  if (!S_ISREG(st.st_mode)) {
+    close(fd);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path must be a regular file");
+  }
+  fp = fdopen(fd, "rb");
+  if (fp == NULL) {
+    close(fd);
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
+                                strerror(errno));
+  }
+  fd = -1;
   start_line = args->has_start_line ? args->start_line : 1LL;
   if (start_line < 1LL) {
+    fclose(fp);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "start_line must be greater than zero");
   }
   end_line = args->has_end_line ? args->end_line : 0LL;
   if (end_line != 0LL && end_line < start_line) {
+    fclose(fp);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "end_line must be greater than or equal to start_line");
   }
@@ -866,20 +893,16 @@ static int cai_read_stream_file(const cai_read_context *ctx,
     }
   }
   if (max_bytes <= 0LL) {
+    fclose(fp);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read content byte limit is invalid");
   }
+  *file_size = (long long)st.st_size;
   spool_options = lonejson_default_spool_options();
   spool_options.memory_limit = ctx->content_memory_limit;
   spool_options.max_bytes = (size_t)max_bytes;
   spool_options.temp_dir = ctx->content_spool_dir;
   lonejson_spooled_init(content, &spool_options);
-  fp = fopen(resolved_path, "rb");
-  if (fp == NULL) {
-    lonejson_spooled_cleanup(content);
-    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
-                                strerror(errno));
-  }
   current_line = 1LL;
   last_line = start_line;
   written = 0LL;
