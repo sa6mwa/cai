@@ -192,7 +192,7 @@ static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
                                             int output_index,
                                             const char *call_id,
                                             const char *name,
-                                            const char *arguments,
+                                            const lonejson_spooled *arguments,
                                             cai_error *error);
 static void cai_stream_tool_call_list_cleanup(
     cai_stream_tool_call_list *list);
@@ -902,12 +902,14 @@ static int cai_stream_tool_call_list_grow(cai_stream_tool_call_list *list) {
 
 static int cai_stream_tool_call_list_append_delta(
     cai_stream_tool_call_list *list, const char *item_id, int output_index,
-    const char *delta, cai_error *error) {
+    const lonejson_spooled *delta, cai_error *error) {
   cai_response_tool_call *call;
+  cai_history_sink_context sink_context;
   lonejson_error json_error;
   int rc;
 
-  if (list == NULL || item_id == NULL || delta == NULL) {
+  if (list == NULL || item_id == NULL || delta == NULL ||
+      lonejson_spooled_size(delta) == 0U) {
     return CAI_OK;
   }
   call = cai_stream_tool_call_list_find(list, item_id, output_index);
@@ -933,8 +935,10 @@ static int cai_stream_tool_call_list_append_delta(
     call->has_arguments_spooled = 1;
   }
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(&call->arguments_spooled, delta, strlen(delta),
-                              &json_error) != LONEJSON_STATUS_OK) {
+  sink_context.spool = &call->arguments_spooled;
+  if (lonejson_spooled_write_to_sink(delta, cai_history_lonejson_sink,
+                                     &sink_context, &json_error) !=
+      LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool streamed tool arguments",
                                 json_error.message);
@@ -961,22 +965,17 @@ static lonejson_status cai_agent_spool_sink(void *user, const void *data,
                                             lonejson_error *error);
 
 static int cai_stream_tool_call_set_final_arguments(
-    cai_response_tool_call *call, const char *arguments, cai_error *error) {
-  lonejson_json_value value;
+    cai_response_tool_call *call, const lonejson_spooled *arguments,
+    cai_error *error) {
+  cai_history_sink_context sink_context;
   lonejson_error json_error;
   lonejson_status status;
-  char *copy;
 
   if (call == NULL || arguments == NULL) {
     return CAI_ERR_INVALID;
   }
-  copy = cai_strdup(NULL, arguments);
-  if (copy == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate stream tool arguments");
-  }
   cai_free_mem(NULL, call->arguments);
-  call->arguments = copy;
+  call->arguments = NULL;
   if (call->has_arguments_spooled) {
     lonejson_spooled_cleanup(&call->arguments_spooled);
     call->has_arguments_spooled = 0;
@@ -984,14 +983,9 @@ static int cai_stream_tool_call_set_final_arguments(
   lonejson_spooled_init(&call->arguments_spooled, NULL);
   call->has_arguments_spooled = 1;
   lonejson_error_init(&json_error);
-  lonejson_json_value_init(&value);
-  status = lonejson_json_value_set_buffer(&value, arguments, strlen(arguments),
-                                          &json_error);
-  if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_json_value_write_to_sink(
-        &value, cai_agent_spool_sink, &call->arguments_spooled, &json_error);
-  }
-  lonejson_json_value_cleanup(&value);
+  sink_context.spool = &call->arguments_spooled;
+  status = lonejson_spooled_write_to_sink(arguments, cai_history_lonejson_sink,
+                                          &sink_context, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool streamed tool arguments",
@@ -1005,7 +999,7 @@ static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
                                             int output_index,
                                             const char *call_id,
                                             const char *name,
-                                            const char *arguments,
+                                            const lonejson_spooled *arguments,
                                             cai_error *error) {
   cai_response_tool_call *call;
   int rc;
@@ -1132,12 +1126,18 @@ static int cai_stream_tool_calls_spool(cai_session *session,
       status = lonejson_writer_key(&writer, "arguments", 9U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_string(
-          &writer,
-          calls->items[i].arguments != NULL ? calls->items[i].arguments : "",
-          calls->items[i].arguments != NULL ? strlen(calls->items[i].arguments)
-                                            : 0U,
-          &json_error);
+      if (calls->items[i].has_arguments_spooled) {
+        status = lonejson_writer_string_spooled(
+            &writer, &calls->items[i].arguments_spooled, &json_error);
+      } else {
+        status = lonejson_writer_string(
+            &writer,
+            calls->items[i].arguments != NULL ? calls->items[i].arguments : "",
+            calls->items[i].arguments != NULL
+                ? strlen(calls->items[i].arguments)
+                : 0U,
+            &json_error);
+      }
     }
     if (status == LONEJSON_STATUS_OK) {
       status = lonejson_writer_end_object(&writer, &json_error);
@@ -1307,9 +1307,11 @@ static int cai_stream_capture_output_items_finish(
 }
 
 static int cai_stream_capture_output_text(void *context, const char *item_id,
-                                          int output_index, const char *delta,
+                                          int output_index,
+                                          const lonejson_spooled *delta,
                                           cai_error *error) {
   cai_stream_tool_capture *capture;
+  cai_history_sink_context sink_context;
   lonejson_error json_error;
   int rc;
 
@@ -1317,10 +1319,13 @@ static int cai_stream_capture_output_text(void *context, const char *item_id,
   (void)output_index;
   capture = (cai_stream_tool_capture *)context;
   rc = CAI_OK;
-  if (capture != NULL && capture->output_text != NULL && delta != NULL) {
+  if (capture != NULL && capture->output_text != NULL && delta != NULL &&
+      lonejson_spooled_size(delta) > 0U) {
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_append(capture->output_text, delta, strlen(delta),
-                                &json_error) != LONEJSON_STATUS_OK) {
+    sink_context.spool = capture->output_text;
+    if (lonejson_spooled_write_to_sink(delta, cai_history_lonejson_sink,
+                                       &sink_context, &json_error) !=
+        LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool streamed output text",
                                 json_error.message);
@@ -1336,7 +1341,8 @@ static int cai_stream_capture_output_text(void *context, const char *item_id,
 }
 
 static int cai_stream_capture_tool_delta(void *context, const char *item_id,
-                                         int output_index, const char *delta,
+                                         int output_index,
+                                         const lonejson_spooled *delta,
                                          cai_error *error) {
   cai_stream_tool_capture *capture;
   int rc;
@@ -1359,7 +1365,7 @@ static int cai_stream_capture_tool_delta(void *context, const char *item_id,
 static int cai_stream_capture_tool_done(void *context, const char *item_id,
                                         int output_index, const char *call_id,
                                         const char *name,
-                                        const char *arguments,
+                                        const lonejson_spooled *arguments,
                                         cai_error *error) {
   cai_stream_tool_capture *capture;
   int rc;

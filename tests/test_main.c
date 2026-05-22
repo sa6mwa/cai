@@ -550,7 +550,7 @@ static void write_bytes_or_die(const char *path, const unsigned char *data,
   fclose(fp);
 }
 
-static char *test_spooled_to_cstr(lonejson_spooled *spool) {
+static char *test_spooled_to_cstr(const lonejson_spooled *spool) {
   lonejson_spooled cursor;
   lonejson_error json_error;
   lonejson_read_result chunk;
@@ -1238,9 +1238,11 @@ static void expect_valid_json(test_state *state, const char *name,
 }
 
 static int test_stream_tool_delta(void *context, const char *item_id,
-                                  int output_index, const char *delta,
+                                  int output_index,
+                                  const lonejson_spooled *delta,
                                   cai_error *error) {
   stream_tool_state *state;
+  char *text;
 
   (void)error;
   state = (stream_tool_state *)context;
@@ -1248,21 +1250,29 @@ static int test_stream_tool_delta(void *context, const char *item_id,
   snprintf(state->item_id, sizeof(state->item_id), "%s",
            item_id != NULL ? item_id : "");
   state->output_index = output_index;
-  if (delta != NULL &&
-      state->delta_count == 1) {
-    snprintf(state->delta, sizeof(state->delta), "%s", delta);
-  } else if (delta != NULL) {
-    strncat(state->delta, delta,
-            sizeof(state->delta) - strlen(state->delta) - 1U);
+  if (delta != NULL) {
+    text = test_spooled_to_cstr(delta);
+    if (text == NULL) {
+      return CAI_ERR_NOMEM;
+    }
+    if (state->delta_count == 1) {
+      snprintf(state->delta, sizeof(state->delta), "%s", text);
+    } else {
+      strncat(state->delta, text,
+              sizeof(state->delta) - strlen(state->delta) - 1U);
+    }
+    free(text);
   }
   return CAI_OK;
 }
 
 static int test_stream_tool_done(void *context, const char *item_id,
                                  int output_index, const char *call_id,
-                                 const char *name, const char *arguments,
+                                 const char *name,
+                                 const lonejson_spooled *arguments,
                                  cai_error *error) {
   stream_tool_state *state;
+  char *text;
 
   (void)error;
   state = (stream_tool_state *)context;
@@ -1273,8 +1283,14 @@ static int test_stream_tool_done(void *context, const char *item_id,
   snprintf(state->call_id, sizeof(state->call_id), "%s",
            call_id != NULL ? call_id : "");
   snprintf(state->name, sizeof(state->name), "%s", name != NULL ? name : "");
-  snprintf(state->arguments, sizeof(state->arguments), "%s",
-           arguments != NULL ? arguments : "");
+  if (arguments != NULL) {
+    text = test_spooled_to_cstr(arguments);
+    if (text == NULL) {
+      return CAI_ERR_NOMEM;
+    }
+    snprintf(state->arguments, sizeof(state->arguments), "%s", text);
+    free(text);
+  }
   return CAI_OK;
 }
 
@@ -1303,9 +1319,11 @@ static int test_stream_output_item_done(
 }
 
 static int test_stream_output_delta(void *context, const char *item_id,
-                                    int output_index, const char *delta,
+                                    int output_index,
+                                    const lonejson_spooled *delta,
                                     cai_error *error) {
   stream_output_state *state;
+  char *text;
 
   (void)error;
   state = (stream_output_state *)context;
@@ -1313,12 +1331,18 @@ static int test_stream_output_delta(void *context, const char *item_id,
   snprintf(state->item_id, sizeof(state->item_id), "%s",
            item_id != NULL ? item_id : "");
   state->output_index = output_index;
-  if (delta != NULL &&
-      state->delta_count == 1) {
-    snprintf(state->delta, sizeof(state->delta), "%s", delta);
-  } else if (delta != NULL) {
-    strncat(state->delta, delta,
-            sizeof(state->delta) - strlen(state->delta) - 1U);
+  if (delta != NULL) {
+    text = test_spooled_to_cstr(delta);
+    if (text == NULL) {
+      return CAI_ERR_NOMEM;
+    }
+    if (state->delta_count == 1) {
+      snprintf(state->delta, sizeof(state->delta), "%s", text);
+    } else {
+      strncat(state->delta, text,
+              sizeof(state->delta) - strlen(state->delta) - 1U);
+    }
+    free(text);
   }
   return CAI_OK;
 }
@@ -1509,11 +1533,22 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     return CAI_OK;
   }
   if (event->type == CAI_TOOL_EVENT_START) {
+    char *arguments;
+
     state->starts++;
     snprintf(state->name, sizeof(state->name), "%s",
              event->name != NULL ? event->name : "");
-    snprintf(state->arguments, sizeof(state->arguments), "%s",
-             event->arguments_json != NULL ? event->arguments_json : "");
+    if (event->arguments_json != NULL) {
+      snprintf(state->arguments, sizeof(state->arguments), "%s",
+               event->arguments_json);
+    } else if (event->arguments_json_spooled != NULL) {
+      arguments = test_spooled_to_cstr(event->arguments_json_spooled);
+      if (arguments == NULL) {
+        return CAI_ERR_NOMEM;
+      }
+      snprintf(state->arguments, sizeof(state->arguments), "%s", arguments);
+      free(arguments);
+    }
     state->arguments_spooled_size =
         event->arguments_json_spooled != NULL
             ? lonejson_spooled_size(event->arguments_json_spooled)
@@ -1545,7 +1580,7 @@ static int test_failing_stream_tool_done(void *context, const char *item_id,
                                          int output_index,
                                          const char *call_id,
                                          const char *name,
-                                         const char *arguments,
+                                         const lonejson_spooled *arguments,
                                          cai_error *error) {
   failing_callback_state *state;
 
@@ -1564,7 +1599,7 @@ static int test_failing_stream_tool_done(void *context, const char *item_id,
 
 static int test_failing_stream_output_delta(void *context, const char *item_id,
                                             int output_index,
-                                            const char *delta,
+                                            const lonejson_spooled *delta,
                                             cai_error *error) {
   failing_callback_state *state;
 
@@ -4972,7 +5007,9 @@ static int mock_write_large_instructions_sse_response(int fd) {
       "\"resp_large_instructions\",\"usage\":{\"input_tokens\":1,"
       "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1,"
       "\"output_tokens_details\":{\"reasoning_tokens\":0},"
-      "\"total_tokens\":2}}}\n\n";
+      "\"total_tokens\":2},\"output\":[{\"type\":\"message\",\"role\":"
+      "\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"";
+  static const char suffix[] = "\"}]}]}}\n\n";
   char chunk[1024];
   size_t i;
 
@@ -4981,12 +5018,90 @@ static int mock_write_large_instructions_sse_response(int fd) {
     return -1;
   }
   memset(chunk, 'i', sizeof(chunk));
-  for (i = 0U; i < 16U; i++) {
+  for (i = 0U; i < 192U; i++) {
     if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
       return -1;
     }
   }
   if (mock_write_all(fd, middle, sizeof(middle) - 1U) != 0) {
+    return -1;
+  }
+  memset(chunk, 'o', sizeof(chunk));
+  for (i = 0U; i < 192U; i++) {
+    if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
+      return -1;
+    }
+  }
+  if (mock_write_all(fd, suffix, sizeof(suffix) - 1U) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int mock_write_large_content_part_done_sse_response(int fd) {
+  static const char header[] =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n";
+  static const char prefix[] =
+      "event: response.output_text.delta\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+      "event: response.output_text.done\n"
+      "data: {\"type\":\"response.output_text.done\",\"content_index\":0,"
+      "\"item_id\":\"msg_large_part\",\"output_index\":0,\"text\":\"";
+  static const char middle[] =
+      "\"}\n\n"
+      "event: response.content_part.done\n"
+      "data: {\"type\":\"response.content_part.done\",\"content_index\":0,"
+      "\"item_id\":\"msg_large_part\",\"output_index\":0,\"part\":{"
+      "\"type\":\"output_text\",\"annotations\":[],\"logprobs\":[],"
+      "\"text\":\"";
+  static const char tail[] =
+      "\"}}\n\n"
+      "event: response.output_item.done\n"
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"msg_large_part\",\"type\":\"message\","
+      "\"status\":\"completed\",\"content\":[{\"type\":\"output_text\","
+      "\"annotations\":[],\"logprobs\":[],\"text\":\"";
+  static const char suffix[] =
+      "\"}],\"role\":\"assistant\"}}\n\n"
+      "event: response.completed\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_large_part\",\"usage\":{\"input_tokens\":1,"
+      "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":0},"
+      "\"total_tokens\":2}}}\n\n";
+  char chunk[1024];
+  size_t i;
+
+  if (mock_write_all(fd, header, sizeof(header) - 1U) != 0 ||
+      mock_write_all(fd, prefix, sizeof(prefix) - 1U) != 0) {
+    return -1;
+  }
+  memset(chunk, 't', sizeof(chunk));
+  for (i = 0U; i < 10U; i++) {
+    if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
+      return -1;
+    }
+  }
+  if (mock_write_all(fd, middle, sizeof(middle) - 1U) != 0) {
+    return -1;
+  }
+  memset(chunk, 'p', sizeof(chunk));
+  for (i = 0U; i < 10U; i++) {
+    if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
+      return -1;
+    }
+  }
+  if (mock_write_all(fd, tail, sizeof(tail) - 1U) != 0) {
+    return -1;
+  }
+  memset(chunk, 'm', sizeof(chunk));
+  for (i = 0U; i < 10U; i++) {
+    if (mock_write_all(fd, chunk, sizeof(chunk)) != 0) {
+      return -1;
+    }
+  }
+  if (mock_write_all(fd, suffix, sizeof(suffix) - 1U) != 0) {
     return -1;
   }
   return 0;
@@ -6020,6 +6135,13 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     }
     if (strstr(request, "large stream instructions turn") != NULL) {
       if (mock_write_large_instructions_sse_response(client_fd) != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
+    if (strstr(request, "large content part done turn") != NULL) {
+      if (mock_write_large_content_part_done_sse_response(client_fd) != 0) {
         _exit(10);
       }
       close(client_fd);
@@ -13012,6 +13134,9 @@ static void test_stream_large_instructions_field(test_state *state) {
              CAI_OK);
   expect_int(state, "stream_large_instructions_run",
              cai_session_stream_text(session, sink, &error), CAI_OK);
+  if (error.code != CAI_OK && error.message != NULL) {
+    test_fail(state, "stream_large_instructions_error", error.message);
+  }
   expect_str(state, "stream_large_instructions_output", writer.buffer, "ok");
   expect_int(state, "stream_large_instructions_usage",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
@@ -13028,6 +13153,106 @@ static void test_stream_large_instructions_field(test_state *state) {
     test_fail(state, "stream_large_instructions_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "stream_large_instructions_mock", "mock child failed");
+  }
+}
+
+static void test_stream_large_content_part_done_field(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  write_state writer;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_token_usage usage;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_large_content_part_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_large_content_part_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_large_content_part_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_large_content_part_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_large_content_part_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_large_content_part_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_large_content_part_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "stream_large_content_part_add",
+             cai_session_add_user_text(session,
+                                       "large content part done turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_large_content_part_run",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  if (error.code != CAI_OK && error.message != NULL) {
+    test_fail(state, "stream_large_content_part_error", error.message);
+  }
+  expect_str(state, "stream_large_content_part_output", writer.buffer, "ok");
+  expect_int(state, "stream_large_content_part_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_large_content_part_usage_total",
+             usage.total_tokens, 2L);
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_large_content_part_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_large_content_part_mock", "mock child failed");
   }
 }
 
@@ -14134,6 +14359,8 @@ static const test_entry test_entries[] = {
      test_session_stream_auto_tool_output_max_bytes},
     {"stream_sse_event_limit", test_stream_sse_event_limit},
     {"stream_large_instructions_field", test_stream_large_instructions_field},
+    {"stream_large_content_part_done_field",
+     test_stream_large_content_part_done_field},
     {"stream_history_preserves_pretty_json",
      test_stream_history_preserves_pretty_json},
     {"stream_client_history_captures_output",

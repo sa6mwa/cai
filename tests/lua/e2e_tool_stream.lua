@@ -125,7 +125,7 @@ ok, err = session:stream({
     return true
   end,
   on_response_delta = function(chunk)
-    response_delta_chunks[#response_delta_chunks + 1] = chunk
+    response_delta_chunks[#response_delta_chunks + 1] = chunk:read_all()
     return true
   end,
   reasoning = function(chunk)
@@ -136,7 +136,7 @@ ok, err = session:stream({
     function_deltas[#function_deltas + 1] = {
       item_id = item_id,
       output_index = output_index,
-      delta = delta,
+      delta = delta:read_all(),
     }
     return true
   end,
@@ -146,7 +146,7 @@ ok, err = session:stream({
       output_index = output_index,
       call_id = call_id,
       name = name,
-      arguments = arguments,
+      arguments = arguments:read_all(),
     }
     return true
   end,

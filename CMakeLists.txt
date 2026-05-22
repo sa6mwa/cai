@@ -33,7 +33,7 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_LONEJSON_VERSION "0.20.0")
+set(CAI_LONEJSON_VERSION "0.22.0")
 set(CAI_PSLOG_VERSION "0.4.1")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -127,19 +127,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "3f8f6c4c05a7aaac45322768a2054b46fba5e08cbf89f3262405a84b1b7a5a33")
+    set(_sha256 "70144cc39049a7f7d19b35dad356ee455de9786342e80f7f4ce62f3125935866")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "991e49720694b2a962a83a40f18cc8b033afab5b02e8ebad3e5bb90572548b9e")
+    set(_sha256 "4dfe87ed84163e33f2ce396103a550c526bdc521bf7e7aa5e2797a862e823bf8")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "64f1fd67c4053bd6bab4e4c27b8cbea24a1e879291efbfb71344793843359b17")
+    set(_sha256 "0ae8578f4ca3d3316c316dba88a5acaa875f9d8845acb383269c11b396018596")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "9d09236b57a9c9307262b4bb614c95caa7b85b3cca5fac0a209fb714d3b56bfc")
+    set(_sha256 "9d0377489d6108455af4ae361d8ef98c5d0db8edd69f94070f5c4ed24236e218")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "57be9a65755e0984e5c9456d0001780a83de23ade9db04cf7aea4b21830a1446")
+    set(_sha256 "c8559323c7e95a3c5f69d7e5f5df62a5312b973633ccef8aaa3d742d822f0bb7")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "97377695b4fb1dded332880526eb92c2596f3e0bee965d44f7934e83ba14b894")
+    set(_sha256 "e8ce4e763a5d3c5ee468f8c8a13eb2e43178c02d7db2f1776366b244ccba2648")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "984bc80b5141afd0f3753e74f9967bf12ae01d26a9907882413abc9c04f5a61c")
+    set(_sha256 "11ebf3989297ba09050f22d2a7b795da5db2634aed45d130428399ca30d56075")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -683,6 +683,8 @@ if(CAI_BUILD_TESTS)
     session_stream_auto_round_limit
     session_stream_auto_tool_output_max_bytes
     stream_sse_event_limit
+    stream_large_instructions_field
+    stream_large_content_part_done_field
     stream_history_preserves_pretty_json
     stream_client_history_captures_output
     stream_client_history_tool_order

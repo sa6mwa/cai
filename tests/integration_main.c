@@ -292,9 +292,13 @@ static int integration_exec_tool_event(void *context,
 }
 
 static int integration_stream_delta_debug(void *context, const char *item_id,
-                                          int output_index, const char *delta,
+                                          int output_index,
+                                          const lonejson_spooled *delta,
                                           cai_error *error) {
   integration_stream_debug_state *state;
+  lonejson_spooled cursor;
+  lonejson_read_result chunk;
+  unsigned char buffer[256];
   size_t length;
   size_t space;
 
@@ -305,15 +309,26 @@ static int integration_stream_delta_debug(void *context, const char *item_id,
   if (state == NULL || delta == NULL) {
     return CAI_OK;
   }
-  length = strlen(delta);
-  space = sizeof(state->deltas) - state->deltas_length - 1U;
-  if (length > space) {
-    length = space;
-  }
-  if (length > 0U) {
-    memcpy(state->deltas + state->deltas_length, delta, length);
-    state->deltas_length += length;
-    state->deltas[state->deltas_length] = '\0';
+  cursor = *delta;
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read streamed tool delta");
+    }
+    length = chunk.bytes_read;
+    space = sizeof(state->deltas) - state->deltas_length - 1U;
+    if (length > space) {
+      length = space;
+    }
+    if (length > 0U) {
+      memcpy(state->deltas + state->deltas_length, buffer, length);
+      state->deltas_length += length;
+      state->deltas[state->deltas_length] = '\0';
+    }
+    if (chunk.eof || space == 0U) {
+      break;
+    }
   }
   return CAI_OK;
 }
@@ -321,9 +336,15 @@ static int integration_stream_delta_debug(void *context, const char *item_id,
 static int integration_stream_done_debug(void *context, const char *item_id,
                                          int output_index, const char *call_id,
                                          const char *name,
-                                         const char *arguments,
+                                         const lonejson_spooled *arguments,
                                          cai_error *error) {
   integration_stream_debug_state *state;
+  lonejson_spooled cursor;
+  lonejson_read_result chunk;
+  unsigned char buffer[256];
+  size_t length;
+  size_t used;
+  size_t space;
 
   (void)item_id;
   (void)output_index;
@@ -332,8 +353,28 @@ static int integration_stream_done_debug(void *context, const char *item_id,
   (void)error;
   state = (integration_stream_debug_state *)context;
   if (state != NULL && arguments != NULL) {
-    snprintf(state->done_arguments, sizeof(state->done_arguments), "%s",
-             arguments);
+    cursor = *arguments;
+    used = 0U;
+    for (;;) {
+      chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+      if (chunk.error_code != 0) {
+        return cai_set_error(error, CAI_ERR_TRANSPORT,
+                             "failed to read streamed tool arguments");
+      }
+      length = chunk.bytes_read;
+      space = sizeof(state->done_arguments) - used - 1U;
+      if (length > space) {
+        length = space;
+      }
+      if (length > 0U) {
+        memcpy(state->done_arguments + used, buffer, length);
+        used += length;
+        state->done_arguments[used] = '\0';
+      }
+      if (chunk.eof || space == 0U) {
+        break;
+      }
+    }
   }
   return CAI_OK;
 }

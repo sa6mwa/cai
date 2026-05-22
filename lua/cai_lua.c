@@ -1981,7 +1981,8 @@ static int cai_lua_agent_stream_text(lua_State *L) {
 }
 
 static int cai_lua_stream_output_delta(void *context, const char *item_id,
-                                       int output_index, const char *delta,
+                                       int output_index,
+                                       const lonejson_spooled *delta,
                                        cai_error *error) {
   cai_lua_sink_ctx *ctx;
   int rc;
@@ -1990,7 +1991,7 @@ static int cai_lua_stream_output_delta(void *context, const char *item_id,
   (void)error;
   ctx = (cai_lua_sink_ctx *)context;
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
-  lua_pushstring(ctx->L, delta != NULL ? delta : "");
+  cai_lua_push_spool_reader(ctx->L, delta);
   rc = lua_pcall(ctx->L, 1, 1, 0);
   if (rc != LUA_OK) {
     return CAI_ERR_INVALID;
@@ -2000,7 +2001,8 @@ static int cai_lua_stream_output_delta(void *context, const char *item_id,
 }
 
 static int cai_lua_stream_function_delta(void *context, const char *item_id,
-                                         int output_index, const char *delta,
+                                         int output_index,
+                                         const lonejson_spooled *delta,
                                          cai_error *error) {
   cai_lua_function_call_ctx *ctx;
   int rc;
@@ -2012,7 +2014,7 @@ static int cai_lua_stream_function_delta(void *context, const char *item_id,
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->delta_ref);
   lua_pushstring(ctx->L, item_id != NULL ? item_id : "");
   lua_pushinteger(ctx->L, output_index);
-  lua_pushstring(ctx->L, delta != NULL ? delta : "");
+  cai_lua_push_spool_reader(ctx->L, delta);
   rc = lua_pcall(ctx->L, 3, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);
@@ -2028,7 +2030,8 @@ static int cai_lua_stream_function_delta(void *context, const char *item_id,
 
 static int cai_lua_stream_function_done(void *context, const char *item_id,
                                         int output_index, const char *call_id,
-                                        const char *name, const char *arguments,
+                                        const char *name,
+                                        const lonejson_spooled *arguments,
                                         cai_error *error) {
   cai_lua_function_call_ctx *ctx;
   int rc;
@@ -2042,7 +2045,7 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
   lua_pushinteger(ctx->L, output_index);
   lua_pushstring(ctx->L, call_id != NULL ? call_id : "");
   lua_pushstring(ctx->L, name != NULL ? name : "");
-  lua_pushstring(ctx->L, arguments != NULL ? arguments : "");
+  cai_lua_push_spool_reader(ctx->L, arguments);
   rc = lua_pcall(ctx->L, 5, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);

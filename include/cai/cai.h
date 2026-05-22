@@ -395,7 +395,8 @@ typedef const char *(*cai_stream_affix_fn)(void *context);
 typedef int (*cai_stream_function_call_delta_fn)(void *context,
                                                  const char *item_id,
                                                  int output_index,
-                                                 const char *delta,
+                                                 const struct lonejson_spooled
+                                                     *delta,
                                                  cai_error *error);
 /** Callback for completed streamed function-call arguments. */
 typedef int (*cai_stream_function_call_done_fn)(void *context,
@@ -403,7 +404,8 @@ typedef int (*cai_stream_function_call_done_fn)(void *context,
                                                 int output_index,
                                                 const char *call_id,
                                                 const char *name,
-                                                const char *arguments,
+                                                const struct lonejson_spooled
+                                                    *arguments,
                                                 cai_error *error);
 /** Callback for completed streamed output items. */
 typedef int (*cai_stream_output_item_done_fn)(void *context,
@@ -417,7 +419,8 @@ typedef int (*cai_stream_output_item_done_fn)(void *context,
 typedef int (*cai_stream_output_text_delta_fn)(void *context,
                                                const char *item_id,
                                                int output_index,
-                                               const char *delta,
+                                               const struct lonejson_spooled
+                                                   *delta,
                                                cai_error *error);
 
 /** Static or dynamic prefix/suffix emitted around stream sections. */

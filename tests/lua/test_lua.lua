@@ -420,7 +420,7 @@ assert_ok(registry:register_exec_tool({
   allow_pty = true,
 }))
 local chunks = {}
-assert_ok(registry:run("exec_command", '{"cmd":"printf lua-out; printf lua-err >&2"}', function(chunk)
+assert_ok(registry:run("exec_command", '{"cmd":"printf lua-out; printf lua-err >&2","tty":false}', function(chunk)
   chunks[#chunks + 1] = chunk
   return true
 end))
