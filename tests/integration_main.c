@@ -28,6 +28,21 @@ static void print_error(const char *operation, int rc, const cai_error *error) {
   }
 }
 
+static int integration_set_error(cai_error *error, int code,
+                                 const char *message) {
+  if (error != NULL) {
+    cai_error_cleanup(error);
+    error->code = code;
+    if (message != NULL) {
+      error->message = (char *)malloc(strlen(message) + 1U);
+      if (error->message != NULL) {
+        strcpy(error->message, message);
+      }
+    }
+  }
+  return code;
+}
+
 static const char *integration_model(void) {
   const char *model;
 
@@ -60,6 +75,60 @@ static const char *openrouter_tool_integration_model(void) {
 
 static int integration_flag_enabled(const char *value) {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static char *integration_spooled_to_cstr(const lonejson_spooled *spool) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result chunk;
+  unsigned char buffer[256];
+  char *out;
+  char *grown;
+  size_t length;
+  size_t capacity;
+
+  out = NULL;
+  length = 0U;
+  capacity = 0U;
+  cursor = *spool;
+  lonejson_error_init(&json_error);
+  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return NULL;
+  }
+  for (;;) {
+    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      free(out);
+      return NULL;
+    }
+    if (length + chunk.bytes_read + 1U > capacity) {
+      capacity = capacity == 0U ? 512U : capacity * 2U;
+      while (capacity < length + chunk.bytes_read + 1U) {
+        capacity *= 2U;
+      }
+      grown = (char *)realloc(out, capacity);
+      if (grown == NULL) {
+        free(out);
+        return NULL;
+      }
+      out = grown;
+    }
+    if (chunk.bytes_read > 0U) {
+      memcpy(out + length, buffer, chunk.bytes_read);
+      length += chunk.bytes_read;
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  if (out == NULL) {
+    out = (char *)malloc(1U);
+    if (out == NULL) {
+      return NULL;
+    }
+  }
+  out[length] = '\0';
+  return out;
 }
 
 static int integration_apply_dotenv_api_key(const char *env_name) {
@@ -122,6 +191,8 @@ typedef struct integration_attack_state {
 typedef struct integration_tool_event_state {
   int starts;
   int outputs;
+  char start_arguments[4096];
+  size_t start_arguments_size;
 } integration_tool_event_state;
 
 typedef struct integration_write_state {
@@ -233,6 +304,21 @@ static int integration_tool_event(void *context, const cai_tool_event *event,
   }
   if (event->type == CAI_TOOL_EVENT_START) {
     state->starts++;
+    if (event->arguments_json_spooled != NULL) {
+      char *text;
+
+      state->start_arguments_size =
+          lonejson_spooled_size(event->arguments_json_spooled);
+      text = integration_spooled_to_cstr(event->arguments_json_spooled);
+      if (text != NULL) {
+        snprintf(state->start_arguments, sizeof(state->start_arguments), "%s",
+                 text);
+        free(text);
+      }
+    } else if (event->arguments_json != NULL) {
+      snprintf(state->start_arguments, sizeof(state->start_arguments), "%s",
+               event->arguments_json);
+    }
   } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
     state->outputs++;
   }
@@ -309,12 +395,12 @@ static int integration_stream_delta_debug(void *context, const char *item_id,
   if (state == NULL || delta == NULL) {
     return CAI_OK;
   }
-  cursor = *delta;
+    cursor = *delta;
   for (;;) {
     chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
     if (chunk.error_code != 0) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read streamed tool delta");
+      return integration_set_error(error, CAI_ERR_TRANSPORT,
+                                   "failed to read streamed tool delta");
     }
     length = chunk.bytes_read;
     space = sizeof(state->deltas) - state->deltas_length - 1U;
@@ -358,8 +444,8 @@ static int integration_stream_done_debug(void *context, const char *item_id,
     for (;;) {
       chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
       if (chunk.error_code != 0) {
-        return cai_set_error(error, CAI_ERR_TRANSPORT,
-                             "failed to read streamed tool arguments");
+        return integration_set_error(error, CAI_ERR_TRANSPORT,
+                                     "failed to read streamed tool arguments");
       }
       length = chunk.bytes_read;
       space = sizeof(state->done_arguments) - used - 1U;
@@ -381,26 +467,26 @@ static int integration_stream_done_debug(void *context, const char *item_id,
 
 static int integration_stream_item_debug(
     void *context, const char *item_id, int output_index, const char *type,
-    const char *item_json, size_t item_json_len, cai_error *error) {
+    const lonejson_spooled *item_json, cai_error *error) {
   integration_stream_debug_state *state;
-  size_t copy_len;
+  char *text;
 
   (void)item_id;
   (void)output_index;
   (void)type;
   (void)error;
   state = (integration_stream_debug_state *)context;
-  if (state == NULL || item_json == NULL) {
+  if (state == NULL || item_json == NULL ||
+      lonejson_spooled_size(item_json) == 0U) {
     return CAI_OK;
   }
-  copy_len = item_json_len;
-  if (copy_len >= sizeof(state->output_item_json)) {
-    copy_len = sizeof(state->output_item_json) - 1U;
+  text = integration_spooled_to_cstr(item_json);
+  if (text == NULL) {
+    return CAI_ERR_NOMEM;
   }
-  if (copy_len > 0U) {
-    memcpy(state->output_item_json, item_json, copy_len);
-  }
-  state->output_item_json[copy_len] = '\0';
+  snprintf(state->output_item_json, sizeof(state->output_item_json), "%s",
+           text);
+  free(text);
   return CAI_OK;
 }
 
@@ -1376,9 +1462,13 @@ static int run_openrouter_stream_tool_regression(void) {
   if (rc != CAI_OK) {
     print_error("openrouter stream tool regression", rc, &error);
     fprintf(stderr,
+            "tool_event_start_arguments_size=%lu\n"
+            "tool_event_start_arguments=[%s]\n"
             "stream debug deltas=[%s]\ndone_arguments=[%s]\n"
             "output_item_json=[%s]\n",
-            stream_debug.deltas, stream_debug.done_arguments,
+            (unsigned long)event_state.start_arguments_size,
+            event_state.start_arguments, stream_debug.deltas,
+            stream_debug.done_arguments,
             stream_debug.output_item_json);
     goto done;
   }

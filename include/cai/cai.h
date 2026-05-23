@@ -412,8 +412,8 @@ typedef int (*cai_stream_output_item_done_fn)(void *context,
                                               const char *item_id,
                                               int output_index,
                                               const char *type,
-                                              const char *item_json,
-                                              size_t item_json_len,
+                                              const struct lonejson_spooled
+                                                  *item_json,
                                               cai_error *error);
 /** Callback for incremental output text deltas. */
 typedef int (*cai_stream_output_text_delta_fn)(void *context,

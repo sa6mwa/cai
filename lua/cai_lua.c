@@ -2061,7 +2061,7 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
 
 static int cai_lua_stream_output_item_done(
     void *context, const char *item_id, int output_index, const char *type,
-    const char *item_json, size_t item_json_len, cai_error *error) {
+    const lonejson_spooled *item_json, cai_error *error) {
   cai_lua_function_call_ctx *ctx;
   int rc;
 
@@ -2078,8 +2078,8 @@ static int cai_lua_stream_output_item_done(
   lua_setfield(ctx->L, -2, "output_index");
   lua_pushstring(ctx->L, type != NULL ? type : "");
   lua_setfield(ctx->L, -2, "type");
-  lua_pushlstring(ctx->L, item_json != NULL ? item_json : "", item_json_len);
-  lua_setfield(ctx->L, -2, "json");
+  cai_lua_push_spool_reader(ctx->L, item_json);
+  lua_setfield(ctx->L, -2, "json_spooled");
   rc = lua_pcall(ctx->L, 1, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);

@@ -770,53 +770,51 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
 static int cai_tool_validate_spooled_arguments_shape(const lonejson_map *map,
                                                      lonejson_spooled *json,
                                                      cai_error *error) {
-  cai_tool_argument_validator validator;
   cai_tool_spooled_reader reader;
-  lonejson_value_visitor visitor;
-  lonejson_value_limits limits;
-  lonejson_error json_error;
-  lonejson_status status;
+  char *raw_json;
+  size_t raw_len;
+  lonejson_read_result chunk;
+  size_t offset;
   int rc;
 
   if (json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "tool arguments are required");
   }
+  raw_len = lonejson_spooled_size(json);
+  if (raw_len > (size_t)LONEJSON_PARSE_MAX_ALLOC_BYTES) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "tool arguments exceeded buffered validation limit");
+  }
+  raw_json = (char *)cai_alloc(NULL, raw_len + 1U);
+  if (raw_json == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate tool arguments");
+  }
   reader.cursor = *json;
-  lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+  if (lonejson_spooled_rewind(&reader.cursor, NULL) !=
       LONEJSON_STATUS_OK) {
-    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to rewind tool arguments",
-                                json_error.message);
+    cai_free_mem(NULL, raw_json);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to rewind tool arguments");
   }
-  memset(&validator, 0, sizeof(validator));
-  validator.root_map = map;
-  visitor = lonejson_default_value_visitor();
-  visitor.object_begin = cai_tool_argument_object_begin;
-  visitor.object_end = cai_tool_argument_object_end;
-  visitor.object_key_begin = cai_tool_argument_key_begin;
-  visitor.object_key_chunk = cai_tool_argument_key_chunk;
-  visitor.object_key_end = cai_tool_argument_key_end;
-  visitor.array_begin = cai_tool_argument_array_begin;
-  visitor.array_end = cai_tool_argument_array_end;
-  visitor.string_begin = cai_tool_argument_scalar_event;
-  visitor.number_begin = cai_tool_argument_scalar_event;
-  visitor.boolean_value = cai_tool_argument_bool_event;
-  visitor.null_value = cai_tool_argument_scalar_event;
-  limits = lonejson_default_value_limits();
-  limits.max_key_bytes = 4096U;
-  lonejson_error_init(&json_error);
-  status = lonejson_visit_value_reader(cai_tool_spooled_read, &reader, &visitor,
-                                       &validator, &limits, &json_error);
-  if (status != LONEJSON_STATUS_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                              "tool arguments failed validation",
-                              json_error.message);
-  } else {
-    rc = CAI_OK;
+  offset = 0U;
+  while (offset < raw_len) {
+    chunk = lonejson_spooled_read(&reader.cursor, (unsigned char *)raw_json + offset,
+                                  raw_len - offset);
+    if (chunk.error_code != 0) {
+      cai_free_mem(NULL, raw_json);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to read tool arguments");
+    }
+    if (chunk.bytes_read == 0U) {
+      break;
+    }
+    offset += chunk.bytes_read;
   }
-  cai_free_mem(NULL, validator.key);
+  raw_json[offset] = '\0';
+  rc = cai_tool_validate_arguments_shape(map, raw_json, error);
+  cai_free_mem(NULL, raw_json);
   return rc;
 }
 

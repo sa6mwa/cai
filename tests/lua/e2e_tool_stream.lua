@@ -151,6 +151,9 @@ ok, err = session:stream({
     return true
   end,
   on_output_item_done = function(item)
+    if item.json_spooled ~= nil then
+      item.json = item.json_spooled:read_all()
+    end
     output_items[#output_items + 1] = item
     return true
   end,

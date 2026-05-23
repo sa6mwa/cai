@@ -1388,7 +1388,7 @@ static int cai_stream_capture_tool_done(void *context, const char *item_id,
 
 static int cai_stream_capture_output_item_done(
     void *context, const char *item_id, int output_index, const char *type,
-    const char *item_json, size_t item_json_len, cai_error *error) {
+    const lonejson_spooled *item_json, cai_error *error) {
   cai_stream_tool_capture *capture;
   lonejson_error json_error;
   lonejson_status status;
@@ -1398,12 +1398,12 @@ static int cai_stream_capture_output_item_done(
   rc = CAI_OK;
   if (capture != NULL && capture->output_text != NULL &&
       (type == NULL || strcmp(type, "function_call") != 0) &&
-      item_json != NULL && item_json_len > 0U) {
+      item_json != NULL && lonejson_spooled_size(item_json) > 0U) {
     rc = cai_stream_capture_output_items_start(capture->session, capture, error);
     if (rc == CAI_OK) {
       lonejson_error_init(&json_error);
-      status = lonejson_writer_json_value_buffer(
-          &capture->output_items_writer, item_json, item_json_len, NULL,
+      status = lonejson_writer_json_value_spooled(
+          &capture->output_items_writer, item_json, NULL,
           &json_error);
       if (status != LONEJSON_STATUS_OK) {
         rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -1418,7 +1418,7 @@ static int cai_stream_capture_output_item_done(
       capture->user_sinks->output_item_done != NULL) {
     rc = capture->user_sinks->output_item_done(
         capture->user_sinks->output_item_context, item_id, output_index, type,
-        item_json, item_json_len, error);
+        item_json, error);
   }
   return rc;
 }

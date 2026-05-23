@@ -126,6 +126,7 @@ typedef struct stream_output_item_state {
   char item_id[32];
   char type[32];
   char json[256];
+  size_t json_size;
   int output_index;
   int done_count;
 } stream_output_item_state;
@@ -1296,9 +1297,9 @@ static int test_stream_tool_done(void *context, const char *item_id,
 
 static int test_stream_output_item_done(
     void *context, const char *item_id, int output_index, const char *type,
-    const char *item_json, size_t item_json_len, cai_error *error) {
+    const lonejson_spooled *item_json, cai_error *error) {
   stream_output_item_state *state;
-  size_t copy_len;
+  char *text;
 
   (void)error;
   state = (stream_output_item_state *)context;
@@ -1307,14 +1308,16 @@ static int test_stream_output_item_done(
            item_id != NULL ? item_id : "");
   state->output_index = output_index;
   snprintf(state->type, sizeof(state->type), "%s", type != NULL ? type : "");
-  copy_len = item_json_len;
-  if (copy_len >= sizeof(state->json)) {
-    copy_len = sizeof(state->json) - 1U;
+  state->json_size = item_json != NULL ? lonejson_spooled_size(item_json) : 0U;
+  state->json[0] = '\0';
+  if (item_json != NULL && state->json_size > 0U) {
+    text = test_spooled_to_cstr(item_json);
+    if (text == NULL) {
+      return CAI_ERR_NOMEM;
+    }
+    snprintf(state->json, sizeof(state->json), "%s", text);
+    free(text);
   }
-  if (item_json != NULL && copy_len > 0U) {
-    memcpy(state->json, item_json, copy_len);
-  }
-  state->json[copy_len] = '\0';
   return CAI_OK;
 }
 
@@ -1612,6 +1615,23 @@ static int test_failing_stream_output_delta(void *context, const char *item_id,
     state->calls++;
   }
   return CAI_ERR_INVALID;
+}
+
+static int test_failing_stream_output_item_done(
+    void *context, const char *item_id, int output_index, const char *type,
+    const lonejson_spooled *item_json, cai_error *error) {
+  failing_callback_state *state;
+
+  (void)item_id;
+  (void)output_index;
+  (void)type;
+  (void)item_json;
+  state = (failing_callback_state *)context;
+  if (state != NULL) {
+    state->calls++;
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "output item done callback failed");
 }
 
 static int test_large_raw_tool(void *context, const char *arguments_json,
@@ -2460,6 +2480,28 @@ static void test_tool_registry(test_state *state) {
                                    &error),
              CAI_OK);
   expect_str(state, "tool_run_typed_spaced_json_output", writer.buffer,
+             "{\"summary\":\"Malmo:3\"}");
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  {
+    lonejson_spooled spooled_args;
+    lonejson_error json_error;
+    const char *spooled_json;
+
+    lonejson_spooled_init(&spooled_args, NULL);
+    lonejson_error_init(&json_error);
+    spooled_json = "{\"city\": \"Malmo\", \"days\": 3}";
+    expect_int(state, "tool_spooled_valid_arg_append",
+               lonejson_spooled_append(&spooled_args, spooled_json,
+                                       strlen(spooled_json), &json_error),
+               LONEJSON_STATUS_OK);
+    expect_int(state, "tool_run_typed_spooled_spaced_json",
+               cai_tool_registry_run_spooled(registry, "weather",
+                                             &spooled_args, sink, &error),
+               CAI_OK);
+    lonejson_spooled_cleanup(&spooled_args);
+  }
+  expect_str(state, "tool_run_typed_spooled_spaced_json_output", writer.buffer,
              "{\"summary\":\"Malmo:3\"}");
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -11778,6 +11820,91 @@ static void test_stream_output_delta_failure(test_state *state) {
   }
 }
 
+static void test_stream_output_item_failure(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_stream_sinks stream_sinks;
+  failing_callback_state fail_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_output_item_fail_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_output_item_fail_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_output_item_fail_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  memset(&fail_state, 0, sizeof(fail_state));
+
+  expect_int(state, "stream_output_item_fail_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_output_item_fail_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_output_item_fail_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_output_item_fail_add",
+             cai_session_add_user_text(session, "stream output item turn",
+                                       &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_item_done = test_failing_stream_output_item_done;
+  stream_sinks.output_item_context = &fail_state;
+  expect_int(state, "stream_output_item_fail_run",
+             session->stream(session, &stream_sinks, &error), CAI_ERR_INVALID);
+  expect_int(state, "stream_output_item_fail_calls", fail_state.calls, 1L);
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_output_item_fail_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_output_item_fail_mock", "mock child failed");
+  }
+}
+
 static void test_stream_output_suffix_segments(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -13169,6 +13296,8 @@ static void test_stream_large_content_part_done_field(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   write_state writer;
+  stream_output_item_state output_item_stream;
+  cai_stream_sinks stream_sinks;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   cai_token_usage usage;
@@ -13213,6 +13342,7 @@ static void test_stream_large_content_part_done_field(test_state *state) {
   session = NULL;
   sink = NULL;
   memset(&writer, 0, sizeof(writer));
+  memset(&output_item_stream, 0, sizeof(output_item_stream));
   memset(&usage, 0, sizeof(usage));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
@@ -13232,12 +13362,26 @@ static void test_stream_large_content_part_done_field(test_state *state) {
                                        "large content part done turn",
                                        &error),
              CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.output_item_done = test_stream_output_item_done;
+  stream_sinks.output_item_context = &output_item_stream;
   expect_int(state, "stream_large_content_part_run",
-             cai_session_stream_text(session, sink, &error), CAI_OK);
+             session->stream(session, &stream_sinks, &error), CAI_OK);
   if (error.code != CAI_OK && error.message != NULL) {
     test_fail(state, "stream_large_content_part_error", error.message);
   }
   expect_str(state, "stream_large_content_part_output", writer.buffer, "ok");
+  expect_int(state, "stream_large_content_part_item_count",
+             output_item_stream.done_count, 1L);
+  expect_str(state, "stream_large_content_part_item_id",
+             output_item_stream.item_id, "msg_large_part");
+  expect_str(state, "stream_large_content_part_item_type",
+             output_item_stream.type, "message");
+  if (output_item_stream.json_size <= 10000U) {
+    test_fail(state, "stream_large_content_part_item_size",
+              "large output item payload was not delivered");
+  }
   expect_int(state, "stream_large_content_part_usage",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_large_content_part_usage_total",
@@ -14338,6 +14482,7 @@ static const test_entry test_entries[] = {
     {"stream_response_text", test_stream_response_text},
     {"stream_non_function_output_item", test_stream_non_function_output_item},
     {"stream_output_delta_failure", test_stream_output_delta_failure},
+    {"stream_output_item_failure", test_stream_output_item_failure},
     {"stream_output_suffix_segments", test_stream_output_suffix_segments},
     {"stream_http_error_preserves_openai_error",
      test_stream_http_error_preserves_openai_error},
