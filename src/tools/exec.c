@@ -53,6 +53,7 @@ typedef struct cai_exec_context {
   size_t output_memory_limit;
   size_t output_max_bytes;
   char *output_spool_dir;
+  lonejson *runtime;
 } cai_exec_context;
 
 typedef struct cai_exec_args {
@@ -210,6 +211,7 @@ static void cai_exec_context_cleanup(void *context) {
   cai_free_mem(NULL, ctx->bwrap_path);
   cai_free_mem(NULL, ctx->sandbox_exec_path);
   cai_free_mem(NULL, ctx->cgroup_parent_path);
+  cai_lonejson_runtime_close(&ctx->runtime);
   cai_free_mem(NULL, ctx->output_spool_dir);
   cai_free_mem(NULL, ctx);
 }
@@ -354,6 +356,25 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
     cai_exec_context_cleanup(ctx);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec default_workdir must be under root_path");
+  }
+  {
+    lonejson_config runtime_config;
+
+    runtime_config = lonejson_default_config();
+    runtime_config.spool_default.memory_limit = ctx->output_memory_limit;
+    runtime_config.spool_blob.memory_limit = ctx->output_memory_limit;
+    runtime_config.spool_large_text.memory_limit = ctx->output_memory_limit;
+    runtime_config.spool_default.max_bytes = ctx->output_max_bytes;
+    runtime_config.spool_blob.max_bytes = ctx->output_max_bytes;
+    runtime_config.spool_large_text.max_bytes = ctx->output_max_bytes;
+    runtime_config.spool_default.temp_dir = ctx->output_spool_dir;
+    runtime_config.spool_blob.temp_dir = ctx->output_spool_dir;
+    runtime_config.spool_large_text.temp_dir = ctx->output_spool_dir;
+    rc = cai_lonejson_runtime_open(&runtime_config, &ctx->runtime, error);
+    if (rc != CAI_OK) {
+      cai_exec_context_cleanup(ctx);
+      return rc;
+    }
   }
   *out = ctx;
   return CAI_OK;
@@ -1584,7 +1605,6 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   const cai_exec_args *args;
   cai_exec_result *out;
   cai_exec_capture capture;
-  lonejson_spool_options spool_options;
   cai_exec_proc_result proc;
   char *workdir;
   char sandbox_path[PATH_MAX];
@@ -1633,14 +1653,13 @@ static int cai_exec_callback(void *context, const void *params, void *result,
           (unsigned long long)output_max_bytes) {
     output_max_bytes = (size_t)args->max_output_tokens;
   }
-  spool_options = lonejson_default_spool_options();
-  spool_options.memory_limit = ctx->output_memory_limit;
-  spool_options.max_bytes = output_max_bytes;
-  spool_options.temp_dir = ctx->output_spool_dir;
   capture.max_bytes = output_max_bytes;
-  lonejson_spooled_init(&capture.stdout_data, &spool_options);
-  lonejson_spooled_init(&capture.stderr_data, &spool_options);
-  lonejson_spooled_init(&capture.output, &spool_options);
+  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ,
+                        &capture.stdout_data);
+  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ,
+                        &capture.stderr_data);
+  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ,
+                        &capture.output);
   rc = cai_exec_run_process(ctx, args, workdir, sandbox_path, use_sandbox,
                             &capture, &proc, error);
   if (rc == CAI_OK) {

@@ -94,9 +94,9 @@ int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
                          "input item list JSON is required");
   }
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(&cai_input_item_list_map, &doc);
-  status = lonejson_parse_cstr(&cai_input_item_list_map, &doc, json, NULL,
-                               &json_error);
+  lonejson_init(CAI_LJ, &cai_input_item_list_map, &doc);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_input_item_list_map, &doc, json,
+                              &json_error);
   if (status != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_input_item_list_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -153,9 +153,9 @@ int cai_conversation_item_parse_json(const char *json,
                          "conversation item JSON is required");
   }
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(&cai_input_item_map, &doc);
-  status =
-      lonejson_parse_cstr(&cai_input_item_map, &doc, json, NULL, &json_error);
+  lonejson_init(CAI_LJ, &cai_input_item_map, &doc);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_input_item_map, &doc, json,
+                              &json_error);
   if (status != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_input_item_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,

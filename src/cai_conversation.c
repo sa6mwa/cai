@@ -150,9 +150,9 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
                          "conversation JSON is required");
   }
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(&cai_conversation_map, &doc);
-  status =
-      lonejson_parse_cstr(&cai_conversation_map, &doc, json, NULL, &json_error);
+  lonejson_init(CAI_LJ, &cai_conversation_map, &doc);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_conversation_map, &doc, json,
+                              &json_error);
   if (status != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_conversation_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -384,7 +384,7 @@ int cai_client_update_conversation_metadata(cai_client *client,
   *out = NULL;
   metadata = metadata_json != NULL ? metadata_json : "{}";
   memset(&doc, 0, sizeof(doc));
-  lonejson_json_value_init(&doc.metadata);
+  CAI_LJ->json_value_init(CAI_LJ, &doc.metadata);
   memset(&body, 0, sizeof(body));
   has_body = 0;
   path = NULL;
@@ -403,11 +403,11 @@ int cai_client_update_conversation_metadata(cai_client *client,
                                      error);
   }
   if (rc == CAI_OK) {
-    lonejson_spooled_init(&body, NULL);
+    lonejson_spooled_init(CAI_LJ, &body);
     has_body = 1;
     lonejson_error_init(&json_error);
-    if (lonejson_serialize_sink(&cai_conversation_metadata_map, &doc,
-                                cai_conversation_spooled_sink, &body, NULL,
+    if (lonejson_serialize_sink(CAI_LJ, &cai_conversation_metadata_map, &doc,
+                                cai_conversation_spooled_sink, &body,
                                 &json_error) != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize conversation metadata",
@@ -423,7 +423,7 @@ int cai_client_update_conversation_metadata(cai_client *client,
   if (has_body) {
     lonejson_spooled_cleanup(&body);
   }
-  lonejson_json_value_cleanup(&doc.metadata);
+  CAI_LJ->json_value_cleanup(CAI_LJ, &doc.metadata);
   return rc;
 }
 
@@ -754,7 +754,7 @@ static int cai_conversation_source_to_spooled(cai_source *source,
                          "source and spool output are required");
   }
   memset(out, 0, sizeof(*out));
-  lonejson_spooled_init(out, NULL);
+  lonejson_spooled_init(CAI_LJ, out);
   for (;;) {
     previous_error_code = error != NULL ? error->code : CAI_OK;
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
@@ -978,7 +978,7 @@ static int cai_conversation_items_params_spool_json(
     }
   }
   if (rc == CAI_OK) {
-    lonejson_json_value_init(&doc.items);
+    CAI_LJ->json_value_init(CAI_LJ, &doc.items);
     lonejson_error_init(&json_error);
     if (lonejson_json_value_set_reader(&doc.items,
                                        cai_conversation_spooled_reader,
@@ -990,10 +990,10 @@ static int cai_conversation_items_params_spool_json(
     }
   }
   if (rc == CAI_OK) {
-    lonejson_spooled_init(out, NULL);
+    lonejson_spooled_init(CAI_LJ, out);
     lonejson_error_init(&json_error);
-    if (lonejson_serialize_sink(&cai_conversation_items_request_map, &doc,
-                                cai_conversation_spooled_sink, out, NULL,
+    if (lonejson_serialize_sink(CAI_LJ, &cai_conversation_items_request_map,
+                                &doc, cai_conversation_spooled_sink, out,
                                 &json_error) != LONEJSON_STATUS_OK) {
       lonejson_spooled_cleanup(out);
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -1005,14 +1005,14 @@ static int cai_conversation_items_params_spool_json(
     if (has_items) {
       lonejson_spooled_cleanup(&items);
     }
-    lonejson_json_value_cleanup(&doc.items);
+    CAI_LJ->json_value_cleanup(CAI_LJ, &doc.items);
     return rc;
   }
   if (out_len != NULL) {
     *out_len = lonejson_spooled_size(out);
   }
   lonejson_spooled_cleanup(&items);
-  lonejson_json_value_cleanup(&doc.items);
+  CAI_LJ->json_value_cleanup(CAI_LJ, &doc.items);
   return CAI_OK;
 }
 

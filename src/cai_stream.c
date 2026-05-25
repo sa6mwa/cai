@@ -10,11 +10,6 @@
 #include <unistd.h>
 
 #define CAI_STREAM_FIELD_MEMORY_LIMIT (64U * 1024U)
-#define CAI_STREAM_PARSE_MAX_DYNAMIC_STRING_BYTES CAI_DEFAULT_SSE_EVENT_LIMIT
-#define CAI_STREAM_PARSE_MAX_ALLOC_BYTES CAI_DEFAULT_SSE_EVENT_LIMIT
-
-static const lonejson_spool_options cai_stream_field_spool_options = {
-    CAI_STREAM_FIELD_MEMORY_LIMIT, CAI_DEFAULT_SSE_EVENT_LIMIT, NULL};
 
 static const char *const cai_stream_json_event_names[] = {
     "",
@@ -112,9 +107,9 @@ static const lonejson_field cai_stream_output_item_fields[] = {
                                           "call_id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_stream_output_item_doc, name,
                                           "name"),
-    LONEJSON_FIELD_STRING_STREAM_OPTS(cai_stream_output_item_doc, arguments,
-                                      "arguments",
-                                      &cai_stream_field_spool_options)};
+    LONEJSON_FIELD_STRING_STREAM_CLASS(cai_stream_output_item_doc, arguments,
+                                       "arguments",
+                                       LONEJSON_SPOOL_CLASS_LARGE_TEXT)};
 LONEJSON_MAP_DEFINE(cai_stream_output_item_map, cai_stream_output_item_doc,
                     cai_stream_output_item_fields);
 
@@ -164,7 +159,6 @@ typedef struct cai_sse_state {
   lonejson_sse *sse;
   lonejson_spooled event_json_storage;
   lonejson_json_value event_json;
-  lonejson_parse_options parse_options;
   lonejson_sse_json_options json_options;
   char *body;
   size_t body_length;
@@ -281,13 +275,6 @@ static void cai_stream_copy_usage(cai_token_usage *out,
   out->total_tokens = usage->total_tokens;
 }
 
-static void cai_stream_parse_options_init(lonejson_parse_options *options) {
-  *options = lonejson_default_parse_options();
-  options->max_dynamic_string_bytes =
-      CAI_STREAM_PARSE_MAX_DYNAMIC_STRING_BYTES;
-  options->max_alloc_bytes = CAI_STREAM_PARSE_MAX_ALLOC_BYTES;
-}
-
 static lonejson_status cai_stream_discard_json_sink(void *user,
                                                     const void *data,
                                                     size_t len,
@@ -295,8 +282,8 @@ static lonejson_status cai_stream_discard_json_sink(void *user,
 
 static lonejson_status cai_stream_event_json_init(cai_sse_state *state,
                                                   lonejson_error *error) {
-  lonejson_spooled_init(&state->event_json_storage, &cai_stream_field_spool_options);
-  lonejson_json_value_init(&state->event_json);
+  lonejson_spooled_init(CAI_LJ_STREAM, &state->event_json_storage);
+  CAI_LJ_STREAM->json_value_init(CAI_LJ_STREAM, &state->event_json);
   if (lonejson_json_value_set_parse_sink(&state->event_json,
                                          cai_stream_discard_json_sink,
                                          &state->event_json_storage,
@@ -307,7 +294,7 @@ static lonejson_status cai_stream_event_json_init(cai_sse_state *state,
 }
 
 static void cai_stream_event_json_cleanup(cai_sse_state *state) {
-  lonejson_json_value_cleanup(&state->event_json);
+  CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &state->event_json);
   lonejson_spooled_cleanup(&state->event_json_storage);
 }
 
@@ -373,8 +360,7 @@ static void cai_sse_cleanup_call_ids(cai_sse_state *state) {
 }
 
 static int cai_stream_parse_spooled(const lonejson_map *map, void *dst,
-                                    const lonejson_spooled *value,
-                                    lonejson_parse_options *options) {
+                                    const lonejson_spooled *value) {
   cai_stream_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
@@ -389,8 +375,9 @@ static int cai_stream_parse_spooled(const lonejson_map *map, void *dst,
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_parse_reader(map, dst, cai_stream_spooled_read, &reader,
-                                 options, &json_error);
+  status = CAI_LJ_STREAM->parse_reader(CAI_LJ_STREAM, map, dst,
+                                       cai_stream_spooled_read, &reader,
+                                       &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return CAI_ERR_PROTOCOL;
   }
@@ -400,41 +387,39 @@ static int cai_stream_parse_spooled(const lonejson_map *map, void *dst,
 static int cai_stream_parse_output_item_event(
     const lonejson_spooled *value, cai_stream_output_item_event_doc *event_doc) {
   cai_stream_spooled_reader reader;
-  lonejson_parse_options options;
   lonejson_error json_error;
   lonejson_status status;
 
   memset(event_doc, 0, sizeof(*event_doc));
-  lonejson_init(&cai_stream_output_item_event_map, event_doc);
-  lonejson_spooled_init(&event_doc->item_storage, &cai_stream_field_spool_options);
-  lonejson_json_value_init(&event_doc->item);
+  lonejson_init(CAI_LJ_STREAM, &cai_stream_output_item_event_map, event_doc);
+  lonejson_spooled_init(CAI_LJ_STREAM, &event_doc->item_storage);
+  CAI_LJ_STREAM->json_value_init(CAI_LJ_STREAM, &event_doc->item);
   lonejson_error_init(&json_error);
   if (lonejson_json_value_set_parse_sink(&event_doc->item,
                                          cai_stream_discard_json_sink,
                                          &event_doc->item_storage,
                                          &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&event_doc->item);
+    CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
     lonejson_spooled_cleanup(&event_doc->item_storage);
     lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
     return CAI_ERR_NOMEM;
   }
-  cai_stream_parse_options_init(&options);
-  options.clear_destination = 0;
   reader.cursor = *value;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&event_doc->item);
+    CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
     lonejson_spooled_cleanup(&event_doc->item_storage);
     lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_parse_reader(&cai_stream_output_item_event_map, event_doc,
-                                 cai_stream_spooled_read, &reader,
-                                 &options, &json_error);
+  status = CAI_LJ_STREAM->parse_reader(CAI_LJ_STREAM,
+                                       &cai_stream_output_item_event_map,
+                                       event_doc, cai_stream_spooled_read,
+                                       &reader, &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&event_doc->item);
+    CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
     lonejson_spooled_cleanup(&event_doc->item_storage);
     lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
     return CAI_ERR_PROTOCOL;
@@ -444,7 +429,7 @@ static int cai_stream_parse_output_item_event(
 
 static void cai_stream_output_item_event_cleanup(
     cai_stream_output_item_event_doc *event_doc) {
-  lonejson_json_value_cleanup(&event_doc->item);
+  CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
   lonejson_spooled_cleanup(&event_doc->item_storage);
   lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
 }
@@ -452,42 +437,39 @@ static void cai_stream_output_item_event_cleanup(
 static int cai_stream_parse_response_event(
     const lonejson_spooled *value, cai_stream_response_event_doc *event_doc) {
   cai_stream_spooled_reader reader;
-  lonejson_parse_options options;
   lonejson_error json_error;
   lonejson_status status;
 
   memset(event_doc, 0, sizeof(*event_doc));
-  lonejson_init(&cai_stream_response_event_map, event_doc);
-  lonejson_spooled_init(&event_doc->response_storage,
-                        &cai_stream_field_spool_options);
-  lonejson_json_value_init(&event_doc->response);
+  lonejson_init(CAI_LJ_STREAM, &cai_stream_response_event_map, event_doc);
+  lonejson_spooled_init(CAI_LJ_STREAM, &event_doc->response_storage);
+  CAI_LJ_STREAM->json_value_init(CAI_LJ_STREAM, &event_doc->response);
   lonejson_error_init(&json_error);
   if (lonejson_json_value_set_parse_sink(&event_doc->response,
                                          cai_stream_discard_json_sink,
                                          &event_doc->response_storage,
                                          &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&event_doc->response);
+    CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
     lonejson_spooled_cleanup(&event_doc->response_storage);
     lonejson_cleanup(&cai_stream_response_event_map, event_doc);
     return CAI_ERR_NOMEM;
   }
-  cai_stream_parse_options_init(&options);
-  options.clear_destination = 0;
   reader.cursor = *value;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&event_doc->response);
+    CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
     lonejson_spooled_cleanup(&event_doc->response_storage);
     lonejson_cleanup(&cai_stream_response_event_map, event_doc);
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_parse_reader(&cai_stream_response_event_map, event_doc,
-                                 cai_stream_spooled_read, &reader, &options,
-                                 &json_error);
+  status = CAI_LJ_STREAM->parse_reader(CAI_LJ_STREAM,
+                                       &cai_stream_response_event_map,
+                                       event_doc, cai_stream_spooled_read,
+                                       &reader, &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_json_value_cleanup(&event_doc->response);
+    CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
     lonejson_spooled_cleanup(&event_doc->response_storage);
     lonejson_cleanup(&cai_stream_response_event_map, event_doc);
     return CAI_ERR_PROTOCOL;
@@ -497,20 +479,17 @@ static int cai_stream_parse_response_event(
 
 static void cai_stream_response_event_cleanup(
     cai_stream_response_event_doc *event_doc) {
-  lonejson_json_value_cleanup(&event_doc->response);
+  CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
   lonejson_spooled_cleanup(&event_doc->response_storage);
   lonejson_cleanup(&cai_stream_response_event_map, event_doc);
 }
 
 static int cai_stream_parse_output_item_spooled(
     const lonejson_spooled *value, cai_stream_output_item_doc *item) {
-  lonejson_parse_options options;
-
   memset(item, 0, sizeof(*item));
-  lonejson_init(&cai_stream_output_item_map, item);
-  cai_stream_parse_options_init(&options);
-  if (cai_stream_parse_spooled(&cai_stream_output_item_map, item, value,
-                               &options) != CAI_OK) {
+  lonejson_init(CAI_LJ_STREAM, &cai_stream_output_item_map, item);
+  if (cai_stream_parse_spooled(&cai_stream_output_item_map, item, value) !=
+      CAI_OK) {
     lonejson_cleanup(&cai_stream_output_item_map, item);
     return CAI_ERR_PROTOCOL;
   }
@@ -691,7 +670,6 @@ static int cai_stream_extract_event_type(const lonejson_spooled *json,
   cai_stream_spooled_reader reader;
   cai_stream_type_visitor_state state;
   lonejson_value_visitor visitor;
-  lonejson_value_limits limits;
   lonejson_error json_error;
   lonejson_status status;
 
@@ -705,8 +683,6 @@ static int cai_stream_extract_event_type(const lonejson_spooled *json,
   visitor.string_begin = cai_stream_type_string_begin;
   visitor.string_chunk = cai_stream_type_string_chunk;
   visitor.string_end = cai_stream_type_string_end;
-  limits = lonejson_default_value_limits();
-  limits.max_total_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
   reader.cursor = *json;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
@@ -714,8 +690,8 @@ static int cai_stream_extract_event_type(const lonejson_spooled *json,
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_visit_value_reader(cai_stream_spooled_read, &reader,
-                                       &visitor, &state, &limits,
+  status = lonejson_visit_value_reader(CAI_LJ_STREAM, cai_stream_spooled_read,
+                                       &reader, &visitor, &state,
                                        &json_error);
   if (status != LONEJSON_STATUS_OK || !state.has_type) {
     return CAI_ERR_PROTOCOL;
@@ -955,7 +931,6 @@ static int cai_stream_parse_response_meta(const lonejson_spooled *json,
   cai_stream_spooled_reader reader;
   cai_stream_response_meta_state state;
   lonejson_value_visitor visitor;
-  lonejson_value_limits limits;
   lonejson_error json_error;
   lonejson_status status;
 
@@ -975,9 +950,6 @@ static int cai_stream_parse_response_meta(const lonejson_spooled *json,
   visitor.number_begin = cai_stream_response_number_begin;
   visitor.number_chunk = cai_stream_response_number_chunk;
   visitor.number_end = cai_stream_response_number_end;
-  limits = lonejson_default_value_limits();
-  limits.max_total_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
-  limits.max_string_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
   reader.cursor = *json;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
@@ -985,8 +957,8 @@ static int cai_stream_parse_response_meta(const lonejson_spooled *json,
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_visit_value_reader(cai_stream_spooled_read, &reader,
-                                       &visitor, &state, &limits,
+  status = lonejson_visit_value_reader(CAI_LJ_STREAM, cai_stream_spooled_read,
+                                       &reader, &visitor, &state,
                                        &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return CAI_ERR_PROTOCOL;
@@ -1157,7 +1129,6 @@ static int cai_stream_parse_item_meta(const lonejson_spooled *json,
   cai_stream_spooled_reader reader;
   cai_stream_item_meta_state state;
   lonejson_value_visitor visitor;
-  lonejson_value_limits limits;
   lonejson_error json_error;
   lonejson_status status;
 
@@ -1174,9 +1145,6 @@ static int cai_stream_parse_item_meta(const lonejson_spooled *json,
   visitor.string_begin = cai_stream_item_string_begin;
   visitor.string_chunk = cai_stream_item_string_chunk;
   visitor.string_end = cai_stream_item_string_end;
-  limits = lonejson_default_value_limits();
-  limits.max_total_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
-  limits.max_string_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
   reader.cursor = *json;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
@@ -1184,8 +1152,8 @@ static int cai_stream_parse_item_meta(const lonejson_spooled *json,
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_visit_value_reader(cai_stream_spooled_read, &reader,
-                                       &visitor, &state, &limits,
+  status = lonejson_visit_value_reader(CAI_LJ_STREAM, cai_stream_spooled_read,
+                                       &reader, &visitor, &state,
                                        &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return CAI_ERR_PROTOCOL;
@@ -1469,7 +1437,6 @@ static int cai_sse_emit_event(cai_sse_state *state,
   cai_stream_output_item_doc function_item_doc;
   cai_stream_response_event_doc response_event;
   cai_stream_response_doc response_doc;
-  lonejson_parse_options options;
   const char *event_name;
   char *owned_event_name;
   int rc;
@@ -1514,11 +1481,10 @@ static int cai_sse_emit_event(cai_sse_state *state,
       strcmp(event_name, "response.reasoning_summary.delta") == 0 ||
       strcmp(event_name, "response.reasoning_text.delta") == 0 ||
       strcmp(event_name, "response.function_call_arguments.delta") == 0) {
-    lonejson_init(&cai_stream_delta_event_map, &delta_doc);
+    lonejson_init(CAI_LJ_STREAM, &cai_stream_delta_event_map, &delta_doc);
     delta_initialized = 1;
-    cai_stream_parse_options_init(&options);
     rc = cai_stream_parse_spooled(&cai_stream_delta_event_map, &delta_doc,
-                                  &state->event_json_storage, &options);
+                                  &state->event_json_storage);
     if (rc != CAI_OK) {
       goto done;
     }
@@ -1548,12 +1514,11 @@ static int cai_sse_emit_event(cai_sse_state *state,
   }
 
   if (strcmp(event_name, "response.function_call_arguments.done") == 0) {
-    lonejson_init(&cai_stream_function_call_done_event_map, &done_doc);
+    lonejson_init(CAI_LJ_STREAM, &cai_stream_function_call_done_event_map,
+                  &done_doc);
     done_initialized = 1;
-    cai_stream_parse_options_init(&options);
     rc = cai_stream_parse_spooled(&cai_stream_function_call_done_event_map,
-                                  &done_doc, &state->event_json_storage,
-                                  &options);
+                                  &done_doc, &state->event_json_storage);
     if (rc != CAI_OK) {
       goto done;
     }
@@ -1740,7 +1705,8 @@ static int cai_sse_push_json_bytes(cai_sse_state *state, const char *bytes,
   }
   memset(&sse_error, 0, sizeof(sse_error));
   status = lonejson_sse_push_json_value(
-      state->sse, &state->event_json, bytes, total, &state->json_options,
+      CAI_LJ_STREAM, state->sse, &state->event_json, bytes, total,
+      &state->json_options,
       cai_sse_json_value_event, state, &sse_error);
   if (status != LONEJSON_STATUS_OK) {
     if (!state->failed) {
@@ -1924,13 +1890,11 @@ static int cai_client_stream_response_params_with_id(
     return cai_set_error(error, cai_sse_status_to_code(sse_error.code),
                          cai_sse_status_to_message(sse_error.code));
   }
-  cai_stream_parse_options_init(&state.parse_options);
   memset(&state.json_options, 0, sizeof(state.json_options));
   state.json_options.event_names = cai_stream_json_event_names;
   state.json_options.event_name_count =
       sizeof(cai_stream_json_event_names) /
       sizeof(cai_stream_json_event_names[0]);
-  state.json_options.parse_options = &state.parse_options;
   state.body = NULL;
   state.body_length = 0U;
   state.body_capacity = 0U;
@@ -2053,7 +2017,7 @@ static int cai_client_stream_response_params_with_id(
   if (http_success && !state.failed && !state.done_seen) {
     memset(&sse_error, 0, sizeof(sse_error));
     sse_status = lonejson_sse_finish_json_value(
-        state.sse, &state.event_json, &state.json_options,
+        CAI_LJ_STREAM, state.sse, &state.event_json, &state.json_options,
         cai_sse_json_value_event, &state, &sse_error);
     if (sse_status != LONEJSON_STATUS_OK) {
       if (!state.failed) {

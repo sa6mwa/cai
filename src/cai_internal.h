@@ -3,6 +3,8 @@
 
 #include <cai/cai.h>
 
+#include "cai_lj.h"
+
 #include <curl/curl.h>
 #include <lonejson.h>
 #include <stddef.h>
@@ -55,6 +57,7 @@ typedef struct cai_agent_impl {
   int local_history_enabled;
   size_t history_memory_limit;
   char *history_spool_dir;
+  lonejson *history_runtime;
   lonejson_object_array hosted_tools;
   cai_tool_registry *tools;
   cai_session *default_session;

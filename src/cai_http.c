@@ -171,9 +171,9 @@ int cai_set_openai_error(cai_error *error, long http_status, const char *body,
   detail = body != NULL ? body : "";
   server_code = NULL;
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(&cai_api_error_map, &doc);
-  status =
-      lonejson_parse_cstr(&cai_api_error_map, &doc, detail, NULL, &json_error);
+  lonejson_init(CAI_LJ, &cai_api_error_map, &doc);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_api_error_map, &doc, detail,
+                              &json_error);
   if (status == LONEJSON_STATUS_OK && doc.error.message != NULL) {
     detail = doc.error.message;
     server_code = doc.error.code != NULL ? doc.error.code : doc.error.type;
@@ -467,7 +467,7 @@ int cai_http_json_request(cai_client *client, const char *method,
                                          out_request_id, error);
   }
   lonejson_error_init(&json_error);
-  lonejson_spooled_init(&spooled, NULL);
+  lonejson_spooled_init(CAI_LJ, &spooled);
   len = strlen(request_json);
   if (lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
       LONEJSON_STATUS_OK) {
@@ -939,10 +939,10 @@ int cai_client_count_response_input_tokens(
   if (rc == CAI_OK) {
     memset(&doc, 0, sizeof(doc));
     lonejson_error_init(&json_error);
-    if (lonejson_parse_buffer(&cai_input_token_count_map, &doc,
-                              body != NULL ? body : "",
-                              body != NULL ? strlen(body) : 0U, NULL,
-                              &json_error) !=
+    if (CAI_LJ->parse_buffer(CAI_LJ, &cai_input_token_count_map, &doc,
+                             body != NULL ? body : "",
+                             body != NULL ? strlen(body) : 0U,
+                             &json_error) !=
         LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse input token count response",

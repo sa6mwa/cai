@@ -349,10 +349,12 @@ static int cai_revgeo_fetch(const cai_revgeo_context *ctx,
   CURLcode code;
   long http_status;
   char *url;
-  lonejson_spool_options spool_options;
+  lonejson *spool_runtime;
+  lonejson_config spool_config;
   int rc;
 
   url = NULL;
+  spool_runtime = NULL;
   curl = curl_easy_init();
   if (curl == NULL) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -363,11 +365,17 @@ static int cai_revgeo_fetch(const cai_revgeo_context *ctx,
     curl_easy_cleanup(curl);
     return rc;
   }
-  spool_options = lonejson_default_spool_options();
-  spool_options.memory_limit = ctx->response_memory_limit;
-  spool_options.max_bytes = ctx->response_max_bytes;
-  spool_options.temp_dir = ctx->response_spool_dir;
-  lonejson_spooled_init(out, &spool_options);
+  spool_config = lonejson_default_config();
+  spool_config.spool_default.memory_limit = ctx->response_memory_limit;
+  spool_config.spool_default.max_bytes = ctx->response_max_bytes;
+  spool_config.spool_default.temp_dir = ctx->response_spool_dir;
+  rc = cai_lonejson_runtime_open(&spool_config, &spool_runtime, error);
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    cai_free_mem(NULL, url);
+    return rc;
+  }
+  lonejson_spooled_init(spool_runtime, out);
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_revgeo_write_spool);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
@@ -381,16 +389,19 @@ static int cai_revgeo_fetch(const cai_revgeo_context *ctx,
   cai_free_mem(NULL, url);
   if (code != CURLE_OK) {
     lonejson_spooled_cleanup(out);
+    cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "reverse-geocoding request failed",
                                 curl_easy_strerror(code));
   }
   if (http_status < 200L || http_status >= 300L) {
     lonejson_spooled_cleanup(out);
+    cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_http(error, CAI_ERR_SERVER, http_status,
                               "reverse-geocoding request failed", NULL, NULL,
                               NULL);
   }
+  cai_lonejson_runtime_close(&spool_runtime);
   return CAI_OK;
 }
 
@@ -408,7 +419,7 @@ static int cai_revgeo_parse(lonejson_spooled *json,
   lonejson_error json_error;
 
   memset(doc, 0, sizeof(*doc));
-  lonejson_init(&cai_revgeo_response_map, doc);
+  lonejson_init(CAI_LJ, &cai_revgeo_response_map, doc);
   reader.cursor = *json;
   lonejson_error_init(&json_error);
   if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
@@ -419,9 +430,9 @@ static int cai_revgeo_parse(lonejson_spooled *json,
                                 json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (lonejson_parse_reader(&cai_revgeo_response_map, doc,
-                            cai_revgeo_spool_read, &reader, NULL,
-                            &json_error) != LONEJSON_STATUS_OK) {
+  if (CAI_LJ->parse_reader(CAI_LJ, &cai_revgeo_response_map, doc,
+                           cai_revgeo_spool_read, &reader,
+                           &json_error) != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_revgeo_response_map, doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse reverse-geocoding response",

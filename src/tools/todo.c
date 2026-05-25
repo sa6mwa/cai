@@ -1168,8 +1168,8 @@ static int cai_todo_rewrite(const cai_todo_context *ctx, void *txn,
   }
   lonejson_error_init(&json_error);
   if (rc == CAI_OK &&
-      lonejson_array_rewrite_reader(selector, reader, reader_context, sink,
-                                    sink_context, options,
+      lonejson_array_rewrite_reader(CAI_LJ, selector, reader, reader_context,
+                                    sink, sink_context, options,
                                     &json_error) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                               "failed to rewrite todo store",
@@ -1190,7 +1190,7 @@ static int cai_todo_spool_string(lonejson_spooled *spool, const char *value,
 
   lonejson_error_init(&json_error);
   lonejson_spooled_cleanup(spool);
-  lonejson_spooled_init(spool, NULL);
+  lonejson_spooled_init(CAI_LJ, spool);
   if (value != NULL &&
       lonejson_spooled_append(spool, value, strlen(value), &json_error) !=
           LONEJSON_STATUS_OK) {
@@ -1212,7 +1212,7 @@ static int cai_todo_spool_clone(lonejson_spooled *dst,
   lonejson_error json_error;
 
   lonejson_spooled_cleanup(dst);
-  lonejson_spooled_init(dst, NULL);
+  lonejson_spooled_init(CAI_LJ, dst);
   lonejson_error_init(&json_error);
   if (lonejson_spooled_write_to_sink(src, cai_todo_spool_sink, dst,
                                      &json_error) != LONEJSON_STATUS_OK) {
@@ -1314,9 +1314,9 @@ static int cai_todo_array_grow(lonejson_object_array *array, size_t elem_size,
 
 static int cai_todo_item_init(cai_todo_item *item) {
   memset(item, 0, sizeof(*item));
-  lonejson_spooled_init(&item->title, NULL);
-  lonejson_spooled_init(&item->description, NULL);
-  lonejson_init(&cai_todo_item_map, item);
+  lonejson_spooled_init(CAI_LJ, &item->title);
+  lonejson_spooled_init(CAI_LJ, &item->description);
+  lonejson_init(CAI_LJ, &cai_todo_item_map, item);
   return CAI_OK;
 }
 
@@ -1345,7 +1345,7 @@ static void cai_todo_item_parse_cleanup(cai_todo_item *item) {
 
 static void cai_todo_board_init(cai_todo_board *board) {
   memset(board, 0, sizeof(*board));
-  lonejson_init(&cai_todo_board_map, board);
+  lonejson_init(CAI_LJ, &cai_todo_board_map, board);
 }
 
 static void cai_todo_board_cleanup(cai_todo_board *board) {
@@ -1553,8 +1553,8 @@ static int cai_todo_stream_boards(const cai_todo_context *ctx, void *txn,
     return rc;
   }
   lonejson_error_init(&json_error);
-  stream = lonejson_array_stream_open_reader("boards", reader, reader_context,
-                                             NULL, &json_error);
+  stream = CAI_LJ->array_stream_open_reader(CAI_LJ, "boards", reader,
+                                            reader_context, &json_error);
   if (stream == NULL) {
     if (ctx->store.close_read != NULL) {
       ctx->store.close_read(ctx->store_context, txn, reader_context);
@@ -1640,8 +1640,8 @@ static int cai_todo_stream_items_path(const cai_todo_context *ctx,
     return rc;
   }
   lonejson_error_init(&json_error);
-  stream = lonejson_array_stream_open_reader(path, reader, reader_context, NULL,
-                                             &json_error);
+  stream = CAI_LJ->array_stream_open_reader(CAI_LJ, path, reader,
+                                            reader_context, &json_error);
   if (stream == NULL) {
     if (ctx->store.close_read != NULL) {
       ctx->store.close_read(ctx->store_context, txn, reader_context);

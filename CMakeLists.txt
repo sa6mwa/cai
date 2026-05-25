@@ -33,7 +33,7 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_LONEJSON_VERSION "0.23.0")
+set(CAI_LONEJSON_VERSION "0.24.0")
 set(CAI_PSLOG_VERSION "0.4.1")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -127,19 +127,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "a6bb5b9a035d2e7d3543b0c8d8ab842fd5be19608d7d03be6a1b23928b3bab0f")
+    set(_sha256 "544c611f36d81f5836e953aa32ded12fa3db0fa82c24ecb50c4befd1c57d55bc")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "62dcc9bb9112d1c8c4721c203e5aa5e1c0e06820dfc0212e7dcdf0025ddd6f18")
+    set(_sha256 "2ee23f0202424c672bf62f4df8e213960c64ace9d162cb4e4307fd185970049b")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "824ab3c37146bcdfb78177ee96f3971dec4ef5668233a687ff1776e7d8c32004")
+    set(_sha256 "66c5e03966f44d97cd2de9ce098b4da404d91d90e1338eb075cdcb040713d354")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "fac7d1bb0fc8a07f5adb5a0aa0958c24f8d0b6c204c30542f35c1c2db6b7202a")
+    set(_sha256 "79f9aba780da6bd757a3f6425b61b850895fc1b2190a2be6d8b5a1b3f9d6d557")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "6f21a6652d2e8934c9eb2dc939cacf83c59e9ce41e5211bc9cd4a0ef5ef92829")
+    set(_sha256 "e52113bfef8ad30c36dbe816bb4e8ab2acd0390f1824ecb5e999d3459cef4f91")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "fade3f2eae005fdce561170f3c80b2becf241f398e908891cca86df8e46fb168")
+    set(_sha256 "c8a91e45c643ba8d9a826e7e30dc45fd733a5b5699a567432d28b568c6fb4a81")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "0f70dd8d710af7ea3eb3d19d0be332ab52554fb3503c0d85439c6c93ca0f84a5")
+    set(_sha256 "cc6c6e3711eec7868dfd3b19470a1cd35c33f8ee692b64269c101f34365fb0a3")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -472,6 +472,7 @@ set(CAI_SOURCES
   src/cai_error.c
   src/cai_http.c
   src/cai_input_item.c
+  src/cai_lj.c
   src/cai_log.c
   src/cai_mcp.c
   src/cai_models.c
@@ -510,7 +511,9 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<BUILD_INTERFACE:${CAI_GENERATED_INCLUDE_DIR}>
         $<BUILD_INTERFACE:${CAI_LONEJSON_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-    target_include_directories(${_cai_target} PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
+    target_include_directories(${_cai_target} PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CAI_PSLOG_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS}
       "${CURL_INCLUDE_DIR}")
     target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
@@ -563,6 +566,7 @@ if(CAI_BUILD_EXAMPLES)
     target_include_directories(cai_example_${_cai_example} PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CAI_LONEJSON_INCLUDE_DIR}")
     if(_cai_example STREQUAL "mcp_server")
       target_include_directories(cai_example_${_cai_example} PRIVATE
@@ -598,6 +602,7 @@ if(CAI_BUILD_LUA)
   target_include_directories(cai_lua PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CAI_LONEJSON_INCLUDE_DIR}"
     "${CAI_PSLOG_INCLUDE_DIR}"
     "${CAI_LUA_INCLUDE_DIR}")

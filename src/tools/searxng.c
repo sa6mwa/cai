@@ -316,7 +316,8 @@ static int cai_searxng_fetch(const cai_searxng_context *ctx, const char *query,
   CURLcode code;
   long http_status;
   char *url;
-  lonejson_spool_options spool_options;
+  lonejson *spool_runtime;
+  lonejson_config spool_config;
   int rc;
 
   url = NULL;
@@ -325,16 +326,23 @@ static int cai_searxng_fetch(const cai_searxng_context *ctx, const char *query,
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize curl for SearXNG");
   }
+  spool_runtime = NULL;
   rc = cai_searxng_build_url(curl, ctx, query, &url, error);
   if (rc != CAI_OK) {
     curl_easy_cleanup(curl);
     return rc;
   }
-  spool_options = lonejson_default_spool_options();
-  spool_options.memory_limit = ctx->response_memory_limit;
-  spool_options.max_bytes = ctx->response_max_bytes;
-  spool_options.temp_dir = ctx->response_spool_dir;
-  lonejson_spooled_init(out, &spool_options);
+  spool_config = lonejson_default_config();
+  spool_config.spool_default.memory_limit = ctx->response_memory_limit;
+  spool_config.spool_default.max_bytes = ctx->response_max_bytes;
+  spool_config.spool_default.temp_dir = ctx->response_spool_dir;
+  rc = cai_lonejson_runtime_open(&spool_config, &spool_runtime, error);
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    cai_free_mem(NULL, url);
+    return rc;
+  }
+  lonejson_spooled_init(spool_runtime, out);
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_searxng_write_spool);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
@@ -348,15 +356,18 @@ static int cai_searxng_fetch(const cai_searxng_context *ctx, const char *query,
   cai_free_mem(NULL, url);
   if (code != CURLE_OK) {
     lonejson_spooled_cleanup(out);
+    cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "SearXNG request failed",
                                 curl_easy_strerror(code));
   }
   if (http_status < 200L || http_status >= 300L) {
     lonejson_spooled_cleanup(out);
+    cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_http(error, CAI_ERR_SERVER, http_status,
                               "SearXNG request failed", NULL, NULL, NULL);
   }
+  cai_lonejson_runtime_close(&spool_runtime);
   return CAI_OK;
 }
 
@@ -480,9 +491,9 @@ static int cai_searxng_parse(lonejson_spooled *json,
   memset(&infobox_item, 0, sizeof(infobox_item));
   memset(&result_handler, 0, sizeof(result_handler));
   memset(&infobox_handler, 0, sizeof(infobox_handler));
-  lonejson_init(&cai_searxng_response_map, doc);
-  lonejson_init(&cai_searxng_item_map, &result_item);
-  lonejson_init(&cai_searxng_item_map, &infobox_item);
+  lonejson_init(CAI_LJ, &cai_searxng_response_map, doc);
+  lonejson_init(CAI_LJ, &cai_searxng_item_map, &result_item);
+  lonejson_init(CAI_LJ, &cai_searxng_item_map, &infobox_item);
   lonejson_mapped_array_stream_init(&doc->results);
   lonejson_mapped_array_stream_init(&doc->infoboxes);
   result_handler.item_map = &cai_searxng_item_map;
@@ -528,9 +539,9 @@ static int cai_searxng_parse(lonejson_spooled *json,
                                 json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (lonejson_parse_reader(&cai_searxng_response_map, doc,
-                            cai_searxng_spool_read, &reader, NULL,
-                            &json_error) != LONEJSON_STATUS_OK) {
+  if (CAI_LJ->parse_reader(CAI_LJ, &cai_searxng_response_map, doc,
+                           cai_searxng_spool_read, &reader,
+                           &json_error) != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_searxng_item_map, &result_item);
     lonejson_cleanup(&cai_searxng_item_map, &infobox_item);
     lonejson_cleanup(&cai_searxng_response_map, doc);

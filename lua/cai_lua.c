@@ -6,6 +6,8 @@
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
 
+#include "../src/cai_lj.h"
+
 #include <lauxlib.h>
 #include <lonejson.h>
 #include <lua.h>
@@ -812,7 +814,7 @@ static int cai_lua_spool_from_stack(lua_State *L, int index,
   const char *text;
 
   memset(out, 0, sizeof(*out));
-  lonejson_spooled_init(out, NULL);
+  lonejson_spooled_init(CAI_LJ, out);
   sink = NULL;
   callbacks.write = cai_lua_spooled_append_sink;
   callbacks.close = NULL;

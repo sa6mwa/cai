@@ -1,5 +1,7 @@
 #include <cai/cai.h>
 
+#include "cai_lj.h"
+
 #include "../common.h"
 
 #include <curl/curl.h>
@@ -287,7 +289,7 @@ static int smhi_fetch_url(const char *url, const char *label,
   long http_status;
   int rc;
 
-  lonejson_spooled_init(out, NULL);
+  lonejson_spooled_init(CAI_LJ, out);
   curl = curl_easy_init();
   if (curl == NULL) {
     lonejson_spooled_cleanup(out);
@@ -411,8 +413,8 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
   memset(state, 0, sizeof(*state));
   memset(&item, 0, sizeof(item));
   memset(&handler, 0, sizeof(handler));
-  lonejson_init(&smhi_forecast_map, doc);
-  lonejson_init(&smhi_forecast_time_map, &item);
+  lonejson_init(CAI_LJ, &smhi_forecast_map, doc);
+  lonejson_init(CAI_LJ, &smhi_forecast_time_map, &item);
   lonejson_mapped_array_stream_init(&doc->time_series);
   handler.item_map = &smhi_forecast_time_map;
   handler.item_dst = &item;
@@ -438,8 +440,7 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
                           "failed to rewind SMHI response", json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (lonejson_parse_reader(&smhi_forecast_map, doc, smhi_spool_read, &reader,
-                            NULL, &json_error) != LONEJSON_STATUS_OK) {
+  if (CAI_LJ->parse_reader(CAI_LJ, &smhi_forecast_map, doc, smhi_spool_read, &reader, &json_error) != LONEJSON_STATUS_OK) {
     lonejson_cleanup(&smhi_forecast_time_map, &item);
     lonejson_cleanup(&smhi_forecast_map, doc);
     smhi_forecast_parse_state_cleanup(state);
@@ -493,8 +494,8 @@ static int smhi_geocode_location(const char *location, double *latitude,
   memset(&item, 0, sizeof(item));
   memset(&state, 0, sizeof(state));
   memset(&handler, 0, sizeof(handler));
-  lonejson_init(&open_meteo_geocoding_map, &doc);
-  lonejson_init(&open_meteo_location_map, &item);
+  lonejson_init(CAI_LJ, &open_meteo_geocoding_map, &doc);
+  lonejson_init(CAI_LJ, &open_meteo_location_map, &item);
   lonejson_mapped_array_stream_init(&doc.results);
   handler.item_map = &open_meteo_location_map;
   handler.item_dst = &item;
@@ -523,8 +524,7 @@ static int smhi_geocode_location(const char *location, double *latitude,
                           json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (lonejson_parse_reader(&open_meteo_geocoding_map, &doc, smhi_spool_read,
-                            &reader, NULL, &json_error) !=
+  if (CAI_LJ->parse_reader(CAI_LJ, &open_meteo_geocoding_map, &doc, smhi_spool_read, &reader, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&open_meteo_location_map, &item);
     lonejson_cleanup(&open_meteo_geocoding_map, &doc);

@@ -518,7 +518,7 @@ int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                          "output text does not contain JSON");
   }
   lonejson_error_init(&json_error);
-  if (lonejson_parse_cstr(map, value, text, NULL, &json_error) !=
+  if (CAI_LJ->parse_cstr(CAI_LJ, map, value, text, &json_error) !=
       LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse output JSON",

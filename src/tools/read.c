@@ -35,6 +35,7 @@ typedef struct cai_read_context {
   size_t content_memory_limit;
   size_t content_max_bytes;
   char *content_spool_dir;
+  lonejson *runtime;
 } cai_read_context;
 
 typedef struct cai_read_args {
@@ -230,6 +231,7 @@ static void cai_read_context_cleanup(void *context) {
   }
   cai_free_mem(NULL, ctx->root_path);
   cai_free_mem(NULL, ctx->default_workdir);
+  cai_lonejson_runtime_close(&ctx->runtime);
   cai_free_mem(NULL, ctx->content_spool_dir);
   cai_free_mem(NULL, ctx);
 }
@@ -500,6 +502,8 @@ static int cai_read_context_new(const cai_read_tool_config *config,
                        "read tool default_workdir escapes configured root");
   }
   if (rc == CAI_OK) {
+    lonejson_config runtime_config;
+
     ctx->root_path = root;
     ctx->default_workdir = workdir;
     root = NULL;
@@ -515,6 +519,19 @@ static int cai_read_context_new(const cai_read_tool_config *config,
                                   config->content_spool_dir,
                                   "failed to allocate read spool directory",
                                   error);
+    if (rc == CAI_OK) {
+      runtime_config = lonejson_default_config();
+      runtime_config.spool_default.memory_limit = ctx->content_memory_limit;
+      runtime_config.spool_blob.memory_limit = ctx->content_memory_limit;
+      runtime_config.spool_large_text.memory_limit = ctx->content_memory_limit;
+      runtime_config.spool_default.max_bytes = ctx->content_max_bytes;
+      runtime_config.spool_blob.max_bytes = ctx->content_max_bytes;
+      runtime_config.spool_large_text.max_bytes = ctx->content_max_bytes;
+      runtime_config.spool_default.temp_dir = ctx->content_spool_dir;
+      runtime_config.spool_blob.temp_dir = ctx->content_spool_dir;
+      runtime_config.spool_large_text.temp_dir = ctx->content_spool_dir;
+      rc = cai_lonejson_runtime_open(&runtime_config, &ctx->runtime, error);
+    }
   }
   cai_free_mem(NULL, root);
   cai_free_mem(NULL, workdir);
@@ -941,7 +958,6 @@ static int cai_read_stream_file(const cai_read_context *ctx,
                                 long long *byte_count,
                                 long long *end_line_out, int *truncated,
                                 long long *file_size, cai_error *error) {
-  lonejson_spool_options spool_options;
   FILE *fp;
   char buffer[4096];
   long long start_line;
@@ -999,11 +1015,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
                          "read content byte limit is invalid");
   }
   *file_size = opened_file_size;
-  spool_options = lonejson_default_spool_options();
-  spool_options.memory_limit = ctx->content_memory_limit;
-  spool_options.max_bytes = (size_t)max_bytes;
-  spool_options.temp_dir = ctx->content_spool_dir;
-  lonejson_spooled_init(content, &spool_options);
+  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ, content);
   current_line = 1LL;
   last_line = start_line;
   written = 0LL;
