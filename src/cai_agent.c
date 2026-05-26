@@ -4040,9 +4040,9 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
     }
     if (rc == CAI_OK) {
       lonejson_error_init(&json_error);
-      if (lonejson_serialize_sink(CAI_LJ, &cai_session_state_map, &doc,
-                                  cai_history_lonejson_sink, &sink_context,
-                                  &json_error) != LONEJSON_STATUS_OK) {
+      if (CAI_LJ->serialize_sink(CAI_LJ, &cai_session_state_map, &doc,
+                                 cai_history_lonejson_sink, &sink_context,
+                                 &json_error) != LONEJSON_STATUS_OK) {
         rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to serialize session state JSON",
                                   json_error.message);

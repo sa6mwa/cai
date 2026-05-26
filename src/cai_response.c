@@ -3842,9 +3842,9 @@ int cai_response_create_params_write_json_sink(
   write_context.sink_error = sink_error;
   write_context.length = 0U;
   lonejson_error_init(&json_error);
-  rc = lonejson_serialize_sink(CAI_LJ, &cai_response_request_map, &state.doc,
-                               cai_response_request_write_sink,
-                               &write_context, &json_error) == LONEJSON_STATUS_OK
+  rc = CAI_LJ->serialize_sink(CAI_LJ, &cai_response_request_map, &state.doc,
+                              cai_response_request_write_sink,
+                              &write_context, &json_error) == LONEJSON_STATUS_OK
            ? CAI_OK
            : cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to serialize response request JSON",

@@ -1577,9 +1577,9 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
   rc = entry->lonejson_callback(entry->context, params, result, error);
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
-    status = lonejson_serialize_sink(CAI_LJ, entry->result_map, result,
-                                     cai_lonejson_sink_write, output,
-                                     &json_error);
+    status = CAI_LJ->serialize_sink(CAI_LJ, entry->result_map, result,
+                                    cai_lonejson_sink_write, output,
+                                    &json_error);
     if (status != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize tool result",
@@ -1711,9 +1711,9 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry,
   rc = entry->lonejson_callback(entry->context, params, result, error);
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
-    status = lonejson_serialize_sink(CAI_LJ, entry->result_map, result,
-                                     cai_lonejson_sink_write, output,
-                                     &json_error);
+    status = CAI_LJ->serialize_sink(CAI_LJ, entry->result_map, result,
+                                    cai_lonejson_sink_write, output,
+                                    &json_error);
     if (status != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize tool result",

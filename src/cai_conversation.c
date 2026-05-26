@@ -407,9 +407,9 @@ int cai_client_update_conversation_metadata(cai_client *client,
     CAI_LJ->spooled_init(CAI_LJ, &body);
     has_body = 1;
     lonejson_error_init(&json_error);
-    if (lonejson_serialize_sink(CAI_LJ, &cai_conversation_metadata_map, &doc,
-                                cai_conversation_spooled_sink, &body,
-                                &json_error) != LONEJSON_STATUS_OK) {
+    if (CAI_LJ->serialize_sink(CAI_LJ, &cai_conversation_metadata_map, &doc,
+                               cai_conversation_spooled_sink, &body,
+                               &json_error) != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize conversation metadata",
                                 json_error.message);
@@ -993,9 +993,9 @@ static int cai_conversation_items_params_spool_json(
   if (rc == CAI_OK) {
     CAI_LJ->spooled_init(CAI_LJ, out);
     lonejson_error_init(&json_error);
-    if (lonejson_serialize_sink(CAI_LJ, &cai_conversation_items_request_map,
-                                &doc, cai_conversation_spooled_sink, out,
-                                &json_error) != LONEJSON_STATUS_OK) {
+    if (CAI_LJ->serialize_sink(CAI_LJ, &cai_conversation_items_request_map,
+                               &doc, cai_conversation_spooled_sink, out,
+                               &json_error) != LONEJSON_STATUS_OK) {
       out->cleanup(out);
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize conversation items JSON",
