@@ -1148,7 +1148,7 @@ static void cai_tool_result_cleanup_plain(const lonejson_map *map,
       break;
     case LONEJSON_FIELD_KIND_STRING_SOURCE:
     case LONEJSON_FIELD_KIND_BASE64_SOURCE:
-      lonejson_source_cleanup((lonejson_source *)ptr);
+      ((lonejson_source *)ptr)->cleanup((lonejson_source *)ptr);
       break;
     case LONEJSON_FIELD_KIND_JSON_VALUE:
       CAI_LJ->json_value_cleanup(CAI_LJ, (lonejson_json_value *)ptr);
