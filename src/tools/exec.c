@@ -30,7 +30,7 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_EXEC_DEFAULT_TIMEOUT_MS 10000L
 #define CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS 60000L
 #define CAI_EXEC_DEFAULT_OUTPUT_MEMORY_LIMIT (128U * 1024U)
-#define CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES (1024U * 1024U)
+#define CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES (3U * 1024U * 1024U)
 #define CAI_EXEC_DEFAULT_CGROUP_PARENT "/sys/fs/cgroup"
 
 typedef struct cai_exec_context {

@@ -153,7 +153,7 @@ if exec_tool_dir then
     timeout_ms = 10000,
     max_timeout_ms = 60000,
     output_memory_limit = 128 * 1024,
-    output_max_bytes = 1024 * 1024,
+    output_max_bytes = 3 * 1024 * 1024,
     allow_pty = true,
   }), nil, "agent:register_exec_tool")
 end

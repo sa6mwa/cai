@@ -267,7 +267,7 @@ int main(int argc, char **argv) {
     exec_config.timeout_ms = 10000L;
     exec_config.max_timeout_ms = 60000L;
     exec_config.output_memory_limit = 128U * 1024U;
-    exec_config.output_max_bytes = 1024U * 1024U;
+    exec_config.output_max_bytes = 3U * 1024U * 1024U;
     exec_config.allow_pty = 1;
   }
   if (read_tool_dir != NULL) {
