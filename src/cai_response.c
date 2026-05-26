@@ -4231,7 +4231,7 @@ int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_response_map, &doc, json,
                               &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse response JSON",
                                 json_error.message);
@@ -4239,13 +4239,13 @@ int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
   if (doc.id == NULL ||
       (doc.status == NULL &&
        (doc.object == NULL || strcmp(doc.object, "response.compaction") != 0))) {
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "response JSON is missing id or status");
   }
   if (cai_capture_response_output_json(&doc, &output_items_json, error) !=
       CAI_OK) {
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return error != NULL ? error->code : CAI_ERR_PROTOCOL;
   }
   have_output_items_json = 1;
@@ -4254,7 +4254,7 @@ int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
     if (have_output_items_json) {
       output_items_json.cleanup(&output_items_json);
     }
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate response");
   }
   memset(response, 0, sizeof(*response));
@@ -4307,21 +4307,21 @@ int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
       (doc.incomplete_details.reason != NULL &&
        response->incomplete_reason == NULL)) {
     cai_response_destroy(response);
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate parsed response");
   }
   if (cai_response_copy_output_items(response, &doc, error) != CAI_OK) {
     cai_response_destroy(response);
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
   if (cai_response_copy_tool_calls(response, &doc, error) != CAI_OK) {
     cai_response_destroy(response);
-    lonejson_cleanup(&cai_response_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
-  lonejson_cleanup(&cai_response_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
   *out = response;
   if (have_output_items_json) {
     output_items_json.cleanup(&output_items_json);

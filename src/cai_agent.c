@@ -4150,7 +4150,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   }
 
 done:
-  lonejson_cleanup(&cai_session_state_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_session_state_map, &doc);
   if (has_history_json) {
     history_json.cleanup(&history_json);
   }

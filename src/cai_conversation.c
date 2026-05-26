@@ -155,19 +155,19 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_conversation_map, &doc, json,
                               &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_conversation_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_conversation_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse conversation JSON",
                                 json_error.message);
   }
   if (doc.id == NULL || doc.object == NULL) {
-    lonejson_cleanup(&cai_conversation_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_conversation_map, &doc);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "conversation JSON is missing id or object");
   }
   conversation = (cai_conversation *)cai_alloc(NULL, sizeof(*conversation));
   if (conversation == NULL) {
-    lonejson_cleanup(&cai_conversation_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_conversation_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation");
   }
@@ -175,11 +175,11 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
   conversation->object = cai_strdup(NULL, doc.object);
   if (conversation->id == NULL || conversation->object == NULL) {
     cai_conversation_destroy(conversation);
-    lonejson_cleanup(&cai_conversation_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_conversation_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate parsed conversation");
   }
-  lonejson_cleanup(&cai_conversation_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_conversation_map, &doc);
   *out = conversation;
   return CAI_OK;
 }

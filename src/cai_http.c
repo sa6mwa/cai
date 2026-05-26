@@ -181,7 +181,7 @@ int cai_set_openai_error(cai_error *error, long http_status, const char *body,
   rc = cai_set_error_http(error, CAI_ERR_SERVER, http_status,
                           "OpenAI API request failed", detail, server_code,
                           request_id);
-  lonejson_cleanup(&cai_api_error_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_api_error_map, &doc);
   return rc;
 }
 
@@ -951,7 +951,7 @@ int cai_client_count_response_input_tokens(
       out->input_tokens = doc.input_tokens;
       out->total_tokens = doc.input_tokens;
     }
-    lonejson_cleanup(&cai_input_token_count_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_token_count_map, &doc);
   }
   cai_free_mem(NULL, body);
   cai_free_mem(NULL, request_id);

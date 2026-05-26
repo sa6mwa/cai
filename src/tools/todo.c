@@ -1345,7 +1345,7 @@ static void cai_todo_item_parse_init(cai_todo_item *item) {
 }
 
 static void cai_todo_item_parse_cleanup(cai_todo_item *item) {
-  lonejson_cleanup(&cai_todo_item_map, item);
+  CAI_LJ->cleanup(CAI_LJ, &cai_todo_item_map, item);
 }
 
 static void cai_todo_board_init(cai_todo_board *board) {
@@ -1368,7 +1368,7 @@ static void cai_todo_board_parse_init(cai_todo_board *board) {
 }
 
 static void cai_todo_board_parse_cleanup(cai_todo_board *board) {
-  lonejson_cleanup(&cai_todo_board_map, board);
+  CAI_LJ->cleanup(CAI_LJ, &cai_todo_board_map, board);
 }
 
 static int cai_todo_add_result_item(cai_todo_result *result,

@@ -98,14 +98,14 @@ int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_input_item_list_map, &doc, json,
                               &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_input_item_list_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_list_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse input item list JSON",
                                 json_error.message);
   }
   list = (cai_input_item_list *)cai_alloc(NULL, sizeof(*list));
   if (list == NULL) {
-    lonejson_cleanup(&cai_input_item_list_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_list_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate input item list");
   }
@@ -120,17 +120,17 @@ int cai_input_item_list_parse_json(const char *json, cai_input_item_list **out,
       (doc.last_id != NULL && list->last_id == NULL) ||
       list->raw_json == NULL) {
     cai_input_item_list_destroy(list);
-    lonejson_cleanup(&cai_input_item_list_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_list_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate input item list fields");
   }
   rc = cai_input_item_list_copy_items(list, &doc, error);
   if (rc != CAI_OK) {
     cai_input_item_list_destroy(list);
-    lonejson_cleanup(&cai_input_item_list_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_list_map, &doc);
     return rc;
   }
-  lonejson_cleanup(&cai_input_item_list_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_input_item_list_map, &doc);
   *out = list;
   return CAI_OK;
 }
@@ -157,14 +157,14 @@ int cai_conversation_item_parse_json(const char *json,
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_input_item_map, &doc, json,
                               &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_input_item_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse conversation item JSON",
                                 json_error.message);
   }
   item = (cai_conversation_item *)cai_alloc(NULL, sizeof(*item));
   if (item == NULL) {
-    lonejson_cleanup(&cai_input_item_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation item");
   }
@@ -177,11 +177,11 @@ int cai_conversation_item_parse_json(const char *json,
       (doc.type != NULL && item->type == NULL) ||
       (doc.role != NULL && item->role == NULL) || item->raw_json == NULL) {
     cai_conversation_item_destroy(item);
-    lonejson_cleanup(&cai_input_item_map, &doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_input_item_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation item fields");
   }
-  lonejson_cleanup(&cai_input_item_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_input_item_map, &doc);
   *out = item;
   return CAI_OK;
 }

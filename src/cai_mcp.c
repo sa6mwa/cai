@@ -802,7 +802,7 @@ static int cai_mcp_parse_call_params(const lonejson_spooled *params_spool,
   if (params.arguments.methods->set_parse_sink(&params.arguments,
                                          cai_mcp_spool_sink, arguments,
                                          &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_mcp_call_params_map, &params);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to configure MCP arguments parser",
                                 json_error.message);
@@ -810,7 +810,7 @@ static int cai_mcp_parse_call_params(const lonejson_spooled *params_spool,
   reader.cursor = *params_spool;
   if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_mcp_call_params_map, &params);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to rewind MCP params",
                                 json_error.message);
@@ -818,18 +818,18 @@ static int cai_mcp_parse_call_params(const lonejson_spooled *params_spool,
   if (CAI_LJ_PRESERVE->parse_reader(CAI_LJ_PRESERVE, &cai_mcp_call_params_map,
                                     &params, cai_mcp_spooled_read, &reader,
                                     &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_mcp_call_params_map, &params);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse MCP tool call params",
                                 json_error.message);
   }
   *out_name = cai_strdup(NULL, params.name);
   if (*out_name == NULL) {
-    lonejson_cleanup(&cai_mcp_call_params_map, &params);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate MCP tool name");
   }
-  lonejson_cleanup(&cai_mcp_call_params_map, &params);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
   return CAI_OK;
 }
 
@@ -987,7 +987,7 @@ static int cai_mcp_parse_initialize_params(
   lonejson_error_init(&json_error);
   if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_mcp_initialize_params_map, params);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_params_map, params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to rewind MCP initialize params",
                                 json_error.message);
@@ -996,7 +996,7 @@ static int cai_mcp_parse_initialize_params(
                                     &cai_mcp_initialize_params_map, params,
                                     cai_mcp_spooled_read, &reader,
                                     &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_mcp_initialize_params_map, params);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_params_map, params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse MCP initialize params",
                                 json_error.message);
@@ -1314,7 +1314,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                      created_session_id,
                                      sizeof(created_session_id), error);
       }
-      lonejson_cleanup(&cai_mcp_initialize_params_map, &init_params);
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_params_map, &init_params);
       if (rc != CAI_OK) {
         response->status = 500;
         cai_mcp_set_header(response, "content-type", "application/json",
@@ -1365,7 +1365,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
   }
 
 done:
-  lonejson_cleanup(&cai_mcp_jsonrpc_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_map, &doc);
   id_spool.cleanup(&id_spool);
   params_spool.cleanup(&params_spool);
   return rc;

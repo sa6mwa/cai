@@ -424,7 +424,7 @@ static int cai_revgeo_parse(lonejson_spooled *json,
   lonejson_error_init(&json_error);
   if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_revgeo_response_map, doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_revgeo_response_map, doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to rewind reverse-geocoding response",
                                 json_error.message);
@@ -433,7 +433,7 @@ static int cai_revgeo_parse(lonejson_spooled *json,
   if (CAI_LJ->parse_reader(CAI_LJ, &cai_revgeo_response_map, doc,
                            cai_revgeo_spool_read, &reader,
                            &json_error) != LONEJSON_STATUS_OK) {
-    lonejson_cleanup(&cai_revgeo_response_map, doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_revgeo_response_map, doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse reverse-geocoding response",
                                 json_error.message);
@@ -537,7 +537,7 @@ static int cai_revgeo_tool_callback(void *context, const void *params,
     return rc;
   }
   rc = cai_revgeo_fill_result(args, &doc, out, error);
-  lonejson_cleanup(&cai_revgeo_response_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_revgeo_response_map, &doc);
   return rc;
 }
 

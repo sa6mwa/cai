@@ -401,7 +401,8 @@ static int cai_stream_parse_output_item_event(
                                          &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
     event_doc->item_storage.cleanup(&event_doc->item_storage);
-    lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_output_item_event_map,
+                           event_doc);
     return CAI_ERR_NOMEM;
   }
   reader.cursor = *value;
@@ -410,7 +411,8 @@ static int cai_stream_parse_output_item_event(
       LONEJSON_STATUS_OK) {
     CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
     event_doc->item_storage.cleanup(&event_doc->item_storage);
-    lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_output_item_event_map,
+                           event_doc);
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
@@ -421,7 +423,8 @@ static int cai_stream_parse_output_item_event(
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
     event_doc->item_storage.cleanup(&event_doc->item_storage);
-    lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_output_item_event_map,
+                           event_doc);
     return CAI_ERR_PROTOCOL;
   }
   return CAI_OK;
@@ -431,7 +434,8 @@ static void cai_stream_output_item_event_cleanup(
     cai_stream_output_item_event_doc *event_doc) {
   CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->item);
   event_doc->item_storage.cleanup(&event_doc->item_storage);
-  lonejson_cleanup(&cai_stream_output_item_event_map, event_doc);
+  CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_output_item_event_map,
+                         event_doc);
 }
 
 static int cai_stream_parse_response_event(
@@ -451,7 +455,8 @@ static int cai_stream_parse_response_event(
                                          &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
     event_doc->response_storage.cleanup(&event_doc->response_storage);
-    lonejson_cleanup(&cai_stream_response_event_map, event_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_response_event_map,
+                           event_doc);
     return CAI_ERR_NOMEM;
   }
   reader.cursor = *value;
@@ -460,7 +465,8 @@ static int cai_stream_parse_response_event(
       LONEJSON_STATUS_OK) {
     CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
     event_doc->response_storage.cleanup(&event_doc->response_storage);
-    lonejson_cleanup(&cai_stream_response_event_map, event_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_response_event_map,
+                           event_doc);
     return CAI_ERR_PROTOCOL;
   }
   lonejson_error_init(&json_error);
@@ -471,7 +477,8 @@ static int cai_stream_parse_response_event(
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
     event_doc->response_storage.cleanup(&event_doc->response_storage);
-    lonejson_cleanup(&cai_stream_response_event_map, event_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_response_event_map,
+                           event_doc);
     return CAI_ERR_PROTOCOL;
   }
   return CAI_OK;
@@ -481,7 +488,8 @@ static void cai_stream_response_event_cleanup(
     cai_stream_response_event_doc *event_doc) {
   CAI_LJ_STREAM->json_value_cleanup(CAI_LJ_STREAM, &event_doc->response);
   event_doc->response_storage.cleanup(&event_doc->response_storage);
-  lonejson_cleanup(&cai_stream_response_event_map, event_doc);
+  CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_response_event_map,
+                         event_doc);
 }
 
 static int cai_stream_parse_output_item_spooled(
@@ -490,7 +498,7 @@ static int cai_stream_parse_output_item_spooled(
   CAI_LJ_STREAM->init(CAI_LJ_STREAM, &cai_stream_output_item_map, item);
   if (cai_stream_parse_spooled(&cai_stream_output_item_map, item, value) !=
       CAI_OK) {
-    lonejson_cleanup(&cai_stream_output_item_map, item);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_output_item_map, item);
     return CAI_ERR_PROTOCOL;
   }
   return CAI_OK;
@@ -1618,16 +1626,20 @@ done:
     cai_stream_item_meta_cleanup(&item_doc);
   }
   if (function_item_doc_initialized) {
-    lonejson_cleanup(&cai_stream_output_item_map, &function_item_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_output_item_map,
+                           &function_item_doc);
   }
   if (item_event_initialized) {
     cai_stream_output_item_event_cleanup(&item_event);
   }
   if (done_initialized) {
-    lonejson_cleanup(&cai_stream_function_call_done_event_map, &done_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM,
+                           &cai_stream_function_call_done_event_map,
+                           &done_doc);
   }
   if (delta_initialized) {
-    lonejson_cleanup(&cai_stream_delta_event_map, &delta_doc);
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_delta_event_map,
+                           &delta_doc);
   }
   return rc;
 }

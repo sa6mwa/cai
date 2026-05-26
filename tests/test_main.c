@@ -1922,9 +1922,9 @@ static void test_lonejson_nested_mapped_array_stream(test_state *state) {
              stream_state.boards, 2L);
   expect_int(state, "lonejson_nested_mapped_array_items", stream_state.items,
              3L);
-  lonejson_cleanup(&nested_stream_store_map, &store);
-  lonejson_cleanup(&nested_stream_board_map, &stream_state.board);
-  lonejson_cleanup(&nested_stream_item_map, &stream_state.item);
+  CAI_LJ->cleanup(CAI_LJ, &nested_stream_store_map, &store);
+  CAI_LJ->cleanup(CAI_LJ, &nested_stream_board_map, &stream_state.board);
+  CAI_LJ->cleanup(CAI_LJ, &nested_stream_item_map, &stream_state.item);
 }
 
 static lonejson_status rewrite_item_cb(void *user,
@@ -4438,7 +4438,7 @@ static void test_response_json(test_state *state) {
                                    &error),
              CAI_OK);
   expect_str(state, "output_write_json_value", parsed.answer, "structured");
-  lonejson_cleanup(&parsed_output_map, &parsed);
+  CAI_LJ->cleanup(CAI_LJ, &parsed_output_map, &parsed);
   cai_output_destroy(output);
   cai_response_destroy(response);
   cai_error_cleanup(&error);
