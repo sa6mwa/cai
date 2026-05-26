@@ -303,7 +303,7 @@ static size_t cai_searxng_write_spool(char *ptr, size_t size, size_t nmemb,
   spool = (lonejson_spooled *)userdata;
   len = size * nmemb;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(spool, ptr, len, &json_error) !=
+  if (spool->append(spool, ptr, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     return 0U;
   }
@@ -342,7 +342,7 @@ static int cai_searxng_fetch(const cai_searxng_context *ctx, const char *query,
     cai_free_mem(NULL, url);
     return rc;
   }
-  lonejson_spooled_init(spool_runtime, out);
+  spool_runtime->spooled_init(spool_runtime, out);
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_searxng_write_spool);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
@@ -355,14 +355,14 @@ static int cai_searxng_fetch(const cai_searxng_context *ctx, const char *query,
   curl_easy_cleanup(curl);
   cai_free_mem(NULL, url);
   if (code != CURLE_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "SearXNG request failed",
                                 curl_easy_strerror(code));
   }
   if (http_status < 200L || http_status >= 300L) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_http(error, CAI_ERR_SERVER, http_status,
                               "SearXNG request failed", NULL, NULL, NULL);
@@ -376,7 +376,7 @@ cai_searxng_spool_read(void *user, unsigned char *buffer, size_t capacity) {
   cai_searxng_spool_reader *reader;
 
   reader = (cai_searxng_spool_reader *)user;
-  return lonejson_spooled_read(&reader->cursor, buffer, capacity);
+  return reader->cursor.read(&reader->cursor, buffer, capacity);
 }
 
 static void cai_searxng_item_cleanup(cai_searxng_item_doc *item) {
@@ -491,9 +491,9 @@ static int cai_searxng_parse(lonejson_spooled *json,
   memset(&infobox_item, 0, sizeof(infobox_item));
   memset(&result_handler, 0, sizeof(result_handler));
   memset(&infobox_handler, 0, sizeof(infobox_handler));
-  lonejson_init(CAI_LJ, &cai_searxng_response_map, doc);
-  lonejson_init(CAI_LJ, &cai_searxng_item_map, &result_item);
-  lonejson_init(CAI_LJ, &cai_searxng_item_map, &infobox_item);
+  CAI_LJ->init(CAI_LJ, &cai_searxng_response_map, doc);
+  CAI_LJ->init(CAI_LJ, &cai_searxng_item_map, &result_item);
+  CAI_LJ->init(CAI_LJ, &cai_searxng_item_map, &infobox_item);
   lonejson_mapped_array_stream_init(&doc->results);
   lonejson_mapped_array_stream_init(&doc->infoboxes);
   result_handler.item_map = &cai_searxng_item_map;
@@ -529,7 +529,7 @@ static int cai_searxng_parse(lonejson_spooled *json,
   }
   reader.cursor = *json;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_searxng_item_map, &result_item);
     lonejson_cleanup(&cai_searxng_item_map, &infobox_item);
@@ -644,7 +644,7 @@ static int cai_searxng_tool_callback(void *context, const void *params,
     return rc;
   }
   rc = cai_searxng_parse(&body, &doc, &parse_state, error);
-  lonejson_spooled_cleanup(&body);
+  body.cleanup(&body);
   if (rc != CAI_OK) {
     return rc;
   }

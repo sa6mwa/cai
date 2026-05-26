@@ -461,7 +461,7 @@ static int cai_exec_append_spool(lonejson_spooled *spool, const char *data,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(spool, data, len, &json_error) !=
+  if (spool->append(spool, data, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to append command output",
@@ -1606,9 +1606,13 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   cai_exec_result *out;
   cai_exec_capture capture;
   cai_exec_proc_result proc;
+  lonejson *runtime;
   char *workdir;
   char sandbox_path[PATH_MAX];
   size_t output_max_bytes;
+  int have_stdout_data;
+  int have_stderr_data;
+  int have_output_data;
   int use_sandbox;
   int rc;
 
@@ -1647,6 +1651,10 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     return rc;
   }
   memset(&capture, 0, sizeof(capture));
+  runtime = ctx->runtime != NULL ? ctx->runtime : CAI_LJ;
+  have_stdout_data = 1;
+  have_stderr_data = 1;
+  have_output_data = 1;
   output_max_bytes = ctx->output_max_bytes;
   if (args->has_max_output_tokens && args->max_output_tokens > 0LL &&
       (unsigned long long)args->max_output_tokens <
@@ -1654,12 +1662,9 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     output_max_bytes = (size_t)args->max_output_tokens;
   }
   capture.max_bytes = output_max_bytes;
-  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ,
-                        &capture.stdout_data);
-  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ,
-                        &capture.stderr_data);
-  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ,
-                        &capture.output);
+  runtime->spooled_init(runtime, &capture.stdout_data);
+  runtime->spooled_init(runtime, &capture.stderr_data);
+  runtime->spooled_init(runtime, &capture.output);
   rc = cai_exec_run_process(ctx, args, workdir, sandbox_path, use_sandbox,
                             &capture, &proc, error);
   if (rc == CAI_OK) {
@@ -1688,19 +1693,34 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     if (rc == CAI_OK) {
       rc = cai_tool_result_set_spooled(&cai_exec_result_map, out, "stdout",
                                        &capture.stdout_data, error);
+      if (rc == CAI_OK) {
+        have_stdout_data = 0;
+      }
     }
     if (rc == CAI_OK) {
       rc = cai_tool_result_set_spooled(&cai_exec_result_map, out, "stderr",
                                        &capture.stderr_data, error);
+      if (rc == CAI_OK) {
+        have_stderr_data = 0;
+      }
     }
     if (rc == CAI_OK) {
       rc = cai_tool_result_set_spooled(&cai_exec_result_map, out, "output",
                                        &capture.output, error);
+      if (rc == CAI_OK) {
+        have_output_data = 0;
+      }
     }
   }
-  lonejson_spooled_cleanup(&capture.stdout_data);
-  lonejson_spooled_cleanup(&capture.stderr_data);
-  lonejson_spooled_cleanup(&capture.output);
+  if (have_stdout_data) {
+    capture.stdout_data.cleanup(&capture.stdout_data);
+  }
+  if (have_stderr_data) {
+    capture.stderr_data.cleanup(&capture.stderr_data);
+  }
+  if (have_output_data) {
+    capture.output.cleanup(&capture.output);
+  }
   cai_free_mem(NULL, workdir);
   return rc;
 }

@@ -795,7 +795,7 @@ static int cai_lua_spooled_append_sink(void *context, const void *bytes,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(spool, bytes, count, &json_error) ==
+  if (spool->append(spool, bytes, count, &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
@@ -814,14 +814,14 @@ static int cai_lua_spool_from_stack(lua_State *L, int index,
   const char *text;
 
   memset(out, 0, sizeof(*out));
-  lonejson_spooled_init(CAI_LJ, out);
+  CAI_LJ->spooled_init(CAI_LJ, out);
   sink = NULL;
   callbacks.write = cai_lua_spooled_append_sink;
   callbacks.close = NULL;
   callbacks.context = out;
   rc = cai_sink_from_callbacks(&callbacks, &sink, error);
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     return rc;
   }
 
@@ -829,10 +829,10 @@ static int cai_lua_spool_from_stack(lua_State *L, int index,
   if (lua_type(L, index) == LUA_TSTRING) {
     text = lua_tolstring(L, index, &len);
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_append(out, text, len, &json_error) !=
+    if (out->append(out, text, len, &json_error) !=
         LONEJSON_STATUS_OK) {
       cai_sink_close(sink);
-      lonejson_spooled_cleanup(out);
+      out->cleanup(out);
       return cai_lua_set_error_detail(error, CAI_ERR_TRANSPORT,
                                       "failed to append Lua string to spool",
                                       json_error.message);
@@ -851,7 +851,7 @@ static int cai_lua_spool_from_stack(lua_State *L, int index,
   }
   cai_sink_close(sink);
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
   }
   return rc;
 }
@@ -1698,7 +1698,7 @@ static int cai_lua_agent_add_user_text_spooled(lua_State *L) {
     rc = self->ptr->add_user_text_spooled(self->ptr, &spool, &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -1745,7 +1745,7 @@ static int cai_lua_agent_add_user_file_data_spooled(lua_State *L) {
         &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -2661,7 +2661,7 @@ static int cai_lua_session_add_user_text_spooled(lua_State *L) {
     rc = cai_session_add_user_text_spooled(self->ptr, &spool, &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -2703,7 +2703,7 @@ static int cai_lua_session_add_user_file_data_spooled(lua_State *L) {
         &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -3493,7 +3493,7 @@ static int cai_lua_spool_reader_gc(lua_State *L) {
   cai_lua_spool_reader *self;
   self = (cai_lua_spool_reader *)luaL_checkudata(L, 1, CAI_LUA_SPOOL_READER);
   if (self->owns_cursor) {
-    lonejson_spooled_cleanup(&self->cursor);
+    self->cursor.cleanup(&self->cursor);
   }
   memset(self, 0, sizeof(*self));
   return 0;
@@ -3502,14 +3502,14 @@ static int cai_lua_spool_reader_gc(lua_State *L) {
 static int cai_lua_spool_reader_size(lua_State *L) {
   cai_lua_spool_reader *self;
   self = cai_lua_check_spool_reader(L, 1);
-  lua_pushinteger(L, (lua_Integer)lonejson_spooled_size(&self->cursor));
+  lua_pushinteger(L, (lua_Integer)self->cursor.size_fn(&self->cursor));
   return 1;
 }
 
 static int cai_lua_spool_reader_spilled(lua_State *L) {
   cai_lua_spool_reader *self;
   self = cai_lua_check_spool_reader(L, 1);
-  lua_pushboolean(L, lonejson_spooled_spilled(&self->cursor));
+  lua_pushboolean(L, self->cursor.spilled_fn(&self->cursor));
   return 1;
 }
 
@@ -3518,7 +3518,7 @@ static int cai_lua_spool_reader_rewind(lua_State *L) {
   lonejson_error json_error;
   self = cai_lua_check_spool_reader(L, 1);
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&self->cursor, &json_error) !=
+  if (self->cursor.rewind(&self->cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
     lua_pushnil(L);
     lua_pushstring(L, json_error.message);
@@ -3544,7 +3544,7 @@ static int cai_lua_spool_reader_read(lua_State *L) {
     lua_pushstring(L, "out of memory");
     return 2;
   }
-  result = lonejson_spooled_read(&self->cursor, buffer, capacity);
+  result = self->cursor.read(&self->cursor, buffer, capacity);
   if (result.error_code != 0) {
     free(buffer);
     lua_pushnil(L);
@@ -4805,7 +4805,7 @@ static int cai_lua_params_add_text_spooled(lua_State *L) {
         self->ptr, luaL_optstring(L, 2, "user"), &spool, &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -4860,7 +4860,7 @@ static int cai_lua_params_add_file_data_spooled(lua_State *L) {
         luaL_optstring(L, 5, NULL), &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -5077,7 +5077,7 @@ cai_lua_params_add_function_call_output_file_data_spooled(lua_State *L) {
         luaL_optstring(L, 5, NULL), &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -5135,7 +5135,7 @@ static int cai_lua_conversation_params_add_text_spooled(lua_State *L) {
         self->ptr, luaL_optstring(L, 2, "user"), &spool, &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -5177,7 +5177,7 @@ static int cai_lua_conversation_params_add_file_data_spooled(lua_State *L) {
         luaL_optstring(L, 5, NULL), &error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&spool);
+    spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
 }

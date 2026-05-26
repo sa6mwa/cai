@@ -7,10 +7,14 @@
 
 #include <lonejson.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef PATH_MAX
@@ -18,7 +22,7 @@
 #endif
 
 #define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
-#define CAI_INTEGRATION_OPENROUTER_E2E_DEFAULT_DELAY_SEC 4U
+#define CAI_INTEGRATION_OPENROUTER_REQUEST_DEFAULT_DELAY_SEC 4U
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -77,6 +81,31 @@ static int integration_flag_enabled(const char *value) {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+static int integration_provider_create_response(cai_client *client,
+                                                cai_response_create_params *params,
+                                                int use_openrouter,
+                                                cai_response **response,
+                                                cai_error *error);
+static int integration_provider_send_text(cai_session *session,
+                                          const char *text,
+                                          int use_openrouter,
+                                          cai_response **response,
+                                          cai_error *error);
+static int integration_provider_stream(cai_session *session,
+                                       const cai_stream_sinks *sinks,
+                                       int use_openrouter,
+                                       cai_error *error);
+static int integration_provider_stream_auto(cai_session *session,
+                                            const cai_run_options *run_options,
+                                            const cai_stream_sinks *sinks,
+                                            int use_openrouter,
+                                            cai_error *error);
+static int integration_provider_run_auto_output(cai_session *session,
+                                                const cai_run_options *run_options,
+                                                int use_openrouter,
+                                                cai_output **output,
+                                                cai_error *error);
+
 static char *integration_spooled_to_cstr(const lonejson_spooled *spool) {
   lonejson_spooled cursor;
   lonejson_error json_error;
@@ -92,11 +121,11 @@ static char *integration_spooled_to_cstr(const lonejson_spooled *spool) {
   capacity = 0U;
   cursor = *spool;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
     return NULL;
   }
   for (;;) {
-    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    chunk = cursor.read(&cursor, buffer, sizeof(buffer));
     if (chunk.error_code != 0) {
       free(out);
       return NULL;
@@ -308,7 +337,7 @@ static int integration_tool_event(void *context, const cai_tool_event *event,
       char *text;
 
       state->start_arguments_size =
-          lonejson_spooled_size(event->arguments_json_spooled);
+          event->arguments_json_spooled->size_fn(event->arguments_json_spooled);
       text = integration_spooled_to_cstr(event->arguments_json_spooled);
       if (text != NULL) {
         snprintf(state->start_arguments, sizeof(state->start_arguments), "%s",
@@ -397,7 +426,7 @@ static int integration_stream_delta_debug(void *context, const char *item_id,
   }
     cursor = *delta;
   for (;;) {
-    chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+    chunk = cursor.read(&cursor, buffer, sizeof(buffer));
     if (chunk.error_code != 0) {
       return integration_set_error(error, CAI_ERR_TRANSPORT,
                                    "failed to read streamed tool delta");
@@ -442,7 +471,7 @@ static int integration_stream_done_debug(void *context, const char *item_id,
     cursor = *arguments;
     used = 0U;
     for (;;) {
-      chunk = lonejson_spooled_read(&cursor, buffer, sizeof(buffer));
+      chunk = cursor.read(&cursor, buffer, sizeof(buffer));
       if (chunk.error_code != 0) {
         return integration_set_error(error, CAI_ERR_TRANSPORT,
                                      "failed to read streamed tool arguments");
@@ -477,7 +506,7 @@ static int integration_stream_item_debug(
   (void)error;
   state = (integration_stream_debug_state *)context;
   if (state == NULL || item_json == NULL ||
-      lonejson_spooled_size(item_json) == 0U) {
+      item_json->size_fn(item_json) == 0U) {
     return CAI_OK;
   }
   text = integration_spooled_to_cstr(item_json);
@@ -615,7 +644,8 @@ static int run_basic_response(void) {
         params, "user", "Reply with exactly: pong", &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(client, params, &response, &error);
+    rc = integration_provider_create_response(client, params, 0, &response,
+                                              &error);
   }
   if (rc != CAI_OK) {
     print_error("integration response", rc, &error);
@@ -702,7 +732,8 @@ static int run_hosted_web_search_regression(void) {
     rc = CAI_ERR_PROTOCOL;
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(client, params, &response, &error);
+    rc = integration_provider_create_response(client, params, 0, &response,
+                                              &error);
   }
   if (rc != CAI_OK) {
     print_error("hosted web search regression", rc, &error);
@@ -1102,7 +1133,8 @@ static int run_openrouter_basic_response(void) {
         params, "user", "Reply with exactly: openrouter-pong-314", &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(client, params, &response, &error);
+    rc = integration_provider_create_response(client, params, 1, &response,
+                                              &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter integration response", rc, &error);
@@ -1164,7 +1196,8 @@ static int run_openrouter_dotenv_response(void) {
         "Reply with exactly: openrouter dotenv compatibility ok", &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(client, params, &response, &error);
+    rc = integration_provider_create_response(client, params, 1, &response,
+                                              &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter dotenv explicit response", rc, &error);
@@ -1223,19 +1256,19 @@ static int run_openrouter_session_regression(void) {
     rc = cai_agent_new_session(agent, &session, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_send_text(
+    rc = integration_provider_send_text(
         session,
         "Remember this exact OpenRouter session key: "
         "openrouter-session-key-271. Reply with only ok.",
-        &response, &error);
+        1, &response, &error);
   }
   cai_response_destroy(response);
   response = NULL;
   if (rc == CAI_OK) {
-    rc = cai_session_send_text(
+    rc = integration_provider_send_text(
         session,
         "Recall the exact OpenRouter session key I asked you to remember.",
-        &response, &error);
+        1, &response, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter session regression", rc, &error);
@@ -1321,7 +1354,8 @@ static int run_openrouter_tool_regression(void) {
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_run_auto_output(session, &run_options, &output, &error);
+    rc = integration_provider_run_auto_output(session, &run_options, 1, &output,
+                                              &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter tool regression", rc, &error);
@@ -1342,10 +1376,10 @@ static int run_openrouter_tool_regression(void) {
   cai_output_destroy(output);
   output = NULL;
 
-  rc = cai_session_send_text(
+  rc = integration_provider_send_text(
       session,
       "Recall the exact code value from the previous integration lookup.",
-      &response, &error);
+      1, &response, &error);
   if (rc != CAI_OK) {
     print_error("openrouter tool continuation", rc, &error);
     goto done;
@@ -1457,7 +1491,8 @@ static int run_openrouter_stream_tool_regression(void) {
     stream_sinks.function_call_context = &stream_debug;
     stream_sinks.output_item_done = integration_stream_item_debug;
     stream_sinks.output_item_context = &stream_debug;
-    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+    rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
+                                          1, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter stream tool regression", rc, &error);
@@ -1487,11 +1522,11 @@ static int run_openrouter_stream_tool_regression(void) {
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
-  rc = cai_session_send_text(
+  rc = integration_provider_send_text(
       session,
       "Recall the exact code value and assistant_phrase value from your "
       "previous streaming answer.",
-      &response, &error);
+      1, &response, &error);
   if (rc != CAI_OK) {
     print_error("openrouter stream tool continuation", rc, &error);
     goto done;
@@ -1610,7 +1645,8 @@ static int run_openrouter_read_tool_regression(void) {
   }
   if (rc == CAI_OK) {
     stream_sinks.output_text = sink;
-    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+    rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
+                                          1, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter read list regression", rc, &error);
@@ -1659,7 +1695,8 @@ static int run_openrouter_read_tool_regression(void) {
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+    rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
+                                          1, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter read text regression", rc, &error);
@@ -1695,7 +1732,8 @@ static int run_openrouter_read_tool_regression(void) {
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+    rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
+                                          1, &error);
   }
   if (rc == CAI_OK) {
     if (event_state.starts < 1 ||
@@ -1805,7 +1843,8 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_run_auto_output(session, &run_options, &output, &error);
+    rc = integration_provider_run_auto_output(session, &run_options, 1, &output,
+                                              &error);
   }
   if (rc != CAI_OK) {
     print_error("tool security regression", rc, &error);
@@ -2043,7 +2082,7 @@ static int run_openrouter_stream_history_regression(void) {
   }
   if (rc == CAI_OK) {
     stream_sinks.output_text = sink;
-    rc = cai_session_stream(session, &stream_sinks, &error);
+    rc = integration_provider_stream(session, &stream_sinks, 1, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter stream history regression", rc, &error);
@@ -2057,9 +2096,9 @@ static int run_openrouter_stream_history_regression(void) {
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
-  rc = cai_session_send_text(
+  rc = integration_provider_send_text(
       session, "Recall only the phrase value from your previous answer.",
-      &response, &error);
+      1, &response, &error);
   if (rc != CAI_OK) {
     print_error("openrouter stream history continuation", rc, &error);
     goto done;
@@ -2683,9 +2722,9 @@ static int run_read_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "READ_TEST_2: call list_files with path='.' and recursive=true. Do "
-        "not use binary.bin as the list path. Inspect the returned metadata "
-        "for binary.bin, and answer exactly: "
+        "READ_TEST_2: call list_files exactly once with path='.' and "
+        "recursive=true. Do not call it on any other path. Do not read any "
+        "file. Inspect the returned metadata for binary.bin, and answer exactly: "
         "READ_LIST_HINT binary_candidate=yes read_attempted=no",
         &error);
   }
@@ -2798,13 +2837,16 @@ static double integration_spend_limit_usd(void) {
   return parsed > 0.0 ? parsed : CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD;
 }
 
-static unsigned int openrouter_e2e_delay_sec(void) {
+static unsigned int openrouter_request_delay_sec(void) {
   const char *value;
   long parsed;
 
-  value = getenv("CAI_OPENROUTER_E2E_DELAY_SEC");
+  value = getenv("CAI_OPENROUTER_REQUEST_DELAY_SEC");
   if (value == NULL || value[0] == '\0') {
-    return CAI_INTEGRATION_OPENROUTER_E2E_DEFAULT_DELAY_SEC;
+    value = getenv("CAI_OPENROUTER_E2E_DELAY_SEC");
+  }
+  if (value == NULL || value[0] == '\0') {
+    return CAI_INTEGRATION_OPENROUTER_REQUEST_DEFAULT_DELAY_SEC;
   }
   parsed = atol(value);
   if (parsed < 0L) {
@@ -2814,6 +2856,129 @@ static unsigned int openrouter_e2e_delay_sec(void) {
     parsed = 60L;
   }
   return (unsigned int)parsed;
+}
+
+static int integration_openrouter_throttle(void) {
+  static const char lock_path[] = "/tmp/cai-openrouter-rate-limit.lock";
+  unsigned int delay_sec;
+  char buffer[64];
+  char *endptr;
+  time_t now;
+  time_t last_request;
+  time_t target_time;
+  long remaining;
+  ssize_t nread;
+  int fd;
+
+  delay_sec = openrouter_request_delay_sec();
+  if (delay_sec == 0U) {
+    return 0;
+  }
+  fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+  if (fd < 0) {
+    sleep(delay_sec);
+    return 0;
+  }
+  if (flock(fd, LOCK_EX) != 0) {
+    close(fd);
+    sleep(delay_sec);
+    return 0;
+  }
+  memset(buffer, 0, sizeof(buffer));
+  if (lseek(fd, 0, SEEK_SET) >= 0) {
+    nread = read(fd, buffer, sizeof(buffer) - 1);
+  } else {
+    nread = -1;
+  }
+  last_request = 0;
+  if (nread > 0) {
+    errno = 0;
+    last_request = (time_t)strtoll(buffer, &endptr, 10);
+    if (errno != 0 || endptr == buffer) {
+      last_request = 0;
+    }
+  }
+  now = time(NULL);
+  target_time = last_request + (time_t)delay_sec;
+  if (target_time > now) {
+    remaining = (long)(target_time - now);
+    while (remaining > 0L) {
+      sleep((unsigned int)remaining);
+      now = time(NULL);
+      remaining = (long)(target_time - now);
+    }
+  }
+  now = time(NULL);
+  if (lseek(fd, 0, SEEK_SET) >= 0) {
+    if (ftruncate(fd, 0) == 0) {
+      int written;
+
+      written = snprintf(buffer, sizeof(buffer), "%lld\n", (long long)now);
+      if (written > 0) {
+        ssize_t nwritten;
+
+        nwritten = write(fd, buffer, (size_t)written);
+        (void)nwritten;
+      }
+    }
+  }
+  flock(fd, LOCK_UN);
+  close(fd);
+  return 0;
+}
+
+static int integration_provider_create_response(cai_client *client,
+                                                cai_response_create_params *params,
+                                                int use_openrouter,
+                                                cai_response **response,
+                                                cai_error *error) {
+  if (use_openrouter != 0) {
+    integration_openrouter_throttle();
+  }
+  return cai_client_create_response(client, params, response, error);
+}
+
+static int integration_provider_send_text(cai_session *session,
+                                          const char *text,
+                                          int use_openrouter,
+                                          cai_response **response,
+                                          cai_error *error) {
+  if (use_openrouter != 0) {
+    integration_openrouter_throttle();
+  }
+  return cai_session_send_text(session, text, response, error);
+}
+
+static int integration_provider_stream(cai_session *session,
+                                       const cai_stream_sinks *sinks,
+                                       int use_openrouter,
+                                       cai_error *error) {
+  if (use_openrouter != 0) {
+    integration_openrouter_throttle();
+  }
+  return cai_session_stream(session, sinks, error);
+}
+
+static int integration_provider_stream_auto(cai_session *session,
+                                            const cai_run_options *run_options,
+                                            const cai_stream_sinks *sinks,
+                                            int use_openrouter,
+                                            cai_error *error) {
+  if (use_openrouter != 0) {
+    integration_openrouter_throttle();
+  }
+  return cai_session_stream_auto(session, run_options, sinks, error);
+}
+
+static int integration_provider_run_auto_output(cai_session *session,
+                                                const cai_run_options *run_options,
+                                                int use_openrouter,
+                                                cai_output **output,
+                                                cai_error *error) {
+  if (use_openrouter != 0) {
+    integration_openrouter_throttle();
+  }
+  return cai_session_run_auto_output(session, run_options, output, error);
 }
 
 static double usage_estimate_usd(const char *model,
@@ -2869,7 +3034,6 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
   char expected_current[96];
   double spent_usd;
   double limit_usd;
-  unsigned int openrouter_delay_sec;
   int rc;
   int turn;
 
@@ -2884,7 +3048,6 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
                               : integration_model();
   spent_usd = 0.0;
   limit_usd = integration_spend_limit_usd();
-  openrouter_delay_sec = use_openrouter != 0 ? openrouter_e2e_delay_sec() : 0U;
   if (use_openrouter != 0) {
     cai_client_config_use_openrouter(&client_config);
   }
@@ -2914,9 +3077,6 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
     rc = cai_agent_new_session(agent, &session, &error);
   }
   for (turn = 1; rc == CAI_OK && turn <= 20; turn++) {
-    if (turn > 1 && openrouter_delay_sec > 0U) {
-      sleep(openrouter_delay_sec);
-    }
     snprintf(current_secret, sizeof(current_secret), "turn-%02d-key-%03d", turn,
              700 + turn);
     if (turn == 1) {
@@ -2938,7 +3098,8 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
                turn, current_secret);
     }
     response = NULL;
-    rc = cai_session_send_text(session, prompt, &response, &error);
+    rc = integration_provider_send_text(session, prompt, use_openrouter,
+                                        &response, &error);
     if (rc != CAI_OK) {
       break;
     }

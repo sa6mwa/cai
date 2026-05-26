@@ -1168,9 +1168,9 @@ static int cai_todo_rewrite(const cai_todo_context *ctx, void *txn,
   }
   lonejson_error_init(&json_error);
   if (rc == CAI_OK &&
-      lonejson_array_rewrite_reader(CAI_LJ, selector, reader, reader_context,
-                                    sink, sink_context, options,
-                                    &json_error) != LONEJSON_STATUS_OK) {
+      CAI_LJ->array_rewrite_reader(CAI_LJ, selector, reader, reader_context,
+                                   sink, sink_context, options,
+                                   &json_error) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                               "failed to rewrite todo store",
                               json_error.message);
@@ -1189,10 +1189,10 @@ static int cai_todo_spool_string(lonejson_spooled *spool, const char *value,
   lonejson_error json_error;
 
   lonejson_error_init(&json_error);
-  lonejson_spooled_cleanup(spool);
-  lonejson_spooled_init(CAI_LJ, spool);
+  spool->cleanup(spool);
+  CAI_LJ->spooled_init(CAI_LJ, spool);
   if (value != NULL &&
-      lonejson_spooled_append(spool, value, strlen(value), &json_error) !=
+      spool->append(spool, value, strlen(value), &json_error) !=
           LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool todo string",
@@ -1203,7 +1203,8 @@ static int cai_todo_spool_string(lonejson_spooled *spool, const char *value,
 
 static lonejson_status cai_todo_spool_sink(void *user, const void *data,
                                            size_t len, lonejson_error *error) {
-  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+  return ((lonejson_spooled *)user)->append((lonejson_spooled *)user, data, len,
+                                            error);
 }
 
 static int cai_todo_spool_clone(lonejson_spooled *dst,
@@ -1211,11 +1212,11 @@ static int cai_todo_spool_clone(lonejson_spooled *dst,
                                 cai_error *error) {
   lonejson_error json_error;
 
-  lonejson_spooled_cleanup(dst);
-  lonejson_spooled_init(CAI_LJ, dst);
+  dst->cleanup(dst);
+  CAI_LJ->spooled_init(CAI_LJ, dst);
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_write_to_sink(src, cai_todo_spool_sink, dst,
-                                     &json_error) != LONEJSON_STATUS_OK) {
+  if (src->write_to_sink(src, cai_todo_spool_sink, dst,
+                         &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to clone todo spooled field",
                                 json_error.message);
@@ -1233,7 +1234,7 @@ static int cai_todo_spool_to_string(const lonejson_spooled *spool,
   size_t size;
   size_t offset;
 
-  size = lonejson_spooled_size(spool);
+  size = spool->size_fn(spool);
   if (size > max_bytes) {
     size = max_bytes;
   }
@@ -1244,7 +1245,7 @@ static int cai_todo_spool_to_string(const lonejson_spooled *spool,
   }
   cursor = *spool;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
     cai_free_mem(NULL, data);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind todo string",
@@ -1252,7 +1253,7 @@ static int cai_todo_spool_to_string(const lonejson_spooled *spool,
   }
   offset = 0U;
   while (offset < size) {
-    chunk = lonejson_spooled_read(&cursor, (unsigned char *)data + offset,
+    chunk = cursor.read(&cursor, (unsigned char *)data + offset,
                                   size - offset);
     if (chunk.error_code != 0) {
       cai_free_mem(NULL, data);
@@ -1314,9 +1315,9 @@ static int cai_todo_array_grow(lonejson_object_array *array, size_t elem_size,
 
 static int cai_todo_item_init(cai_todo_item *item) {
   memset(item, 0, sizeof(*item));
-  lonejson_spooled_init(CAI_LJ, &item->title);
-  lonejson_spooled_init(CAI_LJ, &item->description);
-  lonejson_init(CAI_LJ, &cai_todo_item_map, item);
+  CAI_LJ->spooled_init(CAI_LJ, &item->title);
+  CAI_LJ->spooled_init(CAI_LJ, &item->description);
+  CAI_LJ->init(CAI_LJ, &cai_todo_item_map, item);
   return CAI_OK;
 }
 
@@ -1330,8 +1331,12 @@ static void cai_todo_item_cleanup(cai_todo_item *item) {
   cai_free_mem(NULL, item->board_key);
   cai_free_mem(NULL, item->board_name);
   cai_free_mem(NULL, item->status);
-  lonejson_spooled_cleanup(&item->title);
-  lonejson_spooled_cleanup(&item->description);
+  if (item->title.cleanup != NULL) {
+    item->title.cleanup(&item->title);
+  }
+  if (item->description.cleanup != NULL) {
+    item->description.cleanup(&item->description);
+  }
   memset(item, 0, sizeof(*item));
 }
 
@@ -1345,7 +1350,7 @@ static void cai_todo_item_parse_cleanup(cai_todo_item *item) {
 
 static void cai_todo_board_init(cai_todo_board *board) {
   memset(board, 0, sizeof(*board));
-  lonejson_init(CAI_LJ, &cai_todo_board_map, board);
+  CAI_LJ->init(CAI_LJ, &cai_todo_board_map, board);
 }
 
 static void cai_todo_board_cleanup(cai_todo_board *board) {

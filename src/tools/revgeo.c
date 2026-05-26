@@ -335,7 +335,7 @@ static size_t cai_revgeo_write_spool(char *ptr, size_t size, size_t nmemb,
   spool = (lonejson_spooled *)userdata;
   len = size * nmemb;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(spool, ptr, len, &json_error) !=
+  if (spool->append(spool, ptr, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     return 0U;
   }
@@ -375,7 +375,7 @@ static int cai_revgeo_fetch(const cai_revgeo_context *ctx,
     cai_free_mem(NULL, url);
     return rc;
   }
-  lonejson_spooled_init(spool_runtime, out);
+  spool_runtime->spooled_init(spool_runtime, out);
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_revgeo_write_spool);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
@@ -388,14 +388,14 @@ static int cai_revgeo_fetch(const cai_revgeo_context *ctx,
   curl_easy_cleanup(curl);
   cai_free_mem(NULL, url);
   if (code != CURLE_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "reverse-geocoding request failed",
                                 curl_easy_strerror(code));
   }
   if (http_status < 200L || http_status >= 300L) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     cai_lonejson_runtime_close(&spool_runtime);
     return cai_set_error_http(error, CAI_ERR_SERVER, http_status,
                               "reverse-geocoding request failed", NULL, NULL,
@@ -410,7 +410,7 @@ cai_revgeo_spool_read(void *user, unsigned char *buffer, size_t capacity) {
   cai_revgeo_spool_reader *reader;
 
   reader = (cai_revgeo_spool_reader *)user;
-  return lonejson_spooled_read(&reader->cursor, buffer, capacity);
+  return reader->cursor.read(&reader->cursor, buffer, capacity);
 }
 
 static int cai_revgeo_parse(lonejson_spooled *json,
@@ -419,10 +419,10 @@ static int cai_revgeo_parse(lonejson_spooled *json,
   lonejson_error json_error;
 
   memset(doc, 0, sizeof(*doc));
-  lonejson_init(CAI_LJ, &cai_revgeo_response_map, doc);
+  CAI_LJ->init(CAI_LJ, &cai_revgeo_response_map, doc);
   reader.cursor = *json;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_revgeo_response_map, doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -532,7 +532,7 @@ static int cai_revgeo_tool_callback(void *context, const void *params,
     return rc;
   }
   rc = cai_revgeo_parse(&body, &doc, error);
-  lonejson_spooled_cleanup(&body);
+  body.cleanup(&body);
   if (rc != CAI_OK) {
     return rc;
   }

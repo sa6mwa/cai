@@ -551,7 +551,7 @@ static int cai_read_append(lonejson_spooled *spool, const char *data,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(spool, data, len, &json_error) !=
+  if (spool->append(spool, data, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool read content",
@@ -959,6 +959,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
                                 long long *end_line_out, int *truncated,
                                 long long *file_size, cai_error *error) {
   FILE *fp;
+  lonejson *runtime;
   char buffer[4096];
   long long start_line;
   long long end_line;
@@ -1015,7 +1016,8 @@ static int cai_read_stream_file(const cai_read_context *ctx,
                          "read content byte limit is invalid");
   }
   *file_size = opened_file_size;
-  lonejson_spooled_init(ctx->runtime != NULL ? ctx->runtime : CAI_LJ, content);
+  runtime = ctx->runtime != NULL ? ctx->runtime : CAI_LJ;
+  runtime->spooled_init(runtime, content);
   current_line = 1LL;
   last_line = start_line;
   written = 0LL;
@@ -1233,7 +1235,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   }
   fclose(fp);
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(content);
+    content->cleanup(content);
     return rc;
   }
   *byte_count = written;
@@ -1296,13 +1298,12 @@ static int cai_read_callback(void *context, const void *params, void *result,
     out->truncated = truncated;
     rc = cai_tool_result_set_spooled(&cai_read_result_map, out, "content",
                                      &content, error);
-  }
-  if (rc == CAI_OK) {
-    lonejson_spooled_cleanup(&content);
-    has_content = 0;
+    if (rc == CAI_OK) {
+      has_content = 0;
+    }
   }
   if (has_content) {
-    lonejson_spooled_cleanup(&content);
+    content.cleanup(&content);
   }
   if (fd >= 0) {
     close(fd);

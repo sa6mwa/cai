@@ -33,7 +33,7 @@ static size_t cai_spooled_source_read(void *context, void *buffer,
   if (source_context == NULL || buffer == NULL || count == 0U) {
     return 0U;
   }
-  result = lonejson_spooled_read(&source_context->spool,
+  result = source_context->spool.read(&source_context->spool,
                                  (unsigned char *)buffer, count);
   if (result.error_code != 0) {
     cai_set_error(error, CAI_ERR_TRANSPORT, "failed to read spooled source");
@@ -51,7 +51,7 @@ static int cai_spooled_source_reset(void *context, cai_error *error) {
     return cai_set_error(error, CAI_ERR_INVALID, "spooled source is required");
   }
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&source_context->spool, &json_error) ==
+  if (source_context->spool.rewind(&source_context->spool, &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
@@ -67,7 +67,7 @@ static void cai_spooled_source_close(void *context) {
   if (source_context == NULL) {
     return;
   }
-  lonejson_spooled_cleanup(&source_context->spool);
+  source_context->spool.cleanup(&source_context->spool);
   cai_free_mem(NULL, source_context);
 }
 

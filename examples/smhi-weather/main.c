@@ -275,7 +275,7 @@ static size_t smhi_write_spool(char *ptr, size_t size, size_t nmemb,
   spool = (lonejson_spooled *)userdata;
   len = size * nmemb;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(spool, ptr, len, &json_error) !=
+  if (spool->append(spool, ptr, len, &json_error) !=
       LONEJSON_STATUS_OK) {
     return 0U;
   }
@@ -289,10 +289,10 @@ static int smhi_fetch_url(const char *url, const char *label,
   long http_status;
   int rc;
 
-  lonejson_spooled_init(CAI_LJ, out);
+  CAI_LJ->spooled_init(CAI_LJ, out);
   curl = curl_easy_init();
   if (curl == NULL) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     return smhi_set_error(error, CAI_ERR_TRANSPORT,
                           "failed to initialize curl", NULL);
   }
@@ -307,12 +307,12 @@ static int smhi_fetch_url(const char *url, const char *label,
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
   curl_easy_cleanup(curl);
   if (code != CURLE_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     return smhi_set_error(error, CAI_ERR_TRANSPORT, label,
                           curl_easy_strerror(code));
   }
   if (http_status < 200L || http_status >= 300L) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     return smhi_set_error(error, CAI_ERR_SERVER, label, NULL);
   }
   rc = CAI_OK;
@@ -338,7 +338,7 @@ static lonejson_read_result smhi_spool_read(void *user, unsigned char *buffer,
   smhi_spool_reader *reader;
 
   reader = (smhi_spool_reader *)user;
-  return lonejson_spooled_read(&reader->cursor, buffer, capacity);
+  return reader->cursor.read(&reader->cursor, buffer, capacity);
 }
 
 static void smhi_forecast_time_cleanup(smhi_forecast_time_doc *time_doc) {
@@ -413,8 +413,8 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
   memset(state, 0, sizeof(*state));
   memset(&item, 0, sizeof(item));
   memset(&handler, 0, sizeof(handler));
-  lonejson_init(CAI_LJ, &smhi_forecast_map, doc);
-  lonejson_init(CAI_LJ, &smhi_forecast_time_map, &item);
+  CAI_LJ->init(CAI_LJ, &smhi_forecast_map, doc);
+  CAI_LJ->init(CAI_LJ, &smhi_forecast_time_map, &item);
   lonejson_mapped_array_stream_init(&doc->time_series);
   handler.item_map = &smhi_forecast_time_map;
   handler.item_dst = &item;
@@ -432,7 +432,7 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
   }
   reader.cursor = *json;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&smhi_forecast_time_map, &item);
     lonejson_cleanup(&smhi_forecast_map, doc);
@@ -494,8 +494,8 @@ static int smhi_geocode_location(const char *location, double *latitude,
   memset(&item, 0, sizeof(item));
   memset(&state, 0, sizeof(state));
   memset(&handler, 0, sizeof(handler));
-  lonejson_init(CAI_LJ, &open_meteo_geocoding_map, &doc);
-  lonejson_init(CAI_LJ, &open_meteo_location_map, &item);
+  CAI_LJ->init(CAI_LJ, &open_meteo_geocoding_map, &doc);
+  CAI_LJ->init(CAI_LJ, &open_meteo_location_map, &item);
   lonejson_mapped_array_stream_init(&doc.results);
   handler.item_map = &open_meteo_location_map;
   handler.item_dst = &item;
@@ -507,18 +507,18 @@ static int smhi_geocode_location(const char *location, double *latitude,
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&open_meteo_location_map, &item);
     lonejson_cleanup(&open_meteo_geocoding_map, &doc);
-    lonejson_spooled_cleanup(&body);
+    body.cleanup(&body);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
                           "failed to configure Open-Meteo result stream",
                           json_error.message);
   }
   reader.cursor = body;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&open_meteo_location_map, &item);
     lonejson_cleanup(&open_meteo_geocoding_map, &doc);
-    lonejson_spooled_cleanup(&body);
+    body.cleanup(&body);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
                           "failed to rewind Open-Meteo geocoding response",
                           json_error.message);
@@ -528,13 +528,13 @@ static int smhi_geocode_location(const char *location, double *latitude,
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&open_meteo_location_map, &item);
     lonejson_cleanup(&open_meteo_geocoding_map, &doc);
-    lonejson_spooled_cleanup(&body);
+    body.cleanup(&body);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
                           "failed to parse Open-Meteo geocoding response JSON",
                           json_error.message);
   }
   lonejson_cleanup(&open_meteo_location_map, &item);
-  lonejson_spooled_cleanup(&body);
+  body.cleanup(&body);
   if (!state.has_first) {
     lonejson_cleanup(&open_meteo_geocoding_map, &doc);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
@@ -584,7 +584,7 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
     return rc;
   }
   rc = smhi_parse_forecast(&body, &forecast, &forecast_state, error);
-  lonejson_spooled_cleanup(&body);
+  body.cleanup(&body);
   if (rc != CAI_OK) {
     return rc;
   }

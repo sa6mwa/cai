@@ -152,7 +152,7 @@ static size_t cai_http_spooled_read(char *ptr, size_t size, size_t nmemb,
     return 0U;
   }
   result =
-      lonejson_spooled_read(&upload->cursor, (unsigned char *)ptr, capacity);
+      upload->cursor.read(&upload->cursor, (unsigned char *)ptr, capacity);
   if (result.error_code != 0) {
     return CURL_READFUNC_ABORT;
   }
@@ -171,7 +171,7 @@ int cai_set_openai_error(cai_error *error, long http_status, const char *body,
   detail = body != NULL ? body : "";
   server_code = NULL;
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(CAI_LJ, &cai_api_error_map, &doc);
+  CAI_LJ->init(CAI_LJ, &cai_api_error_map, &doc);
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_api_error_map, &doc, detail,
                               &json_error);
   if (status == LONEJSON_STATUS_OK && doc.error.message != NULL) {
@@ -467,11 +467,11 @@ int cai_http_json_request(cai_client *client, const char *method,
                                          out_request_id, error);
   }
   lonejson_error_init(&json_error);
-  lonejson_spooled_init(CAI_LJ, &spooled);
+  CAI_LJ->spooled_init(CAI_LJ, &spooled);
   len = strlen(request_json);
-  if (lonejson_spooled_append(&spooled, request_json, len, &json_error) !=
+  if (spooled.append(&spooled, request_json, len, &json_error) !=
       LONEJSON_STATUS_OK) {
-    lonejson_spooled_cleanup(&spooled);
+    spooled.cleanup(&spooled);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool request JSON",
                                 json_error.message);
@@ -480,7 +480,7 @@ int cai_http_json_request(cai_client *client, const char *method,
     int rc = cai_http_json_request_spooled(
         client, method, path, &spooled, len, out_json, out_http_status,
         out_request_id, error);
-    lonejson_spooled_cleanup(&spooled);
+    spooled.cleanup(&spooled);
     return rc;
   }
 }
@@ -575,7 +575,7 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
     upload.cursor = *request_json;
     upload.initialized = 1;
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_rewind(&upload.cursor, &json_error) !=
+    if (upload.cursor.rewind(&upload.cursor, &json_error) !=
         LONEJSON_STATUS_OK) {
       curl_easy_cleanup(curl);
       curl_slist_free_all(headers);

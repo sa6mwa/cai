@@ -716,7 +716,7 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->conversation_id = NULL;
   memset(&impl->last_usage, 0, sizeof(impl->last_usage));
   impl->has_last_usage = 0;
-  lonejson_spooled_init(agent_impl->history_runtime, &impl->history);
+  agent_impl->history_runtime->spooled_init(agent_impl->history_runtime, &impl->history);
   impl->inputs = NULL;
   impl->input_count = 0U;
   impl->input_capacity = 0U;
@@ -799,7 +799,10 @@ static void cai_session_clear_inputs(cai_session *session) {
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].role);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].text);
     if (CAI_SESSION_IMPL(session)->inputs[i].has_text_spooled) {
-      lonejson_spooled_cleanup(&CAI_SESSION_IMPL(session)->inputs[i].text_spooled);
+      CAI_SESSION_IMPL(session)
+          ->inputs[i]
+          .text_spooled.cleanup(&CAI_SESSION_IMPL(session)->inputs[i]
+                                     .text_spooled);
     }
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].image_url);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].filename);
@@ -807,7 +810,9 @@ static void cai_session_clear_inputs(cai_session *session) {
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].call_id);
     cai_free_mem(allocator, CAI_SESSION_IMPL(session)->inputs[i].output);
     if (CAI_SESSION_IMPL(session)->inputs[i].has_file_data) {
-      lonejson_spooled_cleanup(&CAI_SESSION_IMPL(session)->inputs[i].file_data);
+      CAI_SESSION_IMPL(session)
+          ->inputs[i]
+          .file_data.cleanup(&CAI_SESSION_IMPL(session)->inputs[i].file_data);
     }
   }
   CAI_SESSION_IMPL(session)->input_count = 0U;
@@ -822,7 +827,7 @@ static int cai_history_append_bytes(lonejson_spooled *history,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(history, bytes, length, &json_error) ==
+  if (history->append(history, bytes, length, &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
@@ -837,7 +842,7 @@ static lonejson_status cai_history_lonejson_sink(void *user, const void *data,
   cai_history_sink_context *context;
   (void)error;
   context = (cai_history_sink_context *)user;
-  if (lonejson_spooled_append(context->spool, data, len, error) ==
+  if (context->spool->append(context->spool, data, len, error) ==
       LONEJSON_STATUS_OK) {
     return LONEJSON_STATUS_OK;
   }
@@ -859,12 +864,12 @@ static int cai_agent_clone_spooled(cai_session *session,
   cai_history_init_spooled(session, dst);
   sink_context.spool = dst;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_write_to_sink(src, cai_history_lonejson_sink,
-                                     &sink_context, &json_error) ==
+  if (src->write_to_sink(src, cai_history_lonejson_sink, &sink_context,
+                         &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
-  lonejson_spooled_cleanup(dst);
+  dst->cleanup(dst);
   return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "failed to clone spooled value",
                               json_error.message);
@@ -895,7 +900,7 @@ static void cai_stream_tool_call_cleanup(cai_response_tool_call *call) {
   cai_free_mem(NULL, call->name);
   cai_free_mem(NULL, call->arguments);
   if (call->has_arguments_spooled) {
-    lonejson_spooled_cleanup(&call->arguments_spooled);
+    call->arguments_spooled.cleanup(&call->arguments_spooled);
   }
   memset(call, 0, sizeof(*call));
 }
@@ -947,7 +952,7 @@ static int cai_stream_tool_call_list_append_delta(
   int rc;
 
   if (list == NULL || item_id == NULL || delta == NULL ||
-      lonejson_spooled_size(delta) == 0U) {
+      delta->size_fn(delta) == 0U) {
     return CAI_OK;
   }
   call = cai_stream_tool_call_list_find(list, item_id, output_index);
@@ -965,17 +970,17 @@ static int cai_stream_tool_call_list_append_delta(
                            "failed to allocate stream tool call id");
     }
     call->output_index = output_index;
-    lonejson_spooled_init(CAI_LJ, &call->arguments_spooled);
+    CAI_LJ->spooled_init(CAI_LJ, &call->arguments_spooled);
     call->has_arguments_spooled = 1;
     list->count++;
   } else if (!call->has_arguments_spooled) {
-    lonejson_spooled_init(CAI_LJ, &call->arguments_spooled);
+    CAI_LJ->spooled_init(CAI_LJ, &call->arguments_spooled);
     call->has_arguments_spooled = 1;
   }
   lonejson_error_init(&json_error);
   sink_context.spool = &call->arguments_spooled;
-  if (lonejson_spooled_write_to_sink(delta, cai_history_lonejson_sink,
-                                     &sink_context, &json_error) !=
+  if (delta->write_to_sink(delta, cai_history_lonejson_sink, &sink_context,
+                           &json_error) !=
       LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool streamed tool arguments",
@@ -1015,15 +1020,15 @@ static int cai_stream_tool_call_set_final_arguments(
   cai_free_mem(NULL, call->arguments);
   call->arguments = NULL;
   if (call->has_arguments_spooled) {
-    lonejson_spooled_cleanup(&call->arguments_spooled);
+    call->arguments_spooled.cleanup(&call->arguments_spooled);
     call->has_arguments_spooled = 0;
   }
-  lonejson_spooled_init(CAI_LJ, &call->arguments_spooled);
+  CAI_LJ->spooled_init(CAI_LJ, &call->arguments_spooled);
   call->has_arguments_spooled = 1;
   lonejson_error_init(&json_error);
   sink_context.spool = &call->arguments_spooled;
-  status = lonejson_spooled_write_to_sink(arguments, cai_history_lonejson_sink,
-                                          &sink_context, &json_error);
+  status = arguments->write_to_sink(arguments, cai_history_lonejson_sink,
+                                    &sink_context, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool streamed tool arguments",
@@ -1093,7 +1098,8 @@ static int cai_stream_tool_call_list_append(cai_stream_tool_call_list *list,
 static lonejson_status cai_agent_spool_sink(void *user, const void *data,
                                             size_t len,
                                             lonejson_error *error) {
-  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+  return ((lonejson_spooled *)user)->append((lonejson_spooled *)user, data, len,
+                                            error);
 }
 
 static int cai_stream_tool_calls_spool(cai_session *session,
@@ -1119,31 +1125,31 @@ static int cai_stream_tool_calls_spool(cai_session *session,
   status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_agent_spool_sink, out, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     writer_initialized = 1;
-    status = lonejson_writer_begin_array(&writer, &json_error);
+    status = writer.begin_array(&writer, &json_error);
   }
   for (i = 0U; status == LONEJSON_STATUS_OK && i < calls->count; i++) {
-    status = lonejson_writer_begin_object(&writer, &json_error);
+    status = writer.begin_object(&writer, &json_error);
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_key(&writer, "type", 4U, &json_error);
+      status = writer.key(&writer, "type", 4U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_string(&writer, "function_call", 13U,
+      status = writer.string(&writer, "function_call", 13U,
                                       &json_error);
     }
     if (status == LONEJSON_STATUS_OK && calls->items[i].id != NULL &&
         calls->items[i].id[0] != '\0') {
-      status = lonejson_writer_key(&writer, "id", 2U, &json_error);
+      status = writer.key(&writer, "id", 2U, &json_error);
       if (status == LONEJSON_STATUS_OK) {
-        status = lonejson_writer_string(&writer, calls->items[i].id,
+        status = writer.string(&writer, calls->items[i].id,
                                         strlen(calls->items[i].id),
                                         &json_error);
       }
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_key(&writer, "call_id", 7U, &json_error);
+      status = writer.key(&writer, "call_id", 7U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_string(
+      status = writer.string(
           &writer,
           calls->items[i].call_id != NULL ? calls->items[i].call_id : "",
           calls->items[i].call_id != NULL ? strlen(calls->items[i].call_id)
@@ -1151,23 +1157,23 @@ static int cai_stream_tool_calls_spool(cai_session *session,
           &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_key(&writer, "name", 4U, &json_error);
+      status = writer.key(&writer, "name", 4U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_string(
+      status = writer.string(
           &writer, calls->items[i].name != NULL ? calls->items[i].name : "",
           calls->items[i].name != NULL ? strlen(calls->items[i].name) : 0U,
           &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_key(&writer, "arguments", 9U, &json_error);
+      status = writer.key(&writer, "arguments", 9U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
       if (calls->items[i].has_arguments_spooled) {
-        status = lonejson_writer_string_spooled(
-            &writer, &calls->items[i].arguments_spooled, &json_error);
+        status = writer.string_spooled(&writer, &calls->items[i].arguments_spooled,
+                                       &json_error);
       } else {
-        status = lonejson_writer_string(
+        status = writer.string(
             &writer,
             calls->items[i].arguments != NULL ? calls->items[i].arguments : "",
             calls->items[i].arguments != NULL
@@ -1177,26 +1183,26 @@ static int cai_stream_tool_calls_spool(cai_session *session,
       }
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = lonejson_writer_end_object(&writer, &json_error);
+      status = writer.end_object(&writer, &json_error);
     }
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_end_array(&writer, &json_error);
+    status = writer.end_array(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_finish(&writer, &json_error);
+    status = writer.finish(&writer, &json_error);
   }
   if (writer_initialized) {
-    lonejson_writer_cleanup(&writer);
+    writer.cleanup(&writer);
   }
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize streamed tool calls",
                                 json_error.message);
   }
   if (out_len != NULL) {
-    *out_len = lonejson_spooled_size(out);
+    *out_len = out->size_fn(out);
   }
   return CAI_OK;
 }
@@ -1215,7 +1221,7 @@ static int cai_stream_output_text_spool(cai_session *session,
     *out_len = 0U;
   }
   cai_history_init_spooled(session, out);
-  if (text == NULL || lonejson_spooled_size(text) == 0U) {
+  if (text == NULL || text->size_fn(text) == 0U) {
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
@@ -1223,70 +1229,70 @@ static int cai_stream_output_text_spool(cai_session *session,
   status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_agent_spool_sink, out, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     writer_initialized = 1;
-    status = lonejson_writer_begin_array(&writer, &json_error);
+    status = writer.begin_array(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_begin_object(&writer, &json_error);
+    status = writer.begin_object(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_key(&writer, "type", 4U, &json_error);
+    status = writer.key(&writer, "type", 4U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_string(&writer, "message", 7U, &json_error);
+    status = writer.string(&writer, "message", 7U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_key(&writer, "role", 4U, &json_error);
+    status = writer.key(&writer, "role", 4U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_string(&writer, "assistant", 9U, &json_error);
+    status = writer.string(&writer, "assistant", 9U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_key(&writer, "content", 7U, &json_error);
+    status = writer.key(&writer, "content", 7U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_begin_array(&writer, &json_error);
+    status = writer.begin_array(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_begin_object(&writer, &json_error);
+    status = writer.begin_object(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_key(&writer, "type", 4U, &json_error);
+    status = writer.key(&writer, "type", 4U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_string(&writer, "output_text", 11U, &json_error);
+    status = writer.string(&writer, "output_text", 11U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_key(&writer, "text", 4U, &json_error);
+    status = writer.key(&writer, "text", 4U, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_string_spooled(&writer, text, &json_error);
+    status = writer.string_spooled(&writer, text, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_end_object(&writer, &json_error);
+    status = writer.end_object(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_end_array(&writer, &json_error);
+    status = writer.end_array(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_end_object(&writer, &json_error);
+    status = writer.end_object(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_end_array(&writer, &json_error);
+    status = writer.end_array(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_finish(&writer, &json_error);
+    status = writer.finish(&writer, &json_error);
   }
   if (writer_initialized) {
-    lonejson_writer_cleanup(&writer);
+    writer.cleanup(&writer);
   }
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize streamed output text",
                                 json_error.message);
   }
   if (out_len != NULL) {
-    *out_len = lonejson_spooled_size(out);
+    *out_len = out->size_fn(out);
   }
   return CAI_OK;
 }
@@ -1306,7 +1312,7 @@ static int cai_stream_capture_output_items_start(cai_session *session,
   status = CAI_LJ->writer_init_sink(CAI_LJ, &capture->output_items_writer, cai_agent_spool_sink, &capture->output_items, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     capture->output_items_writer_initialized = 1;
-    status = lonejson_writer_begin_array(&capture->output_items_writer,
+    status = capture->output_items_writer.begin_array(&capture->output_items_writer,
                                          &json_error);
   }
   if (status != LONEJSON_STATUS_OK) {
@@ -1326,11 +1332,11 @@ static int cai_stream_capture_output_items_finish(
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  status = lonejson_writer_end_array(&capture->output_items_writer, &json_error);
+  status = capture->output_items_writer.end_array(&capture->output_items_writer, &json_error);
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_finish(&capture->output_items_writer, &json_error);
+    status = capture->output_items_writer.finish(&capture->output_items_writer, &json_error);
   }
-  lonejson_writer_cleanup(&capture->output_items_writer);
+  capture->output_items_writer.cleanup(&capture->output_items_writer);
   capture->output_items_writer_initialized = 0;
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -1354,10 +1360,10 @@ static int cai_stream_capture_output_text(void *context, const char *item_id,
   capture = (cai_stream_tool_capture *)context;
   rc = CAI_OK;
   if (capture != NULL && capture->output_text != NULL && delta != NULL &&
-      lonejson_spooled_size(delta) > 0U) {
+      delta->size_fn(delta) > 0U) {
     lonejson_error_init(&json_error);
     sink_context.spool = capture->output_text;
-    if (lonejson_spooled_write_to_sink(delta, cai_history_lonejson_sink,
+    if (delta->write_to_sink(delta, cai_history_lonejson_sink,
                                        &sink_context, &json_error) !=
         LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -1432,11 +1438,11 @@ static int cai_stream_capture_output_item_done(
   rc = CAI_OK;
   if (capture != NULL && capture->output_text != NULL &&
       (type == NULL || strcmp(type, "function_call") != 0) &&
-      item_json != NULL && lonejson_spooled_size(item_json) > 0U) {
+      item_json != NULL && item_json->size_fn(item_json) > 0U) {
     rc = cai_stream_capture_output_items_start(capture->session, capture, error);
     if (rc == CAI_OK) {
       lonejson_error_init(&json_error);
-      status = lonejson_writer_json_value_spooled(
+      status = capture->output_items_writer.json_value_spooled(
           &capture->output_items_writer, item_json, &json_error);
       if (status != LONEJSON_STATUS_OK) {
         rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -1504,7 +1510,7 @@ static int cai_session_after_stream_tool_calls(
                                                 error);
   }
   if (rc == CAI_OK && stream_output_items_count == 0U && output_text != NULL &&
-      lonejson_spooled_size(output_text) > 0U) {
+      output_text->size_fn(output_text) > 0U) {
     rc = cai_stream_output_text_spool(session, output_text, &output_items,
                                      &output_items_len, error);
     if (rc == CAI_OK) {
@@ -1516,10 +1522,10 @@ static int cai_session_after_stream_tool_calls(
                                                 error);
   }
   if (has_call_items) {
-    lonejson_spooled_cleanup(&call_items);
+    call_items.cleanup(&call_items);
   }
   if (has_output_items) {
-    lonejson_spooled_cleanup(&output_items);
+    output_items.cleanup(&output_items);
   }
   return rc;
 }
@@ -1536,9 +1542,9 @@ int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
   context.sink = sink;
   context.error = error;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_write_to_sink(event->output_json,
-                                     cai_lonejson_write_cai_sink, &context,
-                                     &json_error) == LONEJSON_STATUS_OK) {
+  if (event->output_json->write_to_sink(event->output_json,
+                                        cai_lonejson_write_cai_sink, &context,
+                                        &json_error) == LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
   if (error != NULL && error->message != NULL) {
@@ -1551,7 +1557,10 @@ int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
 
 static void cai_history_init_spooled(cai_session *session,
                                      lonejson_spooled *spool) {
-  lonejson_spooled_init(cai_agent_history_runtime(session), spool);
+  lonejson *runtime;
+
+  runtime = cai_agent_history_runtime(session);
+  runtime->spooled_init(runtime, spool);
 }
 
 static lonejson *cai_agent_history_runtime(cai_session *session) {
@@ -1579,19 +1588,18 @@ static int cai_history_append_array_record_to_spool(cai_session *session,
   int rc;
 
   (void)session;
-  if (json == NULL || lonejson_spooled_size(json) == 0U) {
+  if (json == NULL || json->size_fn(json) == 0U) {
     return CAI_OK;
   }
   snprintf(header, sizeof(header), "%lu\n",
-           (unsigned long)lonejson_spooled_size(json));
+           (unsigned long)json->size_fn(json));
   header_length = strlen(header);
   rc = cai_history_append_bytes(history, header, header_length, error);
   if (rc == CAI_OK) {
     sink_context.spool = history;
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_write_to_sink(json, cai_history_lonejson_sink,
-                                       &sink_context,
-                                       &json_error) != LONEJSON_STATUS_OK) {
+    if (json->write_to_sink(json, cai_history_lonejson_sink, &sink_context,
+                            &json_error) != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to copy history spool",
                                 json_error.message);
@@ -1610,12 +1618,13 @@ static void cai_history_replace(cai_session *session,
   old_history = CAI_SESSION_IMPL(session)->history;
   CAI_SESSION_IMPL(session)->history = *next_history;
   memset(next_history, 0, sizeof(*next_history));
-  lonejson_spooled_cleanup(&old_history);
+  old_history.cleanup(&old_history);
 }
 
 static void cai_history_cleanup(cai_session *session) {
   if (session != NULL) {
-    lonejson_spooled_cleanup(&CAI_SESSION_IMPL(session)->history);
+    CAI_SESSION_IMPL(session)
+        ->history.cleanup(&CAI_SESSION_IMPL(session)->history);
   }
 }
 
@@ -1823,16 +1832,16 @@ static int cai_session_source_to_spooled(cai_session *session,
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
     if (nread == 0U && error != NULL && error->code != previous_error_code &&
         error->code != CAI_OK) {
-      lonejson_spooled_cleanup(out);
+      out->cleanup(out);
       return error->code;
     }
     if (nread == 0U) {
       break;
     }
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_append(out, buffer, nread, &json_error) !=
+    if (out->append(out, buffer, nread, &json_error) !=
         LONEJSON_STATUS_OK) {
-      lonejson_spooled_cleanup(out);
+      out->cleanup(out);
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to spool file input",
                                   json_error.message);
@@ -1878,7 +1887,7 @@ static int cai_session_add_file_input_spooled(cai_session *session,
     cai_free_mem(allocator, input->filename);
     cai_free_mem(allocator, input->detail);
     if (input->has_file_data) {
-      lonejson_spooled_cleanup(&input->file_data);
+      input->file_data.cleanup(&input->file_data);
     }
     memset(input, 0, sizeof(*input));
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -1917,7 +1926,7 @@ static int cai_session_add_text_input_spooled(cai_session *session,
   memset(text, 0, sizeof(*text));
   if (input->role == NULL) {
     if (input->has_text_spooled) {
-      lonejson_spooled_cleanup(&input->text_spooled);
+      input->text_spooled.cleanup(&input->text_spooled);
     }
     memset(input, 0, sizeof(*input));
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -1960,7 +1969,7 @@ int cai_session_add_user_text_source(cai_session *session, cai_source *source,
     rc = cai_session_add_user_text_spooled(session, &text, error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&text);
+    text.cleanup(&text);
   }
   return rc;
 }
@@ -2003,7 +2012,7 @@ int cai_session_add_user_file_source(cai_session *session,
                                                 detail, error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&file_data);
+    file_data.cleanup(&file_data);
   }
   return rc;
 }
@@ -2077,7 +2086,7 @@ static int cai_session_add_pending_inputs(cai_session *session,
             CAI_SESSION_IMPL(session)->inputs[i].detail, error);
       }
       if (rc != CAI_OK) {
-        lonejson_spooled_cleanup(&file_data);
+        file_data.cleanup(&file_data);
       }
     } else if (CAI_SESSION_IMPL(session)->inputs[i].kind ==
                CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT) {
@@ -2093,7 +2102,7 @@ static int cai_session_add_pending_inputs(cai_session *session,
             params, CAI_SESSION_IMPL(session)->inputs[i].role, &text, error);
       }
       if (rc != CAI_OK) {
-        lonejson_spooled_cleanup(&text);
+        text.cleanup(&text);
       }
     } else {
       rc = cai_response_create_params_add_text(params, CAI_SESSION_IMPL(session)->inputs[i].role,
@@ -2112,7 +2121,7 @@ static int cai_spooled_record_reader_next(cai_spooled_record_reader *reader,
     if (reader->eof) {
       return 0;
     }
-    chunk = lonejson_spooled_read(&reader->cursor, reader->buffer,
+    chunk = reader->cursor.read(&reader->cursor, reader->buffer,
                                   sizeof(reader->buffer));
     if (chunk.error_code != 0) {
       (void)cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -2247,14 +2256,14 @@ static int cai_history_to_array_spool(cai_session *session,
   lonejson_error_init(&json_error);
   status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_history_lonejson_sink, &sink_context, &json_error);
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_begin_array(&writer, &json_error);
+    status = writer.begin_array(&writer, &json_error);
   }
   reader.cursor = CAI_SESSION_IMPL(session)->history;
   reader.offset = 0U;
   reader.length = 0U;
   reader.eof = 0;
   if (status == LONEJSON_STATUS_OK &&
-      lonejson_spooled_rewind(&reader.cursor, &json_error) !=
+      reader.cursor.rewind(&reader.cursor, &json_error) !=
           LONEJSON_STATUS_OK) {
     status = LONEJSON_STATUS_CALLBACK_FAILED;
   }
@@ -2272,22 +2281,21 @@ static int cai_history_to_array_spool(cai_session *session,
     record_reader.records = &reader;
     record_reader.remaining = item_length;
     record_reader.error = error;
-    status = lonejson_writer_array_items_reader(
-        &writer, "", cai_history_record_json_read, &record_reader,
-        &json_error);
+    status = writer.array_items_reader(&writer, "", cai_history_record_json_read,
+                                       &record_reader, &json_error);
     if (status == LONEJSON_STATUS_OK && record_reader.remaining != 0UL) {
       status = LONEJSON_STATUS_CALLBACK_FAILED;
     }
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_end_array(&writer, &json_error);
+    status = writer.end_array(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_finish(&writer, &json_error);
+    status = writer.finish(&writer, &json_error);
   }
-  lonejson_writer_cleanup(&writer);
+  writer.cleanup(&writer);
   if (status != LONEJSON_STATUS_OK) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
     if (error != NULL && error->message != NULL) {
       return error->code;
     }
@@ -2350,10 +2358,10 @@ cai_session_prepare_history_params(cai_session *session,
       has_pending_items = 0;
     }
     if (has_pending_items) {
-      lonejson_spooled_cleanup(&pending_items);
+      pending_items.cleanup(&pending_items);
     }
     if (has_history_items) {
-      lonejson_spooled_cleanup(&history_items);
+      history_items.cleanup(&history_items);
     }
     return rc;
   }
@@ -2374,7 +2382,7 @@ cai_session_prepare_history_params(cai_session *session,
     has_pending_items = 0;
   }
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   return rc;
 }
@@ -2425,10 +2433,10 @@ static int cai_session_replay_history_with_params_input(
     has_pending_items = 0;
   }
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   if (has_history_items) {
-    lonejson_spooled_cleanup(&history_items);
+    history_items.cleanup(&history_items);
   }
   return rc;
 }
@@ -2500,7 +2508,7 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
   rc = cai_history_to_array_spool(session, &history_items, error);
   if (rc == CAI_OK) {
     has_history_items = 1;
-    history_len = lonejson_spooled_size(&history_items);
+    history_len = history_items.size_fn(&history_items);
   }
   if (rc == CAI_OK && history_len == 0U) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
@@ -2565,15 +2573,15 @@ done:
   cai_response_create_params_destroy(params);
   cai_response_destroy(response);
   if (has_history_items) {
-    lonejson_spooled_cleanup(&history_items);
+    history_items.cleanup(&history_items);
   }
   if (has_next_history) {
-    lonejson_spooled_cleanup(&next_history);
+    next_history.cleanup(&next_history);
   }
   cai_free_mem(NULL, body);
   cai_free_mem(NULL, request_id);
   if (has_output_items) {
-    lonejson_spooled_cleanup(&output_items);
+    output_items.cleanup(&output_items);
   }
   return rc;
 }
@@ -2607,7 +2615,7 @@ static int cai_session_after_response(cai_session *session,
     rc = cai_history_append_array_record_spooled(session, &output_items, error);
   }
   if (has_output_items) {
-    lonejson_spooled_cleanup(&output_items);
+    output_items.cleanup(&output_items);
   }
   return rc;
 }
@@ -2677,7 +2685,7 @@ static int cai_session_after_stream(cai_session *session,
 done:
   cai_response_destroy(response);
   if (has_output_items) {
-    lonejson_spooled_cleanup(&output_items);
+    output_items.cleanup(&output_items);
   }
   return rc;
 }
@@ -2803,7 +2811,7 @@ int cai_session_run(cai_session *session, cai_response **out,
   }
   cai_response_create_params_destroy(params);
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
@@ -2839,7 +2847,7 @@ static int cai_capture_tool_output(void *context, const void *bytes,
 
   capture = (cai_tool_output_capture *)context;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_append(&capture->output, bytes, count, &json_error) ==
+  if (capture->output.append(&capture->output, bytes, count, &json_error) ==
       LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
@@ -2852,7 +2860,7 @@ static void cai_capture_cleanup(cai_tool_output_capture *capture) {
   if (capture == NULL) {
     return;
   }
-  lonejson_spooled_cleanup(&capture->output);
+  capture->output.cleanup(&capture->output);
 }
 
 static int cai_session_init_response_params(cai_session *session,
@@ -2964,6 +2972,7 @@ static int cai_session_run_tool_round(cai_session *session,
   lonejson_spooled arguments_cursor;
   const lonejson_spooled *spooled_arguments;
   int has_pending_items;
+  int capture_output_owned;
   size_t i;
   int rc;
 
@@ -2981,6 +2990,8 @@ static int cai_session_run_tool_round(cai_session *session,
     cai_tool_event event;
 
     memset(&event, 0, sizeof(event));
+    memset(&capture, 0, sizeof(capture));
+    capture_output_owned = 1;
     event.name = cai_response_tool_call_name(response, i);
     event.arguments_json = cai_response_tool_call_arguments(response, i);
     event.arguments_json_spooled =
@@ -2992,7 +3003,7 @@ static int cai_session_run_tool_round(cai_session *session,
     if (rc != CAI_OK) {
       break;
     }
-    lonejson_spooled_init(tool_output_runtime, &capture.output);
+    tool_output_runtime->spooled_init(tool_output_runtime, &capture.output);
     callbacks.write = cai_capture_tool_output;
     callbacks.close = NULL;
     callbacks.context = &capture;
@@ -3032,9 +3043,12 @@ static int cai_session_run_tool_round(cai_session *session,
           error);
       if (rc == CAI_OK) {
         memset(&capture.output, 0, sizeof(capture.output));
+        capture_output_owned = 0;
       }
     }
-    cai_capture_cleanup(&capture);
+    if (capture_output_owned) {
+      cai_capture_cleanup(&capture);
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_session_replay_history_with_params_input(
@@ -3047,7 +3061,7 @@ static int cai_session_run_tool_round(cai_session *session,
   cai_response_create_params_destroy(params);
   cai_lonejson_runtime_close(&tool_output_runtime);
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   return rc;
 }
@@ -3219,16 +3233,16 @@ static int cai_session_stream_once(cai_session *session,
   cai_response_create_params_destroy(params);
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   if (has_output_text) {
-    lonejson_spooled_cleanup(&output_text);
+    output_text.cleanup(&output_text);
   }
   if (capture_stream && capture.output_items_initialized) {
     if (capture.output_items_writer_initialized) {
-      lonejson_writer_cleanup(&capture.output_items_writer);
+      capture.output_items_writer.cleanup(&capture.output_items_writer);
     }
-    lonejson_spooled_cleanup(&capture.output_items);
+    capture.output_items.cleanup(&capture.output_items);
   }
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
@@ -3250,6 +3264,7 @@ static int cai_session_add_stream_tool_outputs(
   cai_tool_output_capture capture;
   lonejson *tool_output_runtime;
   size_t i;
+  int capture_output_owned;
   int rc;
 
   if (calls == NULL) {
@@ -3262,6 +3277,8 @@ static int cai_session_add_stream_tool_outputs(
     cai_tool_event event;
 
     memset(&event, 0, sizeof(event));
+    memset(&capture, 0, sizeof(capture));
+    capture_output_owned = 1;
     event.name = calls->items[i].name;
     event.arguments_json = calls->items[i].arguments;
     event.arguments_json_spooled =
@@ -3275,7 +3292,7 @@ static int cai_session_add_stream_tool_outputs(
     if (rc != CAI_OK) {
       break;
     }
-    lonejson_spooled_init(tool_output_runtime, &capture.output);
+    tool_output_runtime->spooled_init(tool_output_runtime, &capture.output);
     callbacks.write = cai_capture_tool_output;
     callbacks.close = NULL;
     callbacks.context = &capture;
@@ -3310,9 +3327,12 @@ static int cai_session_add_stream_tool_outputs(
           params, calls->items[i].call_id, &capture.output, error);
       if (rc == CAI_OK) {
         memset(&capture.output, 0, sizeof(capture.output));
+        capture_output_owned = 0;
       }
     }
-    cai_capture_cleanup(&capture);
+    if (capture_output_owned) {
+      cai_capture_cleanup(&capture);
+    }
   }
   cai_lonejson_runtime_close(&tool_output_runtime);
   return rc;
@@ -3391,16 +3411,16 @@ static int cai_session_stream_tool_round(
   cai_response_create_params_destroy(params);
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   if (has_output_text) {
-    lonejson_spooled_cleanup(&output_text);
+    output_text.cleanup(&output_text);
   }
   if (capture.output_items_initialized) {
     if (capture.output_items_writer_initialized) {
-      lonejson_writer_cleanup(&capture.output_items_writer);
+      capture.output_items_writer.cleanup(&capture.output_items_writer);
     }
-    lonejson_spooled_cleanup(&capture.output_items);
+    capture.output_items.cleanup(&capture.output_items);
   }
   return rc;
 }
@@ -3495,7 +3515,7 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
   }
   cai_response_create_params_destroy(params);
   if (has_pending_items) {
-    lonejson_spooled_cleanup(&pending_items);
+    pending_items.cleanup(&pending_items);
   }
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
@@ -3576,7 +3596,8 @@ int cai_session_history_spilled(const cai_session *session) {
   if (session == NULL) {
     return 0;
   }
-  return lonejson_spooled_spilled(&CAI_SESSION_IMPL(session)->history);
+  return CAI_SESSION_IMPL(session)
+      ->history.spilled_fn(&CAI_SESSION_IMPL(session)->history);
 }
 
 static lonejson_status cai_state_spooled_sink(void *user, const void *data,
@@ -3588,7 +3609,7 @@ static lonejson_status cai_state_spooled_sink(void *user, const void *data,
   if (spool == NULL) {
     return LONEJSON_STATUS_CALLBACK_FAILED;
   }
-  return lonejson_spooled_append(spool, data, len, error);
+  return spool->append(spool, data, len, error);
 }
 
 static lonejson_read_result cai_state_source_reader(void *user,
@@ -3692,12 +3713,12 @@ static int cai_spooled_json_is_array(const lonejson_spooled *spool,
   cai_json_root_array_check check;
   cai_spooled_reader_context reader_context;
 
-  if (spool == NULL || lonejson_spooled_size(spool) == 0U) {
+  if (spool == NULL || spool->size_fn(spool) == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID, "JSON value is empty");
   }
   cursor = *spool;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind JSON value",
                                 json_error.message);
@@ -3714,9 +3735,9 @@ static int cai_spooled_json_is_array(const lonejson_spooled *spool,
   visitor.boolean_value = cai_root_check_bool;
   visitor.null_value = cai_root_check_scalar;
   lonejson_error_init(&json_error);
-  if (lonejson_visit_value_reader(CAI_LJ, cai_history_spooled_reader,
-                                  &reader_context, &visitor, &check,
-                                  &json_error) !=
+  if (CAI_LJ->visit_value_reader(CAI_LJ, cai_history_spooled_reader,
+                                 &reader_context, &visitor, &check,
+                                 &json_error) !=
       LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "JSON value is not valid JSON",
@@ -3746,7 +3767,7 @@ static int cai_compact_spooled_json(cai_session *session,
   rc = CAI_OK;
   cursor = *json;
   lonejson_error_init(&json_error);
-  if (lonejson_spooled_rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind JSON value",
                                 json_error.message);
@@ -3756,7 +3777,7 @@ static int cai_compact_spooled_json(cai_session *session,
   CAI_LJ->json_value_init(CAI_LJ, &value);
   reader_context.cursor = cursor;
   lonejson_error_init(&json_error);
-  if (lonejson_json_value_set_reader(&value, cai_history_spooled_reader,
+  if (value.methods->set_reader(&value, cai_history_spooled_reader,
                                      &reader_context,
                                      &json_error) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -3766,7 +3787,7 @@ static int cai_compact_spooled_json(cai_session *session,
   }
   sink_context.spool = out;
   lonejson_error_init(&json_error);
-  if (lonejson_json_value_write_to_sink(&value, cai_history_lonejson_sink,
+  if (value.methods->write_to_sink(&value, cai_history_lonejson_sink,
                                         &sink_context,
                                         &json_error) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_INVALID,
@@ -3778,7 +3799,7 @@ static int cai_compact_spooled_json(cai_session *session,
 done:
   CAI_LJ->json_value_cleanup(CAI_LJ, &value);
   if (rc != CAI_OK && has_out) {
-    lonejson_spooled_cleanup(out);
+    out->cleanup(out);
   }
   return rc;
 }
@@ -3796,7 +3817,7 @@ static lonejson_read_result cai_history_spooled_reader(void *user,
     result.error_code = 1;
     return result;
   }
-  return lonejson_spooled_read(&context->cursor, buffer, capacity);
+  return context->cursor.read(&context->cursor, buffer, capacity);
 }
 
 static int cai_history_source_to_array_spooled(cai_session *session,
@@ -3836,7 +3857,7 @@ static int cai_history_source_to_array_spooled(cai_session *session,
       break;
     }
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_append(&raw, buffer, nread, &json_error) !=
+    if (raw.append(&raw, buffer, nread, &json_error) !=
         LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to append imported history",
@@ -3844,7 +3865,7 @@ static int cai_history_source_to_array_spooled(cai_session *session,
       goto done;
     }
   }
-  if (lonejson_spooled_size(&raw) == 0U) {
+  if (raw.size_fn(&raw) == 0U) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "imported history JSON is empty");
     goto done;
@@ -3863,10 +3884,10 @@ static int cai_history_source_to_array_spooled(cai_session *session,
 
 done:
   if (has_raw) {
-    lonejson_spooled_cleanup(&raw);
+    raw.cleanup(&raw);
   }
   if (has_compact) {
-    lonejson_spooled_cleanup(&compact);
+    compact.cleanup(&compact);
   }
   return rc;
 }
@@ -3900,7 +3921,7 @@ int cai_session_export_history_source(cai_session *session, cai_source **out,
     }
   }
   if (has_history_json) {
-    lonejson_spooled_cleanup(&history_json);
+    history_json.cleanup(&history_json);
   }
   return rc;
 }
@@ -3939,10 +3960,10 @@ int cai_session_import_history_source(cai_session *session, cai_source *source,
     has_next_history = 0;
   }
   if (has_history_json) {
-    lonejson_spooled_cleanup(&history_json);
+    history_json.cleanup(&history_json);
   }
   if (has_next_history) {
-    lonejson_spooled_cleanup(&next_history);
+    next_history.cleanup(&next_history);
   }
   return rc;
 }
@@ -3998,7 +4019,7 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
     if (include_history) {
       reader_context.cursor = history_json;
       lonejson_error_init(&json_error);
-      if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
+      if (reader_context.cursor.rewind(&reader_context.cursor, &json_error) !=
           LONEJSON_STATUS_OK) {
         rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to rewind session history JSON",
@@ -4008,7 +4029,7 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
     if (rc == CAI_OK) {
       lonejson_error_init(&json_error);
       if (include_history &&
-          lonejson_json_value_set_reader(&doc.history,
+          doc.history.methods->set_reader(&doc.history,
                                          cai_history_spooled_reader,
                                          &reader_context,
                                          &json_error) != LONEJSON_STATUS_OK) {
@@ -4033,10 +4054,10 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
     }
   }
   if (has_state_json) {
-    lonejson_spooled_cleanup(&state_json);
+    state_json.cleanup(&state_json);
   }
   if (has_history_json) {
-    lonejson_spooled_cleanup(&history_json);
+    history_json.cleanup(&history_json);
   }
   CAI_LJ->json_value_cleanup(CAI_LJ, &doc.history);
   return rc;
@@ -4067,7 +4088,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   has_history_json = 1;
   CAI_LJ->json_value_init(CAI_LJ, &doc.history);
   lonejson_error_init(&json_error);
-  if (lonejson_json_value_set_parse_sink(&doc.history,
+  if (doc.history.methods->set_parse_sink(&doc.history,
                                          cai_state_spooled_sink,
                                          &history_json,
                                          &json_error) != LONEJSON_STATUS_OK) {
@@ -4100,13 +4121,13 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     goto done;
   }
   if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
-      lonejson_spooled_size(&history_json) > 0U) {
+      history_json.size_fn(&history_json) > 0U) {
     rc = cai_spooled_json_is_array(&history_json, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     cai_history_init_spooled(session, &next_history);
     has_next_history = 1;
-    if (lonejson_spooled_size(&history_json) > 0U) {
+    if (history_json.size_fn(&history_json) > 0U) {
       rc = cai_history_append_array_record_to_spool(
           session, &next_history, &history_json, error);
     }
@@ -4129,10 +4150,10 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
 done:
   lonejson_cleanup(&cai_session_state_map, &doc);
   if (has_history_json) {
-    lonejson_spooled_cleanup(&history_json);
+    history_json.cleanup(&history_json);
   }
   if (has_next_history) {
-    lonejson_spooled_cleanup(&next_history);
+    next_history.cleanup(&next_history);
   }
   return rc;
 }

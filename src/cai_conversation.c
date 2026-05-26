@@ -44,7 +44,8 @@ static lonejson_status cai_conversation_spooled_sink(void *user,
                                                      const void *data,
                                                      size_t len,
                                                      lonejson_error *error) {
-  return lonejson_spooled_append((lonejson_spooled *)user, data, len, error);
+  return ((lonejson_spooled *)user)->append((lonejson_spooled *)user, data, len,
+                                            error);
 }
 
 static lonejson_read_result
@@ -60,7 +61,7 @@ cai_conversation_spooled_reader(void *user, unsigned char *buffer,
     result.error_code = 1;
     return result;
   }
-  return lonejson_spooled_read(&context->cursor, buffer, capacity);
+  return context->cursor.read(&context->cursor, buffer, capacity);
 }
 
 static void cai_conversation_object_array_init(lonejson_object_array *array,
@@ -102,7 +103,7 @@ cai_conversation_content_part_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, part->type);
   cai_free_mem(allocator, part->text);
   if (part->has_text_spooled) {
-    lonejson_spooled_cleanup(&part->text_spooled);
+    part->text_spooled.cleanup(&part->text_spooled);
     part->has_text_spooled = 0;
   }
   cai_free_mem(allocator, part->image_url);
@@ -110,7 +111,7 @@ cai_conversation_content_part_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, part->filename);
   cai_free_mem(allocator, part->file_url);
   if (part->has_file_data) {
-    lonejson_spooled_cleanup(&part->file_data);
+    part->file_data.cleanup(&part->file_data);
     part->has_file_data = 0;
   }
   cai_free_mem(allocator, part->detail);
@@ -150,7 +151,7 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
                          "conversation JSON is required");
   }
   memset(&doc, 0, sizeof(doc));
-  lonejson_init(CAI_LJ, &cai_conversation_map, &doc);
+  CAI_LJ->init(CAI_LJ, &cai_conversation_map, &doc);
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_conversation_map, &doc, json,
                               &json_error);
   if (status != LONEJSON_STATUS_OK) {
@@ -389,7 +390,7 @@ int cai_client_update_conversation_metadata(cai_client *client,
   has_body = 0;
   path = NULL;
   lonejson_error_init(&json_error);
-  if (lonejson_json_value_set_buffer(&doc.metadata, metadata,
+  if (doc.metadata.methods->set_buffer(&doc.metadata, metadata,
                                      strlen(metadata),
                                      &json_error) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_INVALID,
@@ -403,7 +404,7 @@ int cai_client_update_conversation_metadata(cai_client *client,
                                      error);
   }
   if (rc == CAI_OK) {
-    lonejson_spooled_init(CAI_LJ, &body);
+    CAI_LJ->spooled_init(CAI_LJ, &body);
     has_body = 1;
     lonejson_error_init(&json_error);
     if (lonejson_serialize_sink(CAI_LJ, &cai_conversation_metadata_map, &doc,
@@ -416,12 +417,12 @@ int cai_client_update_conversation_metadata(cai_client *client,
   }
   if (rc == CAI_OK) {
     rc = cai_conversation_request_spooled(client, "POST", path, &body,
-                                          lonejson_spooled_size(&body), out,
+                                          body.size_fn(&body), out,
                                           error);
   }
   cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
   if (has_body) {
-    lonejson_spooled_cleanup(&body);
+    body.cleanup(&body);
   }
   CAI_LJ->json_value_cleanup(CAI_LJ, &doc.metadata);
   return rc;
@@ -754,22 +755,22 @@ static int cai_conversation_source_to_spooled(cai_source *source,
                          "source and spool output are required");
   }
   memset(out, 0, sizeof(*out));
-  lonejson_spooled_init(CAI_LJ, out);
+  CAI_LJ->spooled_init(CAI_LJ, out);
   for (;;) {
     previous_error_code = error != NULL ? error->code : CAI_OK;
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
     if (nread == 0U && error != NULL && error->code != previous_error_code &&
         error->code != CAI_OK) {
-      lonejson_spooled_cleanup(out);
+      out->cleanup(out);
       return error->code;
     }
     if (nread == 0U) {
       break;
     }
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_append(out, buffer, nread, &json_error) !=
+    if (out->append(out, buffer, nread, &json_error) !=
         LONEJSON_STATUS_OK) {
-      lonejson_spooled_cleanup(out);
+      out->cleanup(out);
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to spool conversation text input",
                                   json_error.message);
@@ -794,7 +795,7 @@ int cai_conversation_items_params_add_text_source(
                                                        error);
   }
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&text);
+    text.cleanup(&text);
   }
   return rc;
 }
@@ -970,7 +971,7 @@ static int cai_conversation_items_params_spool_json(
     has_items = 1;
     reader_context.cursor = items;
     lonejson_error_init(&json_error);
-    if (lonejson_spooled_rewind(&reader_context.cursor, &json_error) !=
+    if (reader_context.cursor.rewind(&reader_context.cursor, &json_error) !=
         LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind conversation items JSON",
@@ -980,7 +981,7 @@ static int cai_conversation_items_params_spool_json(
   if (rc == CAI_OK) {
     CAI_LJ->json_value_init(CAI_LJ, &doc.items);
     lonejson_error_init(&json_error);
-    if (lonejson_json_value_set_reader(&doc.items,
+    if (doc.items.methods->set_reader(&doc.items,
                                        cai_conversation_spooled_reader,
                                        &reader_context,
                                        &json_error) != LONEJSON_STATUS_OK) {
@@ -990,12 +991,12 @@ static int cai_conversation_items_params_spool_json(
     }
   }
   if (rc == CAI_OK) {
-    lonejson_spooled_init(CAI_LJ, out);
+    CAI_LJ->spooled_init(CAI_LJ, out);
     lonejson_error_init(&json_error);
     if (lonejson_serialize_sink(CAI_LJ, &cai_conversation_items_request_map,
                                 &doc, cai_conversation_spooled_sink, out,
                                 &json_error) != LONEJSON_STATUS_OK) {
-      lonejson_spooled_cleanup(out);
+      out->cleanup(out);
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize conversation items JSON",
                                 json_error.message);
@@ -1003,15 +1004,15 @@ static int cai_conversation_items_params_spool_json(
   }
   if (rc != CAI_OK) {
     if (has_items) {
-      lonejson_spooled_cleanup(&items);
+      items.cleanup(&items);
     }
     CAI_LJ->json_value_cleanup(CAI_LJ, &doc.items);
     return rc;
   }
   if (out_len != NULL) {
-    *out_len = lonejson_spooled_size(out);
+    *out_len = out->size_fn(out);
   }
-  lonejson_spooled_cleanup(&items);
+  items.cleanup(&items);
   CAI_LJ->json_value_cleanup(CAI_LJ, &doc.items);
   return CAI_OK;
 }
@@ -1049,14 +1050,14 @@ int cai_client_create_conversation_items(
   rc = cai_build_conversation_path(client, conversation_id, "/items", &path,
                                    error);
   if (rc != CAI_OK) {
-    lonejson_spooled_cleanup(&body);
+    body.cleanup(&body);
     return rc;
   }
   rc = cai_http_json_request_spooled(client, "POST", path, &body, body_len,
                                      &json, &http_status, &request_id, error);
   cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
   if (has_body) {
-    lonejson_spooled_cleanup(&body);
+    body.cleanup(&body);
   }
   if (rc != CAI_OK) {
     return rc;
