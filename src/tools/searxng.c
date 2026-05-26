@@ -505,8 +505,7 @@ static int cai_searxng_parse(lonejson_spooled *json,
   infobox_handler.item = cai_searxng_infobox_item_cb;
   infobox_handler.user = state;
   lonejson_error_init(&json_error);
-  if (lonejson_mapped_array_stream_set_handler(&doc->results, &result_handler,
-                                               &json_error) !=
+  if (doc->results.set_handler(&doc->results, &result_handler, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_searxng_item_map, &result_item);
     lonejson_cleanup(&cai_searxng_item_map, &infobox_item);
@@ -516,9 +515,8 @@ static int cai_searxng_parse(lonejson_spooled *json,
                                 json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (lonejson_mapped_array_stream_set_handler(&doc->infoboxes,
-                                               &infobox_handler,
-                                               &json_error) !=
+  if (doc->infoboxes.set_handler(&doc->infoboxes, &infobox_handler,
+                                 &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&cai_searxng_item_map, &result_item);
     lonejson_cleanup(&cai_searxng_item_map, &infobox_item);

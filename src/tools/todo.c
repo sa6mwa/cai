@@ -1572,8 +1572,7 @@ static int cai_todo_stream_boards(const cai_todo_context *ctx, void *txn,
   rc = CAI_OK;
   for (;;) {
     cai_todo_board_parse_init(&board);
-    result = lonejson_array_stream_next(stream, &cai_todo_board_map, &board,
-                                        &json_error);
+    result = stream->next(stream, &cai_todo_board_map, &board, &json_error);
     if (result == LONEJSON_ARRAY_STREAM_ITEM) {
       if (callback(user, &board) != LONEJSON_STATUS_OK) {
         rc = error != NULL && error->code != 0 ? error->code : CAI_ERR_PROTOCOL;
@@ -1590,12 +1589,12 @@ static int cai_todo_stream_boards(const cai_todo_context *ctx, void *txn,
     }
     rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                               "failed to parse todo boards",
-                              lonejson_array_stream_error(stream) != NULL
-                                  ? lonejson_array_stream_error(stream)->message
+                              stream->error.message[0] != '\0'
+                                  ? stream->error.message
                                   : json_error.message);
     break;
   }
-  lonejson_array_stream_close(stream);
+  stream->close(stream);
   if (ctx->store.close_read != NULL) {
     ctx->store.close_read(ctx->store_context, txn, reader_context);
   }
@@ -1659,8 +1658,7 @@ static int cai_todo_stream_items_path(const cai_todo_context *ctx,
   rc = CAI_OK;
   for (;;) {
     cai_todo_item_parse_init(&item);
-    result = lonejson_array_stream_next(stream, &cai_todo_item_map, &item,
-                                        &json_error);
+    result = stream->next(stream, &cai_todo_item_map, &item, &json_error);
     if (result == LONEJSON_ARRAY_STREAM_ITEM) {
       if (callback(user, &item) != LONEJSON_STATUS_OK) {
         rc = error != NULL && error->code != 0 ? error->code : CAI_ERR_PROTOCOL;
@@ -1677,12 +1675,12 @@ static int cai_todo_stream_items_path(const cai_todo_context *ctx,
     }
     rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                               "failed to parse todo items",
-                              lonejson_array_stream_error(stream) != NULL
-                                  ? lonejson_array_stream_error(stream)->message
+                              stream->error.message[0] != '\0'
+                                  ? stream->error.message
                                   : json_error.message);
     break;
   }
-  lonejson_array_stream_close(stream);
+  stream->close(stream);
   if (ctx->store.close_read != NULL) {
     ctx->store.close_read(ctx->store_context, txn, reader_context);
   }

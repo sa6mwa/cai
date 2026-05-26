@@ -1209,8 +1209,7 @@ int cai_tool_result_set_source_path(const lonejson_map *result_map,
   }
   source = (lonejson_source *)((unsigned char *)result + field->struct_offset);
   lonejson_error_init(&json_error);
-  if (lonejson_source_set_path(source, path, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (source->set_path(source, path, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to set tool result source path",
                                 json_error.message);
@@ -1578,7 +1577,9 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
   rc = entry->lonejson_callback(entry->context, params, result, error);
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
-    status = lonejson_serialize_sink(CAI_LJ, entry->result_map, result, cai_lonejson_sink_write, output, &json_error);
+    status = lonejson_serialize_sink(CAI_LJ, entry->result_map, result,
+                                     cai_lonejson_sink_write, output,
+                                     &json_error);
     if (status != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize tool result",
@@ -1710,7 +1711,9 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry,
   rc = entry->lonejson_callback(entry->context, params, result, error);
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
-    status = lonejson_serialize_sink(CAI_LJ, entry->result_map, result, cai_lonejson_sink_write, output, &json_error);
+    status = lonejson_serialize_sink(CAI_LJ, entry->result_map, result,
+                                     cai_lonejson_sink_write, output,
+                                     &json_error);
     if (status != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize tool result",

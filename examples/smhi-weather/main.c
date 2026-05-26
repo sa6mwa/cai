@@ -421,8 +421,7 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
   handler.item = smhi_forecast_time_cb;
   handler.user = state;
   lonejson_error_init(&json_error);
-  if (lonejson_mapped_array_stream_set_handler(&doc->time_series, &handler,
-                                               &json_error) !=
+  if (doc->time_series.set_handler(&doc->time_series, &handler, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&smhi_forecast_time_map, &item);
     lonejson_cleanup(&smhi_forecast_map, doc);
@@ -502,8 +501,7 @@ static int smhi_geocode_location(const char *location, double *latitude,
   handler.item = open_meteo_location_cb;
   handler.user = &state;
   lonejson_error_init(&json_error);
-  if (lonejson_mapped_array_stream_set_handler(&doc.results, &handler,
-                                               &json_error) !=
+  if (doc.results.set_handler(&doc.results, &handler, &json_error) !=
       LONEJSON_STATUS_OK) {
     lonejson_cleanup(&open_meteo_location_map, &item);
     lonejson_cleanup(&open_meteo_geocoding_map, &doc);

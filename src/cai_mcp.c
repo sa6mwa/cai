@@ -425,9 +425,8 @@ static int cai_mcp_tool_stream_begin(cai_mcp_tool_stream_context *stream,
                                                &stream->json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = lonejson_writer_value_stream_open(&stream->value_stream,
-                                               &stream->writer,
-                                               &stream->json_error);
+    status = stream->value_stream.open(&stream->value_stream, &stream->writer,
+                                       &stream->json_error);
   }
   if (status != LONEJSON_STATUS_OK) {
     stream->writer.cleanup(&stream->writer);
@@ -449,8 +448,8 @@ static int cai_mcp_tool_stream_finish(cai_mcp_tool_stream_context *stream,
   }
   status = LONEJSON_STATUS_OK;
   if (stream->value_open) {
-    status = lonejson_writer_value_stream_close(&stream->value_stream,
-                                                &stream->json_error);
+    status = stream->value_stream.close(&stream->value_stream,
+                                        &stream->json_error);
     stream->value_open = 0;
   }
   if (status == LONEJSON_STATUS_OK) {
@@ -463,7 +462,7 @@ static int cai_mcp_tool_stream_finish(cai_mcp_tool_stream_context *stream,
   if (status == LONEJSON_STATUS_OK) {
     status = stream->writer.finish(&stream->writer, &stream->json_error);
   }
-  lonejson_writer_value_stream_cleanup(&stream->value_stream);
+  stream->value_stream.cleanup(&stream->value_stream);
   stream->writer.cleanup(&stream->writer);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -491,8 +490,8 @@ static int cai_mcp_tool_stream_write(void *context, const void *bytes,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP tool output byte count overflow");
   }
-  status = lonejson_writer_value_stream_push(&stream->value_stream, bytes,
-                                             count, &stream->json_error);
+  status = stream->value_stream.push(&stream->value_stream, bytes, count,
+                                     &stream->json_error);
   if (status == LONEJSON_STATUS_OK) {
     stream->total += count;
     return CAI_OK;
@@ -863,6 +862,7 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
 
   if (handler->tool_output_max_bytes == CAI_MCP_TOOL_OUTPUT_UNLIMITED) {
     memset(&stream_context, 0, sizeof(stream_context));
+    lonejson_writer_value_stream_init(&stream_context.value_stream);
     stream_context.response = sink;
     stream_context.id = id;
     callbacks.write = cai_mcp_tool_stream_write;
@@ -876,7 +876,7 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
     cai_sink_close(output_sink);
     if (rc != CAI_OK) {
       if (stream_context.began) {
-        lonejson_writer_value_stream_cleanup(&stream_context.value_stream);
+        stream_context.value_stream.cleanup(&stream_context.value_stream);
         stream_context.writer.cleanup(&stream_context.writer);
         cai_free_mem(NULL, name);
         arguments.cleanup(&arguments);

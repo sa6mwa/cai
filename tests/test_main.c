@@ -1905,16 +1905,15 @@ static void test_lonejson_nested_mapped_array_stream(test_state *state) {
   item_handler.item = nested_stream_item_cb;
   item_handler.user = &stream_state;
   expect_int(state, "lonejson_nested_item_stream_handler",
-             lonejson_mapped_array_stream_set_handler(
-                 &stream_state.board.items, &item_handler, &error),
+             stream_state.board.items.set_handler(&stream_state.board.items,
+                                                 &item_handler, &error),
              LONEJSON_STATUS_OK);
   board_handler.item_map = &nested_stream_board_map;
   board_handler.item_dst = &stream_state.board;
   board_handler.item = nested_stream_board_cb;
   board_handler.user = &stream_state;
   expect_int(state, "lonejson_nested_board_stream_handler",
-             lonejson_mapped_array_stream_set_handler(&store.boards,
-                                                      &board_handler, &error),
+             store.boards.set_handler(&store.boards, &board_handler, &error),
              LONEJSON_STATUS_OK);
   expect_int(state, "lonejson_nested_mapped_array_parse",
              CAI_LJ->parse_cstr(CAI_LJ, &nested_stream_store_map, &store, json, &error),

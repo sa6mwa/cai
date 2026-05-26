@@ -680,7 +680,7 @@ int cai_buffer_append_json_string(cai_buffer_builder *builder, const char *value
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
-  status = lonejson_write_json_string_buffer_sink(
+  status = CAI_LJ->write_json_string_buffer_sink(
       CAI_LJ, value, strlen(value), cai_response_buffer_sink, &sink_context,
       &json_error);
   if (status != LONEJSON_STATUS_OK) {
@@ -718,7 +718,7 @@ static int cai_buffer_append_json_string_spooled(cai_buffer_builder *builder,
     }
     return CAI_OK;
   }
-  status = lonejson_write_json_string_spooled_sink(
+  status = CAI_LJ->write_json_string_spooled_sink(
       CAI_LJ, value, cai_response_buffer_sink, &sink_context, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
@@ -3842,7 +3842,9 @@ int cai_response_create_params_write_json_sink(
   write_context.sink_error = sink_error;
   write_context.length = 0U;
   lonejson_error_init(&json_error);
-  rc = lonejson_serialize_sink(CAI_LJ, &cai_response_request_map, &state.doc, cai_response_request_write_sink, &write_context, &json_error) == LONEJSON_STATUS_OK
+  rc = lonejson_serialize_sink(CAI_LJ, &cai_response_request_map, &state.doc,
+                               cai_response_request_write_sink,
+                               &write_context, &json_error) == LONEJSON_STATUS_OK
            ? CAI_OK
            : cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to serialize response request JSON",
@@ -3891,9 +3893,9 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
     cai_response_request_upload_close(upload);
     return rc;
   }
-  status = lonejson_curl_upload_init(&upload->curl, CAI_LJ,
-                                     &cai_response_request_map,
-                                     &upload->state.doc);
+  status = CAI_LJ->curl_upload_init(CAI_LJ, &upload->curl,
+                                    &cai_response_request_map,
+                                    &upload->state.doc);
   if (status != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "failed to prepare response request upload",
@@ -3914,7 +3916,7 @@ size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
   if (upload == NULL) {
     return CURL_READFUNC_ABORT;
   }
-  return lonejson_curl_read_callback(ptr, size, nmemb, &upload->curl);
+  return upload->curl.read_callback(&upload->curl, ptr, size, nmemb);
 }
 
 curl_off_t cai_response_request_upload_size(
@@ -3930,7 +3932,7 @@ void cai_response_request_upload_close(cai_response_request_upload *upload) {
     return;
   }
   if (upload->curl_started) {
-    lonejson_curl_upload_cleanup(&upload->curl);
+    upload->curl.cleanup(&upload->curl);
     upload->curl_started = 0;
   }
   cai_response_request_state_cleanup(&upload->state);
