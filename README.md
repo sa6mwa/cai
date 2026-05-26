@@ -743,14 +743,18 @@ tool should have network access; in that mode cai also binds common resolver
 and trust-store files such as `/etc/resolv.conf`, `/etc/hosts`, `/etc/ssl`,
 and `/etc/pki` when present.
 Linux cgroup v2 pids/memory limits are available with
-`enable_cgroup_limits`; zero `pids_max` and `memory_max_bytes` use cai's
-internal defaults. If cgroup setup cannot be applied, the tool fails closed
+`enable_cgroup_limits`; zero `pids_max` and `memory_max_bytes` leave those
+controllers unset. If both are zero, cai skips cgroup setup entirely. If
+cgroup setup cannot be applied, the tool fails closed
 instead of running unbounded. `cgroup_parent_path` can point at a host-owned
 writable cgroup subtree; otherwise cai uses `/sys/fs/cgroup`.
 Output is captured through bounded `lonejson_spooled` fields and serialized as
 structured JSON with `stdout`, `stderr`, combined `output`, exit/signal
 metadata, timeout state, per-stream and combined-output truncation flags,
-effective cwd, and the sandbox backend used.
+effective cwd, and the sandbox backend used. `output_max_bytes` is a total
+retained-byte budget across those three text fields; cai prioritizes combined
+`output` when the budget is tight, so `stdout` and `stderr` may truncate
+earlier than `output`.
 
 Agents or registries can register the opt-in file inspection presets by
 including `<cai/tools/read.h>`. `cai_agent_register_read_tool` or

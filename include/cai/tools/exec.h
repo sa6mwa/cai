@@ -46,7 +46,9 @@ typedef struct cai_exec_tool_config {
   const char *cgroup_parent_path;
   /** In-memory bytes retained before command output spills to disk. */
   size_t output_memory_limit;
-  /** Maximum output bytes retained per command result. */
+  /** Maximum total retained bytes across `stdout`, `stderr`, and combined
+   * `output` for one command result. Combined `output` is prioritized when the
+   * budget is tight, so per-stream fields may truncate sooner. */
   size_t output_max_bytes;
   /** Optional directory for output spool spill files. */
   const char *output_spool_dir;

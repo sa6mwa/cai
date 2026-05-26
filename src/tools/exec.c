@@ -31,8 +31,6 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS 60000L
 #define CAI_EXEC_DEFAULT_OUTPUT_MEMORY_LIMIT (128U * 1024U)
 #define CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES (1024U * 1024U)
-#define CAI_EXEC_DEFAULT_PIDS_MAX 64LL
-#define CAI_EXEC_DEFAULT_MEMORY_MAX_BYTES (256LL * 1024LL * 1024LL)
 #define CAI_EXEC_DEFAULT_CGROUP_PARENT "/sys/fs/cgroup"
 
 typedef struct cai_exec_context {
@@ -93,6 +91,7 @@ typedef struct cai_exec_capture {
   lonejson_spooled stderr_data;
   lonejson_spooled output;
   size_t max_bytes;
+  size_t retained_bytes;
   size_t stdout_bytes;
   size_t stderr_bytes;
   size_t output_bytes;
@@ -335,13 +334,20 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   ctx->max_timeout_ms = config != NULL && config->max_timeout_ms > 0L
                             ? config->max_timeout_ms
                             : CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS;
-  ctx->pids_max = config != NULL && config->pids_max > 0LL
-                      ? config->pids_max
-                      : CAI_EXEC_DEFAULT_PIDS_MAX;
-  ctx->memory_max_bytes =
-      config != NULL && config->memory_max_bytes > 0LL
-          ? config->memory_max_bytes
-          : CAI_EXEC_DEFAULT_MEMORY_MAX_BYTES;
+  if (config != NULL && config->enable_cgroup_limits &&
+      config->pids_max < 0LL) {
+    cai_exec_context_cleanup(ctx);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "exec pids_max must be zero or positive");
+  }
+  if (config != NULL && config->enable_cgroup_limits &&
+      config->memory_max_bytes < 0LL) {
+    cai_exec_context_cleanup(ctx);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "exec memory_max_bytes must be zero or positive");
+  }
+  ctx->pids_max = config != NULL ? config->pids_max : 0LL;
+  ctx->memory_max_bytes = config != NULL ? config->memory_max_bytes : 0LL;
   if (ctx->timeout_ms > ctx->max_timeout_ms) {
     ctx->timeout_ms = ctx->max_timeout_ms;
   }
@@ -476,8 +482,9 @@ static int cai_exec_capture_append(cai_exec_capture *capture, int is_stderr,
   size_t *stream_bytes;
   int *truncated;
   lonejson_spooled *stream;
-  size_t room;
-  size_t keep;
+  size_t keep_output;
+  size_t keep_stream;
+  size_t remaining;
   int rc;
 
   stream = is_stderr ? &capture->stderr_data : &capture->stdout_data;
@@ -487,30 +494,33 @@ static int cai_exec_capture_append(cai_exec_capture *capture, int is_stderr,
   if (len == 0U) {
     return CAI_OK;
   }
-  room = *stream_bytes < capture->max_bytes ? capture->max_bytes - *stream_bytes
-                                            : 0U;
-  keep = len < room ? len : room;
-  if (keep < len) {
-    *truncated = 1;
-  }
-  if (keep > 0U) {
-    rc = cai_exec_append_spool(stream, data, keep, error);
-    if (rc != CAI_OK) {
-      return rc;
-    }
-  }
-  room = capture->output_bytes < capture->max_bytes
-             ? capture->max_bytes - capture->output_bytes
-             : 0U;
-  keep = len < room ? len : room;
-  if (keep < len) {
+  remaining = capture->retained_bytes < capture->max_bytes
+                  ? capture->max_bytes - capture->retained_bytes
+                  : 0U;
+  keep_output = len < remaining ? len : remaining;
+  if (keep_output < len) {
     capture->output_truncated = 1;
   }
-  if (keep > 0U) {
-    rc = cai_exec_append_spool(&capture->output, data, keep, error);
+  if (keep_output > 0U) {
+    rc = cai_exec_append_spool(&capture->output, data, keep_output, error);
     if (rc != CAI_OK) {
       return rc;
     }
+    capture->retained_bytes += keep_output;
+  }
+  remaining = capture->retained_bytes < capture->max_bytes
+                  ? capture->max_bytes - capture->retained_bytes
+                  : 0U;
+  keep_stream = len < remaining ? len : remaining;
+  if (keep_stream < len) {
+    *truncated = 1;
+  }
+  if (keep_stream > 0U) {
+    rc = cai_exec_append_spool(stream, data, keep_stream, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    capture->retained_bytes += keep_stream;
   }
   *stream_bytes += len;
   capture->output_bytes += len;
@@ -598,6 +608,9 @@ static int cai_exec_cgroup_prepare(const cai_exec_context *ctx,
   if (!ctx->enable_cgroup_limits) {
     return CAI_OK;
   }
+  if (ctx->pids_max <= 0LL && ctx->memory_max_bytes <= 0LL) {
+    return CAI_OK;
+  }
   parent = ctx->cgroup_parent_path != NULL ? ctx->cgroup_parent_path
                                            : CAI_EXEC_DEFAULT_CGROUP_PARENT;
   if (snprintf(cgroup->path, sizeof(cgroup->path), "%s/cai-exec-%ld-%ld",
@@ -611,21 +624,25 @@ static int cai_exec_cgroup_prepare(const cai_exec_context *ctx,
                                 strerror(errno));
   }
   cgroup->enabled = 1;
-  if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
-                           "pids.max", error) != CAI_OK) {
-    return error != NULL ? error->code : CAI_ERR_INVALID;
+  if (ctx->pids_max > 0LL) {
+    if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
+                             "pids.max", error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_INVALID;
+    }
+    snprintf(value, sizeof(value), "%lld", ctx->pids_max);
+    if (cai_exec_write_file_text(control_path, value, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
   }
-  snprintf(value, sizeof(value), "%lld", ctx->pids_max);
-  if (cai_exec_write_file_text(control_path, value, error) != CAI_OK) {
-    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
-  }
-  if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
-                           "memory.max", error) != CAI_OK) {
-    return error != NULL ? error->code : CAI_ERR_INVALID;
-  }
-  snprintf(value, sizeof(value), "%lld", ctx->memory_max_bytes);
-  if (cai_exec_write_file_text(control_path, value, error) != CAI_OK) {
-    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  if (ctx->memory_max_bytes > 0LL) {
+    if (cai_exec_cgroup_join(control_path, sizeof(control_path), cgroup->path,
+                             "memory.max", error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_INVALID;
+    }
+    snprintf(value, sizeof(value), "%lld", ctx->memory_max_bytes);
+    if (cai_exec_write_file_text(control_path, value, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
   }
   return CAI_OK;
 #else

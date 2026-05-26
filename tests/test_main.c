@@ -196,6 +196,16 @@ typedef struct parsed_output_doc {
   char *answer;
 } parsed_output_doc;
 
+typedef struct parsed_exec_result {
+  char *stdout_text;
+  char *stderr_text;
+  char *output_text;
+  long long original_byte_count;
+  int stdout_truncated;
+  int stderr_truncated;
+  int output_truncated;
+} parsed_exec_result;
+
 typedef struct raw_tool_state {
   char seen[64];
 } raw_tool_state;
@@ -296,6 +306,21 @@ static const lonejson_field parsed_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(parsed_output_doc, answer, "answer")};
 LONEJSON_MAP_DEFINE(parsed_output_map, parsed_output_doc,
                     parsed_output_fields);
+
+static const lonejson_field parsed_exec_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(parsed_exec_result, stdout_text, "stdout"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(parsed_exec_result, stderr_text, "stderr"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(parsed_exec_result, output_text, "output"),
+    LONEJSON_FIELD_I64_REQ(parsed_exec_result, original_byte_count,
+                           "original_byte_count"),
+    LONEJSON_FIELD_BOOL_REQ(parsed_exec_result, stdout_truncated,
+                            "stdout_truncated"),
+    LONEJSON_FIELD_BOOL_REQ(parsed_exec_result, stderr_truncated,
+                            "stderr_truncated"),
+    LONEJSON_FIELD_BOOL_REQ(parsed_exec_result, output_truncated,
+                            "output_truncated")};
+LONEJSON_MAP_DEFINE(parsed_exec_result_map, parsed_exec_result,
+                    parsed_exec_result_fields);
 
 static void test_fail(test_state *state, const char *name, const char *msg) {
   state->failures++;
@@ -1850,6 +1875,21 @@ static void test_source_sink(test_state *state) {
   cai_sink_close(failing_sink);
   cai_source_close(failing_source);
   cai_error_cleanup(&error);
+}
+
+static int parse_exec_result_json(test_state *state, const char *name,
+                                  const char *json,
+                                  parsed_exec_result *out) {
+  lonejson_error error;
+
+  memset(out, 0, sizeof(*out));
+  lonejson_error_init(&error);
+  if (CAI_LJ->parse_cstr(CAI_LJ, &parsed_exec_result_map, out, json, &error) !=
+      LONEJSON_STATUS_OK) {
+    test_fail(state, name, error.message);
+    return 0;
+  }
+  return 1;
 }
 
 static lonejson_status nested_stream_item_cb(void *user, void *item,
@@ -9284,11 +9324,46 @@ static void test_exec_tool(test_state *state) {
 
   config.enable_cgroup_limits = 1;
   config.cgroup_parent_path = dir_template;
+  config.pids_max = 0LL;
+  config.memory_max_bytes = 0LL;
+  if (run_exec_tool_case(state, "exec_cgroup_zero_limits_unset", &config,
+                         "{\"cmd\":\"printf no-cgroup-defaults\"}", CAI_OK,
+                         &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_cgroup_zero_limits_unset_output",
+                  writer.buffer, "no-cgroup-defaults");
+    expect_valid_json(state, "exec_cgroup_zero_limits_unset_json",
+                      writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.pids_max = 1LL;
+  config.memory_max_bytes = 0LL;
   run_exec_tool_case(state, "exec_cgroup_fail_closed", &config,
                      "{\"cmd\":\"printf should-not-run\"}", CAI_ERR_TRANSPORT,
                      &writer, &error);
   config.enable_cgroup_limits = 0;
+  config.pids_max = 0LL;
+  config.memory_max_bytes = 0LL;
   config.cgroup_parent_path = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.enable_cgroup_limits = 1;
+  config.pids_max = -1LL;
+  run_exec_tool_case(state, "exec_cgroup_negative_pids_rejected", &config,
+                     "{\"cmd\":\"printf should-not-run\"}", CAI_ERR_INVALID,
+                     &writer, &error);
+  config.pids_max = 0LL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  config.memory_max_bytes = -1LL;
+  run_exec_tool_case(state, "exec_cgroup_negative_memory_rejected", &config,
+                     "{\"cmd\":\"printf should-not-run\"}", CAI_ERR_INVALID,
+                     &writer, &error);
+  config.memory_max_bytes = 0LL;
+  config.enable_cgroup_limits = 0;
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
@@ -9324,12 +9399,25 @@ static void test_exec_tool(test_state *state) {
   if (run_exec_tool_case(state, "exec_output_cap", &config,
                          "{\"cmd\":\"printf 123456789\"}", CAI_OK, &writer,
                          &error) == CAI_OK) {
-    expect_substr(state, "exec_output_cap_stdout", writer.buffer,
-                  "\"stdout\":\"1234\"");
-    expect_substr(state, "exec_output_cap_truncated", writer.buffer,
-                  "\"stdout_truncated\":true");
-    expect_substr(state, "exec_output_cap_original", writer.buffer,
-                  "\"original_byte_count\":9");
+    parsed_exec_result parsed;
+    size_t total_retained;
+
+    if (parse_exec_result_json(state, "exec_output_cap_parse", writer.buffer,
+                               &parsed)) {
+      total_retained = strlen(parsed.stdout_text) + strlen(parsed.stderr_text) +
+                       strlen(parsed.output_text);
+      expect_int(state, "exec_output_cap_total_budget",
+                 total_retained <= config.output_max_bytes, 1);
+      expect_str(state, "exec_output_cap_output", parsed.output_text, "1234");
+      expect_str(state, "exec_output_cap_stdout", parsed.stdout_text, "");
+      expect_int(state, "exec_output_cap_stdout_truncated",
+                 parsed.stdout_truncated, 1);
+      expect_int(state, "exec_output_cap_output_truncated",
+                 parsed.output_truncated, 1);
+      expect_int(state, "exec_output_cap_original",
+                 parsed.original_byte_count, 9);
+      CAI_LJ->cleanup(CAI_LJ, &parsed_exec_result_map, &parsed);
+    }
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
@@ -9338,14 +9426,25 @@ static void test_exec_tool(test_state *state) {
   if (run_exec_tool_case(state, "exec_combined_output_cap", &config,
                          "{\"cmd\":\"printf 12345678; printf abcdefgh >&2\"}",
                          CAI_OK, &writer, &error) == CAI_OK) {
-    expect_substr(state, "exec_combined_output_cap_stdout", writer.buffer,
-                  "\"stdout_truncated\":false");
-    expect_substr(state, "exec_combined_output_cap_stderr", writer.buffer,
-                  "\"stderr_truncated\":false");
-    expect_substr(state, "exec_combined_output_cap_output", writer.buffer,
-                  "\"output_truncated\":true");
-    expect_substr(state, "exec_combined_output_cap_original", writer.buffer,
-                  "\"original_byte_count\":16");
+    parsed_exec_result parsed;
+    size_t total_retained;
+
+    if (parse_exec_result_json(state, "exec_combined_output_cap_parse",
+                               writer.buffer, &parsed)) {
+      total_retained = strlen(parsed.stdout_text) + strlen(parsed.stderr_text) +
+                       strlen(parsed.output_text);
+      expect_int(state, "exec_combined_output_cap_total_budget",
+                 total_retained <= config.output_max_bytes, 1);
+      expect_int(state, "exec_combined_output_cap_output_truncated",
+                 parsed.output_truncated, 1);
+      expect_int(state, "exec_combined_output_cap_stdout_truncated",
+                 parsed.stdout_truncated, 1);
+      expect_int(state, "exec_combined_output_cap_stderr_truncated",
+                 parsed.stderr_truncated, 1);
+      expect_int(state, "exec_combined_output_cap_original",
+                 parsed.original_byte_count, 16);
+      CAI_LJ->cleanup(CAI_LJ, &parsed_exec_result_map, &parsed);
+    }
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);
@@ -9355,12 +9454,23 @@ static void test_exec_tool(test_state *state) {
                          "{\"cmd\":\"printf 1234567890\","
                          "\"max_output_tokens\":4}",
                          CAI_OK, &writer, &error) == CAI_OK) {
-    expect_substr(state, "exec_per_call_output_cap_output", writer.buffer,
-                  "\"output\":\"1234\"");
-    expect_substr(state, "exec_per_call_output_cap_truncated", writer.buffer,
-                  "\"output_truncated\":true");
-    expect_substr(state, "exec_per_call_output_cap_original", writer.buffer,
-                  "\"original_byte_count\":10");
+    parsed_exec_result parsed;
+    size_t total_retained;
+
+    if (parse_exec_result_json(state, "exec_per_call_output_cap_parse",
+                               writer.buffer, &parsed)) {
+      total_retained = strlen(parsed.stdout_text) + strlen(parsed.stderr_text) +
+                       strlen(parsed.output_text);
+      expect_int(state, "exec_per_call_output_cap_total_budget",
+                 total_retained <= 4U, 1);
+      expect_str(state, "exec_per_call_output_cap_output", parsed.output_text,
+                 "1234");
+      expect_int(state, "exec_per_call_output_cap_truncated",
+                 parsed.output_truncated, 1);
+      expect_int(state, "exec_per_call_output_cap_original",
+                 parsed.original_byte_count, 10);
+      CAI_LJ->cleanup(CAI_LJ, &parsed_exec_result_map, &parsed);
+    }
   }
   cai_error_cleanup(&error);
   cai_error_init(&error);

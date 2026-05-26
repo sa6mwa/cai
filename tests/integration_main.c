@@ -2723,8 +2723,10 @@ static int run_read_tool_llm_regression(void) {
     rc = cai_session_add_user_text(
         session,
         "READ_TEST_2: call list_files exactly once with path='.' and "
-        "recursive=true. Do not call it on any other path. Do not read any "
-        "file. Inspect the returned metadata for binary.bin, and answer exactly: "
+        "recursive=true. After the first tool result, answer immediately and "
+        "do not call any tool again. Do not call it on any other path. Do "
+        "not read any file. Inspect the returned metadata for binary.bin, "
+        "and answer exactly: "
         "READ_LIST_HINT binary_candidate=yes read_attempted=no",
         &error);
   }
