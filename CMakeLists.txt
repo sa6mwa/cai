@@ -645,6 +645,8 @@ if(CAI_BUILD_TESTS)
     response_spooled_request_arrays
     response_array_serialization_invariants
     response_large_text_parse
+    response_large_instructions_parse
+    response_large_tool_arguments_spooled
     http_create_response
     http_retrieve_response
     http_cancel_response
@@ -675,6 +677,7 @@ if(CAI_BUILD_TESTS)
     stream_response_text
     stream_non_function_output_item
     stream_output_delta_failure
+    stream_output_item_failure
     stream_output_suffix_segments
     stream_http_error_preserves_openai_error
     stream_source_error_preserves_openai_error
@@ -696,6 +699,11 @@ if(CAI_BUILD_TESTS)
     local_history_opt_in
     session_resume_and_history_import
     session_state_validation)
+  string(REPLACE ";" "\n" _cai_unit_test_groups_text
+    "${CAI_UNIT_TEST_GROUPS}")
+  file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cai_unit_test_groups.txt"
+    CONTENT "${_cai_unit_test_groups_text}\n")
   foreach(_cai_unit_test IN LISTS CAI_UNIT_TEST_GROUPS)
     add_test(NAME cai_tests.${_cai_unit_test}
       COMMAND cai_tests --only ${_cai_unit_test})
@@ -703,6 +711,13 @@ if(CAI_BUILD_TESTS)
       LABELS "unit;local"
       TIMEOUT 3)
   endforeach()
+  add_test(NAME cai_tests.registration
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_test_registration_test.sh"
+      $<TARGET_FILE:cai_tests>
+      "${CMAKE_CURRENT_BINARY_DIR}/cai_unit_test_groups.txt")
+  set_tests_properties(cai_tests.registration PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
   target_include_directories(cai_mcp_http_server PRIVATE
