@@ -44,3 +44,21 @@ if ! grep -q 'cai-0\.0\.0-1\.src\.rock' <<<"$dry_run"; then
   printf '%s\n' 'release-lua-artifacts dry run does not allow fallback src rock' >&2
   exit 1
 fi
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+git init -q "$tmpdir/repo"
+git -C "$tmpdir/repo" config user.name "cai test"
+git -C "$tmpdir/repo" config user.email "cai@example.invalid"
+printf 'fixture\n' >"$tmpdir/repo/fixture.txt"
+git -C "$tmpdir/repo" add fixture.txt
+git -C "$tmpdir/repo" commit -q -m 'fixture'
+git -C "$tmpdir/repo" tag v1.2.3
+git -C "$tmpdir/repo" worktree add -q "$tmpdir/worktree" HEAD
+
+actual=$("$repo_root/scripts/detect_release_version.sh" "$tmpdir/worktree")
+if [[ "$actual" != "1.2.3" ]]; then
+  printf 'detect_release_version returned %s for tagged worktree, expected 1.2.3\n' "$actual" >&2
+  exit 1
+fi

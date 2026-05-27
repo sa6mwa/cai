@@ -9,10 +9,12 @@ fi
 repo_root=${1:-$(pwd)}
 version=${CAI_VERSION_OVERRIDE:-}
 
-if [[ -z "$version" && -d "$repo_root/.git" ]] && command -v git >/dev/null 2>&1; then
-  tag=$(git -C "$repo_root" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null || true)
-  if [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
-    version=${tag#v}
+if [[ -z "$version" ]] && command -v git >/dev/null 2>&1; then
+  if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    tag=$(git -C "$repo_root" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null || true)
+    if [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+      version=${tag#v}
+    fi
   fi
 fi
 

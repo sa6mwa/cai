@@ -18,7 +18,10 @@ typedef struct cai_read_tool_config {
   const char *name;
   /** Optional override for the model-facing tool description. */
   const char *description;
-  /** Required sandbox root; all resolved paths must remain under this path. */
+  /**
+   * Required sandbox root; all resolved paths must remain under this path and
+   * read_file rejects regular files with multiple hard links.
+   */
   const char *root_path;
   /** Optional default working directory inside `root_path`. */
   const char *default_workdir;

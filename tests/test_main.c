@@ -8761,6 +8761,8 @@ static void test_read_tool(test_state *state) {
   char invalid_utf8_path[PATH_MAX];
   char outside_path[PATH_MAX];
   char outside_fifo_path[PATH_MAX];
+  char hardlink_secret_path[PATH_MAX];
+  char hardlink_alias_path[PATH_MAX];
   char symlink_path[PATH_MAX];
   char inside_symlink_path[PATH_MAX];
   char dangling_symlink_path[PATH_MAX];
@@ -8839,6 +8841,15 @@ static void test_read_tool(test_state *state) {
   unlink(outside_fifo_path);
   if (mkfifo(outside_fifo_path, 0600) != 0) {
     test_fail(state, "read_outside_fifo_fixture", "mkfifo failed");
+  }
+  snprintf(hardlink_secret_path, sizeof(hardlink_secret_path),
+           "%s/host-secret.txt", dir_template);
+  write_file_or_die(hardlink_secret_path, "host-secret\n");
+  snprintf(hardlink_alias_path, sizeof(hardlink_alias_path),
+           "%s/sub/hardlink-secret.txt", dir_template);
+  unlink(hardlink_alias_path);
+  if (link(hardlink_secret_path, hardlink_alias_path) != 0) {
+    test_fail(state, "read_hardlink_fixture", "link failed");
   }
   snprintf(symlink_path, sizeof(symlink_path), "%s/sub/outside-link",
            dir_template);
@@ -9158,6 +9169,26 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  {
+    cai_read_tool_config hardlink_config;
+
+    memset(&hardlink_config, 0, sizeof(hardlink_config));
+    hardlink_config.root_path = sub_dir;
+    hardlink_config.default_workdir = sub_dir;
+    hardlink_config.content_memory_limit = 8U;
+    hardlink_config.content_max_bytes = 64U;
+    run_read_tool_case(state, "read_reject_hardlink_escape", &hardlink_config,
+                       "{\"path\":\"hardlink-secret.txt\"}", CAI_ERR_INVALID,
+                       &writer, &error);
+    if (error.message == NULL ||
+        strstr(error.message, "multiple hard links") == NULL) {
+      test_fail(state, "read_reject_hardlink_escape_message",
+                "missing hard-link rejection detail");
+    }
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   run_read_tool_case(state, "read_reject_directory", &config,
                      "{\"path\":\".\"}", CAI_ERR_INVALID, &writer, &error);
   cai_error_cleanup(&error);
@@ -9252,6 +9283,8 @@ static void test_read_tool(test_state *state) {
   unlink(inside_symlink_path);
   unlink(dangling_symlink_path);
   unlink(symlink_path);
+  unlink(hardlink_alias_path);
+  unlink(hardlink_secret_path);
   unlink(outside_fifo_path);
   unlink(outside_path);
   unlink(invalid_utf8_path);

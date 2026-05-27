@@ -774,6 +774,8 @@ are optional `path`, `recursive`, `include_hidden`, and `max_entries`.
 Both tools require a `root_path`. Relative paths are resolved from
 `default_workdir` or the root, absolute paths must already be inside the root,
 and symlink/path traversal escapes are rejected after canonicalization.
+`read_file` also rejects regular files with multiple hard links so a writable
+root cannot smuggle in host files through a hard-link alias.
 `list_files` returns bounded file metadata entries and does not follow symlink
 directories. Regular files include `text_candidate` and `binary_candidate`
 hints from a bounded prefix scan so an agent can avoid reading obvious binary

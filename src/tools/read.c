@@ -176,7 +176,8 @@ static const char cai_read_default_description[] =
     "paths and avoid read_file when list_files reports binary_candidate=true. "
     "NUL bytes, invalid UTF-8, and control characters other than tab/newline/"
     "carriage return/form feed are rejected. Paths must stay inside the "
-    "configured root; symlink and absolute-path escapes are rejected.";
+    "configured root; symlink and absolute-path escapes are rejected; files "
+    "with multiple hard links are rejected.";
 
 static const char cai_list_files_schema_json[] =
     "{"
@@ -391,6 +392,13 @@ static int cai_read_open_file_under_root(const cai_read_context *ctx,
     close(fd);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read path must be a regular file");
+  }
+  if (st.st_nlink > 1) {
+    cai_free_mem(NULL, resolved);
+    close(fd);
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "read path must not have multiple hard links under configured root");
   }
   {
     char *opened_resolved;
