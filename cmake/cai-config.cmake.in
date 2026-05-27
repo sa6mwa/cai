@@ -2,6 +2,11 @@
 
 include(CMakeFindDependencyMacro)
 set(cai_DEPENDENCY_MODE "@CAI_RESOLVED_DEPENDENCY_MODE@")
+set(cai_LONEJSON_VERSION "@CAI_LONEJSON_VERSION@")
+set(cai_LONEJSON_TARGET "@CAI_TARGET_ID@")
+set(cai_LONEJSON_URL
+    "https://github.com/sa6mwa/lonejson/releases/download/v@CAI_LONEJSON_VERSION@/liblonejson-@CAI_LONEJSON_VERSION@-@CAI_TARGET_ID@.tar.gz")
+set(cai_LONEJSON_SHA256 "@CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE@")
 set(cai_C_PKT_SYSTEMS_VERSION "@CAI_C_PKT_SYSTEMS_VERSION@")
 set(cai_C_PKT_SYSTEMS_TARGET "@CAI_TARGET_ID@")
 set(cai_C_PKT_SYSTEMS_URL
@@ -20,23 +25,32 @@ if(TARGET lonejson::lonejson)
   get_target_property(cai_LONEJSON_INCLUDE_DIR lonejson::lonejson
                       INTERFACE_INCLUDE_DIRECTORIES)
 else()
-  find_path(cai_LONEJSON_INCLUDE_DIR lonejson.h
-            HINTS "@CAI_CONFIG_LONEJSON_INCLUDE_HINT@")
   find_library(cai_LONEJSON_LIBRARY NAMES lonejson
                HINTS "@CAI_CONFIG_LONEJSON_LIBRARY_HINT@")
+  find_path(cai_LONEJSON_INCLUDE_DIR lonejson.h
+            HINTS "@CAI_CONFIG_LONEJSON_INCLUDE_HINT@")
   if(cai_LONEJSON_INCLUDE_DIR AND cai_LONEJSON_LIBRARY)
     add_library(lonejson::lonejson UNKNOWN IMPORTED)
     set_target_properties(lonejson::lonejson PROPERTIES
       IMPORTED_LOCATION "${cai_LONEJSON_LIBRARY}"
       INTERFACE_INCLUDE_DIRECTORIES "${cai_LONEJSON_INCLUDE_DIR}")
+  elseif(cai_LONEJSON_LIBRARY)
+    add_library(lonejson::lonejson UNKNOWN IMPORTED)
+    set_target_properties(lonejson::lonejson PROPERTIES
+      IMPORTED_LOCATION "${cai_LONEJSON_LIBRARY}")
   endif()
 endif()
-if(NOT cai_LONEJSON_INCLUDE_DIR OR NOT TARGET lonejson::lonejson)
+if(NOT TARGET lonejson::lonejson)
   message(FATAL_ERROR
-    "cai requires CURL, lonejson.h, and liblonejson. "
-    "For native curl/OpenSSL dependencies, use ${cai_C_PKT_SYSTEMS_URL}.")
+    "cai requires external liblonejson at build and runtime. "
+    "Install lonejson ${cai_LONEJSON_VERSION} or newer and make either its "
+    "CMake package or liblonejson discoverable. Official package: "
+    "${cai_LONEJSON_URL}. "
+    "For the native curl/OpenSSL stack, use ${cai_C_PKT_SYSTEMS_URL}.")
 endif()
-list(APPEND _cai_dependency_includes "${cai_LONEJSON_INCLUDE_DIR}")
+if(cai_LONEJSON_INCLUDE_DIR)
+  list(APPEND _cai_dependency_includes "${cai_LONEJSON_INCLUDE_DIR}")
+endif()
 
 foreach(_cai_target cai::cai_static cai::cai_shared)
   if(TARGET "${_cai_target}" AND _cai_dependency_includes)

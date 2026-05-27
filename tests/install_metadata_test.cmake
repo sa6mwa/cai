@@ -110,16 +110,21 @@ string(FIND "${config_text}" "find_dependency(CURL)" curl_dep_pos)
 string(FIND "${config_text}" "find_dependency(Threads)" threads_dep_pos)
 string(FIND "${config_text}" "find_package(lonejson CONFIG QUIET)"
        lonejson_dep_pos)
+string(FIND "${config_text}" "cai requires external liblonejson"
+       lonejson_error_pos)
+string(FIND "${config_text}" "cai_LONEJSON_URL" lonejson_url_pos)
 if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1 OR
-   lonejson_dep_pos EQUAL -1)
+   lonejson_dep_pos EQUAL -1 OR lonejson_error_pos EQUAL -1 OR
+   lonejson_url_pos EQUAL -1)
   message(FATAL_ERROR "cai CMake package does not declare dependencies")
 endif()
 
 string(FIND "${pc_text}" "Requires.private: libcurl" pc_curl_pos)
 string(FIND "${pc_text}" "Requires: lonejson" pc_public_deps_pos)
 string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
+string(FIND "${pc_text}" "lonejson_url=" pc_lonejson_url_pos)
 if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
-   pc_c_pkt_url_pos EQUAL -1)
+   pc_c_pkt_url_pos EQUAL -1 OR pc_lonejson_url_pos EQUAL -1)
   message(FATAL_ERROR "cai.pc does not point at required dependencies")
 endif()
 
@@ -276,10 +281,19 @@ int main(void) {
   return 0;
 }
 ")
+  set(consumer_prefix_path
+      "${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
+  string(REPLACE ";" "\\;" consumer_prefix_path_arg "${consumer_prefix_path}")
+  set(consumer_configure_command
+    "${CMAKE_COMMAND}"
+    -S "${consumer_dir}"
+    -B "${consumer_dir}/build"
+    "-DCMAKE_PREFIX_PATH=${consumer_prefix_path_arg}")
+  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
+    list(APPEND consumer_configure_command -G "${CAI_GENERATOR}")
+  endif()
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -S "${consumer_dir}" -B "${consumer_dir}/build"
-            -G Ninja
-            "-DCMAKE_PREFIX_PATH=${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
+    COMMAND ${consumer_configure_command}
     RESULT_VARIABLE consumer_configure_result)
   if(NOT consumer_configure_result EQUAL 0)
     message(FATAL_ERROR "failed to configure cai installed-package consumer")
@@ -328,11 +342,19 @@ int main(void) {
   return sizeof(config) == 0 ? 1 : 0;
 }
 ")
+  set(fallback_prefix_path
+      "${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${fallback_deps_dir}")
+  string(REPLACE ";" "\\;" fallback_prefix_path_arg "${fallback_prefix_path}")
+  set(fallback_consumer_configure_command
+    "${CMAKE_COMMAND}"
+    -S "${fallback_consumer_dir}"
+    -B "${fallback_consumer_dir}/build"
+    "-DCMAKE_PREFIX_PATH=${fallback_prefix_path_arg}")
+  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
+    list(APPEND fallback_consumer_configure_command -G "${CAI_GENERATOR}")
+  endif()
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -S "${fallback_consumer_dir}"
-            -B "${fallback_consumer_dir}/build"
-            -G Ninja
-            "-DCMAKE_PREFIX_PATH=${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${fallback_deps_dir}"
+    COMMAND ${fallback_consumer_configure_command}
     RESULT_VARIABLE fallback_consumer_configure_result)
   if(NOT fallback_consumer_configure_result EQUAL 0)
     message(FATAL_ERROR
@@ -344,6 +366,86 @@ int main(void) {
   if(NOT fallback_consumer_build_result EQUAL 0)
     message(FATAL_ERROR
       "failed to build cai installed-package fallback consumer")
+  endif()
+
+  set(shared_only_consumer_dir
+      "${CAI_BINARY_DIR}/install-metadata-shared-only-consumer")
+  set(shared_only_fake_lonejson_dir
+      "${shared_only_consumer_dir}/fake-lonejson")
+  file(REMOVE_RECURSE "${shared_only_consumer_dir}")
+  file(MAKE_DIRECTORY "${shared_only_consumer_dir}"
+                      "${shared_only_fake_lonejson_dir}/lib")
+  file(WRITE "${shared_only_fake_lonejson_dir}/lib/liblonejson.so" "")
+  file(WRITE "${shared_only_consumer_dir}/CMakeLists.txt"
+"cmake_minimum_required(VERSION 3.21)
+project(cai_shared_only_consumer LANGUAGES C)
+find_package(cai CONFIG REQUIRED)
+add_executable(cai_shared_only_consumer main.c)
+target_link_libraries(cai_shared_only_consumer PRIVATE cai::cai_shared)
+")
+  file(WRITE "${shared_only_consumer_dir}/main.c"
+"#include <cai/cai.h>
+int main(void) {
+  cai_error error;
+  cai_error_init(&error);
+  cai_error_cleanup(&error);
+  return 0;
+}
+")
+  set(shared_only_consumer_configure_command
+    "${CMAKE_COMMAND}"
+    -S "${shared_only_consumer_dir}"
+    -B "${shared_only_consumer_dir}/build"
+    "-Dcai_DIR=${prefix}/lib/cmake/cai"
+    "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
+  execute_process(
+    COMMAND ${shared_only_consumer_configure_command}
+    RESULT_VARIABLE shared_only_consumer_configure_result
+    OUTPUT_VARIABLE shared_only_consumer_configure_output
+    ERROR_VARIABLE shared_only_consumer_configure_error)
+  if(NOT shared_only_consumer_configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "shared-only installed-package consumer should configure with "
+      "liblonejson but without lonejson headers:\n"
+      "${shared_only_consumer_configure_error}\n"
+      "${shared_only_consumer_configure_output}")
+  endif()
+
+  set(missing_dep_consumer_dir
+      "${CAI_BINARY_DIR}/install-metadata-missing-lonejson-consumer")
+  file(REMOVE_RECURSE "${missing_dep_consumer_dir}")
+  file(MAKE_DIRECTORY "${missing_dep_consumer_dir}")
+  file(WRITE "${missing_dep_consumer_dir}/CMakeLists.txt"
+"cmake_minimum_required(VERSION 3.21)
+project(cai_missing_lonejson_consumer LANGUAGES C)
+find_package(cai CONFIG REQUIRED)
+")
+  set(missing_dep_ignore_path
+      "${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${prefix};/usr;/usr/local;/lib;/lib64")
+  string(REPLACE ";" "\\;" missing_dep_ignore_path_arg
+         "${missing_dep_ignore_path}")
+  set(missing_dep_consumer_configure_command
+    "${CMAKE_COMMAND}"
+    -S "${missing_dep_consumer_dir}"
+    -B "${missing_dep_consumer_dir}/build"
+    "-Dcai_DIR=${prefix}/lib/cmake/cai"
+    "-DCMAKE_IGNORE_PATH=${missing_dep_ignore_path_arg}")
+  execute_process(
+    COMMAND ${missing_dep_consumer_configure_command}
+    RESULT_VARIABLE missing_dep_consumer_configure_result
+    OUTPUT_VARIABLE missing_dep_consumer_configure_output
+    ERROR_VARIABLE missing_dep_consumer_configure_error)
+  if(missing_dep_consumer_configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "installed-package consumer should fail when liblonejson is not "
+      "discoverable")
+  endif()
+  if(NOT missing_dep_consumer_configure_error MATCHES
+        "cai requires external liblonejson")
+    message(FATAL_ERROR
+      "missing-lonejson consumer did not emit actionable error:\n"
+      "${missing_dep_consumer_configure_error}\n"
+      "${missing_dep_consumer_configure_output}")
   endif()
 
   set(build_tree_consumer_dir "${CAI_BINARY_DIR}/build-tree-static-consumer")

@@ -192,15 +192,18 @@ target_link_libraries(app PRIVATE cai::cai_shared)
 
 The metadata records the dependency mode used to build cai. In the default
 `cpkt` mode it points at the matching official `c.pkt.systems` release URL and
-checksum for the native curl/OpenSSL stack. The CMake package requires curl and
-lonejson; pslog is discovered opportunistically so consumers that only link cai
-do not need pslog headers. The pkg-config file exposes lonejson as a public
-requirement and libcurl as a private link requirement. Dependencies are still
-external: consumer environments must make libcurl and
-`lonejson.h`/`liblonejson` discoverable. `pslog.h`/`libpslog` is only needed by
-source builds, logging integrations that construct pslog loggers directly, and
-the MCP server examples. cai release archives do not vendor those dependency
-headers or libraries and do not compile in single-header dependency variants.
+checksum for the native curl/OpenSSL stack and the matching official lonejson
+release URL/checksum. The CMake package models lonejson as an external
+dependency: `find_package(cai)` requires `liblonejson` to be discoverable and
+adds lonejson headers when they are available, but cai release archives do not
+vendor lonejson or curl runtime libraries. Shared-only consumers that only use
+`<cai/cai.h>` can configure without lonejson development headers; consumers
+that include lonejson-backed cai headers or use static linking still need the
+lonejson development package. The pkg-config file exposes lonejson as a public
+requirement and libcurl as a private link requirement. `pslog.h`/`libpslog` is
+only needed by source builds, logging integrations that construct pslog
+loggers directly, and the MCP server examples. cai release archives do not
+compile in single-header dependency variants.
 
 ## Logging
 

@@ -7,6 +7,10 @@ c_pkt_systems_target=@CAI_TARGET_ID@
 c_pkt_systems_url=https://github.com/sa6mwa/c.pkt.systems/releases/download/v@CAI_C_PKT_SYSTEMS_VERSION@/c.pkt.systems-@CAI_C_PKT_SYSTEMS_VERSION@-@CAI_TARGET_ID@.tar.gz
 c_pkt_systems_sha256=@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@
 dependency_mode=@CAI_RESOLVED_DEPENDENCY_MODE@
+lonejson_version=@CAI_LONEJSON_VERSION@
+lonejson_target=@CAI_TARGET_ID@
+lonejson_url=https://github.com/sa6mwa/lonejson/releases/download/v@CAI_LONEJSON_VERSION@/liblonejson-@CAI_LONEJSON_VERSION@-@CAI_TARGET_ID@.tar.gz
+lonejson_sha256=@CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE@
 
 Name: cai
 Description: C89/POSIX SDK client for the OpenAI Responses API
