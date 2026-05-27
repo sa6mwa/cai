@@ -93,10 +93,10 @@ typedef struct cai_session_impl {
 #define CAI_CLIENT_IMPL(client) ((cai_client_impl *)((client)->impl))
 #define CAI_AGENT_IMPL(agent) ((cai_agent_impl *)((agent)->impl))
 #define CAI_SESSION_IMPL(session) ((cai_session_impl *)((session)->impl))
-#define CAI_SESSION_AGENT_IMPL(session) \
+#define CAI_SESSION_AGENT_IMPL(session)                                        \
   (CAI_AGENT_IMPL(CAI_SESSION_IMPL(session)->agent))
 #define CAI_SESSION_CLIENT(session) (CAI_SESSION_AGENT_IMPL(session)->client)
-#define CAI_SESSION_CLIENT_IMPL(session) \
+#define CAI_SESSION_CLIENT_IMPL(session)                                       \
   (CAI_CLIENT_IMPL(CAI_SESSION_CLIENT(session)))
 
 void *cai_alloc(const cai_allocator *allocator, size_t size);
@@ -295,20 +295,20 @@ typedef struct cai_buffer_builder {
 } cai_buffer_builder;
 
 int cai_buffer_append_cstr(cai_buffer_builder *builder, const char *text,
-                         cai_error *error);
+                           cai_error *error);
 int cai_buffer_append(cai_buffer_builder *builder, const char *text,
-                            size_t length, cai_error *error);
-int cai_buffer_append_json_string(cai_buffer_builder *builder, const char *value,
-                            cai_error *error);
+                      size_t length, cai_error *error);
+int cai_buffer_append_json_string(cai_buffer_builder *builder,
+                                  const char *value, cai_error *error);
 int cai_input_messages_spool_json_array(const lonejson_object_array *messages,
-                                        lonejson_spooled *out,
-                                        size_t *out_len, cai_error *error);
+                                        lonejson_spooled *out, size_t *out_len,
+                                        cai_error *error);
 int cai_response_create_params_serialize_json(
     const cai_response_create_params *params, char **out_json, size_t *out_len,
     cai_error *error);
 int cai_response_create_params_spool_json(
-    const cai_response_create_params *params, int stream,
-    lonejson_spooled *out, size_t *out_len, cai_error *error);
+    const cai_response_create_params *params, int stream, lonejson_spooled *out,
+    size_t *out_len, cai_error *error);
 int cai_response_create_params_clone(const cai_response_create_params *params,
                                      cai_response_create_params **out,
                                      cai_error *error);
@@ -322,8 +322,8 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
                                      cai_error *error);
 size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
                                         void *userdata);
-curl_off_t cai_response_request_upload_size(
-    const cai_response_request_upload *upload);
+curl_off_t
+cai_response_request_upload_size(const cai_response_request_upload *upload);
 void cai_response_request_upload_close(cai_response_request_upload *upload);
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
@@ -381,12 +381,13 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
                                   const char *path,
                                   const lonejson_spooled *request_json,
                                   size_t request_json_len, char **out_json,
-                                  long *out_http_status,
-                                  char **out_request_id, cai_error *error);
-int cai_http_response_params_request(
-    cai_client *client, const char *path,
-    const cai_response_create_params *params, int stream, char **out_json,
-    long *out_http_status, char **out_request_id, cai_error *error);
+                                  long *out_http_status, char **out_request_id,
+                                  cai_error *error);
+int cai_http_response_params_request(cai_client *client, const char *path,
+                                     const cai_response_create_params *params,
+                                     int stream, char **out_json,
+                                     long *out_http_status,
+                                     char **out_request_id, cai_error *error);
 typedef int (*cai_stream_complete_fn)(void *context, const char *response_id,
                                       const cai_token_usage *usage);
 int cai_client_open_response_text_source_with_complete(
@@ -401,10 +402,13 @@ int cai_client_stream_response_text_with_id(
     cai_client *client, const cai_response_create_params *params,
     cai_sink *sink, char **out_response_id, cai_token_usage *out_usage,
     cai_error *error);
-int cai_client_stream_response_with_id(
-    cai_client *client, const cai_response_create_params *params,
-    const cai_stream_sinks *sinks, char **out_response_id,
-    cai_token_usage *out_usage, cai_error *error);
+int cai_client_stream_response_with_id(cai_client *client,
+                                       const cai_response_create_params *params,
+                                       const cai_stream_sinks *sinks,
+                                       char **out_response_id,
+                                       cai_token_usage *out_usage,
+                                       cai_error *error);
+int cai_stream_fuzz_sse(const unsigned char *data, size_t size);
 int cai_tool_registry_register_lonejson_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const lonejson_map *params_map, const lonejson_map *result_map,
@@ -415,8 +419,7 @@ int cai_tool_registry_register_lonejson_schema_owned(
     const char *schema_json, int strict, const lonejson_map *params_map,
     const lonejson_map *result_map, cai_tool_fn callback, void *context,
     void (*context_cleanup)(void *context), cai_error *error);
-int cai_tool_registry_run_spooled(cai_tool_registry *registry,
-                                  const char *name,
+int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
                                   lonejson_spooled *arguments_json,
                                   cai_sink *output, cai_error *error);
 size_t cai_tool_registry_count(const cai_tool_registry *registry);

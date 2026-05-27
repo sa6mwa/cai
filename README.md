@@ -513,15 +513,27 @@ tool discovery, help text, WIP-limit denial, completion, and board state.
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
 ```sh
-cmake --fresh --preset fuzz
-cmake --build --preset fuzz --target cai_tool_fuzz
-build/fuzz/cai_tool_fuzz
+make fuzz
+make fuzz-smoke
 ```
 
-The tool fuzzer covers typed/raw tool argument handling plus hostile
-`todo_kanban`, `exec_command`, `list_files`, and `read_file` inputs, including
-path escapes, truncation boundaries, invalid UTF-8, binary/NUL content, and
-control-character rejection.
+Dedicated fuzzers cover the most exposed cai surfaces:
+
+- `cai_tool_fuzz`: typed/raw tool argument handling plus hostile
+  `exec_command`, `list_files`, and `read_file` inputs
+- `cai_stream_fuzz`: Responses SSE framing, chunk-boundary handling, tool-call
+  stream events, and completion metadata
+- `cai_response_fuzz`: response/conversation/item parsing plus request JSON
+  serialization
+- `cai_mcp_fuzz`: MCP JSON-RPC request parsing, session persistence, JSON vs
+  SSE replies, and tool dispatch
+- `cai_session_fuzz`: large local-history/state export/import paths with spill
+  to disk
+- `cai_todo_fuzz`: todo/kanban rewrite, persistence, and structured operation
+  churn
+
+The fuzz build also registers one-iteration smoke tests in CTest so every
+harness is built and executed in the standard gate for the `fuzz` preset.
 
 Streaming callers that need function-call arguments can attach callbacks to
 `cai_stream_sinks.function_call_arguments_delta` and

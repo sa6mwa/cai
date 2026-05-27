@@ -997,17 +997,33 @@ if(CAI_BUILD_FUZZERS)
   if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "CAI_BUILD_FUZZERS currently requires Clang/libFuzzer.")
   endif()
-  add_executable(cai_tool_fuzz tests/tool_fuzz.c)
-  target_include_directories(cai_tool_fuzz PRIVATE
-    "${CAI_PUBLIC_INCLUDE_DIR}"
-    "${CAI_GENERATED_INCLUDE_DIR}"
-    "${CAI_LONEJSON_INCLUDE_DIR}"
-    ${CURL_INCLUDE_DIRS})
-  target_link_libraries(cai_tool_fuzz PRIVATE cai_static CURL::libcurl
-    Threads::Threads ${CAI_LONEJSON_LINK})
-  cai_configure_c_target(cai_tool_fuzz)
-  target_compile_options(cai_tool_fuzz PRIVATE -fsanitize=address,undefined)
-  target_link_options(cai_tool_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  function(cai_add_fuzzer target source)
+    add_executable(${target} ${source})
+    target_include_directories(${target} PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}"
+      "${CAI_GENERATED_INCLUDE_DIR}"
+      "${CAI_LONEJSON_INCLUDE_DIR}"
+      "${CAI_PSLOG_INCLUDE_DIR}"
+      ${CURL_INCLUDE_DIRS}
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(${target} PRIVATE cai_static CURL::libcurl
+      Threads::Threads ${CAI_LONEJSON_LINK})
+    cai_configure_c_target(${target})
+    target_compile_options(${target} PRIVATE -fsanitize=address,undefined)
+    target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_test(NAME ${target}.smoke
+      COMMAND $<TARGET_FILE:${target}> -runs=1)
+    set_tests_properties(${target}.smoke PROPERTIES
+      LABELS "fuzz;local"
+      TIMEOUT 3)
+  endfunction()
+
+  cai_add_fuzzer(cai_tool_fuzz tests/tool_fuzz.c)
+  cai_add_fuzzer(cai_stream_fuzz tests/stream_fuzz.c)
+  cai_add_fuzzer(cai_response_fuzz tests/response_fuzz.c)
+  cai_add_fuzzer(cai_mcp_fuzz tests/mcp_fuzz.c)
+  cai_add_fuzzer(cai_session_fuzz tests/session_fuzz.c)
+  cai_add_fuzzer(cai_todo_fuzz tests/todo_fuzz.c)
 endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)
