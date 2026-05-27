@@ -219,10 +219,13 @@ Implemented MCP methods:
 - `ping`
 - `tools/list`
 - `tools/call`
+- Streamable HTTP GET/SSE heartbeat endpoint.
+- SSE-only POST response mode for successful JSON-RPC replies.
 
 Future MCP work:
 
-- GET/SSE stream support if needed by host integrations.
+- Host callback surface for queued server-initiated JSON-RPC notifications or
+  requests on the GET/SSE stream.
 - Resources.
 - Prompts.
 - Sampling.

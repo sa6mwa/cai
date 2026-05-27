@@ -102,7 +102,9 @@ typedef struct cai_mcp_handler_config {
 
 /** HTTP request view passed from an embedding route to cai MCP. */
 typedef struct cai_mcp_http_request {
-  /** HTTP method, usually "POST" for MCP JSON-RPC requests. */
+  /** HTTP method, usually "POST" for JSON-RPC or "GET" for SSE stream
+   * compatibility.
+   */
   const char *method;
   /** Streaming request body source. */
   cai_source *body;
@@ -131,7 +133,11 @@ void cai_mcp_handler_config_init(cai_mcp_handler_config *config);
 /** Create a new MCP handler from a validated config. */
 int cai_mcp_handler_new(const cai_mcp_handler_config *config,
                         cai_mcp_handler **out, cai_error *error);
-/** Handle one HTTP request using streaming body source/sink callbacks. */
+/** Handle one MCP Streamable HTTP request using streaming body source/sink
+ * callbacks. cai supports JSON POST replies by default, SSE-only POST replies
+ * when the client asks only for `text/event-stream`, and a lightweight GET
+ * SSE stream heartbeat.
+ */
 int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                 const cai_mcp_http_request *request,
                                 cai_mcp_http_response *response,

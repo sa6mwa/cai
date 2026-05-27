@@ -56,6 +56,12 @@ typedef struct cai_mcp_tool_stream_context {
   int value_open;
 } cai_mcp_tool_stream_context;
 
+typedef struct cai_mcp_sse_sink_context {
+  cai_sink *sink;
+  int began;
+  int closed;
+} cai_mcp_sse_sink_context;
+
 struct cai_mcp_handler {
   char *name;
   char *version;
@@ -78,7 +84,7 @@ struct cai_mcp_handler {
 static const lonejson_field cai_mcp_jsonrpc_fields[] = {
     LONEJSON_FIELD_JSON_VALUE(cai_mcp_jsonrpc_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_jsonrpc_doc, jsonrpc, "jsonrpc"),
-    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_jsonrpc_doc, method, "method"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_jsonrpc_doc, method, "method"),
     LONEJSON_FIELD_JSON_VALUE(cai_mcp_jsonrpc_doc, params, "params")};
 LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_map, cai_mcp_jsonrpc_doc,
                     cai_mcp_jsonrpc_fields);
@@ -534,6 +540,106 @@ static int cai_mcp_header_contains(const char *value, const char *needle) {
     p++;
   }
   return 0;
+}
+
+static int cai_mcp_accepts_json(const char *accept) {
+  if (accept == NULL || accept[0] == '\0') {
+    return 1;
+  }
+  return cai_mcp_header_contains(accept, "application/json");
+}
+
+static int cai_mcp_accepts_sse(const char *accept) {
+  if (accept == NULL || accept[0] == '\0') {
+    return 0;
+  }
+  return cai_mcp_header_contains(accept, "text/event-stream");
+}
+
+static int cai_mcp_set_sse_headers(cai_mcp_http_response *response,
+                                   cai_error *error) {
+  int rc;
+
+  rc = cai_mcp_set_header(response, "content-type", "text/event-stream",
+                          error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_set_header(response, "cache-control", "no-cache", error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_mcp_set_header(response, "x-content-type-options", "nosniff",
+                            error);
+}
+
+static int cai_mcp_sse_sink_write(void *context, const void *bytes,
+                                  size_t count, cai_error *error) {
+  cai_mcp_sse_sink_context *sse;
+
+  sse = (cai_mcp_sse_sink_context *)context;
+  if (!sse->began) {
+    if (cai_sink_write(sse->sink, "data: ", 6U, error) != CAI_OK) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+    sse->began = 1;
+  }
+  if (count == 0U) {
+    return CAI_OK;
+  }
+  return cai_sink_write(sse->sink, bytes, count, error);
+}
+
+static void cai_mcp_sse_sink_close(void *context) {
+  cai_mcp_sse_sink_context *sse;
+  cai_error error;
+
+  sse = (cai_mcp_sse_sink_context *)context;
+  if (sse == NULL || sse->closed) {
+    return;
+  }
+  sse->closed = 1;
+  if (!sse->began) {
+    return;
+  }
+  cai_error_init(&error);
+  (void)cai_sink_write(sse->sink, "\n\n", 2U, &error);
+  cai_error_cleanup(&error);
+}
+
+static int cai_mcp_wrap_sse_sink(cai_sink *sink, cai_sink **out,
+                                 cai_mcp_sse_sink_context *context,
+                                 cai_error *error) {
+  cai_sink_callbacks callbacks;
+
+  if (out == NULL || context == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP SSE sink output is required");
+  }
+  memset(context, 0, sizeof(*context));
+  context->sink = sink;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = cai_mcp_sse_sink_write;
+  callbacks.close = cai_mcp_sse_sink_close;
+  callbacks.context = context;
+  return cai_sink_from_callbacks(&callbacks, out, error);
+}
+
+static int cai_mcp_write_sse_comment(cai_sink *sink, const char *comment,
+                                     cai_error *error) {
+  int rc;
+
+  rc = cai_sink_write(sink, ": ", 2U, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (comment != NULL && comment[0] != '\0') {
+    rc = cai_sink_write(sink, comment, strlen(comment), error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  return cai_sink_write(sink, "\n\n", 2U, error);
 }
 
 static int cai_mcp_origin_allowed(cai_mcp_handler *handler,
@@ -1107,13 +1213,19 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
   cai_mcp_session_state session_state;
   lonejson_spooled id_spool;
   lonejson_spooled params_spool;
+  cai_sink *reply_sink;
+  cai_sink *sse_sink;
+  cai_mcp_sse_sink_context sse_context;
   const char *accept;
   const char *content_type;
   const char *origin;
   const char *session_id;
   const char *version;
   char created_session_id[CAI_MCP_SESSION_ID_MAX];
+  int accepts_json;
+  int accepts_sse;
   int have_session;
+  int use_sse_response;
   int rc;
 
   if (handler == NULL || request == NULL || response == NULL ||
@@ -1122,6 +1234,9 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                          "MCP handler, request, and response body are required");
   }
   response->status = 200;
+  reply_sink = response->body;
+  sse_sink = NULL;
+  memset(&sse_context, 0, sizeof(sse_context));
   rc = cai_mcp_set_header(response, "mcp-protocol-version",
                           handler->protocol_version, error);
   if (rc != CAI_OK) {
@@ -1163,6 +1278,51 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     return cai_mcp_write_error(response->body, NULL, -32000,
                                "Forbidden origin", error);
   }
+  accept = cai_mcp_header(request, "accept");
+  accepts_json = cai_mcp_accepts_json(accept);
+  accepts_sse = cai_mcp_accepts_sse(accept);
+  if (request->method != NULL && strcmp(request->method, "GET") == 0) {
+    if (!accepts_sse) {
+      response->status = 406;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      return cai_mcp_write_error(response->body, NULL, -32600,
+                                 "MCP GET requires text/event-stream", error);
+    }
+    if (cai_mcp_session_enabled(handler)) {
+      if (session_id == NULL || session_id[0] == '\0') {
+        response->status = 400;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        return cai_mcp_write_error(response->body, NULL, -32001,
+                                   "Missing MCP session id", error);
+      }
+      memset(&session_state, 0, sizeof(session_state));
+      rc = handler->session.load(handler->session_context, session_id,
+                                 &session_state, error);
+      if (rc != CAI_OK) {
+        response->status = 404;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        return cai_mcp_write_error(response->body, NULL, -32001,
+                                   "MCP session not found", error);
+      }
+      session_state.last_seen_at = cai_mcp_now();
+      rc = handler->session.save(handler->session_context, session_id,
+                                 &session_state, error);
+      if (rc != CAI_OK) {
+        response->status = 500;
+        cai_mcp_set_header(response, "content-type", "application/json",
+                           error);
+        return cai_mcp_write_error(response->body, NULL, -32000,
+                                   "Failed to save MCP session", error);
+      }
+    }
+    rc = cai_mcp_set_sse_headers(response, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    return cai_mcp_write_sse_comment(response->body, "cai-mcp-stream", error);
+  }
   if (request->method == NULL || strcmp(request->method, "POST") != 0) {
     response->status = 405;
     cai_mcp_set_header(response, "content-type", "application/json", error);
@@ -1177,10 +1337,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     return cai_mcp_write_error(response->body, NULL, -32600,
                                "MCP POST requires application/json", error);
   }
-  accept = cai_mcp_header(request, "accept");
-  if (accept != NULL &&
-      !cai_mcp_header_contains(accept, "application/json") &&
-      !cai_mcp_header_contains(accept, "text/event-stream")) {
+  if (accept != NULL && !accepts_json && !accepts_sse) {
     response->status = 406;
     cai_mcp_set_header(response, "content-type", "application/json", error);
     return cai_mcp_write_error(response->body, NULL, -32600,
@@ -1230,7 +1387,8 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                              "Invalid JSON-RPC version", error);
     goto done;
   }
-  if (cai_mcp_session_enabled(handler) && strcmp(doc.method, "initialize") != 0) {
+  if (cai_mcp_session_enabled(handler) &&
+      (doc.method == NULL || strcmp(doc.method, "initialize") != 0)) {
     if (session_id == NULL || session_id[0] == '\0') {
       response->status = 400;
       cai_mcp_set_header(response, "content-type", "application/json", error);
@@ -1250,7 +1408,8 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     have_session = 1;
     session_state.last_seen_at = cai_mcp_now();
   }
-  if (strcmp(doc.method, "notifications/initialized") == 0) {
+  if (doc.method != NULL &&
+      strcmp(doc.method, "notifications/initialized") == 0) {
     if (have_session) {
       session_state.initialized = 1;
       rc = handler->session.save(handler->session_context, session_id,
@@ -1268,11 +1427,65 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     rc = CAI_OK;
     goto done;
   }
-  cai_mcp_set_header(response, "content-type", "application/json", error);
-  if (id_spool.size_fn(&id_spool) == 0U) {
-    response->status = 202;
-    rc = CAI_OK;
+  if (doc.method == NULL || doc.method[0] == '\0') {
+    if (rc == CAI_OK && have_session) {
+      rc = handler->session.save(handler->session_context, session_id,
+                                 &session_state, error);
+    }
+    response->status = rc == CAI_OK ? 202 : 500;
+    if (rc != CAI_OK) {
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      rc = cai_mcp_write_error(response->body, &id_spool, -32000,
+                               "Failed to save MCP session", error);
+    } else {
+      rc = CAI_OK;
+    }
     goto done;
+  }
+  if (id_spool.size_fn(&id_spool) == 0U) {
+    if (rc == CAI_OK && have_session) {
+      rc = handler->session.save(handler->session_context, session_id,
+                                 &session_state, error);
+    }
+    response->status = 202;
+    if (rc == CAI_OK) {
+      rc = CAI_OK;
+    } else {
+      response->status = 500;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      rc = cai_mcp_write_error(response->body, NULL, -32000,
+                               "Failed to save MCP session", error);
+    }
+    goto done;
+  }
+  use_sse_response = accepts_sse && !accepts_json;
+  if (use_sse_response) {
+    rc = cai_mcp_set_sse_headers(response, error);
+    if (rc != CAI_OK) {
+      goto done;
+    }
+    rc = cai_mcp_wrap_sse_sink(response->body, &sse_sink, &sse_context, error);
+    if (rc != CAI_OK) {
+      goto done;
+    }
+    reply_sink = sse_sink;
+  } else {
+    rc = cai_mcp_set_header(response, "content-type", "application/json",
+                            error);
+    if (rc != CAI_OK) {
+      goto done;
+    }
+  }
+  if (have_session) {
+    rc = handler->session.save(handler->session_context, session_id,
+                               &session_state, error);
+    if (rc != CAI_OK) {
+      response->status = 500;
+      cai_mcp_set_header(response, "content-type", "application/json", error);
+      rc = cai_mcp_write_error(response->body, &id_spool, -32000,
+                               "Failed to save MCP session", error);
+      goto done;
+    }
   }
   if (strcmp(doc.method, "initialize") == 0) {
     if (cai_mcp_session_enabled(handler)) {
@@ -1347,24 +1560,21 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
         goto done;
       }
     }
-    rc = cai_mcp_write_initialize(handler, response->body, &id_spool, error);
+    rc = cai_mcp_write_initialize(handler, reply_sink, &id_spool, error);
   } else if (strcmp(doc.method, "ping") == 0) {
-    rc = cai_mcp_write_ping(response->body, &id_spool, error);
+    rc = cai_mcp_write_ping(reply_sink, &id_spool, error);
   } else if (strcmp(doc.method, "tools/list") == 0) {
-    rc = cai_mcp_write_tools_list(handler, response->body, &id_spool, error);
+    rc = cai_mcp_write_tools_list(handler, reply_sink, &id_spool, error);
   } else if (strcmp(doc.method, "tools/call") == 0) {
-    rc = cai_mcp_run_tool(handler, response->body, &id_spool, &params_spool,
+    rc = cai_mcp_run_tool(handler, reply_sink, &id_spool, &params_spool,
                           error);
   } else {
-    rc = cai_mcp_write_error(response->body, &id_spool, -32601,
+    rc = cai_mcp_write_error(reply_sink, &id_spool, -32601,
                              "Method not found", error);
-  }
-  if (rc == CAI_OK && have_session) {
-    rc = handler->session.save(handler->session_context, session_id,
-                               &session_state, error);
   }
 
 done:
+  cai_sink_close(sse_sink);
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_map, &doc);
   id_spool.cleanup(&id_spool);
   params_spool.cleanup(&params_spool);

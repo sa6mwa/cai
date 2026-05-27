@@ -101,36 +101,60 @@ static int read_response(int fd, char *buffer, size_t capacity) {
   return len > 0U ? 0 : -1;
 }
 
-static int http_post(unsigned short port, const char *body, char *response,
-                     size_t response_capacity) {
+static int http_request(unsigned short port, const char *method,
+                        const char *accept, const char *body, char *response,
+                        size_t response_capacity) {
   char header[1024];
   int fd;
   int rc;
+  size_t body_len;
 
   fd = connect_loopback(port);
   if (fd < 0) {
     perror("connect");
     return -1;
   }
+  body_len = body != NULL ? strlen(body) : 0U;
   snprintf(header, sizeof(header),
-           "POST /mcp HTTP/1.1\r\n"
+           "%s /mcp HTTP/1.1\r\n"
            "Host: 127.0.0.1:%u\r\n"
-           "Content-Type: application/json\r\n"
-           "Accept: application/json, text/event-stream\r\n"
+           "Accept: %s\r\n"
            "MCP-Protocol-Version: 2025-11-25\r\n"
+           "%s"
            "Content-Length: %lu\r\n"
            "Connection: close\r\n"
            "\r\n",
-           (unsigned int)port, (unsigned long)strlen(body));
+           method != NULL ? method : "POST", (unsigned int)port,
+           accept != NULL ? accept : "application/json, text/event-stream",
+           body_len > 0U ? "Content-Type: application/json\r\n" : "",
+           (unsigned long)body_len);
   rc = write_all(fd, header, strlen(header));
-  if (rc == 0) {
-    rc = write_all(fd, body, strlen(body));
+  if (rc == 0 && body_len > 0U) {
+    rc = write_all(fd, body, body_len);
   }
   if (rc == 0) {
     rc = read_response(fd, response, response_capacity);
   }
   close(fd);
   return rc;
+}
+
+static int http_post(unsigned short port, const char *body, char *response,
+                     size_t response_capacity) {
+  return http_request(port, "POST", "application/json, text/event-stream",
+                      body, response, response_capacity);
+}
+
+static int http_post_sse(unsigned short port, const char *body, char *response,
+                         size_t response_capacity) {
+  return http_request(port, "POST", "text/event-stream", body, response,
+                      response_capacity);
+}
+
+static int http_get_sse(unsigned short port, char *response,
+                        size_t response_capacity) {
+  return http_request(port, "GET", "text/event-stream", NULL, response,
+                      response_capacity);
 }
 
 static int expect_contains(const char *name, const char *haystack,
@@ -164,7 +188,7 @@ static pid_t start_server(const char *server_path, unsigned short *port_out) {
     dup2(pipefd[1], STDOUT_FILENO);
     close(pipefd[1]);
     execl(server_path, server_path, "--port", "0", "--print-port",
-          "--requests", "3", (char *)NULL);
+          "--requests", "5", (char *)NULL);
     _exit(127);
   }
   close(pipefd[1]);
@@ -233,6 +257,29 @@ int main(int argc, char **argv) {
     failures += expect_contains("tools/call result", response,
                                 "\"structuredContent\":{\"echo\":"
                                 "\"streamed through http\"}");
+  }
+  if (http_post_sse(port,
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"sse\","
+                    "\"method\":\"ping\"}",
+                    response, sizeof(response)) != 0) {
+    failures++;
+  } else {
+    failures += expect_contains("sse ping status", response, "HTTP/1.1 200");
+    failures += expect_contains("sse ping content-type", response,
+                                "content-type: text/event-stream");
+    failures += expect_contains("sse ping data prefix", response,
+                                "\r\ndata: {\"jsonrpc\":\"2.0\"");
+    failures += expect_contains("sse ping result", response,
+                                "\"id\":\"sse\",\"result\":{}");
+  }
+  if (http_get_sse(port, response, sizeof(response)) != 0) {
+    failures++;
+  } else {
+    failures += expect_contains("get sse status", response, "HTTP/1.1 200");
+    failures += expect_contains("get sse content-type", response,
+                                "content-type: text/event-stream");
+    failures += expect_contains("get sse body", response,
+                                "\r\n\r\n: cai-mcp-stream\n\n");
   }
   if (waitpid(pid, &status, 0) < 0) {
     perror("waitpid");

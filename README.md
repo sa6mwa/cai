@@ -402,8 +402,13 @@ sink.
 
 First implemented scope:
 
-- POST only.
-- JSON response only.
+- POST JSON-RPC requests with JSON replies by default.
+- POST JSON-RPC requests can also reply as a single SSE event when the client
+  asks for `Accept: text/event-stream` without `application/json`.
+- GET `/mcp` returns an SSE stream endpoint for server-to-client transport
+  compatibility. cai currently emits a lightweight SSE comment heartbeat and
+  closes; server-initiated JSON-RPC notifications/requests are not implemented
+  yet.
 - `initialize`
 - `notifications/initialized`
 - `ping`
@@ -420,7 +425,9 @@ bounded by `tool_output_max_bytes`, defaulting to
 spooling for that tool-call output so it can fail closed before committing a
 partial JSON-RPC response. Set `tool_output_max_bytes` to
 `CAI_MCP_TOOL_OUTPUT_UNLIMITED` only when the embedding route deliberately
-accepts direct unbounded tool-output streaming. `GET`/SSE streams, resources,
+accepts direct unbounded tool-output streaming. `GET`/SSE transport is
+implemented for compatibility, but cai does not yet provide a host callback
+surface for queued server-initiated MCP notifications or requests. Resources,
 prompts, and sampling are not implemented yet.
 
 MCP session persistence is storage-neutral. The zero/default MCP config is
@@ -453,8 +460,9 @@ cai_mcp_handler_handle_http(handler, &req, &res, &error);
 The handler asks for headers by lowercase logical names such as
 `content-type`, `accept`, `origin`, `mcp-protocol-version`, and
 `mcp-session-id`; adapters should normalize however their HTTP stack stores
-header names. cai sets response headers such as `content-type` and
-`mcp-protocol-version` through the supplied callback.
+header names. cai sets response headers such as `content-type`,
+`mcp-protocol-version`, `cache-control`, and `x-content-type-options`
+through the supplied callback.
 
 The test build also provides `cai_mcp_http_server`, a tiny plain HTTP utility
 for serving the MCP handler on `/mcp`. It is test/example infrastructure only

@@ -111,6 +111,13 @@ typedef struct mcp_session_test_store {
   int empty_create_id;
 } mcp_session_test_store;
 
+typedef struct sse_json_capture {
+  write_state json;
+  size_t event_count;
+  char last_event[32];
+  size_t last_data_len;
+} sse_json_capture;
+
 typedef struct stream_tool_state {
   char delta[64];
   char item_id[32];
@@ -1261,6 +1268,90 @@ static void expect_valid_json(test_state *state, const char *name,
     test_fail(state, name, error.message);
   }
   CAI_LJ->json_value_cleanup(CAI_LJ, &value);
+}
+
+static lonejson_status test_lonejson_capture_sink(void *user, const void *data,
+                                                  size_t len,
+                                                  lonejson_error *error) {
+  write_state *writer;
+
+  (void)error;
+  writer = (write_state *)user;
+  if (writer->length + len >= sizeof(writer->buffer)) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  memcpy(writer->buffer + writer->length, data, len);
+  writer->length += len;
+  writer->buffer[writer->length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status test_sse_json_capture_event(void *user,
+                                                   const lonejson_sse_event *event,
+                                                   lonejson_json_value *value,
+                                                   lonejson_error *error) {
+  sse_json_capture *capture;
+
+  capture = (sse_json_capture *)user;
+  capture->event_count++;
+  capture->last_data_len = event->data_len;
+  snprintf(capture->last_event, sizeof(capture->last_event), "%s",
+           event->event != NULL ? event->event : "");
+  capture->json.buffer[0] = '\0';
+  capture->json.length = 0U;
+  if (value->methods->write_to_sink(value, test_lonejson_capture_sink,
+                                    &capture->json, error) !=
+      LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static int test_capture_single_sse_json(const char *sse,
+                                        sse_json_capture *capture) {
+  static const char *event_names[] = {"", "message"};
+  lonejson_sse_options sse_options;
+  lonejson_sse_json_options json_options;
+  lonejson_sse *sse_parser;
+  lonejson_json_value value;
+  lonejson_error error;
+  lonejson_status status;
+
+  if (sse == NULL || capture == NULL) {
+    return -1;
+  }
+  memset(capture, 0, sizeof(*capture));
+  sse_options = lonejson_default_sse_options();
+  lonejson_error_init(&error);
+  sse_parser = lonejson_sse_open(&sse_options, &error);
+  if (sse_parser == NULL) {
+    return -1;
+  }
+  CAI_LJ->json_value_init(CAI_LJ, &value);
+  if (value.methods->enable_parse_capture(&value, &error) !=
+      LONEJSON_STATUS_OK) {
+    CAI_LJ->json_value_cleanup(CAI_LJ, &value);
+    lonejson_sse_close(sse_parser);
+    return -1;
+  }
+  memset(&json_options, 0, sizeof(json_options));
+  json_options.event_names = event_names;
+  json_options.event_name_count = sizeof(event_names) / sizeof(event_names[0]);
+  status = lonejson_sse_push_json_value(
+      CAI_LJ, sse_parser, &value, sse, strlen(sse), &json_options,
+      test_sse_json_capture_event, capture, &error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = lonejson_sse_finish_json_value(CAI_LJ, sse_parser, &value,
+                                            &json_options,
+                                            test_sse_json_capture_event,
+                                            capture, &error);
+  }
+  CAI_LJ->json_value_cleanup(CAI_LJ, &value);
+  lonejson_sse_close(sse_parser);
+  if (status != LONEJSON_STATUS_OK) {
+    return -1;
+  }
+  return capture->event_count == 1U ? 0 : -1;
 }
 
 static int test_stream_tool_delta(void *context, const char *item_id,
@@ -2978,6 +3069,13 @@ static void test_mcp_handler(test_state *state) {
       {"content-type", "application/json"},
       {"accept", "application/json, text/event-stream"},
       {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+  static const mcp_header_pair sse_only_headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "text/event-stream"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+  static const mcp_header_pair get_sse_headers[] = {
+      {"accept", "text/event-stream"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
   static const mcp_header_pair bad_origin_headers[] = {
       {"content-type", "application/json"},
       {"accept", "application/json"},
@@ -3008,11 +3106,14 @@ static void test_mcp_handler(test_state *state) {
   mcp_source_state source_state;
   mcp_sink_state sink_state;
   mcp_header_state header_state;
+  sse_json_capture sse_capture;
   cai_error error;
+  char *large_tool_body;
   int status;
 
   registry = NULL;
   handler = NULL;
+  large_tool_body = NULL;
   cai_error_init(&error);
   expect_int(state, "mcp_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
@@ -3179,6 +3280,82 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_initialized_status", status, 202L);
   expect_str(state, "mcp_initialized_empty", writer.buffer, "");
+  expect_int(state, "mcp_get_sse",
+             test_mcp_handle_stream(
+                 handler, get_sse_headers,
+                 sizeof(get_sse_headers) / sizeof(get_sse_headers[0]), "GET",
+                 "", 0U, 0, 0, &source_state, &sink_state, &header_state,
+                 &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_get_sse_status", status, 200L);
+  expect_str(state, "mcp_get_sse_content_type",
+             test_mcp_response_header(&header_state, "content-type"),
+             "text/event-stream");
+  if (strstr(sink_state.buffer, ": cai-mcp-stream\n\n") == NULL) {
+    test_fail(state, "mcp_get_sse_body",
+              "GET /mcp did not return an SSE stream comment");
+  }
+  expect_int(state, "mcp_ping_sse",
+             test_mcp_handle(handler, sse_only_headers,
+                             sizeof(sse_only_headers) /
+                                 sizeof(sse_only_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"sse-ping\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_ping_sse_status", status, 200L);
+  expect_str(state, "mcp_ping_sse_content_type",
+             test_mcp_response_header(&header_state, "content-type"),
+             "text/event-stream");
+  if (test_capture_single_sse_json(writer.buffer, &sse_capture) != 0) {
+    test_fail(state, "mcp_ping_sse_parse", "failed to parse SSE ping response");
+  }
+  expect_valid_json(state, "mcp_ping_sse_json", sse_capture.json.buffer);
+  if (strstr(sse_capture.json.buffer, "\"id\":\"sse-ping\"") == NULL ||
+      strstr(sse_capture.json.buffer, "\"result\":{}") == NULL) {
+    test_fail(state, "mcp_ping_sse_body",
+              "SSE ping did not contain the expected JSON-RPC result");
+  }
+  expect_int(state, "mcp_chunked_tool_sse",
+             test_mcp_handle_stream(
+                 handler, sse_only_headers,
+                 sizeof(sse_only_headers) / sizeof(sse_only_headers[0]),
+                 "POST",
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"chunked\","
+                 "\"method\":\"tools/call\",\"params\":{\"name\":"
+                 "\"chunked_json\",\"arguments\":{}}}",
+                 7U, 0, 0, &source_state, &sink_state, &header_state,
+                 &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_chunked_tool_sse_status", status, 200L);
+  expect_str(state, "mcp_chunked_tool_sse_content_type",
+             test_mcp_response_header(&header_state, "content-type"),
+             "text/event-stream");
+  if (test_capture_single_sse_json(sink_state.buffer, &sse_capture) != 0) {
+    test_fail(state, "mcp_chunked_tool_sse_parse",
+              "failed to parse SSE tool response");
+  }
+  expect_valid_json(state, "mcp_chunked_tool_sse_json",
+                    sse_capture.json.buffer);
+  if (strstr(sse_capture.json.buffer,
+             "\"structuredContent\":{\"value\":\"alpha-beta\"}") == NULL ||
+      strstr(sse_capture.json.buffer, "\"isError\":false") == NULL) {
+    test_fail(state, "mcp_chunked_tool_sse_body",
+              "SSE tool response did not contain the structured JSON result");
+  }
+  if (source_state.reads < 2 || sink_state.write_count < 3) {
+    test_fail(state, "mcp_chunked_tool_sse_streaming",
+              "SSE tool response did not stream across source/sink callbacks");
+  }
+  expect_int(state, "mcp_jsonrpc_response_message",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":99,"
+                             "\"result\":{\"ok\":true}}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_jsonrpc_response_message_status", status, 202L);
+  expect_str(state, "mcp_jsonrpc_response_message_empty", writer.buffer, "");
   expect_int(state, "mcp_reject_origin",
              test_mcp_handle(handler, bad_origin_headers,
                              sizeof(bad_origin_headers) /
@@ -3250,7 +3427,7 @@ static void test_mcp_handler(test_state *state) {
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
   expect_int(state, "mcp_bad_method",
              test_mcp_handle_stream(
-                 handler, headers, sizeof(headers) / sizeof(headers[0]), "GET",
+                 handler, headers, sizeof(headers) / sizeof(headers[0]), "PUT",
                  "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}", 0U, 0,
                  0, &source_state, &sink_state, &header_state, &status,
                  &error),
@@ -3428,8 +3605,47 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_stateful_initialized_status", status, 202L);
   expect_int(state, "mcp_stateful_initialized_flag",
              session_store.state.initialized, 1L);
+  expect_int(state, "mcp_stateful_get_sse_missing_session",
+             test_mcp_handle_stream(
+                 handler, get_sse_headers,
+                 sizeof(get_sse_headers) / sizeof(get_sse_headers[0]), "GET",
+                 "", 0U, 0, 0, &source_state, &sink_state, &header_state,
+                 &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_get_sse_missing_session_status", status,
+             400L);
+  expect_valid_json(state, "mcp_stateful_get_sse_missing_session_json",
+                    sink_state.buffer);
+  expect_int(state, "mcp_stateful_jsonrpc_response",
+             test_mcp_handle(handler, stateful_headers, 4U,
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"client-response\","
+                             "\"result\":{\"ok\":true}}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_jsonrpc_response_status", status, 202L);
+  expect_str(state, "mcp_stateful_jsonrpc_response_empty", writer.buffer, "");
+  expect_int(state, "mcp_stateful_jsonrpc_response_save_count",
+             session_store.saves, 3L);
+  expect_int(state, "mcp_stateful_get_sse",
+             test_mcp_handle_stream(
+                 handler, stateful_headers, 4U, "GET", "", 0U, 0, 0,
+                 &source_state, &sink_state, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_get_sse_status", status, 200L);
+  expect_str(state, "mcp_stateful_get_sse_content_type",
+             test_mcp_response_header(&header_state, "content-type"),
+             "text/event-stream");
+  if (strstr(sink_state.buffer, ": cai-mcp-stream\n\n") == NULL) {
+    test_fail(state, "mcp_stateful_get_sse_body",
+              "stateful GET /mcp did not return an SSE stream comment");
+  }
+  expect_int(state, "mcp_stateful_get_sse_load_count", session_store.loads,
+             4L);
+  expect_int(state, "mcp_stateful_get_sse_save_count", session_store.saves,
+             4L);
   expect_int(state, "mcp_stateful_missing_session",
-             test_mcp_handle(handler, headers, sizeof(headers) / sizeof(headers[0]),
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
                              "{\"jsonrpc\":\"2.0\",\"id\":\"missing-session\","
                              "\"method\":\"ping\"}",
                              &writer, &header_state, &status, &error),
@@ -3448,6 +3664,113 @@ static void test_mcp_handler(test_state *state) {
   cai_mcp_handler_destroy(handler);
   handler = NULL;
   expect_int(state, "mcp_stateful_cleanup_count", session_store.cleanups, 1L);
+  memset(&session_store, 0, sizeof(session_store));
+  config.session = &session_callbacks;
+  config.session_context = &session_store;
+  expect_int(state, "mcp_stateful_fail_create_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  session_store.fail_create = 1;
+  expect_int(state, "mcp_stateful_fail_create",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"init-fail\","
+                 "\"method\":\"initialize\",\"params\":{\"protocolVersion\":"
+                 "\"2025-11-25\",\"clientInfo\":{\"name\":\"unit-client\","
+                 "\"version\":\"1.2.3\"}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_fail_create_status", status, 500L);
+  expect_valid_json(state, "mcp_stateful_fail_create_json", writer.buffer);
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  memset(&session_store, 0, sizeof(session_store));
+  expect_int(state, "mcp_stateful_fail_save_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_stateful_fail_save_init",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"init-save\","
+                 "\"method\":\"initialize\",\"params\":{\"protocolVersion\":"
+                 "\"2025-11-25\",\"clientInfo\":{\"name\":\"unit-client\","
+                 "\"version\":\"1.2.3\"}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  stateful_headers[3].value =
+      test_mcp_response_header(&header_state, "mcp-session-id");
+  session_store.fail_save = 1;
+  expect_int(state, "mcp_stateful_fail_save_ping",
+             test_mcp_handle(handler, stateful_headers, 4U,
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"ping-failsave\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_fail_save_ping_status", status, 500L);
+  expect_valid_json(state, "mcp_stateful_fail_save_ping_json",
+                    writer.buffer);
+  if (strstr(writer.buffer, "\"Failed to save MCP session\"") == NULL) {
+    test_fail(state, "mcp_stateful_fail_save_ping_body",
+              "stateful save failure did not surface before response body");
+  }
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  memset(&session_store, 0, sizeof(session_store));
+  expect_int(state, "mcp_stateful_stream_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_stateful_stream_initialize",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"init-stream\","
+                 "\"method\":\"initialize\",\"params\":{\"protocolVersion\":"
+                 "\"2025-11-25\",\"clientInfo\":{\"name\":\"unit-client\","
+                 "\"version\":\"1.2.3\"}}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  stateful_headers[3].value =
+      test_mcp_response_header(&header_state, "mcp-session-id");
+  large_tool_body = (char *)malloc(12000U);
+  if (large_tool_body == NULL) {
+    test_fail(state, "mcp_stateful_stream_tool_body_alloc",
+              "failed to allocate large MCP tool request");
+  } else {
+    size_t prefix_len;
+    size_t suffix_len;
+    size_t fill_len;
+    static const char prefix[] =
+        "{\"jsonrpc\":\"2.0\",\"id\":\"stateful-tool\","
+        "\"method\":\"tools/call\",\"params\":{\"name\":"
+        "\"chunked_json\",\"arguments\":{\"padding\":\"";
+    static const char suffix[] = "\"}}}";
+
+    prefix_len = strlen(prefix);
+    suffix_len = strlen(suffix);
+    fill_len = 12000U - prefix_len - suffix_len - 1U;
+    memcpy(large_tool_body, prefix, prefix_len);
+    memset(large_tool_body + prefix_len, 'x', fill_len);
+    memcpy(large_tool_body + prefix_len + fill_len, suffix, suffix_len + 1U);
+  }
+  if (large_tool_body != NULL) {
+    expect_int(state, "mcp_stateful_stream_tool",
+               test_mcp_handle_stream(
+                   handler, stateful_headers, 4U, "POST",
+                   large_tool_body,
+                   5U, 0, 0, &source_state, &sink_state, &header_state,
+                   &status, &error),
+               CAI_OK);
+    expect_int(state, "mcp_stateful_stream_tool_status", status, 200L);
+    if (source_state.reads < 100 || sink_state.write_count < 3) {
+      test_fail(state, "mcp_stateful_stream_tool_streaming",
+                "stateful tool call did not preserve streamed request/response "
+                "behavior under a large request body");
+    }
+    expect_int(state, "mcp_stateful_stream_tool_load_count",
+               session_store.loads, 1L);
+    expect_int(state, "mcp_stateful_stream_tool_save_count",
+               session_store.saves, 1L);
+  }
+  free(large_tool_body);
+  large_tool_body = NULL;
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
 
   config.enable_sessions = 0;
   config.session = NULL;
@@ -3468,6 +3791,7 @@ static void test_mcp_handler(test_state *state) {
 
   cai_mcp_handler_destroy(handler);
   cai_tool_registry_destroy(registry);
+  free(large_tool_body);
   cai_error_cleanup(&error);
 }
 

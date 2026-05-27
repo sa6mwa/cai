@@ -106,7 +106,9 @@ Run a small MCP-over-HTTP example server on loopback. It streams request bodies
 through `cai_mcp_handler`, registers the production `reverse_geocode` and
 `todo_kanban` presets, and registers `copy_to_clipboard` only when `xclip` is
 available in `PATH`. Clipboard writes are a local-machine side effect and the
-example rejects clipboard inputs larger than 1 MiB.
+example rejects clipboard inputs larger than 1 MiB. The same `/mcp` endpoint
+supports JSON replies, SSE-only POST replies, and a lightweight GET SSE stream
+heartbeat.
 
 The server runs in the foreground. It logs with libpslog to `stderr` so
 `--print-port` remains machine-readable on `stdout`; the MCP server logger and

@@ -19,9 +19,11 @@ Useful flags:
 
 The server exposes:
 
-- `POST /mcp` for MCP JSON-RPC requests.
+- `POST /mcp` for MCP JSON-RPC requests. When the client asks only for
+  `text/event-stream`, successful JSON-RPC responses are returned as a single
+  SSE event.
 - `GET /health` for a small JSON health response.
-- `GET /mcp` for the same lightweight diagnostic response.
+- `GET /mcp` for a lightweight SSE stream heartbeat.
 
 Logs are written with libpslog to `stderr`. `--print-port` writes only the
 selected port to `stdout`, which keeps scripts and tests simple.
@@ -56,6 +58,16 @@ curl -s http://127.0.0.1:18766/mcp \
   -H 'Accept: application/json, text/event-stream' \
   -H 'MCP-Protocol-Version: 2025-11-25' \
   -d '{"jsonrpc":"2.0","id":"help","method":"tools/call","params":{"name":"todo_kanban","arguments":{"operation":"help"}}}'
+
+curl -s http://127.0.0.1:18766/mcp \
+  -H 'Accept: text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25'
+
+curl -s http://127.0.0.1:18766/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -d '{"jsonrpc":"2.0","id":"sse","method":"ping"}'
 ```
 
 The MCP Inspector e2e test uses the official container image and is opt-in:
