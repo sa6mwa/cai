@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"echo","arguments":{"payload":"seed"}}}

@@ -515,6 +515,7 @@ Security fuzzing is available as an opt-in Clang/libFuzzer build:
 ```sh
 make fuzz
 make fuzz-smoke
+make fuzz-full
 ```
 
 Dedicated fuzzers cover the most exposed cai surfaces:
@@ -534,6 +535,11 @@ Dedicated fuzzers cover the most exposed cai surfaces:
 
 The fuzz build also registers one-iteration smoke tests in CTest so every
 harness is built and executed in the standard gate for the `fuzz` preset.
+Checked-in corpora under `tests/fuzz-corpus/` seed the harnesses with realistic
+Responses SSE transcripts, response JSON, MCP JSON-RPC envelopes, session
+history/state documents, and todo tool operations. `make fuzz-full` replays
+those corpora through every harness for `CAI_FUZZ_RUNS` iterations per target
+(`10000` by default).
 
 Streaming callers that need function-call arguments can attach callbacks to
 `cai_stream_sinks.function_call_arguments_delta` and

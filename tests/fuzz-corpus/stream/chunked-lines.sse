@@ -1,0 +1,9 @@
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+data: {"type":"response.output_text.delta",
+data: "delta":"lo"}
+
+data: {"type":"response.completed","response":{"id":"resp_seed_chunked","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}
+
+data: [DONE]
+
