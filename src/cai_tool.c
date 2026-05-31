@@ -108,9 +108,18 @@ static lonejson_read_result cai_tool_spooled_read(void *user,
                                                   unsigned char *buffer,
                                                   size_t capacity) {
   cai_tool_spooled_reader *reader;
+  lonejson_read_result raw;
+  lonejson_read_result result;
 
   reader = (cai_tool_spooled_reader *)user;
-  return reader->cursor.read(&reader->cursor, buffer, capacity);
+  memset(&raw, 0, sizeof(raw));
+  result = lonejson_default_read_result();
+  raw = reader->cursor.read(&reader->cursor, buffer, capacity);
+  result.bytes_read = raw.bytes_read;
+  result.eof = raw.eof;
+  result.would_block = raw.would_block;
+  result.error_code = raw.error_code;
+  return result;
 }
 
 static lonejson_status cai_tool_buffer_sink(void *user, const void *data,
@@ -202,6 +211,9 @@ static int cai_tool_schema_build_array_property(cai_buffer_builder *builder,
   lonejson_error json_error;
   lonejson_status status;
 
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
@@ -255,6 +267,9 @@ static int cai_tool_schema_build_empty_object(cai_buffer_builder *builder,
   lonejson_error json_error;
   lonejson_status status;
 
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
@@ -398,6 +413,7 @@ static int cai_tool_validate_json_value(const char *json, const char *message,
   if (json == NULL || json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, message);
   }
+  memset(&value, 0, sizeof(value));
   CAI_LJ->json_value_init(CAI_LJ, &value);
   lonejson_error_init(&json_error);
   if (value.methods->set_buffer(&value, json, strlen(json), &json_error) !=
@@ -713,6 +729,7 @@ static int cai_tool_validate_arguments_shape(const lonejson_map *map,
   int rc;
 
   memset(&compact, 0, sizeof(compact));
+  memset(&value, 0, sizeof(value));
   CAI_LJ->json_value_init(CAI_LJ, &value);
   lonejson_error_init(&json_error);
   status =
@@ -792,7 +809,7 @@ static int cai_tool_validate_spooled_arguments_shape(const lonejson_map *map,
   }
   offset = 0U;
   while (offset < raw_len) {
-    chunk = reader.cursor.read(&reader.cursor, (unsigned char *)raw_json + offset,
+    chunk = cai_tool_spooled_read(&reader, (unsigned char *)raw_json + offset,
                                   raw_len - offset);
     if (chunk.error_code != 0) {
       cai_free_mem(NULL, raw_json);
@@ -821,6 +838,9 @@ static int cai_tool_schema_rebuild(cai_tool_schema *schema, cai_error *error) {
 
   impl = CAI_TOOL_SCHEMA_IMPL(schema);
   memset(&builder, 0, sizeof(builder));
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
@@ -969,6 +989,9 @@ static int cai_tool_schema_add_typed_property(cai_tool_schema *schema,
     return cai_set_error(error, CAI_ERR_INVALID, "property type is required");
   }
   memset(&builder, 0, sizeof(builder));
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
@@ -1637,7 +1660,7 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry,
 
       offset = 0U;
       while (offset < raw_len) {
-        chunk = reader.cursor.read(&reader.cursor,
+        chunk = cai_tool_spooled_read(&reader,
                                       (unsigned char *)raw_json + offset,
                                       raw_len - offset);
         if (chunk.error_code != 0) {
@@ -1889,6 +1912,9 @@ int cai_tool_schema_add_string_enum(cai_tool_schema *schema, const char *name,
                          "string enum values are required");
   }
   memset(&builder, 0, sizeof(builder));
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);

@@ -602,7 +602,15 @@ static char *test_spooled_to_cstr(const lonejson_spooled *spool) {
     return NULL;
   }
   for (;;) {
-    chunk = cursor.read(&cursor, buffer, sizeof(buffer));
+    lonejson_read_result raw;
+
+    memset(&raw, 0, sizeof(raw));
+    chunk = lonejson_default_read_result();
+    raw = cursor.read(&cursor, buffer, sizeof(buffer));
+    chunk.bytes_read = raw.bytes_read;
+    chunk.eof = raw.eof;
+    chunk.would_block = raw.would_block;
+    chunk.error_code = raw.error_code;
     if (chunk.error_code != 0) {
       free(out);
       return NULL;
@@ -1261,6 +1269,7 @@ static void expect_valid_json(test_state *state, const char *name,
   lonejson_json_value value;
   lonejson_error error;
 
+  memset(&value, 0, sizeof(value));
   CAI_LJ->json_value_init(CAI_LJ, &value);
   lonejson_error_init(&error);
   if (value.methods->set_buffer(&value, json, strlen(json), &error) !=
@@ -1327,6 +1336,7 @@ static int test_capture_single_sse_json(const char *sse,
   if (sse_parser == NULL) {
     return -1;
   }
+  memset(&value, 0, sizeof(value));
   CAI_LJ->json_value_init(CAI_LJ, &value);
   if (value.methods->enable_parse_capture(&value, &error) !=
       LONEJSON_STATUS_OK) {

@@ -208,7 +208,7 @@ verify_no_sanitizer_artifacts() {
   local root_dir=$1
   local matches
 
-  matches=$(grep -R -I -n -E 'fsanitize|__asan|__ubsan|libasan|libubsan' \
+  matches=$(grep -R -I -n -E 'fsanitize|__asan|__ubsan|__tsan|__msan|libasan|libubsan|libtsan|libmsan' \
     "$root_dir/lib" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2
@@ -236,7 +236,7 @@ verify_linux_runpath() {
       printf '%s\n' "$dynamic" >&2
       fail "shared library has host-specific runpath: $so"
     fi
-    if grep -E 'NEEDED' <<<"$dynamic" | grep -E 'libasan|libubsan' \
+    if grep -E 'NEEDED' <<<"$dynamic" | grep -E 'libasan|libubsan|libtsan|libmsan' \
       >/dev/null; then
       printf '%s\n' "$dynamic" >&2
       fail "shared library links sanitizer runtime: $so"
@@ -297,7 +297,7 @@ verify_binary_archive() {
   require_no_member "$listing" "$root/include/lonejson.h"
   require_no_member "$listing" "$root/include/pslog.h"
   require_no_member_glob "$listing" "^$root/lib/lib(lonejson|pslog|curl)\\."
-  require_no_member_glob "$listing" "^$root/lib/.*(asan|ubsan)"
+  require_no_member_glob "$listing" "^$root/lib/.*(asan|ubsan|tsan|msan)"
   verify_no_host_paths "$root_dir"
   verify_no_sanitizer_artifacts "$root_dir"
   if [[ "$root" == *-linux-* ]]; then

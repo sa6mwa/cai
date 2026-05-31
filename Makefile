@@ -15,7 +15,7 @@ CAI_FUZZ_RUNS ?= 10000
 RELEASE_VERSION ?= $(shell ./scripts/detect_release_version.sh "$(CURDIR)")
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
 CAI_C_PKT_SYSTEMS_VERSION ?= 0.1.0
-CAI_LONEJSON_VERSION ?= 0.27.0
+CAI_LONEJSON_VERSION ?= 0.28.0
 CAI_PSLOG_VERSION ?= 0.4.1
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
 CAI_C_PKT_SYSTEMS_PREFIX := $(CURDIR)/.cache/deps/c.pkt.systems-$(CAI_C_PKT_SYSTEMS_VERSION)-$(CAI_CPKT_TARGET)
@@ -40,7 +40,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan fuzz fuzz-smoke fuzz-full lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -50,6 +50,8 @@ help:
 		'make test-release Build and run the release unit tests.' \
 		'make test-integration  Run opt-in OpenAI API integration tests.' \
 		'make asan         Build and run the ASan/UBSan unit tests.' \
+		'make tsan         Build and run the TSan local test suite.' \
+		'make msan         Build and run the MSan smoke subset.' \
 		'make fuzz         Build all libFuzzer harnesses.' \
 		'make fuzz-smoke   Run one-iteration smoke checks for every fuzzer.' \
 		'make fuzz-full    Run every fuzzer with the checked-in corpus and CAI_FUZZ_RUNS iterations.' \
@@ -103,6 +105,20 @@ asan:
 	$(CTEST) --preset asan $(CTEST_FLAGS)
 
 test-asan: asan
+
+tsan:
+	$(CMAKE) --preset tsan
+	$(CMAKE) --build --preset tsan
+	$(CTEST) --preset tsan $(CTEST_FLAGS)
+
+test-tsan: tsan
+
+msan:
+	$(CMAKE) --preset msan
+	$(CMAKE) --build --preset msan
+	$(CTEST) --preset msan $(CTEST_FLAGS)
+
+test-msan: msan
 
 fuzz:
 	$(CMAKE) --preset fuzz

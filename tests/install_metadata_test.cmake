@@ -54,14 +54,14 @@ if(installed_shared_libraries AND installed_shared_library STREQUAL "")
 endif()
 if(installed_shared_library)
   file(STRINGS "${installed_shared_library}" installed_shared_strings
-       REGEX "/home/|/Users/|/opt/|/tmp/|fsanitize|__asan|__ubsan|libasan|libubsan")
+       REGEX "/home/|/Users/|/opt/|/tmp/|fsanitize|__asan|__ubsan|__tsan|__msan|libasan|libubsan|libtsan|libmsan")
   string(TOLOWER "${CAI_BUILD_TYPE}" cai_build_type_lower)
   if(cai_build_type_lower STREQUAL "release")
     if(installed_shared_strings MATCHES "/home/|/Users/|/opt/|/tmp/")
       message(FATAL_ERROR
         "release libcai contains host-specific path: ${installed_shared_strings}")
     endif()
-    if(installed_shared_strings MATCHES "fsanitize|__asan|__ubsan|libasan|libubsan")
+    if(installed_shared_strings MATCHES "fsanitize|__asan|__ubsan|__tsan|__msan|libasan|libubsan|libtsan|libmsan")
       message(FATAL_ERROR
         "release libcai contains sanitizer artifact: ${installed_shared_strings}")
     endif()
@@ -87,7 +87,7 @@ if(installed_shared_library)
           "installed libcai runpath contains host-specific path: ${readelf_output}")
       endif()
       if(cai_build_type_lower STREQUAL "release" AND
-         readelf_output MATCHES "libasan|libubsan")
+         readelf_output MATCHES "libasan|libubsan|libtsan|libmsan")
         message(FATAL_ERROR
           "release libcai links sanitizer runtime: ${readelf_output}")
       endif()

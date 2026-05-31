@@ -3774,6 +3774,7 @@ static int cai_compact_spooled_json(cai_session *session,
   }
   cai_history_init_spooled(session, out);
   has_out = 1;
+  memset(&value, 0, sizeof(value));
   CAI_LJ->json_value_init(CAI_LJ, &value);
   reader_context.cursor = cursor;
   lonejson_error_init(&json_error);

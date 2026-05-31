@@ -109,6 +109,24 @@
       }
     },
     {
+      "name": "tsan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=thread -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "msan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer"
+      }
+    },
+    {
       "name": "fuzz",
       "inherits": "debug",
       "cacheVariables": {
@@ -178,6 +196,14 @@
       "configurePreset": "asan"
     },
     {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    },
+    {
+      "name": "msan",
+      "configurePreset": "msan"
+    },
+    {
       "name": "fuzz",
       "configurePreset": "fuzz"
     },
@@ -224,6 +250,36 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "filter": {
+        "exclude": {
+          "label": "packaging|upstream-lonejson"
+        }
+      },
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "msan",
+      "configurePreset": "msan",
+      "filter": {
+        "include": {
+          "label": "msan-smoke"
+        }
+      },
       "execution": {
         "stopOnFailure": true
       },

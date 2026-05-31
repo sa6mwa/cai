@@ -509,6 +509,7 @@ static int cai_response_validate_json_value(const char *json,
   if (json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, message);
   }
+  memset(&value, 0, sizeof(value));
   CAI_LJ->json_value_init(CAI_LJ, &value);
   lonejson_error_init(&json_error);
   if (value.methods->set_buffer(&value, json, strlen(json),
@@ -699,6 +700,9 @@ static int cai_buffer_append_json_string_spooled(cai_buffer_builder *builder,
   lonejson_error json_error;
   lonejson_status status;
 
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);
@@ -974,6 +978,11 @@ static int cai_response_json_root_kind(const char *json, int *out_is_object,
   if (json == NULL || json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, message);
   }
+  memset(&spool, 0, sizeof(spool));
+  memset(&json_error, 0, sizeof(json_error));
+  memset(&reader_context, 0, sizeof(reader_context));
+  memset(&check, 0, sizeof(check));
+  memset(&visitor, 0, sizeof(visitor));
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, &spool);
   if (spool.append(&spool, json, strlen(json), &json_error) !=
@@ -1106,6 +1115,9 @@ static int cai_spool_mapped_object_array(const lonejson_map *map,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "mapped array spool output pointer is required");
   }
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
+  memset(out, 0, sizeof(*out));
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, out);
   writer_initialized = 0;
@@ -2138,6 +2150,9 @@ int cai_response_create_params_add_simple_hosted_tool(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "hosted tool type is required");
   }
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   lonejson_error_init(&json_error);
   builder.data = NULL;
   builder.length = 0U;
@@ -2338,6 +2353,9 @@ int cai_response_create_params_add_hosted_mcp_tool(
     }
   }
 
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   lonejson_error_init(&json_error);
   builder.data = NULL;
   builder.length = 0U;
@@ -3352,6 +3370,9 @@ static int cai_response_create_params_build_input_json(
   has_raw_input =
       params->has_raw_input_spooled ||
       (params->raw_input_json != NULL && params->raw_input_json[0] != '\0');
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
+  memset(out, 0, sizeof(*out));
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, out);
   memset(&raw_input, 0, sizeof(raw_input));
@@ -3452,6 +3473,9 @@ static int cai_response_create_params_build_tools_json(
   if (params == NULL || params->tools.count == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID, "tools are required");
   }
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
+  memset(out, 0, sizeof(*out));
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, out);
   writer_initialized = 0;
@@ -4419,6 +4443,9 @@ int cai_response_output_items_json(const cai_response *response,
     return cai_set_error(error, CAI_ERR_INVALID, "response is required");
   }
   memset(&builder, 0, sizeof(builder));
+  memset(&sink_context, 0, sizeof(sink_context));
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
   sink_context.builder = &builder;
   sink_context.error = error;
   lonejson_error_init(&json_error);

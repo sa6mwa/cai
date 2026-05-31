@@ -33,7 +33,7 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_LONEJSON_VERSION "0.27.0")
+set(CAI_LONEJSON_VERSION "0.28.0")
 set(CAI_PSLOG_VERSION "0.4.1")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -127,19 +127,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "2cf7abdd0204e84146a93da7b7c4497ec297085d93329463199c102bf81c5887")
+    set(_sha256 "d33167b5d17b096c13abe55a621368bf64bb6d55d208fd9c31bb8908f39c6936")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "105c64a0a44511133106ffae0be022c379fd42cd4b7db69d8440b14fbcdf3732")
+    set(_sha256 "69e363583152679283fe67f09870a58d191dba23e22900e46dca985b4e80b39f")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "79a0e88f5b092aae263f64513fa546942b0e97055125e04f00de438f8b21a07c")
+    set(_sha256 "3064e0681685d4b54fc458ea45dacec00b95461a488d93c52490503d55ad7ac8")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "142f86fb60042b9943eb72d8c9c1fffcdb8d05899e471214aa90118bea288fe7")
+    set(_sha256 "a63aa1fa9b30c098ecbb3d83a88034401d0b9295ffd09f7e1773b17cf100b7d0")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "4839ce575b504ea8ee3140db5daa0901f9dd93e8806b248aae085d81993c52aa")
+    set(_sha256 "d17e25f3efb58ec7bddd10777657c810c974f51fbf7a2dee5cf20025a893c343")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "85e48065c3c212eeab5ff6804fd2bb5feeef55da8784ffe59a73f2a22d1c4920")
+    set(_sha256 "44c2539eb25a3463f5056b77b691ce151f82196362a98d71b8dff74f079322d1")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "7167520e5e92eab8c87ba6f29d034e40590ee956412d0adfce2072cac4889947")
+    set(_sha256 "382a01b3637a04ca8ace0c334c14d63f971b6dafd2213bb86461ce39863d0cc2")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -711,6 +711,34 @@ if(CAI_BUILD_TESTS)
       LABELS "unit;local"
       TIMEOUT 3)
   endforeach()
+  set_tests_properties(cai_tests.lonejson_selected_array_rewrite PROPERTIES
+    LABELS "unit;local;upstream-lonejson"
+    TIMEOUT 3)
+  set_tests_properties(
+    cai_tests.model_capabilities
+    cai_tests.env_precedence
+    cai_tests.source_sink
+    cai_tests.lonejson_nested_mapped_array_stream
+    cai_tests.client_open
+    cai_tests.mike_mind_prompt_contract
+    PROPERTIES
+      LABELS "unit;local;msan-smoke"
+      TIMEOUT 3)
+  set_tests_properties(cai_tests.mcp_handler PROPERTIES
+    LABELS "unit;local;upstream-lonejson"
+    TIMEOUT 3)
+  set_tests_properties(cai_tests.response_json PROPERTIES
+    LABELS "unit;local;upstream-lonejson"
+    TIMEOUT 3)
+  set_tests_properties(cai_tests.response_spooled_request_arrays PROPERTIES
+    LABELS "unit;local;msan-blocked"
+    TIMEOUT 3)
+  set_tests_properties(cai_tests.response_array_serialization_invariants PROPERTIES
+    LABELS "unit;local;msan-blocked"
+    TIMEOUT 3)
+  set_tests_properties(cai_tests.tool_registry PROPERTIES
+    LABELS "unit;local;msan-blocked"
+    TIMEOUT 3)
   add_test(NAME cai_tests.registration
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_test_registration_test.sh"
       $<TARGET_FILE:cai_tests>
