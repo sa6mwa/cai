@@ -245,10 +245,14 @@ function(cai_set_lonejson_from_target)
   get_target_property(_cai_lonejson_include lonejson::lonejson
     INTERFACE_INCLUDE_DIRECTORIES)
   cai_get_imported_target_location(lonejson::lonejson _cai_lonejson_library)
-  if(_cai_lonejson_include AND _cai_lonejson_library)
+  if(NOT CAI_LONEJSON_INCLUDE_DIR AND _cai_lonejson_include)
     set(CAI_LONEJSON_INCLUDE_DIR "${_cai_lonejson_include}" PARENT_SCOPE)
+  endif()
+  if(NOT CAI_LONEJSON_LIBRARY AND _cai_lonejson_library)
     set(CAI_LONEJSON_LIBRARY "${_cai_lonejson_library}" PARENT_SCOPE)
-    set(CAI_LONEJSON_LINK lonejson::lonejson PARENT_SCOPE)
+    if(NOT CAI_LONEJSON_LINK)
+      set(CAI_LONEJSON_LINK lonejson::lonejson PARENT_SCOPE)
+    endif()
   endif()
 endfunction()
 
@@ -264,10 +268,12 @@ function(cai_set_pslog_from_target)
   else()
     return()
   endif()
-  if(_cai_pslog_include)
+  if(NOT CAI_PSLOG_INCLUDE_DIR AND _cai_pslog_include)
     set(CAI_PSLOG_INCLUDE_DIR "${_cai_pslog_include}" PARENT_SCOPE)
   endif()
-  set(CAI_PSLOG_LINK "${_cai_pslog_link}" PARENT_SCOPE)
+  if(NOT CAI_PSLOG_LIBRARY AND NOT CAI_PSLOG_LINK)
+    set(CAI_PSLOG_LINK "${_cai_pslog_link}" PARENT_SCOPE)
+  endif()
 endfunction()
 
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
@@ -842,6 +848,11 @@ if(CAI_BUILD_TESTS)
         "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
+        "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
+        "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
+        "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
+        "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
+        "-DCAI_PARENT_CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
         "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}"
