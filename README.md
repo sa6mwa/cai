@@ -34,6 +34,15 @@ WebSocket transports are not part of the first prerelease. They are tracked in
 This project is in prerelease hardening. The C API is close to first-release
 shape, but may still change before the initial tag.
 
+The verification tiers are split intentionally:
+
+- `make prerelease` runs the standard local gate: debug tests, TSan, MSan
+  smoke, fuzz smoke, Lua tests, and deterministic local example smoke.
+- `make prerelease-live` runs the live-provider gate: integration tests plus a
+  curated set of real non-interactive examples.
+- `make prerelease-hardening` runs both tiers, then long fuzz and the release
+  matrix.
+
 ## Design Bias
 
 - C89 with POSIX features.
@@ -45,6 +54,9 @@ shape, but may still change before the initial tag.
   `dist/cai-<version>.tar.gz`, and `dist/cai-<version>-CHECKSUMS`.
   Release verification checks archive roots, installed docs, pkg-config/CMake
   metadata, dependency-header exclusion, and host-free `$ORIGIN` runpaths.
+- The deterministic local example smoke gate is intentionally narrow. It
+  covers the examples Makefile and the MCP server example automatically. Live
+  example execution is opt-in and limited to a curated non-interactive subset.
 - Release versions are detected from an exact `vX.Y.Z` git tag. Local release
   candidates can use `CAI_VERSION_OVERRIDE=X.Y.Z-rc.N cmake ...` or the same
   override through a custom CMake preset; untagged builds intentionally fall

@@ -6,8 +6,6 @@
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
 
-#include "../src/cai_lj.h"
-
 #include <lauxlib.h>
 #include <lonejson.h>
 #include <lua.h>
@@ -48,6 +46,10 @@ static int cai_lua_absindex(lua_State *L, int index) {
 
 int luaopen_cai(lua_State *L);
 static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
+static int cai_lua_set_error_detail(cai_error *error, int code,
+                                    const char *message,
+                                    const char *detail);
+static int cai_lua_spooled_init(lonejson_spooled *out, cai_error *error);
 
 typedef struct cai_lua_tool_ref cai_lua_tool_ref;
 
@@ -166,6 +168,24 @@ typedef struct cai_lua_function_call_ctx {
   int done_ref;
   int item_ref;
 } cai_lua_function_call_ctx;
+
+static int cai_lua_spooled_init(lonejson_spooled *out, cai_error *error) {
+  lonejson_config config;
+  lonejson_error json_error;
+  lonejson *runtime;
+
+  config = lonejson_default_config();
+  lonejson_error_init(&json_error);
+  runtime = lonejson_new(&config, &json_error);
+  if (runtime == NULL) {
+    return cai_lua_set_error_detail(error, CAI_ERR_NOMEM,
+                                    "failed to initialize lonejson runtime",
+                                    json_error.message);
+  }
+  runtime->spooled_init(runtime, out);
+  lonejson_free(runtime);
+  return CAI_OK;
+}
 
 static int cai_lua_make_sink(lua_State *L, int index, cai_lua_sink_ctx *ctx,
                              cai_sink **out, cai_error *error);
@@ -814,7 +834,10 @@ static int cai_lua_spool_from_stack(lua_State *L, int index,
   const char *text;
 
   memset(out, 0, sizeof(*out));
-  CAI_LJ->spooled_init(CAI_LJ, out);
+  rc = cai_lua_spooled_init(out, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   sink = NULL;
   callbacks.write = cai_lua_spooled_append_sink;
   callbacks.close = NULL;

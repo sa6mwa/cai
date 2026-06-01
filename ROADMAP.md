@@ -75,13 +75,27 @@ Implemented:
 - Release verification for archive roots, docs, pkg-config/CMake metadata,
   dependency exclusion, sanitizer exclusion, and host-free `$ORIGIN` runpaths.
 
-Recent prerelease gates run successfully:
+Verification tiers:
 
-- Debug build and offline tests.
-- ASan/UBSan build and tests.
+- `make prerelease`
+  - debug build and offline tests,
+  - TSan local suite,
+  - MSan smoke subset,
+  - fuzz smoke,
+  - Lua tests,
+  - deterministic local example smoke.
+- `make prerelease-live`
+  - full integration suite,
+  - curated non-interactive live example smoke.
+- `make prerelease-hardening`
+  - both prerelease tiers,
+  - long fuzz via `make fuzz-full`,
+  - release matrix packaging and archive verification.
+
+Recent hardening runs have covered:
+
 - `cai_tool_fuzz -runs=10000`, covering typed/raw tools plus hostile
   `todo_kanban`, `exec_command`, `list_files`, and `read_file` inputs.
-- Release matrix packaging and archive verification.
 - Source archive smoke build.
 - MCP Inspector container e2e.
 - Local SearXNG smoke test.

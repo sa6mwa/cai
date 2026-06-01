@@ -23,6 +23,12 @@ Most examples can be built and run through the examples Makefile:
 make -C examples help
 ```
 
+For automated verification, the repo exposes two narrower smoke paths:
+
+- `make example-smoke-local` covers deterministic local example checks.
+- `CAI_ENABLE_INTEGRATION_TESTS=1 make example-smoke-live` runs a curated
+  non-interactive live subset against the real API.
+
 ## Basic Response
 
 ```sh

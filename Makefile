@@ -40,7 +40,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -55,6 +55,11 @@ help:
 		'make fuzz         Build all libFuzzer harnesses.' \
 		'make fuzz-smoke   Run one-iteration smoke checks for every fuzzer.' \
 		'make fuzz-full    Run every fuzzer with the checked-in corpus and CAI_FUZZ_RUNS iterations.' \
+		'make example-smoke-local  Run deterministic local example smoke checks.' \
+		'make example-smoke-live   Run curated live non-interactive example smoke checks.' \
+		'make prerelease   Run the standard local prerelease verification tier.' \
+		'make prerelease-live  Run the live-provider prerelease verification tier.' \
+		'make prerelease-hardening Run the hardening tier: prerelease, live checks, long fuzz, and release matrix.' \
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
 		'make lua-env      Print shell exports for running local Lua examples.' \
 		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
@@ -134,6 +139,40 @@ fuzz-full: fuzz
 	build/fuzz/cai_mcp_fuzz tests/fuzz-corpus/mcp -runs=$(CAI_FUZZ_RUNS)
 	build/fuzz/cai_session_fuzz tests/fuzz-corpus/session -runs=$(CAI_FUZZ_RUNS)
 	build/fuzz/cai_todo_fuzz tests/fuzz-corpus/todo -runs=$(CAI_FUZZ_RUNS)
+
+example-smoke-local: build-debug
+	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -L example-smoke
+
+example-smoke-live:
+	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
+		printf '%s\n' 'Refusing to run live example smoke without CAI_ENABLE_INTEGRATION_TESTS=1'; \
+		exit 2; \
+	fi
+	$(CMAKE) --preset integration
+	$(CMAKE) --build --preset integration
+	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_examples_live_smoke$$'
+
+prerelease:
+	$(MAKE) test-debug
+	$(MAKE) tsan
+	$(MAKE) msan
+	$(MAKE) fuzz-smoke
+	$(MAKE) lua-test
+	$(MAKE) example-smoke-local
+
+prerelease-live:
+	$(MAKE) test-integration
+	$(MAKE) example-smoke-live
+
+prerelease-hardening:
+	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
+		printf '%s\n' 'Refusing to run prerelease-hardening without CAI_ENABLE_INTEGRATION_TESTS=1'; \
+		exit 2; \
+	fi
+	$(MAKE) prerelease
+	$(MAKE) prerelease-live
+	$(MAKE) fuzz-full
+	$(MAKE) release-matrix
 
 $(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | build-debug
 	mkdir -p "$(LUA_ROCK_TREE)"

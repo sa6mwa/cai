@@ -534,6 +534,35 @@ typedef struct cai_stream_response_meta_state {
   cai_stream_usage_doc usage;
 } cai_stream_response_meta_state;
 
+static int cai_stream_parse_i64_decimal(const char *text, long long *out) {
+  const char *p;
+  int negative;
+  long long value;
+
+  if (text == NULL || out == NULL || text[0] == '\0') {
+    return 0;
+  }
+  p = text;
+  negative = 0;
+  if (*p == '-') {
+    negative = 1;
+    p++;
+  }
+  if (*p == '\0') {
+    return 0;
+  }
+  value = 0;
+  while (*p != '\0') {
+    if (*p < '0' || *p > '9') {
+      return 0;
+    }
+    value = (value * 10LL) + (long long)(*p - '0');
+    p++;
+  }
+  *out = negative ? -value : value;
+  return 1;
+}
+
 typedef struct cai_stream_item_meta_state {
   int depth;
   char current_key[64];
@@ -920,7 +949,14 @@ static lonejson_status cai_stream_response_number_end(void *user,
 
   state = (cai_stream_response_meta_state *)user;
   if (state->current_number_target != NULL) {
-    *state->current_number_target = strtoll(state->number, NULL, 10);
+    if (!cai_stream_parse_i64_decimal(state->number,
+                                      state->current_number_target)) {
+      lonejson_error_init(error);
+      error->code = LONEJSON_STATUS_INVALID_JSON;
+      snprintf(error->message, sizeof(error->message),
+               "invalid response metadata number");
+      return LONEJSON_STATUS_INVALID_JSON;
+    }
     state->current_number_target = NULL;
   }
   return cai_stream_value_ok(user, error);

@@ -466,9 +466,11 @@ if(NOT CAI_LONEJSON_LIBRARY)
     "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=cpkt or set "
     "CAI_LONEJSON_LIBRARY to an official installed lonejson library.")
 endif()
-cai_validate_lonejson_library_abi(
-  "${CAI_LONEJSON_LIBRARY}" "${CAI_LONEJSON_ABI_VERSION}"
-  "cai host dependency check")
+if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+  cai_validate_lonejson_library_abi(
+    "${CAI_LONEJSON_LIBRARY}" "${CAI_LONEJSON_ABI_VERSION}"
+    "cai host dependency check")
+endif()
 if(NOT CAI_LONEJSON_LINK)
   set(CAI_LONEJSON_LINK "${CAI_LONEJSON_LIBRARY}")
 endif()
@@ -782,13 +784,19 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_mcp_http_smoke PROPERTIES
     LABELS "smoke;local"
     TIMEOUT 3)
+  add_test(NAME cai_examples_help_smoke
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_help_smoke.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_examples_help_smoke PROPERTIES
+    LABELS "smoke;local;example-smoke"
+    TIMEOUT 3)
   add_executable(cai_mcp_example_smoke tests/mcp_example_smoke.c)
   cai_configure_c_target(cai_mcp_example_smoke)
   if(TARGET cai_example_mcp_server)
     add_test(NAME cai_mcp_example_smoke
       COMMAND cai_mcp_example_smoke $<TARGET_FILE:cai_example_mcp_server>)
     set_tests_properties(cai_mcp_example_smoke PROPERTIES
-      LABELS "smoke;local"
+      LABELS "smoke;local;example-smoke"
       TIMEOUT 3)
   endif()
   add_test(NAME cai_mcp_inspector_e2e
@@ -1037,6 +1045,22 @@ if(CAI_BUILD_TESTS)
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+    endif()
+    if(TARGET cai_example_basic_response AND
+        TARGET cai_example_streaming_text AND
+        TARGET cai_example_history_export AND
+        TARGET cai_example_session_state)
+      add_test(NAME cai_examples_live_smoke
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_live_smoke.sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "$<TARGET_FILE:cai_example_basic_response>"
+          "$<TARGET_FILE:cai_example_streaming_text>"
+          "$<TARGET_FILE:cai_example_history_export>"
+          "$<TARGET_FILE:cai_example_session_state>")
+      set_tests_properties(cai_examples_live_smoke PROPERTIES
+        LABELS "integration;example-smoke"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     endif()
   endif()
 endif()
