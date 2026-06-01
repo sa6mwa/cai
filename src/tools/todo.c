@@ -232,8 +232,12 @@ typedef struct cai_todo_rewrite_state {
   const char *old_board_key;
   const char *new_board_key;
   long long next_sequence;
+  long long in_process;
+  long long wip_limit;
   int found;
   int complete;
+  int has_wip_limit;
+  int wip_exceeded;
   long long now_unix;
 } cai_todo_rewrite_state;
 
@@ -914,13 +918,6 @@ static int cai_todo_file_store_begin(void *context, void **transaction,
   if (store == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "todo file store is required");
   }
-  rc = cai_todo_ensure_store(store->store_path, error);
-  if (rc == CAI_OK) {
-    rc = cai_todo_ensure_file(store->lock_path, error);
-  }
-  if (rc != CAI_OK) {
-    return rc;
-  }
   txn = (cai_todo_file_transaction *)cai_alloc(NULL, sizeof(*txn));
   if (txn == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -931,6 +928,12 @@ static int cai_todo_file_store_begin(void *context, void **transaction,
   txn->lock.fd = -1;
   rc = cai_todo_lock_file(store->lock_path, &txn->lock, error);
   if (rc != CAI_OK) {
+    cai_free_mem(NULL, txn);
+    return rc;
+  }
+  rc = cai_todo_ensure_store(store->store_path, error);
+  if (rc != CAI_OK) {
+    cai_todo_unlock(&txn->lock);
     cai_free_mem(NULL, txn);
     return rc;
   }
@@ -2447,6 +2450,10 @@ static lonejson_status cai_todo_move_item_cb(
   (void)context;
   state = (cai_todo_rewrite_state *)user;
   src = (cai_todo_item *)item;
+  if (state->target_board_id != NULL &&
+      !cai_todo_streq(src->board_id, state->target_board_id)) {
+    return LONEJSON_STATUS_OK;
+  }
   if (!cai_todo_item_ref_matches(src, state->args->item_id)) {
     return LONEJSON_STATUS_OK;
   }
@@ -2462,6 +2469,13 @@ static lonejson_status cai_todo_move_item_cb(
     state->append_item.has_updated_at_unix = 1;
     result->action = LONEJSON_ARRAY_REWRITE_DROP;
   } else {
+    if (cai_todo_streq(state->new_status, CAI_TODO_STATUS_IN_PROCESS) &&
+        !cai_todo_streq(src->status, CAI_TODO_STATUS_IN_PROCESS) &&
+        state->has_wip_limit && state->wip_limit >= 0LL &&
+        state->in_process >= state->wip_limit) {
+      state->wip_exceeded = 1;
+      return LONEJSON_STATUS_OK;
+    }
     if (cai_todo_copy_item(&state->replacement_item, src, NULL) != CAI_OK) {
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
@@ -3035,25 +3049,28 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(ctx, txn, args->board_id, args->board_key,
-                           cai_todo_arg_string(args->board_name,
-                                               ctx->default_board),
-                           &board, &in_process, &items, error);
-  if (rc == CAI_TODO_FOUND_NONE) {
-    rc = CAI_OK;
+  if (cai_todo_board_arg_is_default(ctx, args)) {
+    rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &board,
+                               &in_process, &items, -1, 0, NULL, NULL, error);
+  } else {
+    rc = cai_todo_find_board(ctx, txn, args->board_id, args->board_key,
+                             cai_todo_arg_string(args->board_name,
+                                                 ctx->default_board),
+                             &board, &in_process, &items, error);
   }
-  if (rc == CAI_OK && !complete &&
-      cai_todo_streq(new_status, CAI_TODO_STATUS_IN_PROCESS) &&
-      board.has_wip_limit && board.wip_limit >= 0 &&
-      in_process >= board.wip_limit) {
-    rc = cai_todo_set_result(result, args->operation, 0, "wip_limit_exceeded",
-                             "board WIP limit would be exceeded", error);
+  if (rc == CAI_TODO_FOUND_NONE) {
+    rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
+                             "board was not found", error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     state.ctx = ctx;
     state.args = args;
+    state.target_board_id = board.id;
     state.new_status = new_status;
     state.complete = complete;
+    state.in_process = in_process;
+    state.has_wip_limit = board.has_wip_limit;
+    state.wip_limit = board.wip_limit;
     state.now_unix = (long long)time(NULL);
     options.item_map = &cai_todo_item_map;
     options.item_dst = &state.item;
@@ -3061,17 +3078,22 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
     options.user = &state;
     rc = cai_todo_rewrite(ctx, txn, "items", &options, error);
   }
+  if (rc == CAI_OK && state.wip_exceeded) {
+    rc = cai_todo_set_result(result, args->operation, 0, "wip_limit_exceeded",
+                             "board WIP limit would be exceeded", error);
+  }
   if (rc == CAI_OK && !(result->has_ok && !result->ok) && !state.found) {
     rc = cai_todo_set_result(result, args->operation, 0, "item_not_found",
                              "item was not found", error);
   }
-  if (rc == CAI_OK && state.found && complete) {
+  if (rc == CAI_OK && !(result->has_ok && !result->ok) && state.found &&
+      complete) {
     memset(&options, 0, sizeof(options));
     options.append = cai_todo_append_done_cb;
     options.user = &state;
     rc = cai_todo_rewrite(ctx, txn, "done", &options, error);
   }
-  if (rc == CAI_OK && state.found) {
+  if (rc == CAI_OK && !(result->has_ok && !result->ok) && state.found) {
     rc = cai_todo_store_commit(ctx, txn, error);
     txn = NULL;
   }

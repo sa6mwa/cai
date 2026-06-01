@@ -3640,6 +3640,7 @@ cai_response_request_state_cleanup(cai_response_request_state *state) {
   CAI_LJ->json_value_cleanup(CAI_LJ, &state->doc.prompt);
   CAI_LJ->json_value_cleanup(CAI_LJ, &state->doc.tool_choice);
   CAI_LJ->json_value_cleanup(CAI_LJ, &state->doc.input);
+  CAI_LJ->json_value_cleanup(CAI_LJ, &state->doc.tools);
   if (state->has_input_json) {
     state->input_json.cleanup(&state->input_json);
     state->has_input_json = 0;

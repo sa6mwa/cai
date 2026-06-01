@@ -11,6 +11,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <locale.h>
 #include <netinet/in.h>
 #include <pslog.h>
@@ -25,6 +26,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef PATH_MAX
@@ -3861,6 +3863,9 @@ static void test_client_open(test_state *state) {
     expect_str(state, "client_api_key", CAI_CLIENT_IMPL(client)->api_key, "test-key");
     expect_str(state, "client_base_url", CAI_CLIENT_IMPL(client)->base_url,
                "http://example.test/v1");
+    expect_int(state, "client_default_timeout",
+               CAI_CLIENT_IMPL(client)->timeout_ms,
+               CAI_DEFAULT_HTTP_TIMEOUT_MS);
     expect_int(state, "client_http_2_disabled", CAI_CLIENT_IMPL(client)->http_2_disabled, 0);
     if (CAI_CLIENT_IMPL(client)->logger != logger) {
       test_fail(state, "client_logger", "borrowed logger not preserved");
@@ -4815,6 +4820,56 @@ static void test_response_json(test_state *state) {
   CAI_LJ->cleanup(CAI_LJ, &parsed_output_map, &parsed);
   cai_output_destroy(output);
   cai_response_destroy(response);
+  cai_error_cleanup(&error);
+}
+
+static void test_response_request_tools_cleanup(test_state *state) {
+  cai_response_create_params *params;
+  cai_error error;
+  char *json;
+  size_t json_len;
+  int i;
+
+  cai_error_init(&error);
+  for (i = 0; i < 8; i++) {
+    params = NULL;
+    json = NULL;
+    json_len = 0U;
+    expect_int(state, "response_tools_cleanup_params_new",
+               cai_response_create_params_new(&params, &error), CAI_OK);
+    expect_int(state, "response_tools_cleanup_model",
+               cai_response_create_params_set_model(
+                   params, CAI_MODEL_GPT_5_NANO, &error),
+               CAI_OK);
+    expect_int(state, "response_tools_cleanup_input",
+               cai_response_create_params_add_text(params, "user", "hello",
+                                                   &error),
+               CAI_OK);
+    expect_int(state, "response_tools_cleanup_function_tool",
+               cai_response_create_params_add_function_tool(
+                   params, "lookup", "Lookup a value",
+                   "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":"
+                   "\"string\"}},\"required\":[\"query\"]}",
+                   1, &error),
+               CAI_OK);
+    expect_int(state, "response_tools_cleanup_hosted_tool",
+               cai_response_create_params_add_simple_hosted_tool(
+                   params, CAI_HOSTED_TOOL_WEB_SEARCH, &error),
+               CAI_OK);
+    expect_int(state, "response_tools_cleanup_serialize",
+               cai_response_create_params_serialize_json(params, &json,
+                                                         &json_len, &error),
+               CAI_OK);
+    if (json == NULL || strstr(json, "\"tools\":[") == NULL ||
+        strstr(json, "\"name\":\"lookup\"") == NULL ||
+        strstr(json, "\"type\":\"web_search\"") == NULL ||
+        strlen(json) != json_len) {
+      test_fail(state, "response_tools_cleanup_serialize",
+                "tool-bearing request did not serialize correctly");
+    }
+    free(json);
+    cai_response_create_params_destroy(params);
+  }
   cai_error_cleanup(&error);
 }
 
@@ -6286,7 +6341,10 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request, "\"instructions\":\"answer tersely\"") != NULL &&
         strstr(request, "\"prompt_cache_key\":\"cai:test:agent:v1\"") !=
             NULL &&
-        strstr(request, "\"tool_choice\":\"auto\"") != NULL &&
+        strstr(request,
+               "\"tool_choice\":{\"type\":\"function\",\"name\":\"raw_echo\"}") !=
+            NULL &&
+        strstr(request, "\"tool_choice\":\"auto\"") == NULL &&
         strstr(request,
                "\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"}") !=
             NULL &&
@@ -7718,6 +7776,7 @@ static void test_agent_session(test_state *state) {
   agent_config.developer_instructions = "answer tersely";
   agent_config.prompt_cache_key = "cai:test:agent:v1";
   agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
+  agent_config.tool_choice_json = "{\"type\":\"function\",\"name\":\"raw_echo\"}";
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   agent_config.text_format_name = "agent_answer";
@@ -8764,6 +8823,7 @@ static void test_read_tool(test_state *state) {
   char nested_path[PATH_MAX];
   char hidden_path[PATH_MAX];
   char utf8_path[PATH_MAX];
+  char utf8_boundary_path[PATH_MAX];
   char cr_path[PATH_MAX];
   char crlf_boundary_path[PATH_MAX];
   char binary_path[PATH_MAX];
@@ -8814,6 +8874,26 @@ static void test_read_tool(test_state *state) {
   write_file_or_die(hidden_path, "hidden\n");
   snprintf(utf8_path, sizeof(utf8_path), "%s/sub/utf8.txt", dir_template);
   write_bytes_or_die(utf8_path, utf8_bytes, sizeof(utf8_bytes));
+  snprintf(utf8_boundary_path, sizeof(utf8_boundary_path),
+           "%s/sub/utf8-boundary.txt", dir_template);
+  {
+    FILE *fp;
+    size_t i;
+
+    fp = fopen(utf8_boundary_path, "wb");
+    if (fp == NULL) {
+      test_fail(state, "read_utf8_boundary_fixture",
+                "failed to create file");
+    } else {
+      for (i = 0U; i < 4095U; i++) {
+        fputc('a', fp);
+      }
+      fputc(0xC3, fp);
+      fputc(0xA9, fp);
+      fputc('\n', fp);
+      fclose(fp);
+    }
+  }
   snprintf(cr_path, sizeof(cr_path), "%s/sub/classic-cr.txt", dir_template);
   write_file_or_die(cr_path, "uno\rdos\rtres\r");
   snprintf(crlf_boundary_path, sizeof(crlf_boundary_path),
@@ -9137,6 +9217,30 @@ static void test_read_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  {
+    cai_read_tool_config boundary_config;
+
+    boundary_config = config;
+    boundary_config.content_max_bytes = 8192U;
+    if (run_read_tool_case(state, "read_chunk_boundary_utf8_limit",
+                           &boundary_config,
+                           "{\"path\":\"utf8-boundary.txt\","
+                           "\"max_bytes\":4096}",
+                           CAI_OK, &writer, &error) == CAI_OK) {
+      expect_substr(state, "read_chunk_boundary_utf8_byte_count",
+                    writer.buffer, "\"byte_count\":4095");
+      expect_substr(state, "read_chunk_boundary_utf8_truncated", writer.buffer,
+                    "\"truncated\":true");
+      expect_valid_json(state, "read_chunk_boundary_utf8_json", writer.buffer);
+      if (strstr(writer.buffer, "\xC3") != NULL) {
+        test_fail(state, "read_chunk_boundary_utf8_partial",
+                  "read_file emitted a partial UTF-8 sequence at max_bytes");
+      }
+    }
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   run_read_tool_case(state, "read_reject_start_zero", &config,
                      "{\"path\":\"alpha.txt\",\"start_line\":0}",
                      CAI_ERR_INVALID, &writer, &error);
@@ -9300,6 +9404,9 @@ static void test_read_tool(test_state *state) {
   unlink(invalid_utf8_path);
   unlink(control_path);
   unlink(binary_path);
+  unlink(crlf_boundary_path);
+  unlink(cr_path);
+  unlink(utf8_boundary_path);
   unlink(utf8_path);
   unlink(hidden_path);
   unlink(nested_path);
@@ -10116,6 +10223,147 @@ static void test_revgeo_tool(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static int test_lock_file_exclusive(const char *path, int *fd_out) {
+  struct flock lock;
+  int fd;
+
+  fd = open(path, O_CREAT | O_RDWR, 0600);
+  if (fd < 0) {
+    return -1;
+  }
+  memset(&lock, 0, sizeof(lock));
+  lock.l_type = F_WRLCK;
+  lock.l_whence = SEEK_SET;
+  if (fcntl(fd, F_SETLK, &lock) != 0) {
+    close(fd);
+    return -1;
+  }
+  *fd_out = fd;
+  return 0;
+}
+
+static void test_unlock_file_exclusive(int fd) {
+  struct flock lock;
+
+  if (fd < 0) {
+    return;
+  }
+  memset(&lock, 0, sizeof(lock));
+  lock.l_type = F_UNLCK;
+  lock.l_whence = SEEK_SET;
+  (void)fcntl(fd, F_SETLK, &lock);
+  close(fd);
+}
+
+static void test_todo_add_item_child(const char *store_path,
+                                     const char *lock_path) {
+  cai_todo_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int rc;
+
+  cai_error_init(&error);
+  registry = NULL;
+  sink = NULL;
+  memset(&config, 0, sizeof(config));
+  memset(&writer, 0, sizeof(writer));
+  config.store_path = store_path;
+  config.lock_path = lock_path;
+  config.default_board = "main";
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  rc = cai_tool_registry_new(&registry, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_todo_tool(registry, &config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(
+        registry, CAI_TODO_DEFAULT_TOOL_NAME,
+        "{\"operation\":\"add_item\",\"title\":\"child task\"}", sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  if (rc != CAI_OK || strstr(writer.buffer, "\"ok\":true") == NULL ||
+      strstr(writer.buffer, "\"item_id\":\"DEF-001\"") == NULL) {
+    _exit(1);
+  }
+  _exit(0);
+}
+
+static void test_todo_file_store_initializes_under_lock(test_state *state) {
+  char dir_template[] = "/tmp/cai-todo-lock-test-XXXXXX";
+  char store_path[PATH_MAX];
+  char lock_path[PATH_MAX];
+  char store_text[2048];
+  pid_t pid;
+  int lock_fd;
+  int status;
+  int i;
+  int store_created_while_locked;
+
+  lock_fd = -1;
+  store_created_while_locked = 0;
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "todo_lock_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  snprintf(store_path, sizeof(store_path), "%s/todo.json", dir_template);
+  snprintf(lock_path, sizeof(lock_path), "%s/todo.lock", dir_template);
+  if (test_lock_file_exclusive(lock_path, &lock_fd) != 0) {
+    test_fail(state, "todo_lock_parent", "failed to acquire parent lock");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_unlock_file_exclusive(lock_fd);
+    test_fail(state, "todo_lock_fork", "fork failed");
+    return;
+  }
+  if (pid == 0) {
+    test_todo_add_item_child(store_path, lock_path);
+  }
+  for (i = 0; i < 50; i++) {
+    if (access(store_path, F_OK) == 0) {
+      store_created_while_locked = 1;
+      break;
+    }
+    {
+      struct timespec delay;
+
+      delay.tv_sec = 0;
+      delay.tv_nsec = 10000000L;
+      nanosleep(&delay, NULL);
+    }
+  }
+  if (store_created_while_locked) {
+    test_fail(state, "todo_lock_store_init",
+              "todo store was initialized before the file lock was acquired");
+  }
+  test_unlock_file_exclusive(lock_fd);
+  lock_fd = -1;
+  status = 0;
+  if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) {
+    test_fail(state, "todo_lock_child", "child todo operation failed");
+  }
+  if (!read_text_file(store_path, store_text, sizeof(store_text)) ||
+      strstr(store_text, "child task") == NULL ||
+      strstr(store_text, "DEF-001") == NULL) {
+    test_fail(state, "todo_lock_store_content",
+              "locked child operation did not persist expected todo item");
+  }
+}
+
 static void test_todo_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-todo-test-XXXXXX";
   char store_path[PATH_MAX];
@@ -10365,6 +10613,40 @@ static void test_todo_tool(test_state *state) {
       memcpy(item_id, id_start, (size_t)(id_end - id_start));
       item_id[id_end - id_start] = '\0';
     }
+  }
+  if (item_id[0] != '\0') {
+    snprintf(todo_args, sizeof(todo_args),
+             "{\"operation\":\"move_item\",\"item_id\":\"%s\","
+             "\"board_name\":\"main\",\"status\":\"in_process\"}",
+             item_id);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_move_in_process_idempotent_at_wip_limit",
+               cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                     todo_args, sink, &error),
+               CAI_OK);
+    if (strstr(writer.buffer, "\"ok\":true") == NULL ||
+        strstr(writer.buffer, "\"status\":\"in_process\"") == NULL ||
+        strstr(writer.buffer, "\"wip_limit_exceeded\"") != NULL) {
+      test_fail(state, "todo_move_in_process_idempotent_output",
+                "idempotent in_process move should not hit WIP limit");
+    }
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_move_missing_item_at_wip_limit",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"move_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"item_id\":\"DEF-999\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"item_not_found\"") == NULL ||
+      strstr(writer.buffer, "\"wip_limit_exceeded\"") != NULL) {
+    test_fail(state, "todo_move_missing_item_at_wip_limit_output",
+              "missing item should not be masked by WIP limit");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -10699,6 +10981,22 @@ static void test_todo_tool(test_state *state) {
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
+  expect_int(state, "todo_move_missing_board_item_ref",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"move_item\","
+                                   "\"board_name\":\"missing\","
+                                   "\"item_id\":\"AX-001\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"board_not_found\"") == NULL) {
+    test_fail(state, "todo_move_missing_board_item_ref_output",
+              "move_item with missing selected board should not rewrite "
+              "another board item");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
   expect_int(state, "todo_create_ops_board",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"create_board\","
@@ -10891,6 +11189,49 @@ static void test_todo_tool(test_state *state) {
       strstr(writer.buffer, "legacy-aux-active") != NULL) {
     test_fail(state, "todo_legacy_non_default_list_output",
               "legacy non-default board did not backfill item refs");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_move_wrong_board_internal_id",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"move_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"item_id\":\"legacy-aux-active\","
+                                   "\"status\":\"in_process\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"item_not_found\"") == NULL) {
+    test_fail(state, "todo_move_wrong_board_internal_id_output",
+              "move_item must scope opaque item ids to selected board");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_complete_wrong_board_internal_id",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"complete_item\","
+                                   "\"board_name\":\"main\","
+                                   "\"item_id\":\"legacy-aux-active\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"ok\":false") == NULL ||
+      strstr(writer.buffer, "\"item_not_found\"") == NULL) {
+    test_fail(state, "todo_complete_wrong_board_internal_id_output",
+              "complete_item must scope opaque item ids to selected board");
+  }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_wrong_board_did_not_mutate_aux",
+             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                   "{\"operation\":\"list_board\","
+                                   "\"board_name\":\"aux\"}",
+                                   sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"id\":\"AUX-001\"") == NULL ||
+      strstr(writer.buffer, "\"status\":\"todo\"") == NULL ||
+      strstr(writer.buffer, "\"in_process\"") != NULL) {
+    test_fail(state, "todo_wrong_board_did_not_mutate_aux_output",
+              "wrong-board move/complete mutated aux item state");
   }
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -14919,6 +15260,7 @@ static const test_entry test_entries[] = {
     {"client_open", test_client_open},
     {"mike_mind_prompt_contract", test_mike_mind_prompt_contract},
     {"response_json", test_response_json},
+    {"response_request_tools_cleanup", test_response_request_tools_cleanup},
     {"response_spooled_request_arrays", test_response_spooled_request_arrays},
     {"response_array_serialization_invariants",
      test_response_array_serialization_invariants},
@@ -14946,6 +15288,8 @@ static const test_entry test_entries[] = {
     {"agent_client_history_tool_auto_run",
      test_agent_client_history_tool_auto_run},
     {"revgeo_tool", test_revgeo_tool},
+    {"todo_file_store_initializes_under_lock",
+     test_todo_file_store_initializes_under_lock},
     {"todo_tool", test_todo_tool},
     {"todo_callback_store", test_todo_callback_store},
     {"searxng_registry_tool", test_searxng_registry_tool},

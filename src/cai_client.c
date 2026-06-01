@@ -80,7 +80,8 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->base_url = NULL;
   impl->organization_id = NULL;
   impl->project_id = NULL;
-  impl->timeout_ms = effective->timeout_ms;
+  impl->timeout_ms = effective->timeout_ms > 0L ? effective->timeout_ms
+                                                : CAI_DEFAULT_HTTP_TIMEOUT_MS;
   impl->http_2_disabled = effective->http_2_disabled;
   impl->insecure_skip_verify = effective->insecure_skip_verify;
   impl->json_response_limit_bytes = effective->json_response_limit_bytes;

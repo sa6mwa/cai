@@ -744,6 +744,39 @@ static int cai_read_append_text(lonejson_spooled *spool,
   return cai_read_append(spool, data, len, error);
 }
 
+static size_t cai_read_apply_output_limit(
+    const cai_read_text_validator *validator, const char *data, size_t len,
+    long long written, long long max_bytes, int *truncated, int *stop) {
+  long long remaining;
+  size_t complete;
+
+  if (len == 0U || *stop) {
+    return len;
+  }
+  if (written >= max_bytes) {
+    *truncated = 1;
+    *stop = 1;
+    return 0U;
+  }
+  remaining = max_bytes - written;
+  if ((unsigned long long)len > (unsigned long long)remaining) {
+    complete =
+        cai_read_text_complete_prefix(validator, data, (size_t)remaining);
+    *truncated = 1;
+    *stop = 1;
+    return complete;
+  }
+  if ((unsigned long long)len == (unsigned long long)remaining) {
+    complete = cai_read_text_complete_prefix(validator, data, len);
+    if (complete < len) {
+      *truncated = 1;
+      *stop = 1;
+      return complete;
+    }
+  }
+  return len;
+}
+
 static int cai_read_is_line_break(const char *buffer, size_t nread, size_t i,
                                   size_t *len) {
   if (buffer[i] == '\n') {
@@ -1063,13 +1096,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           *truncated = 1;
           stop = 1;
         } else {
-          if (written + (long long)len > max_bytes) {
-            len = cai_read_text_complete_prefix(
-                &output_validator, line_break,
-                (size_t)(max_bytes - written));
-            *truncated = 1;
-            stop = 1;
-          }
+          len = cai_read_apply_output_limit(&output_validator, line_break, len,
+                                            written, max_bytes, truncated,
+                                            &stop);
           rc = cai_read_append_text(content, &output_validator, line_break, len,
                                     error);
           if (rc != CAI_OK) {
@@ -1108,13 +1137,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
               stop = 1;
               break;
             }
-            if (written + (long long)len > max_bytes) {
-              len = cai_read_text_complete_prefix(
-                  &output_validator, buffer + start,
-                  (size_t)(max_bytes - written));
-              *truncated = 1;
-              stop = 1;
-            }
+            len = cai_read_apply_output_limit(
+                &output_validator, buffer + start, len, written, max_bytes,
+                truncated, &stop);
             rc = cai_read_append_text(content, &output_validator,
                                       buffer + start, len, error);
             if (rc != CAI_OK) {
@@ -1142,13 +1167,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
             stop = 1;
             break;
           }
-          if (written + (long long)len > max_bytes) {
-            len = cai_read_text_complete_prefix(
-                &output_validator, buffer + start,
-                (size_t)(max_bytes - written));
-            *truncated = 1;
-            stop = 1;
-          }
+          len = cai_read_apply_output_limit(&output_validator, buffer + start,
+                                            len, written, max_bytes,
+                                            truncated, &stop);
           rc = cai_read_append_text(content, &output_validator, buffer + start,
                                     len, error);
           if (rc != CAI_OK) {
@@ -1183,13 +1204,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           stop = 1;
           break;
         }
-        if (written + (long long)len > max_bytes) {
-          len = cai_read_text_complete_prefix(&output_validator,
-                                              buffer + start,
-                                              (size_t)(max_bytes - written));
-          *truncated = 1;
-          stop = 1;
-        }
+        len = cai_read_apply_output_limit(&output_validator, buffer + start,
+                                          len, written, max_bytes, truncated,
+                                          &stop);
         rc = cai_read_append_text(content, &output_validator, buffer + start,
                                   len, error);
         if (rc != CAI_OK) {
@@ -1213,11 +1230,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
       if (at_limit) {
         *truncated = 1;
       } else {
-        if (written + (long long)len > max_bytes) {
-          len = cai_read_text_complete_prefix(&output_validator, "\r",
-                                              (size_t)(max_bytes - written));
-          *truncated = 1;
-        }
+        len = cai_read_apply_output_limit(&output_validator, "\r", len,
+                                          written, max_bytes, truncated,
+                                          &stop);
         rc = cai_read_append_text(content, &output_validator, "\r", len, error);
         if (rc == CAI_OK) {
           written += (long long)len;
@@ -1235,7 +1250,7 @@ static int cai_read_stream_file(const cai_read_context *ctx,
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "failed while reading file", strerror(errno));
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && !*truncated) {
     rc = cai_read_text_validator_finish(&file_validator, error);
   }
   if (rc == CAI_OK) {

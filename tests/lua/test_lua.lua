@@ -153,6 +153,8 @@ assert_not_ok(dummy_agent:add_hosted_mcp_tool({
 }), "Lua hosted MCP server_label is required")
 assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
   "agent hosted tool JSON must be an object")
+assert_not_ok(dummy_agent:add_user_text_spooled({ read = "not callable" }),
+  "agent spooled reader with non-callable read must fail")
 local dummy_session = assert_ok(dummy_agent:new_session())
 assert_ok(dummy_session:set_previous_response_id("resp_lua_test"))
 assert_ok(dummy_session:set_conversation_id("conv_lua_test"))

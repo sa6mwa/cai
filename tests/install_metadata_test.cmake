@@ -7,8 +7,29 @@ endif()
 if(NOT DEFINED CAI_BUILD_TYPE)
   set(CAI_BUILD_TYPE "")
 endif()
+if(NOT DEFINED CAI_BUILD_SHARED)
+  set(CAI_BUILD_SHARED ON)
+endif()
+if(NOT DEFINED CAI_BUILD_STATIC)
+  set(CAI_BUILD_STATIC ON)
+endif()
 if(NOT DEFINED CAI_TARGET_ID)
   set(CAI_TARGET_ID "")
+endif()
+if(NOT DEFINED CAI_INSTALL_RPATH_TOKEN)
+  set(CAI_INSTALL_RPATH_TOKEN "$ORIGIN")
+endif()
+
+if(CAI_TARGET_ID MATCHES "darwin")
+  if(NOT CAI_INSTALL_RPATH_TOKEN STREQUAL "@loader_path")
+    message(FATAL_ERROR
+      "Darwin install rpath token must be @loader_path, got ${CAI_INSTALL_RPATH_TOKEN}")
+  endif()
+else()
+  if(NOT CAI_INSTALL_RPATH_TOKEN STREQUAL "$ORIGIN")
+    message(FATAL_ERROR
+      "ELF install rpath token must be $ORIGIN, got ${CAI_INSTALL_RPATH_TOKEN}")
+  endif()
 endif()
 if(NOT DEFINED CAI_C_COMPILER OR CAI_C_COMPILER STREQUAL "")
   message(FATAL_ERROR "CAI_C_COMPILER is required")
@@ -57,6 +78,15 @@ foreach(path IN LISTS installed_shared_libraries)
 endforeach()
 if(installed_shared_libraries AND installed_shared_library STREQUAL "")
   list(GET installed_shared_libraries 0 installed_shared_library)
+endif()
+if(CAI_BUILD_SHARED AND NOT installed_shared_library)
+  message(FATAL_ERROR "shared build did not install a libcai shared library")
+endif()
+if(NOT CAI_BUILD_SHARED AND installed_shared_library)
+  message(FATAL_ERROR "static-only build installed a libcai shared library")
+endif()
+if(CAI_BUILD_STATIC AND NOT EXISTS "${prefix}/lib/libcai.a")
+  message(FATAL_ERROR "static build did not install libcai.a")
 endif()
 if(installed_shared_library)
   file(STRINGS "${installed_shared_library}" installed_shared_strings
@@ -377,47 +407,48 @@ int main(void) {
       "failed to build cai installed-package fallback consumer")
   endif()
 
-  set(shared_only_consumer_dir
-      "${CAI_BINARY_DIR}/install-metadata-shared-only-consumer")
-  set(shared_only_fake_lonejson_dir
-      "${shared_only_consumer_dir}/fake-lonejson")
-  file(REMOVE_RECURSE "${shared_only_consumer_dir}")
-  file(MAKE_DIRECTORY "${shared_only_consumer_dir}"
-                      "${shared_only_fake_lonejson_dir}/lib")
-  file(WRITE "${shared_only_fake_lonejson_dir}/fake_lonejson.c"
-             "void cai_fake_lonejson(void) {}\n")
-  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-    set(shared_only_fake_lonejson_library
-        "${shared_only_fake_lonejson_dir}/lib/liblonejson.dylib")
-    set(shared_only_fake_lonejson_link_flag
-        "-Wl,-install_name,@rpath/liblonejson.${CAI_LONEJSON_ABI_VERSION}.dylib")
-  else()
-    set(shared_only_fake_lonejson_library
-        "${shared_only_fake_lonejson_dir}/lib/liblonejson.so")
-    set(shared_only_fake_lonejson_link_flag
-        "-Wl,-soname,liblonejson.so.${CAI_LONEJSON_ABI_VERSION}")
-  endif()
-  execute_process(
-    COMMAND "${CAI_C_COMPILER}" -shared
-            "${shared_only_fake_lonejson_link_flag}"
-            -o "${shared_only_fake_lonejson_library}"
-            "${shared_only_fake_lonejson_dir}/fake_lonejson.c"
-    RESULT_VARIABLE shared_only_fake_lib_result
-    OUTPUT_VARIABLE shared_only_fake_lib_output
-    ERROR_VARIABLE shared_only_fake_lib_error)
-  if(NOT shared_only_fake_lib_result EQUAL 0)
-    message(FATAL_ERROR
-      "failed to build fake lonejson shared library:\n"
-      "${shared_only_fake_lib_error}\n${shared_only_fake_lib_output}")
-  endif()
-  file(WRITE "${shared_only_consumer_dir}/CMakeLists.txt"
+  if(CAI_BUILD_SHARED)
+    set(shared_only_consumer_dir
+        "${CAI_BINARY_DIR}/install-metadata-shared-only-consumer")
+    set(shared_only_fake_lonejson_dir
+        "${shared_only_consumer_dir}/fake-lonejson")
+    file(REMOVE_RECURSE "${shared_only_consumer_dir}")
+    file(MAKE_DIRECTORY "${shared_only_consumer_dir}"
+                        "${shared_only_fake_lonejson_dir}/lib")
+    file(WRITE "${shared_only_fake_lonejson_dir}/fake_lonejson.c"
+               "void cai_fake_lonejson(void) {}\n")
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+      set(shared_only_fake_lonejson_library
+          "${shared_only_fake_lonejson_dir}/lib/liblonejson.dylib")
+      set(shared_only_fake_lonejson_link_flag
+          "-Wl,-install_name,@rpath/liblonejson.${CAI_LONEJSON_ABI_VERSION}.dylib")
+    else()
+      set(shared_only_fake_lonejson_library
+          "${shared_only_fake_lonejson_dir}/lib/liblonejson.so")
+      set(shared_only_fake_lonejson_link_flag
+          "-Wl,-soname,liblonejson.so.${CAI_LONEJSON_ABI_VERSION}")
+    endif()
+    execute_process(
+      COMMAND "${CAI_C_COMPILER}" -shared
+              "${shared_only_fake_lonejson_link_flag}"
+              -o "${shared_only_fake_lonejson_library}"
+              "${shared_only_fake_lonejson_dir}/fake_lonejson.c"
+      RESULT_VARIABLE shared_only_fake_lib_result
+      OUTPUT_VARIABLE shared_only_fake_lib_output
+      ERROR_VARIABLE shared_only_fake_lib_error)
+    if(NOT shared_only_fake_lib_result EQUAL 0)
+      message(FATAL_ERROR
+        "failed to build fake lonejson shared library:\n"
+        "${shared_only_fake_lib_error}\n${shared_only_fake_lib_output}")
+    endif()
+    file(WRITE "${shared_only_consumer_dir}/CMakeLists.txt"
 "cmake_minimum_required(VERSION 3.21)
 project(cai_shared_only_consumer LANGUAGES C)
 find_package(cai CONFIG REQUIRED)
 add_executable(cai_shared_only_consumer main.c)
 target_link_libraries(cai_shared_only_consumer PRIVATE cai::cai_shared)
 ")
-  file(WRITE "${shared_only_consumer_dir}/main.c"
+    file(WRITE "${shared_only_consumer_dir}/main.c"
 "#include <cai/cai.h>
 int main(void) {
   cai_error error;
@@ -426,23 +457,24 @@ int main(void) {
   return 0;
 }
 ")
-  set(shared_only_consumer_configure_command
-    "${CMAKE_COMMAND}"
-    -S "${shared_only_consumer_dir}"
-    -B "${shared_only_consumer_dir}/build"
-    "-Dcai_DIR=${prefix}/lib/cmake/cai"
-    "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
-  execute_process(
-    COMMAND ${shared_only_consumer_configure_command}
-    RESULT_VARIABLE shared_only_consumer_configure_result
-    OUTPUT_VARIABLE shared_only_consumer_configure_output
-    ERROR_VARIABLE shared_only_consumer_configure_error)
-  if(NOT shared_only_consumer_configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "shared-only installed-package consumer should configure with "
-      "liblonejson but without lonejson headers:\n"
-      "${shared_only_consumer_configure_error}\n"
-      "${shared_only_consumer_configure_output}")
+    set(shared_only_consumer_configure_command
+      "${CMAKE_COMMAND}"
+      -S "${shared_only_consumer_dir}"
+      -B "${shared_only_consumer_dir}/build"
+      "-Dcai_DIR=${prefix}/lib/cmake/cai"
+      "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
+    execute_process(
+      COMMAND ${shared_only_consumer_configure_command}
+      RESULT_VARIABLE shared_only_consumer_configure_result
+      OUTPUT_VARIABLE shared_only_consumer_configure_output
+      ERROR_VARIABLE shared_only_consumer_configure_error)
+    if(NOT shared_only_consumer_configure_result EQUAL 0)
+      message(FATAL_ERROR
+        "shared-only installed-package consumer should configure with "
+        "liblonejson but without lonejson headers:\n"
+        "${shared_only_consumer_configure_error}\n"
+        "${shared_only_consumer_configure_output}")
+    endif()
   endif()
 
   set(missing_dep_consumer_dir

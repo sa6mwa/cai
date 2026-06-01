@@ -53,7 +53,8 @@ The verification tiers are split intentionally:
   archives as `dist/cai-<version>-<target>.tar.gz`, a source archive as
   `dist/cai-<version>.tar.gz`, and `dist/cai-<version>-CHECKSUMS`.
   Release verification checks archive roots, installed docs, pkg-config/CMake
-  metadata, dependency-header exclusion, and host-free `$ORIGIN` runpaths.
+  metadata, dependency-header exclusion, and host-free relative runpaths
+  (`$ORIGIN` on ELF targets, `@loader_path` on Darwin).
 - The deterministic local example smoke gate is intentionally narrow. It
   covers the examples Makefile and the MCP server example automatically. Live
   example execution is opt-in and limited to a curated non-interactive subset.
@@ -255,16 +256,16 @@ without manually carrying a `cai_session`. Explicit sessions remain available
 for multi-session, conversation-handle, and advanced workflows.
 
 Large user text can use `add_user_text_source` or `add_user_text_spooled`
-instead of building a temporary C string. The session keeps the pending text
-spooled and clones it into each request, so retry behavior is the same as for
-small string input.
+instead of building a temporary C string. Source inputs are consumed when added
+and stored as spooled pending input; request retries then clone that spool, so
+retry behavior is the same as for small string input.
 
 User file input is available at the same facade level. Use
 `add_user_file_path` for a local path, `add_user_file_source` for a `cai_source`,
 or `add_user_file_data_spooled` when the caller already owns a
-`lonejson_spooled` value. The session keeps the pending file content spooled
-and clones it into each request, so a failed request does not consume the
-queued file input.
+`lonejson_spooled` value. Source/path file inputs are consumed when added and
+stored as spooled pending input; request retries then clone that spool, so a
+failed request does not consume the queued file input.
 
 Process restart/resume has two separate pieces by design. To continue
 inference against OpenAI-held Responses context, persist either

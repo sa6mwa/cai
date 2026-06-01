@@ -2883,14 +2883,14 @@ static int cai_session_init_response_params(cai_session *session,
     rc = cai_response_create_params_set_prompt_cache_key(
         params, CAI_SESSION_AGENT_IMPL(session)->prompt_cache_key, error);
   }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->tool_choice != NULL) {
+    rc = cai_response_create_params_set_tool_choice(
+        params, CAI_SESSION_AGENT_IMPL(session)->tool_choice, error);
+  }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->tool_choice_json != NULL) {
     rc = cai_response_create_params_set_tool_choice_json(
         params, CAI_SESSION_AGENT_IMPL(session)->tool_choice_json, error);
-  }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->tool_choice != NULL) {
-    rc = cai_response_create_params_set_tool_choice(
-        params, CAI_SESSION_AGENT_IMPL(session)->tool_choice, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->max_output_tokens > 0) {
     rc = cai_response_create_params_set_max_output_tokens(

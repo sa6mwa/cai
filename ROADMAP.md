@@ -73,7 +73,7 @@ Implemented:
   variants plus Darwin arm64 when osxcross is available.
 - Source archive packaging.
 - Release verification for archive roots, docs, pkg-config/CMake metadata,
-  dependency exclusion, sanitizer exclusion, and host-free `$ORIGIN` runpaths.
+  dependency exclusion, sanitizer exclusion, and host-free relative runpaths.
 
 Verification tiers:
 

@@ -361,7 +361,7 @@ typedef int (*cai_source_reset_fn)(void *context, cai_error *error);
 /** Source close callback. */
 typedef void (*cai_source_close_fn)(void *context);
 
-/** Callback table for custom streaming input sources. */
+/** Callback table for custom pull-based byte sources. */
 typedef struct cai_source_callbacks {
   /** Read bytes into buffer. */
   cai_source_read_fn read;
@@ -546,7 +546,7 @@ struct cai_agent {
   int (*add_user_text_spooled)(cai_agent *agent,
                                struct lonejson_spooled *text,
                                cai_error *error);
-  /** Add streaming user text to the agent's implicit session. */
+  /** Read a source into spooled user text for the implicit session. */
   int (*add_user_text_source)(cai_agent *agent, cai_source *source,
                               cai_error *error);
   /** Add a user image URL to the agent's implicit session. */
@@ -556,7 +556,7 @@ struct cai_agent {
   int (*add_user_file_data_spooled)(cai_agent *agent, const char *filename,
                                     struct lonejson_spooled *file_data,
                                     const char *detail, cai_error *error);
-  /** Add streaming user file data to the agent's implicit session. */
+  /** Read a source into spooled user file data for the implicit session. */
   int (*add_user_file_source)(cai_agent *agent, const char *filename,
                               cai_source *source, const char *detail,
                               cai_error *error);
@@ -624,7 +624,7 @@ struct cai_session {
   int (*add_user_text_spooled)(cai_session *session,
                                struct lonejson_spooled *text,
                                cai_error *error);
-  /** Add streaming user text to the pending session input. */
+  /** Read a source into spooled user text for the pending session input. */
   int (*add_user_text_source)(cai_session *session, cai_source *source,
                               cai_error *error);
   /** Add an image URL to the pending session input. */
@@ -635,7 +635,7 @@ struct cai_session {
                                     const char *filename,
                                     struct lonejson_spooled *file_data,
                                     const char *detail, cai_error *error);
-  /** Add streaming file data to the pending session input. */
+  /** Read a source into spooled file data for the pending session input. */
   int (*add_user_file_source)(cai_session *session, const char *filename,
                               cai_source *source, const char *detail,
                               cai_error *error);
@@ -837,7 +837,7 @@ int cai_session_add_user_text(cai_session *session, const char *text,
 int cai_session_add_user_text_spooled(cai_session *session,
                                       struct lonejson_spooled *text,
                                       cai_error *error);
-/** Add streaming user text to the pending session input. */
+/** Read a source into spooled user text for the pending session input. */
 int cai_session_add_user_text_source(cai_session *session, cai_source *source,
                                      cai_error *error);
 /** Add an image URL to the pending session input. */
@@ -849,7 +849,7 @@ int cai_session_add_user_file_data_spooled(cai_session *session,
                                            struct lonejson_spooled *file_data,
                                            const char *detail,
                                            cai_error *error);
-/** Add streaming file data to the pending session input. */
+/** Read a source into spooled file data for the pending session input. */
 int cai_session_add_user_file_source(cai_session *session,
                                      const char *filename, cai_source *source,
                                      const char *detail, cai_error *error);
@@ -1442,7 +1442,7 @@ int cai_conversation_items_params_add_text(
 int cai_conversation_items_params_add_text_spooled(
     cai_conversation_items_params *params, const char *role,
     struct lonejson_spooled *text, cai_error *error);
-/** Add streaming text to a conversation-items create request. */
+/** Read a source into spooled text for a conversation-items create request. */
 int cai_conversation_items_params_add_text_source(
     cai_conversation_items_params *params, const char *role, cai_source *source,
     cai_error *error);

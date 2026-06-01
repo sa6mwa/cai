@@ -1714,13 +1714,16 @@ static int cai_lua_agent_add_user_text_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_agent(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 2, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = self->ptr->add_user_text_spooled(self->ptr, &spool, &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -1759,15 +1762,18 @@ static int cai_lua_agent_add_user_file_data_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_agent(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 3, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = self->ptr->add_user_file_data_spooled(
         self->ptr, luaL_checkstring(L, 2), &spool, luaL_optstring(L, 4, NULL),
         &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -2677,13 +2683,16 @@ static int cai_lua_session_add_user_text_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_session(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 2, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_session_add_user_text_spooled(self->ptr, &spool, &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -2717,15 +2726,18 @@ static int cai_lua_session_add_user_file_data_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_session(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 3, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_session_add_user_file_data_spooled(
         self->ptr, luaL_checkstring(L, 2), &spool, luaL_optstring(L, 4, NULL),
         &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -4820,14 +4832,17 @@ static int cai_lua_params_add_text_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 3, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_response_create_params_add_text_spooled(
         self->ptr, luaL_optstring(L, 2, "user"), &spool, &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -4874,15 +4889,18 @@ static int cai_lua_params_add_file_data_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 4, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_response_create_params_add_file_data_spooled(
         self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &spool,
         luaL_optstring(L, 5, NULL), &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -5091,15 +5109,18 @@ cai_lua_params_add_function_call_output_file_data_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 4, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_response_create_params_add_function_call_output_file_data_spooled(
         self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &spool,
         luaL_optstring(L, 5, NULL), &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -5150,14 +5171,17 @@ static int cai_lua_conversation_params_add_text_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 3, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_conversation_items_params_add_text_spooled(
         self->ptr, luaL_optstring(L, 2, "user"), &spool, &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);
@@ -5191,15 +5215,18 @@ static int cai_lua_conversation_params_add_file_data_spooled(lua_State *L) {
   lonejson_spooled spool;
   cai_error error;
   int rc;
+  int have_spool;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
+  have_spool = 0;
   rc = cai_lua_spool_from_stack(L, 4, &spool, &error);
   if (rc == CAI_OK) {
+    have_spool = 1;
     rc = cai_conversation_items_params_add_file_data_spooled(
         self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &spool,
         luaL_optstring(L, 5, NULL), &error);
   }
-  if (rc != CAI_OK) {
+  if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
   }
   return cai_lua_bool_result(L, rc, &error);

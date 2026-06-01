@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CaiVersion)
 include(CaiLonejsonAbi)
+include(cai-rpath)
 
 cai_detect_version(CAI_RESOLVED_VERSION)
 project(cai VERSION ${CAI_RESOLVED_VERSION} LANGUAGES C)
@@ -207,6 +208,8 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
   set(CAI_RESOLVED_DEPENDENCY_MODE "host")
 endif()
 
+cai_install_rpath_token("${CAI_TARGET_ID}" CAI_INSTALL_RPATH_TOKEN)
+
 function(cai_download_tarball name url archive prefix sha256 stamp_file)
   file(MAKE_DIRECTORY "${CAI_DEPS_DIR}")
   set(_cai_download 1)
@@ -347,7 +350,7 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   set(CURL_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include" CACHE PATH "curl include directory" FORCE)
   set(CURL_LIBRARY "${_cai_cpkt_curl_library}" CACHE FILEPATH "curl library" FORCE)
   set(CURL_LIBRARY_RELEASE "${_cai_cpkt_curl_library}" CACHE FILEPATH "curl release library" FORCE)
-  list(APPEND CMAKE_INSTALL_RPATH "$ORIGIN")
+  list(APPEND CMAKE_INSTALL_RPATH "${CAI_INSTALL_RPATH_TOKEN}")
   get_filename_component(_cai_lonejson_library_dir
     "${CAI_LONEJSON_LIBRARY}" DIRECTORY)
   list(APPEND CMAKE_BUILD_RPATH
@@ -367,8 +370,10 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND TARGET CURL::libcurl)
 endif()
 find_package(Threads REQUIRED)
 
-if(CAI_BUILD_LUA OR CAI_BUILD_INTEGRATION_TESTS)
+if(CAI_BUILD_LUA)
   find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua REQUIRED)
+elseif(CAI_BUILD_INTEGRATION_TESTS)
+  find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua)
 endif()
 
 if(CAI_BUILD_LUA)
@@ -666,6 +671,7 @@ if(CAI_BUILD_TESTS)
     client_open
     mike_mind_prompt_contract
     response_json
+    response_request_tools_cleanup
     response_spooled_request_arrays
     response_array_serialization_invariants
     response_large_text_parse
@@ -688,6 +694,7 @@ if(CAI_BUILD_TESTS)
     agent_tool_auto_run
     agent_client_history_tool_auto_run
     revgeo_tool
+    todo_file_store_initializes_under_lock
     todo_tool
     todo_callback_store
     searxng_registry_tool
@@ -822,6 +829,8 @@ if(CAI_BUILD_TESTS)
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DCAI_VERSION=${PROJECT_VERSION}"
+        "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
+        "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
         "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
@@ -830,11 +839,13 @@ if(CAI_BUILD_TESTS)
         "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
         "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
         "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
+        "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
         "-DCAI_PARENT_CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+        "-DCAI_INSTALL_RPATH_TOKEN=${CAI_INSTALL_RPATH_TOKEN}"
         "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES
@@ -860,6 +871,40 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_rpath_token_test
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/rpath_token_test.cmake")
+    set_tests_properties(cai_rpath_token_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_c_integration_config_without_lua
+      COMMAND "${CMAKE_COMMAND}"
+        -S "${CMAKE_CURRENT_SOURCE_DIR}"
+        -B "${CMAKE_CURRENT_BINARY_DIR}/c-integration-without-lua"
+        "-G${CMAKE_GENERATOR}"
+        "-DCAI_BUILD_INTEGRATION_TESTS=ON"
+        "-DCAI_BUILD_LUA=OFF"
+        "-DCAI_BUILD_EXAMPLES=OFF"
+        "-DCAI_BUILD_FUZZERS=OFF"
+        "-DCAI_BUILD_TESTS=ON"
+        "-DCAI_INSTALL=OFF"
+        "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
+        "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
+        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+        "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
+        "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
+        "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
+        "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
+        "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
+        "-DCAI_LUA_EXECUTABLE=CAI_LUA_EXECUTABLE-NOTFOUND"
+        "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+        "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
+        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+    set_tests_properties(cai_c_integration_config_without_lua PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 10)
     add_test(NAME cai_release_lua_version_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_lua_version_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")
