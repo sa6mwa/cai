@@ -8,6 +8,7 @@ c_pkt_systems_url=https://github.com/sa6mwa/c.pkt.systems/releases/download/v@CA
 c_pkt_systems_sha256=@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@
 dependency_mode=@CAI_RESOLVED_DEPENDENCY_MODE@
 lonejson_version=@CAI_LONEJSON_VERSION@
+lonejson_abi_version=@CAI_LONEJSON_ABI_VERSION@
 lonejson_target=@CAI_TARGET_ID@
 lonejson_url=https://github.com/sa6mwa/lonejson/releases/download/v@CAI_LONEJSON_VERSION@/liblonejson-@CAI_LONEJSON_VERSION@-@CAI_TARGET_ID@.tar.gz
 lonejson_sha256=@CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE@

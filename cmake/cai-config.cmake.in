@@ -1,8 +1,10 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+include("${CMAKE_CURRENT_LIST_DIR}/CaiLonejsonAbi.cmake")
 set(cai_DEPENDENCY_MODE "@CAI_RESOLVED_DEPENDENCY_MODE@")
 set(cai_LONEJSON_VERSION "@CAI_LONEJSON_VERSION@")
+set(cai_LONEJSON_ABI_VERSION "@CAI_LONEJSON_ABI_VERSION@")
 set(cai_LONEJSON_TARGET "@CAI_TARGET_ID@")
 set(cai_LONEJSON_URL
     "https://github.com/sa6mwa/lonejson/releases/download/v@CAI_LONEJSON_VERSION@/liblonejson-@CAI_LONEJSON_VERSION@-@CAI_TARGET_ID@.tar.gz")
@@ -24,6 +26,7 @@ set(_cai_dependency_includes "")
 if(TARGET lonejson::lonejson)
   get_target_property(cai_LONEJSON_INCLUDE_DIR lonejson::lonejson
                       INTERFACE_INCLUDE_DIRECTORIES)
+  cai_get_imported_target_location(lonejson::lonejson cai_LONEJSON_LIBRARY)
 else()
   find_library(cai_LONEJSON_LIBRARY NAMES lonejson
                HINTS "@CAI_CONFIG_LONEJSON_LIBRARY_HINT@")
@@ -43,11 +46,14 @@ endif()
 if(NOT TARGET lonejson::lonejson)
   message(FATAL_ERROR
     "cai requires external liblonejson at build and runtime. "
-    "Install lonejson ${cai_LONEJSON_VERSION} or newer and make either its "
-    "CMake package or liblonejson discoverable. Official package: "
+    "Install liblonejson with ABI ${cai_LONEJSON_ABI_VERSION} and make "
+    "either its CMake package or liblonejson discoverable. Official package: "
     "${cai_LONEJSON_URL}. "
     "For the native curl/OpenSSL stack, use ${cai_C_PKT_SYSTEMS_URL}.")
 endif()
+cai_validate_lonejson_library_abi(
+  "${cai_LONEJSON_LIBRARY}" "${cai_LONEJSON_ABI_VERSION}"
+  "cai installed package")
 if(cai_LONEJSON_INCLUDE_DIR)
   list(APPEND _cai_dependency_includes "${cai_LONEJSON_INCLUDE_DIR}")
 endif()

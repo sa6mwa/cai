@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CaiVersion)
+include(CaiLonejsonAbi)
 
 cai_detect_version(CAI_RESOLVED_VERSION)
 project(cai VERSION ${CAI_RESOLVED_VERSION} LANGUAGES C)
@@ -34,6 +35,7 @@ set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 set(CAI_LONEJSON_VERSION "0.30.0")
+set(CAI_LONEJSON_ABI_VERSION "16")
 set(CAI_PSLOG_VERSION "0.4.1")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -176,8 +178,15 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   find_library(_cai_auto_lonejson_library NAMES lonejson)
   find_library(_cai_auto_pslog_library NAMES pslog)
   find_package(CURL QUIET)
+  set(_cai_auto_lonejson_abi_ok FALSE)
+  if(_cai_auto_lonejson_library)
+    cai_probe_lonejson_library_abi(
+      "${_cai_auto_lonejson_library}" "${CAI_LONEJSON_ABI_VERSION}"
+      _cai_auto_lonejson_abi_ok _cai_auto_lonejson_abi_reason)
+  endif()
   if(CURL_FOUND AND _cai_auto_lonejson_include AND _cai_auto_pslog_include AND
-     _cai_auto_lonejson_library AND _cai_auto_pslog_library)
+     _cai_auto_lonejson_library AND _cai_auto_pslog_library AND
+     _cai_auto_lonejson_abi_ok)
     set(CAI_RESOLVED_DEPENDENCY_MODE "host")
   else()
     set(CAI_RESOLVED_DEPENDENCY_MODE "cpkt")
@@ -186,6 +195,8 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   unset(_cai_auto_pslog_include CACHE)
   unset(_cai_auto_lonejson_library CACHE)
   unset(_cai_auto_pslog_library CACHE)
+  unset(_cai_auto_lonejson_abi_ok)
+  unset(_cai_auto_lonejson_abi_reason)
 endif()
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
    CAI_TARGET_ID STREQUAL "x86_64-apple-darwin")
@@ -233,8 +244,7 @@ function(cai_set_lonejson_from_target)
   endif()
   get_target_property(_cai_lonejson_include lonejson::lonejson
     INTERFACE_INCLUDE_DIRECTORIES)
-  get_target_property(_cai_lonejson_library lonejson::lonejson
-    IMPORTED_LOCATION)
+  cai_get_imported_target_location(lonejson::lonejson _cai_lonejson_library)
   if(_cai_lonejson_include AND _cai_lonejson_library)
     set(CAI_LONEJSON_INCLUDE_DIR "${_cai_lonejson_include}" PARENT_SCOPE)
     set(CAI_LONEJSON_LIBRARY "${_cai_lonejson_library}" PARENT_SCOPE)
@@ -456,6 +466,9 @@ if(NOT CAI_LONEJSON_LIBRARY)
     "Failed to find liblonejson. Use CAI_DEPENDENCY_MODE=cpkt or set "
     "CAI_LONEJSON_LIBRARY to an official installed lonejson library.")
 endif()
+cai_validate_lonejson_library_abi(
+  "${CAI_LONEJSON_LIBRARY}" "${CAI_LONEJSON_ABI_VERSION}"
+  "cai host dependency check")
 if(NOT CAI_LONEJSON_LINK)
   set(CAI_LONEJSON_LINK "${CAI_LONEJSON_LIBRARY}")
 endif()
@@ -796,8 +809,10 @@ if(CAI_BUILD_TESTS)
         "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
         "-DCAI_PARENT_CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+        "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES
       LABELS "packaging;local"
@@ -811,6 +826,8 @@ if(CAI_BUILD_TESTS)
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
+        "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
       LABELS "packaging;local"
@@ -1139,6 +1156,7 @@ if(CAI_INSTALL)
     FILE cai-targets.cmake
     DESTINATION "${CAI_INSTALL_CMAKEDIR}")
   install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CaiLonejsonAbi.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config-version.cmake"
     DESTINATION "${CAI_INSTALL_CMAKEDIR}")

@@ -62,9 +62,11 @@ shape, but may still change before the initial tag.
   Tarball URLs and SHA-256 values are pinned in CMake; sibling checkout
   artifacts are not dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
-  libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. `auto` chooses host
-  only when all required host pieces are discoverable, otherwise it falls back
-  to `cpkt`.
+  libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. The discovered
+  `liblonejson` must match cai's required ABI generation (`liblonejson.so.16`
+  on Linux, `liblonejson.16.dylib` on Darwin). `auto` chooses host only when
+  all required host pieces are discoverable and the lonejson ABI matches,
+  otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
   `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
@@ -196,8 +198,9 @@ checksum for the native curl/OpenSSL stack and the matching official lonejson
 release URL/checksum. The CMake package models lonejson as an external
 dependency: `find_package(cai)` requires `liblonejson` to be discoverable and
 adds lonejson headers when they are available, but cai release archives do not
-vendor lonejson or curl runtime libraries. Shared-only consumers that only use
-`<cai/cai.h>` can configure without lonejson development headers; consumers
+vendor lonejson or curl runtime libraries. The discovered host `liblonejson`
+must also expose cai's expected ABI generation. Shared-only consumers that only
+use `<cai/cai.h>` can configure without lonejson development headers; consumers
 that include lonejson-backed cai headers or use static linking still need the
 lonejson development package. The pkg-config file exposes lonejson as a public
 requirement and libcurl as a private link requirement. `pslog.h`/`libpslog` is

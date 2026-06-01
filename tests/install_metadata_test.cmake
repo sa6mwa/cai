@@ -10,6 +10,12 @@ endif()
 if(NOT DEFINED CAI_TARGET_ID)
   set(CAI_TARGET_ID "")
 endif()
+if(NOT DEFINED CAI_C_COMPILER OR CAI_C_COMPILER STREQUAL "")
+  message(FATAL_ERROR "CAI_C_COMPILER is required")
+endif()
+if(NOT DEFINED CAI_LONEJSON_ABI_VERSION OR CAI_LONEJSON_ABI_VERSION STREQUAL "")
+  message(FATAL_ERROR "CAI_LONEJSON_ABI_VERSION is required")
+endif()
 
 set(prefix "${CAI_BINARY_DIR}/install-metadata-test")
 file(REMOVE_RECURSE "${prefix}")
@@ -113,9 +119,10 @@ string(FIND "${config_text}" "find_package(lonejson CONFIG QUIET)"
 string(FIND "${config_text}" "cai requires external liblonejson"
        lonejson_error_pos)
 string(FIND "${config_text}" "cai_LONEJSON_URL" lonejson_url_pos)
+string(FIND "${config_text}" "cai_LONEJSON_ABI_VERSION" lonejson_abi_pos)
 if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1 OR
    lonejson_dep_pos EQUAL -1 OR lonejson_error_pos EQUAL -1 OR
-   lonejson_url_pos EQUAL -1)
+   lonejson_url_pos EQUAL -1 OR lonejson_abi_pos EQUAL -1)
   message(FATAL_ERROR "cai CMake package does not declare dependencies")
 endif()
 
@@ -123,8 +130,10 @@ string(FIND "${pc_text}" "Requires.private: libcurl" pc_curl_pos)
 string(FIND "${pc_text}" "Requires: lonejson" pc_public_deps_pos)
 string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
 string(FIND "${pc_text}" "lonejson_url=" pc_lonejson_url_pos)
+string(FIND "${pc_text}" "lonejson_abi_version=" pc_lonejson_abi_pos)
 if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
-   pc_c_pkt_url_pos EQUAL -1 OR pc_lonejson_url_pos EQUAL -1)
+   pc_c_pkt_url_pos EQUAL -1 OR pc_lonejson_url_pos EQUAL -1 OR
+   pc_lonejson_abi_pos EQUAL -1)
   message(FATAL_ERROR "cai.pc does not point at required dependencies")
 endif()
 
@@ -375,7 +384,32 @@ int main(void) {
   file(REMOVE_RECURSE "${shared_only_consumer_dir}")
   file(MAKE_DIRECTORY "${shared_only_consumer_dir}"
                       "${shared_only_fake_lonejson_dir}/lib")
-  file(WRITE "${shared_only_fake_lonejson_dir}/lib/liblonejson.so" "")
+  file(WRITE "${shared_only_fake_lonejson_dir}/fake_lonejson.c"
+             "void cai_fake_lonejson(void) {}\n")
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    set(shared_only_fake_lonejson_library
+        "${shared_only_fake_lonejson_dir}/lib/liblonejson.dylib")
+    set(shared_only_fake_lonejson_link_flag
+        "-Wl,-install_name,@rpath/liblonejson.${CAI_LONEJSON_ABI_VERSION}.dylib")
+  else()
+    set(shared_only_fake_lonejson_library
+        "${shared_only_fake_lonejson_dir}/lib/liblonejson.so")
+    set(shared_only_fake_lonejson_link_flag
+        "-Wl,-soname,liblonejson.so.${CAI_LONEJSON_ABI_VERSION}")
+  endif()
+  execute_process(
+    COMMAND "${CAI_C_COMPILER}" -shared
+            "${shared_only_fake_lonejson_link_flag}"
+            -o "${shared_only_fake_lonejson_library}"
+            "${shared_only_fake_lonejson_dir}/fake_lonejson.c"
+    RESULT_VARIABLE shared_only_fake_lib_result
+    OUTPUT_VARIABLE shared_only_fake_lib_output
+    ERROR_VARIABLE shared_only_fake_lib_error)
+  if(NOT shared_only_fake_lib_result EQUAL 0)
+    message(FATAL_ERROR
+      "failed to build fake lonejson shared library:\n"
+      "${shared_only_fake_lib_error}\n${shared_only_fake_lib_output}")
+  endif()
   file(WRITE "${shared_only_consumer_dir}/CMakeLists.txt"
 "cmake_minimum_required(VERSION 3.21)
 project(cai_shared_only_consumer LANGUAGES C)
