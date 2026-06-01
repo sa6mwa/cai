@@ -120,9 +120,9 @@ make lua-test
 The LuaRock depends on the `lonejson` Lua rock and links against an installed
 `libcai` discovered through `pkg-config cai`; the local test target installs
 the current debug build into `build/luarocks/cai-prefix` first. `lonejson`
-0.29.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
+0.30.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
 from the official release source rock at
-`https://github.com/sa6mwa/lonejson/releases/download/v0.29.0/lonejson-0.29.0-1.src.rock`
+`https://github.com/sa6mwa/lonejson/releases/download/v0.30.0/lonejson-0.30.0-1.src.rock`
 when needed. Lua projects can use the rock as a facade over the C library,
 while Vectis can still call the C API directly where that fits its performance
 and integration needs better.
@@ -131,7 +131,7 @@ For manual LuaRock installation, install the matching lonejson source rock
 first because this version is served from the GitHub release, not LuaRocks.org:
 
 ```sh
-luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.29.0/lonejson-0.29.0-1.src.rock
+luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.30.0/lonejson-0.30.0-1.src.rock
 luarocks install cai-<version>-1.src.rock
 ```
 
