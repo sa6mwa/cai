@@ -712,7 +712,7 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endforeach()
   set_tests_properties(cai_tests.lonejson_selected_array_rewrite PROPERTIES
-    LABELS "unit;local;upstream-lonejson"
+    LABELS "unit;local;msan-external-boundary"
     TIMEOUT 3)
   set_tests_properties(
     cai_tests.model_capabilities
@@ -725,19 +725,19 @@ if(CAI_BUILD_TESTS)
       LABELS "unit;local;msan-smoke"
       TIMEOUT 3)
   set_tests_properties(cai_tests.mcp_handler PROPERTIES
-    LABELS "unit;local;upstream-lonejson"
+    LABELS "unit;local;msan-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.response_json PROPERTIES
-    LABELS "unit;local;upstream-lonejson"
+    LABELS "unit;local;msan-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.response_spooled_request_arrays PROPERTIES
-    LABELS "unit;local;msan-blocked"
+    LABELS "unit;local;msan-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.response_array_serialization_invariants PROPERTIES
-    LABELS "unit;local;msan-blocked"
+    LABELS "unit;local;msan-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.tool_registry PROPERTIES
-    LABELS "unit;local;msan-blocked"
+    LABELS "unit;local;msan-external-boundary"
     TIMEOUT 3)
   add_test(NAME cai_tests.registration
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_test_registration_test.sh"

@@ -563,7 +563,8 @@ ctest --preset asan --output-on-failure
 ThreadSanitizer and MemorySanitizer presets are also available. TSan runs the
 local suite minus packaging checks that intentionally link non-instrumented
 consumer smoke programs. MSan currently runs a curated smoke subset because
-full-suite MSan is still blocked by upstream lonejson runtime/string hygiene:
+the normal cai dependency flow links against upstream binary dependencies; full
+suite MSan is not meaningful across those uninstrumented library boundaries:
 
 ```sh
 cmake --build --preset tsan --target cai_tests

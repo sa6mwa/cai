@@ -262,7 +262,7 @@
       "configurePreset": "tsan",
       "filter": {
         "exclude": {
-          "label": "packaging|upstream-lonejson"
+          "label": "packaging"
         }
       },
       "execution": {
