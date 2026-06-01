@@ -644,17 +644,50 @@ cai_lua_push_conversation_params(lua_State *L,
   lua_setmetatable(L, -2);
 }
 
-static void cai_lua_push_spool_reader(lua_State *L,
-                                      const lonejson_spooled *spool) {
+static lonejson_status cai_lua_lonejson_spool_sink(void *user,
+                                                   const void *data, size_t len,
+                                                   lonejson_error *error) {
+  lonejson_spooled *spool;
+
+  spool = (lonejson_spooled *)user;
+  return spool->append(spool, data, len, error);
+}
+
+static int cai_lua_push_spool_reader(lua_State *L, const lonejson_spooled *spool,
+                                     cai_error *error) {
   cai_lua_spool_reader *ud;
+  lonejson_error json_error;
+  int rc;
+
   ud = (cai_lua_spool_reader *)lua_newuserdata(L, sizeof(*ud));
   memset(ud, 0, sizeof(*ud));
-  if (spool != NULL) {
-    ud->cursor = *spool;
+  rc = cai_lua_spooled_init(&ud->cursor, error);
+  if (rc != CAI_OK) {
+    lua_pop(L, 1);
+    return rc;
   }
-  ud->owns_cursor = 0;
+  ud->owns_cursor = 1;
+  if (spool != NULL) {
+    lonejson_error_init(&json_error);
+    if (spool->write_to_sink(spool, cai_lua_lonejson_spool_sink, &ud->cursor,
+                             &json_error) != LONEJSON_STATUS_OK) {
+      ud->cursor.cleanup(&ud->cursor);
+      lua_pop(L, 1);
+      return cai_lua_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                      "failed to clone Lua spooled reader",
+                                      json_error.message);
+    }
+    if (ud->cursor.rewind(&ud->cursor, &json_error) != LONEJSON_STATUS_OK) {
+      ud->cursor.cleanup(&ud->cursor);
+      lua_pop(L, 1);
+      return cai_lua_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                      "failed to rewind Lua spooled reader",
+                                      json_error.message);
+    }
+  }
   luaL_getmetatable(L, CAI_LUA_SPOOL_READER);
   lua_setmetatable(L, -2);
+  return CAI_OK;
 }
 
 static const char *cai_lua_json_from_stack(lua_State *L, int index,
@@ -1147,7 +1180,11 @@ static int cai_lua_raw_spooled_tool_trampoline(void *context,
   int rc;
   ctx = (cai_lua_tool_context *)context;
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
-  cai_lua_push_spool_reader(ctx->L, arguments_json);
+  rc = cai_lua_push_spool_reader(ctx->L, arguments_json, error);
+  if (rc != CAI_OK) {
+    lua_pop(ctx->L, 1);
+    return rc;
+  }
   rc = lua_pcall(ctx->L, 1, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);
@@ -1847,7 +1884,7 @@ static int cai_lua_tool_event_trampoline(void *context,
                                          cai_error *error) {
   cai_lua_tool_event_ctx *ctx;
   int rc;
-  (void)error;
+
   ctx = (cai_lua_tool_event_ctx *)context;
   ctx->current_event = event;
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
@@ -1875,7 +1912,12 @@ static int cai_lua_tool_event_trampoline(void *context,
   if (event->arguments_json_spooled != NULL) {
     lua_pushinteger(ctx->L, (lua_Integer)event->arguments_json_spooled->size);
     lua_setfield(ctx->L, -2, "arguments_size");
-    cai_lua_push_spool_reader(ctx->L, event->arguments_json_spooled);
+    rc = cai_lua_push_spool_reader(ctx->L, event->arguments_json_spooled, error);
+    if (rc != CAI_OK) {
+      lua_pop(ctx->L, 2);
+      ctx->current_event = NULL;
+      return rc;
+    }
     lua_setfield(ctx->L, -2, "arguments_spooled");
   }
   if (event->output_json != NULL) {
@@ -2019,10 +2061,14 @@ static int cai_lua_stream_output_delta(void *context, const char *item_id,
   int rc;
   (void)item_id;
   (void)output_index;
-  (void)error;
+
   ctx = (cai_lua_sink_ctx *)context;
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->callback_ref);
-  cai_lua_push_spool_reader(ctx->L, delta);
+  rc = cai_lua_push_spool_reader(ctx->L, delta, error);
+  if (rc != CAI_OK) {
+    lua_pop(ctx->L, 1);
+    return rc;
+  }
   rc = lua_pcall(ctx->L, 1, 1, 0);
   if (rc != LUA_OK) {
     return CAI_ERR_INVALID;
@@ -2037,7 +2083,6 @@ static int cai_lua_stream_function_delta(void *context, const char *item_id,
                                          cai_error *error) {
   cai_lua_function_call_ctx *ctx;
   int rc;
-  (void)error;
   ctx = (cai_lua_function_call_ctx *)context;
   if (ctx == NULL || ctx->delta_ref == 0) {
     return CAI_OK;
@@ -2045,7 +2090,11 @@ static int cai_lua_stream_function_delta(void *context, const char *item_id,
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->delta_ref);
   lua_pushstring(ctx->L, item_id != NULL ? item_id : "");
   lua_pushinteger(ctx->L, output_index);
-  cai_lua_push_spool_reader(ctx->L, delta);
+  rc = cai_lua_push_spool_reader(ctx->L, delta, error);
+  if (rc != CAI_OK) {
+    lua_pop(ctx->L, 3);
+    return rc;
+  }
   rc = lua_pcall(ctx->L, 3, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);
@@ -2066,7 +2115,6 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
                                         cai_error *error) {
   cai_lua_function_call_ctx *ctx;
   int rc;
-  (void)error;
   ctx = (cai_lua_function_call_ctx *)context;
   if (ctx == NULL || ctx->done_ref == 0) {
     return CAI_OK;
@@ -2076,7 +2124,11 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
   lua_pushinteger(ctx->L, output_index);
   lua_pushstring(ctx->L, call_id != NULL ? call_id : "");
   lua_pushstring(ctx->L, name != NULL ? name : "");
-  cai_lua_push_spool_reader(ctx->L, arguments);
+  rc = cai_lua_push_spool_reader(ctx->L, arguments, error);
+  if (rc != CAI_OK) {
+    lua_pop(ctx->L, 5);
+    return rc;
+  }
   rc = lua_pcall(ctx->L, 5, 1, 0);
   if (rc != LUA_OK) {
     lua_pop(ctx->L, 1);
@@ -2096,7 +2148,6 @@ static int cai_lua_stream_output_item_done(
   cai_lua_function_call_ctx *ctx;
   int rc;
 
-  (void)error;
   ctx = (cai_lua_function_call_ctx *)context;
   if (ctx == NULL || ctx->item_ref == 0) {
     return CAI_OK;
@@ -2109,7 +2160,11 @@ static int cai_lua_stream_output_item_done(
   lua_setfield(ctx->L, -2, "output_index");
   lua_pushstring(ctx->L, type != NULL ? type : "");
   lua_setfield(ctx->L, -2, "type");
-  cai_lua_push_spool_reader(ctx->L, item_json);
+  rc = cai_lua_push_spool_reader(ctx->L, item_json, error);
+  if (rc != CAI_OK) {
+    lua_pop(ctx->L, 2);
+    return rc;
+  }
   lua_setfield(ctx->L, -2, "json_spooled");
   rc = lua_pcall(ctx->L, 1, 1, 0);
   if (rc != LUA_OK) {

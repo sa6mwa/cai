@@ -382,6 +382,12 @@ assert_ok(registry:register_raw_spooled_tool("lua_throwing_tool", "Lua throwing 
   error("tool exploded")
 end, true))
 
+local retained_spooled_args = nil
+assert_ok(registry:register_raw_spooled_tool("lua_retained_spooled_weather", "Lua retained spooled argument test tool", weather_schema, function(args)
+  retained_spooled_args = args
+  return '{"ok":true}'
+end, true))
+
 local raw_chunks = {}
 assert_ok(registry:run("lua_weather", '{"city":"Gothenburg"}', function(chunk)
   raw_chunks[#raw_chunks + 1] = chunk
@@ -399,6 +405,14 @@ end))
 local spooled_json = table.concat(spooled_chunks)
 assert(spooled_json:match('"ok":true'))
 assert(spooled_json:match('"summary":"spooled dry enough"'))
+chunks = {}
+assert_ok(registry:run("lua_retained_spooled_weather", '{"city":"Gothenburg"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(retained_spooled_args ~= nil, "retained spooled callback arguments missing")
+assert(retained_spooled_args:read_all():match("Gothenburg"),
+  "retained spooled callback arguments must remain readable after callback")
 assert_not_ok(registry:run("lua_spooled_weather", '{"city":"Gothenburg"}', function()
   return false
 end), "registry run must propagate sink cancellation")

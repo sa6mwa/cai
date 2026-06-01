@@ -117,6 +117,10 @@ local function_done = {}
 local output_items = {}
 local tool_events = {}
 local tool_output = {}
+local retained_function_deltas = {}
+local retained_function_done = {}
+local retained_output_items = {}
+local retained_tool_event_args = {}
 
 ok, err = session:stream({
   max_tool_rounds = 3,
@@ -133,6 +137,7 @@ ok, err = session:stream({
     return true
   end,
   on_function_call_delta = function(item_id, output_index, delta)
+    retained_function_deltas[#retained_function_deltas + 1] = delta
     function_deltas[#function_deltas + 1] = {
       item_id = item_id,
       output_index = output_index,
@@ -141,6 +146,7 @@ ok, err = session:stream({
     return true
   end,
   on_function_call_done = function(item_id, output_index, call_id, name, arguments)
+    retained_function_done[#retained_function_done + 1] = arguments
     function_done[#function_done + 1] = {
       item_id = item_id,
       output_index = output_index,
@@ -152,6 +158,9 @@ ok, err = session:stream({
   end,
   on_output_item_done = function(item)
     if item.json_spooled ~= nil then
+      retained_output_items[#retained_output_items + 1] = item.json_spooled
+    end
+    if item.json_spooled ~= nil then
       item.json = item.json_spooled:read_all()
     end
     output_items[#output_items + 1] = item
@@ -160,6 +169,7 @@ ok, err = session:stream({
   tool_event = function(event)
     tool_events[#tool_events + 1] = event.kind .. ":" .. (event.name or "")
     if event.arguments_spooled ~= nil then
+      retained_tool_event_args[#retained_tool_event_args + 1] = event.arguments_spooled
       local args = event.arguments_spooled:read_all()
       if not args:match("gothenburg") then
         fail("streamed tool event arguments lost gothenburg: " .. args)
@@ -217,6 +227,30 @@ if not table.concat(tool_events, "\n"):match("output:lua_stream_fact") then
 end
 if not output:find(secret, 1, true) then
   fail("streamed tool output did not include secret; output=" .. output)
+end
+for _, reader in ipairs(retained_function_deltas) do
+  reader:rewind()
+  if #reader:read_all() == 0 then
+    fail("retained function-call delta reader became empty after callback")
+  end
+end
+for _, reader in ipairs(retained_function_done) do
+  reader:rewind()
+  if not reader:read_all():match("gothenburg") then
+    fail("retained function-call done reader lost arguments after callback")
+  end
+end
+for _, reader in ipairs(retained_output_items) do
+  reader:rewind()
+  if not reader:read_all():match('"type"') then
+    fail("retained output-item reader lost JSON after callback")
+  end
+end
+for _, reader in ipairs(retained_tool_event_args) do
+  reader:rewind()
+  if not reader:read_all():match("gothenburg") then
+    fail("retained tool-event argument reader lost JSON after callback")
+  end
 end
 if not response:find("LUA_STREAM_TOOL_OK gothenburg " .. secret, 1, true) then
   fail("unexpected final response: " .. response)
