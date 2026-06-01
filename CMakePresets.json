@@ -19,7 +19,8 @@
         "CAI_BUILD_INTEGRATION_TESTS": "OFF",
         "CAI_BUILD_LUA": "OFF",
         "CAI_ENABLE_COVERAGE": "OFF",
-        "CAI_INSTALL": "ON"
+        "CAI_INSTALL": "ON",
+        "CAI_DEPENDENCY_MODE": "cpkt"
       }
     },
     {
@@ -44,7 +45,6 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CAI_BUILD_LUA": "OFF",
         "CAI_DIST_DIR": "${sourceDir}/dist",
-        "CAI_DEPENDENCY_MODE": "cpkt",
         "CAI_TARGET_ID": "x86_64-linux-gnu"
       }
     },

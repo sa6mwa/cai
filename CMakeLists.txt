@@ -878,6 +878,13 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_rpath_token_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_cmake_presets_test
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_presets_test.cmake")
+    set_tests_properties(cai_cmake_presets_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_c_integration_config_without_lua
       COMMAND "${CMAKE_COMMAND}"
         -S "${CMAKE_CURRENT_SOURCE_DIR}"
