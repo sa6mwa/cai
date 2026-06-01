@@ -9767,18 +9767,16 @@ static void test_exec_tool(test_state *state) {
                          "{\"cmd\":\"printf 123456789\"}", CAI_OK, &writer,
                          &error) == CAI_OK) {
     parsed_exec_result parsed;
-    size_t total_retained;
 
     if (parse_exec_result_json(state, "exec_output_cap_parse", writer.buffer,
                                &parsed)) {
-      total_retained = strlen(parsed.stdout_text) + strlen(parsed.stderr_text) +
-                       strlen(parsed.output_text);
       expect_int(state, "exec_output_cap_total_budget",
-                 total_retained <= config.output_max_bytes, 1);
+                 strlen(parsed.output_text) <= config.output_max_bytes, 1);
       expect_str(state, "exec_output_cap_output", parsed.output_text, "1234");
-      expect_str(state, "exec_output_cap_stdout", parsed.stdout_text, "");
+      expect_str(state, "exec_output_cap_stdout", parsed.stdout_text, "1234");
       expect_int(state, "exec_output_cap_stdout_truncated",
                  parsed.stdout_truncated, 1);
+      expect_str(state, "exec_output_cap_stderr", parsed.stderr_text, "");
       expect_int(state, "exec_output_cap_output_truncated",
                  parsed.output_truncated, 1);
       expect_int(state, "exec_output_cap_original",
@@ -9794,18 +9792,21 @@ static void test_exec_tool(test_state *state) {
                          "{\"cmd\":\"printf 12345678; printf abcdefgh >&2\"}",
                          CAI_OK, &writer, &error) == CAI_OK) {
     parsed_exec_result parsed;
-    size_t total_retained;
 
     if (parse_exec_result_json(state, "exec_combined_output_cap_parse",
                                writer.buffer, &parsed)) {
-      total_retained = strlen(parsed.stdout_text) + strlen(parsed.stderr_text) +
-                       strlen(parsed.output_text);
       expect_int(state, "exec_combined_output_cap_total_budget",
-                 total_retained <= config.output_max_bytes, 1);
+                 strlen(parsed.output_text) <= config.output_max_bytes, 1);
+      expect_str(state, "exec_combined_output_cap_output",
+                 parsed.output_text, "12345678ab");
+      expect_str(state, "exec_combined_output_cap_stdout",
+                 parsed.stdout_text, "12345678");
+      expect_str(state, "exec_combined_output_cap_stderr",
+                 parsed.stderr_text, "ab");
       expect_int(state, "exec_combined_output_cap_output_truncated",
                  parsed.output_truncated, 1);
       expect_int(state, "exec_combined_output_cap_stdout_truncated",
-                 parsed.stdout_truncated, 1);
+                 parsed.stdout_truncated, 0);
       expect_int(state, "exec_combined_output_cap_stderr_truncated",
                  parsed.stderr_truncated, 1);
       expect_int(state, "exec_combined_output_cap_original",
@@ -9822,15 +9823,14 @@ static void test_exec_tool(test_state *state) {
                          "\"max_output_tokens\":4}",
                          CAI_OK, &writer, &error) == CAI_OK) {
     parsed_exec_result parsed;
-    size_t total_retained;
 
     if (parse_exec_result_json(state, "exec_per_call_output_cap_parse",
                                writer.buffer, &parsed)) {
-      total_retained = strlen(parsed.stdout_text) + strlen(parsed.stderr_text) +
-                       strlen(parsed.output_text);
       expect_int(state, "exec_per_call_output_cap_total_budget",
-                 total_retained <= 4U, 1);
+                 strlen(parsed.output_text) <= 4U, 1);
       expect_str(state, "exec_per_call_output_cap_output", parsed.output_text,
+                 "1234");
+      expect_str(state, "exec_per_call_output_cap_stdout", parsed.stdout_text,
                  "1234");
       expect_int(state, "exec_per_call_output_cap_truncated",
                  parsed.output_truncated, 1);

@@ -29,8 +29,8 @@ extra=$tmpdir/extra
 "$cai_tests" --list | sed '/^$/d' | sort >"$actual_sorted"
 sed '/^$/d' "$expected_list" | sort >"$expected_sorted"
 
-comm -23 "$actual_sorted" "$expected_sorted" >"$missing"
-comm -13 "$actual_sorted" "$expected_sorted" >"$extra"
+comm -13 "$actual_sorted" "$expected_sorted" >"$missing"
+comm -23 "$actual_sorted" "$expected_sorted" >"$extra"
 
 if [[ -s "$missing" || -s "$extra" ]]; then
   if [[ -s "$missing" ]]; then

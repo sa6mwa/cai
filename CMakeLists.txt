@@ -759,6 +759,12 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_tests.registration PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_tests.registration_script
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_test_registration_script_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_test_registration_test.sh")
+  set_tests_properties(cai_tests.registration_script PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
   target_include_directories(cai_mcp_http_server PRIVATE

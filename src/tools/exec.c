@@ -500,26 +500,22 @@ static int cai_exec_capture_append(cai_exec_capture *capture, int is_stderr,
   keep_output = len < remaining ? len : remaining;
   if (keep_output < len) {
     capture->output_truncated = 1;
+    *truncated = 1;
   }
   if (keep_output > 0U) {
     rc = cai_exec_append_spool(&capture->output, data, keep_output, error);
     if (rc != CAI_OK) {
       return rc;
     }
-    capture->retained_bytes += keep_output;
   }
-  remaining = capture->retained_bytes < capture->max_bytes
-                  ? capture->max_bytes - capture->retained_bytes
-                  : 0U;
-  keep_stream = len < remaining ? len : remaining;
-  if (keep_stream < len) {
-    *truncated = 1;
-  }
+  keep_stream = keep_output;
   if (keep_stream > 0U) {
     rc = cai_exec_append_spool(stream, data, keep_stream, error);
     if (rc != CAI_OK) {
       return rc;
     }
+  }
+  if (keep_output > 0U) {
     capture->retained_bytes += keep_stream;
   }
   *stream_bytes += len;
