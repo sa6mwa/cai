@@ -84,7 +84,7 @@ typedef struct cai_mcp_handler_config {
   int enable_sessions;
   /** Non-zero disables Origin header validation. */
   int disable_origin_validation;
-  /** Optional allow-list of accepted Origin header values. */
+  /** Optional allow-list of accepted non-empty Origin header values. */
   const char **allowed_origins;
   /** Number of entries in allowed_origins. */
   size_t allowed_origin_count;

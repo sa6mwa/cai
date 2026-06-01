@@ -3092,6 +3092,11 @@ static void test_mcp_handler(test_state *state) {
       {"content-type", "application/json"},
       {"accept", "application/json"},
       {"origin", "https://evil.example"}};
+  static const mcp_header_pair allowed_origin_headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "application/json"},
+      {"origin", "https://app.example"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
   static const mcp_header_pair no_version_headers[] = {
       {"content-type", "application/json"},
       {"accept", "application/json"}};
@@ -3193,6 +3198,17 @@ static void test_mcp_handler(test_state *state) {
     test_fail(state, "mcp_tools_list_body", "tools/list response incomplete");
   }
   expect_valid_json(state, "mcp_tools_list_json", writer.buffer);
+  expect_int(state, "mcp_allowlisted_origin",
+             test_mcp_handle(
+                 handler, allowed_origin_headers,
+                 sizeof(allowed_origin_headers) /
+                     sizeof(allowed_origin_headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"origin-ok\","
+                 "\"method\":\"ping\"}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_allowlisted_origin_status", status, 200L);
+  expect_valid_json(state, "mcp_allowlisted_origin_json", writer.buffer);
   expect_int(state, "mcp_tools_call",
              test_mcp_handle(
                  handler, headers, sizeof(headers) / sizeof(headers[0]),
@@ -3208,6 +3224,23 @@ static void test_mcp_handler(test_state *state) {
     test_fail(state, "mcp_tools_call_body", "tools/call response incomplete");
   }
   expect_valid_json(state, "mcp_tools_call_json", writer.buffer);
+  expect_int(state, "mcp_tools_call_omitted_arguments",
+             test_mcp_handle(
+                 handler, headers, sizeof(headers) / sizeof(headers[0]),
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"no-args\","
+                 "\"method\":\"tools/call\",\"params\":{\"name\":"
+                 "\"chunked_json\"}}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_tools_call_omitted_arguments_status", status, 200L);
+  if (strstr(writer.buffer,
+             "\"structuredContent\":{\"value\":\"alpha-beta\"}") == NULL ||
+      strstr(writer.buffer, "\"isError\":false") == NULL) {
+    test_fail(state, "mcp_tools_call_omitted_arguments_body",
+              "tools/call without arguments did not default to an empty object");
+  }
+  expect_valid_json(state, "mcp_tools_call_omitted_arguments_json",
+                    writer.buffer);
   expect_int(state, "mcp_chunked_tool_call",
              test_mcp_handle_stream(
                  handler, headers, sizeof(headers) / sizeof(headers[0]),
@@ -3381,6 +3414,49 @@ static void test_mcp_handler(test_state *state) {
 
   cai_mcp_handler_destroy(handler);
   handler = NULL;
+  config.allowed_origins = NULL;
+  config.allowed_origin_count = 0U;
+  expect_int(state, "mcp_default_origin_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_default_reject_origin",
+             test_mcp_handle(handler, bad_origin_headers,
+                             sizeof(bad_origin_headers) /
+                                 sizeof(bad_origin_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"default-origin\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_default_reject_origin_status", status, 403L);
+  expect_valid_json(state, "mcp_default_reject_origin_json", writer.buffer);
+  expect_int(state, "mcp_default_no_origin",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"no-origin\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_default_no_origin_status", status, 200L);
+  expect_valid_json(state, "mcp_default_no_origin_json", writer.buffer);
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.disable_origin_validation = 1;
+  expect_int(state, "mcp_disabled_origin_handler_new",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "mcp_disabled_origin_allows",
+             test_mcp_handle(handler, bad_origin_headers,
+                             sizeof(bad_origin_headers) /
+                                 sizeof(bad_origin_headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"origin-disabled\","
+                             "\"method\":\"ping\"}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_disabled_origin_allows_status", status, 200L);
+  expect_valid_json(state, "mcp_disabled_origin_allows_json", writer.buffer);
+  cai_mcp_handler_destroy(handler);
+  handler = NULL;
+  config.disable_origin_validation = 0;
+  config.allowed_origins = allowed_origins;
+  config.allowed_origin_count = 1U;
   config.require_protocol_version = 1;
   expect_int(state, "mcp_strict_handler_new",
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
@@ -3515,7 +3591,7 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_notification_no_body_status", status, 202L);
   expect_str(state, "mcp_notification_no_body_empty", writer.buffer, "");
-  expect_int(state, "mcp_invalid_tool_params",
+  expect_int(state, "mcp_tool_missing_arguments_typed_error",
              test_mcp_handle(handler, headers,
                              sizeof(headers) / sizeof(headers[0]),
                              "{\"jsonrpc\":\"2.0\",\"id\":14,"
@@ -3523,9 +3599,22 @@ static void test_mcp_handler(test_state *state) {
                              "\"weather\"}}",
                              &writer, &header_state, &status, &error),
              CAI_OK);
+  if (strstr(writer.buffer, "\"isError\":true") == NULL) {
+    test_fail(state, "mcp_tool_missing_arguments_typed_error_body",
+              "typed tool missing required fields did not surface as tool error");
+  }
+  expect_valid_json(state, "mcp_tool_missing_arguments_typed_error_json",
+                    writer.buffer);
+  expect_int(state, "mcp_invalid_tool_params",
+             test_mcp_handle(handler, headers,
+                             sizeof(headers) / sizeof(headers[0]),
+                             "{\"jsonrpc\":\"2.0\",\"id\":\"bad-params\","
+                             "\"method\":\"tools/call\",\"params\":{}}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
   if (strstr(writer.buffer, "\"code\":-32602") == NULL) {
     test_fail(state, "mcp_invalid_tool_params_body",
-              "invalid tool params did not return invalid-params error");
+              "missing tool name did not return invalid-params error");
   }
   expect_valid_json(state, "mcp_invalid_tool_params_json", writer.buffer);
   expect_int(state, "mcp_unknown_tool",

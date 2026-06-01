@@ -110,8 +110,8 @@ LONEJSON_MAP_DEFINE(cai_mcp_initialize_params_map,
 
 static const lonejson_field cai_mcp_call_params_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_call_params_doc, name, "name"),
-    LONEJSON_FIELD_JSON_VALUE_REQ(cai_mcp_call_params_doc, arguments,
-                                  "arguments")};
+    LONEJSON_FIELD_JSON_VALUE(cai_mcp_call_params_doc, arguments,
+                              "arguments")};
 LONEJSON_MAP_DEFINE(cai_mcp_call_params_map, cai_mcp_call_params_doc,
                     cai_mcp_call_params_fields);
 
@@ -650,7 +650,7 @@ static int cai_mcp_origin_allowed(cai_mcp_handler *handler,
     return 1;
   }
   if (handler->allowed_origin_count == 0U) {
-    return 1;
+    return 0;
   }
   for (i = 0U; i < handler->allowed_origin_count; i++) {
     if (handler->allowed_origins[i] != NULL &&
@@ -927,6 +927,14 @@ static int cai_mcp_parse_call_params(const lonejson_spooled *params_spool,
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse MCP tool call params",
+                                json_error.message);
+  }
+  if (arguments->size_fn(arguments) == 0U &&
+      arguments->append(arguments, "{}", 2U, &json_error) !=
+          LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to default MCP tool arguments",
                                 json_error.message);
   }
   *out_name = cai_strdup(NULL, params.name);

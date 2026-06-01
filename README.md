@@ -483,6 +483,11 @@ header names. cai sets response headers such as `content-type`,
 `mcp-protocol-version`, `cache-control`, and `x-content-type-options`
 through the supplied callback.
 
+By default, requests without an `Origin` header are accepted and requests with
+a non-empty `Origin` header are rejected unless the origin is present in
+`cai_mcp_handler_config.allowed_origins`. Set `disable_origin_validation` only
+when the embedding server handles equivalent browser-origin protection itself.
+
 The test build also provides `cai_mcp_http_server`, a tiny plain HTTP utility
 for serving the MCP handler on `/mcp`. It is test/example infrastructure only
 and is not linked into `libcai`. It binds `127.0.0.1`, defaults to port
