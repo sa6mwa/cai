@@ -361,8 +361,11 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND TARGET CURL::libcurl)
 endif()
 find_package(Threads REQUIRED)
 
-if(CAI_BUILD_LUA)
+if(CAI_BUILD_LUA OR CAI_BUILD_INTEGRATION_TESTS)
   find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua REQUIRED)
+endif()
+
+if(CAI_BUILD_LUA)
   find_path(CAI_LUA_INCLUDE_DIR lua.h
     PATHS /usr/local/include /usr/include /opt/homebrew/include
     PATH_SUFFIXES lua5.5)
@@ -1049,14 +1052,18 @@ if(CAI_BUILD_TESTS)
     if(TARGET cai_example_basic_response AND
         TARGET cai_example_streaming_text AND
         TARGET cai_example_history_export AND
-        TARGET cai_example_session_state)
+        TARGET cai_example_session_state AND
+        TARGET cai_example_terminal_chat AND
+        CAI_LUA_EXECUTABLE)
       add_test(NAME cai_examples_live_smoke
         COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_live_smoke.sh"
           "${CMAKE_CURRENT_SOURCE_DIR}"
           "$<TARGET_FILE:cai_example_basic_response>"
           "$<TARGET_FILE:cai_example_streaming_text>"
           "$<TARGET_FILE:cai_example_history_export>"
-          "$<TARGET_FILE:cai_example_session_state>")
+          "$<TARGET_FILE:cai_example_session_state>"
+          "$<TARGET_FILE:cai_example_terminal_chat>"
+          "${CAI_LUA_EXECUTABLE}")
       set_tests_properties(cai_examples_live_smoke PROPERTIES
         LABELS "integration;example-smoke"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
