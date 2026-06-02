@@ -4089,6 +4089,18 @@ static void test_mike_mind_prompt_contract(test_state *state) {
     test_fail(state, "mike_mind_prompt_first_person",
               "prompt does not require first-person Mike voice");
   }
+  if (!mike_mind_prompt_contains("answer with first-person openings")) {
+    test_fail(state, "mike_mind_prompt_first_person_openings",
+              "prompt does not require first-person opinion openings");
+  }
+  if (!mike_mind_prompt_contains("Do not answer with third-person openings")) {
+    test_fail(state, "mike_mind_prompt_no_third_person_openings",
+              "prompt does not prohibit third-person opinion openings");
+  }
+  if (!mike_mind_prompt_contains("this first-person override wins")) {
+    test_fail(state, "mike_mind_prompt_override_precedence",
+              "prompt does not make the first-person override explicit");
+  }
   if (!mike_mind_prompt_contains("Do not claim to read files")) {
     test_fail(state, "mike_mind_prompt_no_files",
               "prompt does not prohibit runtime file claims");
