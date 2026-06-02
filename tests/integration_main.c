@@ -2459,7 +2459,8 @@ static int run_exec_tool_llm_regression(void) {
         "printf TAR:; tar -tf archive.tar\n"
         "Then answer exactly: EXEC_TOOL_OK saw_alpha=<yes/no> "
         "saw_linux=<yes/no> saw_tar=<yes/no>. Replace each placeholder with "
-        "yes or no. Do not copy angle brackets.",
+        "yes or no. Keep the field names exactly saw_alpha, saw_linux, and "
+        "saw_tar. Do not copy angle brackets.",
         &error);
   }
   if (rc == CAI_OK) {
@@ -2478,8 +2479,14 @@ static int run_exec_tool_llm_regression(void) {
       strstr(writer.buffer, "EXEC_TOOL_OK") == NULL ||
       (strstr(writer.buffer, "saw_alpha=yes") == NULL &&
        strstr(writer.buffer, "saw_alpha=<yes>") == NULL) ||
+      (strstr(writer.buffer, "saw_linux=yes") == NULL &&
+       strstr(writer.buffer, "saw_linux=<yes>") == NULL &&
+       strstr(writer.buffer, "seen_linux=yes") == NULL &&
+       strstr(writer.buffer, "seen_linux=<yes>") == NULL) ||
       (strstr(writer.buffer, "saw_tar=yes") == NULL &&
-       strstr(writer.buffer, "saw_tar=<yes>") == NULL)) {
+       strstr(writer.buffer, "saw_tar=<yes>") == NULL &&
+       strstr(writer.buffer, "seen_tar=yes") == NULL &&
+       strstr(writer.buffer, "seen_tar=<yes>") == NULL)) {
     fprintf(stderr,
             "exec tool first turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
