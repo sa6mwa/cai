@@ -4084,7 +4084,37 @@ static size_t mike_mind_prompt_total_length(void) {
   return length;
 }
 
+static char *mike_mind_prompt_flatten(void) {
+  const char *const *part;
+  char *buffer;
+  char *cursor;
+  size_t length;
+  size_t part_length;
+
+  length = mike_mind_prompt_total_length();
+  buffer = (char *)malloc(length + 1U);
+  if (buffer == NULL) {
+    return NULL;
+  }
+  cursor = buffer;
+  for (part = cai_mike_mind_developer_prompt_parts; *part != NULL; part++) {
+    part_length = strlen(*part);
+    memcpy(cursor, *part, part_length);
+    cursor += part_length;
+  }
+  *cursor = '\0';
+  return buffer;
+}
+
 static void test_mike_mind_prompt_contract(test_state *state) {
+  char *flat_prompt;
+
+  flat_prompt = mike_mind_prompt_flatten();
+  if (flat_prompt == NULL) {
+    test_fail(state, "mike_mind_prompt_flatten",
+              "failed to allocate flattened prompt for contract checks");
+    return;
+  }
   if (!mike_mind_prompt_contains("Speak as Mike in first person")) {
     test_fail(state, "mike_mind_prompt_first_person",
               "prompt does not require first-person Mike voice");
@@ -4093,13 +4123,31 @@ static void test_mike_mind_prompt_contract(test_state *state) {
     test_fail(state, "mike_mind_prompt_first_person_openings",
               "prompt does not require first-person opinion openings");
   }
-  if (!mike_mind_prompt_contains("Do not answer with third-person openings")) {
-    test_fail(state, "mike_mind_prompt_no_third_person_openings",
-              "prompt does not prohibit third-person opinion openings");
+  if (!mike_mind_prompt_contains("Never start an answer by naming Mike")) {
+    test_fail(state, "mike_mind_prompt_no_mike_named_opening",
+              "prompt does not prohibit Mike-prefixed openings");
   }
   if (!mike_mind_prompt_contains("this first-person override wins")) {
     test_fail(state, "mike_mind_prompt_override_precedence",
               "prompt does not make the first-person override explicit");
+  }
+  if (!mike_mind_prompt_contains("Final response voice rule")) {
+    test_fail(state, "mike_mind_prompt_final_voice_rule",
+              "prompt does not end with a first-person voice rule");
+  }
+  if (strstr(flat_prompt, "`Mike thinks") != NULL ||
+      strstr(flat_prompt, "`Mike would likely think") != NULL ||
+      strstr(flat_prompt, "`Mike is very certain") != NULL ||
+      strstr(flat_prompt, "\n\nMike thinks") != NULL ||
+      strstr(flat_prompt, "\n\nMike would likely think") != NULL ||
+      strstr(flat_prompt, "\n\nMike is very certain") != NULL) {
+    test_fail(state, "mike_mind_prompt_no_third_person_templates",
+              "prompt still contains third-person answer templates");
+  }
+  if (strstr(flat_prompt, "Never start an answer by naming Mike") == NULL ||
+      strstr(flat_prompt, "Do not start with \"Mike\"") == NULL) {
+    test_fail(state, "mike_mind_prompt_no_mike_opening",
+              "prompt does not prohibit Mike-prefixed openings");
   }
   if (!mike_mind_prompt_contains("Do not claim to read files")) {
     test_fail(state, "mike_mind_prompt_no_files",
@@ -4128,6 +4176,7 @@ static void test_mike_mind_prompt_contract(test_state *state) {
     test_fail(state, "mike_mind_prompt_career_profile",
               "prompt does not include the career profile source synthesis");
   }
+  free(flat_prompt);
 }
 
 static void test_response_json(test_state *state) {
