@@ -1857,21 +1857,18 @@ static int cai_session_add_file_input_spooled(
   input->role = cai_strdup(allocator, role);
   input->filename = cai_strdup(allocator, filename);
   input->detail = cai_strdup(allocator, detail);
-  input->file_data = *file_data;
-  input->has_file_data = 1;
-  memset(file_data, 0, sizeof(*file_data));
   if (input->role == NULL || (filename != NULL && input->filename == NULL) ||
       (detail != NULL && input->detail == NULL)) {
     cai_free_mem(allocator, input->role);
     cai_free_mem(allocator, input->filename);
     cai_free_mem(allocator, input->detail);
-    if (input->has_file_data) {
-      input->file_data.cleanup(&input->file_data);
-    }
     memset(input, 0, sizeof(*input));
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate session file input");
   }
+  input->file_data = *file_data;
+  input->has_file_data = 1;
+  memset(file_data, 0, sizeof(*file_data));
   CAI_SESSION_IMPL(session)->input_count++;
   return CAI_OK;
 }
@@ -1901,17 +1898,14 @@ static int cai_session_add_text_input_spooled(cai_session *session,
   memset(input, 0, sizeof(*input));
   input->kind = CAI_SESSION_INPUT_TEXT;
   input->role = cai_strdup(allocator, role);
-  input->text_spooled = *text;
-  input->has_text_spooled = 1;
-  memset(text, 0, sizeof(*text));
   if (input->role == NULL) {
-    if (input->has_text_spooled) {
-      input->text_spooled.cleanup(&input->text_spooled);
-    }
     memset(input, 0, sizeof(*input));
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate session text input");
   }
+  input->text_spooled = *text;
+  input->has_text_spooled = 1;
+  memset(text, 0, sizeof(*text));
   CAI_SESSION_IMPL(session)->input_count++;
   return CAI_OK;
 }

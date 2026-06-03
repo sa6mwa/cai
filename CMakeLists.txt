@@ -686,6 +686,7 @@ if(CAI_BUILD_TESTS)
     http_mock_incomplete_request_timeout
     http_error_details
     agent_session
+    session_spooled_input_failure_ownership
     agent_client_history_continuity
     agent_tool_declarations
     agent_tool_manual_step

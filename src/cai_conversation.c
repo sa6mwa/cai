@@ -736,16 +736,18 @@ int cai_conversation_items_params_add_text_spooled(
   allocator = params != NULL ? &params->allocator : NULL;
   memset(&part, 0, sizeof(part));
   part.type = cai_strdup(allocator, "input_text");
-  part.text_spooled = *text;
-  part.has_text_spooled = 1;
-  memset(text, 0, sizeof(*text));
   if (part.type == NULL) {
     cai_conversation_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
   }
+  part.text_spooled = *text;
+  part.has_text_spooled = 1;
   rc = cai_conversation_items_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
+    part.has_text_spooled = 0;
     cai_conversation_content_part_cleanup(allocator, &part);
+  } else {
+    memset(text, 0, sizeof(*text));
   }
   return rc;
 }
@@ -934,18 +936,20 @@ int cai_conversation_items_params_add_file_data_spooled(
   part.type = cai_strdup(allocator, "input_file");
   part.filename = cai_strdup(allocator, filename);
   part.detail = cai_strdup(allocator, detail);
-  part.file_data = *file_data;
-  part.has_file_data = 1;
-  memset(file_data, 0, sizeof(*file_data));
   if (part.type == NULL || (filename != NULL && part.filename == NULL) ||
       (detail != NULL && part.detail == NULL)) {
     cai_conversation_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate file data input");
   }
+  part.file_data = *file_data;
+  part.has_file_data = 1;
   rc = cai_conversation_items_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
+    part.has_file_data = 0;
     cai_conversation_content_part_cleanup(allocator, &part);
+  } else {
+    memset(file_data, 0, sizeof(*file_data));
   }
   return rc;
 }

@@ -63,6 +63,12 @@ typedef struct alloc_count_state {
   size_t frees;
 } alloc_count_state;
 
+typedef struct fail_alloc_state {
+  size_t allocs;
+  size_t frees;
+  size_t fail_after;
+} fail_alloc_state;
+
 typedef struct write_state {
   char buffer[8192];
   size_t length;
@@ -645,6 +651,36 @@ static char *test_spooled_to_cstr(const lonejson_spooled *spool) {
   return out;
 }
 
+static void expect_spool_owned_text(test_state *state, const char *name,
+                                    lonejson_spooled *spool,
+                                    const char *expected) {
+  char *text;
+
+  if (spool == NULL || spool->cleanup == NULL) {
+    test_fail(state, name, "spool ownership was consumed unexpectedly");
+    return;
+  }
+  text = test_spooled_to_cstr(spool);
+  if (text == NULL) {
+    test_fail(state, name, "failed to read retained spool");
+  } else {
+    expect_str(state, name, text, expected);
+    free(text);
+  }
+  spool->cleanup(spool);
+  memset(spool, 0, sizeof(*spool));
+}
+
+static void test_init_spooled_text(test_state *state, const char *name,
+                                   lonejson_spooled *spool, const char *text) {
+  lonejson_error json_error;
+
+  lonejson_error_init(&json_error);
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  expect_int(state, name, spool->append(spool, text, strlen(text), &json_error),
+             LONEJSON_STATUS_OK);
+}
+
 static void test_model_capabilities(test_state *state) {
   const cai_model_info *info;
   cai_agent_config agent_config;
@@ -1004,6 +1040,43 @@ static void test_allocator_free(void *context, void *ptr) {
   alloc_count_state *state;
 
   state = (alloc_count_state *)context;
+  if (state != NULL && ptr != NULL) {
+    state->frees++;
+  }
+  free(ptr);
+}
+
+static void *test_fail_allocator_malloc(void *context, size_t size) {
+  fail_alloc_state *state;
+
+  state = (fail_alloc_state *)context;
+  if (state != NULL) {
+    if (state->allocs >= state->fail_after) {
+      return NULL;
+    }
+    state->allocs++;
+  }
+  return malloc(size);
+}
+
+static void *test_fail_allocator_realloc(void *context, void *ptr,
+                                         size_t size) {
+  fail_alloc_state *state;
+
+  state = (fail_alloc_state *)context;
+  if (state != NULL && ptr == NULL) {
+    if (state->allocs >= state->fail_after) {
+      return NULL;
+    }
+    state->allocs++;
+  }
+  return realloc(ptr, size);
+}
+
+static void test_fail_allocator_free(void *context, void *ptr) {
+  fail_alloc_state *state;
+
+  state = (fail_alloc_state *)context;
   if (state != NULL && ptr != NULL) {
     state->frees++;
   }
@@ -5007,6 +5080,10 @@ static void test_response_spooled_request_arrays(test_state *state) {
   lonejson_spooled text_data;
   lonejson_spooled file_data;
   lonejson_spooled tool_file_data;
+  lonejson_spooled invalid_text_data;
+  lonejson_spooled invalid_file_data;
+  lonejson_spooled invalid_tool_output;
+  lonejson_spooled invalid_tool_file_data;
   lonejson_spooled request_json;
   lonejson_spooled output_items;
   cai_response *response;
@@ -5040,6 +5117,48 @@ static void test_response_spooled_request_arrays(test_state *state) {
              cai_response_create_params_set_raw_input_json(
                  params, "{\"type\":\"message\"", &error),
              CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  test_init_spooled_text(state, "spooled_invalid_text_append",
+                         &invalid_text_data, "still-owned-text");
+  expect_int(state, "spooled_invalid_text_add_keeps_owner",
+             cai_response_create_params_add_text_spooled(
+                 NULL, "user", &invalid_text_data, &error),
+             CAI_ERR_INVALID);
+  expect_spool_owned_text(state, "spooled_invalid_text_owner",
+                          &invalid_text_data, "still-owned-text");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  test_init_spooled_text(state, "spooled_invalid_file_append",
+                         &invalid_file_data, "still-owned-file");
+  expect_int(state, "spooled_invalid_file_add_keeps_owner",
+             cai_response_create_params_add_file_data_spooled(
+                 NULL, "user", "bad.txt", &invalid_file_data, "low", &error),
+             CAI_ERR_INVALID);
+  expect_spool_owned_text(state, "spooled_invalid_file_owner",
+                          &invalid_file_data, "still-owned-file");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  test_init_spooled_text(state, "spooled_invalid_tool_output_append",
+                         &invalid_tool_output, "still-owned-output");
+  expect_int(state, "spooled_invalid_tool_output_keeps_owner",
+             cai_response_create_params_add_function_call_output_spooled(
+                 NULL, "call_bad", &invalid_tool_output, &error),
+             CAI_ERR_INVALID);
+  expect_spool_owned_text(state, "spooled_invalid_tool_output_owner",
+                          &invalid_tool_output, "still-owned-output");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  test_init_spooled_text(state, "spooled_invalid_tool_file_append",
+                         &invalid_tool_file_data, "still-owned-tool-file");
+  expect_int(
+      state, "spooled_invalid_tool_file_keeps_owner",
+      cai_response_create_params_add_function_call_output_file_data_spooled(
+          NULL, "call_bad_file", "bad-tool.txt", &invalid_tool_file_data, "low",
+          &error),
+      CAI_ERR_INVALID);
+  expect_spool_owned_text(state, "spooled_invalid_tool_file_owner",
+                          &invalid_tool_file_data, "still-owned-tool-file");
   cai_error_cleanup(&error);
   cai_error_init(&error);
   lonejson_error_init(&json_error);
@@ -7664,6 +7783,8 @@ static void test_conversations(test_state *state) {
   read_state source_state;
   lonejson_spooled conversation_text_data;
   lonejson_spooled conversation_file_data;
+  lonejson_spooled invalid_conversation_text_data;
+  lonejson_spooled invalid_conversation_file_data;
   lonejson_error json_error;
   cai_list_params list_params;
   cai_error error;
@@ -7743,6 +7864,31 @@ static void test_conversations(test_state *state) {
   conversation = NULL;
   expect_int(state, "conversation_items_params_new",
              cai_conversation_items_params_new(&item_params, &error), CAI_OK);
+  test_init_spooled_text(state, "conversation_items_invalid_text_append",
+                         &invalid_conversation_text_data,
+                         "still-owned-conversation-text");
+  expect_int(state, "conversation_items_invalid_text_keeps_owner",
+             cai_conversation_items_params_add_text_spooled(
+                 NULL, "user", &invalid_conversation_text_data, &error),
+             CAI_ERR_INVALID);
+  expect_spool_owned_text(state, "conversation_items_invalid_text_owner",
+                          &invalid_conversation_text_data,
+                          "still-owned-conversation-text");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  test_init_spooled_text(state, "conversation_items_invalid_file_append",
+                         &invalid_conversation_file_data,
+                         "still-owned-conversation-file");
+  expect_int(state, "conversation_items_invalid_file_keeps_owner",
+             cai_conversation_items_params_add_file_data_spooled(
+                 NULL, "user", "conv-bad.txt", &invalid_conversation_file_data,
+                 "low", &error),
+             CAI_ERR_INVALID);
+  expect_spool_owned_text(state, "conversation_items_invalid_file_owner",
+                          &invalid_conversation_file_data,
+                          "still-owned-conversation-file");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "conversation_items_add_text",
              cai_conversation_items_params_add_text(
                  item_params, "user", "conversation item", &error),
@@ -8188,6 +8334,74 @@ static void test_agent_session(test_state *state) {
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_mock", "mock child failed");
   }
+}
+
+static void test_session_spooled_input_failure_ownership(test_state *state) {
+  fail_alloc_state alloc_state;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  lonejson_spooled text_data;
+  lonejson_spooled file_data;
+  cai_error error;
+
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  alloc_state.fail_after = (size_t)-1;
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.http_2_disabled = 1;
+  client_config.allocator.malloc_fn = test_fail_allocator_malloc;
+  client_config.allocator.realloc_fn = test_fail_allocator_realloc;
+  client_config.allocator.free_fn = test_fail_allocator_free;
+  client_config.allocator.context = &alloc_state;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+
+  expect_int(state, "session_spooled_fail_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "session_spooled_fail_agent_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "session_spooled_fail_session_new",
+             agent->new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "session_spooled_fail_seed",
+             session->add_user_text(session, "seed", &error), CAI_OK);
+
+  test_init_spooled_text(state, "session_spooled_text_fail_append", &text_data,
+                         "session-owned-text");
+  alloc_state.fail_after = alloc_state.allocs;
+  expect_int(state, "session_spooled_text_fail_keeps_owner",
+             session->add_user_text_spooled(session, &text_data, &error),
+             CAI_ERR_NOMEM);
+  alloc_state.fail_after = (size_t)-1;
+  expect_spool_owned_text(state, "session_spooled_text_fail_owner", &text_data,
+                          "session-owned-text");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  test_init_spooled_text(state, "session_spooled_file_fail_append", &file_data,
+                         "session-owned-file");
+  alloc_state.fail_after = alloc_state.allocs;
+  expect_int(state, "session_spooled_file_fail_keeps_owner",
+             session->add_user_file_data_spooled(session, "owned.txt",
+                                                 &file_data, "low", &error),
+             CAI_ERR_NOMEM);
+  alloc_state.fail_after = (size_t)-1;
+  expect_spool_owned_text(state, "session_spooled_file_fail_owner", &file_data,
+                          "session-owned-file");
+
+  cai_error_cleanup(&error);
+  session->close(session);
+  agent->close(agent);
+  client->close(client);
 }
 
 static void test_agent_client_history_continuity(test_state *state) {
@@ -15370,6 +15584,8 @@ static const test_entry test_entries[] = {
      test_http_mock_incomplete_request_timeout},
     {"http_error_details", test_http_error_details},
     {"agent_session", test_agent_session},
+    {"session_spooled_input_failure_ownership",
+     test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},

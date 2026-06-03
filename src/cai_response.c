@@ -1879,16 +1879,18 @@ int cai_response_create_params_add_text_spooled(
   cai_content_part_zero(&part);
   part.type =
       cai_strdup(params != NULL ? &params->allocator : NULL, "input_text");
-  part.text_spooled = *text;
-  part.has_text_spooled = 1;
-  memset(text, 0, sizeof(*text));
   if (part.type == NULL) {
     cai_content_part_cleanup(params != NULL ? &params->allocator : NULL, &part);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate text input");
   }
+  part.text_spooled = *text;
+  part.has_text_spooled = 1;
   rc = cai_response_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
+    part.has_text_spooled = 0;
     cai_content_part_cleanup(params != NULL ? &params->allocator : NULL, &part);
+  } else {
+    memset(text, 0, sizeof(*text));
   }
   return rc;
 }
@@ -2024,18 +2026,20 @@ int cai_response_create_params_add_file_data_spooled(
   part.type = cai_strdup(allocator, "input_file");
   part.filename = cai_strdup(allocator, filename);
   part.detail = cai_strdup(allocator, detail);
-  part.file_data = *file_data;
-  part.has_file_data = 1;
-  memset(file_data, 0, sizeof(*file_data));
   if (part.type == NULL || (filename != NULL && part.filename == NULL) ||
       (detail != NULL && part.detail == NULL)) {
     cai_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate file data input");
   }
+  part.file_data = *file_data;
+  part.has_file_data = 1;
   rc = cai_response_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
+    part.has_file_data = 0;
     cai_content_part_cleanup(allocator, &part);
+  } else {
+    memset(file_data, 0, sizeof(*file_data));
   }
   return rc;
 }
@@ -2743,16 +2747,12 @@ int cai_response_create_params_add_function_call_output_spooled(
 
   if (params == NULL || call_id == NULL || call_id[0] == '\0' ||
       output == NULL) {
-    if (output != NULL) {
-      output->cleanup(output);
-    }
     return cai_set_error(error, CAI_ERR_INVALID,
                          "function call id and output are required");
   }
   rc = cai_object_array_grow(&params->allocator, &params->input,
                              sizeof(struct cai_input_message), error);
   if (rc != CAI_OK) {
-    output->cleanup(output);
     return rc;
   }
   messages = (struct cai_input_message *)params->input.items;
@@ -2761,14 +2761,14 @@ int cai_response_create_params_add_function_call_output_spooled(
   message->kind = CAI_INPUT_FUNCTION_CALL_OUTPUT;
   cai_object_array_init(&message->content, sizeof(struct cai_content_part));
   message->call_id = cai_strdup(&params->allocator, call_id);
-  message->output_spooled = *output;
-  message->has_output_spooled = 1;
-  memset(output, 0, sizeof(*output));
   if (message->call_id == NULL) {
     cai_input_message_cleanup(&params->allocator, message);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate function call output");
   }
+  message->output_spooled = *output;
+  message->has_output_spooled = 1;
+  memset(output, 0, sizeof(*output));
   params->input.count++;
   return CAI_OK;
 }
@@ -2918,19 +2918,21 @@ int cai_response_create_params_add_function_call_output_file_data_spooled(
   part.type = cai_strdup(allocator, "input_file");
   part.filename = cai_strdup(allocator, filename);
   part.detail = cai_strdup(allocator, detail);
-  part.file_data = *file_data;
-  part.has_file_data = 1;
-  memset(file_data, 0, sizeof(*file_data));
   if (part.type == NULL || (filename != NULL && part.filename == NULL) ||
       (detail != NULL && part.detail == NULL)) {
     cai_content_part_cleanup(allocator, &part);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate function output file data");
   }
+  part.file_data = *file_data;
+  part.has_file_data = 1;
   rc = cai_response_params_add_function_output_part(params, call_id, &part,
                                                     error);
   if (rc != CAI_OK) {
+    part.has_file_data = 0;
     cai_content_part_cleanup(allocator, &part);
+  } else {
+    memset(file_data, 0, sizeof(*file_data));
   }
   return rc;
 }
