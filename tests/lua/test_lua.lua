@@ -197,6 +197,30 @@ assert(table.concat(state_chunks):match("conv_lua_test"))
 dummy_session:close()
 dummy_agent:close()
 dummy_client:close()
+
+do
+  local auth_path = os.tmpname()
+  local future_token = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.lua"
+  local fp = assert(io.open(auth_path, "w"))
+  fp:write('{"auth_mode":"chatgpt","tokens":{"id_token":"' .. future_token ..
+    '","access_token":"' .. future_token ..
+    '","refresh_token":"refresh-lua","account_id":"acct_lua"},' ..
+    '"last_refresh":"2026-01-01T00:00:00Z"}')
+  fp:close()
+  local auth_client = assert_ok(cai.open({
+    chatgpt_auth_json = auth_path,
+    base_url = "http://127.0.0.1:1/v1",
+    http_2_disabled = 1,
+    timeout_ms = 1,
+  }), nil, "Lua ChatGPT auth client open")
+  auth_client:close()
+  os.remove(auth_path)
+  local missing_client, missing_err = cai.open({
+    chatgpt_auth_json = auth_path,
+  })
+  assert_not_ok(missing_client, missing_err, "Lua ChatGPT auth missing file")
+end
+
 do
   local chained_agent = assert_ok(cai.open({
     api_key = "test-key",

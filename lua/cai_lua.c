@@ -1,3 +1,4 @@
+#include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/tools/exec.h>
@@ -60,6 +61,7 @@ struct cai_lua_tool_ref {
 
 typedef struct cai_lua_client {
   cai_client *ptr;
+  cai_chatgpt_auth *chatgpt_auth;
 } cai_lua_client;
 
 typedef struct cai_lua_agent {
@@ -520,10 +522,12 @@ static void cai_lua_unref_tools(lua_State *L, cai_lua_tool_ref *tool) {
   }
 }
 
-static void cai_lua_push_client(lua_State *L, cai_client *client) {
+static void cai_lua_push_client(lua_State *L, cai_client *client,
+                                cai_chatgpt_auth *chatgpt_auth) {
   cai_lua_client *ud;
   ud = (cai_lua_client *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = client;
+  ud->chatgpt_auth = chatgpt_auth;
   luaL_getmetatable(L, CAI_LUA_CLIENT);
   lua_setmetatable(L, -2);
 }
@@ -1242,12 +1246,18 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
 }
 
 static int cai_lua_open(lua_State *L) {
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *chatgpt_auth;
   cai_client_config config;
   cai_client *client;
+  const char *chatgpt_auth_json;
   cai_error error;
   int rc;
+  chatgpt_auth = NULL;
+  chatgpt_auth_json = NULL;
   cai_error_init(&error);
   cai_client_config_init(&config);
+  cai_chatgpt_auth_config_init(&auth_config);
   if (lua_istable(L, 1)) {
     lua_getfield(L, 1, "openrouter");
     if (lua_toboolean(L, -1)) {
@@ -1271,12 +1281,30 @@ static int cai_lua_open(lua_State *L) {
         L, 1, "insecure_skip_verify", config.insecure_skip_verify);
     config.json_response_limit_bytes = cai_lua_opt_size_field(
         L, 1, "json_response_limit_bytes", config.json_response_limit_bytes);
+    chatgpt_auth_json =
+        cai_lua_opt_string_field(L, 1, "chatgpt_auth_json", NULL);
+    auth_config.issuer =
+        cai_lua_opt_string_field(L, 1, "chatgpt_auth_issuer", NULL);
+    auth_config.client_id =
+        cai_lua_opt_string_field(L, 1, "chatgpt_auth_client_id", NULL);
+    auth_config.refresh_window_seconds =
+        cai_lua_opt_ll_field(L, 1, "chatgpt_auth_refresh_window_seconds",
+                             auth_config.refresh_window_seconds);
+  }
+  if (chatgpt_auth_json != NULL && chatgpt_auth_json[0] != '\0') {
+    auth_config.auth_json_path = chatgpt_auth_json;
+    rc = cai_chatgpt_auth_open(&auth_config, &chatgpt_auth, &error);
+    if (rc != CAI_OK) {
+      return cai_lua_fail(L, rc, &error);
+    }
+    config.chatgpt_auth = chatgpt_auth;
   }
   rc = cai_client_open(&config, &client, &error);
   if (rc != CAI_OK) {
+    cai_chatgpt_auth_close(chatgpt_auth);
     return cai_lua_fail(L, rc, &error);
   }
-  cai_lua_push_client(L, client);
+  cai_lua_push_client(L, client, chatgpt_auth);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -1307,6 +1335,10 @@ static int cai_lua_client_gc(lua_State *L) {
   if (self->ptr != NULL) {
     cai_client_close(self->ptr);
     self->ptr = NULL;
+  }
+  if (self->chatgpt_auth != NULL) {
+    cai_chatgpt_auth_close(self->chatgpt_auth);
+    self->chatgpt_auth = NULL;
   }
   return 0;
 }

@@ -60,6 +60,7 @@ local todo_store = os.getenv("CAI_LUA_TODO_STORE")
 local todo_lock = os.getenv("CAI_LUA_TODO_LOCK")
 local exec_tool_dir = nil
 local read_tool_dir = nil
+local chatgpt_auth_json = nil
 
 local i = 1
 while i <= #arg do
@@ -77,8 +78,15 @@ while i <= #arg do
     end
     read_tool_dir = arg[i + 1]
     i = i + 2
+  elseif arg[i] == "--chatgpt-auth-json" then
+    if not arg[i + 1] or arg[i + 1] == "" then
+      io.stderr:write("--chatgpt-auth-json requires a path\n")
+      os.exit(2)
+    end
+    chatgpt_auth_json = arg[i + 1]
+    i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--exec-tool-dir <path>] [--read-tool-dir <path>]\n")
+    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth-json <path>] [--exec-tool-dir <path>] [--read-tool-dir <path>]\n")
     os.exit(0)
   else
     io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
@@ -86,6 +94,9 @@ while i <= #arg do
   end
 end
 
+if chatgpt_auth_json then
+  io.stderr:write("ChatGPT subscription auth enabled with: " .. chatgpt_auth_json .. "\n")
+end
 if exec_tool_dir then
   io.stderr:write("exec_command enabled with root: " .. exec_tool_dir .. "\n")
 else
@@ -126,7 +137,13 @@ if exec_tool_dir or read_tool_dir then
     "specific directory matters, and do not assume network access."
 end
 
-local client = ok(cai.open(common.client_config(cai)), nil, "cai.open")
+local client_config
+if chatgpt_auth_json then
+  client_config = { chatgpt_auth_json = chatgpt_auth_json }
+else
+  client_config = common.client_config(cai)
+end
+local client = ok(cai.open(client_config), nil, "cai.open")
 local agent = ok(client:new_agent({
   model = model,
   instructions = instructions,

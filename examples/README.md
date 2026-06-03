@@ -190,6 +190,7 @@ characters.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
+make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 ```

@@ -67,7 +67,7 @@ help:
 		'  make run-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-mike-mind' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
+		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
 		'' \
@@ -120,7 +120,7 @@ run-lua-basic:
 	$(call run_lua_example,examples/lua-basic/main.lua,)
 
 run-lua-terminal-chat:
-	$(call run_lua_example,examples/lua-terminal-chat/main.lua,$(TERMINAL_TOOL_ARGS))
+	$(call run_lua_example,examples/lua-terminal-chat/main.lua,$(TERMINAL_CHAT_ARGS))
 
 run-lua-conversation:
 	$(call run_lua_example,examples/lua-conversation/main.lua,)
