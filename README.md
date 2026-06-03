@@ -91,17 +91,21 @@ The verification tiers are split intentionally:
 - ChatGPT subscription auth can be supplied explicitly through
   `cai_chatgpt_auth` from `cai/auth.h`. Open a Codex-compatible `auth.json`
   path with `cai_chatgpt_auth_open`, set `config.chatgpt_auth`, and keep the
-  auth handle alive for the client lifetime. cai reads `id_token`,
-  `access_token`, `refresh_token`, and `account_id` from the file, refreshes
-  access tokens through the configured OAuth issuer before expiry, persists
-  returned token fields, and retries one 401/403 response after a forced
-  refresh. Before using a refresh token, cai re-reads the explicit auth file so
-  another process can refresh or replace same-account tokens without racing the
-  stale in-memory handle; a different account is rejected. The auth file path is
-  never guessed by `cai_client_open`; callers must pass it explicitly.
+  auth handle alive for the client lifetime. If `auth_json_path` is NULL/empty,
+  the auth library uses `$XDG_CONFIG_HOME/cai/auth.json`, or
+  `$HOME/.config/cai/auth.json` when `XDG_CONFIG_HOME` is unset or relative.
+  cai reads `id_token`, `access_token`, `refresh_token`, and `account_id` from
+  the file, refreshes access tokens through the configured OAuth issuer before
+  expiry, persists returned token fields, and retries one 401/403 response
+  after a forced refresh. Before using a refresh token, cai re-reads the auth
+  file so another process can refresh or replace same-account tokens without
+  racing the stale in-memory handle; a different account is rejected. The auth
+  file is never loaded implicitly by `cai_client_open`; callers must explicitly
+  open auth and pass `config.chatgpt_auth`.
 - Interactive ChatGPT login is exposed as a server-agnostic OAuth callback
   handler, not as a built-in webserver. Call `cai_chatgpt_login_start` with an
-  explicit auth file path and redirect URI, open the returned authorization URL,
+  auth file path or the library default and a redirect URI, open the returned
+  authorization URL,
   pass the embedding server's callback request target into
   `cai_chatgpt_login_handle_callback`, then write the returned status,
   content-type, and body. The example `cai_example_chatgpt_login` shows this

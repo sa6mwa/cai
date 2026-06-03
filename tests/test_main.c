@@ -573,6 +573,35 @@ static void write_file_or_die(const char *path, const char *text) {
   fclose(fp);
 }
 
+typedef struct test_env_snapshot {
+  const char *name;
+  char *value;
+  int had_value;
+} test_env_snapshot;
+
+static void test_env_capture(test_env_snapshot *snapshot, const char *name) {
+  const char *value;
+
+  snapshot->name = name;
+  value = getenv(name);
+  snapshot->had_value = value != NULL;
+  snapshot->value = value != NULL ? strdup(value) : NULL;
+  if (value != NULL && snapshot->value == NULL) {
+    perror("strdup");
+    exit(2);
+  }
+}
+
+static void test_env_restore(test_env_snapshot *snapshot) {
+  if (snapshot->had_value) {
+    setenv(snapshot->name, snapshot->value != NULL ? snapshot->value : "", 1);
+  } else {
+    unsetenv(snapshot->name);
+  }
+  free(snapshot->value);
+  snapshot->value = NULL;
+}
+
 static void write_bytes_or_die(const char *path, const unsigned char *data,
                                size_t len) {
   FILE *fp;
@@ -8110,6 +8139,138 @@ cleanup:
   rmdir(template_dir);
 }
 
+static void test_chatgpt_auth_default_path(test_state *state) {
+  char template_dir[] = "/tmp/cai-auth-default-path-XXXXXX";
+  char xdg_dir[PATH_MAX];
+  char expected[PATH_MAX];
+  test_env_snapshot home_env;
+  test_env_snapshot xdg_env;
+  cai_error error;
+  char *path;
+
+  path = NULL;
+  cai_error_init(&error);
+  test_env_capture(&home_env, "HOME");
+  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  xdg_dir[0] = '\0';
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_default_tmpdir", "mkdtemp failed");
+    goto cleanup;
+  }
+
+  setenv("HOME", template_dir, 1);
+  unsetenv("XDG_CONFIG_HOME");
+  snprintf(expected, sizeof(expected), "%s/.config/cai/auth.json",
+           template_dir);
+  expect_int(state, "chatgpt_auth_default_home",
+             cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
+  expect_str(state, "chatgpt_auth_default_home_path", path, expected);
+  cai_string_destroy(path);
+  path = NULL;
+
+  snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
+  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  snprintf(expected, sizeof(expected), "%s/xdg/cai/auth.json", template_dir);
+  expect_int(state, "chatgpt_auth_default_xdg",
+             cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
+  expect_str(state, "chatgpt_auth_default_xdg_path", path, expected);
+  cai_string_destroy(path);
+  path = NULL;
+
+  setenv("XDG_CONFIG_HOME", "relative-xdg", 1);
+  snprintf(expected, sizeof(expected), "%s/.config/cai/auth.json",
+           template_dir);
+  expect_int(state, "chatgpt_auth_default_relative_xdg",
+             cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
+  expect_str(state, "chatgpt_auth_default_relative_xdg_path", path, expected);
+  cai_string_destroy(path);
+  path = NULL;
+
+  setenv("HOME", "relative-home", 1);
+  unsetenv("XDG_CONFIG_HOME");
+  expect_int(state, "chatgpt_auth_default_missing_absolute_home",
+             cai_chatgpt_auth_default_path(&path, &error), CAI_ERR_INVALID);
+  expect_substr(state, "chatgpt_auth_default_error", error.message,
+                "HOME is required");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+cleanup:
+  cai_string_destroy(path);
+  test_env_restore(&xdg_env);
+  test_env_restore(&home_env);
+  cai_error_cleanup(&error);
+  rmdir(template_dir);
+}
+
+static void test_chatgpt_auth_open_default_path(test_state *state) {
+  char template_dir[] = "/tmp/cai-auth-default-open-XXXXXX";
+  char xdg_dir[PATH_MAX];
+  char cai_dir[PATH_MAX];
+  char auth_path[PATH_MAX];
+  const char *future_token = "eyJhbGciOiJub25lIn0."
+                             "eyJleHAiOjQxMDI0NDQ4MDB9.default";
+  char auth_json[2048];
+  test_env_snapshot home_env;
+  test_env_snapshot xdg_env;
+  cai_chatgpt_auth_config config;
+  cai_chatgpt_auth *auth;
+  cai_error error;
+  char *token;
+
+  auth = NULL;
+  token = NULL;
+  cai_error_init(&error);
+  test_env_capture(&home_env, "HOME");
+  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  xdg_dir[0] = '\0';
+  cai_dir[0] = '\0';
+  auth_path[0] = '\0';
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_default_open_tmpdir", "mkdtemp failed");
+    goto cleanup;
+  }
+  snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
+  snprintf(cai_dir, sizeof(cai_dir), "%s/xdg/cai", template_dir);
+  snprintf(auth_path, sizeof(auth_path), "%s/xdg/cai/auth.json", template_dir);
+  if (mkdir(xdg_dir, 0700) != 0 || mkdir(cai_dir, 0700) != 0) {
+    test_fail(state, "chatgpt_auth_default_open_mkdir", "mkdir failed");
+    goto cleanup;
+  }
+  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"%s\","
+           "\"access_token\":\"%s\",\"refresh_token\":\"refresh-default\","
+           "\"account_id\":\"acct_default\"},"
+           "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+           future_token, future_token);
+  write_file_or_die(auth_path, auth_json);
+
+  cai_chatgpt_auth_config_init(&config);
+  expect_int(state, "chatgpt_auth_default_open",
+             cai_chatgpt_auth_open(&config, &auth, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_default_access",
+             cai_chatgpt_auth_access_token(auth, &token, &error), CAI_OK);
+  expect_str(state, "chatgpt_auth_default_token", token, future_token);
+
+cleanup:
+  cai_string_destroy(token);
+  cai_chatgpt_auth_close(auth);
+  test_env_restore(&xdg_env);
+  test_env_restore(&home_env);
+  cai_error_cleanup(&error);
+  if (auth_path[0] != '\0') {
+    unlink(auth_path);
+  }
+  if (cai_dir[0] != '\0') {
+    rmdir(cai_dir);
+  }
+  if (xdg_dir[0] != '\0') {
+    rmdir(xdg_dir);
+  }
+  rmdir(template_dir);
+}
+
 static void test_chatgpt_login_authorize_url(test_state *state) {
   cai_chatgpt_login_config config;
   cai_chatgpt_login *login;
@@ -8309,6 +8470,127 @@ cleanup:
                       &server.child_status);
   }
   unlink(auth_path);
+  rmdir(template_dir);
+}
+
+static void test_chatgpt_login_default_path_write(test_state *state) {
+  static const char token_body[] =
+      "{\"id_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.id\","
+      "\"access_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+      "\"refresh_token\":\"refresh-default-login\","
+      "\"account_id\":\"acct_default_login\"}";
+  static const char *required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "Content-Type: application/x-www-form-urlencoded",
+      "grant_type=authorization_code",
+      "code=mock-code",
+      "redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback",
+      "client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID,
+      "code_verifier=test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body}};
+  char template_dir[] = "/tmp/cai-login-default-path-XXXXXX";
+  char xdg_dir[PATH_MAX];
+  char cai_dir[PATH_MAX];
+  char auth_path[PATH_MAX];
+  char *stored;
+  test_env_snapshot home_env;
+  test_env_snapshot xdg_env;
+  http_mock_server server;
+  cai_chatgpt_login_config config;
+  cai_chatgpt_login_request request;
+  cai_chatgpt_login_response response;
+  cai_chatgpt_login *login;
+  cai_error error;
+  char *authorize_url;
+  struct stat file_stat;
+  struct stat dir_stat;
+  int server_opened;
+
+  stored = NULL;
+  login = NULL;
+  authorize_url = NULL;
+  server_opened = 0;
+  xdg_dir[0] = '\0';
+  cai_dir[0] = '\0';
+  auth_path[0] = '\0';
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&response, 0, sizeof(response));
+  cai_error_init(&error);
+  test_env_capture(&home_env, "HOME");
+  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_login_default_tmpdir", "mkdtemp failed");
+    goto cleanup;
+  }
+  snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
+  snprintf(cai_dir, sizeof(cai_dir), "%s/xdg/cai", template_dir);
+  snprintf(auth_path, sizeof(auth_path), "%s/xdg/cai/auth.json", template_dir);
+  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  if (http_mock_server_open_script(state, "chatgpt_login_default_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_login_config_init(&config);
+  config.redirect_uri = "http://127.0.0.1:1455/auth/callback";
+  config.issuer = server.base_url;
+  config.state = "state-fixed";
+  config.code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
+  expect_int(state, "chatgpt_login_default_start",
+             cai_chatgpt_login_start(&config, &login, &authorize_url, &error),
+             CAI_OK);
+  memset(&request, 0, sizeof(request));
+  request.method = "GET";
+  request.target = "/auth/callback?code=mock-code&state=state-fixed";
+  expect_int(
+      state, "chatgpt_login_default_callback",
+      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
+      CAI_OK);
+  expect_int(state, "chatgpt_login_default_status", response.status, 200L);
+  expect_int(state, "chatgpt_login_default_completed",
+             cai_chatgpt_login_completed(login), 1L);
+  stored = read_file_or_die(auth_path);
+  expect_substr(state, "chatgpt_login_default_persisted", stored,
+                "\"account_id\":\"acct_default_login\"");
+  if (stat(auth_path, &file_stat) != 0) {
+    test_fail(state, "chatgpt_login_default_stat_file", "stat failed");
+  } else {
+    expect_int(state, "chatgpt_login_default_file_mode",
+               (long)(file_stat.st_mode & 0777), 0600L);
+  }
+  if (stat(cai_dir, &dir_stat) != 0) {
+    test_fail(state, "chatgpt_login_default_stat_dir", "stat failed");
+  } else {
+    expect_int(state, "chatgpt_login_default_dir_mode",
+               (long)(dir_stat.st_mode & 0777), 0700L);
+  }
+
+cleanup:
+  cai_chatgpt_login_response_cleanup(&response);
+  cai_string_destroy(authorize_url);
+  cai_chatgpt_login_close(login);
+  free(stored);
+  test_env_restore(&xdg_env);
+  test_env_restore(&home_env);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_login_default_mock", server.pid,
+                      &server.child_status);
+  }
+  if (auth_path[0] != '\0') {
+    unlink(auth_path);
+  }
+  if (cai_dir[0] != '\0') {
+    rmdir(cai_dir);
+  }
+  if (xdg_dir[0] != '\0') {
+    rmdir(xdg_dir);
+  }
   rmdir(template_dir);
 }
 
@@ -16404,10 +16686,13 @@ static const test_entry test_entries[] = {
      test_chatgpt_auth_rejects_changed_file_account},
     {"chatgpt_auth_stream_refresh_retry",
      test_chatgpt_auth_stream_refresh_retry},
+    {"chatgpt_auth_default_path", test_chatgpt_auth_default_path},
+    {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
     {"chatgpt_login_callback_validation",
      test_chatgpt_login_callback_validation},
     {"chatgpt_login_callback_exchange", test_chatgpt_login_callback_exchange},
+    {"chatgpt_login_default_path_write", test_chatgpt_login_default_path_write},
     {"http_retrieve_response", test_http_retrieve_response},
     {"http_cancel_response", test_http_cancel_response},
     {"http_delete_response", test_http_delete_response},

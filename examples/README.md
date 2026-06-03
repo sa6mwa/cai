@@ -3,8 +3,9 @@
 These examples are built by default with `CAI_BUILD_EXAMPLES=ON`. Most call the
 real OpenAI API when run, so they require either `OPENAI_API_KEY` in the
 environment, a repo-local `.env` file containing `OPENAI_API_KEY=...`, or an
-explicit ChatGPT subscription auth file for examples that support
-`CAI_CHATGPT_AUTH_JSON`. The examples load dotenv files explicitly and pass the
+explicit ChatGPT subscription auth opt-in for examples that support
+`CAI_CHATGPT_AUTH=1` or `CAI_CHATGPT_AUTH_JSON`. The examples load dotenv files
+explicitly and pass the
 parsed key as `cai_client_config.api_key` or `cai.open({ api_key = ... })`.
 
 `cai_client_open` itself does not implicitly load dotenv files. Applications
@@ -15,8 +16,9 @@ the returned key to `cai_client_config.api_key`, then release it with
 `api_key`.
 
 ChatGPT subscription login is also explicit. Run `run-chatgpt-login` to create
-a Codex-style auth file through the browser OAuth flow, then pass that same
-path to examples that support `CAI_CHATGPT_AUTH_JSON`.
+a Codex-style auth file through the browser OAuth flow, then run chat examples
+with `CAI_CHATGPT_AUTH=1` to use cai's default auth path or
+`CAI_CHATGPT_AUTH_JSON=/path/auth.json` for an explicit path.
 
 The agent-oriented examples use the method-style handle facade (`client->...`,
 `agent->...`, `session->...`). Raw Responses examples still use free functions
@@ -46,8 +48,13 @@ Start a local callback listener, open the ChatGPT OAuth URL, and write a
 Codex-style auth file:
 
 ```sh
+make -C examples run-chatgpt-login
 make -C examples run-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 ```
+
+Without `CAI_CHATGPT_AUTH_JSON`, the login example writes cai's default
+ChatGPT auth path: `$XDG_CONFIG_HOME/cai/auth.json`, or
+`$HOME/.config/cai/auth.json`.
 
 Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
 callback port is unavailable. The example is intentionally interactive; local
@@ -190,6 +197,7 @@ characters.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
+make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
@@ -245,6 +253,7 @@ only returns UTF-8 text without unsafe control characters.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-terminal-chat
+make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json

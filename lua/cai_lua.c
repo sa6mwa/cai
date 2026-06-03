@@ -1252,9 +1252,11 @@ static int cai_lua_open(lua_State *L) {
   cai_client *client;
   const char *chatgpt_auth_json;
   cai_error error;
+  int chatgpt_auth_enabled;
   int rc;
   chatgpt_auth = NULL;
   chatgpt_auth_json = NULL;
+  chatgpt_auth_enabled = 0;
   cai_error_init(&error);
   cai_client_config_init(&config);
   cai_chatgpt_auth_config_init(&auth_config);
@@ -1283,6 +1285,8 @@ static int cai_lua_open(lua_State *L) {
         L, 1, "json_response_limit_bytes", config.json_response_limit_bytes);
     chatgpt_auth_json =
         cai_lua_opt_string_field(L, 1, "chatgpt_auth_json", NULL);
+    chatgpt_auth_enabled =
+        cai_lua_opt_bool_field(L, 1, "chatgpt_auth", chatgpt_auth_enabled);
     auth_config.issuer =
         cai_lua_opt_string_field(L, 1, "chatgpt_auth_issuer", NULL);
     auth_config.client_id =
@@ -1292,6 +1296,9 @@ static int cai_lua_open(lua_State *L) {
                              auth_config.refresh_window_seconds);
   }
   if (chatgpt_auth_json != NULL && chatgpt_auth_json[0] != '\0') {
+    chatgpt_auth_enabled = 1;
+  }
+  if (chatgpt_auth_enabled) {
     auth_config.auth_json_path = chatgpt_auth_json;
     rc = cai_chatgpt_auth_open(&auth_config, &chatgpt_auth, &error);
     if (rc != CAI_OK) {

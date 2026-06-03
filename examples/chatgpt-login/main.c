@@ -23,13 +23,14 @@ static int print_error(const char *operation, int rc, const cai_error *error) {
 static void print_help(const char *program) {
   fprintf(
       stderr,
-      "usage: %s --auth-json <path> [--port <port>] [--issuer <url>] "
+      "usage: %s [--auth-json <path>] [--port <port>] [--issuer <url>] "
       "[--no-open-browser]\n\n"
-      "  --auth-json <path>    Codex-style auth.json path to write.\n"
+      "  --auth-json <path>    Codex-style auth.json path to write; default "
+      "is cai's XDG auth path.\n"
       "  --port <port>         Local callback port, default 1455.\n"
       "  --issuer <url>        OAuth issuer, default https://auth.openai.com.\n"
       "  --no-open-browser     Print the URL without launching a browser.\n\n"
-      "CAI_CHATGPT_AUTH_JSON can provide the auth-json path.\n",
+      "CAI_CHATGPT_AUTH_JSON can override the default auth-json path.\n",
       program != NULL ? program : "cai_example_chatgpt_login");
 }
 
@@ -90,10 +91,6 @@ static int parse_args(int argc, char **argv, const char **auth_json,
     }
     fprintf(stderr, "unknown argument: %s\n", argv[i]);
     print_help(argv[0]);
-    return 0;
-  }
-  if (*auth_json == NULL || (*auth_json)[0] == '\0') {
-    fprintf(stderr, "--auth-json or CAI_CHATGPT_AUTH_JSON is required\n");
     return 0;
   }
   return 1;
@@ -259,6 +256,7 @@ int main(int argc, char **argv) {
   int rc;
   int exit_code;
   char *authorize_url;
+  char *auth_json_display;
   char request_buffer[16384];
   char bad_request_body[] = "Bad Request\n";
   char callback_failed_body[] = "OAuth callback failed\n";
@@ -300,6 +298,7 @@ int main(int argc, char **argv) {
   login_config.issuer = issuer;
   login = NULL;
   authorize_url = NULL;
+  auth_json_display = NULL;
   exit_code = 1;
   rc = cai_chatgpt_login_start(&login_config, &login, &authorize_url, &error);
   if (rc != CAI_OK) {
@@ -354,7 +353,16 @@ int main(int argc, char **argv) {
       cai_chatgpt_login_response_cleanup(&login_response);
     }
     if (cai_chatgpt_login_completed(login)) {
-      fprintf(stderr, "ChatGPT auth saved to %s\n", auth_json);
+      if (auth_json != NULL && auth_json[0] != '\0') {
+        fprintf(stderr, "ChatGPT auth saved to %s\n", auth_json);
+      } else if (cai_chatgpt_auth_default_path(&auth_json_display, &error) ==
+                 CAI_OK) {
+        fprintf(stderr, "ChatGPT auth saved to %s\n", auth_json_display);
+      } else {
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        fprintf(stderr, "ChatGPT auth saved to default auth path\n");
+      }
       exit_code = 0;
       break;
     }
@@ -366,6 +374,7 @@ int main(int argc, char **argv) {
 
 done:
   cai_string_destroy(authorize_url);
+  cai_string_destroy(auth_json_display);
   cai_chatgpt_login_close(login);
   cai_error_cleanup(&error);
   close(server_fd);

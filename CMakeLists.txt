@@ -688,9 +688,12 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_reloads_changed_file_before_refresh
     chatgpt_auth_rejects_changed_file_account
     chatgpt_auth_stream_refresh_retry
+    chatgpt_auth_default_path
+    chatgpt_auth_open_default_path
     chatgpt_login_authorize_url
     chatgpt_login_callback_validation
     chatgpt_login_callback_exchange
+    chatgpt_login_default_path_write
     http_retrieve_response
     http_cancel_response
     http_delete_response

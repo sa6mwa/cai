@@ -3,6 +3,7 @@
 #include <cai/auth.h>
 
 #include <curl/curl.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <openssl/sha.h>
 #include <stdio.h>
@@ -248,6 +249,85 @@ static int cai_auth_serialize_cstr(const lonejson_map *map, void *doc,
   return CAI_OK;
 }
 
+static int cai_auth_path_join(char **out, const char *left, const char *right,
+                              cai_error *error) {
+  char *path;
+  size_t left_len;
+  size_t right_len;
+  size_t need_slash;
+
+  if (out == NULL || left == NULL || left[0] == '\0' || right == NULL ||
+      right[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth path components are required");
+  }
+  *out = NULL;
+  left_len = strlen(left);
+  right_len = strlen(right);
+  need_slash = left[left_len - 1U] == '/' ? 0U : 1U;
+  if (left_len + need_slash + right_len + 1U < left_len) {
+    return cai_set_error(error, CAI_ERR_INVALID, "auth path is too long");
+  }
+  path = (char *)cai_alloc(NULL, left_len + need_slash + right_len + 1U);
+  if (path == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth path");
+  }
+  memcpy(path, left, left_len);
+  if (need_slash) {
+    path[left_len] = '/';
+  }
+  memcpy(path + left_len + need_slash, right, right_len);
+  path[left_len + need_slash + right_len] = '\0';
+  *out = path;
+  return CAI_OK;
+}
+
+static int cai_auth_is_absolute_path(const char *path) {
+  return path != NULL && path[0] == '/';
+}
+
+int cai_chatgpt_auth_default_path(char **out, cai_error *error) {
+  const char *xdg;
+  const char *home;
+  char *base;
+  char *dir;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth path output pointer is required");
+  }
+  *out = NULL;
+  xdg = getenv("XDG_CONFIG_HOME");
+  if (cai_auth_is_absolute_path(xdg)) {
+    dir = NULL;
+    rc = cai_auth_path_join(&dir, xdg, "cai", error);
+    if (rc == CAI_OK) {
+      rc = cai_auth_path_join(out, dir, "auth.json", error);
+    }
+    cai_free_mem(NULL, dir);
+    return rc;
+  }
+
+  home = getenv("HOME");
+  if (!cai_auth_is_absolute_path(home)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "HOME is required for default ChatGPT auth path");
+  }
+  base = NULL;
+  dir = NULL;
+  rc = cai_auth_path_join(&base, home, ".config", error);
+  if (rc == CAI_OK) {
+    rc = cai_auth_path_join(&dir, base, "cai", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_path_join(out, dir, "auth.json", error);
+  }
+  cai_free_mem(NULL, dir);
+  cai_free_mem(NULL, base);
+  return rc;
+}
+
 static int cai_auth_read_file(const char *path, char **out, cai_error *error) {
   FILE *fp;
   char *data;
@@ -304,8 +384,12 @@ static int cai_auth_mkdirs_for_file(const char *path, cai_error *error) {
   for (p = copy + 1; *p != '\0'; p++) {
     if (*p == '/') {
       *p = '\0';
-      if (mkdir(copy, 0700) != 0) {
-        /* Existing directories are fine; fopen will report real path errors. */
+      if (mkdir(copy, 0700) != 0 && errno != EEXIST) {
+        int rc;
+        rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to create auth directory", copy);
+        cai_free_mem(NULL, copy);
+        return rc;
       }
       *p = '/';
     }
@@ -705,8 +789,11 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   cai_chatgpt_auth_config defaults;
   const cai_chatgpt_auth_config *effective;
   cai_chatgpt_auth *auth;
+  char *default_auth_json_path;
+  const char *auth_json_path;
   int rc;
 
+  default_auth_json_path = NULL;
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "auth output pointer is required");
@@ -718,18 +805,23 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   } else {
     effective = config;
   }
-  if (effective->auth_json_path == NULL ||
-      effective->auth_json_path[0] == '\0') {
-    return cai_set_error(error, CAI_ERR_INVALID, "auth JSON path is required");
+  auth_json_path = effective->auth_json_path;
+  if (auth_json_path == NULL || auth_json_path[0] == '\0') {
+    rc = cai_chatgpt_auth_default_path(&default_auth_json_path, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    auth_json_path = default_auth_json_path;
   }
   auth = (cai_chatgpt_auth *)cai_alloc(&effective->allocator, sizeof(*auth));
   if (auth == NULL) {
+    cai_free_mem(NULL, default_auth_json_path);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth");
   }
   memset(auth, 0, sizeof(*auth));
   auth->allocator = effective->allocator;
-  auth->auth_json_path =
-      cai_strdup(&auth->allocator, effective->auth_json_path);
+  auth->auth_json_path = cai_strdup(&auth->allocator, auth_json_path);
+  cai_free_mem(NULL, default_auth_json_path);
   auth->issuer =
       cai_strdup(&auth->allocator, effective->issuer != NULL
                                        ? effective->issuer
@@ -1342,10 +1434,13 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   cai_chatgpt_login_config defaults;
   const cai_chatgpt_login_config *effective;
   cai_chatgpt_login *login;
+  char *default_auth_json_path;
+  const char *auth_json_path;
   char *generated_state;
   char *generated_verifier;
   int rc;
 
+  default_auth_json_path = NULL;
   if (out == NULL || out_authorize_url == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "login and authorize URL outputs are required");
@@ -1358,16 +1453,23 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   } else {
     effective = config;
   }
-  if (effective->auth_json_path == NULL ||
-      effective->auth_json_path[0] == '\0' || effective->redirect_uri == NULL ||
-      effective->redirect_uri[0] == '\0') {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "auth JSON path and redirect URI are required");
+  auth_json_path = effective->auth_json_path;
+  if (auth_json_path == NULL || auth_json_path[0] == '\0') {
+    rc = cai_chatgpt_auth_default_path(&default_auth_json_path, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    auth_json_path = default_auth_json_path;
+  }
+  if (effective->redirect_uri == NULL || effective->redirect_uri[0] == '\0') {
+    cai_free_mem(NULL, default_auth_json_path);
+    return cai_set_error(error, CAI_ERR_INVALID, "redirect URI is required");
   }
   generated_state = NULL;
   generated_verifier = NULL;
   login = (cai_chatgpt_login *)cai_alloc(&effective->allocator, sizeof(*login));
   if (login == NULL) {
+    cai_free_mem(NULL, default_auth_json_path);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
   }
   memset(login, 0, sizeof(*login));
@@ -1380,8 +1482,7 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
     rc = cai_auth_random_b64(32U, &generated_verifier, error);
   }
   if (rc == CAI_OK) {
-    login->auth_json_path =
-        cai_strdup(&login->allocator, effective->auth_json_path);
+    login->auth_json_path = cai_strdup(&login->allocator, auth_json_path);
     login->issuer =
         cai_strdup(&login->allocator, effective->issuer != NULL
                                           ? effective->issuer
@@ -1423,6 +1524,7 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   cai_auth_secure_clear(generated_verifier);
   cai_free_mem(NULL, generated_verifier);
   cai_free_mem(NULL, generated_state);
+  cai_free_mem(NULL, default_auth_json_path);
   if (rc == CAI_OK) {
     rc = cai_chatgpt_login_build_authorize_url(login, &login->authorize_url,
                                                error);

@@ -27,7 +27,10 @@ extern "C" {
 
 /** Codex-compatible ChatGPT auth session configuration. */
 typedef struct cai_chatgpt_auth_config {
-  /** Path to Codex-style auth.json storage. Required for file-backed auth. */
+  /**
+   * Path to Codex-style auth.json storage. NULL/empty selects cai's default
+   * path: $XDG_CONFIG_HOME/cai/auth.json, or $HOME/.config/cai/auth.json.
+   */
   const char *auth_json_path;
   /** OAuth issuer; NULL selects CAI_CHATGPT_AUTH_DEFAULT_ISSUER. */
   const char *issuer;
@@ -65,7 +68,11 @@ typedef struct cai_chatgpt_login_response {
 
 /** Configuration for an interactive ChatGPT OAuth browser login flow. */
 typedef struct cai_chatgpt_login_config {
-  /** Path where Codex-style auth.json should be persisted. Required. */
+  /**
+   * Path where Codex-style auth.json should be persisted. NULL/empty selects
+   * cai's default path: $XDG_CONFIG_HOME/cai/auth.json, or
+   * $HOME/.config/cai/auth.json.
+   */
   const char *auth_json_path;
   /** OAuth redirect URI served by the embedding HTTP server. Required. */
   const char *redirect_uri;
@@ -96,6 +103,9 @@ typedef struct cai_chatgpt_login cai_chatgpt_login;
 
 /** Initialize ChatGPT auth config defaults. */
 void cai_chatgpt_auth_config_init(cai_chatgpt_auth_config *config);
+/** Return cai's default ChatGPT auth.json path. Free with cai_string_destroy.
+ */
+int cai_chatgpt_auth_default_path(char **out, cai_error *error);
 /** Open a Codex-compatible ChatGPT auth session from auth.json storage. */
 int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
                           cai_chatgpt_auth **out, cai_error *error);
