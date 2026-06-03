@@ -95,8 +95,10 @@ The verification tiers are split intentionally:
   `access_token`, `refresh_token`, and `account_id` from the file, refreshes
   access tokens through the configured OAuth issuer before expiry, persists
   returned token fields, and retries one 401/403 response after a forced
-  refresh. The auth file path is never guessed by `cai_client_open`; callers
-  must pass it explicitly.
+  refresh. Before using a refresh token, cai re-reads the explicit auth file so
+  another process can refresh or replace same-account tokens without racing the
+  stale in-memory handle; a different account is rejected. The auth file path is
+  never guessed by `cai_client_open`; callers must pass it explicitly.
 - Interactive ChatGPT login is exposed as a server-agnostic OAuth callback
   handler, not as a built-in webserver. Call `cai_chatgpt_login_start` with an
   explicit auth file path and redirect URI, open the returned authorization URL,

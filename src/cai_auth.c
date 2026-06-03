@@ -160,6 +160,13 @@ static int cai_auth_replace_secret(const cai_allocator *allocator, char **slot,
   return CAI_OK;
 }
 
+static int cai_auth_secret_equal(const char *a, const char *b) {
+  if (a == NULL || b == NULL) {
+    return a == b;
+  }
+  return strcmp(a, b) == 0;
+}
+
 static lonejson_status cai_auth_buffer_write(void *user, const void *data,
                                              size_t size,
                                              lonejson_error *error) {
@@ -588,52 +595,108 @@ void cai_chatgpt_auth_config_init(cai_chatgpt_auth_config *config) {
   memset(config, 0, sizeof(*config));
 }
 
-static int cai_chatgpt_auth_load(cai_chatgpt_auth *auth, cai_error *error) {
-  cai_auth_file_doc doc;
+static int cai_chatgpt_auth_parse_file(cai_chatgpt_auth *auth,
+                                       cai_auth_file_doc *doc,
+                                       cai_error *error) {
   char *json;
   lonejson_error json_error;
   lonejson_status status;
   int rc;
 
   json = NULL;
+  memset(doc, 0, sizeof(*doc));
+  CAI_LJ->init(CAI_LJ, &cai_auth_file_map, doc);
   rc = cai_auth_read_file(auth->auth_json_path, &json, error);
   if (rc != CAI_OK) {
     return rc;
   }
-  memset(&doc, 0, sizeof(doc));
-  CAI_LJ->init(CAI_LJ, &cai_auth_file_map, &doc);
   lonejson_error_init(&json_error);
   status =
-      CAI_LJ->parse_cstr(CAI_LJ, &cai_auth_file_map, &doc, json, &json_error);
+      CAI_LJ->parse_cstr(CAI_LJ, &cai_auth_file_map, doc, json, &json_error);
   cai_auth_secure_clear(json);
   cai_free_mem(NULL, json);
   if (status != LONEJSON_STATUS_OK) {
-    CAI_LJ->cleanup(CAI_LJ, &cai_auth_file_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse auth JSON",
                                 json_error.message);
   }
-  if (doc.auth_mode == NULL || strcmp(doc.auth_mode, "chatgpt") != 0 ||
-      doc.tokens.access_token == NULL || doc.tokens.refresh_token == NULL) {
-    CAI_LJ->cleanup(CAI_LJ, &cai_auth_file_map, &doc);
+  if (doc->auth_mode == NULL || strcmp(doc->auth_mode, "chatgpt") != 0 ||
+      doc->tokens.access_token == NULL || doc->tokens.refresh_token == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "auth JSON does not contain ChatGPT tokens");
   }
+  return CAI_OK;
+}
+
+static int cai_chatgpt_auth_apply_doc(cai_chatgpt_auth *auth,
+                                      const cai_auth_file_doc *doc,
+                                      cai_error *error) {
+  int rc;
+
   rc = cai_auth_replace_secret(&auth->allocator, &auth->id_token,
-                               doc.tokens.id_token, error);
+                               doc->tokens.id_token, error);
   if (rc == CAI_OK) {
     rc = cai_auth_replace_secret(&auth->allocator, &auth->access_token,
-                                 doc.tokens.access_token, error);
+                                 doc->tokens.access_token, error);
   }
   if (rc == CAI_OK) {
     rc = cai_auth_replace_secret(&auth->allocator, &auth->refresh_token,
-                                 doc.tokens.refresh_token, error);
+                                 doc->tokens.refresh_token, error);
   }
   if (rc == CAI_OK) {
     rc = cai_auth_replace_secret(&auth->allocator, &auth->account_id,
-                                 doc.tokens.account_id, error);
+                                 doc->tokens.account_id, error);
+  }
+  return rc;
+}
+
+static int cai_chatgpt_auth_load(cai_chatgpt_auth *auth, cai_error *error) {
+  cai_auth_file_doc doc;
+  int rc;
+
+  rc = cai_chatgpt_auth_parse_file(auth, &doc, error);
+  if (rc == CAI_OK) {
+    rc = cai_chatgpt_auth_apply_doc(auth, &doc, error);
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_auth_file_map, &doc);
+  return rc;
+}
+
+static int cai_chatgpt_auth_reload_changed(cai_chatgpt_auth *auth,
+                                           int *out_changed, cai_error *error) {
+  cai_auth_file_doc doc;
+  int changed;
+  int rc;
+
+  if (out_changed == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "reload changed output is required");
+  }
+  *out_changed = 0;
+  rc = cai_chatgpt_auth_parse_file(auth, &doc, error);
+  if (rc != CAI_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_auth_file_map, &doc);
+    return rc;
+  }
+  changed =
+      !cai_auth_secret_equal(auth->id_token, doc.tokens.id_token) ||
+      !cai_auth_secret_equal(auth->access_token, doc.tokens.access_token) ||
+      !cai_auth_secret_equal(auth->refresh_token, doc.tokens.refresh_token) ||
+      !cai_auth_secret_equal(auth->account_id, doc.tokens.account_id);
+  if (changed && auth->account_id != NULL &&
+      (doc.tokens.account_id == NULL ||
+       strcmp(auth->account_id, doc.tokens.account_id) != 0)) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_auth_file_map, &doc);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth JSON changed to a different ChatGPT account");
+  }
+  if (changed) {
+    rc = cai_chatgpt_auth_apply_doc(auth, &doc, error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_auth_file_map, &doc);
+  if (rc == CAI_OK) {
+    *out_changed = changed;
+  }
   return rc;
 }
 
@@ -1076,11 +1139,19 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
   lonejson_status json_status;
   int rc;
   char *grant_type;
+  int reloaded;
 
   if (auth == NULL || auth->refresh_token == NULL ||
       auth->refresh_token[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "ChatGPT refresh token is required");
+  }
+  rc = cai_chatgpt_auth_reload_changed(auth, &reloaded, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (reloaded && !cai_chatgpt_auth_should_refresh(auth, error)) {
+    return CAI_OK;
   }
   grant_type = cai_strdup(NULL, "refresh_token");
   if (grant_type == NULL) {
