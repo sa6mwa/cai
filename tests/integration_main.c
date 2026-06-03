@@ -2454,9 +2454,20 @@ static int run_exec_tool_llm_regression(void) {
   if (rc == CAI_OK) {
     rc = cai_session_add_user_text(
         session,
-        "EXEC_TEST_1: run this shell command: ls -1; uname -s; "
-        "cat alpha.txt; grep beta alpha.txt; tar -cf archive.tar alpha.txt; "
-        "printf TAR:; tar -tf archive.tar\n"
+        "EXEC_TEST_1: call exec_command exactly once with these JSON "
+        "arguments: {\"cmd\":\"ls alpha.txt >/dev/null && grep -q beta "
+        "alpha.txt && printf 'SAW_ALPHA=yes\\n' || printf "
+        "'SAW_ALPHA=no\\n'; uname -s | grep -q Linux && printf "
+        "'SAW_LINUX=yes\\n' || printf 'SAW_LINUX=no\\n'; tar -cf "
+        "archive.tar alpha.txt && tar -tf archive.tar | grep -q alpha.txt "
+        "&& printf 'SAW_TAR=yes\\n' || printf 'SAW_TAR=no\\n'\"}.\n",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "Do not set shell or workdir. After that tool result, do not call "
+        "any more tools.\n"
         "Then answer exactly: EXEC_TOOL_OK saw_alpha=<yes/no> "
         "saw_linux=<yes/no> saw_tar=<yes/no>. Replace each placeholder with "
         "yes or no. Keep the field names exactly saw_alpha, saw_linux, and "
@@ -2473,9 +2484,9 @@ static int run_exec_tool_llm_regression(void) {
   }
   if (event_state.starts < 1 || event_state.outputs < 1 ||
       strstr(event_state.output.buffer, "\"sandbox\":\"bwrap\"") == NULL ||
-      strstr(event_state.output.buffer, "alpha.txt") == NULL ||
-      strstr(event_state.output.buffer, "Linux") == NULL ||
-      strstr(event_state.output.buffer, "TAR:alpha.txt") == NULL ||
+      strstr(event_state.output.buffer, "SAW_ALPHA=yes") == NULL ||
+      strstr(event_state.output.buffer, "SAW_LINUX=yes") == NULL ||
+      strstr(event_state.output.buffer, "SAW_TAR=yes") == NULL ||
       strstr(writer.buffer, "EXEC_TOOL_OK") == NULL ||
       (strstr(writer.buffer, "saw_alpha=yes") == NULL &&
        strstr(writer.buffer, "saw_alpha=<yes>") == NULL) ||
@@ -2509,8 +2520,10 @@ static int run_exec_tool_llm_regression(void) {
   }
   rc = cai_session_add_user_text(
       session,
-      "EXEC_TEST_2: run this shell command: cat /etc/passwd | "
-      "head -n 1\n"
+      "EXEC_TEST_2: call exec_command exactly once with these JSON "
+      "arguments: {\"cmd\":\"cat /etc/passwd | head -n 1\"}. Do not set "
+      "shell or workdir. After that tool result, do not call any more "
+      "tools.\n"
       "Then answer exactly: EXEC_ESCAPE_DENIED saw_root=<yes/no> "
       "saw_missing=<yes/no>. Replace each placeholder with yes or no. Do not "
       "copy angle brackets.",

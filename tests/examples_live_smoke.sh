@@ -14,11 +14,68 @@ cleanup() {
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT
+dump_failure() {
+  local status=$?
+
+  if ((status == 0)); then
+    return
+  fi
+  for file in "$tmpdir"/*.clean "$tmpdir"/*.out; do
+    if [[ -f "$file" ]]; then
+      printf '\n--- %s ---\n' "$file" >&2
+      sed -n '1,240p' "$file" >&2 || true
+    fi
+  done
+  return "$status"
+}
+trap dump_failure ERR
 
 cd "$repo_root"
 
 strip_ansi() {
   env -u LD_PRELOAD sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g' "$1" >"$2"
+}
+
+assert_count_at_least() {
+  local pattern=$1
+  local minimum=$2
+  local file=$3
+  local count
+
+  count=$(grep -F -c "$pattern" "$file" || true)
+  if ((count < minimum)); then
+    printf 'expected at least %d occurrence(s) of %s in %s, saw %d\n' \
+      "$minimum" "$pattern" "$file" "$count" >&2
+    return 1
+  fi
+}
+
+write_terminal_fixture() {
+  local root=$1
+
+  mkdir -p "$root/subdir"
+  printf 'NOTE_ALPHA from read_file fixture\n' >"$root/note.txt"
+  printf 'nested fixture\n' >"$root/subdir/nested.txt"
+}
+
+assert_terminal_multi_turn_transcript() {
+  local transcript=$1
+
+  assert_count_at_least '> ' 4 "$transcript"
+  assert_count_at_least '[response]' 4 "$transcript"
+  assert_count_at_least '[usage]' 4 "$transcript"
+  assert_count_at_least '[tool]' 4 "$transcript"
+  grep -F '[tool] todo_kanban input=' "$transcript" >/dev/null
+  grep -F '[tool] todo_kanban output=' "$transcript" >/dev/null
+  grep -F '[tool] list_files input=' "$transcript" >/dev/null
+  grep -F '[tool] list_files output=' "$transcript" >/dev/null
+  grep -F '[tool] read_file input=' "$transcript" >/dev/null
+  grep -F '[tool] read_file output=' "$transcript" >/dev/null
+  grep -F '[tool] exec_command input=' "$transcript" >/dev/null
+  grep -F '[tool] exec_command output=' "$transcript" >/dev/null
+  grep -F 'CAI_MULTI_TURN_ALPHA' "$transcript" >/dev/null
+  grep -F 'NOTE_ALPHA' "$transcript" >/dev/null
+  grep -F 'EXEC_ALPHA' "$transcript" >/dev/null
 }
 
 "$basic_example" >"$tmpdir/basic.out"
@@ -50,6 +107,25 @@ grep -F '> ' "$tmpdir/terminal.clean" >/dev/null
 grep -F '[response]' "$tmpdir/terminal.clean" >/dev/null
 grep -F '[usage]' "$tmpdir/terminal.clean" >/dev/null
 
+c_terminal_root="$tmpdir/c-terminal-root"
+write_terminal_fixture "$c_terminal_root"
+{
+  printf '%s\n' \
+    'Integration test turn 1: use todo_kanban to create one item titled CAI_MULTI_TURN_ALPHA on the default board, then answer TURN1_DONE.' \
+    'Integration test turn 2: use list_files on "." and read_file with only path "note.txt". Do not set max_bytes, start_line, or end_line. Then answer TURN2_DONE and include NOTE_ALPHA if the file contains it.' \
+    'Integration test turn 3: use exec_command to run only command text `printf EXEC_ALPHA; uname -s`. Do not set shell or workdir. Then answer TURN3_DONE and include EXEC_ALPHA.' \
+    'Integration test turn 4: use todo_kanban to list the default board, then answer TURN4_DONE and include CAI_MULTI_TURN_ALPHA if the item is present.' \
+    '/exit'
+} | env \
+  CAI_TODO_STORE="$tmpdir/terminal-multiturn-todo.json" \
+  CAI_TODO_LOCK="$tmpdir/terminal-multiturn-todo.lock" \
+  "$terminal_chat_example" \
+  --exec-tool-dir "$c_terminal_root" \
+  --read-tool-dir "$c_terminal_root" \
+  >"$tmpdir/terminal-multiturn.out" 2>&1
+strip_ansi "$tmpdir/terminal-multiturn.out" "$tmpdir/terminal-multiturn.clean"
+assert_terminal_multi_turn_transcript "$tmpdir/terminal-multiturn.clean"
+
 make lua-rock >/dev/null
 eval "$(make -s lua-env)"
 printf 'hello\n/exit\n' | env \
@@ -65,3 +141,22 @@ grep -F 'hint: pass --read-tool-dir <path> to enable' \
 grep -F '> ' "$tmpdir/lua-terminal.clean" >/dev/null
 grep -F '[response]' "$tmpdir/lua-terminal.clean" >/dev/null
 grep -F '[usage]' "$tmpdir/lua-terminal.clean" >/dev/null
+
+lua_terminal_root="$tmpdir/lua-terminal-root"
+write_terminal_fixture "$lua_terminal_root"
+{
+  printf '%s\n' \
+    'Integration test turn 1: use todo_kanban to create one item titled CAI_MULTI_TURN_ALPHA on the default board, then answer TURN1_DONE.' \
+    'Integration test turn 2: use list_files on "." and read_file with only path "note.txt". Do not set max_bytes, start_line, or end_line. Then answer TURN2_DONE and include NOTE_ALPHA if the file contains it.' \
+    'Integration test turn 3: use exec_command to run only command text `printf EXEC_ALPHA; uname -s`. Do not set shell or workdir. Then answer TURN3_DONE and include EXEC_ALPHA.' \
+    'Integration test turn 4: use todo_kanban to list the default board, then answer TURN4_DONE and include CAI_MULTI_TURN_ALPHA if the item is present.' \
+    '/exit'
+} | env \
+  CAI_LUA_TODO_STORE="$tmpdir/lua-terminal-multiturn-todo.json" \
+  CAI_LUA_TODO_LOCK="$tmpdir/lua-terminal-multiturn-todo.lock" \
+  "$lua_executable" examples/lua-terminal-chat/main.lua \
+  --exec-tool-dir "$lua_terminal_root" \
+  --read-tool-dir "$lua_terminal_root" \
+  >"$tmpdir/lua-terminal-multiturn.out" 2>&1
+strip_ansi "$tmpdir/lua-terminal-multiturn.out" "$tmpdir/lua-terminal-multiturn.clean"
+assert_terminal_multi_turn_transcript "$tmpdir/lua-terminal-multiturn.clean"

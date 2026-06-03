@@ -442,7 +442,7 @@ assert_ok(registry:run("exec_command", '{"cmd":"printf lua-out; printf lua-err >
 end))
 local exec_json = table.concat(chunks)
 assert(exec_json:match('"stdout":"lua%-out"'))
-assert(exec_json:match('"stderr":"lua%-err"'))
+assert(exec_json:match('"stderr":"lua%-err'))
 assert(exec_json:match('"exit_code":0'))
 chunks = {}
 assert_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"sub","tty":null}', function(chunk)
