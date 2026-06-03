@@ -3113,6 +3113,7 @@ static void test_mcp_handler(test_state *state) {
       {"accept", "application/json"},
       {"mcp-protocol-version", "1900-01-01"}};
   mcp_header_pair stateful_headers[4];
+  mcp_header_pair stateful_bad_origin_headers[5];
   cai_mcp_session_callbacks session_callbacks;
   mcp_session_test_store session_store;
   const char *allowed_origins[1];
@@ -3687,6 +3688,12 @@ static void test_mcp_handler(test_state *state) {
   stateful_headers[3].name = "mcp-session-id";
   stateful_headers[3].value =
       test_mcp_response_header(&header_state, "mcp-session-id");
+  stateful_bad_origin_headers[0] = stateful_headers[0];
+  stateful_bad_origin_headers[1] = stateful_headers[1];
+  stateful_bad_origin_headers[2] = stateful_headers[2];
+  stateful_bad_origin_headers[3] = stateful_headers[3];
+  stateful_bad_origin_headers[4].name = "origin";
+  stateful_bad_origin_headers[4].value = "https://evil.example";
   expect_int(state, "mcp_stateful_ping",
              test_mcp_handle(handler, stateful_headers, 4U,
                              "{\"jsonrpc\":\"2.0\",\"id\":\"ping-stateful\","
@@ -3753,6 +3760,19 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_stateful_missing_session_status", status, 400L);
   expect_valid_json(state, "mcp_stateful_missing_session_json", writer.buffer);
+  expect_int(state, "mcp_stateful_destroy_reject_origin",
+             test_mcp_handle_stream(
+                 handler, stateful_bad_origin_headers, 5U, "DELETE",
+                 "{\"jsonrpc\":\"2.0\",\"id\":\"delete-forbidden\"}", 0U, 0,
+                 0, &source_state, &sink_state, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "mcp_stateful_destroy_reject_origin_status", status, 403L);
+  expect_int(state, "mcp_stateful_destroy_reject_origin_count",
+             session_store.destroys, 0L);
+  expect_int(state, "mcp_stateful_destroy_reject_origin_exists",
+             session_store.exists, 1L);
+  expect_valid_json(state, "mcp_stateful_destroy_reject_origin_json",
+                    sink_state.buffer);
   expect_int(state, "mcp_stateful_destroy",
              test_mcp_handle_stream(
                  handler, stateful_headers, 4U, "DELETE",

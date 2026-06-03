@@ -1251,6 +1251,14 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     return rc;
   }
   session_id = cai_mcp_header(request, "mcp-session-id");
+  origin = cai_mcp_header(request, "origin");
+  if (!handler->disable_origin_validation &&
+      !cai_mcp_origin_allowed(handler, origin)) {
+    response->status = 403;
+    cai_mcp_set_header(response, "content-type", "application/json", error);
+    return cai_mcp_write_error(response->body, NULL, -32000,
+                               "Forbidden origin", error);
+  }
   if (request->method != NULL && strcmp(request->method, "DELETE") == 0) {
     if (!cai_mcp_session_enabled(handler)) {
       response->status = 405;
@@ -1277,14 +1285,6 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     }
     response->status = 202;
     return CAI_OK;
-  }
-  origin = cai_mcp_header(request, "origin");
-  if (!handler->disable_origin_validation &&
-      !cai_mcp_origin_allowed(handler, origin)) {
-    response->status = 403;
-    cai_mcp_set_header(response, "content-type", "application/json", error);
-    return cai_mcp_write_error(response->body, NULL, -32000,
-                               "Forbidden origin", error);
   }
   accept = cai_mcp_header(request, "accept");
   accepts_json = cai_mcp_accepts_json(accept);
