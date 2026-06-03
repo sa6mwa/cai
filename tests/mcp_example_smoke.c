@@ -133,9 +133,9 @@ static int http_request(unsigned short port, const char *method,
            method, path, (unsigned int)port,
            content_type != NULL ? "Content-Type: " : "",
            content_type != NULL ? content_type : "",
-           content_type != NULL ? "\r\n" : "",
-           accept != NULL ? "Accept: " : "", accept != NULL ? accept : "",
-           accept != NULL ? "\r\n" : "", (unsigned long)body_len);
+           content_type != NULL ? "\r\n" : "", accept != NULL ? "Accept: " : "",
+           accept != NULL ? accept : "", accept != NULL ? "\r\n" : "",
+           (unsigned long)body_len);
   rc = write_all(fd, header, strlen(header));
   if (rc == 0 && body_len != 0U) {
     rc = write_all(fd, body, body_len);
@@ -204,8 +204,8 @@ static pid_t start_server(const char *server_path, const char *todo_store,
     dup2(stderr_pipe[1], STDERR_FILENO);
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
-    execl(server_path, server_path, "--port", "0", "--print-port",
-          "--requests", "10", (char *)NULL);
+    execl(server_path, server_path, "--port", "0", "--print-port", "--requests",
+          "10", (char *)NULL);
     _exit(127);
   }
   close(stdout_pipe[1]);
@@ -322,8 +322,8 @@ int main(int argc, char **argv) {
                 response, sizeof(response)) != 0) {
     failures++;
   } else {
-    failures += expect_contains("tools/call help status", response,
-                                "HTTP/1.1 200");
+    failures +=
+        expect_contains("tools/call help status", response, "HTTP/1.1 200");
     failures += expect_contains("tools/call help content", response,
                                 "Refs accept DEF-001");
   }
@@ -337,8 +337,8 @@ int main(int argc, char **argv) {
     failures += expect_contains("tools/call status", response, "HTTP/1.1 200");
     failures += expect_contains("tools/call todo", response,
                                 "\"structuredContent\":{\"ok\":true");
-    failures += expect_contains("tools/call board", response,
-                                "\"board_name\":\"mcp\"");
+    failures +=
+        expect_contains("tools/call board", response, "\"board_name\":\"mcp\"");
   }
   if (http_request(port, "GET", "/health", NULL, "application/json", NULL,
                    response, sizeof(response)) != 0) {
@@ -355,26 +355,24 @@ int main(int argc, char **argv) {
     failures += expect_contains("mcp get status", response, "HTTP/1.1 200");
     failures += expect_contains("mcp get body", response, "\"ok\":true");
   }
-  if (http_request(port, "PUT", "/mcp", "application/json",
-                   "application/json", NULL, response, sizeof(response)) !=
-      0) {
+  if (http_request(port, "PUT", "/mcp", "application/json", "application/json",
+                   NULL, response, sizeof(response)) != 0) {
     failures++;
   } else {
     failures += expect_contains("put mcp status", response, "HTTP/1.1 405");
   }
   if (http_request(port, "POST", "/nope", "application/json",
-                   "application/json", NULL, response, sizeof(response)) !=
-      0) {
+                   "application/json", NULL, response, sizeof(response)) != 0) {
     failures++;
   } else {
     failures += expect_contains("not found status", response, "HTTP/1.1 404");
   }
-  if (http_request(port, "POST", "/mcp", "text/plain", "application/json",
-                   NULL, response, sizeof(response)) != 0) {
+  if (http_request(port, "POST", "/mcp", "text/plain", "application/json", NULL,
+                   response, sizeof(response)) != 0) {
     failures++;
   } else {
-    failures += expect_contains("bad content-type status", response,
-                                "HTTP/1.1 415");
+    failures +=
+        expect_contains("bad content-type status", response, "HTTP/1.1 415");
   }
   if (http_request(port, "POST", "/mcp", NULL, "application/json", NULL,
                    response, sizeof(response)) != 0) {

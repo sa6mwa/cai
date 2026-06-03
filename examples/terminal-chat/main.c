@@ -22,15 +22,14 @@
   CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY                 \
                 "]" CAI_ANSI_RESET
 #define CAI_RESPONSE_PREFIX                                                    \
-  CAI_ANSI_GRAY "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]"                \
-                CAI_ANSI_RESET " "
+  CAI_ANSI_GRAY "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]" CAI_ANSI_RESET \
+                " "
 #define CAI_RESPONSE_SUFFIX CAI_ANSI_RESET "\n"
 #define CAI_TOOL_LABEL                                                         \
-  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "tool" CAI_ANSI_GRAY "]"              \
-                CAI_ANSI_RESET
+  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "tool" CAI_ANSI_GRAY "]" CAI_ANSI_RESET
 #define CAI_REASONING_PREFIX                                                   \
-  CAI_ANSI_GRAY "[" CAI_ANSI_MAGENTA "reasoning" CAI_ANSI_GRAY "] "            \
-                CAI_ANSI_GRAY
+  CAI_ANSI_GRAY "[" CAI_ANSI_MAGENTA "reasoning" CAI_ANSI_GRAY                 \
+                "] " CAI_ANSI_GRAY
 #define CAI_REASONING_SUFFIX CAI_ANSI_RESET "\n\n"
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
@@ -243,7 +242,8 @@ int main(int argc, char **argv) {
         "You are a concise terminal chat assistant. Answer plainly. You have "
         "access to searxng_search for web search and todo_kanban for managing "
         "a local kanban board. Use search when the user asks for current, "
-        "external, or source-backed information, and cite the URL from the tool "
+        "external, or source-backed information, and cite the URL from the "
+        "tool "
         "result when you use it. Use todo_kanban when the user asks you to "
         "remember, plan, list, move, limit, or archive work. todo_kanban has a "
         "default board; omit board_id, board_key, and board_name for ordinary "

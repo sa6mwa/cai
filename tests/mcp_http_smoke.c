@@ -141,8 +141,8 @@ static int http_request(unsigned short port, const char *method,
 
 static int http_post(unsigned short port, const char *body, char *response,
                      size_t response_capacity) {
-  return http_request(port, "POST", "application/json, text/event-stream",
-                      body, response, response_capacity);
+  return http_request(port, "POST", "application/json, text/event-stream", body,
+                      response, response_capacity);
 }
 
 static int http_post_sse(unsigned short port, const char *body, char *response,
@@ -187,8 +187,8 @@ static pid_t start_server(const char *server_path, unsigned short *port_out) {
     close(pipefd[0]);
     dup2(pipefd[1], STDOUT_FILENO);
     close(pipefd[1]);
-    execl(server_path, server_path, "--port", "0", "--print-port",
-          "--requests", "5", (char *)NULL);
+    execl(server_path, server_path, "--port", "0", "--print-port", "--requests",
+          "5", (char *)NULL);
     _exit(127);
   }
   close(pipefd[1]);
@@ -243,8 +243,8 @@ int main(int argc, char **argv) {
     failures += expect_contains("tools/list status", response, "HTTP/1.1 200");
     failures += expect_contains("tools/list tool", response,
                                 "\"name\":\"echo_message\"");
-    failures += expect_contains("tools/list schema", response,
-                                "\"inputSchema\"");
+    failures +=
+        expect_contains("tools/list schema", response, "\"inputSchema\"");
   }
   if (http_post(port,
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","

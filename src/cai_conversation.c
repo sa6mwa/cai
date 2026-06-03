@@ -44,8 +44,8 @@ static lonejson_status cai_conversation_spooled_sink(void *user,
                                                      const void *data,
                                                      size_t len,
                                                      lonejson_error *error) {
-  return ((lonejson_spooled *)user)->append((lonejson_spooled *)user, data, len,
-                                            error);
+  return ((lonejson_spooled *)user)
+      ->append((lonejson_spooled *)user, data, len, error);
 }
 
 static lonejson_read_result
@@ -232,7 +232,8 @@ static int cai_build_conversation_path(cai_client *client,
   prefix_len = sizeof(prefix) - 1U;
   id_len = strlen(conversation_id);
   suffix_len = suffix != NULL ? strlen(suffix) : 0U;
-  path = (char *)cai_alloc(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+  path = (char *)cai_alloc(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator
+                                          : NULL,
                            prefix_len + id_len + suffix_len + 1U);
   if (path == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -263,8 +264,9 @@ static int cai_build_conversation_item_path(cai_client *client,
   }
   prefix_len = sizeof(items_prefix) - 1U;
   id_len = strlen(item_id);
-  suffix = (char *)cai_alloc(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
-                             prefix_len + id_len + 1U);
+  suffix = (char *)cai_alloc(
+      client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+      prefix_len + id_len + 1U);
   if (suffix == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation item path");
@@ -273,7 +275,8 @@ static int cai_build_conversation_item_path(cai_client *client,
   memcpy(suffix + prefix_len, item_id, id_len);
   suffix[prefix_len + id_len] = '\0';
   rc = cai_build_conversation_path(client, conversation_id, suffix, out, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, suffix);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               suffix);
   return rc;
 }
 
@@ -304,13 +307,11 @@ static int cai_conversation_request(cai_client *client, const char *method,
   return rc;
 }
 
-static int cai_conversation_request_spooled(cai_client *client,
-                                            const char *method,
-                                            const char *path,
-                                            const lonejson_spooled *body,
-                                            size_t body_len,
-                                            cai_conversation **out,
-                                            cai_error *error) {
+static int
+cai_conversation_request_spooled(cai_client *client, const char *method,
+                                 const char *path, const lonejson_spooled *body,
+                                 size_t body_len, cai_conversation **out,
+                                 cai_error *error) {
   char *json;
   char *request_id;
   long http_status;
@@ -352,7 +353,8 @@ int cai_client_retrieve_conversation(cai_client *client,
     return rc;
   }
   rc = cai_conversation_request(client, "GET", path, NULL, out, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   return rc;
 }
 
@@ -391,8 +393,8 @@ int cai_client_update_conversation_metadata(cai_client *client,
   path = NULL;
   lonejson_error_init(&json_error);
   if (doc.metadata.methods->set_buffer(&doc.metadata, metadata,
-                                     strlen(metadata),
-                                     &json_error) != LONEJSON_STATUS_OK) {
+                                       strlen(metadata),
+                                       &json_error) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_INVALID,
                               "conversation metadata must be valid JSON",
                               json_error.message);
@@ -417,10 +419,10 @@ int cai_client_update_conversation_metadata(cai_client *client,
   }
   if (rc == CAI_OK) {
     rc = cai_conversation_request_spooled(client, "POST", path, &body,
-                                          body.size_fn(&body), out,
-                                          error);
+                                          body.size_fn(&body), out, error);
   }
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   if (has_body) {
     body.cleanup(&body);
   }
@@ -453,7 +455,8 @@ int cai_client_delete_conversation(cai_client *client,
   }
   rc = cai_conversation_request(client, "DELETE", path, NULL, &conversation,
                                 error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   cai_conversation_destroy(conversation);
   return rc;
 }
@@ -491,15 +494,18 @@ int cai_client_list_conversation_items(cai_client *client,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_append_list_query_params(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
-                                    &path, params, error);
+  rc = cai_append_list_query_params(
+      client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, &path,
+      params, error);
   if (rc != CAI_OK) {
-    cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+    cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+                 path);
     return rc;
   }
   rc = cai_http_json_request(client, "GET", path, NULL, &json, &http_status,
                              &request_id, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -542,7 +548,8 @@ int cai_client_delete_conversation_item(cai_client *client,
   }
   rc = cai_conversation_request(client, "DELETE", path, NULL, &conversation,
                                 error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   cai_conversation_destroy(conversation);
   return rc;
 }
@@ -583,7 +590,8 @@ int cai_client_retrieve_conversation_item(cai_client *client,
   }
   rc = cai_http_json_request(client, "GET", path, NULL, &json, &http_status,
                              &request_id, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -768,8 +776,7 @@ static int cai_conversation_source_to_spooled(cai_source *source,
       break;
     }
     lonejson_error_init(&json_error);
-    if (out->append(out, buffer, nread, &json_error) !=
-        LONEJSON_STATUS_OK) {
+    if (out->append(out, buffer, nread, &json_error) != LONEJSON_STATUS_OK) {
       out->cleanup(out);
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to spool conversation text input",
@@ -792,7 +799,7 @@ int cai_conversation_items_params_add_text_source(
   rc = cai_conversation_source_to_spooled(source, &text, error);
   if (rc == CAI_OK) {
     rc = cai_conversation_items_params_add_text_spooled(params, role, &text,
-                                                       error);
+                                                        error);
   }
   if (rc != CAI_OK) {
     text.cleanup(&text);
@@ -874,8 +881,7 @@ int cai_conversation_items_params_add_file_id(
   if (part.type == NULL || part.file_id == NULL ||
       (detail != NULL && part.detail == NULL)) {
     cai_conversation_content_part_cleanup(allocator, &part);
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate file input");
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate file input");
   }
   rc = cai_conversation_items_params_add_part(params, role, &part, error);
   if (rc != CAI_OK) {
@@ -981,10 +987,9 @@ static int cai_conversation_items_params_spool_json(
   if (rc == CAI_OK) {
     CAI_LJ->json_value_init(CAI_LJ, &doc.items);
     lonejson_error_init(&json_error);
-    if (doc.items.methods->set_reader(&doc.items,
-                                       cai_conversation_spooled_reader,
-                                       &reader_context,
-                                       &json_error) != LONEJSON_STATUS_OK) {
+    if (doc.items.methods->set_reader(
+            &doc.items, cai_conversation_spooled_reader, &reader_context,
+            &json_error) != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to prepare conversation items JSON",
                                 json_error.message);
@@ -1041,8 +1046,8 @@ int cai_client_create_conversation_items(
   has_body = 0;
   json = NULL;
   request_id = NULL;
-  rc = cai_conversation_items_params_spool_json(params, &body, &body_len,
-                                               error);
+  rc =
+      cai_conversation_items_params_spool_json(params, &body, &body_len, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1055,7 +1060,8 @@ int cai_client_create_conversation_items(
   }
   rc = cai_http_json_request_spooled(client, "POST", path, &body, body_len,
                                      &json, &http_status, &request_id, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   if (has_body) {
     body.cleanup(&body);
   }

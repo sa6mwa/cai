@@ -249,9 +249,8 @@ static int cai_exec_realpath_dup(const char *path, char **out,
                                 "failed to resolve command execution path",
                                 strerror(errno));
   }
-  return cai_exec_strdup_field(out, resolved,
-                               "failed to allocate command execution path",
-                               error);
+  return cai_exec_strdup_field(
+      out, resolved, "failed to allocate command execution path", error);
 }
 
 static int cai_exec_context_new(const cai_exec_tool_config *config,
@@ -283,9 +282,8 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   }
   memset(ctx, 0, sizeof(*ctx));
   rc = cai_exec_realpath_dup(root, &ctx->root_path, error);
-  workdir = cai_exec_default_string(config != NULL ? config->default_workdir
-                                                  : NULL,
-                                    ctx->root_path);
+  workdir = cai_exec_default_string(
+      config != NULL ? config->default_workdir : NULL, ctx->root_path);
   if (rc == CAI_OK) {
     rc = cai_exec_realpath_dup(workdir, &ctx->default_workdir, error);
   }
@@ -296,9 +294,9 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
                                "failed to allocate exec shell path", error);
   }
   if (rc == CAI_OK) {
-    rc = cai_exec_strdup_optional(
-        &ctx->bwrap_path, config != NULL ? config->bwrap_path : NULL,
-        "failed to allocate bwrap path", error);
+    rc = cai_exec_strdup_optional(&ctx->bwrap_path,
+                                  config != NULL ? config->bwrap_path : NULL,
+                                  "failed to allocate bwrap path", error);
   }
   if (rc == CAI_OK) {
     rc = cai_exec_strdup_optional(
@@ -324,13 +322,12 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   }
   ctx->allow_network = config != NULL && config->allow_network ? 1 : 0;
   ctx->allow_pty = config != NULL && config->allow_pty ? 1 : 0;
-  ctx->allow_login_shell =
-      config != NULL && config->allow_login_shell ? 1 : 0;
+  ctx->allow_login_shell = config != NULL && config->allow_login_shell ? 1 : 0;
   ctx->enable_cgroup_limits =
       config != NULL && config->enable_cgroup_limits ? 1 : 0;
-  ctx->timeout_ms =
-      config != NULL && config->timeout_ms > 0L ? config->timeout_ms
-                                                : CAI_EXEC_DEFAULT_TIMEOUT_MS;
+  ctx->timeout_ms = config != NULL && config->timeout_ms > 0L
+                        ? config->timeout_ms
+                        : CAI_EXEC_DEFAULT_TIMEOUT_MS;
   ctx->max_timeout_ms = config != NULL && config->max_timeout_ms > 0L
                             ? config->max_timeout_ms
                             : CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS;
@@ -351,10 +348,9 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
   if (ctx->timeout_ms > ctx->max_timeout_ms) {
     ctx->timeout_ms = ctx->max_timeout_ms;
   }
-  ctx->output_memory_limit =
-      config != NULL && config->output_memory_limit != 0U
-          ? config->output_memory_limit
-          : CAI_EXEC_DEFAULT_OUTPUT_MEMORY_LIMIT;
+  ctx->output_memory_limit = config != NULL && config->output_memory_limit != 0U
+                                 ? config->output_memory_limit
+                                 : CAI_EXEC_DEFAULT_OUTPUT_MEMORY_LIMIT;
   ctx->output_max_bytes = config != NULL && config->output_max_bytes != 0U
                               ? config->output_max_bytes
                               : CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES;
@@ -422,8 +418,8 @@ static int cai_exec_resolve_workdir(const cai_exec_context *ctx,
   const char *candidate;
 
   *out = NULL;
-  candidate =
-      requested != NULL && requested[0] != '\0' ? requested : ctx->default_workdir;
+  candidate = requested != NULL && requested[0] != '\0' ? requested
+                                                        : ctx->default_workdir;
   if (candidate[0] != '/') {
     if (strlen(ctx->default_workdir) + 1U + strlen(candidate) + 1U >
         sizeof(joined)) {
@@ -467,8 +463,7 @@ static int cai_exec_append_spool(lonejson_spooled *spool, const char *data,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (spool->append(spool, data, len, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (spool->append(spool, data, len, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to append command output",
                                 json_error.message);
@@ -489,8 +484,8 @@ static int cai_exec_capture_append(cai_exec_capture *capture, int is_stderr,
 
   stream = is_stderr ? &capture->stderr_data : &capture->stdout_data;
   stream_bytes = is_stderr ? &capture->stderr_bytes : &capture->stdout_bytes;
-  truncated = is_stderr ? &capture->stderr_truncated
-                        : &capture->stdout_truncated;
+  truncated =
+      is_stderr ? &capture->stderr_truncated : &capture->stdout_truncated;
   if (len == 0U) {
     return CAI_OK;
   }
@@ -593,8 +588,7 @@ static int cai_exec_cgroup_join(char *out, size_t out_size, const char *dir,
 }
 
 static int cai_exec_cgroup_prepare(const cai_exec_context *ctx,
-                                   cai_exec_cgroup *cgroup,
-                                   cai_error *error) {
+                                   cai_exec_cgroup *cgroup, cai_error *error) {
 #if defined(__linux__)
   const char *parent;
   char control_path[PATH_MAX];
@@ -610,8 +604,8 @@ static int cai_exec_cgroup_prepare(const cai_exec_context *ctx,
   parent = ctx->cgroup_parent_path != NULL ? ctx->cgroup_parent_path
                                            : CAI_EXEC_DEFAULT_CGROUP_PARENT;
   if (snprintf(cgroup->path, sizeof(cgroup->path), "%s/cai-exec-%ld-%ld",
-               parent, (long)getpid(), cai_exec_now_ms()) >=
-      (int)sizeof(cgroup->path)) {
+               parent, (long)getpid(),
+               cai_exec_now_ms()) >= (int)sizeof(cgroup->path)) {
     return cai_set_error(error, CAI_ERR_INVALID, "cgroup path is too long");
   }
   if (mkdir(cgroup->path, 0700) != 0) {
@@ -711,9 +705,8 @@ static int cai_exec_bwrap_bind_file_if_exists(const char **argv, size_t *i,
   return 0;
 }
 
-static int cai_exec_bwrap_parent_dirs(const char **argv, size_t *i,
-                                      size_t cap, const char *path,
-                                      char dirs[][PATH_MAX],
+static int cai_exec_bwrap_parent_dirs(const char **argv, size_t *i, size_t cap,
+                                      const char *path, char dirs[][PATH_MAX],
                                       size_t *dir_count, size_t dir_cap) {
   char current[PATH_MAX];
   const char *cursor;
@@ -807,8 +800,7 @@ static int cai_exec_shell_bin_dir(const char *shell_path, char *out,
 static const char *cai_exec_bwrap_path_env(const cai_exec_context *ctx,
                                            const char *shell_path,
                                            char dirs[][PATH_MAX],
-                                           size_t *dir_count,
-                                           size_t dir_cap) {
+                                           size_t *dir_count, size_t dir_cap) {
   char bin_dir[PATH_MAX];
   int n;
 
@@ -857,11 +849,9 @@ static int cai_exec_bwrap_bind_custom_shell_prefix(
 
 static int cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
                                             const char **argv, size_t *i,
-                                            size_t cap,
-                                            const char *shell_path,
+                                            size_t cap, const char *shell_path,
                                             char dirs[][PATH_MAX],
-                                            size_t *dir_count,
-                                            size_t dir_cap) {
+                                            size_t *dir_count, size_t dir_cap) {
   int prefix_result;
 
   if (shell_path == NULL || shell_path[0] != '/' ||
@@ -881,21 +871,17 @@ static int cai_exec_bwrap_bind_custom_shell(const cai_exec_context *ctx,
   return cai_exec_bwrap_bind_file_if_exists(argv, i, cap, shell_path);
 }
 
-static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
-                                     const char *workdir,
-                                     const char *shell_path,
-                                     const char *cmd, const char *bwrap_path,
-                                     int login_shell,
-                                     const char **argv, size_t argv_cap,
-                                     char dirs[][PATH_MAX],
-                                     size_t *dir_count, size_t dir_cap) {
+static int cai_exec_build_bwrap_argv(
+    const cai_exec_context *ctx, const char *workdir, const char *shell_path,
+    const char *cmd, const char *bwrap_path, int login_shell, const char **argv,
+    size_t argv_cap, char dirs[][PATH_MAX], size_t *dir_count, size_t dir_cap) {
   size_t i;
 
-#define CAI_EXEC_BWRAP_ADD(arg_)                                             \
-  do {                                                                       \
-    if (cai_exec_bwrap_arg(argv, &i, argv_cap, (arg_)) != 0) {                \
-      return -1;                                                             \
-    }                                                                        \
+#define CAI_EXEC_BWRAP_ADD(arg_)                                               \
+  do {                                                                         \
+    if (cai_exec_bwrap_arg(argv, &i, argv_cap, (arg_)) != 0) {                 \
+      return -1;                                                               \
+    }                                                                          \
   } while (0)
 
   if (argv_cap < 48U) {
@@ -915,8 +901,8 @@ static int cai_exec_build_bwrap_argv(const cai_exec_context *ctx,
   CAI_EXEC_BWRAP_ADD("--clearenv");
   CAI_EXEC_BWRAP_ADD("--setenv");
   CAI_EXEC_BWRAP_ADD("PATH");
-  CAI_EXEC_BWRAP_ADD(cai_exec_bwrap_path_env(ctx, shell_path, dirs, dir_count,
-                                             dir_cap));
+  CAI_EXEC_BWRAP_ADD(
+      cai_exec_bwrap_path_env(ctx, shell_path, dirs, dir_count, dir_cap));
   CAI_EXEC_BWRAP_ADD("--setenv");
   CAI_EXEC_BWRAP_ADD("HOME");
   CAI_EXEC_BWRAP_ADD(ctx->root_path);
@@ -1061,25 +1047,24 @@ static int cai_exec_build_sandbox_exec_profile(const cai_exec_context *ctx,
 
   offset = 0U;
   profile[0] = '\0';
-  if (cai_exec_profile_append(
-          profile, profile_size, &offset,
-          "(version 1)\n"
-          "(deny default)\n"
-          "(allow process*)\n"
-          "(allow sysctl-read)\n"
-          "(allow mach-lookup)\n"
-          "(allow file-read-metadata)\n"
-          "(allow file-read-data") != 0) {
+  if (cai_exec_profile_append(profile, profile_size, &offset,
+                              "(version 1)\n"
+                              "(deny default)\n"
+                              "(allow process*)\n"
+                              "(allow sysctl-read)\n"
+                              "(allow mach-lookup)\n"
+                              "(allow file-read-metadata)\n"
+                              "(allow file-read-data") != 0) {
     return -1;
   }
   if (cai_exec_profile_allow_subpath(profile, profile_size, &offset,
                                      ctx->root_path) != 0 ||
       cai_exec_profile_allow_literal(profile, profile_size, &offset,
                                      ctx->shell_path) != 0 ||
-      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
-                                     "/bin") != 0 ||
-      cai_exec_profile_allow_subpath(profile, profile_size, &offset,
-                                     "/sbin") != 0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset, "/bin") !=
+          0 ||
+      cai_exec_profile_allow_subpath(profile, profile_size, &offset, "/sbin") !=
+          0 ||
       cai_exec_profile_allow_subpath(profile, profile_size, &offset,
                                      "/usr/bin") != 0 ||
       cai_exec_profile_allow_subpath(profile, profile_size, &offset,
@@ -1135,9 +1120,8 @@ static int cai_exec_build_sandbox_exec_argv(
 #endif
 
 static void cai_exec_child_exec(const cai_exec_context *ctx,
-                                const cai_exec_args *args,
-                                const char *workdir, const char *sandbox_path,
-                                int use_sandbox) {
+                                const cai_exec_args *args, const char *workdir,
+                                const char *sandbox_path, int use_sandbox) {
   const char *argv[96];
   char dirs[32][PATH_MAX];
 #if defined(__APPLE__)
@@ -1153,14 +1137,11 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
   }
   if (use_sandbox) {
 #if defined(__linux__)
-    if (cai_exec_build_bwrap_argv(ctx, workdir, shell_path, args->cmd,
-                                  sandbox_path,
-                                  args->has_login && args->login &&
-                                      ctx->allow_login_shell,
-                                  argv,
-                                  sizeof(argv) / sizeof(argv[0]), dirs,
-                                  &dir_count,
-                                  sizeof(dirs) / sizeof(dirs[0])) != 0) {
+    if (cai_exec_build_bwrap_argv(
+            ctx, workdir, shell_path, args->cmd, sandbox_path,
+            args->has_login && args->login && ctx->allow_login_shell, argv,
+            sizeof(argv) / sizeof(argv[0]), dirs, &dir_count,
+            sizeof(dirs) / sizeof(dirs[0])) != 0) {
       _exit(127);
     }
     execv(sandbox_path, (char *const *)(void *)argv);
@@ -1196,8 +1177,7 @@ static int cai_exec_validate_sandbox_args(const cai_exec_context *ctx,
                                           const cai_exec_args *args,
                                           const char *workdir,
                                           const char *sandbox_path,
-                                          int use_sandbox,
-                                          cai_error *error) {
+                                          int use_sandbox, cai_error *error) {
   const char *argv[96];
   char dirs[32][PATH_MAX];
   size_t dir_count;
@@ -1209,13 +1189,11 @@ static int cai_exec_validate_sandbox_args(const cai_exec_context *ctx,
   shell_path = args->shell != NULL && args->shell[0] != '\0' ? args->shell
                                                              : ctx->shell_path;
 #if defined(__linux__)
-  if (cai_exec_build_bwrap_argv(ctx, workdir, shell_path, args->cmd,
-                                sandbox_path,
-                                args->has_login && args->login &&
-                                    ctx->allow_login_shell,
-                                argv, sizeof(argv) / sizeof(argv[0]), dirs,
-                                &dir_count,
-                                sizeof(dirs) / sizeof(dirs[0])) != 0) {
+  if (cai_exec_build_bwrap_argv(
+          ctx, workdir, shell_path, args->cmd, sandbox_path,
+          args->has_login && args->login && ctx->allow_login_shell, argv,
+          sizeof(argv) / sizeof(argv[0]), dirs, &dir_count,
+          sizeof(dirs) / sizeof(dirs[0])) != 0) {
     return cai_set_error(
         error, CAI_ERR_INVALID,
         "exec bubblewrap argument list is too large for sandbox setup");
@@ -1247,11 +1225,12 @@ static int cai_exec_validate_sandbox_args(const cai_exec_context *ctx,
 #endif
 }
 
-static int cai_exec_spawn(const cai_exec_context *ctx, const cai_exec_args *args,
-                          const char *workdir, const char *bwrap_path,
-                          int use_sandbox, const cai_exec_cgroup *cgroup,
-                          int stdout_fd[2], int stderr_fd[2], int *pty_master,
-                          pid_t *pid_out, cai_error *error) {
+static int cai_exec_spawn(const cai_exec_context *ctx,
+                          const cai_exec_args *args, const char *workdir,
+                          const char *bwrap_path, int use_sandbox,
+                          const cai_exec_cgroup *cgroup, int stdout_fd[2],
+                          int stderr_fd[2], int *pty_master, pid_t *pid_out,
+                          cai_error *error) {
   int stdin_fd;
   int slave_fd;
   int sync_fd[2];
@@ -1563,8 +1542,8 @@ static int cai_exec_prepare_sandbox(const cai_exec_context *ctx, char *buffer,
                                     size_t buffer_size, int *use_sandbox,
                                     cai_error *error) {
 #if defined(__linux__)
-  static const char *const bwrap_candidates[] = {
-      "/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap", NULL};
+  static const char *const bwrap_candidates[] = {"/usr/bin/bwrap", "/bin/bwrap",
+                                                 "/usr/local/bin/bwrap", NULL};
   const char *path;
 
   *use_sandbox = 0;
@@ -1582,8 +1561,8 @@ static int cai_exec_prepare_sandbox(const cai_exec_context *ctx, char *buffer,
   return cai_set_error(error, CAI_ERR_INVALID,
                        "exec sandbox requires bubblewrap (bwrap) on Linux");
 #elif defined(__APPLE__)
-  static const char *const sandbox_exec_candidates[] = {
-      "/usr/bin/sandbox-exec", NULL};
+  static const char *const sandbox_exec_candidates[] = {"/usr/bin/sandbox-exec",
+                                                        NULL};
   const char *path;
 
   *use_sandbox = 0;
@@ -1689,8 +1668,8 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     out->original_byte_count =
         (long long)(capture.stdout_bytes + capture.stderr_bytes);
     out->cwd = cai_strdup(NULL, workdir);
-    out->sandbox = cai_strdup(NULL, use_sandbox ? cai_exec_sandbox_name()
-                                                : "unavailable");
+    out->sandbox =
+        cai_strdup(NULL, use_sandbox ? cai_exec_sandbox_name() : "unavailable");
     if (out->cwd == NULL || out->sandbox == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate exec result metadata");
@@ -1753,8 +1732,9 @@ int cai_tool_registry_register_exec_tool(cai_tool_registry *registry,
   }
   name = cai_exec_default_string(config != NULL ? config->name : NULL,
                                  CAI_EXEC_DEFAULT_TOOL_NAME);
-  description = cai_exec_default_string(
-      config != NULL ? config->description : NULL, cai_exec_default_description);
+  description =
+      cai_exec_default_string(config != NULL ? config->description : NULL,
+                              cai_exec_default_description);
   rc = cai_tool_registry_register_lonejson_schema_owned(
       registry, name, description, cai_exec_schema_json, 0, &cai_exec_args_map,
       &cai_exec_result_map, cai_exec_callback, ctx, cai_exec_context_cleanup,

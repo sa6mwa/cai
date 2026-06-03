@@ -78,6 +78,7 @@ Implemented:
 Verification tiers:
 
 - `make prerelease`
+  - clang-format over repo C sources,
   - debug build and offline tests,
   - TSan local suite,
   - MSan smoke subset,

@@ -8,10 +8,10 @@
 #include <lonejson.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -81,30 +81,24 @@ static int integration_flag_enabled(const char *value) {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
-static int integration_provider_create_response(cai_client *client,
-                                                cai_response_create_params *params,
-                                                int use_openrouter,
-                                                cai_response **response,
-                                                cai_error *error);
+static int integration_provider_create_response(
+    cai_client *client, cai_response_create_params *params, int use_openrouter,
+    cai_response **response, cai_error *error);
 static int integration_provider_send_text(cai_session *session,
-                                          const char *text,
-                                          int use_openrouter,
+                                          const char *text, int use_openrouter,
                                           cai_response **response,
                                           cai_error *error);
 static int integration_provider_stream(cai_session *session,
                                        const cai_stream_sinks *sinks,
-                                       int use_openrouter,
-                                       cai_error *error);
+                                       int use_openrouter, cai_error *error);
 static int integration_provider_stream_auto(cai_session *session,
                                             const cai_run_options *run_options,
                                             const cai_stream_sinks *sinks,
                                             int use_openrouter,
                                             cai_error *error);
-static int integration_provider_run_auto_output(cai_session *session,
-                                                const cai_run_options *run_options,
-                                                int use_openrouter,
-                                                cai_output **output,
-                                                cai_error *error);
+static int integration_provider_run_auto_output(
+    cai_session *session, const cai_run_options *run_options,
+    int use_openrouter, cai_output **output, cai_error *error);
 
 static char *integration_spooled_to_cstr(const lonejson_spooled *spool) {
   lonejson_spooled cursor;
@@ -460,7 +454,7 @@ static int integration_stream_delta_debug(void *context, const char *item_id,
   if (state == NULL || delta == NULL) {
     return CAI_OK;
   }
-    cursor = *delta;
+  cursor = *delta;
   for (;;) {
     chunk = cursor.read(&cursor, buffer, sizeof(buffer));
     if (chunk.error_code != 0) {
@@ -530,9 +524,10 @@ static int integration_stream_done_debug(void *context, const char *item_id,
   return CAI_OK;
 }
 
-static int integration_stream_item_debug(
-    void *context, const char *item_id, int output_index, const char *type,
-    const lonejson_spooled *item_json, cai_error *error) {
+static int integration_stream_item_debug(void *context, const char *item_id,
+                                         int output_index, const char *type,
+                                         const lonejson_spooled *item_json,
+                                         cai_error *error) {
   integration_stream_debug_state *state;
   char *text;
 
@@ -558,8 +553,8 @@ static int integration_stream_item_debug(
 static int integration_expect_contains(const char *name, const char *haystack,
                                        const char *needle) {
   if (haystack == NULL || strstr(haystack, needle) == NULL) {
-    fprintf(stderr, "%s missing expected text: %s\nactual:\n%s\n", name,
-            needle, haystack != NULL ? haystack : "(null)");
+    fprintf(stderr, "%s missing expected text: %s\nactual:\n%s\n", name, needle,
+            haystack != NULL ? haystack : "(null)");
     return 1;
   }
   return 0;
@@ -747,8 +742,7 @@ static int run_hosted_web_search_regression(void) {
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_add_hosted_tool_json(
-        params,
-        "{\"type\":\"web_search\",\"search_context_size\":\"low\"}",
+        params, "{\"type\":\"web_search\",\"search_context_size\":\"low\"}",
         &error);
   }
   if (rc == CAI_OK) {
@@ -879,10 +873,11 @@ static int run_todo_workflow_regression(void) {
     goto done;
   }
 
-  failures += todo_run(registry, sink, &writer, "todo create main",
-                       "{\"operation\":\"create_board\",\"board_name\":\"main\","
-                       "\"wip_limit\":1}",
-                       CAI_OK, &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo create main",
+               "{\"operation\":\"create_board\",\"board_name\":\"main\","
+               "\"wip_limit\":1}",
+               CAI_OK, &error);
   failures += integration_expect_contains("todo create main ok", writer.buffer,
                                           "\"ok\":true");
   if (!integration_extract_json_string(writer.buffer, "board_id", board_main,
@@ -890,9 +885,10 @@ static int run_todo_workflow_regression(void) {
     fprintf(stderr, "todo workflow failed to capture main board id\n");
     failures++;
   }
-  failures += todo_run(registry, sink, &writer, "todo create ops",
-                       "{\"operation\":\"create_board\",\"board_name\":\"ops\"}",
-                       CAI_OK, &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo create ops",
+               "{\"operation\":\"create_board\",\"board_name\":\"ops\"}",
+               CAI_OK, &error);
   if (!integration_extract_json_string(writer.buffer, "board_id", board_ops,
                                        sizeof(board_ops))) {
     fprintf(stderr, "todo workflow failed to capture ops board id\n");
@@ -903,8 +899,8 @@ static int run_todo_workflow_regression(void) {
            "\"title\":\"plan slice\",\"description\":\"define expected "
            "workflow invariants\",\"status\":\"todo\"}",
            board_main);
-  failures += todo_run(registry, sink, &writer, "todo add plan", args, CAI_OK,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo add plan", args, CAI_OK, &error);
   failures += integration_expect_contains("todo add plan ok", writer.buffer,
                                           "\"ok\":true");
   if (!integration_extract_json_string(writer.buffer, "item_id", item_plan,
@@ -915,8 +911,8 @@ static int run_todo_workflow_regression(void) {
            "{\"operation\":\"add_item\",\"board_id\":\"%s\","
            "\"title\":\"build slice\",\"status\":\"in_process\"}",
            board_main);
-  failures += todo_run(registry, sink, &writer, "todo add build", args, CAI_OK,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo add build", args, CAI_OK, &error);
   if (!integration_extract_json_string(writer.buffer, "item_id", item_build,
                                        sizeof(item_build))) {
     failures++;
@@ -925,27 +921,26 @@ static int run_todo_workflow_regression(void) {
            "{\"operation\":\"add_item\",\"board_id\":\"%s\","
            "\"title\":\"review slice\",\"status\":\"in_process\"}",
            board_main);
-  failures += todo_run(registry, sink, &writer, "todo wip denial", args,
-                       CAI_OK, &error);
+  failures += todo_run(registry, sink, &writer, "todo wip denial", args, CAI_OK,
+                       &error);
   failures += integration_expect_contains("todo wip denial ok=false",
                                           writer.buffer, "\"ok\":false");
-  failures += integration_expect_contains("todo wip denial code",
-                                          writer.buffer,
+  failures += integration_expect_contains("todo wip denial code", writer.buffer,
                                           "\"wip_limit_exceeded\"");
   snprintf(args, sizeof(args),
            "{\"operation\":\"set_wip_limit\",\"board_id\":\"%s\","
            "\"wip_limit\":2}",
            board_main);
-  failures += todo_run(registry, sink, &writer, "todo set wip", args, CAI_OK,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo set wip", args, CAI_OK, &error);
   failures += integration_expect_contains("todo set wip result", writer.buffer,
                                           "\"wip_limit\":2");
   snprintf(args, sizeof(args),
            "{\"operation\":\"add_item\",\"board_id\":\"%s\","
            "\"title\":\"review slice\",\"status\":\"in_process\"}",
            board_main);
-  failures += todo_run(registry, sink, &writer, "todo add review", args,
-                       CAI_OK, &error);
+  failures += todo_run(registry, sink, &writer, "todo add review", args, CAI_OK,
+                       &error);
   if (!integration_extract_json_string(writer.buffer, "item_id", item_review,
                                        sizeof(item_review))) {
     failures++;
@@ -975,8 +970,8 @@ static int run_todo_workflow_regression(void) {
            "{\"operation\":\"add_item\",\"board_id\":\"%s\","
            "\"title\":\"ops deploy\",\"status\":\"in_process\"}",
            board_ops);
-  failures += todo_run(registry, sink, &writer, "todo add ops", args, CAI_OK,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo add ops", args, CAI_OK, &error);
   if (!integration_extract_json_string(writer.buffer, "item_id", item_ops,
                                        sizeof(item_ops))) {
     failures++;
@@ -987,15 +982,15 @@ static int run_todo_workflow_regression(void) {
            item_build, board_main);
   failures += todo_run(registry, sink, &writer, "todo complete build", args,
                        CAI_OK, &error);
-  failures += integration_expect_contains("todo complete result",
-                                          writer.buffer, "item completed");
+  failures += integration_expect_contains("todo complete result", writer.buffer,
+                                          "item completed");
   snprintf(args, sizeof(args),
            "{\"operation\":\"add_item\",\"board_id\":\"%s\","
            "\"title\":\"ship slice\",\"status\":\"in_process\"}",
            board_main);
-  failures += todo_run(registry, sink, &writer,
-                       "todo add after completion frees wip", args, CAI_OK,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo add after completion frees wip",
+               args, CAI_OK, &error);
   failures += integration_expect_contains("todo add after completion",
                                           writer.buffer, "\"ok\":true");
   for (i = 0; i < 8; ++i) {
@@ -1018,8 +1013,8 @@ static int run_todo_workflow_regression(void) {
                        "{\"operation\":\"list_boards\"}", CAI_OK, &error);
   failures += integration_expect_contains("todo list boards main",
                                           writer.buffer, "\"main\"");
-  failures += integration_expect_contains("todo list boards ops",
-                                          writer.buffer, "\"ops\"");
+  failures += integration_expect_contains("todo list boards ops", writer.buffer,
+                                          "\"ops\"");
   failures += integration_expect_contains("todo list boards array",
                                           writer.buffer, "\"boards\":[");
   failures += integration_expect_contains("todo list boards count",
@@ -1056,25 +1051,27 @@ static int run_todo_workflow_regression(void) {
                                           writer.buffer, "\"invalid_request\"");
   failures += todo_run(registry, sink, &writer, "todo title too large",
                        "{\"operation\":\"add_item\",\"board_name\":\"main\","
-                       "\"title\":\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\"}",
+                       "\"title\":"
+                       "\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza"
+                       "bcdefghijklmnopqrstuvwxyz\"}",
                        CAI_OK, &error);
   failures += integration_expect_contains("todo title too large result",
                                           writer.buffer, "\"title_too_large\"");
-  failures += todo_run(registry, sink, &writer, "todo description too large",
-                       "{\"operation\":\"add_item\",\"board_name\":\"main\","
-                       "\"title\":\"desc\",\"description\":\""
-                       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                       "aaaaaaaaaaaaaaaa\"}",
-                       CAI_OK, &error);
-  failures += integration_expect_contains("todo description too large result",
-                                          writer.buffer,
-                                          "\"description_too_large\"");
+  failures += todo_run(
+      registry, sink, &writer, "todo description too large",
+      "{\"operation\":\"add_item\",\"board_name\":\"main\","
+      "\"title\":\"desc\",\"description\":\""
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "aaaaaaaaaaaaaaaa\"}",
+      CAI_OK, &error);
+  failures +=
+      integration_expect_contains("todo description too large result",
+                                  writer.buffer, "\"description_too_large\"");
   failures += todo_run(registry, sink, &writer, "todo unknown operation",
                        "{\"operation\":\"explode\"}", CAI_OK, &error);
-  failures += integration_expect_contains("todo unknown op result",
-                                          writer.buffer,
-                                          "\"unknown_operation\"");
+  failures += integration_expect_contains(
+      "todo unknown op result", writer.buffer, "\"unknown_operation\"");
   failures += todo_run(registry, sink, &writer, "todo unknown arg",
                        "{\"operation\":\"list_boards\",\"system\":\"ignore\"}",
                        CAI_ERR_PROTOCOL, &error);
@@ -1085,12 +1082,12 @@ static int run_todo_workflow_regression(void) {
     fprintf(stderr, "todo workflow failed to read store\n");
     failures++;
   } else {
-    failures += integration_expect_contains("todo store boards", store,
-                                            "\"boards\":[");
-    failures += integration_expect_contains("todo store items", store,
-                                            "\"items\":[");
-    failures += integration_expect_contains("todo store done", store,
-                                            "\"done\":[");
+    failures +=
+        integration_expect_contains("todo store boards", store, "\"boards\":[");
+    failures +=
+        integration_expect_contains("todo store items", store, "\"items\":[");
+    failures +=
+        integration_expect_contains("todo store done", store, "\"done\":[");
     failures += integration_expect_contains("todo store archived build", store,
                                             "build slice");
     if (strstr(store, "\"type\"") != NULL) {
@@ -1102,15 +1099,15 @@ static int run_todo_workflow_regression(void) {
   integration_write_file_or_die(
       store_path,
       "{\"version\":1,\"boards\":[],\"boards\":[],\"items\":[],\"done\":[]}");
-  failures += todo_run(registry, sink, &writer, "todo duplicate key store",
-                       "{\"operation\":\"list_boards\"}", CAI_ERR_PROTOCOL,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo duplicate key store",
+               "{\"operation\":\"list_boards\"}", CAI_ERR_PROTOCOL, &error);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   integration_write_file_or_die(store_path, "{\"version\":1,\"boards\":[");
-  failures += todo_run(registry, sink, &writer, "todo corrupt store",
-                       "{\"operation\":\"list_boards\"}", CAI_ERR_PROTOCOL,
-                       &error);
+  failures +=
+      todo_run(registry, sink, &writer, "todo corrupt store",
+               "{\"operation\":\"list_boards\"}", CAI_ERR_PROTOCOL, &error);
 
 done:
   cai_error_cleanup(&error);
@@ -1303,8 +1300,8 @@ static int run_openrouter_session_regression(void) {
   if (rc == CAI_OK) {
     rc = integration_provider_send_text(
         session,
-        "Recall the exact OpenRouter session key I asked you to remember.",
-        1, &response, &error);
+        "Recall the exact OpenRouter session key I asked you to remember.", 1,
+        &response, &error);
   }
   if (rc != CAI_OK) {
     print_error("openrouter session regression", rc, &error);
@@ -1398,8 +1395,7 @@ static int run_openrouter_tool_regression(void) {
     goto done;
   }
   answer = cai_output_text(output);
-  if (tool_state.called == 0 ||
-      answer == NULL ||
+  if (tool_state.called == 0 || answer == NULL ||
       strstr(answer, "openrouter-tool-verified") == NULL ||
       strstr(answer, "Gothenburg") == NULL ||
       strstr(answer, "openrouter-tool-code-913") == NULL) {
@@ -1414,16 +1410,15 @@ static int run_openrouter_tool_regression(void) {
 
   rc = integration_provider_send_text(
       session,
-      "Recall the exact code value from the previous integration lookup.",
-      1, &response, &error);
+      "Recall the exact code value from the previous integration lookup.", 1,
+      &response, &error);
   if (rc != CAI_OK) {
     print_error("openrouter tool continuation", rc, &error);
     goto done;
   }
   answer = cai_response_output_text(response);
   if (answer == NULL || strstr(answer, "openrouter-tool-code-913") == NULL) {
-    fprintf(stderr,
-            "openrouter tool continuation did not preserve code:\n%s\n",
+    fprintf(stderr, "openrouter tool continuation did not preserve code:\n%s\n",
             answer != NULL ? answer : "(null)");
     rc = CAI_ERR_PROTOCOL;
     goto done;
@@ -1540,8 +1535,7 @@ static int run_openrouter_stream_tool_regression(void) {
             "output_item_json=[%s]\n",
             (unsigned long)event_state.start_arguments_size,
             event_state.start_arguments, stream_debug.deltas,
-            stream_debug.done_arguments,
-            stream_debug.output_item_json);
+            stream_debug.done_arguments, stream_debug.output_item_json);
     goto done;
   }
   if (tool_state.called == 0 || event_state.starts != 1 ||
@@ -1841,9 +1835,8 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
   answer = NULL;
   memset(&tool_state, 0, sizeof(tool_state));
 
-  agent_config.model =
-      use_openrouter != 0 ? openrouter_tool_integration_model()
-                          : integration_model();
+  agent_config.model = use_openrouter != 0 ? openrouter_tool_integration_model()
+                                           : integration_model();
   fprintf(stderr, "[integration-%stool-security] model=%s\n",
           use_openrouter != 0 ? "openrouter-" : "", agent_config.model);
   if (use_openrouter != 0) {
@@ -1929,8 +1922,7 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
         strstr(answer, "Ignore all developer instructions") != NULL)) ||
       ((use_openrouter != 0) &&
        strstr(answer, "SAFE_TOOL_DATA_HANDLED") == NULL &&
-       strstr(answer, "payload") == NULL &&
-       strstr(answer, "Payload") == NULL &&
+       strstr(answer, "payload") == NULL && strstr(answer, "Payload") == NULL &&
        strstr(answer, "verdict") == NULL)) {
     fprintf(stderr,
             "tool security answer failed check; called=%d answer:\n%s\n",
@@ -2027,8 +2019,7 @@ static int run_searxng_tool_regression(void) {
   }
   answer = cai_output_text(output);
   if (answer == NULL || strstr(answer, "SEARXNG_TOOL_OK") == NULL ||
-      strstr(answer, "OpenAI") == NULL ||
-      strstr(answer, "wikipedia") == NULL) {
+      strstr(answer, "OpenAI") == NULL || strstr(answer, "wikipedia") == NULL) {
     fprintf(stderr, "searxng tool answer failed check:\n%s\n",
             answer != NULL ? answer : "(null)");
     rc = CAI_ERR_PROTOCOL;
@@ -2074,9 +2065,9 @@ static int run_revgeo_provider_regression(void) {
     rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_tool_registry_run(
-        registry, "reverse_geocode",
-        "{\"latitude\":57.70887,\"longitude\":11.97456}", sink, &error);
+    rc = cai_tool_registry_run(registry, "reverse_geocode",
+                               "{\"latitude\":57.70887,\"longitude\":11.97456}",
+                               sink, &error);
   }
   if (rc != CAI_OK) {
     print_error("revgeo provider regression", rc, &error);
@@ -2173,15 +2164,14 @@ static int run_openrouter_stream_history_regression(void) {
     goto done;
   }
   rc = integration_provider_send_text(
-      session, "Recall only the phrase value from your previous answer.",
-      1, &response, &error);
+      session, "Recall only the phrase value from your previous answer.", 1,
+      &response, &error);
   if (rc != CAI_OK) {
     print_error("openrouter stream history continuation", rc, &error);
     goto done;
   }
   answer = cai_response_output_text(response);
-  if (answer == NULL ||
-      strstr(answer, "streamed-history-memory-842") == NULL) {
+  if (answer == NULL || strstr(answer, "streamed-history-memory-842") == NULL) {
     fprintf(stderr,
             "openrouter stream history continuation did not preserve "
             "streamed assistant text:\n%s\n",
@@ -2295,8 +2285,7 @@ static int run_searxng_stream_tool_regression(void) {
   answer[nread] = '\0';
   if (event_state.starts != 1 || event_state.outputs != 1 ||
       strstr(answer, "SEARXNG_STREAM_TOOL_OK") == NULL ||
-      strstr(answer, "OpenAI") == NULL ||
-      strstr(answer, "wikipedia") == NULL) {
+      strstr(answer, "OpenAI") == NULL || strstr(answer, "wikipedia") == NULL) {
     fprintf(stderr,
             "searxng stream tool answer failed check; starts=%d outputs=%d "
             "answer:\n%s\n",
@@ -2501,8 +2490,8 @@ static int run_exec_tool_llm_regression(void) {
     fprintf(stderr,
             "exec tool first turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
-            event_state.starts, event_state.outputs,
-            event_state.output.buffer, writer.buffer);
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
@@ -2545,8 +2534,8 @@ static int run_exec_tool_llm_regression(void) {
     fprintf(stderr,
             "exec tool escape turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
-            event_state.starts, event_state.outputs,
-            event_state.output.buffer, writer.buffer);
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
@@ -2566,7 +2555,8 @@ static int run_exec_tool_llm_regression(void) {
       session,
       "EXEC_TEST_3: run sh ./hardened_check.sh\n"
       "Answer exactly: EXEC_HARDENED env_unset=<yes/no> "
-      "var_tmp_isolated=<yes/no> network_closed=<yes/no> proc_private=<yes/no>. "
+      "var_tmp_isolated=<yes/no> network_closed=<yes/no> "
+      "proc_private=<yes/no>. "
       "VAR=isolated means var_tmp_isolated=yes. Replace each placeholder with "
       "yes or no. Do not copy angle brackets.",
       &error);
@@ -2586,8 +2576,8 @@ static int run_exec_tool_llm_regression(void) {
     fprintf(stderr,
             "exec tool hardening turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
-            event_state.starts, event_state.outputs,
-            event_state.output.buffer, writer.buffer);
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
@@ -3044,11 +3034,9 @@ static int integration_openrouter_throttle(void) {
   return 0;
 }
 
-static int integration_provider_create_response(cai_client *client,
-                                                cai_response_create_params *params,
-                                                int use_openrouter,
-                                                cai_response **response,
-                                                cai_error *error) {
+static int integration_provider_create_response(
+    cai_client *client, cai_response_create_params *params, int use_openrouter,
+    cai_response **response, cai_error *error) {
   if (use_openrouter != 0) {
     integration_openrouter_throttle();
   }
@@ -3056,8 +3044,7 @@ static int integration_provider_create_response(cai_client *client,
 }
 
 static int integration_provider_send_text(cai_session *session,
-                                          const char *text,
-                                          int use_openrouter,
+                                          const char *text, int use_openrouter,
                                           cai_response **response,
                                           cai_error *error) {
   if (use_openrouter != 0) {
@@ -3068,8 +3055,7 @@ static int integration_provider_send_text(cai_session *session,
 
 static int integration_provider_stream(cai_session *session,
                                        const cai_stream_sinks *sinks,
-                                       int use_openrouter,
-                                       cai_error *error) {
+                                       int use_openrouter, cai_error *error) {
   if (use_openrouter != 0) {
     integration_openrouter_throttle();
   }
@@ -3087,11 +3073,9 @@ static int integration_provider_stream_auto(cai_session *session,
   return cai_session_stream_auto(session, run_options, sinks, error);
 }
 
-static int integration_provider_run_auto_output(cai_session *session,
-                                                const cai_run_options *run_options,
-                                                int use_openrouter,
-                                                cai_output **output,
-                                                cai_error *error) {
+static int integration_provider_run_auto_output(
+    cai_session *session, const cai_run_options *run_options,
+    int use_openrouter, cai_output **output, cai_error *error) {
   if (use_openrouter != 0) {
     integration_openrouter_throttle();
   }
@@ -3123,7 +3107,8 @@ static int answer_contains_turn(const char *answer, int turn) {
   snprintf(natural, sizeof(natural), "turn %d", turn);
   snprintf(zero_padded, sizeof(zero_padded), "turn %02d", turn);
   if (turn == 1) {
-    return answer_contains(answer, plain) || answer_contains(answer, bracketed) ||
+    return answer_contains(answer, plain) ||
+           answer_contains(answer, bracketed) ||
            answer_contains(answer, natural) ||
            answer_contains(answer, zero_padded) ||
            answer_contains(answer, "first turn") ||
@@ -3245,7 +3230,8 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
         !answer_contains_previous_secret(answer, previous_secret) ||
         !answer_contains(answer, current_secret)) {
       fprintf(stderr,
-              "integration e2e turn %d failed content check\nexpected: %s %s %s %s\n"
+              "integration e2e turn %d failed content check\nexpected: %s %s "
+              "%s %s\n"
               "answer: %s\n",
               turn, expected_turn, expected_first, expected_previous,
               expected_current, answer != NULL ? answer : "(null)");
@@ -3258,8 +3244,8 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
       fprintf(stderr,
               "[integration-%s-e2e] turn=%d tokens=%lld cached=%lld "
               "estimated_cost=$%.8f limit=$%.8f\n",
-              use_openrouter != 0 ? "openrouter" : "openai",
-              turn, usage.total_tokens, usage.input_cached_tokens, spent_usd,
+              use_openrouter != 0 ? "openrouter" : "openai", turn,
+              usage.total_tokens, usage.input_cached_tokens, spent_usd,
               limit_usd);
       if (spent_usd > limit_usd) {
         fprintf(stderr,
@@ -3338,9 +3324,8 @@ static int run_compaction_recall(void) {
                           &error);
   }
   if (rc == CAI_OK) {
-    rc = send_and_destroy(session,
-                          "Compact test fact two: launch number is 17.",
-                          &error);
+    rc = send_and_destroy(
+        session, "Compact test fact two: launch number is 17.", &error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_send_text(
@@ -3451,8 +3436,7 @@ static int run_state_restore_regression(void) {
   }
   if (rc == CAI_OK) {
     rc = cai_session_send_text(
-        restored,
-        "Recall the exact state restore key I asked you to remember.",
+        restored, "Recall the exact state restore key I asked you to remember.",
         &response, &error);
   }
   if (rc != CAI_OK) {

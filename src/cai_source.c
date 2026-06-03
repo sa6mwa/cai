@@ -24,8 +24,8 @@ typedef struct cai_file_sink_context {
   int close_file;
 } cai_file_sink_context;
 
-static size_t cai_spooled_source_read(void *context, void *buffer,
-                                      size_t count, cai_error *error) {
+static size_t cai_spooled_source_read(void *context, void *buffer, size_t count,
+                                      cai_error *error) {
   cai_spooled_source_context *source_context;
   lonejson_read_result result;
 
@@ -34,7 +34,7 @@ static size_t cai_spooled_source_read(void *context, void *buffer,
     return 0U;
   }
   result = source_context->spool.read(&source_context->spool,
-                                 (unsigned char *)buffer, count);
+                                      (unsigned char *)buffer, count);
   if (result.error_code != 0) {
     cai_set_error(error, CAI_ERR_TRANSPORT, "failed to read spooled source");
     return 0U;
@@ -254,7 +254,8 @@ int cai_source_file(FILE *fp, int close_file, cai_source **out,
   }
   context = (cai_file_source_context *)cai_alloc(NULL, sizeof(*context));
   if (context == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate file source");
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate file source");
   }
   context->fp = fp;
   context->close_file = close_file ? 1 : 0;
@@ -323,8 +324,7 @@ int cai_source_copy_to_sink(cai_source *source, cai_sink *sink,
     nread = cai_source_read(source, buffer, sizeof(buffer), error);
     if (nread == 0U) {
       if (error != NULL && error->code != CAI_OK &&
-          (error->code != previous_code ||
-           error->message != previous_message ||
+          (error->code != previous_code || error->message != previous_message ||
            error->detail != previous_detail ||
            error->server_code != previous_server_code ||
            error->request_id != previous_request_id)) {

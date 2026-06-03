@@ -92,19 +92,19 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     impl->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
   }
 
-  rc = cai_resolve_api_key(
-      &impl->allocator, effective->api_key,
-      effective->api_key_env != NULL ? effective->api_key_env
-                                     : CAI_OPENAI_API_KEY_ENV,
-      &impl->api_key, error);
+  rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
+                           effective->api_key_env != NULL
+                               ? effective->api_key_env
+                               : CAI_OPENAI_API_KEY_ENV,
+                           &impl->api_key, error);
   if (rc != CAI_OK) {
     cai_free_mem(&impl->allocator, impl);
     cai_free_mem(&effective->allocator, client);
     return rc;
   }
-  impl->base_url = cai_strdup(
-      &impl->allocator,
-      effective->base_url != NULL ? effective->base_url : CAI_DEFAULT_BASE_URL);
+  impl->base_url = cai_strdup(&impl->allocator, effective->base_url != NULL
+                                                    ? effective->base_url
+                                                    : CAI_DEFAULT_BASE_URL);
   if (impl->base_url == NULL) {
     cai_client_destroy_fields(impl);
     cai_free_mem(&impl->allocator, impl);

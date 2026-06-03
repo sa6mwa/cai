@@ -20,9 +20,8 @@ typedef struct cai_todo_store_callbacks {
   /** Begin a storage transaction and return an opaque transaction. */
   int (*begin)(void *context, void **transaction, cai_error *error);
   /** Open the current JSON document as a lonejson reader. */
-  int (*open_read)(void *context, void *transaction,
-                   lonejson_reader_fn *reader, void **reader_context,
-                   cai_error *error);
+  int (*open_read)(void *context, void *transaction, lonejson_reader_fn *reader,
+                   void **reader_context, cai_error *error);
   /** Close a reader opened by open_read. */
   void (*close_read)(void *context, void *transaction, void *reader_context);
   /** Open a replacement JSON document as a lonejson sink. */

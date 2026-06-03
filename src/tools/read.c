@@ -2,8 +2,8 @@
 
 #include <cai/tools/read.h>
 
-#include <errno.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,8 +102,8 @@ static const lonejson_field cai_read_arg_fields[] = {
                                         has_start_line, "start_line"),
     LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, end_line, has_end_line,
                                         "end_line"),
-    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, max_bytes,
-                                        has_max_bytes, "max_bytes")};
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, max_bytes, has_max_bytes,
+                                        "max_bytes")};
 LONEJSON_MAP_DEFINE(cai_read_args_map, cai_read_args, cai_read_arg_fields);
 
 static const lonejson_field cai_read_result_fields[] = {
@@ -150,10 +150,9 @@ static const lonejson_field cai_list_files_result_fields[] = {
                                     "resolved_path"),
     LONEJSON_FIELD_I64_REQ(cai_list_files_result, entry_count, "entry_count"),
     LONEJSON_FIELD_BOOL_REQ(cai_list_files_result, truncated, "truncated"),
-    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(cai_list_files_result, entries,
-                                           "entries", cai_list_files_entry,
-                                           &cai_list_files_entry_map,
-                                           LONEJSON_OVERFLOW_FAIL)};
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_list_files_result, entries, "entries", cai_list_files_entry,
+        &cai_list_files_entry_map, LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_list_files_result_map, cai_list_files_result,
                     cai_list_files_result_fields);
 
@@ -281,7 +280,8 @@ static int cai_read_join(char *out, size_t out_size, const char *base,
   return CAI_OK;
 }
 
-static int cai_read_fd_realpath(int fd, char **resolved_path, cai_error *error) {
+static int cai_read_fd_realpath(int fd, char **resolved_path,
+                                cai_error *error) {
   char path[PATH_MAX];
 #if defined(__linux__)
   char link_path[64];
@@ -496,13 +496,11 @@ static int cai_read_context_new(const cai_read_tool_config *config,
   workdir = NULL;
   rc = cai_read_realpath_dup(config->root_path, &root, error);
   if (rc == CAI_OK) {
-    if (config->default_workdir != NULL &&
-        config->default_workdir[0] != '\0') {
+    if (config->default_workdir != NULL && config->default_workdir[0] != '\0') {
       rc = cai_read_realpath_dup(config->default_workdir, &workdir, error);
     } else {
-      rc = cai_read_strdup_field(&workdir, root,
-                                 "failed to allocate read default workdir",
-                                 error);
+      rc = cai_read_strdup_field(
+          &workdir, root, "failed to allocate read default workdir", error);
     }
   }
   if (rc == CAI_OK && !cai_read_path_is_under_root(root, workdir)) {
@@ -516,17 +514,15 @@ static int cai_read_context_new(const cai_read_tool_config *config,
     ctx->default_workdir = workdir;
     root = NULL;
     workdir = NULL;
-    ctx->content_memory_limit =
-        config->content_memory_limit != 0U
-            ? config->content_memory_limit
-            : CAI_READ_DEFAULT_CONTENT_MEMORY_LIMIT;
+    ctx->content_memory_limit = config->content_memory_limit != 0U
+                                    ? config->content_memory_limit
+                                    : CAI_READ_DEFAULT_CONTENT_MEMORY_LIMIT;
     ctx->content_max_bytes = config->content_max_bytes != 0U
                                  ? config->content_max_bytes
                                  : CAI_READ_DEFAULT_CONTENT_MAX_BYTES;
-    rc = cai_read_strdup_optional(&ctx->content_spool_dir,
-                                  config->content_spool_dir,
-                                  "failed to allocate read spool directory",
-                                  error);
+    rc = cai_read_strdup_optional(
+        &ctx->content_spool_dir, config->content_spool_dir,
+        "failed to allocate read spool directory", error);
     if (rc == CAI_OK) {
       runtime_config = lonejson_default_config();
       runtime_config.spool_default.memory_limit = ctx->content_memory_limit;
@@ -559,8 +555,7 @@ static int cai_read_append(lonejson_spooled *spool, const char *data,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (spool->append(spool, data, len, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (spool->append(spool, data, len, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool read content",
                                 json_error.message);
@@ -744,9 +739,10 @@ static int cai_read_append_text(lonejson_spooled *spool,
   return cai_read_append(spool, data, len, error);
 }
 
-static size_t cai_read_apply_output_limit(
-    const cai_read_text_validator *validator, const char *data, size_t len,
-    long long written, long long max_bytes, int *truncated, int *stop) {
+static size_t
+cai_read_apply_output_limit(const cai_read_text_validator *validator,
+                            const char *data, size_t len, long long written,
+                            long long max_bytes, int *truncated, int *stop) {
   long long remaining;
   size_t complete;
 
@@ -907,7 +903,8 @@ static int cai_list_add_entry(const cai_read_context *ctx,
                                "failed to allocate list entry name", error);
   }
   if (rc == CAI_OK) {
-    rc = cai_read_strdup_field(&entry->type, cai_list_type_from_mode(st->st_mode),
+    rc = cai_read_strdup_field(&entry->type,
+                               cai_list_type_from_mode(st->st_mode),
                                "failed to allocate list entry type", error);
   }
   if (rc == CAI_OK && S_ISREG(st->st_mode)) {
@@ -967,9 +964,9 @@ static int cai_list_scan_dir(const cai_read_context *ctx,
       if (S_ISLNK(st.st_mode)) {
         continue;
       }
-      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
-                                "failed to resolve list entry",
-                                strerror(errno));
+      rc =
+          cai_set_error_detail(error, CAI_ERR_INVALID,
+                               "failed to resolve list entry", strerror(errno));
       break;
     }
     if (!cai_read_path_is_under_root(ctx->root_path, real_child)) {
@@ -996,9 +993,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
                                 const cai_read_args *args, int fd,
                                 long long opened_file_size,
                                 lonejson_spooled *content,
-                                long long *byte_count,
-                                long long *end_line_out, int *truncated,
-                                long long *file_size, cai_error *error) {
+                                long long *byte_count, long long *end_line_out,
+                                int *truncated, long long *file_size,
+                                cai_error *error) {
   FILE *fp;
   lonejson *runtime;
   char buffer[4096];
@@ -1040,8 +1037,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
   end_line = args->has_end_line ? args->end_line : 0LL;
   if (end_line != 0LL && end_line < start_line) {
     fclose(fp);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "end_line must be greater than or equal to start_line");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "end_line must be greater than or equal to start_line");
   }
   max_bytes = ctx->content_max_bytes;
   if (args->has_max_bytes && args->max_bytes > 0LL) {
@@ -1096,9 +1094,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           *truncated = 1;
           stop = 1;
         } else {
-          len = cai_read_apply_output_limit(&output_validator, line_break, len,
-                                            written, max_bytes, truncated,
-                                            &stop);
+          len =
+              cai_read_apply_output_limit(&output_validator, line_break, len,
+                                          written, max_bytes, truncated, &stop);
           rc = cai_read_append_text(content, &output_validator, line_break, len,
                                     error);
           if (rc != CAI_OK) {
@@ -1137,9 +1135,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
               stop = 1;
               break;
             }
-            len = cai_read_apply_output_limit(
-                &output_validator, buffer + start, len, written, max_bytes,
-                truncated, &stop);
+            len = cai_read_apply_output_limit(&output_validator, buffer + start,
+                                              len, written, max_bytes,
+                                              truncated, &stop);
             rc = cai_read_append_text(content, &output_validator,
                                       buffer + start, len, error);
             if (rc != CAI_OK) {
@@ -1168,8 +1166,8 @@ static int cai_read_stream_file(const cai_read_context *ctx,
             break;
           }
           len = cai_read_apply_output_limit(&output_validator, buffer + start,
-                                            len, written, max_bytes,
-                                            truncated, &stop);
+                                            len, written, max_bytes, truncated,
+                                            &stop);
           rc = cai_read_append_text(content, &output_validator, buffer + start,
                                     len, error);
           if (rc != CAI_OK) {
@@ -1204,9 +1202,9 @@ static int cai_read_stream_file(const cai_read_context *ctx,
           stop = 1;
           break;
         }
-        len = cai_read_apply_output_limit(&output_validator, buffer + start,
-                                          len, written, max_bytes, truncated,
-                                          &stop);
+        len =
+            cai_read_apply_output_limit(&output_validator, buffer + start, len,
+                                        written, max_bytes, truncated, &stop);
         rc = cai_read_append_text(content, &output_validator, buffer + start,
                                   len, error);
         if (rc != CAI_OK) {
@@ -1230,9 +1228,8 @@ static int cai_read_stream_file(const cai_read_context *ctx,
       if (at_limit) {
         *truncated = 1;
       } else {
-        len = cai_read_apply_output_limit(&output_validator, "\r", len,
-                                          written, max_bytes, truncated,
-                                          &stop);
+        len = cai_read_apply_output_limit(&output_validator, "\r", len, written,
+                                          max_bytes, truncated, &stop);
         rc = cai_read_append_text(content, &output_validator, "\r", len, error);
         if (rc == CAI_OK) {
           written += (long long)len;
@@ -1400,8 +1397,9 @@ int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
   }
   name = cai_read_default_string(config != NULL ? config->name : NULL,
                                  CAI_READ_DEFAULT_TOOL_NAME);
-  description = cai_read_default_string(
-      config != NULL ? config->description : NULL, cai_read_default_description);
+  description =
+      cai_read_default_string(config != NULL ? config->description : NULL,
+                              cai_read_default_description);
   rc = cai_tool_registry_register_lonejson_schema_owned(
       registry, name, description, cai_read_schema_json, 0, &cai_read_args_map,
       &cai_read_result_map, cai_read_callback, ctx, cai_read_context_cleanup,
@@ -1427,14 +1425,13 @@ int cai_tool_registry_register_list_files_tool(
   }
   name = cai_read_default_string(config != NULL ? config->name : NULL,
                                  CAI_LIST_FILES_DEFAULT_TOOL_NAME);
-  description = cai_read_default_string(
-      config != NULL ? config->description : NULL,
-      cai_list_files_default_description);
+  description =
+      cai_read_default_string(config != NULL ? config->description : NULL,
+                              cai_list_files_default_description);
   rc = cai_tool_registry_register_lonejson_schema_owned(
       registry, name, description, cai_list_files_schema_json, 0,
-      &cai_list_files_args_map,
-      &cai_list_files_result_map, cai_list_files_callback, ctx,
-      cai_read_context_cleanup, error);
+      &cai_list_files_args_map, &cai_list_files_result_map,
+      cai_list_files_callback, ctx, cai_read_context_cleanup, error);
   if (rc != CAI_OK) {
     cai_read_context_cleanup(ctx);
   }

@@ -47,8 +47,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 int luaopen_cai(lua_State *L);
 static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
 static int cai_lua_set_error_detail(cai_error *error, int code,
-                                    const char *message,
-                                    const char *detail);
+                                    const char *message, const char *detail);
 static int cai_lua_spooled_init(lonejson_spooled *out, cai_error *error);
 
 typedef struct cai_lua_tool_ref cai_lua_tool_ref;
@@ -644,8 +643,8 @@ cai_lua_push_conversation_params(lua_State *L,
   lua_setmetatable(L, -2);
 }
 
-static lonejson_status cai_lua_lonejson_spool_sink(void *user,
-                                                   const void *data, size_t len,
+static lonejson_status cai_lua_lonejson_spool_sink(void *user, const void *data,
+                                                   size_t len,
                                                    lonejson_error *error) {
   lonejson_spooled *spool;
 
@@ -653,7 +652,8 @@ static lonejson_status cai_lua_lonejson_spool_sink(void *user,
   return spool->append(spool, data, len, error);
 }
 
-static int cai_lua_push_spool_reader(lua_State *L, const lonejson_spooled *spool,
+static int cai_lua_push_spool_reader(lua_State *L,
+                                     const lonejson_spooled *spool,
                                      cai_error *error) {
   cai_lua_spool_reader *ud;
   lonejson_error json_error;
@@ -848,8 +848,7 @@ static int cai_lua_spooled_append_sink(void *context, const void *bytes,
     return CAI_OK;
   }
   lonejson_error_init(&json_error);
-  if (spool->append(spool, bytes, count, &json_error) ==
-      LONEJSON_STATUS_OK) {
+  if (spool->append(spool, bytes, count, &json_error) == LONEJSON_STATUS_OK) {
     return CAI_OK;
   }
   return cai_lua_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -885,8 +884,7 @@ static int cai_lua_spool_from_stack(lua_State *L, int index,
   if (lua_type(L, index) == LUA_TSTRING) {
     text = lua_tolstring(L, index, &len);
     lonejson_error_init(&json_error);
-    if (out->append(out, text, len, &json_error) !=
-        LONEJSON_STATUS_OK) {
+    if (out->append(out, text, len, &json_error) != LONEJSON_STATUS_OK) {
       cai_sink_close(sink);
       out->cleanup(out);
       return cai_lua_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -985,9 +983,8 @@ static int cai_lua_call_chunk_source(cai_lua_source_ctx *ctx,
     detail = lua_tostring(ctx->L, -1);
     ctx->done = 1;
     lua_pop(ctx->L, 1);
-    (void)cai_lua_set_error_detail(error, CAI_ERR_INVALID,
-                                   "failed to read Lua source function",
-                                   detail);
+    (void)cai_lua_set_error_detail(
+        error, CAI_ERR_INVALID, "failed to read Lua source function", detail);
     return -1;
   }
   if (lua_isnil(ctx->L, -1)) {
@@ -1221,11 +1218,11 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
       L, index, "reasoning_summary", config->reasoning_summary);
   config->max_output_tokens = cai_lua_opt_int_field(
       L, index, "max_output_tokens", config->max_output_tokens);
-  config->max_tool_calls = cai_lua_opt_int_field(
-      L, index, "max_tool_calls", config->max_tool_calls);
-  config->disable_parallel_tool_calls = cai_lua_opt_int_field(
-      L, index, "disable_parallel_tool_calls",
-      config->disable_parallel_tool_calls);
+  config->max_tool_calls =
+      cai_lua_opt_int_field(L, index, "max_tool_calls", config->max_tool_calls);
+  config->disable_parallel_tool_calls =
+      cai_lua_opt_int_field(L, index, "disable_parallel_tool_calls",
+                            config->disable_parallel_tool_calls);
   config->session_continuity = cai_lua_opt_int_field(
       L, index, "session_continuity", config->session_continuity);
   config->disable_auto_compaction = cai_lua_opt_int_field(
@@ -1912,7 +1909,8 @@ static int cai_lua_tool_event_trampoline(void *context,
   if (event->arguments_json_spooled != NULL) {
     lua_pushinteger(ctx->L, (lua_Integer)event->arguments_json_spooled->size);
     lua_setfield(ctx->L, -2, "arguments_size");
-    rc = cai_lua_push_spool_reader(ctx->L, event->arguments_json_spooled, error);
+    rc =
+        cai_lua_push_spool_reader(ctx->L, event->arguments_json_spooled, error);
     if (rc != CAI_OK) {
       lua_pop(ctx->L, 2);
       ctx->current_event = NULL;
@@ -2142,9 +2140,10 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
   return CAI_OK;
 }
 
-static int cai_lua_stream_output_item_done(
-    void *context, const char *item_id, int output_index, const char *type,
-    const lonejson_spooled *item_json, cai_error *error) {
+static int cai_lua_stream_output_item_done(void *context, const char *item_id,
+                                           int output_index, const char *type,
+                                           const lonejson_spooled *item_json,
+                                           cai_error *error) {
   cai_lua_function_call_ctx *ctx;
   int rc;
 
@@ -2407,8 +2406,8 @@ static int cai_lua_agent_add_hosted_tool_json(lua_State *L) {
   int rc;
   self = cai_lua_check_agent(L, 1);
   cai_error_init(&error);
-  rc = cai_agent_add_hosted_tool_json(self->ptr, luaL_checkstring(L, 2),
-                                      &error);
+  rc =
+      cai_agent_add_hosted_tool_json(self->ptr, luaL_checkstring(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -3608,8 +3607,7 @@ static int cai_lua_spool_reader_rewind(lua_State *L) {
   lonejson_error json_error;
   self = cai_lua_check_spool_reader(L, 1);
   lonejson_error_init(&json_error);
-  if (self->cursor.rewind(&self->cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (self->cursor.rewind(&self->cursor, &json_error) != LONEJSON_STATUS_OK) {
     lua_pushnil(L);
     lua_pushstring(L, json_error.message);
     return 2;
@@ -4196,13 +4194,11 @@ static int cai_lua_mcp_new(lua_State *L) {
   config.response_spool_memory_limit = cai_lua_opt_size_field(
       L, 1, "response_spool_memory_limit", config.response_spool_memory_limit);
   config.tool_output_max_bytes =
-      cai_lua_opt_mcp_tool_output_max_bytes(L, 1,
-                                            config.tool_output_max_bytes);
-  config.enable_sessions = cai_lua_opt_int_field(L, 1, "enable_sessions",
-                                                 config.enable_sessions);
-  config.disable_origin_validation =
-      cai_lua_opt_int_field(L, 1, "disable_origin_validation",
-                            config.disable_origin_validation);
+      cai_lua_opt_mcp_tool_output_max_bytes(L, 1, config.tool_output_max_bytes);
+  config.enable_sessions =
+      cai_lua_opt_int_field(L, 1, "enable_sessions", config.enable_sessions);
+  config.disable_origin_validation = cai_lua_opt_int_field(
+      L, 1, "disable_origin_validation", config.disable_origin_validation);
   config.protocol_version = cai_lua_opt_string_field(L, 1, "protocol_version",
                                                      config.protocol_version);
   config.require_protocol_version = cai_lua_opt_int_field(
@@ -5647,8 +5643,7 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("TEXT_VERBOSITY_LOW", CAI_TEXT_VERBOSITY_LOW);
   CAI_LUA_SET_STRING("TEXT_VERBOSITY_MEDIUM", CAI_TEXT_VERBOSITY_MEDIUM);
   CAI_LUA_SET_STRING("TEXT_VERBOSITY_HIGH", CAI_TEXT_VERBOSITY_HIGH);
-  CAI_LUA_SET_STRING("RESPONSE_TRUNCATION_AUTO",
-                     CAI_RESPONSE_TRUNCATION_AUTO);
+  CAI_LUA_SET_STRING("RESPONSE_TRUNCATION_AUTO", CAI_RESPONSE_TRUNCATION_AUTO);
   CAI_LUA_SET_STRING("RESPONSE_TRUNCATION_DISABLED",
                      CAI_RESPONSE_TRUNCATION_DISABLED);
   CAI_LUA_SET_STRING("SERVICE_TIER_AUTO", CAI_SERVICE_TIER_AUTO);
@@ -5658,8 +5653,7 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("HOSTED_TOOL_WEB_SEARCH", CAI_HOSTED_TOOL_WEB_SEARCH);
   CAI_LUA_SET_STRING("HOSTED_TOOL_FILE_SEARCH", CAI_HOSTED_TOOL_FILE_SEARCH);
   CAI_LUA_SET_STRING("HOSTED_TOOL_MCP", CAI_HOSTED_TOOL_MCP);
-  CAI_LUA_SET_STRING("HOSTED_TOOL_COMPUTER_USE",
-                     CAI_HOSTED_TOOL_COMPUTER_USE);
+  CAI_LUA_SET_STRING("HOSTED_TOOL_COMPUTER_USE", CAI_HOSTED_TOOL_COMPUTER_USE);
   CAI_LUA_SET_STRING("HOSTED_TOOL_IMAGE_GENERATION",
                      CAI_HOSTED_TOOL_IMAGE_GENERATION);
   CAI_LUA_SET_STRING("HOSTED_TOOL_CODE_INTERPRETER",

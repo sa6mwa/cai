@@ -22,34 +22,35 @@
 #define CAI_TODO_STATUS_TODO "todo"
 #define CAI_TODO_STATUS_IN_PROCESS "in_process"
 #define CAI_TODO_FOUND_NONE (-9001)
-#define CAI_TODO_INITIAL_STORE "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}"
-#define CAI_TODO_DESCRIPTION_1                                                \
+#define CAI_TODO_INITIAL_STORE                                                 \
+  "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}"
+#define CAI_TODO_DESCRIPTION_1                                                 \
   "Persistent kanban board tool for planning work. Start with operation=help " \
   "when uncertain. A configured default board always exists and is used when "
-#define CAI_TODO_DESCRIPTION_2                                                \
-  "board_id/board_key/board_name are omitted. Use list_boards to discover "   \
+#define CAI_TODO_DESCRIPTION_2                                                 \
+  "board_id/board_key/board_name are omitted. Use list_boards to discover "    \
   "board IDs and keys. add_item creates readable item refs such as DEF-001. "
-#define CAI_TODO_DESCRIPTION_3                                                \
-  "current_work inspects in_process work; move_item moves todo/in_process; "  \
-  "complete_item archives done work; set_wip_limit limits WIP; "              \
+#define CAI_TODO_DESCRIPTION_3                                                 \
+  "current_work inspects in_process work; move_item moves todo/in_process; "   \
+  "complete_item archives done work; set_wip_limit limits WIP; "               \
   "wip_limit_exceeded is a normal structured result."
-#define CAI_TODO_DESCRIPTION                                                  \
+#define CAI_TODO_DESCRIPTION                                                   \
   CAI_TODO_DESCRIPTION_1 CAI_TODO_DESCRIPTION_2 CAI_TODO_DESCRIPTION_3
-#define CAI_TODO_HELP_TEXT_1                                                  \
-  "todo_kanban usage: default board always exists; omit board_id, board_key " \
+#define CAI_TODO_HELP_TEXT_1                                                   \
+  "todo_kanban usage: default board always exists; omit board_id, board_key "  \
   "and board_name to use it. "
-#define CAI_TODO_HELP_TEXT_2                                                  \
-  "list_boards discovers IDs and keys. create_board accepts board_name, "     \
+#define CAI_TODO_HELP_TEXT_2                                                   \
+  "list_boards discovers IDs and keys. create_board accepts board_name, "      \
   "optional unique board_key, and wip_limit. "
-#define CAI_TODO_HELP_TEXT_3                                                  \
-  "add_item assigns item_id like DEF-001; callers cannot set sequence "       \
-  "numbers. Refs accept DEF-001, DEF#1, DEF001, or DEF1. "                   \
+#define CAI_TODO_HELP_TEXT_3                                                   \
+  "add_item assigns item_id like DEF-001; callers cannot set sequence "        \
+  "numbers. Refs accept DEF-001, DEF#1, DEF001, or DEF1. "                     \
   "current_work lists in_process; list_board lists active items. "
-#define CAI_TODO_HELP_TEXT_4                                                  \
-  "move_item/complete_item require item_id. WIP denial is "                   \
+#define CAI_TODO_HELP_TEXT_4                                                   \
+  "move_item/complete_item require item_id. WIP denial is "                    \
   "code=wip_limit_exceeded. Use returned IDs and keys."
-#define CAI_TODO_HELP_TEXT                                                    \
-  CAI_TODO_HELP_TEXT_1 CAI_TODO_HELP_TEXT_2 CAI_TODO_HELP_TEXT_3             \
+#define CAI_TODO_HELP_TEXT                                                     \
+  CAI_TODO_HELP_TEXT_1 CAI_TODO_HELP_TEXT_2 CAI_TODO_HELP_TEXT_3               \
       CAI_TODO_HELP_TEXT_4
 
 typedef struct cai_todo_context {
@@ -272,8 +273,8 @@ static const lonejson_field cai_todo_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_args, description,
                                           "description"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_args, status, "status"),
-    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_todo_args, wip_limit,
-                                        has_wip_limit, "wip_limit")};
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_todo_args, wip_limit, has_wip_limit,
+                                        "wip_limit")};
 LONEJSON_MAP_DEFINE(cai_todo_args_map, cai_todo_args, cai_todo_arg_fields);
 
 static const lonejson_field cai_todo_result_item_fields[] = {
@@ -292,8 +293,8 @@ static const lonejson_field cai_todo_result_board_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_result_board, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_result_board, key, "key"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_result_board, name, "name"),
-    LONEJSON_FIELD_I64_PRESENT(cai_todo_result_board, wip_limit,
-                               has_wip_limit, "wip_limit")};
+    LONEJSON_FIELD_I64_PRESENT(cai_todo_result_board, wip_limit, has_wip_limit,
+                               "wip_limit")};
 LONEJSON_MAP_DEFINE(cai_todo_result_board_map, cai_todo_result_board,
                     cai_todo_result_board_fields);
 
@@ -320,14 +321,12 @@ static const lonejson_field cai_todo_result_fields[] = {
                                "board_count"),
     LONEJSON_FIELD_BOOL_PRESENT(cai_todo_result, truncated, has_truncated,
                                 "truncated"),
-    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(cai_todo_result, items, "items",
-                                           cai_todo_result_item,
-                                           &cai_todo_result_item_map,
-                                           LONEJSON_OVERFLOW_FAIL),
-    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(cai_todo_result, boards, "boards",
-                                           cai_todo_result_board,
-                                           &cai_todo_result_board_map,
-                                           LONEJSON_OVERFLOW_FAIL)};
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_todo_result, items, "items", cai_todo_result_item,
+        &cai_todo_result_item_map, LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_todo_result, boards, "boards", cai_todo_result_board,
+        &cai_todo_result_board_map, LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_todo_result_map, cai_todo_result,
                     cai_todo_result_fields);
 
@@ -335,16 +334,15 @@ static const lonejson_field cai_todo_board_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_board, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(cai_todo_board, key, "key"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_board, name, "name"),
-    LONEJSON_FIELD_I64_PRESENT(cai_todo_board, next_sequence,
-                               has_next_sequence, "next_sequence"),
+    LONEJSON_FIELD_I64_PRESENT(cai_todo_board, next_sequence, has_next_sequence,
+                               "next_sequence"),
     LONEJSON_FIELD_I64_PRESENT(cai_todo_board, wip_limit, has_wip_limit,
                                "wip_limit"),
     LONEJSON_FIELD_I64_PRESENT(cai_todo_board, created_at_unix,
                                has_created_at_unix, "created_at_unix"),
     LONEJSON_FIELD_I64_PRESENT(cai_todo_board, updated_at_unix,
                                has_updated_at_unix, "updated_at_unix")};
-LONEJSON_MAP_DEFINE(cai_todo_board_map, cai_todo_board,
-                    cai_todo_board_fields);
+LONEJSON_MAP_DEFINE(cai_todo_board_map, cai_todo_board, cai_todo_board_fields);
 
 static const lonejson_field cai_todo_item_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_item, id, "id"),
@@ -417,15 +415,14 @@ static int cai_todo_normalize_board_key(const char *input, char *out,
 }
 
 static void cai_todo_default_key_candidate(const char *name, char *out,
-                                           size_t out_size,
-                                           size_t key_length) {
+                                           size_t out_size, size_t key_length) {
   size_t i;
   size_t j;
   unsigned char ch;
 
   j = 0U;
-  for (i = 0U; name != NULL && name[i] != '\0' && j < key_length &&
-              j + 1U < out_size;
+  for (i = 0U;
+       name != NULL && name[i] != '\0' && j < key_length && j + 1U < out_size;
        i++) {
     ch = (unsigned char)name[i];
     if (cai_todo_char_is_alnum(ch)) {
@@ -510,7 +507,8 @@ static int cai_todo_item_ref_matches(const cai_todo_item *item,
   if (item->board_key == NULL || item->board_key[0] == '\0') {
     return 0;
   }
-  stored_sequence = cai_todo_parse_item_sequence(item->item_id, item->board_key);
+  stored_sequence =
+      cai_todo_parse_item_sequence(item->item_id, item->board_key);
   input_sequence = cai_todo_parse_item_sequence(input, item->board_key);
   return stored_sequence > 0LL && input_sequence == stored_sequence;
 }
@@ -766,18 +764,16 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
     cai_todo_context_cleanup(ctx);
     return rc;
   }
-  ctx->max_title_bytes =
-      config != NULL && config->max_title_bytes != 0U
-          ? config->max_title_bytes
-          : 4096U;
+  ctx->max_title_bytes = config != NULL && config->max_title_bytes != 0U
+                             ? config->max_title_bytes
+                             : 4096U;
   ctx->max_description_bytes =
       config != NULL && config->max_description_bytes != 0U
           ? config->max_description_bytes
           : 128U * 1024U;
-  ctx->max_result_items =
-      config != NULL && config->max_result_items != 0U
-          ? config->max_result_items
-          : 100U;
+  ctx->max_result_items = config != NULL && config->max_result_items != 0U
+                              ? config->max_result_items
+                              : 100U;
   *out = ctx;
   return CAI_OK;
 }
@@ -854,9 +850,8 @@ static int cai_todo_commit_temp(const char *tmp_path, const char *target_path,
   return CAI_OK;
 }
 
-static lonejson_read_result cai_todo_file_read(void *user,
-                                               unsigned char *buffer,
-                                               size_t capacity) {
+static lonejson_read_result
+cai_todo_file_read(void *user, unsigned char *buffer, size_t capacity) {
   FILE *fp;
   lonejson_read_result result;
 
@@ -877,8 +872,7 @@ static lonejson_read_result cai_todo_file_read(void *user,
 }
 
 static lonejson_status cai_todo_file_write(void *user, const void *data,
-                                           size_t len,
-                                           lonejson_error *error) {
+                                           size_t len, lonejson_error *error) {
   FILE *fp;
 
   fp = (FILE *)user;
@@ -1010,9 +1004,9 @@ static int cai_todo_file_store_open_write(void *context, void *transaction,
   }
   txn->write_fp = fopen(txn->write_path, "wb");
   if (txn->write_fp == NULL) {
-    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                              "failed to open todo temp store",
-                              txn->write_path);
+    rc =
+        cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                             "failed to open todo temp store", txn->write_path);
     cai_free_mem(NULL, txn->write_path);
     txn->write_path = NULL;
     return rc;
@@ -1194,9 +1188,8 @@ static int cai_todo_spool_string(lonejson_spooled *spool, const char *value,
   lonejson_error_init(&json_error);
   spool->cleanup(spool);
   CAI_LJ->spooled_init(CAI_LJ, spool);
-  if (value != NULL &&
-      spool->append(spool, value, strlen(value), &json_error) !=
-          LONEJSON_STATUS_OK) {
+  if (value != NULL && spool->append(spool, value, strlen(value),
+                                     &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to spool todo string",
                                 json_error.message);
@@ -1206,20 +1199,19 @@ static int cai_todo_spool_string(lonejson_spooled *spool, const char *value,
 
 static lonejson_status cai_todo_spool_sink(void *user, const void *data,
                                            size_t len, lonejson_error *error) {
-  return ((lonejson_spooled *)user)->append((lonejson_spooled *)user, data, len,
-                                            error);
+  return ((lonejson_spooled *)user)
+      ->append((lonejson_spooled *)user, data, len, error);
 }
 
 static int cai_todo_spool_clone(lonejson_spooled *dst,
-                                const lonejson_spooled *src,
-                                cai_error *error) {
+                                const lonejson_spooled *src, cai_error *error) {
   lonejson_error json_error;
 
   dst->cleanup(dst);
   CAI_LJ->spooled_init(CAI_LJ, dst);
   lonejson_error_init(&json_error);
-  if (src->write_to_sink(src, cai_todo_spool_sink, dst,
-                         &json_error) != LONEJSON_STATUS_OK) {
+  if (src->write_to_sink(src, cai_todo_spool_sink, dst, &json_error) !=
+      LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to clone todo spooled field",
                                 json_error.message);
@@ -1256,8 +1248,7 @@ static int cai_todo_spool_to_string(const lonejson_spooled *spool,
   }
   offset = 0U;
   while (offset < size) {
-    chunk = cursor.read(&cursor, (unsigned char *)data + offset,
-                                  size - offset);
+    chunk = cursor.read(&cursor, (unsigned char *)data + offset, size - offset);
     if (chunk.error_code != 0) {
       cai_free_mem(NULL, data);
       return cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -1376,8 +1367,8 @@ static void cai_todo_board_parse_cleanup(cai_todo_board *board) {
 
 static int cai_todo_add_result_item(cai_todo_result *result,
                                     const cai_todo_item *record,
-                                    const char *board_name,
-                                    size_t max_items, cai_error *error) {
+                                    const char *board_name, size_t max_items,
+                                    cai_error *error) {
   cai_todo_result_item *item;
   int rc;
 
@@ -1392,27 +1383,23 @@ static int cai_todo_add_result_item(cai_todo_result *result,
   }
   item = (cai_todo_result_item *)result->items.items + result->items.count;
   memset(item, 0, sizeof(*item));
-  rc = cai_todo_copy_string(&item->id,
-                            record->item_id != NULL ? record->item_id
-                                                    : record->id,
-                            error);
+  rc = cai_todo_copy_string(
+      &item->id, record->item_id != NULL ? record->item_id : record->id, error);
   if (rc == CAI_OK) {
     rc = cai_todo_copy_string(&item->board_id, record->board_id, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&item->board_key,
-                              record->board_key != NULL ? record->board_key
-                                                        : "",
-                              error);
+    rc = cai_todo_copy_string(
+        &item->board_key, record->board_key != NULL ? record->board_key : "",
+        error);
   }
   if (rc == CAI_OK) {
     rc = cai_todo_copy_string(&item->board_name,
                               board_name != NULL ? board_name : "", error);
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&item->status,
-                              record->status != NULL ? record->status : "",
-                              error);
+    rc = cai_todo_copy_string(
+        &item->status, record->status != NULL ? record->status : "", error);
   }
   if (rc == CAI_OK) {
     rc = cai_todo_spool_to_string(&record->title, 4096U, &item->title, error);
@@ -1438,8 +1425,8 @@ static int cai_todo_add_result_board(cai_todo_result *result,
   if (rc != CAI_OK) {
     return rc;
   }
-  result_board = (cai_todo_result_board *)result->boards.items +
-                 result->boards.count;
+  result_board =
+      (cai_todo_result_board *)result->boards.items + result->boards.count;
   memset(result_board, 0, sizeof(*result_board));
   rc = cai_todo_copy_string(&result_board->id, board->id, error);
   if (rc == CAI_OK) {
@@ -1493,17 +1480,15 @@ static int cai_todo_copy_item(cai_todo_item *dst, const cai_todo_item *src,
   cai_todo_item_init(dst);
   rc = cai_todo_copy_string(&dst->id, src->id, error);
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&dst->item_id,
-                              src->item_id != NULL ? src->item_id : src->id,
-                              error);
+    rc = cai_todo_copy_string(
+        &dst->item_id, src->item_id != NULL ? src->item_id : src->id, error);
   }
   if (rc == CAI_OK) {
     rc = cai_todo_copy_string(&dst->board_id, src->board_id, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_todo_copy_string(&dst->board_key,
-                              src->board_key != NULL ? src->board_key : "",
-                              error);
+    rc = cai_todo_copy_string(
+        &dst->board_key, src->board_key != NULL ? src->board_key : "", error);
   }
   if (rc == CAI_OK) {
     rc = cai_todo_copy_string(&dst->board_name, src->board_name, error);
@@ -1590,11 +1575,10 @@ static int cai_todo_stream_boards(const cai_todo_context *ctx, void *txn,
     if (result == LONEJSON_ARRAY_STREAM_EOF) {
       break;
     }
-    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                              "failed to parse todo boards",
-                              stream->error.message[0] != '\0'
-                                  ? stream->error.message
-                                  : json_error.message);
+    rc = cai_set_error_detail(
+        error, CAI_ERR_PROTOCOL, "failed to parse todo boards",
+        stream->error.message[0] != '\0' ? stream->error.message
+                                         : json_error.message);
     break;
   }
   stream->close(stream);
@@ -1611,8 +1595,8 @@ static int cai_todo_stream_boards(const cai_todo_context *ctx, void *txn,
   return rc;
 }
 
-static int cai_todo_stream_items_path(const cai_todo_context *ctx,
-                                      void *txn, const char *path,
+static int cai_todo_stream_items_path(const cai_todo_context *ctx, void *txn,
+                                      const char *path,
                                       lonejson_array_stream_item_fn callback,
                                       void *user, cai_error *error) {
   lonejson_array_stream *stream;
@@ -1676,11 +1660,10 @@ static int cai_todo_stream_items_path(const cai_todo_context *ctx,
     if (result == LONEJSON_ARRAY_STREAM_EOF) {
       break;
     }
-    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                              "failed to parse todo items",
-                              stream->error.message[0] != '\0'
-                                  ? stream->error.message
-                                  : json_error.message);
+    rc = cai_set_error_detail(
+        error, CAI_ERR_PROTOCOL, "failed to parse todo items",
+        stream->error.message[0] != '\0' ? stream->error.message
+                                         : json_error.message);
     break;
   }
   stream->close(stream);
@@ -1724,8 +1707,7 @@ static lonejson_status cai_todo_find_board_cb(void *user, void *dst) {
 }
 
 static int cai_todo_find_board(cai_todo_context *ctx, void *txn,
-                               const char *board_id,
-                               const char *board_key,
+                               const char *board_id, const char *board_key,
                                const char *board_name, cai_todo_board *out,
                                long long *in_process, long long *items,
                                cai_error *error);
@@ -1746,8 +1728,7 @@ static lonejson_status cai_todo_count_items_cb(void *user, void *dst) {
 }
 
 static int cai_todo_find_board(cai_todo_context *ctx, void *txn,
-                               const char *board_id,
-                               const char *board_key,
+                               const char *board_id, const char *board_key,
                                const char *board_name, cai_todo_board *out,
                                long long *in_process, long long *items,
                                cai_error *error) {
@@ -1855,8 +1836,8 @@ static int cai_todo_board_key_exists(const cai_todo_context *ctx, void *txn,
 static int cai_todo_generate_board_key(const cai_todo_context *ctx, void *txn,
                                        const char *name,
                                        const char *requested_key,
-                                       const char *allow_board_id,
-                                       char out[16], cai_error *error) {
+                                       const char *allow_board_id, char out[16],
+                                       cai_error *error) {
   char candidate[16];
   size_t key_len;
   int exists;
@@ -1873,8 +1854,8 @@ static int cai_todo_generate_board_key(const cai_todo_context *ctx, void *txn,
       return cai_set_error(error, CAI_ERR_INVALID,
                            "board_key DEF is reserved for the default board");
     }
-    exists = cai_todo_board_key_exists(ctx, txn, candidate, allow_board_id,
-                                       error);
+    exists =
+        cai_todo_board_key_exists(ctx, txn, candidate, allow_board_id, error);
     if (exists != 0) {
       return exists > 0 ? cai_set_error(error, CAI_ERR_INVALID,
                                         "board_key must be unique")
@@ -1884,14 +1865,13 @@ static int cai_todo_generate_board_key(const cai_todo_context *ctx, void *txn,
     return CAI_OK;
   }
   for (key_len = 3U; key_len < sizeof(candidate) - 1U; key_len++) {
-    cai_todo_default_key_candidate(name, candidate, sizeof(candidate),
-                                   key_len);
+    cai_todo_default_key_candidate(name, candidate, sizeof(candidate), key_len);
     if (cai_todo_streq(candidate, "DEF") &&
         !cai_todo_streq(name, ctx->default_board)) {
       continue;
     }
-    exists = cai_todo_board_key_exists(ctx, txn, candidate, allow_board_id,
-                                       error);
+    exists =
+        cai_todo_board_key_exists(ctx, txn, candidate, allow_board_id, error);
     if (exists == 0) {
       strcpy(out, candidate);
       return CAI_OK;
@@ -1920,8 +1900,7 @@ static int cai_todo_generate_board_key(const cai_todo_context *ctx, void *txn,
 
 static int cai_todo_next_item_sequence(const cai_todo_context *ctx, void *txn,
                                        const cai_todo_board *board,
-                                       long long *sequence,
-                                       cai_error *error) {
+                                       long long *sequence, cai_error *error) {
   cai_todo_sequence_state state;
   int rc;
 
@@ -1958,8 +1937,8 @@ static int cai_todo_id_exists(const cai_todo_context *ctx, void *txn,
   if (rc != CAI_OK || state.found) {
     return rc == CAI_OK ? 1 : rc;
   }
-  rc = cai_todo_stream_items_path(ctx, txn, "items", cai_todo_id_item_cb, &state,
-                                  error);
+  rc = cai_todo_stream_items_path(ctx, txn, "items", cai_todo_id_item_cb,
+                                  &state, error);
   if (rc != CAI_OK || state.found) {
     return rc == CAI_OK ? 1 : rc;
   }
@@ -2107,18 +2086,17 @@ static lonejson_status cai_todo_update_board_cb(
     void *user, const lonejson_array_rewrite_context *context, void *item,
     lonejson_array_rewrite_result *result, lonejson_error *error);
 
-static int cai_todo_rewrite_items_board_key(cai_todo_context *ctx, void *txn,
-                                            const char *path,
-                                            const char *board_id,
-                                            const char *old_key,
-                                            const char *new_key,
-                                            long long *next_sequence,
-                                            cai_error *error);
+static int
+cai_todo_rewrite_items_board_key(cai_todo_context *ctx, void *txn,
+                                 const char *path, const char *board_id,
+                                 const char *old_key, const char *new_key,
+                                 long long *next_sequence, cai_error *error);
 
-static lonejson_status cai_todo_append_board_cb(
-    void *user, const lonejson_array_rewrite_context *context,
-    lonejson_array_rewrite_emit_fn emit, void *emit_user,
-    lonejson_error *error) {
+static lonejson_status
+cai_todo_append_board_cb(void *user,
+                         const lonejson_array_rewrite_context *context,
+                         lonejson_array_rewrite_emit_fn emit, void *emit_user,
+                         lonejson_error *error) {
   cai_todo_rewrite_state *state;
   lonejson_array_rewrite_source source;
 
@@ -2147,8 +2125,8 @@ static int cai_todo_ensure_board(cai_todo_context *ctx, void *txn,
                                  const char *name, cai_todo_board *out,
                                  long long *in_process, long long *items,
                                  long long wip_limit, int has_wip_limit,
-                                 const char *requested_key,
-                                 int *created, cai_error *error) {
+                                 const char *requested_key, int *created,
+                                 cai_error *error) {
   cai_todo_rewrite_state state;
   lonejson_array_rewrite_options options;
   char id[32];
@@ -2170,17 +2148,14 @@ static int cai_todo_ensure_board(cai_todo_context *ctx, void *txn,
         out->id, key, error);
   }
   if (rc == CAI_OK && (out->key == NULL || out->key[0] == '\0')) {
-    next_sequence =
-        out->has_next_sequence && out->next_sequence > 0
-            ? out->next_sequence
-            : 1LL;
-    rc = cai_todo_rewrite_items_board_key(ctx, txn, "items", out->id,
-                                          out->key, key, &next_sequence,
-                                          error);
+    next_sequence = out->has_next_sequence && out->next_sequence > 0
+                        ? out->next_sequence
+                        : 1LL;
+    rc = cai_todo_rewrite_items_board_key(ctx, txn, "items", out->id, out->key,
+                                          key, &next_sequence, error);
     if (rc == CAI_OK) {
-      rc = cai_todo_rewrite_items_board_key(ctx, txn, "done", out->id,
-                                            out->key, key, &next_sequence,
-                                            error);
+      rc = cai_todo_rewrite_items_board_key(ctx, txn, "done", out->id, out->key,
+                                            key, &next_sequence, error);
     }
   }
   if (rc == CAI_OK && (out->key == NULL || out->key[0] == '\0')) {
@@ -2263,9 +2238,9 @@ static int cai_todo_ensure_default_board_committed(cai_todo_context *ctx,
   txn = NULL;
   rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc == CAI_OK) {
-    rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &board,
-                               &in_process, &items, -1, 0, NULL, &created,
-                               error);
+    rc =
+        cai_todo_ensure_board(ctx, txn, ctx->default_board, &board, &in_process,
+                              &items, -1, 0, NULL, &created, error);
   }
   if (rc == CAI_OK) {
     rc = cai_todo_store_commit(ctx, txn, error);
@@ -2284,8 +2259,7 @@ static lonejson_status cai_todo_missing_board_key_cb(void *user, void *dst) {
 
   state = (cai_todo_missing_board_key_state *)user;
   board = (cai_todo_board *)dst;
-  if (state->found ||
-      (board->key != NULL && board->key[0] != '\0') ||
+  if (state->found || (board->key != NULL && board->key[0] != '\0') ||
       board->name == NULL || board->name[0] == '\0') {
     return LONEJSON_STATUS_OK;
   }
@@ -2353,10 +2327,11 @@ static int cai_todo_backfill_board_keys(cai_todo_context *ctx,
                        "too many todo boards require key migration");
 }
 
-static lonejson_status cai_todo_append_item_cb(
-    void *user, const lonejson_array_rewrite_context *context,
-    lonejson_array_rewrite_emit_fn emit, void *emit_user,
-    lonejson_error *error) {
+static lonejson_status
+cai_todo_append_item_cb(void *user,
+                        const lonejson_array_rewrite_context *context,
+                        lonejson_array_rewrite_emit_fn emit, void *emit_user,
+                        lonejson_error *error) {
   cai_todo_rewrite_state *state;
   lonejson_array_rewrite_source source;
 
@@ -2368,10 +2343,11 @@ static lonejson_status cai_todo_append_item_cb(
   return emit(emit_user, &source, error);
 }
 
-static lonejson_status cai_todo_append_done_cb(
-    void *user, const lonejson_array_rewrite_context *context,
-    lonejson_array_rewrite_emit_fn emit, void *emit_user,
-    lonejson_error *error) {
+static lonejson_status
+cai_todo_append_done_cb(void *user,
+                        const lonejson_array_rewrite_context *context,
+                        lonejson_array_rewrite_emit_fn emit, void *emit_user,
+                        lonejson_error *error) {
   cai_todo_rewrite_state *state;
   lonejson_array_rewrite_source source;
 
@@ -2402,15 +2378,13 @@ static lonejson_status cai_todo_update_board_cb(
        state->args->board_key != NULL && state->args->board_key[0] != '\0' &&
        cai_todo_streq(board->key, state->args->board_key)) ||
       ((state->args->board_id == NULL || state->args->board_id[0] == '\0') &&
-       (state->args->board_key == NULL ||
-        state->args->board_key[0] == '\0') &&
+       (state->args->board_key == NULL || state->args->board_key[0] == '\0') &&
        cai_todo_streq(board->name,
                       cai_todo_arg_string(state->args->board_name,
                                           state->ctx->default_board)))) {
     state->found = 1;
     cai_todo_board_init(&state->replacement_board);
-    if (cai_todo_copy_board(&state->replacement_board, board, NULL) !=
-        CAI_OK) {
+    if (cai_todo_copy_board(&state->replacement_board, board, NULL) != CAI_OK) {
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
     if (state->new_board_key != NULL && state->new_board_key[0] != '\0') {
@@ -2441,9 +2415,10 @@ static lonejson_status cai_todo_update_board_cb(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_todo_move_item_cb(
-    void *user, const lonejson_array_rewrite_context *context, void *item,
-    lonejson_array_rewrite_result *result, lonejson_error *error) {
+static lonejson_status
+cai_todo_move_item_cb(void *user, const lonejson_array_rewrite_context *context,
+                      void *item, lonejson_array_rewrite_result *result,
+                      lonejson_error *error) {
   cai_todo_rewrite_state *state;
   cai_todo_item *src;
 
@@ -2480,8 +2455,7 @@ static lonejson_status cai_todo_move_item_cb(
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
     if (cai_todo_replace_string(&state->replacement_item.status,
-                                state->new_status, NULL) !=
-        CAI_OK) {
+                                state->new_status, NULL) != CAI_OK) {
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
     state->replacement_item.updated_at_unix = state->now_unix;
@@ -2543,13 +2517,11 @@ static lonejson_status cai_todo_update_item_board_key_cb(
   return LONEJSON_STATUS_OK;
 }
 
-static int cai_todo_rewrite_items_board_key(cai_todo_context *ctx, void *txn,
-                                            const char *path,
-                                            const char *board_id,
-                                            const char *old_key,
-                                            const char *new_key,
-                                            long long *next_sequence,
-                                            cai_error *error) {
+static int
+cai_todo_rewrite_items_board_key(cai_todo_context *ctx, void *txn,
+                                 const char *path, const char *board_id,
+                                 const char *old_key, const char *new_key,
+                                 long long *next_sequence, cai_error *error) {
   cai_todo_rewrite_state state;
   lonejson_array_rewrite_options options;
   int rc;
@@ -2611,13 +2583,12 @@ static int cai_todo_create_board(cai_todo_context *ctx,
   name = args->board_name != NULL && args->board_name[0] != '\0'
              ? args->board_name
              : NULL;
-  targeted = (args->board_id != NULL && args->board_id[0] != '\0') ||
-             (name == NULL && args->board_key != NULL &&
-              args->board_key[0] != '\0');
+  targeted =
+      (args->board_id != NULL && args->board_id[0] != '\0') ||
+      (name == NULL && args->board_key != NULL && args->board_key[0] != '\0');
   if (rc == CAI_OK && targeted) {
     rc = cai_todo_find_board(ctx, txn, args->board_id,
-                             args->board_id != NULL &&
-                                     args->board_id[0] != '\0'
+                             args->board_id != NULL && args->board_id[0] != '\0'
                                  ? NULL
                                  : args->board_key,
                              NULL, &board, &in_process, &items, error);
@@ -2635,8 +2606,7 @@ static int cai_todo_create_board(cai_todo_context *ctx,
                                args->board_key, &created, error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok) && !created &&
-      args->board_key != NULL &&
-      args->board_key[0] != '\0') {
+      args->board_key != NULL && args->board_key[0] != '\0') {
     if ((args->board_id != NULL && args->board_id[0] != '\0') || !targeted) {
       rc = cai_todo_generate_board_key(ctx, txn, name, args->board_key,
                                        board.id, new_key, error);
@@ -2648,18 +2618,17 @@ static int cai_todo_create_board(cai_todo_context *ctx,
   if (rc == CAI_OK && !(result->has_ok && !result->ok) && !created &&
       (args->has_wip_limit || has_new_key)) {
     if (has_new_key) {
-      rc = cai_todo_next_item_sequence(ctx, txn, &board, &next_sequence,
-                                       error);
+      rc = cai_todo_next_item_sequence(ctx, txn, &board, &next_sequence, error);
     }
     if (rc == CAI_OK && has_new_key) {
       rc = cai_todo_rewrite_items_board_key(ctx, txn, "items", board.id,
-                                            board.key, new_key,
-                                            &next_sequence, error);
+                                            board.key, new_key, &next_sequence,
+                                            error);
     }
     if (rc == CAI_OK && has_new_key) {
       rc = cai_todo_rewrite_items_board_key(ctx, txn, "done", board.id,
-                                            board.key, new_key,
-                                            &next_sequence, error);
+                                            board.key, new_key, &next_sequence,
+                                            error);
     }
     if (rc == CAI_OK) {
       update_args = *args;
@@ -2695,8 +2664,7 @@ static int cai_todo_create_board(cai_todo_context *ctx,
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     rc = cai_todo_set_result(result, args->operation, 1, "ok",
-                             created ? "board created"
-                                     : "board already exists",
+                             created ? "board created" : "board already exists",
                              error);
   }
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
@@ -2709,8 +2677,8 @@ static int cai_todo_create_board(cai_todo_context *ctx,
   if (rc == CAI_OK && !(result->has_ok && !result->ok)) {
     rc = cai_todo_copy_string(&result->board_name, name, error);
   }
-  if (rc == CAI_OK && !(result->has_ok && !result->ok) &&
-      board.has_wip_limit && board.wip_limit >= 0) {
+  if (rc == CAI_OK && !(result->has_ok && !result->ok) && board.has_wip_limit &&
+      board.wip_limit >= 0) {
     result->wip_limit = board.wip_limit;
     result->has_wip_limit = 1;
   }
@@ -2774,10 +2742,10 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
     rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &board,
                                &in_process, &items, -1, 0, NULL, NULL, error);
   } else {
-    rc = cai_todo_find_board(ctx, txn, args->board_id, args->board_key,
-                             cai_todo_arg_string(args->board_name,
-                                                 ctx->default_board),
-                             &board, &in_process, &items, error);
+    rc = cai_todo_find_board(
+        ctx, txn, args->board_id, args->board_key,
+        cai_todo_arg_string(args->board_name, ctx->default_board), &board,
+        &in_process, &items, error);
   }
   if (rc == CAI_TODO_FOUND_NONE) {
     rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
@@ -2888,9 +2856,8 @@ static lonejson_status cai_todo_list_item_cb(void *user, void *dst) {
   if (cai_todo_streq(item->board_id, state->board_id) &&
       (!state->only_current ||
        cai_todo_streq(item->status, CAI_TODO_STATUS_IN_PROCESS))) {
-    state->rc = cai_todo_add_result_item(state->result, item,
-                                         state->board_name, state->max_items,
-                                         state->error);
+    state->rc = cai_todo_add_result_item(state->result, item, state->board_name,
+                                         state->max_items, state->error);
     if (state->rc != CAI_OK) {
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
@@ -2921,10 +2888,10 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(ctx, NULL, args->board_id, args->board_key,
-                           cai_todo_arg_string(args->board_name,
-                                               ctx->default_board),
-                           &board, &in_process, &items, error);
+  rc = cai_todo_find_board(
+      ctx, NULL, args->board_id, args->board_key,
+      cai_todo_arg_string(args->board_name, ctx->default_board), &board,
+      &in_process, &items, error);
   if (rc == CAI_TODO_FOUND_NONE) {
     cai_todo_board_cleanup(&board);
     return cai_todo_set_result(result, args->operation, 0, "board_not_found",
@@ -3053,10 +3020,10 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
     rc = cai_todo_ensure_board(ctx, txn, ctx->default_board, &board,
                                &in_process, &items, -1, 0, NULL, NULL, error);
   } else {
-    rc = cai_todo_find_board(ctx, txn, args->board_id, args->board_key,
-                             cai_todo_arg_string(args->board_name,
-                                                 ctx->default_board),
-                             &board, &in_process, &items, error);
+    rc = cai_todo_find_board(
+        ctx, txn, args->board_id, args->board_key,
+        cai_todo_arg_string(args->board_name, ctx->default_board), &board,
+        &in_process, &items, error);
   }
   if (rc == CAI_TODO_FOUND_NONE) {
     rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
@@ -3099,8 +3066,7 @@ static int cai_todo_rewrite_move(cai_todo_context *ctx,
   }
   if (rc == CAI_OK && state.found) {
     rc = cai_todo_set_result(result, args->operation, 1, "ok",
-                             complete ? "item completed" : "item moved",
-                             error);
+                             complete ? "item completed" : "item moved", error);
   }
   if (rc == CAI_OK && state.found) {
     rc = cai_todo_copy_string(
@@ -3204,8 +3170,8 @@ static int cai_todo_help(const cai_todo_args *args, cai_todo_result *result,
                          cai_error *error) {
   int rc;
 
-  rc = cai_todo_set_result(result, args->operation, 1, "ok",
-                           CAI_TODO_HELP_TEXT, error);
+  rc = cai_todo_set_result(result, args->operation, 1, "ok", CAI_TODO_HELP_TEXT,
+                           error);
   if (rc == CAI_OK) {
     result->item_count = 0;
     result->has_item_count = 1;
@@ -3215,9 +3181,8 @@ static int cai_todo_help(const cai_todo_args *args, cai_todo_result *result,
 
 static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
   static const char *const operations[] = {
-      "help",        "create_board", "list_boards",  "set_wip_limit",
-      "add_item",    "list_board",   "current_work", "move_item",
-      "complete_item"};
+      "help",       "create_board", "list_boards", "set_wip_limit", "add_item",
+      "list_board", "current_work", "move_item",   "complete_item"};
   cai_tool_schema *schema;
   int rc;
 
@@ -3383,8 +3348,8 @@ int cai_tool_registry_register_todo_tool(cai_tool_registry *registry,
   }
   name = cai_todo_arg_string(config != NULL ? config->name : NULL,
                              CAI_TODO_DEFAULT_TOOL_NAME);
-  description = cai_todo_arg_string(
-      config != NULL ? config->description : NULL, CAI_TODO_DESCRIPTION);
+  description = cai_todo_arg_string(config != NULL ? config->description : NULL,
+                                    CAI_TODO_DESCRIPTION);
   schema = NULL;
   rc = cai_todo_schema_new(&schema, error);
   if (rc == CAI_OK) {

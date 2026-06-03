@@ -2,30 +2,36 @@
 
 #include <string.h>
 
-#define CAI_MODEL_CAP_TEXT                                                    \
-  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                        \
+#define CAI_MODEL_CAP_TEXT                                                     \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                         \
    CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_STRUCTURED_OUTPUTS)
-#define CAI_MODEL_CAP_TEXT_IMAGE                                             \
+#define CAI_MODEL_CAP_TEXT_IMAGE                                               \
   (CAI_MODEL_CAP_TEXT | CAI_MODEL_CAP_IMAGE_INPUT)
-#define CAI_MODEL_CAP_TEXT_REALTIME                                          \
+#define CAI_MODEL_CAP_TEXT_REALTIME                                            \
   (CAI_MODEL_CAP_TEXT_IMAGE | CAI_MODEL_CAP_REALTIME)
-#define CAI_MODEL_CAP_TEXT_AUDIO                                             \
-  (CAI_MODEL_CAP_TEXT_REALTIME | CAI_MODEL_CAP_AUDIO_INPUT |                  \
+#define CAI_MODEL_CAP_TEXT_AUDIO                                               \
+  (CAI_MODEL_CAP_TEXT_REALTIME | CAI_MODEL_CAP_AUDIO_INPUT |                   \
    CAI_MODEL_CAP_AUDIO_OUTPUT)
-#define CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT                                 \
-  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                        \
-   CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_IMAGE_INPUT |               \
+#define CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT                                   \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                         \
+   CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_IMAGE_INPUT |                \
    CAI_MODEL_CAP_AUDIO_INPUT)
 #define CAI_MODEL_ROW_META_PRICED(model_id, caps, flags, context_tokens,       \
                                   input_price, cached_price, output_price)     \
-  {model_id, caps, flags, context_tokens, ((context_tokens) * 8LL) / 10LL,     \
-   input_price, cached_price, output_price}
+  {model_id,                                                                   \
+   caps,                                                                       \
+   flags,                                                                      \
+   context_tokens,                                                             \
+   ((context_tokens) * 8LL) / 10LL,                                            \
+   input_price,                                                                \
+   cached_price,                                                               \
+   output_price}
 #define CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, input_price,      \
-                             cached_price, output_price)                      \
+                             cached_price, output_price)                       \
   CAI_MODEL_ROW_META_PRICED(model_id, caps, CAI_MODEL_META_VERIFIED,           \
                             context_tokens, input_price, cached_price,         \
                             output_price)
-#define CAI_MODEL_ROW(model_id, caps, context_tokens)                         \
+#define CAI_MODEL_ROW(model_id, caps, context_tokens)                          \
   CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, 0.0, 0.0, 0.0)
 #define CAI_MODEL_ROW_UNKNOWN(model_id, caps)                                  \
   {model_id, caps, CAI_MODEL_META_INCOMPLETE, 0LL, 0LL, 0.0, 0.0, 0.0}
@@ -62,17 +68,17 @@ static const cai_model_info cai_models[] = {
                          400000LL, 0.05, 0.005, 0.40),
     CAI_MODEL_ROW(CAI_MODEL_GPT_5_2025_08_07, CAI_MODEL_CAP_TEXT_REALTIME,
                   400000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_5_MINI_2025_08_07,
-                  CAI_MODEL_CAP_TEXT_REALTIME, 400000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_5_NANO_2025_08_07,
-                  CAI_MODEL_CAP_TEXT_REALTIME, 400000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_5_MINI_2025_08_07, CAI_MODEL_CAP_TEXT_REALTIME,
+                  400000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_5_NANO_2025_08_07, CAI_MODEL_CAP_TEXT_REALTIME,
+                  400000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_1, CAI_MODEL_CAP_TEXT_REALTIME, 1047576LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_1_MINI, CAI_MODEL_CAP_TEXT_REALTIME,
                   1047576LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_1_NANO, CAI_MODEL_CAP_TEXT_REALTIME,
                   1047576LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_4_1_2025_04_14,
-                  CAI_MODEL_CAP_TEXT_REALTIME, 1047576LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_1_2025_04_14, CAI_MODEL_CAP_TEXT_REALTIME,
+                  1047576LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_1_MINI_2025_04_14,
                   CAI_MODEL_CAP_TEXT_REALTIME, 1047576LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_1_NANO_2025_04_14,
@@ -105,8 +111,8 @@ static const cai_model_info cai_models[] = {
                   CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2025_06_03,
                   CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW,
-                  CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW, CAI_MODEL_CAP_TEXT_AUDIO,
+                  128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW_2024_12_17,
                   CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4O_SEARCH_PREVIEW, CAI_MODEL_CAP_TEXT,
@@ -119,16 +125,14 @@ static const cai_model_info cai_models[] = {
                   CAI_MODEL_CAP_TEXT, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_CHATGPT_4O_LATEST, CAI_MODEL_CAP_TEXT_REALTIME,
                   128000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI, CAI_MODEL_CAP_TEXT_REALTIME,
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI, CAI_MODEL_CAP_TEXT_REALTIME, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_2024_07_18, CAI_MODEL_CAP_TEXT_REALTIME,
                   128000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_2024_07_18,
-                  CAI_MODEL_CAP_TEXT_REALTIME, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO, CAI_MODEL_CAP_TEXT_IMAGE, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO_2024_04_09, CAI_MODEL_CAP_TEXT_IMAGE,
                   128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_0125_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
-    CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO_PREVIEW, CAI_MODEL_CAP_TEXT,
-                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_1106_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
     CAI_MODEL_ROW(CAI_MODEL_GPT_4_VISION_PREVIEW, CAI_MODEL_CAP_TEXT_IMAGE,
                   128000LL),
@@ -168,8 +172,7 @@ static const cai_model_info cai_models[] = {
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O3_DEEP_RESEARCH, CAI_MODEL_CAP_TEXT),
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O3_DEEP_RESEARCH_2025_06_26,
                           CAI_MODEL_CAP_TEXT),
-    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O4_MINI_DEEP_RESEARCH,
-                          CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O4_MINI_DEEP_RESEARCH, CAI_MODEL_CAP_TEXT),
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O4_MINI_DEEP_RESEARCH_2025_06_26,
                           CAI_MODEL_CAP_TEXT),
     CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_COMPUTER_USE_PREVIEW, CAI_MODEL_CAP_TEXT),

@@ -88,8 +88,8 @@ static int cai_parse_env_value(const cai_allocator *allocator, const char *key,
     if (*cursor != quote) {
       char message[160];
 
-      snprintf(message, sizeof(message), "%s in dotenv file has no closing quote",
-               key);
+      snprintf(message, sizeof(message),
+               "%s in dotenv file has no closing quote", key);
       return cai_set_error(error, CAI_ERR_INVALID, message);
     }
     length = (size_t)(cursor - value_start);
@@ -222,8 +222,7 @@ int cai_load_dotenv_api_key(const char *dotenv_path, const char *api_key_env,
                          "api key environment variable name is invalid");
   }
   if (dotenv_path == NULL || dotenv_path[0] == '\0') {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "dotenv path is required");
+    return cai_set_error(error, CAI_ERR_INVALID, "dotenv path is required");
   }
   return cai_load_dotenv_api_key_internal(NULL, dotenv_path, key_name, out,
                                           error);

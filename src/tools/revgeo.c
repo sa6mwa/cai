@@ -82,16 +82,14 @@ LONEJSON_MAP_DEFINE(cai_revgeo_result_map, cai_revgeo_result,
                     cai_revgeo_result_fields);
 
 static const lonejson_field cai_revgeo_address_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, city,
-                                          "city"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, town,
-                                          "town"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, city, "city"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, town, "town"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, village,
                                           "village"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, hamlet,
                                           "hamlet"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc,
-                                          municipality, "municipality"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, municipality,
+                                          "municipality"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, county,
                                           "county"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, state,
@@ -100,14 +98,14 @@ static const lonejson_field cai_revgeo_address_fields[] = {
                                           "region"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, country,
                                           "country"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc,
-                                          country_code, "country_code")};
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_address_doc, country_code,
+                                          "country_code")};
 LONEJSON_MAP_DEFINE(cai_revgeo_address_map, cai_revgeo_address_doc,
                     cai_revgeo_address_fields);
 
 static const lonejson_field cai_revgeo_response_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_response_doc,
-                                          display_name, "display_name"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_revgeo_response_doc, display_name,
+                                          "display_name"),
     LONEJSON_FIELD_OBJECT(cai_revgeo_response_doc, address, "address",
                           &cai_revgeo_address_map)};
 LONEJSON_MAP_DEFINE(cai_revgeo_response_map, cai_revgeo_response_doc,
@@ -153,8 +151,7 @@ static void cai_revgeo_context_cleanup(void *context) {
 }
 
 static int cai_revgeo_context_new(const cai_revgeo_tool_config *config,
-                                  cai_revgeo_context **out,
-                                  cai_error *error) {
+                                  cai_revgeo_context **out, cai_error *error) {
   const char *base_url;
   const char *reverse_path;
   const char *user_agent;
@@ -167,16 +164,16 @@ static int cai_revgeo_context_new(const cai_revgeo_tool_config *config,
                          "reverse-geocoding context output is required");
   }
   *out = NULL;
-  base_url = cai_revgeo_default_string(
-      config != NULL ? config->base_url : NULL, CAI_REVGEO_DEFAULT_BASE_URL);
+  base_url = cai_revgeo_default_string(config != NULL ? config->base_url : NULL,
+                                       CAI_REVGEO_DEFAULT_BASE_URL);
   reverse_path =
       cai_revgeo_default_string(config != NULL ? config->reverse_path : NULL,
                                 CAI_REVGEO_DEFAULT_REVERSE_PATH);
   user_agent = cai_revgeo_default_string(
       config != NULL ? config->user_agent : NULL,
       "cai-revgeo-tool/1 (https://github.com/sa6mwa/cai)");
-  language = cai_revgeo_default_string(config != NULL ? config->language : NULL,
-                                       "en");
+  language =
+      cai_revgeo_default_string(config != NULL ? config->language : NULL, "en");
   ctx = (cai_revgeo_context *)cai_alloc(NULL, sizeof(*ctx));
   if (ctx == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -217,8 +214,8 @@ static int cai_revgeo_context_new(const cai_revgeo_tool_config *config,
 }
 
 static int cai_revgeo_append_url_part(cai_buffer_builder *url,
-                                      const char *base_url,
-                                      const char *path, cai_error *error) {
+                                      const char *base_url, const char *path,
+                                      cai_error *error) {
   size_t base_len;
   int rc;
 
@@ -335,16 +332,15 @@ static size_t cai_revgeo_write_spool(char *ptr, size_t size, size_t nmemb,
   spool = (lonejson_spooled *)userdata;
   len = size * nmemb;
   lonejson_error_init(&json_error);
-  if (spool->append(spool, ptr, len, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (spool->append(spool, ptr, len, &json_error) != LONEJSON_STATUS_OK) {
     return 0U;
   }
   return len;
 }
 
 static int cai_revgeo_fetch(const cai_revgeo_context *ctx,
-                            const cai_revgeo_args *args,
-                            lonejson_spooled *out, cai_error *error) {
+                            const cai_revgeo_args *args, lonejson_spooled *out,
+                            cai_error *error) {
   CURL *curl;
   CURLcode code;
   long http_status;
@@ -422,8 +418,7 @@ static int cai_revgeo_parse(lonejson_spooled *json,
   CAI_LJ->init(CAI_LJ, &cai_revgeo_response_map, doc);
   reader.cursor = *json;
   lonejson_error_init(&json_error);
-  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_revgeo_response_map, doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to rewind reverse-geocoding response",
@@ -541,9 +536,9 @@ static int cai_revgeo_tool_callback(void *context, const void *params,
   return rc;
 }
 
-int cai_tool_registry_register_revgeo_tool(
-    cai_tool_registry *registry, const cai_revgeo_tool_config *config,
-    cai_error *error) {
+int cai_tool_registry_register_revgeo_tool(cai_tool_registry *registry,
+                                           const cai_revgeo_tool_config *config,
+                                           cai_error *error) {
   const char *name;
   const char *description;
   cai_revgeo_context *ctx;
@@ -562,9 +557,8 @@ int cai_tool_registry_register_revgeo_tool(
     return rc;
   }
   rc = cai_tool_registry_register_lonejson_owned(
-      registry, name, description, &cai_revgeo_args_map,
-      &cai_revgeo_result_map, cai_revgeo_tool_callback, ctx,
-      cai_revgeo_context_cleanup, error);
+      registry, name, description, &cai_revgeo_args_map, &cai_revgeo_result_map,
+      cai_revgeo_tool_callback, ctx, cai_revgeo_context_cleanup, error);
   if (rc != CAI_OK) {
     cai_revgeo_context_cleanup(ctx);
   }

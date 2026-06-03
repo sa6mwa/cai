@@ -392,36 +392,22 @@ typedef struct cai_sink_callbacks {
 /** Callback returning dynamic stream prefix/suffix text. */
 typedef const char *(*cai_stream_affix_fn)(void *context);
 /** Callback for incremental function-call argument deltas. */
-typedef int (*cai_stream_function_call_delta_fn)(void *context,
-                                                 const char *item_id,
-                                                 int output_index,
-                                                 const struct lonejson_spooled
-                                                     *delta,
-                                                 cai_error *error);
+typedef int (*cai_stream_function_call_delta_fn)(
+    void *context, const char *item_id, int output_index,
+    const struct lonejson_spooled *delta, cai_error *error);
 /** Callback for completed streamed function-call arguments. */
-typedef int (*cai_stream_function_call_done_fn)(void *context,
-                                                const char *item_id,
-                                                int output_index,
-                                                const char *call_id,
-                                                const char *name,
-                                                const struct lonejson_spooled
-                                                    *arguments,
-                                                cai_error *error);
+typedef int (*cai_stream_function_call_done_fn)(
+    void *context, const char *item_id, int output_index, const char *call_id,
+    const char *name, const struct lonejson_spooled *arguments,
+    cai_error *error);
 /** Callback for completed streamed output items. */
-typedef int (*cai_stream_output_item_done_fn)(void *context,
-                                              const char *item_id,
-                                              int output_index,
-                                              const char *type,
-                                              const struct lonejson_spooled
-                                                  *item_json,
-                                              cai_error *error);
+typedef int (*cai_stream_output_item_done_fn)(
+    void *context, const char *item_id, int output_index, const char *type,
+    const struct lonejson_spooled *item_json, cai_error *error);
 /** Callback for incremental output text deltas. */
-typedef int (*cai_stream_output_text_delta_fn)(void *context,
-                                               const char *item_id,
-                                               int output_index,
-                                               const struct lonejson_spooled
-                                                   *delta,
-                                               cai_error *error);
+typedef int (*cai_stream_output_text_delta_fn)(
+    void *context, const char *item_id, int output_index,
+    const struct lonejson_spooled *delta, cai_error *error);
 
 /** Static or dynamic prefix/suffix emitted around stream sections. */
 typedef struct cai_stream_affix {
@@ -543,8 +529,7 @@ struct cai_agent {
   /** Add user text to the agent's implicit session. */
   int (*add_user_text)(cai_agent *agent, const char *text, cai_error *error);
   /** Add spooled user text to the agent's implicit session. */
-  int (*add_user_text_spooled)(cai_agent *agent,
-                               struct lonejson_spooled *text,
+  int (*add_user_text_spooled)(cai_agent *agent, struct lonejson_spooled *text,
                                cai_error *error);
   /** Read a source into spooled user text for the implicit session. */
   int (*add_user_text_source)(cai_agent *agent, cai_source *source,
@@ -583,8 +568,7 @@ struct cai_agent {
   /** Stream only output text to a sink. */
   int (*stream_text)(cai_agent *agent, cai_sink *sink, cai_error *error);
   /** Open output text as a source. */
-  int (*open_text_source)(cai_agent *agent, cai_source **out,
-                          cai_error *error);
+  int (*open_text_source)(cai_agent *agent, cai_source **out, cai_error *error);
   /** Add one user text message and run the implicit session. */
   int (*send_text)(cai_agent *agent, const char *text, cai_response **out,
                    cai_error *error);
@@ -592,8 +576,7 @@ struct cai_agent {
   int (*last_usage)(const cai_agent *agent, cai_token_usage *out,
                     cai_error *error);
   /** Return estimated context-window percentage for the implicit session. */
-  int (*context_percent)(const cai_agent *agent, double *out,
-                         cai_error *error);
+  int (*context_percent)(const cai_agent *agent, double *out, cai_error *error);
   /** Close and destroy the agent. */
   void (*close)(cai_agent *agent);
   /** Private implementation pointer; do not access directly. */
@@ -612,8 +595,7 @@ struct cai_session {
   /** Return the bound conversation id, or NULL. */
   const char *(*conversation_id)(const cai_session *session);
   /** Set the previous response id used for server-side continuity. */
-  int (*set_previous_response_id)(cai_session *session,
-                                  const char *response_id,
+  int (*set_previous_response_id)(cai_session *session, const char *response_id,
                                   cai_error *error);
   /** Return the previous response id, or NULL. */
   const char *(*previous_response_id)(const cai_session *session);
@@ -622,8 +604,7 @@ struct cai_session {
                        cai_error *error);
   /** Add spooled user text to the pending session input. */
   int (*add_user_text_spooled)(cai_session *session,
-                               struct lonejson_spooled *text,
-                               cai_error *error);
+                               struct lonejson_spooled *text, cai_error *error);
   /** Read a source into spooled user text for the pending session input. */
   int (*add_user_text_source)(cai_session *session, cai_source *source,
                               cai_error *error);
@@ -631,8 +612,7 @@ struct cai_session {
   int (*add_user_image_url)(cai_session *session, const char *url,
                             const char *detail, cai_error *error);
   /** Add spooled file data to the pending session input. */
-  int (*add_user_file_data_spooled)(cai_session *session,
-                                    const char *filename,
+  int (*add_user_file_data_spooled)(cai_session *session, const char *filename,
                                     struct lonejson_spooled *file_data,
                                     const char *detail, cai_error *error);
   /** Read a source into spooled file data for the pending session input. */
@@ -654,9 +634,8 @@ struct cai_session {
   int (*run_auto)(cai_session *session, const cai_run_options *options,
                   cai_response **out, cai_error *error);
   /** Run with local tool auto-run and return high-level output. */
-  int (*run_auto_output)(cai_session *session,
-                         const cai_run_options *options, cai_output **out,
-                         cai_error *error);
+  int (*run_auto_output)(cai_session *session, const cai_run_options *options,
+                         cai_output **out, cai_error *error);
   /** Stream the session with local tool auto-run. */
   int (*stream_auto)(cai_session *session, const cai_run_options *options,
                      const cai_stream_sinks *sinks, cai_error *error);
@@ -850,9 +829,9 @@ int cai_session_add_user_file_data_spooled(cai_session *session,
                                            const char *detail,
                                            cai_error *error);
 /** Read a source into spooled file data for the pending session input. */
-int cai_session_add_user_file_source(cai_session *session,
-                                     const char *filename, cai_source *source,
-                                     const char *detail, cai_error *error);
+int cai_session_add_user_file_source(cai_session *session, const char *filename,
+                                     cai_source *source, const char *detail,
+                                     cai_error *error);
 /** Add file data from a filesystem path to the pending input. */
 int cai_session_add_user_file_path(cai_session *session, const char *path,
                                    const char *filename, const char *detail,
@@ -876,7 +855,8 @@ int cai_session_run_auto_output(cai_session *session,
                                 const cai_run_options *options,
                                 cai_output **out, cai_error *error);
 /** Stream the session with local tool auto-run. */
-int cai_session_stream_auto(cai_session *session, const cai_run_options *options,
+int cai_session_stream_auto(cai_session *session,
+                            const cai_run_options *options,
                             const cai_stream_sinks *sinks, cai_error *error);
 /** Stream the session without local tool auto-run. */
 int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
@@ -1003,10 +983,13 @@ int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);
 /** Destroy a local tool registry. */
 void cai_tool_registry_destroy(cai_tool_registry *registry);
 /** Register a typed lonejson-backed local tool. */
-int cai_tool_registry_register_lonejson(
-    cai_tool_registry *registry, const char *name, const char *description,
-    const struct lonejson_map *params_map, const struct lonejson_map *result_map,
-    cai_tool_fn callback, void *context, cai_error *error);
+int cai_tool_registry_register_lonejson(cai_tool_registry *registry,
+                                        const char *name,
+                                        const char *description,
+                                        const struct lonejson_map *params_map,
+                                        const struct lonejson_map *result_map,
+                                        cai_tool_fn callback, void *context,
+                                        cai_error *error);
 /** Register a raw JSON local tool. */
 int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    const char *name, const char *description,
@@ -1014,10 +997,12 @@ int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    cai_tool_raw_fn callback, void *context,
                                    cai_error *error);
 /** Register a raw JSON spooled local tool. */
-int cai_tool_registry_register_raw_spooled(
-    cai_tool_registry *registry, const char *name, const char *description,
-    const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
-    void *context, cai_error *error);
+int cai_tool_registry_register_raw_spooled(cai_tool_registry *registry,
+                                           const char *name,
+                                           const char *description,
+                                           const char *schema_json, int strict,
+                                           cai_tool_raw_spooled_fn callback,
+                                           void *context, cai_error *error);
 /** Add all registered tools to a Responses parameter builder. */
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,
@@ -1097,8 +1082,8 @@ int cai_response_create_params_set_prompt_cache_key(
     cai_response_create_params *params, const char *prompt_cache_key,
     cai_error *error);
 /** Enable or disable background response processing. */
-int cai_response_create_params_set_background(cai_response_create_params *params,
-                                              int enabled, cai_error *error);
+int cai_response_create_params_set_background(
+    cai_response_create_params *params, int enabled, cai_error *error);
 /** Enable or disable server-side response storage. */
 int cai_response_create_params_set_store(cai_response_create_params *params,
                                          int enabled, cai_error *error);
@@ -1180,8 +1165,10 @@ int cai_response_create_params_add_image_file_id(
     const char *detail, cai_error *error);
 /** Add a file id input item. */
 int cai_response_create_params_add_file_id(cai_response_create_params *params,
-                                           const char *role, const char *file_id,
-                                           const char *detail, cai_error *error);
+                                           const char *role,
+                                           const char *file_id,
+                                           const char *detail,
+                                           cai_error *error);
 /** Add a file URL input item. */
 int cai_response_create_params_add_file_url(cai_response_create_params *params,
                                             const char *role,
@@ -1208,8 +1195,8 @@ int cai_response_create_params_add_simple_hosted_tool(
 void cai_hosted_mcp_tool_config_init(cai_hosted_mcp_tool_config *config);
 /** Add a hosted MCP tool definition. */
 int cai_response_create_params_add_hosted_mcp_tool(
-    cai_response_create_params *params, const cai_hosted_mcp_tool_config *config,
-    cai_error *error);
+    cai_response_create_params *params,
+    const cai_hosted_mcp_tool_config *config, cai_error *error);
 /** Add raw JSON function-call output. */
 int cai_response_create_params_add_function_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
@@ -1224,8 +1211,8 @@ int cai_response_create_params_add_function_call_output_image_url(
     const char *detail, cai_error *error);
 /** Add file id function-call output. */
 int cai_response_create_params_add_function_call_output_file_id(
-    cai_response_create_params *params, const char *call_id, const char *file_id,
-    const char *detail, cai_error *error);
+    cai_response_create_params *params, const char *call_id,
+    const char *file_id, const char *detail, cai_error *error);
 /** Add spooled file data function-call output. */
 int cai_response_create_params_add_function_call_output_file_data_spooled(
     cai_response_create_params *params, const char *call_id,

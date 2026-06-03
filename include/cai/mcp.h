@@ -26,8 +26,7 @@ extern "C" {
 typedef struct cai_mcp_handler cai_mcp_handler;
 
 /** Callback used by the MCP handler to read request headers. */
-typedef const char *(*cai_mcp_header_get_fn)(void *context,
-                                             const char *name);
+typedef const char *(*cai_mcp_header_get_fn)(void *context, const char *name);
 /** Callback used by the MCP handler to set response headers. */
 typedef int (*cai_mcp_header_set_fn)(void *context, const char *name,
                                      const char *value, cai_error *error);
@@ -52,8 +51,7 @@ typedef struct cai_mcp_session_state {
 typedef struct cai_mcp_session_callbacks {
   /** Create a new session id and initial persisted state. */
   int (*create)(void *context, const cai_mcp_session_state *initial_state,
-                char *session_id, size_t session_id_capacity,
-                cai_error *error);
+                char *session_id, size_t session_id_capacity, cai_error *error);
   /** Load persisted state for an existing session id. */
   int (*load)(void *context, const char *session_id,
               cai_mcp_session_state *state, cai_error *error);

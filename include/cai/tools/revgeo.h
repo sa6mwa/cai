@@ -39,9 +39,9 @@ typedef struct cai_revgeo_tool_config {
 } cai_revgeo_tool_config;
 
 /** Register the reverse-geocoding preset on a registry. */
-int cai_tool_registry_register_revgeo_tool(
-    cai_tool_registry *registry, const cai_revgeo_tool_config *config,
-    cai_error *error);
+int cai_tool_registry_register_revgeo_tool(cai_tool_registry *registry,
+                                           const cai_revgeo_tool_config *config,
+                                           cai_error *error);
 /** Register the reverse-geocoding preset on an agent. */
 int cai_agent_register_revgeo_tool(cai_agent *agent,
                                    const cai_revgeo_tool_config *config,

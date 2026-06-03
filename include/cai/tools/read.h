@@ -42,9 +42,9 @@ int cai_agent_register_read_tool(cai_agent *agent,
                                  const cai_read_tool_config *config,
                                  cai_error *error);
 /** Register the sandboxed `list_files` preset on a registry. */
-int cai_tool_registry_register_list_files_tool(cai_tool_registry *registry,
-                                               const cai_read_tool_config *config,
-                                               cai_error *error);
+int cai_tool_registry_register_list_files_tool(
+    cai_tool_registry *registry, const cai_read_tool_config *config,
+    cai_error *error);
 /** Register the sandboxed `list_files` preset on an agent. */
 int cai_agent_register_list_files_tool(cai_agent *agent,
                                        const cai_read_tool_config *config,

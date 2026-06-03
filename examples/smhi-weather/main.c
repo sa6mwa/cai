@@ -12,10 +12,10 @@
 #include <string.h>
 
 #define SMHI_FORECAST_URL                                                      \
-  "https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/"  \
-  "geotype/point/lon/%.6f/lat/%.6f/data.json?timeseries=1&parameters="        \
-  "air_temperature,wind_from_direction,wind_speed,relative_humidity,"         \
-  "cloud_area_fraction,precipitation_amount,"                                \
+  "https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/"   \
+  "geotype/point/lon/%.6f/lat/%.6f/data.json?timeseries=1&parameters="         \
+  "air_temperature,wind_from_direction,wind_speed,relative_humidity,"          \
+  "cloud_area_fraction,precipitation_amount,"                                  \
   "predominant_precipitation_type_at_surface,symbol_code"
 
 #define OPEN_METEO_GEOCODING_URL                                               \
@@ -133,16 +133,14 @@ static const lonejson_field smhi_weather_result_fields[] = {
                                has_air_temperature_c, "air_temperature_c"),
     LONEJSON_FIELD_F64_PRESENT(smhi_weather_result, wind_speed_mps,
                                has_wind_speed_mps, "wind_speed_mps"),
-    LONEJSON_FIELD_F64_PRESENT(smhi_weather_result,
-                               wind_from_direction_degrees,
+    LONEJSON_FIELD_F64_PRESENT(smhi_weather_result, wind_from_direction_degrees,
                                has_wind_from_direction_degrees,
                                "wind_from_direction_degrees"),
     LONEJSON_FIELD_F64_PRESENT(smhi_weather_result, relative_humidity_percent,
                                has_relative_humidity_percent,
                                "relative_humidity_percent"),
     LONEJSON_FIELD_F64_PRESENT(smhi_weather_result, cloud_cover_percent,
-                               has_cloud_cover_percent,
-                               "cloud_cover_percent"),
+                               has_cloud_cover_percent, "cloud_cover_percent"),
     LONEJSON_FIELD_F64_PRESENT(smhi_weather_result,
                                precipitation_amount_mm_per_hour,
                                has_precipitation_amount_mm_per_hour,
@@ -151,8 +149,7 @@ static const lonejson_field smhi_weather_result_fields[] = {
                                has_precipitation_type_code,
                                "precipitation_type_code"),
     LONEJSON_FIELD_F64_PRESENT(smhi_weather_result, weather_symbol_code,
-                               has_weather_symbol_code,
-                               "weather_symbol_code")};
+                               has_weather_symbol_code, "weather_symbol_code")};
 LONEJSON_MAP_DEFINE(smhi_weather_result_map, smhi_weather_result,
                     smhi_weather_result_fields);
 
@@ -170,10 +167,10 @@ static const lonejson_field smhi_forecast_data_fields[] = {
     LONEJSON_FIELD_F64_PRESENT(smhi_forecast_data_doc, precipitation_amount,
                                has_precipitation_amount,
                                "precipitation_amount"),
-    LONEJSON_FIELD_F64_PRESENT(
-        smhi_forecast_data_doc, predominant_precipitation_type_at_surface,
-        has_predominant_precipitation_type_at_surface,
-        "predominant_precipitation_type_at_surface"),
+    LONEJSON_FIELD_F64_PRESENT(smhi_forecast_data_doc,
+                               predominant_precipitation_type_at_surface,
+                               has_predominant_precipitation_type_at_surface,
+                               "predominant_precipitation_type_at_surface"),
     LONEJSON_FIELD_F64_PRESENT(smhi_forecast_data_doc, symbol_code,
                                has_symbol_code, "symbol_code")};
 LONEJSON_MAP_DEFINE(smhi_forecast_data_map, smhi_forecast_data_doc,
@@ -197,8 +194,7 @@ static const lonejson_field smhi_forecast_fields[] = {
                           &smhi_geometry_map),
     LONEJSON_FIELD_MAPPED_ARRAY_STREAM(smhi_forecast_doc, time_series,
                                        "timeSeries")};
-LONEJSON_MAP_DEFINE(smhi_forecast_map, smhi_forecast_doc,
-                    smhi_forecast_fields);
+LONEJSON_MAP_DEFINE(smhi_forecast_map, smhi_forecast_doc, smhi_forecast_fields);
 
 static const lonejson_field open_meteo_location_fields[] = {
     LONEJSON_FIELD_F64_PRESENT(open_meteo_location_doc, latitude, has_latitude,
@@ -275,8 +271,7 @@ static size_t smhi_write_spool(char *ptr, size_t size, size_t nmemb,
   spool = (lonejson_spooled *)userdata;
   len = size * nmemb;
   lonejson_error_init(&json_error);
-  if (spool->append(spool, ptr, len, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (spool->append(spool, ptr, len, &json_error) != LONEJSON_STATUS_OK) {
     return 0U;
   }
   return len;
@@ -293,8 +288,8 @@ static int smhi_fetch_url(const char *url, const char *label,
   curl = curl_easy_init();
   if (curl == NULL) {
     out->cleanup(out);
-    return smhi_set_error(error, CAI_ERR_TRANSPORT,
-                          "failed to initialize curl", NULL);
+    return smhi_set_error(error, CAI_ERR_TRANSPORT, "failed to initialize curl",
+                          NULL);
   }
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, smhi_write_spool);
@@ -360,8 +355,8 @@ static int smhi_forecast_time_copy(smhi_forecast_time_doc *dst,
   return CAI_OK;
 }
 
-static void smhi_forecast_parse_state_cleanup(
-    smhi_forecast_parse_state *state) {
+static void
+smhi_forecast_parse_state_cleanup(smhi_forecast_parse_state *state) {
   if (state == NULL) {
     return;
   }
@@ -431,15 +426,15 @@ static int smhi_parse_forecast(lonejson_spooled *json, smhi_forecast_doc *doc,
   }
   reader.cursor = *json;
   lonejson_error_init(&json_error);
-  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &smhi_forecast_time_map, &item);
     CAI_LJ->cleanup(CAI_LJ, &smhi_forecast_map, doc);
     return smhi_set_error(error, CAI_ERR_PROTOCOL,
                           "failed to rewind SMHI response", json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (CAI_LJ->parse_reader(CAI_LJ, &smhi_forecast_map, doc, smhi_spool_read, &reader, &json_error) != LONEJSON_STATUS_OK) {
+  if (CAI_LJ->parse_reader(CAI_LJ, &smhi_forecast_map, doc, smhi_spool_read,
+                           &reader, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &smhi_forecast_time_map, &item);
     CAI_LJ->cleanup(CAI_LJ, &smhi_forecast_map, doc);
     smhi_forecast_parse_state_cleanup(state);
@@ -466,25 +461,23 @@ static int smhi_geocode_location(const char *location, double *latitude,
   int rc;
 
   if (location == NULL || location[0] == '\0') {
-    return smhi_set_error(error, CAI_ERR_INVALID, "location is required",
-                          NULL);
+    return smhi_set_error(error, CAI_ERR_INVALID, "location is required", NULL);
   }
   curl = curl_easy_init();
   if (curl == NULL) {
-    return smhi_set_error(error, CAI_ERR_TRANSPORT,
-                          "failed to initialize curl", NULL);
+    return smhi_set_error(error, CAI_ERR_TRANSPORT, "failed to initialize curl",
+                          NULL);
   }
   escaped = curl_easy_escape(curl, location, 0);
   if (escaped == NULL) {
     curl_easy_cleanup(curl);
-    return smhi_set_error(error, CAI_ERR_NOMEM,
-                          "failed to encode location", NULL);
+    return smhi_set_error(error, CAI_ERR_NOMEM, "failed to encode location",
+                          NULL);
   }
   snprintf(url, sizeof(url), OPEN_METEO_GEOCODING_URL, escaped);
   curl_free(escaped);
   curl_easy_cleanup(curl);
-  rc = smhi_fetch_url(url, "Open-Meteo geocoding request failed", &body,
-                      error);
+  rc = smhi_fetch_url(url, "Open-Meteo geocoding request failed", &body, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -512,8 +505,7 @@ static int smhi_geocode_location(const char *location, double *latitude,
   }
   reader.cursor = body;
   lonejson_error_init(&json_error);
-  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &open_meteo_location_map, &item);
     CAI_LJ->cleanup(CAI_LJ, &open_meteo_geocoding_map, &doc);
     body.cleanup(&body);
@@ -522,8 +514,9 @@ static int smhi_geocode_location(const char *location, double *latitude,
                           json_error.message);
   }
   lonejson_error_init(&json_error);
-  if (CAI_LJ->parse_reader(CAI_LJ, &open_meteo_geocoding_map, &doc, smhi_spool_read, &reader, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (CAI_LJ->parse_reader(CAI_LJ, &open_meteo_geocoding_map, &doc,
+                           smhi_spool_read, &reader,
+                           &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &open_meteo_location_map, &item);
     CAI_LJ->cleanup(CAI_LJ, &open_meteo_geocoding_map, &doc);
     body.cleanup(&body);
@@ -589,9 +582,9 @@ static int smhi_weather_tool(void *context, const void *params, void *result,
   if (!forecast_state.has_first) {
     smhi_forecast_parse_state_cleanup(&forecast_state);
     CAI_LJ->cleanup(CAI_LJ, &smhi_forecast_map, &forecast);
-    return smhi_set_error(
-        error, CAI_ERR_PROTOCOL,
-        "SMHI response did not contain a forecast timeSeries", NULL);
+    return smhi_set_error(error, CAI_ERR_PROTOCOL,
+                          "SMHI response did not contain a forecast timeSeries",
+                          NULL);
   }
   first = &forecast_state.first;
   rc = smhi_copy_result_string(
@@ -741,7 +734,8 @@ int main(int argc, char **argv) {
     exit_code = print_error("agent run_auto_output", rc, &error);
     goto done;
   }
-  printf("%s\n", cai_output_text(output) != NULL ? cai_output_text(output) : "");
+  printf("%s\n",
+         cai_output_text(output) != NULL ? cai_output_text(output) : "");
   exit_code = 0;
 
 done:

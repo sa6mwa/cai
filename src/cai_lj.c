@@ -13,12 +13,12 @@ typedef struct cai_lj_global_runtime {
   lonejson_error error;
 } cai_lj_global_runtime;
 
-static cai_lj_global_runtime cai_lj_default_runtime = {PTHREAD_ONCE_INIT, NULL,
-                                                       {0}};
-static cai_lj_global_runtime cai_lj_preserve_runtime = {PTHREAD_ONCE_INIT, NULL,
-                                                        {0}};
-static cai_lj_global_runtime cai_lj_stream_runtime = {PTHREAD_ONCE_INIT, NULL,
-                                                      {0}};
+static cai_lj_global_runtime cai_lj_default_runtime = {
+    PTHREAD_ONCE_INIT, NULL, {0}};
+static cai_lj_global_runtime cai_lj_preserve_runtime = {
+    PTHREAD_ONCE_INIT, NULL, {0}};
+static cai_lj_global_runtime cai_lj_stream_runtime = {
+    PTHREAD_ONCE_INIT, NULL, {0}};
 static pthread_once_t cai_lj_cleanup_once = PTHREAD_ONCE_INIT;
 
 static void cai_lj_cleanup_all(void) {
@@ -27,9 +27,7 @@ static void cai_lj_cleanup_all(void) {
   cai_lonejson_runtime_close(&cai_lj_stream_runtime.runtime);
 }
 
-static void cai_lj_register_cleanup(void) {
-  (void)atexit(cai_lj_cleanup_all);
-}
+static void cai_lj_register_cleanup(void) { (void)atexit(cai_lj_cleanup_all); }
 
 static lonejson *cai_lj_require_runtime(cai_lj_global_runtime *state) {
   if (state->runtime == NULL) {

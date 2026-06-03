@@ -303,8 +303,7 @@ static size_t cai_searxng_write_spool(char *ptr, size_t size, size_t nmemb,
   spool = (lonejson_spooled *)userdata;
   len = size * nmemb;
   lonejson_error_init(&json_error);
-  if (spool->append(spool, ptr, len, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (spool->append(spool, ptr, len, &json_error) != LONEJSON_STATUS_OK) {
     return 0U;
   }
   return len;
@@ -476,8 +475,7 @@ static lonejson_status cai_searxng_infobox_item_cb(void *user, void *item,
 
 static int cai_searxng_parse(lonejson_spooled *json,
                              cai_searxng_response_doc *doc,
-                             cai_searxng_parse_state *state,
-                             cai_error *error) {
+                             cai_searxng_parse_state *state, cai_error *error) {
   cai_searxng_spool_reader reader;
   cai_searxng_item_doc result_item;
   cai_searxng_item_doc infobox_item;
@@ -516,8 +514,7 @@ static int cai_searxng_parse(lonejson_spooled *json,
   }
   lonejson_error_init(&json_error);
   if (doc->infoboxes.set_handler(&doc->infoboxes, &infobox_handler,
-                                 &json_error) !=
-      LONEJSON_STATUS_OK) {
+                                 &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_searxng_item_map, &result_item);
     CAI_LJ->cleanup(CAI_LJ, &cai_searxng_item_map, &infobox_item);
     CAI_LJ->cleanup(CAI_LJ, &cai_searxng_response_map, doc);
@@ -527,8 +524,7 @@ static int cai_searxng_parse(lonejson_spooled *json,
   }
   reader.cursor = *json;
   lonejson_error_init(&json_error);
-  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_searxng_item_map, &result_item);
     CAI_LJ->cleanup(CAI_LJ, &cai_searxng_item_map, &infobox_item);
     CAI_LJ->cleanup(CAI_LJ, &cai_searxng_response_map, doc);

@@ -69,9 +69,8 @@ static size_t cai_http_write(char *ptr, size_t size, size_t nmemb,
   if (size != 0U && count / size != nmemb) {
     return 0U;
   }
-  if (buffer->limit > 0U &&
-      (buffer->length >= buffer->limit ||
-       count > buffer->limit - buffer->length)) {
+  if (buffer->limit > 0U && (buffer->length >= buffer->limit ||
+                             count > buffer->limit - buffer->length)) {
     buffer->exceeded = 1;
     return 0U;
   }
@@ -151,8 +150,7 @@ static size_t cai_http_spooled_read(char *ptr, size_t size, size_t nmemb,
   if (upload == NULL || ptr == NULL || capacity == 0U) {
     return 0U;
   }
-  result =
-      upload->cursor.read(&upload->cursor, (unsigned char *)ptr, capacity);
+  result = upload->cursor.read(&upload->cursor, (unsigned char *)ptr, capacity);
   if (result.error_code != 0) {
     return CURL_READFUNC_ABORT;
   }
@@ -172,8 +170,8 @@ int cai_set_openai_error(cai_error *error, long http_status, const char *body,
   server_code = NULL;
   memset(&doc, 0, sizeof(doc));
   CAI_LJ->init(CAI_LJ, &cai_api_error_map, &doc);
-  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_api_error_map, &doc, detail,
-                              &json_error);
+  status =
+      CAI_LJ->parse_cstr(CAI_LJ, &cai_api_error_map, &doc, detail, &json_error);
   if (status == LONEJSON_STATUS_OK && doc.error.message != NULL) {
     detail = doc.error.message;
     server_code = doc.error.code != NULL ? doc.error.code : doc.error.type;
@@ -414,7 +412,8 @@ int cai_append_bearer_header(cai_client *client, struct curl_slist **headers,
 
   prefix_len = sizeof(prefix) - 1U;
   key_len = strlen(CAI_CLIENT_IMPL(client)->api_key);
-  header = (char *)cai_alloc(&CAI_CLIENT_IMPL(client)->allocator, prefix_len + key_len + 1U);
+  header = (char *)cai_alloc(&CAI_CLIENT_IMPL(client)->allocator,
+                             prefix_len + key_len + 1U);
   if (header == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate authorization header");
@@ -440,7 +439,8 @@ int cai_append_prefixed_header(cai_client *client, struct curl_slist **headers,
   }
   prefix_len = strlen(prefix);
   value_len = strlen(value);
-  header = (char *)cai_alloc(&CAI_CLIENT_IMPL(client)->allocator, prefix_len + value_len + 1U);
+  header = (char *)cai_alloc(&CAI_CLIENT_IMPL(client)->allocator,
+                             prefix_len + value_len + 1U);
   if (header == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate HTTP header");
@@ -477,9 +477,9 @@ int cai_http_json_request(cai_client *client, const char *method,
                                 json_error.message);
   }
   {
-    int rc = cai_http_json_request_spooled(
-        client, method, path, &spooled, len, out_json, out_http_status,
-        out_request_id, error);
+    int rc = cai_http_json_request_spooled(client, method, path, &spooled, len,
+                                           out_json, out_http_status,
+                                           out_request_id, error);
     spooled.cleanup(&spooled);
     return rc;
   }
@@ -489,8 +489,8 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
                                   const char *path,
                                   const lonejson_spooled *request_json,
                                   size_t request_json_len, char **out_json,
-                                  long *out_http_status,
-                                  char **out_request_id, cai_error *error) {
+                                  long *out_http_status, char **out_request_id,
+                                  cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -527,7 +527,8 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   request_id = NULL;
   upload.initialized = 0;
 
-  rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator, CAI_CLIENT_IMPL(client)->base_url, path, &url, error);
+  rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
+                     CAI_CLIENT_IMPL(client)->base_url, path, &url, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -543,11 +544,12 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
-                                    CAI_CLIENT_IMPL(client)->organization_id, error);
+                                    CAI_CLIENT_IMPL(client)->organization_id,
+                                    error);
   }
   if (rc == CAI_OK) {
-    rc = cai_append_prefixed_header(
-        client, &headers, "OpenAI-Project: ", CAI_CLIENT_IMPL(client)->project_id, error);
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Project: ",
+                                    CAI_CLIENT_IMPL(client)->project_id, error);
   }
   if (rc != CAI_OK) {
     cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
@@ -598,7 +600,8 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, &request_id);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, CAI_CLIENT_IMPL(client)->timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
+                     CAI_CLIENT_IMPL(client)->timeout_ms);
   }
   if (CAI_CLIENT_IMPL(client)->http_2_disabled) {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
@@ -765,8 +768,7 @@ int cai_http_response_params_request(cai_client *client, const char *path,
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(client, &headers, "OpenAI-Project: ",
-                                    CAI_CLIENT_IMPL(client)->project_id,
-                                    error);
+                                    CAI_CLIENT_IMPL(client)->project_id, error);
   }
   if (rc != CAI_OK) {
     curl_slist_free_all(headers);
@@ -799,8 +801,7 @@ int cai_http_response_params_request(cai_client *client, const char *path,
                        CAI_CLIENT_IMPL(client)->timeout_ms);
     }
     if (CAI_CLIENT_IMPL(client)->http_2_disabled) {
-      curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
-                       (long)CURL_HTTP_VERSION_1_1);
+      curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
     } else {
       curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
                        (long)CURL_HTTP_VERSION_2TLS);
@@ -809,9 +810,9 @@ int cai_http_response_params_request(cai_client *client, const char *path,
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
-    cai_log_http_request_start(CAI_CLIENT_IMPL(client), "POST", path, stream,
-                               (size_t)cai_response_request_upload_size(
-                                   upload));
+    cai_log_http_request_start(
+        CAI_CLIENT_IMPL(client), "POST", path, stream,
+        (size_t)cai_response_request_upload_size(upload));
     curl_rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
     if (curl_rc == CURLE_OK) {
@@ -942,8 +943,7 @@ int cai_client_count_response_input_tokens(
     if (CAI_LJ->parse_buffer(CAI_LJ, &cai_input_token_count_map, &doc,
                              body != NULL ? body : "",
                              body != NULL ? strlen(body) : 0U,
-                             &json_error) !=
-        LONEJSON_STATUS_OK) {
+                             &json_error) != LONEJSON_STATUS_OK) {
       rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse input token count response",
                                 json_error.message);
@@ -965,14 +965,16 @@ int cai_client_retrieve_response(cai_client *client, const char *response_id,
   int rc;
 
   path = NULL;
-  rc = cai_build_response_path(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
-                               response_id, NULL, &path, error);
+  rc = cai_build_response_path(
+      client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, response_id,
+      NULL, &path, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_http_response_request(client, "GET", path, NULL,
                                  CAI_HTTP_RESPONSE_PARSE, out, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   return rc;
 }
 
@@ -982,14 +984,16 @@ int cai_client_cancel_response(cai_client *client, const char *response_id,
   int rc;
 
   path = NULL;
-  rc = cai_build_response_path(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
-                               response_id, "/cancel", &path, error);
+  rc = cai_build_response_path(
+      client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, response_id,
+      "/cancel", &path, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_http_response_request(client, "POST", path, NULL,
                                  CAI_HTTP_RESPONSE_PARSE, out, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   return rc;
 }
 
@@ -999,14 +1003,16 @@ int cai_client_delete_response(cai_client *client, const char *response_id,
   int rc;
 
   path = NULL;
-  rc = cai_build_response_path(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
-                               response_id, NULL, &path, error);
+  rc = cai_build_response_path(
+      client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, response_id,
+      NULL, &path, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_http_response_request(client, "DELETE", path, NULL,
                                  CAI_HTTP_RESPONSE_IGNORE, NULL, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   return rc;
 }
 
@@ -1029,15 +1035,16 @@ int cai_client_list_response_input_items(cai_client *client,
   path = NULL;
   body = NULL;
   request_id = NULL;
-  rc = cai_build_response_input_items_path(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator
-                                                          : NULL,
-                                           response_id, params, &path, error);
+  rc = cai_build_response_input_items_path(
+      client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, response_id,
+      params, &path, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_http_json_request(client, "GET", path, NULL, &body, &http_status,
                              &request_id, error);
-  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL, path);
+  cai_free_mem(client != NULL ? &CAI_CLIENT_IMPL(client)->allocator : NULL,
+               path);
   if (rc != CAI_OK) {
     return rc;
   }

@@ -154,8 +154,8 @@ int cai_conversation_item_parse_json(const char *json,
   }
   memset(&doc, 0, sizeof(doc));
   CAI_LJ->init(CAI_LJ, &cai_input_item_map, &doc);
-  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_input_item_map, &doc, json,
-                              &json_error);
+  status =
+      CAI_LJ->parse_cstr(CAI_LJ, &cai_input_item_map, &doc, json, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_input_item_map, &doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,

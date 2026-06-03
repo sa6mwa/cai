@@ -84,17 +84,15 @@ static void trim_ascii(char *s) {
   char *end;
 
   start = s;
-  while (*start == ' ' || *start == '\t' || *start == '\r' ||
-         *start == '\n') {
+  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
     start++;
   }
   if (start != s) {
     memmove(s, start, strlen(start) + 1U);
   }
   end = s + strlen(s);
-  while (end > s &&
-         (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
-          end[-1] == '\n')) {
+  while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+                     end[-1] == '\n')) {
     end--;
   }
   *end = '\0';
@@ -194,9 +192,8 @@ static int read_headers(http_request_state *request) {
       return -1;
     }
     buffer[len++] = c;
-    if (len >= 4U && buffer[len - 4U] == '\r' &&
-        buffer[len - 3U] == '\n' && buffer[len - 2U] == '\r' &&
-        buffer[len - 1U] == '\n') {
+    if (len >= 4U && buffer[len - 4U] == '\r' && buffer[len - 3U] == '\n' &&
+        buffer[len - 2U] == '\r' && buffer[len - 1U] == '\n') {
       break;
     }
   }

@@ -46,7 +46,7 @@ extern "C" {
 #define CAI_MODEL_O4_MINI "o4-mini"
 #define CAI_MODEL_O4_MINI_2025_04_16 "o4-mini-2025-04-16"
 #define CAI_MODEL_O4_MINI_DEEP_RESEARCH "o4-mini-deep-research"
-#define CAI_MODEL_O4_MINI_DEEP_RESEARCH_2025_06_26                        \
+#define CAI_MODEL_O4_MINI_DEEP_RESEARCH_2025_06_26                             \
   "o4-mini-deep-research-2025-06-26"
 #define CAI_MODEL_O3 "o3"
 #define CAI_MODEL_O3_2025_04_16 "o3-2025-04-16"
@@ -55,8 +55,7 @@ extern "C" {
 #define CAI_MODEL_O3_PRO "o3-pro"
 #define CAI_MODEL_O3_PRO_2025_06_10 "o3-pro-2025-06-10"
 #define CAI_MODEL_O3_DEEP_RESEARCH "o3-deep-research"
-#define CAI_MODEL_O3_DEEP_RESEARCH_2025_06_26                              \
-  "o3-deep-research-2025-06-26"
+#define CAI_MODEL_O3_DEEP_RESEARCH_2025_06_26 "o3-deep-research-2025-06-26"
 #define CAI_MODEL_O1 "o1"
 #define CAI_MODEL_O1_2024_12_17 "o1-2024-12-17"
 #define CAI_MODEL_O1_PRO "o1-pro"
@@ -70,20 +69,20 @@ extern "C" {
 #define CAI_MODEL_GPT_4O_2024_08_06 "gpt-4o-2024-08-06"
 #define CAI_MODEL_GPT_4O_2024_05_13 "gpt-4o-2024-05-13"
 #define CAI_MODEL_GPT_4O_AUDIO_PREVIEW "gpt-4o-audio-preview"
-#define CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_10_01                          \
+#define CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_10_01                              \
   "gpt-4o-audio-preview-2024-10-01"
-#define CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_12_17                          \
+#define CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_12_17                              \
   "gpt-4o-audio-preview-2024-12-17"
-#define CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2025_06_03                          \
+#define CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2025_06_03                              \
   "gpt-4o-audio-preview-2025-06-03"
 #define CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW "gpt-4o-mini-audio-preview"
-#define CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW_2024_12_17                     \
+#define CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW_2024_12_17                         \
   "gpt-4o-mini-audio-preview-2024-12-17"
 #define CAI_MODEL_GPT_4O_SEARCH_PREVIEW "gpt-4o-search-preview"
 #define CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW "gpt-4o-mini-search-preview"
-#define CAI_MODEL_GPT_4O_SEARCH_PREVIEW_2025_03_11                         \
+#define CAI_MODEL_GPT_4O_SEARCH_PREVIEW_2025_03_11                             \
   "gpt-4o-search-preview-2025-03-11"
-#define CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW_2025_03_11                    \
+#define CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW_2025_03_11                        \
   "gpt-4o-mini-search-preview-2025-03-11"
 #define CAI_MODEL_CHATGPT_4O_LATEST "chatgpt-4o-latest"
 #define CAI_MODEL_CODEX_MINI_LATEST "codex-mini-latest"
@@ -109,18 +108,18 @@ extern "C" {
 #define CAI_MODEL_GPT_3_5_TURBO_0125 "gpt-3.5-turbo-0125"
 #define CAI_MODEL_GPT_3_5_TURBO_16K_0613 "gpt-3.5-turbo-16k-0613"
 #define CAI_MODEL_COMPUTER_USE_PREVIEW "computer-use-preview"
-#define CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11                          \
+#define CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11                              \
   "computer-use-preview-2025-03-11"
 /** OpenRouter model id constants used by examples and integration tests. */
 #define CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE \
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 #define CAI_OPENROUTER_MODEL_FREE_ROUTER "openrouter/free"
-#define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE                       \
+#define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE                         \
   "poolside/laguna-xs.2:free"
 /** Default OpenAI Responses model used by examples and tests. */
 #define CAI_MODEL_DEFAULT_RESPONSES CAI_MODEL_GPT_5_NANO
 /** Default OpenRouter Responses-compatible model used by examples/tests. */
-#define CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES                              \
+#define CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES                                 \
   CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE
 
 /** Model capability flags returned by cai_model_info and cai_model_supports. */

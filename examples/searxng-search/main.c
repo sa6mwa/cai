@@ -120,7 +120,8 @@ int main(int argc, char **argv) {
     exit_code = print_error("cai_agent_run_auto_output", rc, &error);
     goto done;
   }
-  printf("%s\n", cai_output_text(output) != NULL ? cai_output_text(output) : "");
+  printf("%s\n",
+         cai_output_text(output) != NULL ? cai_output_text(output) : "");
   exit_code = 0;
 
 done:

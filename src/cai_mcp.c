@@ -99,35 +99,33 @@ LONEJSON_MAP_DEFINE(cai_mcp_initialize_client_info_map,
                     cai_mcp_initialize_client_info_fields);
 
 static const lonejson_field cai_mcp_initialize_params_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_params_doc,
-                                protocol_version, "protocolVersion"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_params_doc, protocol_version,
+                                "protocolVersion"),
     LONEJSON_FIELD_OBJECT(cai_mcp_initialize_params_doc, client_info,
-                          "clientInfo",
-                          &cai_mcp_initialize_client_info_map)};
+                          "clientInfo", &cai_mcp_initialize_client_info_map)};
 LONEJSON_MAP_DEFINE(cai_mcp_initialize_params_map,
                     cai_mcp_initialize_params_doc,
                     cai_mcp_initialize_params_fields);
 
 static const lonejson_field cai_mcp_call_params_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_call_params_doc, name, "name"),
-    LONEJSON_FIELD_JSON_VALUE(cai_mcp_call_params_doc, arguments,
-                              "arguments")};
+    LONEJSON_FIELD_JSON_VALUE(cai_mcp_call_params_doc, arguments, "arguments")};
 LONEJSON_MAP_DEFINE(cai_mcp_call_params_map, cai_mcp_call_params_doc,
                     cai_mcp_call_params_fields);
 
 static lonejson_status cai_mcp_spool_sink(void *user, const void *data,
                                           size_t len,
                                           lonejson_error *json_error) {
-  if (((lonejson_spooled *)user)->append((lonejson_spooled *)user, data, len,
-                                         json_error) == LONEJSON_STATUS_OK) {
+  if (((lonejson_spooled *)user)
+          ->append((lonejson_spooled *)user, data, len, json_error) ==
+      LONEJSON_STATUS_OK) {
     return LONEJSON_STATUS_OK;
   }
   return LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
-static lonejson_read_result cai_mcp_source_read(void *user,
-                                                unsigned char *buffer,
-                                                size_t capacity) {
+static lonejson_read_result
+cai_mcp_source_read(void *user, unsigned char *buffer, size_t capacity) {
   cai_mcp_source_reader *reader;
   lonejson_read_result result;
   size_t got;
@@ -136,8 +134,7 @@ static lonejson_read_result cai_mcp_source_read(void *user,
   result = lonejson_default_read_result();
   got = cai_source_read(reader->source, buffer, capacity, reader->error);
   if (reader->limit > 0U &&
-      (reader->total > reader->limit ||
-       got > reader->limit - reader->total)) {
+      (reader->total > reader->limit || got > reader->limit - reader->total)) {
     if (reader->error != NULL) {
       cai_set_error(reader->error, CAI_ERR_INVALID,
                     "MCP request body exceeded configured limit");
@@ -154,9 +151,8 @@ static lonejson_read_result cai_mcp_source_read(void *user,
   return result;
 }
 
-static lonejson_read_result cai_mcp_spooled_read(void *user,
-                                                 unsigned char *buffer,
-                                                 size_t capacity) {
+static lonejson_read_result
+cai_mcp_spooled_read(void *user, unsigned char *buffer, size_t capacity) {
   cai_mcp_spooled_reader *reader;
 
   reader = (cai_mcp_spooled_reader *)user;
@@ -229,24 +225,24 @@ static lonejson_status cai_mcp_lonejson_sink(void *user, const void *data,
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status
-cai_mcp_writer_key(lonejson_writer *writer, const char *key,
-                   lonejson_error *json_error) {
+static lonejson_status cai_mcp_writer_key(lonejson_writer *writer,
+                                          const char *key,
+                                          lonejson_error *json_error) {
   return writer->key(writer, key, strlen(key), json_error);
 }
 
-static lonejson_status
-cai_mcp_writer_string_cstr(lonejson_writer *writer, const char *value,
-                           lonejson_error *json_error) {
+static lonejson_status cai_mcp_writer_string_cstr(lonejson_writer *writer,
+                                                  const char *value,
+                                                  lonejson_error *json_error) {
   if (value == NULL) {
     value = "";
   }
   return writer->string(writer, value, strlen(value), json_error);
 }
 
-static lonejson_status
-cai_mcp_writer_id(lonejson_writer *writer, const lonejson_spooled *id,
-                  lonejson_error *json_error) {
+static lonejson_status cai_mcp_writer_id(lonejson_writer *writer,
+                                         const lonejson_spooled *id,
+                                         lonejson_error *json_error) {
   if (id != NULL && id->size_fn(id) > 0U) {
     return writer->json_value_spooled(writer, id, json_error);
   }
@@ -285,10 +281,9 @@ cai_mcp_writer_begin_jsonrpc(lonejson_writer *writer,
   return status;
 }
 
-static lonejson_status
-cai_mcp_writer_begin_result(lonejson_writer *writer,
-                            const lonejson_spooled *id,
-                            lonejson_error *json_error) {
+static lonejson_status cai_mcp_writer_begin_result(lonejson_writer *writer,
+                                                   const lonejson_spooled *id,
+                                                   lonejson_error *json_error) {
   lonejson_status status;
 
   status = cai_mcp_writer_begin_jsonrpc(writer, id, json_error);
@@ -298,9 +293,9 @@ cai_mcp_writer_begin_result(lonejson_writer *writer,
   return status;
 }
 
-static lonejson_status
-cai_mcp_writer_tool_content(lonejson_writer *writer, const char *text,
-                            lonejson_error *json_error) {
+static lonejson_status cai_mcp_writer_tool_content(lonejson_writer *writer,
+                                                   const char *text,
+                                                   lonejson_error *json_error) {
   lonejson_status status;
 
   status = cai_mcp_writer_key(writer, "content", json_error);
@@ -362,8 +357,7 @@ cai_mcp_writer_tool_success_end(lonejson_writer *writer,
   return status;
 }
 
-static int cai_mcp_write_tool_result(cai_sink *sink,
-                                     const lonejson_spooled *id,
+static int cai_mcp_write_tool_result(cai_sink *sink, const lonejson_spooled *id,
                                      const lonejson_spooled *structured,
                                      const char *error_text, int is_error,
                                      cai_error *error) {
@@ -372,8 +366,8 @@ static int cai_mcp_write_tool_result(cai_sink *sink,
   lonejson_status status;
 
   lonejson_error_init(&json_error);
-  status =
-      CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink, sink, &json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink,
+                                    sink, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_begin_result(&writer, id, &json_error);
   }
@@ -382,16 +376,14 @@ static int cai_mcp_write_tool_result(cai_sink *sink,
   }
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_tool_content(
-        &writer, is_error ? error_text : "structured JSON result",
-        &json_error);
+        &writer, is_error ? error_text : "structured JSON result", &json_error);
   }
   if (status == LONEJSON_STATUS_OK && !is_error) {
     status = cai_mcp_writer_key(&writer, "structuredContent", &json_error);
   }
   if (status == LONEJSON_STATUS_OK && !is_error) {
     if (structured != NULL && structured->size_fn(structured) > 0U) {
-      status = writer.json_value_spooled(&writer, structured,
-                                                  &json_error);
+      status = writer.json_value_spooled(&writer, structured, &json_error);
     } else {
       status = writer.null_fn(&writer, &json_error);
     }
@@ -421,14 +413,16 @@ static int cai_mcp_tool_stream_begin(cai_mcp_tool_stream_context *stream,
   lonejson_status status;
 
   lonejson_error_init(&stream->json_error);
-  status = CAI_LJ->writer_init_sink(CAI_LJ, &stream->writer, cai_mcp_lonejson_sink, stream->response, &stream->json_error);
+  status =
+      CAI_LJ->writer_init_sink(CAI_LJ, &stream->writer, cai_mcp_lonejson_sink,
+                               stream->response, &stream->json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_begin_result(&stream->writer, stream->id,
                                          &stream->json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = cai_mcp_writer_tool_success_begin(&stream->writer,
-                                               &stream->json_error);
+    status =
+        cai_mcp_writer_tool_success_begin(&stream->writer, &stream->json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = stream->value_stream.open(&stream->value_stream, &stream->writer,
@@ -454,13 +448,13 @@ static int cai_mcp_tool_stream_finish(cai_mcp_tool_stream_context *stream,
   }
   status = LONEJSON_STATUS_OK;
   if (stream->value_open) {
-    status = stream->value_stream.close(&stream->value_stream,
-                                        &stream->json_error);
+    status =
+        stream->value_stream.close(&stream->value_stream, &stream->json_error);
     stream->value_open = 0;
   }
   if (status == LONEJSON_STATUS_OK) {
-    status = cai_mcp_writer_tool_success_end(&stream->writer,
-                                             &stream->json_error);
+    status =
+        cai_mcp_writer_tool_success_end(&stream->writer, &stream->json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = stream->writer.end_object(&stream->writer, &stream->json_error);
@@ -507,9 +501,8 @@ static int cai_mcp_tool_stream_write(void *context, const void *bytes,
                               stream->json_error.message);
 }
 
-static int cai_mcp_set_header(cai_mcp_http_response *response,
-                              const char *name, const char *value,
-                              cai_error *error) {
+static int cai_mcp_set_header(cai_mcp_http_response *response, const char *name,
+                              const char *value, cai_error *error) {
   if (response->set_header == NULL) {
     return CAI_OK;
   }
@@ -560,8 +553,7 @@ static int cai_mcp_set_sse_headers(cai_mcp_http_response *response,
                                    cai_error *error) {
   int rc;
 
-  rc = cai_mcp_set_header(response, "content-type", "text/event-stream",
-                          error);
+  rc = cai_mcp_set_header(response, "content-type", "text/event-stream", error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -669,8 +661,8 @@ static int cai_mcp_write_error(cai_sink *sink, const lonejson_spooled *id,
   lonejson_status status;
 
   lonejson_error_init(&json_error);
-  status =
-      CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink, sink, &json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink,
+                                    sink, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_begin_jsonrpc(&writer, id, &json_error);
   }
@@ -702,12 +694,11 @@ static int cai_mcp_write_error(cai_sink *sink, const lonejson_spooled *id,
     status = writer.finish(&writer, &json_error);
   }
   writer.cleanup(&writer);
-  return cai_mcp_writer_error(status, &json_error,
-                              "failed to write MCP error", error);
+  return cai_mcp_writer_error(status, &json_error, "failed to write MCP error",
+                              error);
 }
 
-static int cai_mcp_write_initialize(cai_mcp_handler *handler,
-                                    cai_sink *sink,
+static int cai_mcp_write_initialize(cai_mcp_handler *handler, cai_sink *sink,
                                     const lonejson_spooled *id,
                                     cai_error *error) {
   lonejson_writer writer;
@@ -715,8 +706,8 @@ static int cai_mcp_write_initialize(cai_mcp_handler *handler,
   lonejson_status status;
 
   lonejson_error_init(&json_error);
-  status =
-      CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink, sink, &json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink,
+                                    sink, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_begin_result(&writer, id, &json_error);
   }
@@ -727,9 +718,8 @@ static int cai_mcp_write_initialize(cai_mcp_handler *handler,
     status = cai_mcp_writer_key(&writer, "protocolVersion", &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status =
-        cai_mcp_writer_string_cstr(&writer, handler->protocol_version,
-                                   &json_error);
+    status = cai_mcp_writer_string_cstr(&writer, handler->protocol_version,
+                                        &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_key(&writer, "capabilities", &json_error);
@@ -771,8 +761,7 @@ static int cai_mcp_write_initialize(cai_mcp_handler *handler,
     status = cai_mcp_writer_key(&writer, "version", &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
-    status =
-        cai_mcp_writer_string_cstr(&writer, handler->version, &json_error);
+    status = cai_mcp_writer_string_cstr(&writer, handler->version, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = writer.end_object(&writer, &json_error);
@@ -788,8 +777,7 @@ static int cai_mcp_write_initialize(cai_mcp_handler *handler,
   }
   writer.cleanup(&writer);
   return cai_mcp_writer_error(status, &json_error,
-                              "failed to write MCP initialize response",
-                              error);
+                              "failed to write MCP initialize response", error);
 }
 
 static int cai_mcp_write_ping(cai_sink *sink, const lonejson_spooled *id,
@@ -799,8 +787,8 @@ static int cai_mcp_write_ping(cai_sink *sink, const lonejson_spooled *id,
   lonejson_status status;
 
   lonejson_error_init(&json_error);
-  status =
-      CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink, sink, &json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink,
+                                    sink, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_begin_result(&writer, id, &json_error);
   }
@@ -831,8 +819,8 @@ static int cai_mcp_write_tools_list(cai_mcp_handler *handler, cai_sink *sink,
   lonejson_status status;
 
   lonejson_error_init(&json_error);
-  status =
-      CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink, sink, &json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_lonejson_sink,
+                                    sink, &json_error);
   if (status == LONEJSON_STATUS_OK) {
     status = cai_mcp_writer_begin_result(&writer, id, &json_error);
   }
@@ -870,8 +858,7 @@ static int cai_mcp_write_tools_list(cai_mcp_handler *handler, cai_sink *sink,
     if (status == LONEJSON_STATUS_OK) {
       status = writer.json_value_buffer(
           &writer, cai_tool_registry_schema_at(handler->tools, i),
-          strlen(cai_tool_registry_schema_at(handler->tools, i)),
-          &json_error);
+          strlen(cai_tool_registry_schema_at(handler->tools, i)), &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
       status = writer.end_object(&writer, &json_error);
@@ -905,17 +892,16 @@ static int cai_mcp_parse_call_params(const lonejson_spooled *params_spool,
   CAI_LJ_PRESERVE->init(CAI_LJ_PRESERVE, &cai_mcp_call_params_map, &params);
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, arguments);
-  if (params.arguments.methods->set_parse_sink(&params.arguments,
-                                         cai_mcp_spool_sink, arguments,
-                                         &json_error) != LONEJSON_STATUS_OK) {
+  if (params.arguments.methods->set_parse_sink(
+          &params.arguments, cai_mcp_spool_sink, arguments, &json_error) !=
+      LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to configure MCP arguments parser",
                                 json_error.message);
   }
   reader.cursor = *params_spool;
-  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_call_params_map, &params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to rewind MCP params",
@@ -970,8 +956,8 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
   rc = cai_mcp_parse_call_params(params_spool, &arguments, &name, error);
   if (rc != CAI_OK) {
     arguments.cleanup(&arguments);
-    return cai_mcp_write_error(sink, id, -32602,
-                               "Invalid tool call parameters", error);
+    return cai_mcp_write_error(sink, id, -32602, "Invalid tool call parameters",
+                               error);
   }
 
   if (handler->tool_output_max_bytes == CAI_MCP_TOOL_OUTPUT_UNLIMITED) {
@@ -996,11 +982,11 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
         arguments.cleanup(&arguments);
         return rc;
       }
-      rc = cai_mcp_write_tool_result(
-          sink, id, NULL,
-          error != NULL && error->message != NULL ? error->message
-                                                  : "tool failed",
-          1, error);
+      rc = cai_mcp_write_tool_result(sink, id, NULL,
+                                     error != NULL && error->message != NULL
+                                         ? error->message
+                                         : "tool failed",
+                                     1, error);
     } else {
       if (!stream_context.began) {
         rc = cai_mcp_write_tool_result(sink, id, NULL, NULL, 0, error);
@@ -1015,7 +1001,8 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
   }
 
   spool_config = lonejson_default_config();
-  spool_config.spool_default.memory_limit = handler->response_spool_memory_limit;
+  spool_config.spool_default.memory_limit =
+      handler->response_spool_memory_limit;
   rc = cai_lonejson_runtime_open(&spool_config, &spool_runtime, error);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, name);
@@ -1036,11 +1023,11 @@ static int cai_mcp_run_tool(cai_mcp_handler *handler, cai_sink *sink,
   }
   cai_sink_close(output_sink);
   if (rc != CAI_OK) {
-    rc = cai_mcp_write_tool_result(
-        sink, id, NULL,
-        error != NULL && error->message != NULL ? error->message
-                                                : "tool failed",
-        1, error);
+    rc = cai_mcp_write_tool_result(sink, id, NULL,
+                                   error != NULL && error->message != NULL
+                                       ? error->message
+                                       : "tool failed",
+                                   1, error);
   } else {
     rc = cai_mcp_write_tool_result(sink, id, &output, NULL, 0, error);
   }
@@ -1061,12 +1048,11 @@ static int cai_mcp_parse_request(cai_source *source, size_t limit,
 
   CAI_LJ_PRESERVE->init(CAI_LJ_PRESERVE, &cai_mcp_jsonrpc_map, doc);
   lonejson_error_init(&json_error);
-  if (doc->id.methods->set_parse_sink(&doc->id, cai_mcp_spool_sink,
-                                         id_spool, &json_error) !=
-      LONEJSON_STATUS_OK ||
+  if (doc->id.methods->set_parse_sink(&doc->id, cai_mcp_spool_sink, id_spool,
+                                      &json_error) != LONEJSON_STATUS_OK ||
       doc->params.methods->set_parse_sink(&doc->params, cai_mcp_spool_sink,
-                                         params_spool, &json_error) !=
-          LONEJSON_STATUS_OK) {
+                                          params_spool,
+                                          &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to configure MCP request parser",
                                 json_error.message);
@@ -1077,8 +1063,7 @@ static int cai_mcp_parse_request(cai_source *source, size_t limit,
   reader.limit = limit;
   if (CAI_LJ_PRESERVE->parse_reader(CAI_LJ_PRESERVE, &cai_mcp_jsonrpc_map, doc,
                                     cai_mcp_source_read, &reader,
-                                    &json_error) !=
-      LONEJSON_STATUS_OK) {
+                                    &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse MCP request",
                                 json_error.message);
@@ -1086,30 +1071,30 @@ static int cai_mcp_parse_request(cai_source *source, size_t limit,
   return CAI_OK;
 }
 
-static int cai_mcp_parse_initialize_params(
-    const lonejson_spooled *params_spool, cai_mcp_initialize_params_doc *params,
-    cai_error *error) {
+static int
+cai_mcp_parse_initialize_params(const lonejson_spooled *params_spool,
+                                cai_mcp_initialize_params_doc *params,
+                                cai_error *error) {
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
 
   memset(params, 0, sizeof(*params));
-  CAI_LJ_PRESERVE->init(CAI_LJ_PRESERVE, &cai_mcp_initialize_params_map, params);
+  CAI_LJ_PRESERVE->init(CAI_LJ_PRESERVE, &cai_mcp_initialize_params_map,
+                        params);
   if (params_spool == NULL || params_spool->size_fn(params_spool) == 0U) {
     return CAI_OK;
   }
   reader.cursor = *params_spool;
   lonejson_error_init(&json_error);
-  if (reader.cursor.rewind(&reader.cursor, &json_error) !=
-      LONEJSON_STATUS_OK) {
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_params_map, params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to rewind MCP initialize params",
                                 json_error.message);
   }
-  if (CAI_LJ_PRESERVE->parse_reader(CAI_LJ_PRESERVE,
-                                    &cai_mcp_initialize_params_map, params,
-                                    cai_mcp_spooled_read, &reader,
-                                    &json_error) != LONEJSON_STATUS_OK) {
+  if (CAI_LJ_PRESERVE->parse_reader(
+          CAI_LJ_PRESERVE, &cai_mcp_initialize_params_map, params,
+          cai_mcp_spooled_read, &reader, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_params_map, params);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse MCP initialize params",
@@ -1158,12 +1143,11 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
   }
   memset(handler, 0, sizeof(*handler));
   handler->name = cai_strdup(NULL, config->name != NULL ? config->name : "cai");
-  handler->version =
-      cai_strdup(NULL, config->version != NULL ? config->version
-                                               : CAI_VERSION_STRING);
-  handler->protocol_version = cai_strdup(
-      NULL, config->protocol_version != NULL ? config->protocol_version
-                                             : CAI_MCP_PROTOCOL_VERSION);
+  handler->version = cai_strdup(
+      NULL, config->version != NULL ? config->version : CAI_VERSION_STRING);
+  handler->protocol_version = cai_strdup(NULL, config->protocol_version != NULL
+                                                   ? config->protocol_version
+                                                   : CAI_MCP_PROTOCOL_VERSION);
   if (handler->name == NULL || handler->version == NULL ||
       handler->protocol_version == NULL) {
     cai_mcp_handler_destroy(handler);
@@ -1172,18 +1156,18 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
   }
   handler->tools = config->tools;
   handler->request_max_bytes = config->request_max_bytes != 0U
-                                    ? config->request_max_bytes
-                                    : 1024U * 1024U;
+                                   ? config->request_max_bytes
+                                   : 1024U * 1024U;
   handler->response_spool_memory_limit =
       config->response_spool_memory_limit != 0U
           ? config->response_spool_memory_limit
           : 128U * 1024U;
-  handler->tool_output_max_bytes =
-      config->tool_output_max_bytes != 0U
-          ? config->tool_output_max_bytes
-          : CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES;
+  handler->tool_output_max_bytes = config->tool_output_max_bytes != 0U
+                                       ? config->tool_output_max_bytes
+                                       : CAI_MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES;
   handler->enable_sessions = config->enable_sessions ? 1 : 0;
-  handler->disable_origin_validation = config->disable_origin_validation ? 1 : 0;
+  handler->disable_origin_validation =
+      config->disable_origin_validation ? 1 : 0;
   handler->require_protocol_version = config->require_protocol_version ? 1 : 0;
   if (config->session != NULL) {
     handler->session = *config->session;
@@ -1191,8 +1175,9 @@ int cai_mcp_handler_new(const cai_mcp_handler_config *config,
   handler->session_context = config->session_context;
   handler->user_context = config->user_context;
   if (config->allowed_origin_count > 0U) {
-    handler->allowed_origins = (char **)cai_alloc(
-        NULL, config->allowed_origin_count * sizeof(handler->allowed_origins[0]));
+    handler->allowed_origins =
+        (char **)cai_alloc(NULL, config->allowed_origin_count *
+                                     sizeof(handler->allowed_origins[0]));
     if (handler->allowed_origins == NULL) {
       cai_mcp_handler_destroy(handler);
       return cai_set_error(error, CAI_ERR_NOMEM,
@@ -1238,8 +1223,9 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
 
   if (handler == NULL || request == NULL || response == NULL ||
       response->body == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "MCP handler, request, and response body are required");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP handler, request, and response body are required");
   }
   response->status = 200;
   reply_sink = response->body;
@@ -1256,8 +1242,8 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
       !cai_mcp_origin_allowed(handler, origin)) {
     response->status = 403;
     cai_mcp_set_header(response, "content-type", "application/json", error);
-    return cai_mcp_write_error(response->body, NULL, -32000,
-                               "Forbidden origin", error);
+    return cai_mcp_write_error(response->body, NULL, -32000, "Forbidden origin",
+                               error);
   }
   if (request->method != NULL && strcmp(request->method, "DELETE") == 0) {
     if (!cai_mcp_session_enabled(handler)) {
@@ -1273,12 +1259,11 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                  "Missing MCP session id", error);
     }
     if (handler->session.destroy != NULL) {
-      rc = handler->session.destroy(handler->session_context, session_id,
-                                    error);
+      rc =
+          handler->session.destroy(handler->session_context, session_id, error);
       if (rc != CAI_OK) {
         response->status = 404;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         return cai_mcp_write_error(response->body, NULL, -32001,
                                    "MCP session not found", error);
       }
@@ -1299,8 +1284,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     if (cai_mcp_session_enabled(handler)) {
       if (session_id == NULL || session_id[0] == '\0') {
         response->status = 400;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         return cai_mcp_write_error(response->body, NULL, -32001,
                                    "Missing MCP session id", error);
       }
@@ -1309,8 +1293,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                  &session_state, error);
       if (rc != CAI_OK) {
         response->status = 404;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         return cai_mcp_write_error(response->body, NULL, -32001,
                                    "MCP session not found", error);
       }
@@ -1319,8 +1302,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                  &session_state, error);
       if (rc != CAI_OK) {
         response->status = 500;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         return cai_mcp_write_error(response->body, NULL, -32000,
                                    "Failed to save MCP session", error);
       }
@@ -1384,8 +1366,8 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
   if (rc != CAI_OK) {
     response->status = 400;
     cai_mcp_set_header(response, "content-type", "application/json", error);
-    rc = cai_mcp_write_error(response->body, NULL, -32700, "Parse error",
-                             error);
+    rc =
+        cai_mcp_write_error(response->body, NULL, -32700, "Parse error", error);
     goto done;
   }
   if (doc.jsonrpc == NULL || strcmp(doc.jsonrpc, "2.0") != 0) {
@@ -1424,8 +1406,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
                                  &session_state, error);
       if (rc != CAI_OK) {
         response->status = 500;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         rc = cai_mcp_write_error(response->body, &id_spool, -32000,
                                  "Failed to save MCP session", error);
         goto done;
@@ -1478,8 +1459,8 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
     }
     reply_sink = sse_sink;
   } else {
-    rc = cai_mcp_set_header(response, "content-type", "application/json",
-                            error);
+    rc =
+        cai_mcp_set_header(response, "content-type", "application/json", error);
     if (rc != CAI_OK) {
       goto done;
     }
@@ -1502,8 +1483,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
       rc = cai_mcp_parse_initialize_params(&params_spool, &init_params, error);
       if (rc != CAI_OK) {
         response->status = 400;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         rc = cai_mcp_write_error(response->body, &id_spool, -32602,
                                  "Invalid initialize params", error);
         goto done;
@@ -1512,12 +1492,12 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
       session_state.initialized = 0;
       session_state.created_at = cai_mcp_now();
       session_state.last_seen_at = session_state.created_at;
-      rc = cai_mcp_copy_fixed(
-          session_state.protocol_version,
-          sizeof(session_state.protocol_version),
-          init_params.protocol_version != NULL ? init_params.protocol_version
-                                               : handler->protocol_version,
-          "MCP protocol version is too large", error);
+      rc = cai_mcp_copy_fixed(session_state.protocol_version,
+                              sizeof(session_state.protocol_version),
+                              init_params.protocol_version != NULL
+                                  ? init_params.protocol_version
+                                  : handler->protocol_version,
+                              "MCP protocol version is too large", error);
       if (rc == CAI_OK) {
         rc = cai_mcp_copy_fixed(session_state.client_name,
                                 sizeof(session_state.client_name),
@@ -1538,16 +1518,14 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_params_map, &init_params);
       if (rc != CAI_OK) {
         response->status = 500;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         rc = cai_mcp_write_error(response->body, &id_spool, -32000,
                                  "Failed to create MCP session", error);
         goto done;
       }
       if (created_session_id[0] == '\0') {
         response->status = 500;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         rc = cai_mcp_write_error(response->body, &id_spool, -32000,
                                  "MCP session id is empty", error);
         goto done;
@@ -1556,8 +1534,7 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
       handler->last_session_id = cai_strdup(NULL, created_session_id);
       if (handler->last_session_id == NULL) {
         response->status = 500;
-        cai_mcp_set_header(response, "content-type", "application/json",
-                           error);
+        cai_mcp_set_header(response, "content-type", "application/json", error);
         rc = cai_mcp_write_error(response->body, &id_spool, -32000,
                                  "Failed to allocate MCP session id", error);
         goto done;
@@ -1574,11 +1551,10 @@ int cai_mcp_handler_handle_http(cai_mcp_handler *handler,
   } else if (strcmp(doc.method, "tools/list") == 0) {
     rc = cai_mcp_write_tools_list(handler, reply_sink, &id_spool, error);
   } else if (strcmp(doc.method, "tools/call") == 0) {
-    rc = cai_mcp_run_tool(handler, reply_sink, &id_spool, &params_spool,
-                          error);
+    rc = cai_mcp_run_tool(handler, reply_sink, &id_spool, &params_spool, error);
   } else {
-    rc = cai_mcp_write_error(reply_sink, &id_spool, -32601,
-                             "Method not found", error);
+    rc = cai_mcp_write_error(reply_sink, &id_spool, -32601, "Method not found",
+                             error);
   }
 
 done:

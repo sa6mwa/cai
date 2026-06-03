@@ -101,17 +101,15 @@ static void trim_ascii(char *s) {
   char *end;
 
   start = s;
-  while (*start == ' ' || *start == '\t' || *start == '\r' ||
-         *start == '\n') {
+  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
     start++;
   }
   if (start != s) {
     memmove(s, start, strlen(start) + 1U);
   }
   end = s + strlen(s);
-  while (end > s &&
-         (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
-          end[-1] == '\n')) {
+  while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+                     end[-1] == '\n')) {
     end--;
   }
   *end = '\0';
@@ -132,9 +130,8 @@ static void logger_bundle_init(logger_bundle *loggers) {
   config.output = pslog_output_from_fp(stderr, 0);
   loggers->server_root = pslog_new(&config);
   if (loggers->server_root != NULL) {
-    loggers->server =
-        loggers->server_root->withf(loggers->server_root, "component=%s",
-                                    "mcp-example");
+    loggers->server = loggers->server_root->withf(
+        loggers->server_root, "component=%s", "mcp-example");
   }
   pslog_default_config(&config);
   config.mode = PSLOG_MODE_CONSOLE;
@@ -147,9 +144,8 @@ static void logger_bundle_init(logger_bundle *loggers) {
   config.output = pslog_output_from_fp(stderr, 0);
   loggers->cai_root = pslog_new(&config);
   if (loggers->cai_root != NULL) {
-    loggers->cai =
-        loggers->cai_root->withf(loggers->cai_root, "component=%s",
-                                 "cai-client");
+    loggers->cai = loggers->cai_root->withf(loggers->cai_root, "component=%s",
+                                            "cai-client");
   }
 }
 
@@ -264,9 +260,8 @@ static int read_headers(http_request_state *request) {
       return -1;
     }
     buffer[len++] = c;
-    if (len >= 4U && buffer[len - 4U] == '\r' &&
-        buffer[len - 3U] == '\n' && buffer[len - 2U] == '\r' &&
-        buffer[len - 1U] == '\n') {
+    if (len >= 4U && buffer[len - 4U] == '\r' && buffer[len - 3U] == '\n' &&
+        buffer[len - 2U] == '\r' && buffer[len - 1U] == '\n') {
       break;
     }
   }
@@ -498,8 +493,8 @@ static int clipboard_tool(void *context, const void *params, void *result,
   out->ok = 0;
   out->has_ok = 1;
   if (strlen(args->text) > CAI_MCP_EXAMPLE_CLIPBOARD_LIMIT) {
-    out->message = cai_tool_result_strdup("clipboard input exceeds 1 MiB",
-                                          error);
+    out->message =
+        cai_tool_result_strdup("clipboard input exceeds 1 MiB", error);
     return out->message != NULL ? CAI_OK : CAI_ERR_NOMEM;
   }
   if (pipe(pipe_fds) != 0) {
@@ -532,8 +527,8 @@ static int clipboard_tool(void *context, const void *params, void *result,
     out->message = cai_tool_result_strdup("xclip failed", error);
   } else {
     out->ok = 1;
-    out->message = cai_tool_result_strdup("copied text to X11 clipboard",
-                                          error);
+    out->message =
+        cai_tool_result_strdup("copied text to X11 clipboard", error);
   }
   return out->message != NULL ? CAI_OK : CAI_ERR_NOMEM;
 }
@@ -637,8 +632,7 @@ done:
   cai_source_close(source);
   if (rc != CAI_OK) {
     pslog_errorf(log, "mcp request failed", "status=%d error=%s", rc,
-                 error.message != NULL ? error.message
-                                       : cai_status_string(rc));
+                 error.message != NULL ? error.message : cai_status_string(rc));
   } else {
     pslog_infof(log, "mcp request completed", "http_status=%d",
                 response.status);
@@ -737,8 +731,8 @@ int main(int argc, char **argv) {
   client_config.logger = loggers.cai;
   rc = cai_client_open(&client_config, &client_handle, &error);
   if (rc != CAI_OK) {
-    pslog_errorf(loggers.server, "cai client setup failed", "status=%d error=%s",
-                 rc,
+    pslog_errorf(loggers.server, "cai client setup failed",
+                 "status=%d error=%s", rc,
                  error.message != NULL ? error.message : cai_status_string(rc));
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
@@ -766,8 +760,7 @@ int main(int argc, char **argv) {
   if (rc != CAI_OK) {
     pslog_errorf(loggers.server, "tool registry setup failed",
                  "status=%d error=%s", rc,
-                 error.message != NULL ? error.message
-                                       : cai_status_string(rc));
+                 error.message != NULL ? error.message : cai_status_string(rc));
     cai_tool_registry_destroy(registry);
     cai_client_close(client_handle);
     cai_error_cleanup(&error);
@@ -782,8 +775,7 @@ int main(int argc, char **argv) {
   if (rc != CAI_OK) {
     pslog_errorf(loggers.server, "MCP handler setup failed",
                  "status=%d error=%s", rc,
-                 error.message != NULL ? error.message
-                                       : cai_status_string(rc));
+                 error.message != NULL ? error.message : cai_status_string(rc));
     cai_tool_registry_destroy(registry);
     cai_client_close(client_handle);
     cai_error_cleanup(&error);
@@ -805,8 +797,8 @@ int main(int argc, char **argv) {
     printf("%u\n", (unsigned int)actual_port);
     fflush(stdout);
   }
-  pslog_infof(loggers.server, "mcp example server listening",
-              "addr=%s port=%d", "127.0.0.1", (int)actual_port);
+  pslog_infof(loggers.server, "mcp example server listening", "addr=%s port=%d",
+              "127.0.0.1", (int)actual_port);
   for (;;) {
     if (request_limit > 0L && handled >= request_limit) {
       break;
@@ -824,8 +816,8 @@ int main(int argc, char **argv) {
     handled++;
     close(client);
   }
-  pslog_infof(loggers.server, "mcp example server stopping",
-              "requests=%d", (int)handled);
+  pslog_infof(loggers.server, "mcp example server stopping", "requests=%d",
+              (int)handled);
   close(listener);
   cai_mcp_handler_destroy(handler);
   cai_tool_registry_destroy(registry);

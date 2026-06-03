@@ -1,8 +1,8 @@
 #include <cai/cai.h>
 #include <cai/tools/read.h>
 
-#include <lonejson.h>
 #include <limits.h>
+#include <lonejson.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,8 +80,8 @@ static int fuzz_read_root(char *root, size_t root_size) {
   char template_path[PATH_MAX];
 
   if (!initialized) {
-    snprintf(template_path, sizeof(template_path), "/tmp/cai-read-fuzz-%ld-XXXXXX",
-             (long)getpid());
+    snprintf(template_path, sizeof(template_path),
+             "/tmp/cai-read-fuzz-%ld-XXXXXX", (long)getpid());
     if (mkdtemp(template_path) == NULL) {
       return 0;
     }
