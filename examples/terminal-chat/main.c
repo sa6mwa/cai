@@ -1,3 +1,4 @@
+#include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/read.h>
@@ -94,7 +95,11 @@ static const char *searxng_base_url(void) {
 
 static void print_help(const char *program) {
   fprintf(stderr,
-          "usage: %s [--exec-tool-dir <path>] [--read-tool-dir <path>]\n\n"
+          "usage: %s [--chatgpt-auth-json <path>] [--exec-tool-dir <path>] "
+          "[--read-tool-dir <path>]\n\n"
+          "  --chatgpt-auth-json <path>\n"
+          "                          Use ChatGPT subscription auth from a "
+          "Codex-style auth.json file.\n"
           "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
           "  --read-tool-dir <path>  Register list_files/read_file rooted to "
           "<path>.\n"
@@ -104,12 +109,22 @@ static void print_help(const char *program) {
 }
 
 static int parse_args(int argc, char **argv, const char **exec_tool_dir,
-                      const char **read_tool_dir) {
+                      const char **read_tool_dir,
+                      const char **chatgpt_auth_json) {
   int i;
 
   *exec_tool_dir = NULL;
   *read_tool_dir = NULL;
+  *chatgpt_auth_json = NULL;
   for (i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--chatgpt-auth-json") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--chatgpt-auth-json requires a path\n");
+        return 0;
+      }
+      *chatgpt_auth_json = argv[++i];
+      continue;
+    }
     if (strcmp(argv[i], "--exec-tool-dir") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
         fprintf(stderr, "--exec-tool-dir requires a path\n");
@@ -193,7 +208,9 @@ int main(int argc, char **argv) {
   cai_read_tool_config read_config;
   cai_searxng_tool_config searxng_config;
   cai_todo_tool_config todo_config;
+  cai_chatgpt_auth_config chatgpt_auth_config;
   cai_stream_sinks stream_sinks;
+  cai_chatgpt_auth *chatgpt_auth;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
@@ -206,6 +223,7 @@ int main(int argc, char **argv) {
   char *dotenv_api_key;
   const char *exec_tool_dir;
   const char *read_tool_dir;
+  const char *chatgpt_auth_json;
   int has_context_percent;
   char line[4096];
   int exit_code;
@@ -215,11 +233,13 @@ int main(int argc, char **argv) {
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
   cai_run_options_init(&run_options);
+  cai_chatgpt_auth_config_init(&chatgpt_auth_config);
   memset(&exec_config, 0, sizeof(exec_config));
   memset(&read_config, 0, sizeof(read_config));
   memset(&searxng_config, 0, sizeof(searxng_config));
   memset(&todo_config, 0, sizeof(todo_config));
-  rc = parse_args(argc, argv, &exec_tool_dir, &read_tool_dir);
+  rc = parse_args(argc, argv, &exec_tool_dir, &read_tool_dir,
+                  &chatgpt_auth_json);
   if (rc < 0) {
     return 0;
   }
@@ -277,6 +297,7 @@ int main(int argc, char **argv) {
     read_config.content_max_bytes = 1024U * 1024U;
   }
   client = NULL;
+  chatgpt_auth = NULL;
   agent = NULL;
   session = NULL;
   stdout_sink = NULL;
@@ -301,10 +322,23 @@ int main(int argc, char **argv) {
     fprintf(stderr, "read_file enabled with root: %s\n", read_tool_dir);
   }
 
-  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
-  if (rc != CAI_OK) {
-    exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
-    goto done;
+  if (chatgpt_auth_json != NULL) {
+    chatgpt_auth_config.auth_json_path = chatgpt_auth_json;
+    rc = cai_chatgpt_auth_open(&chatgpt_auth_config, &chatgpt_auth, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_chatgpt_auth_open", rc, &error);
+      goto done;
+    }
+    client_config.chatgpt_auth = chatgpt_auth;
+    fprintf(stderr, "ChatGPT subscription auth enabled: %s\n",
+            chatgpt_auth_json);
+  } else {
+    rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key,
+                                         &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
+      goto done;
+    }
   }
   rc = cai_client_open(&client_config, &client, &error);
   if (rc != CAI_OK) {
@@ -430,6 +464,7 @@ done:
   if (client != NULL) {
     client->close(client);
   }
+  cai_chatgpt_auth_close(chatgpt_auth);
   cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return exit_code;

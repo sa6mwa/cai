@@ -1,10 +1,11 @@
 # CAI Examples
 
-These examples are built by default with `CAI_BUILD_EXAMPLES=ON`. They call the
-real OpenAI API when run, so they require `OPENAI_API_KEY` in the environment
-or a repo-local `.env` file containing `OPENAI_API_KEY=...`. The examples load
-that dotenv file explicitly and pass the parsed key as `cai_client_config.api_key`
-or `cai.open({ api_key = ... })`.
+These examples are built by default with `CAI_BUILD_EXAMPLES=ON`. Most call the
+real OpenAI API when run, so they require either `OPENAI_API_KEY` in the
+environment, a repo-local `.env` file containing `OPENAI_API_KEY=...`, or an
+explicit ChatGPT subscription auth file for examples that support
+`CAI_CHATGPT_AUTH_JSON`. The examples load dotenv files explicitly and pass the
+parsed key as `cai_client_config.api_key` or `cai.open({ api_key = ... })`.
 
 `cai_client_open` itself does not implicitly load dotenv files. Applications
 that want dotenv support should call `cai_load_dotenv_api_key` explicitly, pass
@@ -12,6 +13,10 @@ the returned key to `cai_client_config.api_key`, then release it with
 `cai_string_destroy` after opening the client. Lua callers can use
 `cai.load_dotenv_api_key(path, env_name)` and pass the returned string as
 `api_key`.
+
+ChatGPT subscription login is also explicit. Run `run-chatgpt-login` to create
+a Codex-style auth file through the browser OAuth flow, then pass that same
+path to examples that support `CAI_CHATGPT_AUTH_JSON`.
 
 The agent-oriented examples use the method-style handle facade (`client->...`,
 `agent->...`, `session->...`). Raw Responses examples still use free functions
@@ -34,6 +39,19 @@ For automated verification, the repo exposes two narrower smoke paths:
 ```sh
 make -C examples run-basic-response
 ```
+
+## ChatGPT Login
+
+Start a local callback listener, open the ChatGPT OAuth URL, and write a
+Codex-style auth file:
+
+```sh
+make -C examples run-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+```
+
+Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
+callback port is unavailable. The example is intentionally interactive; local
+unit tests mock the callback and token exchange flow.
 
 ## OpenRouter Response
 
@@ -228,6 +246,7 @@ only returns UTF-8 text without unsafe control characters.
 OPENAI_API_KEY=... make -C examples run-terminal-chat
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+make -C examples run-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 ```
 
 Optional local todo isolation:

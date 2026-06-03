@@ -7602,6 +7602,7 @@ static void test_chatgpt_auth_refresh_retry(test_state *state) {
   stored = NULL;
   memset(&server, 0, sizeof(server));
   server.pid = -1;
+  memset(&response, 0, sizeof(response));
   cai_error_init(&error);
   if (mkdtemp(template_dir) == NULL) {
     test_fail(state, "chatgpt_auth_tmpdir", "mkdtemp failed");
@@ -7812,6 +7813,208 @@ cleanup:
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_stream_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
+static void test_chatgpt_login_authorize_url(test_state *state) {
+  cai_chatgpt_login_config config;
+  cai_chatgpt_login *login;
+  cai_error error;
+  char *authorize_url;
+
+  cai_error_init(&error);
+  cai_chatgpt_login_config_init(&config);
+  config.auth_json_path = "/tmp/cai-auth-login-url.json";
+  config.redirect_uri = "http://localhost:1455/auth/callback";
+  config.issuer = "https://auth.example.test/";
+  config.state = "state-fixed";
+  config.code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
+  config.originator = "cai-test";
+  login = NULL;
+  authorize_url = NULL;
+  expect_int(state, "chatgpt_login_start",
+             cai_chatgpt_login_start(&config, &login, &authorize_url, &error),
+             CAI_OK);
+  expect_substr(state, "chatgpt_login_authorize_base", authorize_url,
+                "https://auth.example.test/oauth/authorize?");
+  expect_substr(state, "chatgpt_login_authorize_client", authorize_url,
+                "client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID);
+  expect_substr(state, "chatgpt_login_authorize_redirect", authorize_url,
+                "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback");
+  expect_substr(state, "chatgpt_login_authorize_scope", authorize_url,
+                "scope=openid%20profile%20email%20offline_access%20"
+                "api.connectors.read%20api.connectors.invoke");
+  expect_substr(state, "chatgpt_login_authorize_challenge", authorize_url,
+                "code_challenge=QFVFIYowA-CaLwYQKnkBmBcuiBpr_RSxgOKjKtT9nlc");
+  expect_substr(state, "chatgpt_login_authorize_s256", authorize_url,
+                "code_challenge_method=S256");
+  expect_substr(state, "chatgpt_login_authorize_state", authorize_url,
+                "state=state-fixed");
+  expect_substr(state, "chatgpt_login_authorize_orgs", authorize_url,
+                "id_token_add_organizations=true");
+  expect_substr(state, "chatgpt_login_authorize_flow", authorize_url,
+                "codex_cli_simplified_flow=true");
+  expect_substr(state, "chatgpt_login_authorize_originator", authorize_url,
+                "originator=cai-test");
+  expect_int(state, "chatgpt_login_completed_initial",
+             cai_chatgpt_login_completed(login), 0L);
+  cai_string_destroy(authorize_url);
+  cai_chatgpt_login_close(login);
+  cai_error_cleanup(&error);
+}
+
+static void test_chatgpt_login_callback_validation(test_state *state) {
+  cai_chatgpt_login_config config;
+  cai_chatgpt_login_request request;
+  cai_chatgpt_login_response response;
+  cai_chatgpt_login *login;
+  cai_error error;
+  char *authorize_url;
+
+  cai_error_init(&error);
+  cai_chatgpt_login_config_init(&config);
+  config.auth_json_path = "/tmp/cai-auth-login-validation.json";
+  config.redirect_uri = "http://localhost:1455/auth/callback";
+  config.issuer = "https://auth.example.test";
+  config.state = "state-fixed";
+  config.code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
+  login = NULL;
+  authorize_url = NULL;
+  expect_int(state, "chatgpt_login_validation_start",
+             cai_chatgpt_login_start(&config, &login, &authorize_url, &error),
+             CAI_OK);
+  memset(&request, 0, sizeof(request));
+  memset(&response, 0, sizeof(response));
+  request.method = "GET";
+  request.target = "/auth/callback?code=mock-code&state=wrong";
+  expect_int(
+      state, "chatgpt_login_state_mismatch",
+      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
+      CAI_OK);
+  expect_int(state, "chatgpt_login_state_status", response.status, 400L);
+  expect_int(state, "chatgpt_login_state_completed", response.completed, 1L);
+  expect_int(state, "chatgpt_login_state_not_success",
+             cai_chatgpt_login_completed(login), 0L);
+  cai_chatgpt_login_response_cleanup(&response);
+
+  request.method = "POST";
+  request.target = "/auth/callback?code=mock-code&state=state-fixed";
+  expect_int(
+      state, "chatgpt_login_method_reject",
+      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
+      CAI_OK);
+  expect_int(state, "chatgpt_login_method_status", response.status, 405L);
+  expect_int(state, "chatgpt_login_method_completed", response.completed, 0L);
+  cai_chatgpt_login_response_cleanup(&response);
+
+  request.method = "GET";
+  request.target = "/other?code=mock-code&state=state-fixed";
+  expect_int(
+      state, "chatgpt_login_path_reject",
+      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
+      CAI_OK);
+  expect_int(state, "chatgpt_login_path_status", response.status, 404L);
+  expect_int(state, "chatgpt_login_path_completed", response.completed, 0L);
+  cai_chatgpt_login_response_cleanup(&response);
+  cai_string_destroy(authorize_url);
+  cai_chatgpt_login_close(login);
+  cai_error_cleanup(&error);
+}
+
+static void test_chatgpt_login_callback_exchange(test_state *state) {
+  static const char token_body[] =
+      "{\"id_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.id\","
+      "\"access_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+      "\"refresh_token\":\"refresh-new\",\"account_id\":\"acct_login\"}";
+  static const char *required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "Content-Type: application/x-www-form-urlencoded",
+      "grant_type=authorization_code",
+      "code=mock-code",
+      "redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback",
+      "client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID,
+      "code_verifier=test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body}};
+  char template_dir[] = "/tmp/cai-login-test-XXXXXX";
+  char auth_path[PATH_MAX];
+  char *stored;
+  http_mock_server server;
+  cai_chatgpt_login_config config;
+  cai_chatgpt_login_request request;
+  cai_chatgpt_login_response response;
+  cai_chatgpt_login *login;
+  cai_error error;
+  char *authorize_url;
+  int server_opened;
+
+  stored = NULL;
+  login = NULL;
+  authorize_url = NULL;
+  server_opened = 0;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_login_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  if (http_mock_server_open_script(state, "chatgpt_login_exchange_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_login_config_init(&config);
+  config.auth_json_path = auth_path;
+  config.redirect_uri = "http://127.0.0.1:1455/auth/callback";
+  config.issuer = server.base_url;
+  config.state = "state-fixed";
+  config.code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
+  expect_int(state, "chatgpt_login_exchange_start",
+             cai_chatgpt_login_start(&config, &login, &authorize_url, &error),
+             CAI_OK);
+  memset(&request, 0, sizeof(request));
+  memset(&response, 0, sizeof(response));
+  request.method = "GET";
+  request.target = "/auth/callback?code=mock-code&state=state-fixed";
+  expect_int(
+      state, "chatgpt_login_exchange_callback",
+      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
+      CAI_OK);
+  expect_int(state, "chatgpt_login_exchange_status", response.status, 200L);
+  expect_int(state, "chatgpt_login_exchange_completed_response",
+             response.completed, 1L);
+  expect_int(state, "chatgpt_login_exchange_completed",
+             cai_chatgpt_login_completed(login), 1L);
+  expect_substr(state, "chatgpt_login_exchange_body", response.body,
+                "ChatGPT login complete");
+  stored = read_file_or_die(auth_path);
+  expect_substr(state, "chatgpt_login_persisted_mode", stored,
+                "\"auth_mode\":\"chatgpt\"");
+  expect_substr(state, "chatgpt_login_persisted_access", stored,
+                "\"access_token\":\"eyJhbGciOiJub25lIn0."
+                "eyJleHAiOjQxMDI0NDQ4MDB9.new\"");
+  expect_substr(state, "chatgpt_login_persisted_refresh", stored,
+                "\"refresh_token\":\"refresh-new\"");
+  expect_substr(state, "chatgpt_login_persisted_account", stored,
+                "\"account_id\":\"acct_login\"");
+
+cleanup:
+  cai_chatgpt_login_response_cleanup(&response);
+  cai_string_destroy(authorize_url);
+  cai_chatgpt_login_close(login);
+  free(stored);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_login_exchange_mock", server.pid,
                       &server.child_status);
   }
   unlink(auth_path);
@@ -15904,6 +16107,10 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_refresh_retry", test_chatgpt_auth_refresh_retry},
     {"chatgpt_auth_stream_refresh_retry",
      test_chatgpt_auth_stream_refresh_retry},
+    {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
+    {"chatgpt_login_callback_validation",
+     test_chatgpt_login_callback_validation},
+    {"chatgpt_login_callback_exchange", test_chatgpt_login_callback_exchange},
     {"http_retrieve_response", test_http_retrieve_response},
     {"http_cancel_response", test_http_cancel_response},
     {"http_delete_response", test_http_delete_response},

@@ -76,11 +76,11 @@ The verification tiers are split intentionally:
   Tarball URLs and SHA-256 values are pinned in CMake; sibling checkout
   artifacts are not dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
-  libcurl, `lonejson.h` plus `liblonejson`, and `pslog.h`. The discovered
-  `liblonejson` must match cai's required ABI generation (`liblonejson.so.16`
-  on Linux, `liblonejson.16.dylib` on Darwin). `auto` chooses host only when
-  all required host pieces are discoverable and the lonejson ABI matches,
-  otherwise it falls back to `cpkt`.
+  libcurl, OpenSSL crypto, `lonejson.h` plus `liblonejson`, and `pslog.h`.
+  The discovered `liblonejson` must match cai's required ABI generation
+  (`liblonejson.so.16` on Linux, `liblonejson.16.dylib` on Darwin). `auto`
+  chooses host only when all required host pieces are discoverable and the
+  lonejson ABI matches, otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
   `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
@@ -97,6 +97,13 @@ The verification tiers are split intentionally:
   returned token fields, and retries one 401/403 response after a forced
   refresh. The auth file path is never guessed by `cai_client_open`; callers
   must pass it explicitly.
+- Interactive ChatGPT login is exposed as a server-agnostic OAuth callback
+  handler, not as a built-in webserver. Call `cai_chatgpt_login_start` with an
+  explicit auth file path and redirect URI, open the returned authorization URL,
+  pass the embedding server's callback request target into
+  `cai_chatgpt_login_handle_callback`, then write the returned status,
+  content-type, and body. The example `cai_example_chatgpt_login` shows this
+  with a tiny local test server.
 - `CAI_DEFAULT_DOTENV_PATH` is `.env` for callers that explicitly want cai's
   dotenv parser. Call `cai_load_dotenv_api_key(path, env_name, &key, &error)`,
   pass the returned key to `config.api_key`, then release it with

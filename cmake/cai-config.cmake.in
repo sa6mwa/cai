@@ -16,6 +16,7 @@ set(cai_C_PKT_SYSTEMS_URL
 set(cai_C_PKT_SYSTEMS_SHA256 "@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@")
 
 find_dependency(CURL)
+find_dependency(OpenSSL COMPONENTS Crypto)
 find_dependency(Threads)
 find_package(lonejson CONFIG QUIET)
 find_package(pslog CONFIG QUIET)

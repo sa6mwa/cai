@@ -4,6 +4,7 @@
 
 #include <curl/curl.h>
 #include <fcntl.h>
+#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,7 @@ typedef struct cai_auth_refresh_response_doc {
   char *id_token;
   char *access_token;
   char *refresh_token;
+  char *account_id;
 } cai_auth_refresh_response_doc;
 
 typedef struct cai_auth_jwt_claims_doc {
@@ -58,6 +60,23 @@ struct cai_chatgpt_auth {
   char *access_token;
   char *refresh_token;
   char *account_id;
+};
+
+struct cai_chatgpt_login {
+  cai_allocator allocator;
+  char *auth_json_path;
+  char *issuer;
+  char *client_id;
+  char *redirect_uri;
+  char *callback_path;
+  char *scopes;
+  char *originator;
+  char *state;
+  char *code_verifier;
+  char *authorize_url;
+  struct pslog_logger *logger;
+  int logger_disabled;
+  int completed;
 };
 
 static const lonejson_field cai_auth_tokens_fields[] = {
@@ -97,7 +116,9 @@ static const lonejson_field cai_auth_refresh_response_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_auth_refresh_response_doc,
                                           access_token, "access_token"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_auth_refresh_response_doc,
-                                          refresh_token, "refresh_token")};
+                                          refresh_token, "refresh_token"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_auth_refresh_response_doc,
+                                          account_id, "account_id")};
 LONEJSON_MAP_DEFINE(cai_auth_refresh_response_map,
                     cai_auth_refresh_response_doc,
                     cai_auth_refresh_response_fields);
@@ -382,6 +403,114 @@ static int cai_auth_urlsafe_b64_decode(const char *text, unsigned char **out,
   return CAI_OK;
 }
 
+static int cai_auth_urlsafe_b64_encode(const unsigned char *data, size_t len,
+                                       char **out, cai_error *error) {
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  char *encoded;
+  size_t out_len;
+  size_t rem;
+  size_t i;
+  size_t j;
+  unsigned int value;
+
+  if (data == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "base64 input and output are required");
+  }
+  *out = NULL;
+  out_len = ((len + 2U) / 3U) * 4U;
+  rem = len % 3U;
+  if (rem == 1U) {
+    out_len -= 2U;
+  } else if (rem == 2U) {
+    out_len -= 1U;
+  }
+  encoded = (char *)cai_alloc(NULL, out_len + 1U);
+  if (encoded == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate base64");
+  }
+  i = 0U;
+  j = 0U;
+  while (i + 3U <= len) {
+    value = ((unsigned int)data[i] << 16) | ((unsigned int)data[i + 1U] << 8) |
+            (unsigned int)data[i + 2U];
+    encoded[j++] = alphabet[(value >> 18) & 63U];
+    encoded[j++] = alphabet[(value >> 12) & 63U];
+    encoded[j++] = alphabet[(value >> 6) & 63U];
+    encoded[j++] = alphabet[value & 63U];
+    i += 3U;
+  }
+  if (i < len) {
+    value = (unsigned int)data[i] << 16;
+    if (i + 1U < len) {
+      value |= (unsigned int)data[i + 1U] << 8;
+    }
+    encoded[j++] = alphabet[(value >> 18) & 63U];
+    encoded[j++] = alphabet[(value >> 12) & 63U];
+    if (i + 1U < len) {
+      encoded[j++] = alphabet[(value >> 6) & 63U];
+    }
+  }
+  encoded[j] = '\0';
+  *out = encoded;
+  return CAI_OK;
+}
+
+static int cai_auth_random_bytes(unsigned char *out, size_t len,
+                                 cai_error *error) {
+  FILE *fp;
+  size_t got;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "random output is required");
+  }
+  fp = fopen("/dev/urandom", "rb");
+  if (fp == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open system random source");
+  }
+  got = fread(out, 1U, len, fp);
+  fclose(fp);
+  if (got != len) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read system random source");
+  }
+  return CAI_OK;
+}
+
+static int cai_auth_random_b64(size_t byte_count, char **out,
+                               cai_error *error) {
+  unsigned char bytes[48];
+  int rc;
+
+  if (byte_count > sizeof(bytes)) {
+    return cai_set_error(error, CAI_ERR_INVALID, "random request too large");
+  }
+  rc = cai_auth_random_bytes(bytes, byte_count, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_auth_urlsafe_b64_encode(bytes, byte_count, out, error);
+  memset(bytes, 0, sizeof(bytes));
+  return rc;
+}
+
+static int cai_auth_pkce_challenge(const char *verifier, char **out,
+                                   cai_error *error) {
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  int rc;
+
+  if (verifier == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "PKCE verifier and output are required");
+  }
+  SHA256((const unsigned char *)verifier, strlen(verifier), digest);
+  rc = cai_auth_urlsafe_b64_encode(digest, sizeof(digest), out, error);
+  memset(digest, 0, sizeof(digest));
+  return rc;
+}
+
 static int cai_auth_jwt_payload(const char *jwt, char **out, cai_error *error) {
   const char *first;
   const char *second;
@@ -606,13 +735,239 @@ static int cai_auth_refresh_endpoint(cai_chatgpt_auth *auth, char **out,
   return CAI_OK;
 }
 
-static int cai_auth_http_post_json(cai_chatgpt_auth *auth, const char *url,
-                                   const char *request_json, char **out_json,
-                                   long *out_status, cai_error *error) {
+static int cai_auth_issuer_url(const cai_allocator *allocator,
+                               const char *issuer, const char *suffix,
+                               char **out, cai_error *error) {
+  size_t issuer_len;
+  size_t suffix_len;
+  char *url;
+
+  if (issuer == NULL || suffix == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "issuer, suffix, and output are required");
+  }
+  issuer_len = strlen(issuer);
+  while (issuer_len > 0U && issuer[issuer_len - 1U] == '/') {
+    issuer_len--;
+  }
+  suffix_len = strlen(suffix);
+  url = (char *)cai_alloc(allocator, issuer_len + suffix_len + 1U);
+  if (url == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth URL");
+  }
+  memcpy(url, issuer, issuer_len);
+  memcpy(url + issuer_len, suffix, suffix_len);
+  url[issuer_len + suffix_len] = '\0';
+  *out = url;
+  return CAI_OK;
+}
+
+static int cai_auth_buffer_append(cai_auth_buffer *buffer, const char *text,
+                                  cai_error *error) {
+  lonejson_error json_error;
+
+  if (text == NULL) {
+    return CAI_OK;
+  }
+  lonejson_error_init(&json_error);
+  if (cai_auth_buffer_write(buffer, text, strlen(text), &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth URL");
+  }
+  return CAI_OK;
+}
+
+static int cai_auth_hex_value(char ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return 10 + ch - 'A';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return 10 + ch - 'a';
+  }
+  return -1;
+}
+
+static int cai_auth_url_encode(const char *value, char **out,
+                               cai_error *error) {
+  static const char hex[] = "0123456789ABCDEF";
+  const unsigned char *src;
+  char *encoded;
+  size_t len;
+  size_t capacity;
+  size_t i;
+  size_t j;
+  unsigned char ch;
+
+  if (value == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "URL encode input and output are required");
+  }
+  *out = NULL;
+  len = strlen(value);
+  capacity = len * 3U + 1U;
+  encoded = (char *)cai_alloc(NULL, capacity);
+  if (encoded == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate URL value");
+  }
+  src = (const unsigned char *)value;
+  j = 0U;
+  for (i = 0U; i < len; i++) {
+    ch = src[i];
+    if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' ||
+        ch == '~') {
+      encoded[j++] = (char)ch;
+    } else {
+      encoded[j++] = '%';
+      encoded[j++] = hex[(ch >> 4) & 15U];
+      encoded[j++] = hex[ch & 15U];
+    }
+  }
+  encoded[j] = '\0';
+  *out = encoded;
+  return CAI_OK;
+}
+
+static int cai_auth_url_decode(const char *value, size_t len, char **out,
+                               cai_error *error) {
+  char *decoded;
+  size_t i;
+  size_t j;
+  int hi;
+  int lo;
+  char ch;
+
+  if (value == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "URL decode input and output are required");
+  }
+  *out = NULL;
+  decoded = (char *)cai_alloc(NULL, len + 1U);
+  if (decoded == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate URL value");
+  }
+  i = 0U;
+  j = 0U;
+  while (i < len) {
+    ch = value[i++];
+    if (ch == '+') {
+      decoded[j++] = ' ';
+    } else if (ch == '%' && i + 1U < len) {
+      hi = cai_auth_hex_value(value[i]);
+      lo = cai_auth_hex_value(value[i + 1U]);
+      if (hi < 0 || lo < 0) {
+        cai_free_mem(NULL, decoded);
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "invalid URL escape in OAuth callback");
+      }
+      decoded[j++] = (char)((hi << 4) | lo);
+      i += 2U;
+    } else if (ch == '%') {
+      cai_free_mem(NULL, decoded);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "truncated URL escape in OAuth callback");
+    } else {
+      decoded[j++] = ch;
+    }
+  }
+  decoded[j] = '\0';
+  *out = decoded;
+  return CAI_OK;
+}
+
+static int cai_auth_append_query_param(cai_auth_buffer *buffer,
+                                       const char *name, const char *value,
+                                       int *first, cai_error *error) {
+  char *encoded;
+  int rc;
+
+  if (value == NULL || value[0] == '\0') {
+    return CAI_OK;
+  }
+  encoded = NULL;
+  rc = cai_auth_url_encode(value, &encoded, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_auth_buffer_append(buffer, *first ? "?" : "&", error);
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(buffer, name, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(buffer, "=", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(buffer, encoded, error);
+  }
+  cai_free_mem(NULL, encoded);
+  *first = 0;
+  return rc;
+}
+
+static int cai_auth_query_param(const char *target, const char *name,
+                                char **out, cai_error *error) {
+  const char *query;
+  const char *p;
+  const char *key;
+  const char *value;
+  size_t name_len;
+  size_t key_len;
+  size_t value_len;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "query output pointer is required");
+  }
+  *out = NULL;
+  if (target == NULL || name == NULL) {
+    return CAI_OK;
+  }
+  query = strchr(target, '?');
+  if (query == NULL) {
+    return CAI_OK;
+  }
+  query++;
+  name_len = strlen(name);
+  p = query;
+  while (*p != '\0') {
+    key = p;
+    while (*p != '\0' && *p != '=' && *p != '&') {
+      p++;
+    }
+    key_len = (size_t)(p - key);
+    if (*p == '=') {
+      p++;
+      value = p;
+      while (*p != '\0' && *p != '&') {
+        p++;
+      }
+      value_len = (size_t)(p - value);
+    } else {
+      value = p;
+      value_len = 0U;
+    }
+    if (key_len == name_len && strncmp(key, name, name_len) == 0) {
+      return cai_auth_url_decode(value, value_len, out, error);
+    }
+    if (*p == '&') {
+      p++;
+    }
+  }
+  return CAI_OK;
+}
+
+static int cai_auth_http_post(cai_allocator *allocator, const char *url,
+                              const char *content_type, const char *body_text,
+                              char **out_json, long *out_status,
+                              cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
   cai_auth_buffer body;
+  char content_header[128];
 
   if (out_json == NULL || out_status == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -622,8 +977,15 @@ static int cai_auth_http_post_json(cai_chatgpt_auth *auth, const char *url,
   *out_status = 0L;
   headers = NULL;
   memset(&body, 0, sizeof(body));
-  if (cai_append_header(&headers, "Content-Type: application/json", error) !=
-      CAI_OK) {
+  if (content_type == NULL) {
+    content_type = "application/json";
+  }
+  if (snprintf(content_header, sizeof(content_header), "Content-Type: %s",
+               content_type) < 0 ||
+      strlen(content_header) >= sizeof(content_header)) {
+    return cai_set_error(error, CAI_ERR_INVALID, "content type is too long");
+  }
+  if (cai_append_header(&headers, content_header, error) != CAI_OK) {
     return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
   curl = curl_easy_init();
@@ -634,9 +996,9 @@ static int cai_auth_http_post_json(cai_chatgpt_auth *auth, const char *url,
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_POST, 1L);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_json);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_text);
   curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
-                   (curl_off_t)strlen(request_json));
+                   (curl_off_t)strlen(body_text));
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_auth_curl_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -644,19 +1006,26 @@ static int cai_auth_http_post_json(cai_chatgpt_auth *auth, const char *url,
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, out_status);
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
-  (void)auth;
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "auth HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
+  (void)allocator;
   *out_json = body.data != NULL ? body.data : cai_strdup(NULL, "");
   if (*out_json == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate auth HTTP body");
   }
   return CAI_OK;
+}
+
+static int cai_auth_http_post_json(cai_chatgpt_auth *auth, const char *url,
+                                   const char *request_json, char **out_json,
+                                   long *out_status, cai_error *error) {
+  return cai_auth_http_post(&auth->allocator, url, "application/json",
+                            request_json, out_json, out_status, error);
 }
 
 static int cai_chatgpt_auth_save(cai_chatgpt_auth *auth, cai_error *error) {
@@ -773,6 +1142,10 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
     rc = cai_auth_replace_secret(&auth->allocator, &auth->refresh_token,
                                  response.refresh_token, error);
   }
+  if (rc == CAI_OK && response.account_id != NULL) {
+    rc = cai_auth_replace_secret(&auth->allocator, &auth->account_id,
+                                 response.account_id, error);
+  }
   if (rc == CAI_OK && auth->access_token == NULL) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "refresh response omitted access token");
@@ -808,6 +1181,456 @@ int cai_chatgpt_auth_access_token(cai_chatgpt_auth *auth, char **out,
                          "failed to allocate access token");
   }
   return CAI_OK;
+}
+
+void cai_chatgpt_login_config_init(cai_chatgpt_login_config *config) {
+  if (config == NULL) {
+    return;
+  }
+  memset(config, 0, sizeof(*config));
+}
+
+static int cai_chatgpt_login_build_authorize_url(cai_chatgpt_login *login,
+                                                 char **out, cai_error *error) {
+  cai_auth_buffer url;
+  char *base;
+  char *challenge;
+  int first;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "authorize URL output pointer is required");
+  }
+  *out = NULL;
+  base = NULL;
+  challenge = NULL;
+  memset(&url, 0, sizeof(url));
+  rc = cai_auth_issuer_url(&login->allocator, login->issuer, "/oauth/authorize",
+                           &base, error);
+  if (rc == CAI_OK) {
+    rc = cai_auth_pkce_challenge(login->code_verifier, &challenge, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(&url, base, error);
+  }
+  first = 1;
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "client_id", login->client_id,
+                                     &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "response_type", "code", &first,
+                                     error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "redirect_uri", login->redirect_uri,
+                                     &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "scope", login->scopes, &first,
+                                     error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "code_challenge", challenge, &first,
+                                     error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "code_challenge_method", "S256",
+                                     &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc =
+        cai_auth_append_query_param(&url, "state", login->state, &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "id_token_add_organizations", "true",
+                                     &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "codex_cli_simplified_flow", "true",
+                                     &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_query_param(&url, "originator", login->originator,
+                                     &first, error);
+  }
+  cai_free_mem(&login->allocator, base);
+  cai_free_mem(NULL, challenge);
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, url.data);
+    return rc;
+  }
+  *out = url.data;
+  return CAI_OK;
+}
+
+int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
+                            cai_chatgpt_login **out, char **out_authorize_url,
+                            cai_error *error) {
+  cai_chatgpt_login_config defaults;
+  const cai_chatgpt_login_config *effective;
+  cai_chatgpt_login *login;
+  char *generated_state;
+  char *generated_verifier;
+  int rc;
+
+  if (out == NULL || out_authorize_url == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "login and authorize URL outputs are required");
+  }
+  *out = NULL;
+  *out_authorize_url = NULL;
+  if (config == NULL) {
+    cai_chatgpt_login_config_init(&defaults);
+    effective = &defaults;
+  } else {
+    effective = config;
+  }
+  if (effective->auth_json_path == NULL ||
+      effective->auth_json_path[0] == '\0' || effective->redirect_uri == NULL ||
+      effective->redirect_uri[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth JSON path and redirect URI are required");
+  }
+  generated_state = NULL;
+  generated_verifier = NULL;
+  login = (cai_chatgpt_login *)cai_alloc(&effective->allocator, sizeof(*login));
+  if (login == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
+  }
+  memset(login, 0, sizeof(*login));
+  login->allocator = effective->allocator;
+  rc = CAI_OK;
+  if (effective->state == NULL) {
+    rc = cai_auth_random_b64(24U, &generated_state, error);
+  }
+  if (rc == CAI_OK && effective->code_verifier == NULL) {
+    rc = cai_auth_random_b64(32U, &generated_verifier, error);
+  }
+  if (rc == CAI_OK) {
+    login->auth_json_path =
+        cai_strdup(&login->allocator, effective->auth_json_path);
+    login->issuer =
+        cai_strdup(&login->allocator, effective->issuer != NULL
+                                          ? effective->issuer
+                                          : CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
+    login->client_id =
+        cai_strdup(&login->allocator, effective->client_id != NULL
+                                          ? effective->client_id
+                                          : CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID);
+    login->redirect_uri =
+        cai_strdup(&login->allocator, effective->redirect_uri);
+    login->callback_path = cai_strdup(
+        &login->allocator, effective->callback_path != NULL
+                               ? effective->callback_path
+                               : CAI_CHATGPT_AUTH_DEFAULT_CALLBACK_PATH);
+    login->scopes =
+        cai_strdup(&login->allocator, effective->scopes != NULL
+                                          ? effective->scopes
+                                          : CAI_CHATGPT_AUTH_DEFAULT_SCOPES);
+    login->originator = cai_strdup(
+        &login->allocator,
+        effective->originator != NULL ? effective->originator : "cai");
+    login->state = cai_strdup(&login->allocator, effective->state != NULL
+                                                     ? effective->state
+                                                     : generated_state);
+    login->code_verifier =
+        cai_strdup(&login->allocator, effective->code_verifier != NULL
+                                          ? effective->code_verifier
+                                          : generated_verifier);
+    login->logger = effective->logger;
+    login->logger_disabled = effective->logger_disabled;
+    if (login->auth_json_path == NULL || login->issuer == NULL ||
+        login->client_id == NULL || login->redirect_uri == NULL ||
+        login->callback_path == NULL || login->scopes == NULL ||
+        login->originator == NULL || login->state == NULL ||
+        login->code_verifier == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
+    }
+  }
+  cai_auth_secure_clear(generated_verifier);
+  cai_free_mem(NULL, generated_verifier);
+  cai_free_mem(NULL, generated_state);
+  if (rc == CAI_OK) {
+    rc = cai_chatgpt_login_build_authorize_url(login, &login->authorize_url,
+                                               error);
+  }
+  if (rc != CAI_OK) {
+    cai_chatgpt_login_close(login);
+    return rc;
+  }
+  *out_authorize_url = cai_strdup(NULL, login->authorize_url);
+  if (*out_authorize_url == NULL) {
+    cai_chatgpt_login_close(login);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate authorize URL");
+  }
+  *out = login;
+  return CAI_OK;
+}
+
+static int cai_chatgpt_login_target_matches(cai_chatgpt_login *login,
+                                            const char *target) {
+  const char *query;
+  size_t path_len;
+
+  if (login == NULL || target == NULL) {
+    return 0;
+  }
+  query = strchr(target, '?');
+  path_len = query != NULL ? (size_t)(query - target) : strlen(target);
+  return strlen(login->callback_path) == path_len &&
+         strncmp(target, login->callback_path, path_len) == 0;
+}
+
+static int cai_chatgpt_login_set_response(cai_chatgpt_login_response *response,
+                                          int status, const char *body,
+                                          int completed, cai_error *error) {
+  if (response == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "login response output is required");
+  }
+  memset(response, 0, sizeof(*response));
+  response->status = status;
+  response->content_type = "text/html; charset=utf-8";
+  response->body = cai_strdup(NULL, body != NULL ? body : "");
+  if (response->body == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate login response body");
+  }
+  response->completed = completed;
+  return CAI_OK;
+}
+
+static int cai_auth_append_form_param(cai_auth_buffer *buffer, const char *name,
+                                      const char *value, int *first,
+                                      cai_error *error) {
+  char *encoded;
+  int rc;
+
+  encoded = NULL;
+  rc = cai_auth_url_encode(value != NULL ? value : "", &encoded, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!*first) {
+    rc = cai_auth_buffer_append(buffer, "&", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(buffer, name, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(buffer, "=", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_buffer_append(buffer, encoded, error);
+  }
+  cai_free_mem(NULL, encoded);
+  *first = 0;
+  return rc;
+}
+
+static int cai_chatgpt_login_exchange_code(cai_chatgpt_login *login,
+                                           const char *code, cai_error *error) {
+  cai_auth_refresh_response_doc response;
+  cai_chatgpt_auth auth_view;
+  cai_auth_buffer form;
+  char *url;
+  char *response_json;
+  long status;
+  lonejson_error json_error;
+  lonejson_status json_status;
+  int first;
+  int rc;
+
+  memset(&form, 0, sizeof(form));
+  url = NULL;
+  response_json = NULL;
+  first = 1;
+  rc = cai_auth_append_form_param(&form, "grant_type", "authorization_code",
+                                  &first, error);
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_form_param(&form, "code", code, &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_form_param(&form, "redirect_uri", login->redirect_uri,
+                                    &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_form_param(&form, "client_id", login->client_id,
+                                    &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_append_form_param(&form, "code_verifier",
+                                    login->code_verifier, &first, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_issuer_url(&login->allocator, login->issuer, "/oauth/token",
+                             &url, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_auth_http_post(&login->allocator, url,
+                            "application/x-www-form-urlencoded", form.data,
+                            &response_json, &status, error);
+  }
+  cai_auth_secure_clear(form.data);
+  cai_free_mem(NULL, form.data);
+  cai_free_mem(&login->allocator, url);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (status < 200L || status >= 300L) {
+    cai_auth_secure_clear(response_json);
+    cai_free_mem(NULL, response_json);
+    return cai_set_error_http(error, CAI_ERR_TRANSPORT, status,
+                              "ChatGPT authorization-code exchange failed",
+                              NULL, NULL, NULL);
+  }
+  memset(&response, 0, sizeof(response));
+  CAI_LJ->init(CAI_LJ, &cai_auth_refresh_response_map, &response);
+  lonejson_error_init(&json_error);
+  json_status = CAI_LJ->parse_cstr(CAI_LJ, &cai_auth_refresh_response_map,
+                                   &response, response_json, &json_error);
+  cai_auth_secure_clear(response_json);
+  cai_free_mem(NULL, response_json);
+  if (json_status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_auth_refresh_response_map, &response);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse code exchange response",
+                                json_error.message);
+  }
+  if (response.access_token == NULL || response.refresh_token == NULL) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_auth_refresh_response_map, &response);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "code exchange response omitted required tokens");
+  }
+  memset(&auth_view, 0, sizeof(auth_view));
+  auth_view.allocator = login->allocator;
+  auth_view.auth_json_path = login->auth_json_path;
+  auth_view.id_token = response.id_token;
+  auth_view.access_token = response.access_token;
+  auth_view.refresh_token = response.refresh_token;
+  auth_view.account_id = response.account_id;
+  rc = cai_chatgpt_auth_save(&auth_view, error);
+  CAI_LJ->cleanup(CAI_LJ, &cai_auth_refresh_response_map, &response);
+  return rc;
+}
+
+int cai_chatgpt_login_handle_callback(cai_chatgpt_login *login,
+                                      const cai_chatgpt_login_request *request,
+                                      cai_chatgpt_login_response *response,
+                                      cai_error *error) {
+  char *state;
+  char *code;
+  char *oauth_error;
+  int rc;
+
+  if (response != NULL) {
+    memset(response, 0, sizeof(*response));
+  }
+  if (login == NULL || request == NULL || response == NULL ||
+      request->method == NULL || request->target == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "login, request, and response are required");
+  }
+  if (strcmp(request->method, "GET") != 0) {
+    return cai_chatgpt_login_set_response(
+        response, 405,
+        "<!doctype html><title>Method Not Allowed</title>"
+        "<h1>Method Not Allowed</h1>",
+        0, error);
+  }
+  if (!cai_chatgpt_login_target_matches(login, request->target)) {
+    return cai_chatgpt_login_set_response(
+        response, 404,
+        "<!doctype html><title>Not Found</title><h1>Not Found</h1>", 0, error);
+  }
+  state = NULL;
+  code = NULL;
+  oauth_error = NULL;
+  rc = cai_auth_query_param(request->target, "error", &oauth_error, error);
+  if (rc == CAI_OK && oauth_error != NULL) {
+    rc = cai_chatgpt_login_set_response(
+        response, 400,
+        "<!doctype html><title>ChatGPT login failed</title>"
+        "<h1>ChatGPT login failed</h1><p>The OAuth issuer returned an "
+        "error.</p>",
+        1, error);
+  }
+  if (rc == CAI_OK && oauth_error == NULL) {
+    rc = cai_auth_query_param(request->target, "state", &state, error);
+  }
+  if (rc == CAI_OK && oauth_error == NULL &&
+      (state == NULL || strcmp(state, login->state) != 0)) {
+    rc = cai_chatgpt_login_set_response(
+        response, 400,
+        "<!doctype html><title>ChatGPT login failed</title>"
+        "<h1>ChatGPT login failed</h1><p>OAuth state did not match.</p>",
+        1, error);
+  }
+  if (rc == CAI_OK && oauth_error == NULL && response->body == NULL) {
+    rc = cai_auth_query_param(request->target, "code", &code, error);
+  }
+  if (rc == CAI_OK && oauth_error == NULL && response->body == NULL &&
+      (code == NULL || code[0] == '\0')) {
+    rc = cai_chatgpt_login_set_response(
+        response, 400,
+        "<!doctype html><title>ChatGPT login failed</title>"
+        "<h1>ChatGPT login failed</h1><p>OAuth callback omitted code.</p>",
+        1, error);
+  }
+  if (rc == CAI_OK && oauth_error == NULL && response->body == NULL) {
+    rc = cai_chatgpt_login_exchange_code(login, code, error);
+    if (rc == CAI_OK) {
+      login->completed = 1;
+      rc = cai_chatgpt_login_set_response(
+          response, 200,
+          "<!doctype html><title>ChatGPT login complete</title>"
+          "<h1>ChatGPT login complete</h1>"
+          "<p>You can close this browser tab and return to the terminal.</p>",
+          1, error);
+    }
+  }
+  cai_auth_secure_clear(code);
+  cai_free_mem(NULL, code);
+  cai_free_mem(NULL, state);
+  cai_free_mem(NULL, oauth_error);
+  return rc;
+}
+
+void cai_chatgpt_login_response_cleanup(cai_chatgpt_login_response *response) {
+  if (response == NULL) {
+    return;
+  }
+  cai_auth_secure_clear(response->body);
+  cai_free_mem(NULL, response->body);
+  memset(response, 0, sizeof(*response));
+}
+
+int cai_chatgpt_login_completed(const cai_chatgpt_login *login) {
+  return login != NULL ? login->completed : 0;
+}
+
+void cai_chatgpt_login_close(cai_chatgpt_login *login) {
+  cai_allocator allocator;
+
+  if (login == NULL) {
+    return;
+  }
+  allocator = login->allocator;
+  cai_free_mem(&allocator, login->auth_json_path);
+  cai_free_mem(&allocator, login->issuer);
+  cai_free_mem(&allocator, login->client_id);
+  cai_free_mem(&allocator, login->redirect_uri);
+  cai_free_mem(&allocator, login->callback_path);
+  cai_free_mem(&allocator, login->scopes);
+  cai_free_mem(&allocator, login->originator);
+  cai_free_mem(&allocator, login->state);
+  cai_auth_free_secret(&allocator, login->code_verifier);
+  cai_free_mem(&allocator, login->authorize_url);
+  memset(login, 0, sizeof(*login));
+  cai_free_mem(&allocator, login);
 }
 
 void cai_chatgpt_auth_close(cai_chatgpt_auth *auth) {
