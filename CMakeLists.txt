@@ -495,6 +495,7 @@ endif()
 set(CAI_SOURCES
   src/cai_agent.c
   src/cai_allocator.c
+  src/cai_auth.c
   src/cai_client.c
   src/cai_conversation.c
   src/cai_env.c
@@ -678,6 +679,8 @@ if(CAI_BUILD_TESTS)
     response_large_instructions_parse
     response_large_tool_arguments_spooled
     http_create_response
+    chatgpt_auth_refresh_retry
+    chatgpt_auth_stream_refresh_retry
     http_retrieve_response
     http_cancel_response
     http_delete_response

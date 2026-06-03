@@ -88,6 +88,15 @@ The verification tiers are split intentionally:
 - `cai_client_open` resolves API keys only from explicit `config.api_key` or
   `getenv(config.api_key_env)`. If `api_key_env` is NULL, cai uses
   `OPENAI_API_KEY`. It does not implicitly load dotenv files.
+- ChatGPT subscription auth can be supplied explicitly through
+  `cai_chatgpt_auth` from `cai/auth.h`. Open a Codex-compatible `auth.json`
+  path with `cai_chatgpt_auth_open`, set `config.chatgpt_auth`, and keep the
+  auth handle alive for the client lifetime. cai reads `id_token`,
+  `access_token`, `refresh_token`, and `account_id` from the file, refreshes
+  access tokens through the configured OAuth issuer before expiry, persists
+  returned token fields, and retries one 401/403 response after a forced
+  refresh. The auth file path is never guessed by `cai_client_open`; callers
+  must pass it explicitly.
 - `CAI_DEFAULT_DOTENV_PATH` is `.env` for callers that explicitly want cai's
   dotenv parser. Call `cai_load_dotenv_api_key(path, env_name, &key, &error)`,
   pass the returned key to `config.api_key`, then release it with

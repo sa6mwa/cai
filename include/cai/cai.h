@@ -53,6 +53,8 @@ typedef struct cai_conversation_items_params cai_conversation_items_params;
 typedef struct cai_tool_registry cai_tool_registry;
 /** Builder for JSON schema used by function tools. */
 typedef struct cai_tool_schema cai_tool_schema;
+/** ChatGPT OAuth auth session from cai/auth.h. */
+typedef struct cai_chatgpt_auth cai_chatgpt_auth;
 
 /** cai status codes returned by public APIs. */
 typedef enum cai_status {
@@ -142,6 +144,8 @@ typedef struct cai_client_config {
   struct pslog_logger *logger;
   /** Non-zero disables cai logging even when logger is set. */
   int logger_disabled;
+  /** Optional ChatGPT OAuth auth session; when set, supplies bearer tokens. */
+  cai_chatgpt_auth *chatgpt_auth;
   /** Optional custom allocator callbacks. */
   cai_allocator allocator;
 } cai_client_config;

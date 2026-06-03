@@ -1,6 +1,22 @@
 #include "cai_internal.h"
 
+#include <cai/auth.h>
+
 #include <string.h>
+
+static void cai_client_clear_secret(char *value) {
+  volatile char *p;
+  size_t len;
+
+  if (value == NULL) {
+    return;
+  }
+  len = strlen(value);
+  p = (volatile char *)value;
+  while (len-- > 0U) {
+    *p++ = '\0';
+  }
+}
 
 void cai_client_config_init(cai_client_config *config) {
   if (config == NULL) {
@@ -33,6 +49,7 @@ static void cai_client_destroy_fields(cai_client_impl *impl) {
   if (impl == NULL) {
     return;
   }
+  cai_client_clear_secret(impl->api_key);
   cai_free_mem(&impl->allocator, impl->api_key);
   cai_free_mem(&impl->allocator, impl->base_url);
   cai_free_mem(&impl->allocator, impl->organization_id);
@@ -77,6 +94,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   memset(impl, 0, sizeof(*impl));
   impl->allocator = effective->allocator;
   impl->api_key = NULL;
+  impl->chatgpt_auth = effective->chatgpt_auth;
   impl->base_url = NULL;
   impl->organization_id = NULL;
   impl->project_id = NULL;
@@ -92,11 +110,16 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     impl->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
   }
 
-  rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
-                           effective->api_key_env != NULL
-                               ? effective->api_key_env
-                               : CAI_OPENAI_API_KEY_ENV,
-                           &impl->api_key, error);
+  if (effective->chatgpt_auth != NULL) {
+    rc = cai_chatgpt_auth_access_token(effective->chatgpt_auth, &impl->api_key,
+                                       error);
+  } else {
+    rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
+                             effective->api_key_env != NULL
+                                 ? effective->api_key_env
+                                 : CAI_OPENAI_API_KEY_ENV,
+                             &impl->api_key, error);
+  }
   if (rc != CAI_OK) {
     cai_free_mem(&impl->allocator, impl);
     cai_free_mem(&effective->allocator, client);
@@ -134,6 +157,55 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   *out = client;
   cai_log_client_opened(impl);
   return CAI_OK;
+}
+
+int cai_client_refresh_chatgpt_auth(cai_client *client, cai_error *error) {
+  cai_client_impl *impl;
+  char *access_token;
+  int rc;
+
+  if (client == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is required");
+  }
+  impl = CAI_CLIENT_IMPL(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
+  }
+  if (impl->chatgpt_auth == NULL) {
+    return CAI_OK;
+  }
+  access_token = NULL;
+  rc = cai_chatgpt_auth_refresh(impl->chatgpt_auth, error);
+  if (rc == CAI_OK) {
+    rc =
+        cai_chatgpt_auth_access_token(impl->chatgpt_auth, &access_token, error);
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, access_token);
+    return rc;
+  }
+  cai_client_clear_secret(impl->api_key);
+  cai_free_mem(&impl->allocator, impl->api_key);
+  impl->api_key = cai_strdup(&impl->allocator, access_token);
+  cai_client_clear_secret(access_token);
+  cai_free_mem(NULL, access_token);
+  if (impl->api_key == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate refreshed access token");
+  }
+  return CAI_OK;
+}
+
+int cai_client_refresh_chatgpt_auth_after_http(cai_client *client,
+                                               long http_status,
+                                               cai_error *error) {
+  if (http_status != 401L && http_status != 403L) {
+    return CAI_OK;
+  }
+  if (client == NULL || CAI_CLIENT_IMPL(client)->chatgpt_auth == NULL) {
+    return CAI_OK;
+  }
+  return cai_client_refresh_chatgpt_auth(client, error);
 }
 
 void cai_client_close(cai_client *client) {

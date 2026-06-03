@@ -20,6 +20,7 @@ struct curl_slist;
 typedef struct cai_client_impl {
   cai_allocator allocator;
   char *api_key;
+  cai_chatgpt_auth *chatgpt_auth;
   char *base_url;
   char *organization_id;
   char *project_id;
@@ -117,6 +118,10 @@ int cai_set_error_http(cai_error *error, int code, long http_status,
 int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, const char *env_name,
                         char **out, cai_error *error);
+int cai_client_refresh_chatgpt_auth(cai_client *client, cai_error *error);
+int cai_client_refresh_chatgpt_auth_after_http(cai_client *client,
+                                               long http_status,
+                                               cai_error *error);
 
 void cai_log_client_opened(const cai_client_impl *client);
 void cai_log_openrouter_server_continuity(const cai_client_impl *client);

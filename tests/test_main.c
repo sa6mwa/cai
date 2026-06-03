@@ -1,3 +1,4 @@
+#include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/tools/exec.h>
@@ -587,6 +588,48 @@ static void write_bytes_or_die(const char *path, const unsigned char *data,
     exit(2);
   }
   fclose(fp);
+}
+
+static char *read_file_or_die(const char *path) {
+  FILE *fp;
+  long length;
+  char *text;
+
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    perror(path);
+    exit(2);
+  }
+  if (fseek(fp, 0L, SEEK_END) != 0) {
+    perror(path);
+    fclose(fp);
+    exit(2);
+  }
+  length = ftell(fp);
+  if (length < 0L) {
+    perror(path);
+    fclose(fp);
+    exit(2);
+  }
+  if (fseek(fp, 0L, SEEK_SET) != 0) {
+    perror(path);
+    fclose(fp);
+    exit(2);
+  }
+  text = (char *)malloc((size_t)length + 1U);
+  if (text == NULL) {
+    fclose(fp);
+    exit(2);
+  }
+  if (length != 0L && fread(text, 1U, (size_t)length, fp) != (size_t)length) {
+    perror(path);
+    free(text);
+    fclose(fp);
+    exit(2);
+  }
+  text[length] = '\0';
+  fclose(fp);
+  return text;
 }
 
 static char *test_spooled_to_cstr(const lonejson_spooled *spool) {
@@ -7490,6 +7533,289 @@ static void test_http_create_response(test_state *state) {
   expect_int(state, "http_log_warn_count", g_test_warnf_count, 0L);
   expect_int(state, "http_log_error_count", g_test_errorf_count, 0L);
   http_mock_client_close(state, "http_create_mock", &mock);
+}
+
+static void test_chatgpt_auth_refresh_retry(test_state *state) {
+  static const char old_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old";
+  static const char id_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.id";
+  static const char refresh_body[] =
+      "{\"id_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.id\","
+      "\"access_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+      "\"refresh_token\":\"refresh-new\"}";
+  static const char success_body[] =
+      "{\"id\":\"resp_auth_retry\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"auth ok\"}]}]}";
+  static const char auth_error_body[] =
+      "{\"error\":{\"message\":\"expired token\",\"type\":"
+      "\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
+  static const char *first_required[] = {
+      "POST /v1/responses HTTP/",
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old",
+      "\"text\":\"hello auth\""};
+  static const char *refresh_required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "\"client_id\":\"" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID "\"",
+      "\"grant_type\":\"refresh_token\"", "\"refresh_token\":\"refresh-old\""};
+  static const char *second_required[] = {
+      "POST /v1/responses HTTP/",
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new",
+      "\"text\":\"hello auth\""};
+  static const char *second_forbidden[] = {
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 401,
+       "Unauthorized", "application/json", "req_auth_old", auth_error_body},
+      {"POST /v1/oauth/token HTTP/", refresh_required,
+       sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, refresh_body},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), second_forbidden,
+       sizeof(second_forbidden) / sizeof(second_forbidden[0]), 200, "OK",
+       "application/json", NULL, success_body}};
+  char template_dir[] = "/tmp/cai-auth-test-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[2048];
+  char *stored;
+  struct stat auth_stat;
+  http_mock_server server;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_error error;
+  int server_opened;
+
+  server_opened = 0;
+  auth = NULL;
+  client = NULL;
+  params = NULL;
+  response = NULL;
+  stored = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"%s\","
+           "\"access_token\":\"%s\",\"refresh_token\":\"refresh-old\","
+           "\"account_id\":\"acct_test\"},"
+           "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+           id_token, old_token);
+  write_file_or_die(auth_path, auth_json);
+  if (http_mock_server_open_script(state, "chatgpt_auth_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  auth_config.issuer = server.base_url;
+  expect_int(state, "chatgpt_auth_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  cai_client_config_init(&client_config);
+  client_config.base_url = server.base_url;
+  client_config.chatgpt_auth = auth;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 500L;
+  expect_int(state, "chatgpt_auth_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_params_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(
+      state, "chatgpt_auth_params_input",
+      cai_response_create_params_add_text(params, "user", "hello auth", &error),
+      CAI_OK);
+  expect_int(state, "chatgpt_auth_create_response",
+             cai_client_create_response(client, params, &response, &error),
+             CAI_OK);
+  expect_str(state, "chatgpt_auth_response_id", cai_response_id(response),
+             "resp_auth_retry");
+  expect_str(state, "chatgpt_auth_response_text",
+             cai_response_output_text(response), "auth ok");
+  stored = read_file_or_die(auth_path);
+  expect_substr(state, "chatgpt_auth_persisted_access", stored,
+                "\"access_token\":\"eyJhbGciOiJub25lIn0."
+                "eyJleHAiOjQxMDI0NDQ4MDB9.new\"");
+  expect_substr(state, "chatgpt_auth_persisted_refresh", stored,
+                "\"refresh_token\":\"refresh-new\"");
+#if defined(__unix__) || defined(__APPLE__)
+  if (stat(auth_path, &auth_stat) != 0) {
+    test_fail(state, "chatgpt_auth_stat", "stat failed");
+  } else {
+    expect_int(state, "chatgpt_auth_file_mode",
+               (long)(auth_stat.st_mode & 0777), 0600L);
+  }
+#endif
+
+cleanup:
+  free(stored);
+  cai_response_destroy(response);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
+static void test_chatgpt_auth_stream_refresh_retry(test_state *state) {
+  static const char old_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old";
+  static const char id_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.id";
+  static const char refresh_body[] =
+      "{\"id_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.id\","
+      "\"access_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+      "\"refresh_token\":\"refresh-new\"}";
+  static const char stream_body[] =
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"auth stream ok\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auth_stream_retry\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":2,\"total_tokens\":3}}}\n\n";
+  static const char auth_error_body[] =
+      "{\"error\":{\"message\":\"expired token\",\"type\":"
+      "\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
+  static const char *first_required[] = {
+      "POST /v1/responses HTTP/",
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old",
+      "\"stream\":true", "\"text\":\"hello stream auth\""};
+  static const char *refresh_required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "\"client_id\":\"" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID "\"",
+      "\"grant_type\":\"refresh_token\"", "\"refresh_token\":\"refresh-old\""};
+  static const char *second_required[] = {
+      "POST /v1/responses HTTP/",
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new",
+      "\"stream\":true", "\"text\":\"hello stream auth\""};
+  static const char *second_forbidden[] = {
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 401,
+       "Unauthorized", "application/json", "req_stream_auth_old",
+       auth_error_body},
+      {"POST /v1/oauth/token HTTP/", refresh_required,
+       sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, refresh_body},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), second_forbidden,
+       sizeof(second_forbidden) / sizeof(second_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, stream_body}};
+  char template_dir[] = "/tmp/cai-auth-stream-test-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[2048];
+  http_mock_server server;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_response_create_params *params;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int server_opened;
+
+  server_opened = 0;
+  auth = NULL;
+  client = NULL;
+  params = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_stream_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"%s\","
+           "\"access_token\":\"%s\",\"refresh_token\":\"refresh-old\","
+           "\"account_id\":\"acct_test\"},"
+           "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+           id_token, old_token);
+  write_file_or_die(auth_path, auth_json);
+  if (http_mock_server_open_script(state, "chatgpt_auth_stream_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  auth_config.issuer = server.base_url;
+  expect_int(state, "chatgpt_auth_stream_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  cai_client_config_init(&client_config);
+  client_config.base_url = server.base_url;
+  client_config.chatgpt_auth = auth;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 500L;
+  expect_int(state, "chatgpt_auth_stream_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_stream_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_stream_params_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(state, "chatgpt_auth_stream_params_input",
+             cai_response_create_params_add_text(params, "user",
+                                                 "hello stream auth", &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "chatgpt_auth_stream_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_stream_response",
+             cai_client_stream_response_text(client, params, sink, &error),
+             CAI_OK);
+  expect_str(state, "chatgpt_auth_stream_text", writer.buffer,
+             "auth stream ok");
+
+cleanup:
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_stream_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
 }
 
 static void test_http_retrieve_response(test_state *state) {
@@ -15575,6 +15901,9 @@ static const test_entry test_entries[] = {
     {"response_large_tool_arguments_spooled",
      test_response_large_tool_arguments_spooled},
     {"http_create_response", test_http_create_response},
+    {"chatgpt_auth_refresh_retry", test_chatgpt_auth_refresh_retry},
+    {"chatgpt_auth_stream_refresh_retry",
+     test_chatgpt_auth_stream_refresh_retry},
     {"http_retrieve_response", test_http_retrieve_response},
     {"http_cancel_response", test_http_cancel_response},
     {"http_delete_response", test_http_delete_response},

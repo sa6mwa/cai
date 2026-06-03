@@ -501,6 +501,7 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   char *request_id;
   long http_status;
   int rc;
+  int retried_auth;
 
   if (out_json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -517,6 +518,8 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client, method, and path are required");
   }
+  retried_auth = 0;
+retry_request:
   url = NULL;
   headers = NULL;
   body.data = NULL;
@@ -628,6 +631,18 @@ int cai_http_json_request_spooled(cai_client *client, const char *method,
   if (out_http_status != NULL) {
     *out_http_status = http_status;
   }
+  if (curl_rc == CURLE_OK && !retried_auth &&
+      (http_status == 401L || http_status == 403L) &&
+      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL) {
+    cai_free_mem(NULL, body.data);
+    cai_free_mem(NULL, request_id);
+    rc = cai_client_refresh_chatgpt_auth_after_http(client, http_status, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    retried_auth = 1;
+    goto retry_request;
+  }
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);
     cai_free_mem(NULL, request_id);
@@ -718,6 +733,7 @@ int cai_http_response_params_request(cai_client *client, const char *path,
   char *request_id;
   long http_status;
   int rc;
+  int retried_auth;
 
   if (out_json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -734,6 +750,8 @@ int cai_http_response_params_request(cai_client *client, const char *path,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client, path, and response params are required");
   }
+  retried_auth = 0;
+retry_request:
   url = NULL;
   headers = NULL;
   body.data = NULL;
@@ -834,6 +852,18 @@ int cai_http_response_params_request(cai_client *client, const char *path,
     cai_free_mem(NULL, body.data);
     cai_free_mem(NULL, request_id);
     return rc;
+  }
+  if (curl_rc == CURLE_OK && !retried_auth &&
+      (http_status == 401L || http_status == 403L) &&
+      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL) {
+    cai_free_mem(NULL, body.data);
+    cai_free_mem(NULL, request_id);
+    rc = cai_client_refresh_chatgpt_auth_after_http(client, http_status, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    retried_auth = 1;
+    goto retry_request;
   }
   if (curl_rc != CURLE_OK) {
     cai_free_mem(NULL, body.data);

@@ -2059,6 +2059,7 @@ static int cai_client_stream_response_params_with_id(
   lonejson_sse_options sse_options;
   lonejson_error sse_error;
   lonejson_status sse_status;
+  int retried_auth;
 
   if (client == NULL || params == NULL || sinks == NULL ||
       (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
@@ -2069,15 +2070,17 @@ static int cai_client_stream_response_params_with_id(
                          "client, params, and at least one stream sink or "
                          "callback are required");
   }
-  url = NULL;
-  headers = NULL;
-  upload = NULL;
+  retried_auth = 0;
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
   if (out_usage != NULL) {
     memset(out_usage, 0, sizeof(*out_usage));
   }
+retry_request:
+  url = NULL;
+  headers = NULL;
+  upload = NULL;
   memset(&state, 0, sizeof(state));
   sse_options = lonejson_default_sse_options();
   sse_options.max_line_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
@@ -2239,6 +2242,17 @@ static int cai_client_stream_response_params_with_id(
   if (rc != CAI_OK) {
     cai_free_mem(NULL, state.body);
     return rc;
+  }
+  if (!http_success && !retried_auth &&
+      (http_status == 401L || http_status == 403L) &&
+      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL) {
+    cai_free_mem(NULL, state.body);
+    rc = cai_client_refresh_chatgpt_auth_after_http(client, http_status, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    retried_auth = 1;
+    goto retry_request;
   }
   if (curl_rc != CURLE_OK) {
     if (http_status > 0L && (http_status < 200L || http_status >= 300L)) {
