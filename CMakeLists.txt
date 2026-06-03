@@ -684,6 +684,7 @@ if(CAI_BUILD_TESTS)
     response_large_tool_arguments_spooled
     http_create_response
     chatgpt_auth_refresh_retry
+    chatgpt_auth_expired_refreshes_before_request
     chatgpt_auth_stream_refresh_retry
     chatgpt_login_authorize_url
     chatgpt_login_callback_validation
