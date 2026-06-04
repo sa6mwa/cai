@@ -400,41 +400,136 @@ static int cai_auth_mkdirs_for_file(const char *path, cai_error *error) {
 
 static int cai_auth_write_file(const char *path, const char *json,
                                cai_error *error) {
-  FILE *fp;
-  int rc;
 #if defined(__unix__) || defined(__APPLE__)
+  char *template_path;
+  char *slash;
+  char *allocated_dir_path;
+  const char *dir_path;
+  size_t path_len;
+  size_t suffix_len;
+  size_t dir_len;
+  size_t written;
+  size_t json_len;
+  ssize_t n;
   int fd;
+  int dir_fd;
+  int saved_errno;
+#else
+  FILE *fp;
 #endif
+  int rc;
 
   rc = cai_auth_mkdirs_for_file(path, error);
   if (rc != CAI_OK) {
     return rc;
   }
 #if defined(__unix__) || defined(__APPLE__)
-  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  path_len = strlen(path);
+  suffix_len = sizeof(".tmp.XXXXXX") - 1U;
+  template_path = (char *)cai_alloc(NULL, path_len + suffix_len + 1U);
+  if (template_path == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate auth temp path");
+  }
+  memcpy(template_path, path, path_len);
+  memcpy(template_path + path_len, ".tmp.XXXXXX", suffix_len + 1U);
+  allocated_dir_path = NULL;
+  dir_path = NULL;
+  fd = mkstemp(template_path);
   if (fd < 0) {
+    cai_free_mem(NULL, template_path);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open auth JSON for writing");
+                         "failed to open temporary auth JSON for writing");
   }
-  (void)fchmod(fd, 0600);
-  fp = fdopen(fd, "wb");
-  if (fp == NULL) {
+  if (fchmod(fd, 0600) != 0) {
+    saved_errno = errno;
     close(fd);
+    unlink(template_path);
+    cai_free_mem(NULL, template_path);
+    errno = saved_errno;
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open auth JSON stream");
+                         "failed to chmod temporary auth JSON");
   }
+  json_len = strlen(json);
+  written = 0U;
+  while (written < json_len) {
+    n = write(fd, json + written, json_len - written);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n <= 0) {
+      saved_errno = errno;
+      close(fd);
+      unlink(template_path);
+      cai_free_mem(NULL, template_path);
+      errno = saved_errno;
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to write temporary auth JSON");
+    }
+    written += (size_t)n;
+  }
+  if (fsync(fd) != 0) {
+    saved_errno = errno;
+    close(fd);
+    unlink(template_path);
+    cai_free_mem(NULL, template_path);
+    errno = saved_errno;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to sync temporary auth JSON");
+  }
+  if (close(fd) != 0) {
+    saved_errno = errno;
+    unlink(template_path);
+    cai_free_mem(NULL, template_path);
+    errno = saved_errno;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to close temporary auth JSON");
+  }
+  slash = strrchr(path, '/');
+  if (slash == NULL) {
+    dir_path = ".";
+  } else if (slash == path) {
+    dir_path = "/";
+  } else {
+    dir_len = (size_t)(slash - path);
+    allocated_dir_path = (char *)cai_alloc(NULL, dir_len + 1U);
+    if (allocated_dir_path == NULL) {
+      cai_free_mem(NULL, template_path);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate auth directory path");
+    }
+    memcpy(allocated_dir_path, path, dir_len);
+    allocated_dir_path[dir_len] = '\0';
+    dir_path = allocated_dir_path;
+  }
+  if (rename(template_path, path) != 0) {
+    saved_errno = errno;
+    unlink(template_path);
+    cai_free_mem(NULL, allocated_dir_path);
+    cai_free_mem(NULL, template_path);
+    errno = saved_errno;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to replace auth JSON");
+  }
+  dir_fd = open(dir_path, O_RDONLY);
+  if (dir_fd >= 0) {
+    (void)fsync(dir_fd);
+    close(dir_fd);
+  }
+  cai_free_mem(NULL, allocated_dir_path);
+  cai_free_mem(NULL, template_path);
 #else
   fp = fopen(path, "wb");
   if (fp == NULL) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to open auth JSON for writing");
   }
-#endif
   if (fwrite(json, 1U, strlen(json), fp) != strlen(json) || fflush(fp) != 0) {
     fclose(fp);
     return cai_set_error(error, CAI_ERR_TRANSPORT, "failed to write auth JSON");
   }
   fclose(fp);
+#endif
   return CAI_OK;
 }
 

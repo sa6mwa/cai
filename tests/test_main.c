@@ -7800,6 +7800,88 @@ cleanup:
   rmdir(template_dir);
 }
 
+static void test_chatgpt_auth_save_failure_preserves_file(test_state *state) {
+  static const char expired_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.expired";
+  static const char refresh_body[] = "{\"access_token\":\"eyJhbGciOiJub25lIn0."
+                                     "eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+                                     "\"refresh_token\":\"refresh-new\"}";
+  static const char *refresh_required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "\"client_id\":\"" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID "\"",
+      "\"grant_type\":\"refresh_token\"", "\"refresh_token\":\"refresh-old\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", refresh_required,
+       sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, refresh_body}};
+  char template_dir[] = "/tmp/cai-auth-save-failure-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[2048];
+  char *stored;
+  http_mock_server server;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_error error;
+  int server_opened;
+  int dir_locked;
+
+  stored = NULL;
+  server_opened = 0;
+  dir_locked = 0;
+  auth = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_save_failure_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"%s\","
+           "\"refresh_token\":\"refresh-old\",\"account_id\":\"acct_test\"},"
+           "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+           expired_token);
+  write_file_or_die(auth_path, auth_json);
+  if (http_mock_server_open_script(state, "chatgpt_auth_save_failure_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  auth_config.issuer = server.base_url;
+  expect_int(state, "chatgpt_auth_save_failure_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+#if defined(__unix__) || defined(__APPLE__)
+  if (chmod(template_dir, 0500) != 0) {
+    test_fail(state, "chatgpt_auth_save_failure_chmod", "chmod failed");
+    goto cleanup;
+  }
+  dir_locked = 1;
+#endif
+  expect_int(state, "chatgpt_auth_save_failure_refresh",
+             cai_chatgpt_auth_refresh(auth, &error), CAI_ERR_TRANSPORT);
+  stored = read_file_or_die(auth_path);
+  expect_str(state, "chatgpt_auth_save_failure_preserved", stored, auth_json);
+
+cleanup:
+  if (dir_locked) {
+    (void)chmod(template_dir, 0700);
+  }
+  free(stored);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_save_failure_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
 static void
 test_chatgpt_auth_expired_refreshes_before_request(test_state *state) {
   static const char expired_token[] = "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.old";
@@ -16769,6 +16851,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_refresh_retry", test_chatgpt_auth_refresh_retry},
     {"chatgpt_auth_invalid_refresh_retryable",
      test_chatgpt_auth_invalid_refresh_retryable},
+    {"chatgpt_auth_save_failure_preserves_file",
+     test_chatgpt_auth_save_failure_preserves_file},
     {"chatgpt_auth_expired_refreshes_before_request",
      test_chatgpt_auth_expired_refreshes_before_request},
     {"chatgpt_auth_reloads_changed_file_before_refresh",

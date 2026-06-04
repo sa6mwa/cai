@@ -685,6 +685,7 @@ if(CAI_BUILD_TESTS)
     http_create_response
     chatgpt_auth_refresh_retry
     chatgpt_auth_invalid_refresh_retryable
+    chatgpt_auth_save_failure_preserves_file
     chatgpt_auth_expired_refreshes_before_request
     chatgpt_auth_reloads_changed_file_before_refresh
     chatgpt_auth_rejects_changed_file_account
