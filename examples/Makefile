@@ -1,7 +1,7 @@
 SHELL := bash
 .DEFAULT_GOAL := help
 MAKEFLAGS += --no-print-directory
-.PHONY: help lua-rock lua-env run-basic-response run-chatgpt-login run-openrouter-response run-conversation-handles run-streaming-text run-history-export run-session-state run-smhi-weather run-mcp-server run-searxng-search run-terminal-chat run-mike-mind run-lua-basic run-lua-terminal-chat run-lua-conversation run-lua-session-state
+.PHONY: help lua-rock lua-env run-basic-response run-chatgpt-login run-openrouter-response run-conversation-handles run-streaming-text run-history-export run-session-state run-smhi-weather run-mcp-server run-searxng-search run-terminal-chat run-mike-mind run-lua-chatgpt-login run-lua-basic run-lua-terminal-chat run-lua-conversation run-lua-session-state
 
 ROOT := ..
 CMAKE ?= cmake
@@ -70,6 +70,7 @@ help:
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
 		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-mike-mind' \
+		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-lua-basic' \
 		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-lua-conversation' \
@@ -119,6 +120,9 @@ run-terminal-chat:
 
 run-mike-mind:
 	$(call run_c_example,cai_example_mike_mind,)
+
+run-lua-chatgpt-login:
+	$(call run_lua_example,examples/lua-chatgpt-login/main.lua,$(CHATGPT_LOGIN_ARGS))
 
 run-lua-basic:
 	$(call run_lua_example,examples/lua-basic/main.lua,)

@@ -9,4 +9,5 @@ output=$(make -C examples help)
 grep -F 'make run-basic-response' <<<"$output" >/dev/null
 grep -F 'make run-chatgpt-login' <<<"$output" >/dev/null
 grep -F 'make run-terminal-chat' <<<"$output" >/dev/null
+grep -F 'make run-lua-chatgpt-login' <<<"$output" >/dev/null
 grep -F 'make run-lua-terminal-chat' <<<"$output" >/dev/null

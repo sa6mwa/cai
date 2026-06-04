@@ -50,6 +50,8 @@ Codex-style auth file:
 ```sh
 make -C examples run-chatgpt-login
 make -C examples run-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+make -C examples run-lua-chatgpt-login
+make -C examples run-lua-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 ```
 
 Without `CAI_CHATGPT_AUTH_JSON`, the login example writes cai's default
@@ -58,7 +60,10 @@ ChatGPT auth path: `$XDG_CONFIG_HOME/cai/auth.json`, or
 
 Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
 callback port is unavailable. The example is intentionally interactive; local
-unit tests mock the callback and token exchange flow.
+unit tests mock the callback and token exchange flow. The Lua login example
+uses cai's Lua OAuth binding for the auth flow and LuaSocket only for its tiny
+example HTTP listener; install LuaSocket separately if you want to run that
+example.
 
 ## OpenRouter Response
 
@@ -173,6 +178,7 @@ Build the local LuaRock into `build/luarocks`, then run a Lua 5.5 example
 against the same C SDK facade:
 
 ```sh
+make -C examples run-lua-chatgpt-login
 OPENAI_API_KEY=... make -C examples run-lua-basic
 ```
 

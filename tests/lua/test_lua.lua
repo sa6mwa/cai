@@ -89,12 +89,22 @@ end
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.mcp_handler) == "function")
+assert(type(cai.chatgpt_login) == "function")
+assert(type(cai.chatgpt_auth_default_path) == "function")
 assert(cai.MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES > 0)
 assert_eq(cai.MCP_TOOL_OUTPUT_UNLIMITED, -1, "mcp unlimited sentinel")
 assert(type(cai.tool_schema) == "function")
 assert(type(cai.load_dotenv_api_key) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
 assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
+assert_eq(cai.CHATGPT_AUTH_DEFAULT_ISSUER, "https://auth.openai.com",
+  "ChatGPT auth issuer")
+assert_eq(cai.CHATGPT_AUTH_DEFAULT_CALLBACK_PATH, "/auth/callback",
+  "ChatGPT callback path")
+assert_eq(cai.CHATGPT_AUTH_DEFAULT_CALLBACK_PORT, 1455,
+  "ChatGPT callback port")
+assert_eq(cai.CHATGPT_AUTH_FALLBACK_CALLBACK_PORT, 1457,
+  "ChatGPT fallback callback port")
 assert_eq(cai.OPENAI_API_KEY_ENV, "OPENAI_API_KEY", "OpenAI env name")
 assert_eq(cai.OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY", "OpenRouter env name")
 assert_eq(cai.TEXT_VERBOSITY_LOW, "low", "text verbosity low")
@@ -199,6 +209,11 @@ dummy_agent:close()
 dummy_client:close()
 
 do
+  local default_path = assert_ok(cai.chatgpt_auth_default_path(), nil,
+    "Lua ChatGPT default auth path")
+  assert(default_path:match("/cai/auth%.json$"),
+    "Lua ChatGPT default auth path suffix")
+
   local auth_path = os.tmpname()
   local future_token = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.lua"
   local fp = assert(io.open(auth_path, "w"))
@@ -219,6 +234,58 @@ do
     chatgpt_auth_json = auth_path,
   })
   assert_not_ok(missing_client, missing_err, "Lua ChatGPT auth missing file")
+end
+
+do
+  local auth_path = os.tmpname()
+  os.remove(auth_path)
+  local login, authorize_url_or_err = cai.chatgpt_login({
+    auth_json_path = auth_path,
+    redirect_uri = "http://localhost:1455/auth/callback",
+    issuer = "https://auth.example.test/",
+    state = "state-fixed",
+    code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789",
+    originator = "cai-lua-test",
+  })
+  local authorize_url = authorize_url_or_err
+  assert_ok(login, authorize_url_or_err, "Lua ChatGPT login start")
+  assert(authorize_url:match("^https://auth%.example%.test/oauth/authorize%?"),
+    "Lua ChatGPT authorize URL base")
+  assert(authorize_url:find("client_id=" .. cai.CHATGPT_AUTH_DEFAULT_CLIENT_ID,
+    1, true), "Lua ChatGPT authorize URL client id")
+  assert(authorize_url:find("redirect_uri=http%%3A%%2F%%2Flocalhost%%3A1455%%2Fauth%%2Fcallback"),
+    "Lua ChatGPT authorize URL redirect")
+  assert(authorize_url:find("code_challenge_method=S256", 1, true),
+    "Lua ChatGPT authorize URL PKCE")
+  assert(authorize_url:find("state=state-fixed", 1, true),
+    "Lua ChatGPT authorize URL state")
+  assert_eq(login:authorize_url(), authorize_url, "Lua ChatGPT authorize method")
+  assert_eq(login:completed(), false, "Lua ChatGPT login starts incomplete")
+
+  local bad_state = assert_ok(login:handle_callback({
+    method = "GET",
+    target = "/auth/callback?code=mock-code&state=wrong",
+  }), nil, "Lua ChatGPT login state mismatch response")
+  assert_eq(bad_state.status, 400, "Lua ChatGPT state mismatch status")
+  assert_eq(bad_state.completed, true, "Lua ChatGPT state mismatch terminal")
+  assert_eq(login:completed(), false, "Lua ChatGPT state mismatch not success")
+
+  local bad_method = assert_ok(login:handle_callback("POST",
+    "/auth/callback?code=mock-code&state=state-fixed"), nil,
+    "Lua ChatGPT login method response")
+  assert_eq(bad_method.status, 405, "Lua ChatGPT method status")
+  assert_eq(bad_method.completed, false, "Lua ChatGPT method not terminal")
+
+  local bad_path = assert_ok(login:handle_callback("GET",
+    "/other?code=mock-code&state=state-fixed"), nil,
+    "Lua ChatGPT login path response")
+  assert_eq(bad_path.status, 404, "Lua ChatGPT path status")
+  assert_eq(bad_path.completed, false, "Lua ChatGPT path not terminal")
+
+  login:close()
+  assert_throws(function()
+    login:completed()
+  end, "closed Lua ChatGPT login handle must fail")
 end
 
 do

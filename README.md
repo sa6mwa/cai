@@ -109,7 +109,10 @@ The verification tiers are split intentionally:
   pass the embedding server's callback request target into
   `cai_chatgpt_login_handle_callback`, then write the returned status,
   content-type, and body. The example `cai_example_chatgpt_login` shows this
-  with a tiny local test server.
+  with a tiny local test server. Lua exposes the same flow with
+  `cai.chatgpt_login`, `login:handle_callback`, and
+  `cai.chatgpt_auth_default_path`; the Lua example uses LuaSocket only for its
+  example listener.
 - `CAI_DEFAULT_DOTENV_PATH` is `.env` for callers that explicitly want cai's
   dotenv parser. Call `cai_load_dotenv_api_key(path, env_name, &key, &error)`,
   pass the returned key to `config.api_key`, then release it with
