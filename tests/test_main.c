@@ -7711,6 +7711,95 @@ cleanup:
   rmdir(template_dir);
 }
 
+static void test_chatgpt_auth_invalid_refresh_retryable(test_state *state) {
+  static const char expired_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.expired";
+  static const char auth_error_body[] =
+      "{\"error\":\"invalid_grant\",\"error_description\":\"refresh token "
+      "expired\"}";
+  static const char *refresh_required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "\"client_id\":\"" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID "\"",
+      "\"grant_type\":\"refresh_token\"",
+      "\"refresh_token\":\"refresh-invalid\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", refresh_required,
+       sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 400,
+       "Bad Request", "application/json", NULL, auth_error_body},
+      {"POST /v1/oauth/token HTTP/", refresh_required,
+       sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 400,
+       "Bad Request", "application/json", NULL, auth_error_body}};
+  char template_dir[] = "/tmp/cai-auth-invalid-refresh-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[2048];
+  http_mock_server server;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_error error;
+  char *token;
+  int server_opened;
+
+  server_opened = 0;
+  auth = NULL;
+  token = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_invalid_refresh_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(
+      auth_json, sizeof(auth_json),
+      "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"%s\","
+      "\"refresh_token\":\"refresh-invalid\",\"account_id\":\"acct_test\"},"
+      "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+      expired_token);
+  write_file_or_die(auth_path, auth_json);
+  if (http_mock_server_open_script(state, "chatgpt_auth_invalid_refresh_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  auth_config.issuer = server.base_url;
+  expect_int(state, "chatgpt_auth_invalid_refresh_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_invalid_refresh_first",
+             cai_chatgpt_auth_access_token(auth, &token, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "chatgpt_auth_invalid_refresh_first_status",
+             error.http_status, 400L);
+  expect_substr(state, "chatgpt_auth_invalid_refresh_first_message",
+                error.message, "login again");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_string_destroy(token);
+  token = NULL;
+  expect_int(state, "chatgpt_auth_invalid_refresh_second",
+             cai_chatgpt_auth_access_token(auth, &token, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "chatgpt_auth_invalid_refresh_second_status",
+             error.http_status, 400L);
+  expect_substr(state, "chatgpt_auth_invalid_refresh_second_message",
+                error.message, "login again");
+
+cleanup:
+  cai_string_destroy(token);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_invalid_refresh_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
 static void
 test_chatgpt_auth_expired_refreshes_before_request(test_state *state) {
   static const char expired_token[] = "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.old";
@@ -16678,6 +16767,8 @@ static const test_entry test_entries[] = {
      test_response_large_tool_arguments_spooled},
     {"http_create_response", test_http_create_response},
     {"chatgpt_auth_refresh_retry", test_chatgpt_auth_refresh_retry},
+    {"chatgpt_auth_invalid_refresh_retryable",
+     test_chatgpt_auth_invalid_refresh_retryable},
     {"chatgpt_auth_expired_refreshes_before_request",
      test_chatgpt_auth_expired_refreshes_before_request},
     {"chatgpt_auth_reloads_changed_file_before_refresh",

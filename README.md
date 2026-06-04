@@ -149,8 +149,9 @@ The verification tiers are split intentionally:
 ## Lua Binding
 
 The Lua binding targets Lua 5.5 and is exposed as `require("cai")`. It wraps
-the public C facade: clients, agents, sessions, responses/outputs, streaming
-sinks, tool registries, tool presets, and the MCP Streamable HTTP handler.
+the public C workflow facade: clients, agents, sessions, responses/outputs,
+streaming sinks, tool registries, tool presets, ChatGPT auth/login helpers, and
+the MCP Streamable HTTP handler.
 
 Build and run the local LuaRock test:
 
@@ -181,6 +182,11 @@ Those accept strings, chunk-producing callbacks, or lonejson-style spooled
 readers with `rewind()` and `read(n)`. Lua raw spooled tool callbacks receive
 that same reader shape for arguments, and may return a chunk-producing callback
 or spooled reader to stream JSON output without building the full value first.
+
+The Lua facade intentionally does not expose C-only embedding surfaces such as
+custom allocators, `FILE *`, `lc_source` / `lc_sink`, raw `cai_source` /
+`cai_sink` constructors, lonejson C maps, or custom todo storage callbacks.
+Lua code uses Lua callbacks/readers/writers for those integration points.
 
 The Lua examples include a basic streaming agent, a terminal chatbot with
 SearXNG and todo/kanban tools, streamed tool output, low-level conversation

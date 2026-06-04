@@ -89,6 +89,7 @@ end
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.mcp_handler) == "function")
+assert(type(cai.chatgpt_auth) == "function")
 assert(type(cai.chatgpt_login) == "function")
 assert(type(cai.chatgpt_auth_default_path) == "function")
 assert(cai.MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES > 0)
@@ -118,6 +119,31 @@ assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
 assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
 assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
+
+do
+  local registry = debug.getregistry()
+  local response_methods = assert(registry["cai.response"].__index,
+    "Lua response metatable")
+  local output_methods = assert(registry["cai.output"].__index,
+    "Lua output metatable")
+  for _, name in ipairs({
+    "conversation_id",
+    "created_at",
+    "error_code",
+    "error_message",
+    "incomplete_reason",
+    "input_tokens",
+    "input_cached_tokens",
+    "output_tokens",
+    "output_reasoning_tokens",
+    "total_tokens",
+  }) do
+    assert(type(response_methods[name]) == "function",
+      "Lua response method missing: " .. name)
+  end
+  assert(type(output_methods.write_raw_json) == "function",
+    "Lua output write_raw_json method missing")
+end
 assert_eq(cai.MODEL_GPT_4O, "gpt-4o", "model constant")
 assert(type(cai.MODEL_CAP_RESPONSES) == "number")
 assert(type(cai.MODEL_META_PROVIDER_OPENROUTER) == "number")
@@ -222,6 +248,18 @@ do
     '","refresh_token":"refresh-lua","account_id":"acct_lua"},' ..
     '"last_refresh":"2026-01-01T00:00:00Z"}')
   fp:close()
+  local standalone_auth = assert_ok(cai.chatgpt_auth({
+    auth_json_path = auth_path,
+    issuer = "http://127.0.0.1:1",
+    refresh_window_seconds = 300,
+  }), nil, "Lua standalone ChatGPT auth open")
+  assert_eq(assert_ok(standalone_auth:access_token(), nil,
+    "Lua standalone ChatGPT access token"), future_token,
+    "Lua standalone ChatGPT token")
+  standalone_auth:close()
+  assert_throws(function()
+    standalone_auth:access_token()
+  end, "Lua standalone ChatGPT closed auth")
   local auth_client = assert_ok(cai.open({
     chatgpt_auth_json = auth_path,
     base_url = "http://127.0.0.1:1/v1",

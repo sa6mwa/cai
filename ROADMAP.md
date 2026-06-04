@@ -65,10 +65,11 @@ Implemented:
 - Lua 5.5 binding with client/agent/session/response/output handles, streaming
   sinks, streamed tool output callbacks, function-call argument stream
   callbacks, raw and raw-spooled Lua callback tools, lonejson-style spooled
-  large-value inputs, public tool presets, hosted-tool helpers, MCP handler
-  exposure, low-level Responses and Conversations handles, raw JSON
-  `tool_choice`, input-token counting, model constants/metadata, offline tests,
-  Lua examples, and local/release LuaRock build targets.
+  large-value inputs, public tool presets, hosted-tool helpers, ChatGPT
+  auth/login helpers, MCP handler exposure, low-level Responses and
+  Conversations handles, raw JSON `tool_choice`, input-token counting, model
+  constants/metadata, offline tests, Lua examples, and local/release LuaRock
+  build targets.
 - Release matrix packaging for Linux x86_64/aarch64/armhf with GNU and musl
   variants plus Darwin arm64 when osxcross is available.
 - Source archive packaging.

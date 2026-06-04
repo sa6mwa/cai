@@ -1277,8 +1277,15 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
     cai_auth_secure_clear(response_json);
     cai_free_mem(NULL, response_json);
     return cai_set_error_http(
-        error, status == 401L ? CAI_ERR_INVALID : CAI_ERR_TRANSPORT, status,
-        "ChatGPT token refresh failed", NULL, NULL, NULL);
+        error,
+        (status == 400L || status == 401L || status == 403L)
+            ? CAI_ERR_INVALID
+            : CAI_ERR_TRANSPORT,
+        status,
+        (status == 400L || status == 401L || status == 403L)
+            ? "ChatGPT token refresh failed; login again with chatgpt-login"
+            : "ChatGPT token refresh failed",
+        NULL, NULL, NULL);
   }
   memset(&response, 0, sizeof(response));
   CAI_LJ->init(CAI_LJ, &cai_auth_refresh_response_map, &response);

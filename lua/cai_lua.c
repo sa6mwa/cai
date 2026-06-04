@@ -37,6 +37,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_OUTPUT "cai.output"
 #define CAI_LUA_REGISTRY "cai.tool_registry"
 #define CAI_LUA_MCP "cai.mcp_handler"
+#define CAI_LUA_CHATGPT_AUTH "cai.chatgpt_auth"
 #define CAI_LUA_CHATGPT_LOGIN "cai.chatgpt_login"
 #define CAI_LUA_SCHEMA "cai.tool_schema"
 #define CAI_LUA_PARAMS "cai.response_params"
@@ -94,6 +95,10 @@ typedef struct cai_lua_registry {
 typedef struct cai_lua_mcp {
   cai_mcp_handler *ptr;
 } cai_lua_mcp;
+
+typedef struct cai_lua_chatgpt_auth {
+  cai_chatgpt_auth *ptr;
+} cai_lua_chatgpt_auth;
 
 typedef struct cai_lua_chatgpt_login {
   cai_chatgpt_login *ptr;
@@ -457,6 +462,15 @@ static cai_lua_mcp *cai_lua_check_mcp(lua_State *L, int index) {
   cai_lua_mcp *self;
   self = (cai_lua_mcp *)luaL_checkudata(L, index, CAI_LUA_MCP);
   luaL_argcheck(L, self->ptr != NULL, index, "closed cai mcp handler");
+  return self;
+}
+
+static cai_lua_chatgpt_auth *cai_lua_check_chatgpt_auth(lua_State *L,
+                                                        int index) {
+  cai_lua_chatgpt_auth *self;
+  self =
+      (cai_lua_chatgpt_auth *)luaL_checkudata(L, index, CAI_LUA_CHATGPT_AUTH);
+  luaL_argcheck(L, self->ptr != NULL, index, "closed cai ChatGPT auth");
   return self;
 }
 
@@ -1366,6 +1380,80 @@ static int cai_lua_chatgpt_auth_default_path(lua_State *L) {
   cai_string_destroy(path);
   cai_lua_error_cleanup(&error);
   return 1;
+}
+
+static int cai_lua_chatgpt_auth_new(lua_State *L) {
+  cai_chatgpt_auth_config config;
+  cai_chatgpt_auth *auth;
+  cai_lua_chatgpt_auth *ud;
+  cai_error error;
+  int rc;
+
+  auth = NULL;
+  cai_error_init(&error);
+  cai_chatgpt_auth_config_init(&config);
+  if (lua_istable(L, 1)) {
+    config.auth_json_path =
+        cai_lua_opt_string_field(L, 1, "auth_json_path", NULL);
+    config.issuer = cai_lua_opt_string_field(L, 1, "issuer", NULL);
+    config.client_id = cai_lua_opt_string_field(L, 1, "client_id", NULL);
+    config.refresh_window_seconds = cai_lua_opt_ll_field(
+        L, 1, "refresh_window_seconds", config.refresh_window_seconds);
+  }
+  rc = cai_chatgpt_auth_open(&config, &auth, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  ud = (cai_lua_chatgpt_auth *)lua_newuserdata(L, sizeof(*ud));
+  ud->ptr = auth;
+  luaL_getmetatable(L, CAI_LUA_CHATGPT_AUTH);
+  lua_setmetatable(L, -2);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_chatgpt_auth_gc(lua_State *L) {
+  cai_lua_chatgpt_auth *self;
+  self = (cai_lua_chatgpt_auth *)luaL_checkudata(L, 1, CAI_LUA_CHATGPT_AUTH);
+  if (self->ptr != NULL) {
+    cai_chatgpt_auth_close(self->ptr);
+    self->ptr = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_chatgpt_auth_close(lua_State *L) {
+  return cai_lua_chatgpt_auth_gc(L);
+}
+
+static int cai_lua_chatgpt_auth_access_token(lua_State *L) {
+  cai_lua_chatgpt_auth *self;
+  cai_error error;
+  char *token;
+  int rc;
+
+  self = cai_lua_check_chatgpt_auth(L, 1);
+  token = NULL;
+  cai_error_init(&error);
+  rc = cai_chatgpt_auth_access_token(self->ptr, &token, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, token != NULL ? token : "");
+  cai_string_destroy(token);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_chatgpt_auth_refresh(lua_State *L) {
+  cai_lua_chatgpt_auth *self;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_chatgpt_auth(L, 1);
+  cai_error_init(&error);
+  rc = cai_chatgpt_auth_refresh(self->ptr, &error);
+  return cai_lua_bool_result(L, rc, &error);
 }
 
 static int cai_lua_chatgpt_login_new(lua_State *L) {
@@ -3517,6 +3605,101 @@ static int cai_lua_response_model(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_response_conversation_id(lua_State *L) {
+  cai_lua_response *self;
+  const char *value;
+  self = cai_lua_check_response(L, 1);
+  value = cai_response_conversation_id(self->ptr);
+  if (value == NULL) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, value);
+  }
+  return 1;
+}
+
+static int cai_lua_response_created_at(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushinteger(L, (lua_Integer)cai_response_created_at(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_error_code(lua_State *L) {
+  cai_lua_response *self;
+  const char *value;
+  self = cai_lua_check_response(L, 1);
+  value = cai_response_error_code(self->ptr);
+  if (value == NULL) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, value);
+  }
+  return 1;
+}
+
+static int cai_lua_response_error_message(lua_State *L) {
+  cai_lua_response *self;
+  const char *value;
+  self = cai_lua_check_response(L, 1);
+  value = cai_response_error_message(self->ptr);
+  if (value == NULL) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, value);
+  }
+  return 1;
+}
+
+static int cai_lua_response_incomplete_reason(lua_State *L) {
+  cai_lua_response *self;
+  const char *value;
+  self = cai_lua_check_response(L, 1);
+  value = cai_response_incomplete_reason(self->ptr);
+  if (value == NULL) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, value);
+  }
+  return 1;
+}
+
+static int cai_lua_response_input_tokens(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushinteger(L, (lua_Integer)cai_response_input_tokens(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_input_cached_tokens(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushinteger(L, (lua_Integer)cai_response_input_cached_tokens(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_output_tokens(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushinteger(L, (lua_Integer)cai_response_output_tokens(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_output_reasoning_tokens(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushinteger(L,
+                  (lua_Integer)cai_response_output_reasoning_tokens(self->ptr));
+  return 1;
+}
+
+static int cai_lua_response_total_tokens(lua_State *L) {
+  cai_lua_response *self;
+  self = cai_lua_check_response(L, 1);
+  lua_pushinteger(L, (lua_Integer)cai_response_total_tokens(self->ptr));
+  return 1;
+}
+
 static int cai_lua_response_refusal(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
@@ -3746,6 +3929,29 @@ static int cai_lua_output_write_refusal(lua_State *L) {
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
     rc = cai_output_write_refusal(self->ptr, sink, &error);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_output_write_raw_json(lua_State *L) {
+  cai_lua_output *self;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_output(L, 1);
+  sink = NULL;
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_output_write_raw_json(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -5597,6 +5803,16 @@ static const luaL_Reg cai_lua_response_methods[] = {
     {"id", cai_lua_response_id},
     {"status", cai_lua_response_status},
     {"model", cai_lua_response_model},
+    {"conversation_id", cai_lua_response_conversation_id},
+    {"created_at", cai_lua_response_created_at},
+    {"error_code", cai_lua_response_error_code},
+    {"error_message", cai_lua_response_error_message},
+    {"incomplete_reason", cai_lua_response_incomplete_reason},
+    {"input_tokens", cai_lua_response_input_tokens},
+    {"input_cached_tokens", cai_lua_response_input_cached_tokens},
+    {"output_tokens", cai_lua_response_output_tokens},
+    {"output_reasoning_tokens", cai_lua_response_output_reasoning_tokens},
+    {"total_tokens", cai_lua_response_total_tokens},
     {"output_text", cai_lua_response_output_text},
     {"refusal", cai_lua_response_refusal},
     {"write_output_text", cai_lua_response_write_output_text},
@@ -5617,6 +5833,7 @@ static const luaL_Reg cai_lua_output_methods[] = {
     {"raw_json", cai_lua_output_raw_json},
     {"write_text", cai_lua_output_write_text},
     {"write_refusal", cai_lua_output_write_refusal},
+    {"write_raw_json", cai_lua_output_write_raw_json},
     {"close", cai_lua_output_close},
     {NULL, NULL}};
 
@@ -5645,6 +5862,12 @@ static const luaL_Reg cai_lua_registry_methods[] = {
 static const luaL_Reg cai_lua_mcp_methods[] = {
     {"handle_http", cai_lua_mcp_handle_http},
     {"close", cai_lua_mcp_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_chatgpt_auth_methods[] = {
+    {"access_token", cai_lua_chatgpt_auth_access_token},
+    {"refresh", cai_lua_chatgpt_auth_refresh},
+    {"close", cai_lua_chatgpt_auth_close},
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_chatgpt_login_methods[] = {
@@ -5778,6 +6001,8 @@ int luaopen_cai(lua_State *L) {
   cai_lua_metatable(L, CAI_LUA_REGISTRY, cai_lua_registry_methods,
                     cai_lua_registry_gc);
   cai_lua_metatable(L, CAI_LUA_MCP, cai_lua_mcp_methods, cai_lua_mcp_gc);
+  cai_lua_metatable(L, CAI_LUA_CHATGPT_AUTH, cai_lua_chatgpt_auth_methods,
+                    cai_lua_chatgpt_auth_gc);
   cai_lua_metatable(L, CAI_LUA_CHATGPT_LOGIN, cai_lua_chatgpt_login_methods,
                     cai_lua_chatgpt_login_gc);
   cai_lua_metatable(L, CAI_LUA_SCHEMA, cai_lua_schema_methods,
@@ -5815,6 +6040,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "load_dotenv_api_key");
   lua_pushcfunction(L, cai_lua_chatgpt_auth_default_path);
   lua_setfield(L, -2, "chatgpt_auth_default_path");
+  lua_pushcfunction(L, cai_lua_chatgpt_auth_new);
+  lua_setfield(L, -2, "chatgpt_auth");
   lua_pushcfunction(L, cai_lua_chatgpt_login_new);
   lua_setfield(L, -2, "chatgpt_login");
   lua_pushcfunction(L, cai_lua_model_info);
