@@ -228,6 +228,11 @@ handling, and session state save/restore. See
   Lua exposes the same surface with `usage_limits` on `cai.open`,
   `session_usage_limits` on `client:new_agent`, and `usage()` /
   `set_usage_limits()` methods on clients and sessions.
+- The C and Lua terminal-chat examples set a default session
+  `max_output_tokens` budget of `1,000,000` cumulative output tokens. Override
+  any budget lane with `--max-input-tokens`, `--max-cached-input-tokens`,
+  `--max-output-tokens`, `--max-reasoning-output-tokens`,
+  `--max-total-tokens`, or `--max-spend-usd`; pass `0` to disable that lane.
 - Production SDK calls should choose a model explicitly.
 - Session auto-compaction is enabled by default and uses Responses
   server-side compaction.

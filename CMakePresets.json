@@ -146,7 +146,8 @@
       "name": "integration",
       "inherits": "debug",
       "cacheVariables": {
-        "CAI_BUILD_INTEGRATION_TESTS": "ON"
+        "CAI_BUILD_INTEGRATION_TESTS": "ON",
+        "CAI_BUILD_LUA": "ON"
       }
     }
   ],

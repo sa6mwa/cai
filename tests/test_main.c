@@ -9682,6 +9682,102 @@ static void test_usage_limits(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+typedef enum usage_limit_lane {
+  USAGE_LIMIT_INPUT,
+  USAGE_LIMIT_CACHED_INPUT,
+  USAGE_LIMIT_OUTPUT,
+  USAGE_LIMIT_REASONING_OUTPUT,
+  USAGE_LIMIT_TOTAL
+} usage_limit_lane;
+
+static void run_usage_limit_lane_case(test_state *state, const char *name,
+                                      usage_limit_lane lane, const char *body) {
+  static const char *required[] = {"POST /v1/responses", "lane limit"};
+  mock_http_expectation script[] = {{"POST /v1/responses", required, 2U, NULL,
+                                     0U, 200, "OK", "application/json", NULL,
+                                     NULL}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_usage_accounting usage;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  script[0].body = body;
+  if (http_mock_client_open_script(state, name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_usage_limits_init(&limits);
+  switch (lane) {
+  case USAGE_LIMIT_INPUT:
+    limits.max_input_tokens = 9LL;
+    break;
+  case USAGE_LIMIT_CACHED_INPUT:
+    limits.max_input_cached_tokens = 2LL;
+    break;
+  case USAGE_LIMIT_OUTPUT:
+    limits.max_output_tokens = 4LL;
+    break;
+  case USAGE_LIMIT_REASONING_OUTPUT:
+    limits.max_output_reasoning_tokens = 1LL;
+    break;
+  case USAGE_LIMIT_TOTAL:
+    limits.max_total_tokens = 14LL;
+    break;
+  }
+
+  expect_int(state, name,
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, name, cai_agent_new_session(agent, &session, &error),
+             CAI_OK);
+  expect_int(state, name,
+             cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+  expect_int(state, name,
+             cai_session_add_user_text(session, "lane limit", &error), CAI_OK);
+  expect_int(state, name, cai_session_run(session, &response, &error),
+             CAI_ERR_LIMIT);
+  expect_str(state, name, error.message,
+             "configured usage or spend limit exceeded");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, name, cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, name, usage.limit_exceeded, 1L);
+  if (response != NULL) {
+    test_fail(state, name, "limited response should not be returned");
+    cai_response_destroy(response);
+  }
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, name, &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_usage_limit_lanes(test_state *state) {
+  run_usage_limit_lane_case(state, "usage_limit_input", USAGE_LIMIT_INPUT,
+                            usage_body_one);
+  run_usage_limit_lane_case(state, "usage_limit_cached",
+                            USAGE_LIMIT_CACHED_INPUT, usage_body_two);
+  run_usage_limit_lane_case(state, "usage_limit_output", USAGE_LIMIT_OUTPUT,
+                            usage_body_one);
+  run_usage_limit_lane_case(state, "usage_limit_reasoning",
+                            USAGE_LIMIT_REASONING_OUTPUT, usage_body_two);
+  run_usage_limit_lane_case(state, "usage_limit_total", USAGE_LIMIT_TOTAL,
+                            usage_body_one);
+}
+
 static void test_usage_client_limits(test_state *state) {
   static const char *first_required[] = {"POST /v1/responses", "client one"};
   static const char *second_required[] = {"POST /v1/responses", "client two"};
@@ -18335,6 +18431,7 @@ static const test_entry test_entries[] = {
     {"http_list_response_input_items", test_http_list_response_input_items},
     {"usage_accounting", test_usage_accounting},
     {"usage_limits", test_usage_limits},
+    {"usage_limit_lanes", test_usage_limit_lanes},
     {"usage_client_limits", test_usage_client_limits},
     {"usage_spend_limit", test_usage_spend_limit},
     {"usage_spend_limit_requires_pricing",

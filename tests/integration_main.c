@@ -3328,6 +3328,104 @@ static int run_openrouter_e2e_session_regression(void) {
   return run_e2e_session_regression_with_provider(1);
 }
 
+static int run_usage_limit_regression(void) {
+  cai_agent_config agent_config;
+  cai_client_config client_config;
+  cai_usage_limits limits;
+  cai_usage_accounting usage;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_usage_limits_init(&limits);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+
+  limits.max_output_tokens = 1LL;
+  agent_config.model = integration_model();
+  agent_config.developer_instructions =
+      "You are a usage-limit integration test. Obey the user exactly.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 64;
+  agent_config.session_usage_limits = limits;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = integration_provider_send_text(
+        session,
+        "Reply with exactly this sentence: alpha beta gamma delta epsilon.", 0,
+        &response, &error);
+  }
+  if (rc != CAI_ERR_LIMIT) {
+    fprintf(stderr,
+            "integration usage limit expected CAI_ERR_LIMIT, got %s (%d)\n",
+            cai_status_string(rc), rc);
+    print_error("integration usage limit", rc, &error);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (response != NULL) {
+    fprintf(stderr, "integration usage limit unexpectedly returned response\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  rc = cai_session_usage(session, &usage, &error);
+  if (rc != CAI_OK) {
+    print_error("integration usage limit usage", rc, &error);
+    goto done;
+  }
+  fprintf(stderr,
+          "[integration-usage-limits] output=%lld total=%lld limited=%d "
+          "estimated_cost=$%.8f\n",
+          usage.usage.output_tokens, usage.usage.total_tokens,
+          usage.limit_exceeded, usage.estimated_spend_usd);
+  if (usage.limit_exceeded == 0 || usage.usage.output_tokens <= 1LL) {
+    fprintf(stderr,
+            "integration usage limit did not observe provider output above "
+            "cap\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  rc = cai_session_add_user_text(session, "This should fail before transport.",
+                                 &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_run(session, &response, &error);
+  }
+  if (rc != CAI_ERR_LIMIT) {
+    fprintf(stderr,
+            "integration usage limit expected preflight CAI_ERR_LIMIT, got %s "
+            "(%d)\n",
+            cai_status_string(rc), rc);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  rc = CAI_OK;
+
+done:
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
                                                  cai_error *error) {
   cai_chatgpt_auth_config auth_config;
@@ -3771,6 +3869,7 @@ int main(void) {
   const char *openrouter_read_tool;
   const char *openrouter_tool_security;
   const char *hosted_web_search;
+  const char *usage_limits;
   const char *searxng_tool;
   const char *searxng_stream_tool;
   const char *state_restore;
@@ -3793,6 +3892,13 @@ int main(void) {
       return 1;
     }
     return run_openrouter_e2e_session_regression();
+  }
+  usage_limits = getenv("CAI_INTEGRATION_USAGE_LIMITS");
+  if (integration_flag_enabled(usage_limits)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
+    return run_usage_limit_regression();
   }
   openrouter_session = getenv("CAI_INTEGRATION_OPENROUTER_SESSION");
   if (integration_flag_enabled(openrouter_session)) {

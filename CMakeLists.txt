@@ -709,6 +709,7 @@ if(CAI_BUILD_TESTS)
     http_list_response_input_items
     usage_accounting
     usage_limits
+    usage_limit_lanes
     usage_client_limits
     usage_spend_limit
     usage_spend_limit_requires_pricing
@@ -1009,6 +1010,14 @@ if(CAI_BUILD_TESTS)
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_usage_limits
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_USAGE_LIMITS=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_usage_limits PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
     add_test(NAME cai_integration_chatgpt_subscription_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1"
@@ -1142,6 +1151,16 @@ if(CAI_BUILD_TESTS)
         COMMAND "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_session_continuity.lua")
       set_tests_properties(cai_lua_session_continuity_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+      add_test(NAME cai_lua_usage_limits_e2e
+        COMMAND "${CMAKE_COMMAND}" -E env
+          "CAI_LUA_USAGE_LIMITS_E2E=1"
+          "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_usage_limits.lua")
+      set_tests_properties(cai_lua_usage_limits_e2e PROPERTIES
         LABELS integration
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"

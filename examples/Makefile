@@ -18,6 +18,12 @@ CAI_CHATGPT_AUTH ?=
 CAI_CHATGPT_AUTH_JSON ?=
 CAI_CHATGPT_LOGIN_PORT ?= 1455
 CAI_TERMINAL_CHAT_MODEL ?=
+CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS ?=
+CAI_TERMINAL_CHAT_MAX_CACHED_INPUT_TOKENS ?=
+CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS ?=
+CAI_TERMINAL_CHAT_MAX_REASONING_OUTPUT_TOKENS ?=
+CAI_TERMINAL_CHAT_MAX_TOTAL_TOKENS ?=
+CAI_TERMINAL_CHAT_MAX_SPEND_USD ?=
 
 ifneq ($(strip $(CAI_EXEC_TOOL_DIR)),)
 EXEC_TOOL_ARGS := --exec-tool-dir "$(CAI_EXEC_TOOL_DIR)"
@@ -45,7 +51,25 @@ else
 CHATGPT_AUTH_ARGS :=
 CHATGPT_LOGIN_ARGS := --port "$(CAI_CHATGPT_LOGIN_PORT)"
 endif
-TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS)
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS)),)
+TERMINAL_LIMIT_ARGS += --max-input-tokens "$(CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS)"
+endif
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_CACHED_INPUT_TOKENS)),)
+TERMINAL_LIMIT_ARGS += --max-cached-input-tokens "$(CAI_TERMINAL_CHAT_MAX_CACHED_INPUT_TOKENS)"
+endif
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS)),)
+TERMINAL_LIMIT_ARGS += --max-output-tokens "$(CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS)"
+endif
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_REASONING_OUTPUT_TOKENS)),)
+TERMINAL_LIMIT_ARGS += --max-reasoning-output-tokens "$(CAI_TERMINAL_CHAT_MAX_REASONING_OUTPUT_TOKENS)"
+endif
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_TOTAL_TOKENS)),)
+TERMINAL_LIMIT_ARGS += --max-total-tokens "$(CAI_TERMINAL_CHAT_MAX_TOTAL_TOKENS)"
+endif
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_SPEND_USD)),)
+TERMINAL_LIMIT_ARGS += --max-spend-usd "$(CAI_TERMINAL_CHAT_MAX_SPEND_USD)"
+endif
+TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS) $(TERMINAL_LIMIT_ARGS)
 
 define run_c_example
 	cd "$(ROOT)" && \
@@ -74,11 +98,11 @@ help:
 		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
 		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
-		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
+		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
 		'  make run-mike-mind' \
 		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
+		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
 		'' \

@@ -32,6 +32,7 @@
   CAI_ANSI_GRAY "[" CAI_ANSI_MAGENTA "reasoning" CAI_ANSI_GRAY                 \
                 "] " CAI_ANSI_GRAY
 #define CAI_REASONING_SUFFIX CAI_ANSI_RESET "\n\n"
+#define CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS 1000000LL
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -97,7 +98,7 @@ static void print_help(const char *program) {
   fprintf(stderr,
           "usage: %s [--chatgpt-auth] [--chatgpt-auth-json <path>] "
           "[--model <model>] [--exec-tool-dir <path>] "
-          "[--read-tool-dir <path>]\n\n"
+          "[--read-tool-dir <path>] [usage-limit flags]\n\n"
           "  --chatgpt-auth       Use ChatGPT subscription auth from cai's "
           "default auth.json path.\n",
           program != NULL ? program : "cai_example_terminal_chat");
@@ -112,12 +113,63 @@ static void print_help(const char *program) {
           "<path>.\n"
           "                          list_files reports text/binary hints; "
           "read_file is UTF-8 text-only.\n");
+  fprintf(stderr,
+          "  --max-input-tokens <n>  Maximum cumulative input tokens; 0 "
+          "disables.\n"
+          "  --max-cached-input-tokens <n>\n"
+          "                          Maximum cumulative cached input tokens; 0 "
+          "disables.\n"
+          "  --max-output-tokens <n> Maximum cumulative output tokens. "
+          "Default: %lld.\n",
+          CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS);
+  fprintf(stderr,
+          "  --max-reasoning-output-tokens <n>\n"
+          "                          Maximum cumulative reasoning output "
+          "tokens; 0 disables.\n"
+          "  --max-total-tokens <n>  Maximum cumulative total tokens; 0 "
+          "disables.\n"
+          "  --max-spend-usd <n>     Maximum estimated cumulative USD spend; 0 "
+          "disables.\n");
+}
+
+static int parse_ll_arg(const char *name, const char *value, long long *out) {
+  char *endptr;
+  long long parsed;
+
+  if (value == NULL || value[0] == '\0') {
+    fprintf(stderr, "%s requires a non-negative integer\n", name);
+    return 0;
+  }
+  parsed = strtoll(value, &endptr, 10);
+  if (*endptr != '\0' || parsed < 0LL) {
+    fprintf(stderr, "%s requires a non-negative integer\n", name);
+    return 0;
+  }
+  *out = parsed;
+  return 1;
+}
+
+static int parse_double_arg(const char *name, const char *value, double *out) {
+  char *endptr;
+  double parsed;
+
+  if (value == NULL || value[0] == '\0') {
+    fprintf(stderr, "%s requires a non-negative number\n", name);
+    return 0;
+  }
+  parsed = strtod(value, &endptr);
+  if (*endptr != '\0' || parsed < 0.0) {
+    fprintf(stderr, "%s requires a non-negative number\n", name);
+    return 0;
+  }
+  *out = parsed;
+  return 1;
 }
 
 static int parse_args(int argc, char **argv, const char **exec_tool_dir,
                       const char **read_tool_dir,
                       const char **chatgpt_auth_json, const char **model,
-                      int *chatgpt_auth) {
+                      int *chatgpt_auth, cai_usage_limits *usage_limits) {
   int i;
 
   *exec_tool_dir = NULL;
@@ -128,6 +180,8 @@ static int parse_args(int argc, char **argv, const char **exec_tool_dir,
     *model = getenv("CAI_EXAMPLE_MODEL");
   }
   *chatgpt_auth = 0;
+  cai_usage_limits_init(usage_limits);
+  usage_limits->max_output_tokens = CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS;
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--chatgpt-auth") == 0) {
       *chatgpt_auth = 1;
@@ -164,6 +218,56 @@ static int parse_args(int argc, char **argv, const char **exec_tool_dir,
         return 0;
       }
       *read_tool_dir = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--max-input-tokens") == 0) {
+      if (i + 1 >= argc || !parse_ll_arg("--max-input-tokens", argv[i + 1],
+                                         &usage_limits->max_input_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-cached-input-tokens") == 0) {
+      if (i + 1 >= argc ||
+          !parse_ll_arg("--max-cached-input-tokens", argv[i + 1],
+                        &usage_limits->max_input_cached_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-output-tokens") == 0) {
+      if (i + 1 >= argc || !parse_ll_arg("--max-output-tokens", argv[i + 1],
+                                         &usage_limits->max_output_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-reasoning-output-tokens") == 0) {
+      if (i + 1 >= argc ||
+          !parse_ll_arg("--max-reasoning-output-tokens", argv[i + 1],
+                        &usage_limits->max_output_reasoning_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-total-tokens") == 0) {
+      if (i + 1 >= argc || !parse_ll_arg("--max-total-tokens", argv[i + 1],
+                                         &usage_limits->max_total_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-spend-usd") == 0) {
+      if (i + 1 >= argc || !parse_double_arg("--max-spend-usd", argv[i + 1],
+                                             &usage_limits->max_spend_usd)) {
+        return 0;
+      }
+      i++;
       continue;
     }
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -243,6 +347,7 @@ int main(int argc, char **argv) {
   terminal_tool_trace tool_trace;
   cai_error error;
   cai_token_usage usage;
+  cai_usage_limits usage_limits;
   double context_percent;
   double total_spent_usd;
   char *dotenv_api_key;
@@ -266,8 +371,9 @@ int main(int argc, char **argv) {
   memset(&read_config, 0, sizeof(read_config));
   memset(&searxng_config, 0, sizeof(searxng_config));
   memset(&todo_config, 0, sizeof(todo_config));
-  rc = parse_args(argc, argv, &exec_tool_dir, &read_tool_dir,
-                  &chatgpt_auth_json, &model, &chatgpt_auth_enabled);
+  rc =
+      parse_args(argc, argv, &exec_tool_dir, &read_tool_dir, &chatgpt_auth_json,
+                 &model, &chatgpt_auth_enabled, &usage_limits);
   if (rc < 0) {
     return 0;
   }
@@ -278,6 +384,7 @@ int main(int argc, char **argv) {
     model = chatgpt_auth_enabled ? CAI_MODEL_GPT_5_4 : CAI_MODEL_GPT_5_NANO;
   }
   agent_config.model = model;
+  agent_config.session_usage_limits = usage_limits;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   if (exec_tool_dir != NULL || read_tool_dir != NULL) {
     agent_config.developer_instructions =

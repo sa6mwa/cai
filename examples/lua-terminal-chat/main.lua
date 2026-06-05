@@ -28,12 +28,21 @@ local function usage_cost(model_info, usage)
   if not model_info or not usage then
     return 0
   end
-  local input = (usage.input_tokens or 0) - (usage.input_cached_tokens or 0)
+  local input_tokens = usage.input_tokens or 0
+  local input = input_tokens - (usage.input_cached_tokens or 0)
   local cached = usage.input_cached_tokens or 0
   local output = usage.output_tokens or 0
-  return ((input * (model_info.input_usd_per_million or 0)) +
-    (cached * (model_info.cached_input_usd_per_million or 0)) +
-    (output * (model_info.output_usd_per_million or 0))) / 1000000
+  local input_price = model_info.input_usd_per_million or 0
+  local cached_price = model_info.cached_input_usd_per_million or 0
+  local output_price = model_info.output_usd_per_million or 0
+  local long_threshold = model_info.long_context_threshold_tokens or 0
+  if long_threshold > 0 and input_tokens > long_threshold then
+    input_price = model_info.long_input_usd_per_million or input_price
+    cached_price = model_info.long_cached_input_usd_per_million or cached_price
+    output_price = model_info.long_output_usd_per_million or output_price
+  end
+  return ((input * input_price) + (cached * cached_price) +
+    (output * output_price)) / 1000000
 end
 
 local function print_usage(usage, context, total_cost)
@@ -77,6 +86,27 @@ local exec_tool_dir = nil
 local read_tool_dir = nil
 local chatgpt_auth_json = nil
 local chatgpt_auth = false
+local usage_limits = {
+  max_output_tokens = 1000000,
+}
+
+local function parse_nonnegative_integer(name, value)
+  local parsed = tonumber(value)
+  if not parsed or parsed < 0 or parsed ~= math.floor(parsed) then
+    io.stderr:write(name .. " requires a non-negative integer\n")
+    os.exit(2)
+  end
+  return parsed
+end
+
+local function parse_nonnegative_number(name, value)
+  local parsed = tonumber(value)
+  if not parsed or parsed < 0 then
+    io.stderr:write(name .. " requires a non-negative number\n")
+    os.exit(2)
+  end
+  return parsed
+end
 
 local i = 1
 while i <= #arg do
@@ -112,8 +142,33 @@ while i <= #arg do
     end
     model = arg[i + 1]
     i = i + 2
+  elseif arg[i] == "--max-input-tokens" then
+    usage_limits.max_input_tokens =
+      parse_nonnegative_integer("--max-input-tokens", arg[i + 1])
+    i = i + 2
+  elseif arg[i] == "--max-cached-input-tokens" then
+    usage_limits.max_input_cached_tokens =
+      parse_nonnegative_integer("--max-cached-input-tokens", arg[i + 1])
+    i = i + 2
+  elseif arg[i] == "--max-output-tokens" then
+    usage_limits.max_output_tokens =
+      parse_nonnegative_integer("--max-output-tokens", arg[i + 1])
+    i = i + 2
+  elseif arg[i] == "--max-reasoning-output-tokens" then
+    usage_limits.max_output_reasoning_tokens =
+      parse_nonnegative_integer("--max-reasoning-output-tokens", arg[i + 1])
+    i = i + 2
+  elseif arg[i] == "--max-total-tokens" then
+    usage_limits.max_total_tokens =
+      parse_nonnegative_integer("--max-total-tokens", arg[i + 1])
+    i = i + 2
+  elseif arg[i] == "--max-spend-usd" then
+    usage_limits.max_spend_usd =
+      parse_nonnegative_number("--max-spend-usd", arg[i + 1])
+    i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>] [--exec-tool-dir <path>] [--read-tool-dir <path>]\n")
+    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>] [--exec-tool-dir <path>] [--read-tool-dir <path>] [usage-limit flags]\n")
+    io.stderr:write("usage-limit flags: --max-input-tokens <n> --max-cached-input-tokens <n> --max-output-tokens <n> --max-reasoning-output-tokens <n> --max-total-tokens <n> --max-spend-usd <n>\n")
     os.exit(0)
   else
     io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
@@ -189,6 +244,7 @@ local agent = ok(client:new_agent({
   reasoning_summary = cai.REASONING_SUMMARY_AUTO,
   prompt_cache_key = "cai:example:lua-terminal-chat:v1",
   disable_parallel_tool_calls = 1,
+  session_usage_limits = usage_limits,
 }), nil, "client:new_agent")
 
 ok(agent:register_searxng_tool({
