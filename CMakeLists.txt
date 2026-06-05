@@ -699,6 +699,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_client_defaults_to_codex_backend
     chatgpt_auth_agent_keeps_server_continuity
     chatgpt_login_authorize_url
+    chatgpt_login_browser_helper
     chatgpt_login_callback_validation
     chatgpt_login_callback_exchange
     chatgpt_login_default_path_write

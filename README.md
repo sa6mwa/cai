@@ -105,12 +105,14 @@ The verification tiers are split intentionally:
 - Interactive ChatGPT login is exposed as a server-agnostic OAuth callback
   handler, not as a built-in webserver. Call `cai_chatgpt_login_start` with an
   auth file path or the library default and a redirect URI, open the returned
-  authorization URL,
+  authorization URL yourself or with `cai_chatgpt_login_open_browser`,
   pass the embedding server's callback request target into
   `cai_chatgpt_login_handle_callback`, then write the returned status,
   content-type, and body. The example `cai_example_chatgpt_login` shows this
-  with a tiny local test server. Lua exposes the same flow with
-  `cai.chatgpt_login`, `login:handle_callback`, and
+  with a tiny local test server. The browser helper uses `open` on Darwin and
+  `xdg-open` elsewhere by default, accepts a configured opener command, and
+  never invokes a shell. Lua exposes the same flow with `cai.chatgpt_login`,
+  `login:handle_callback`, `cai.chatgpt_login_open_browser`, and
   `cai.chatgpt_auth_default_path`; the Lua example uses LuaSocket only for its
   example listener.
 - `CAI_DEFAULT_DOTENV_PATH` is `.env` for callers that explicitly want cai's

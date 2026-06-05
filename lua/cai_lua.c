@@ -1589,6 +1589,38 @@ static int cai_lua_chatgpt_login_completed(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_chatgpt_login_browser_command(lua_State *L) {
+  cai_error error;
+  char command[64];
+  int rc;
+
+  cai_error_init(&error);
+  rc = cai_chatgpt_login_browser_command(command, sizeof(command), &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, command);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_chatgpt_login_open_browser(lua_State *L) {
+  cai_chatgpt_login_browser_config config;
+  cai_error error;
+  const char *authorize_url;
+  int rc;
+
+  authorize_url = luaL_checkstring(L, 1);
+  cai_chatgpt_login_browser_config_init(&config);
+  if (lua_istable(L, 2)) {
+    config.command = cai_lua_opt_string_field(L, 2, "command", NULL);
+  }
+  cai_error_init(&error);
+  rc = cai_chatgpt_login_open_browser_with_config(&config, authorize_url,
+                                                  &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_chatgpt_login_handle_callback(lua_State *L) {
   cai_lua_chatgpt_login *self;
   cai_chatgpt_login_request request;
@@ -6251,6 +6283,10 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "chatgpt_auth");
   lua_pushcfunction(L, cai_lua_chatgpt_login_new);
   lua_setfield(L, -2, "chatgpt_login");
+  lua_pushcfunction(L, cai_lua_chatgpt_login_browser_command);
+  lua_setfield(L, -2, "chatgpt_login_browser_command");
+  lua_pushcfunction(L, cai_lua_chatgpt_login_open_browser);
+  lua_setfield(L, -2, "chatgpt_login_open_browser");
   lua_pushcfunction(L, cai_lua_model_info);
   lua_setfield(L, -2, "model_info");
   lua_pushcfunction(L, cai_lua_model_can_estimate_usage_usd);

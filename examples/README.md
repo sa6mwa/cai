@@ -59,11 +59,14 @@ ChatGPT auth path: `$XDG_CONFIG_HOME/cai/auth.json`, or
 `$HOME/.config/cai/auth.json`.
 
 Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
-callback port is unavailable. The example is intentionally interactive; local
-unit tests mock the callback and token exchange flow. The Lua login example
-uses cai's Lua OAuth binding for the auth flow and LuaSocket only for its tiny
-example HTTP listener; install LuaSocket separately if you want to run that
-example.
+callback port is unavailable. Both login examples use cai's shared browser
+opener helper, which defaults to `open` on Darwin and `xdg-open` elsewhere, and
+can be overridden with `CAI_CHATGPT_BROWSER_COMMAND`. The helper passes the URL
+as one argv value and does not invoke a shell. The examples are intentionally
+interactive; local unit tests mock the callback and token exchange flow. The Lua
+login example uses cai's Lua OAuth binding for the auth flow and LuaSocket only
+for its tiny example HTTP listener; install LuaSocket separately if you want to
+run that example.
 
 ## OpenRouter Response
 
@@ -200,7 +203,7 @@ not enabled by default. Pass `--exec-tool-dir <path>` to register
 that path. `list_files` reports `text_candidate`/`binary_candidate` hints for
 regular files, and `read_file` only returns UTF-8 text without unsafe control
 characters.
-With ChatGPT subscription auth, the example defaults to `gpt-5.4` because
+With ChatGPT subscription auth, the example defaults to `gpt-5.4-mini` because
 `gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
 mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
 
@@ -208,7 +211,7 @@ mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
-make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4
+make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 ```
@@ -260,14 +263,14 @@ inspection is also opt-in; pass `--read-tool-dir <path>` to register
 `list_files` and `read_file` rooted to that path. `list_files` reports
 `text_candidate`/`binary_candidate` hints for regular files, and `read_file`
 only returns UTF-8 text without unsafe control characters.
-With ChatGPT subscription auth, the example defaults to `gpt-5.4` because
+With ChatGPT subscription auth, the example defaults to `gpt-5.4-mini` because
 `gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
 mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-terminal-chat
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1
-make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4
+make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json

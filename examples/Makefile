@@ -17,6 +17,7 @@ CAI_READ_TOOL_DIR ?= $(abspath $(ROOT))
 CAI_CHATGPT_AUTH ?=
 CAI_CHATGPT_AUTH_JSON ?=
 CAI_CHATGPT_LOGIN_PORT ?= 1455
+CAI_CHATGPT_BROWSER_COMMAND ?=
 CAI_TERMINAL_CHAT_MODEL ?=
 CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS ?=
 CAI_TERMINAL_CHAT_MAX_CACHED_INPUT_TOKENS ?=
@@ -50,6 +51,9 @@ CHATGPT_LOGIN_ARGS := --port "$(CAI_CHATGPT_LOGIN_PORT)"
 else
 CHATGPT_AUTH_ARGS :=
 CHATGPT_LOGIN_ARGS := --port "$(CAI_CHATGPT_LOGIN_PORT)"
+endif
+ifneq ($(strip $(CAI_CHATGPT_BROWSER_COMMAND)),)
+CHATGPT_LOGIN_ARGS += --browser-command "$(CAI_CHATGPT_BROWSER_COMMAND)"
 endif
 ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS)),)
 TERMINAL_LIMIT_ARGS += --max-input-tokens "$(CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS)"
@@ -89,7 +93,7 @@ help:
 	@printf '%s\n' \
 		'cai example runners:' \
 		'  make run-basic-response' \
-		'  make run-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
+		'  make run-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_CHATGPT_BROWSER_COMMAND=xdg-open]' \
 		'  make run-openrouter-response' \
 		'  make run-conversation-handles' \
 		'  make run-streaming-text' \
@@ -98,12 +102,12 @@ help:
 		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
 		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
-		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
+		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
 		'    run-terminal-chat defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
 		'  make run-mike-mind' \
-		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
+		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_CHATGPT_BROWSER_COMMAND=xdg-open]' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
+		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
 		'    run-lua-terminal-chat defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \

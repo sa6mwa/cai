@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1453,6 +1455,127 @@ void cai_chatgpt_login_config_init(cai_chatgpt_login_config *config) {
     return;
   }
   memset(config, 0, sizeof(*config));
+}
+
+void cai_chatgpt_login_browser_config_init(
+    cai_chatgpt_login_browser_config *config) {
+  if (config == NULL) {
+    return;
+  }
+  memset(config, 0, sizeof(*config));
+}
+
+static const char *cai_chatgpt_login_default_browser_command(void) {
+#if defined(__APPLE__)
+  return "open";
+#else
+  return "xdg-open";
+#endif
+}
+
+int cai_chatgpt_login_browser_command(char *out, size_t out_size,
+                                      cai_error *error) {
+  const char *command;
+  size_t length;
+
+  if (out == NULL || out_size == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "browser command output buffer is required");
+  }
+  command = cai_chatgpt_login_default_browser_command();
+  length = strlen(command);
+  if (length + 1U > out_size) {
+    out[0] = '\0';
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "browser command output buffer is too small");
+  }
+  memcpy(out, command, length + 1U);
+  return CAI_OK;
+}
+
+int cai_chatgpt_login_open_browser_with_config(
+    const cai_chatgpt_login_browser_config *config, const char *authorize_url,
+    cai_error *error) {
+  const char *command;
+  ssize_t count;
+  ssize_t ignored_write;
+  int child_errno;
+  int child_status;
+  int pipe_fds[2];
+  pid_t pid;
+  pid_t opener_pid;
+
+  if (authorize_url == NULL || authorize_url[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "authorization URL is required");
+  }
+  command = config != NULL ? config->command : NULL;
+  if (command == NULL || command[0] == '\0') {
+    command = cai_chatgpt_login_default_browser_command();
+  }
+  if (pipe(pipe_fds) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to create browser opener pipe",
+                                strerror(errno));
+  }
+  if (fcntl(pipe_fds[1], F_SETFD, FD_CLOEXEC) != 0) {
+    child_errno = errno;
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to configure browser opener pipe",
+                                strerror(child_errno));
+  }
+  pid = fork();
+  if (pid < 0) {
+    child_errno = errno;
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to launch browser opener",
+                                strerror(child_errno));
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    opener_pid = fork();
+    if (opener_pid < 0) {
+      child_errno = errno;
+      ignored_write = write(pipe_fds[1], &child_errno, sizeof(child_errno));
+      (void)ignored_write;
+      _exit(127);
+    }
+    if (opener_pid > 0) {
+      close(pipe_fds[1]);
+      _exit(0);
+    }
+    execlp(command, command, authorize_url, (char *)NULL);
+    child_errno = errno;
+    ignored_write = write(pipe_fds[1], &child_errno, sizeof(child_errno));
+    (void)ignored_write;
+    _exit(127);
+  }
+  close(pipe_fds[1]);
+  child_errno = 0;
+  count = read(pipe_fds[0], &child_errno, sizeof(child_errno));
+  close(pipe_fds[0]);
+  while (waitpid(pid, &child_status, 0) < 0 && errno == EINTR) {
+  }
+  if (count > 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to execute browser opener",
+                                strerror(child_errno));
+  }
+  if (count < 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to observe browser opener launch",
+                                strerror(errno));
+  }
+  return CAI_OK;
+}
+
+int cai_chatgpt_login_open_browser(const char *authorize_url,
+                                   cai_error *error) {
+  return cai_chatgpt_login_open_browser_with_config(NULL, authorize_url, error);
 }
 
 static int cai_chatgpt_login_build_authorize_url(cai_chatgpt_login *login,

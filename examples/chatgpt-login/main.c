@@ -21,17 +21,23 @@ static int print_error(const char *operation, int rc, const cai_error *error) {
 }
 
 static void print_help(const char *program) {
-  fprintf(
-      stderr,
-      "usage: %s [--auth-json <path>] [--port <port>] [--issuer <url>] "
-      "[--no-open-browser]\n\n"
-      "  --auth-json <path>    Codex-style auth.json path to write; default "
-      "is cai's XDG auth path.\n"
-      "  --port <port>         Local callback port, default 1455.\n"
-      "  --issuer <url>        OAuth issuer, default https://auth.openai.com.\n"
-      "  --no-open-browser     Print the URL without launching a browser.\n\n"
-      "CAI_CHATGPT_AUTH_JSON can override the default auth-json path.\n",
-      program != NULL ? program : "cai_example_chatgpt_login");
+  fprintf(stderr,
+          "usage: %s [--auth-json <path>] [--port <port>] [--issuer <url>] "
+          "[--browser-command <cmd>] [--no-open-browser]\n\n",
+          program != NULL ? program : "cai_example_chatgpt_login");
+  fprintf(stderr,
+          "  --auth-json <path>    Codex-style auth.json path to write; "
+          "default is cai's XDG auth path.\n"
+          "  --port <port>         Local callback port, default 1455.\n"
+          "  --issuer <url>        OAuth issuer, default "
+          "https://auth.openai.com.\n");
+  fprintf(stderr,
+          "  --browser-command <cmd>\n"
+          "                         Browser opener command; default is "
+          "platform selected.\n"
+          "  --no-open-browser     Print the URL without launching a "
+          "browser.\n\n"
+          "CAI_CHATGPT_AUTH_JSON can override the default auth-json path.\n");
 }
 
 static int parse_port(const char *text, int *out) {
@@ -49,12 +55,14 @@ static int parse_port(const char *text, int *out) {
 }
 
 static int parse_args(int argc, char **argv, const char **auth_json,
-                      const char **issuer, int *port, int *open_browser) {
+                      const char **issuer, int *port,
+                      const char **browser_command, int *open_browser) {
   int i;
 
   *auth_json = getenv("CAI_CHATGPT_AUTH_JSON");
   *issuer = NULL;
   *port = CAI_CHATGPT_AUTH_DEFAULT_CALLBACK_PORT;
+  *browser_command = NULL;
   *open_browser = 1;
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--auth-json") == 0) {
@@ -79,6 +87,14 @@ static int parse_args(int argc, char **argv, const char **auth_json,
         return 0;
       }
       i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--browser-command") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--browser-command requires a command\n");
+        return 0;
+      }
+      *browser_command = argv[++i];
       continue;
     }
     if (strcmp(argv[i], "--no-open-browser") == 0) {
@@ -127,24 +143,6 @@ static int listen_localhost(int requested_port, int *out_port) {
   }
   *out_port = (int)ntohs(addr.sin_port);
   return fd;
-}
-
-static int open_auth_url(const char *url) {
-  pid_t pid;
-
-  pid = fork();
-  if (pid < 0) {
-    return -1;
-  }
-  if (pid == 0) {
-#if defined(__APPLE__)
-    execlp("open", "open", url, (char *)NULL);
-#else
-    execlp("xdg-open", "xdg-open", url, (char *)NULL);
-#endif
-    _exit(127);
-  }
-  return 0;
 }
 
 static int read_http_request(int fd, char *buffer, size_t capacity) {
@@ -247,6 +245,7 @@ static void write_http_response(int fd,
 int main(int argc, char **argv) {
   const char *auth_json;
   const char *issuer;
+  const char *browser_command;
   char redirect_uri[256];
   int requested_port;
   int port;
@@ -264,13 +263,14 @@ int main(int argc, char **argv) {
   char *target;
   int response_owned;
   cai_chatgpt_login_config login_config;
+  cai_chatgpt_login_browser_config browser_config;
   cai_chatgpt_login_request login_request;
   cai_chatgpt_login_response login_response;
   cai_chatgpt_login *login;
   cai_error error;
 
   rc = parse_args(argc, argv, &auth_json, &issuer, &requested_port,
-                  &open_browser_flag);
+                  &browser_command, &open_browser_flag);
   if (rc < 0) {
     return 0;
   }
@@ -293,9 +293,11 @@ int main(int argc, char **argv) {
 
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&login_config);
+  cai_chatgpt_login_browser_config_init(&browser_config);
   login_config.auth_json_path = auth_json;
   login_config.redirect_uri = redirect_uri;
   login_config.issuer = issuer;
+  browser_config.command = browser_command;
   login = NULL;
   authorize_url = NULL;
   auth_json_display = NULL;
@@ -307,8 +309,12 @@ int main(int argc, char **argv) {
   }
   fprintf(stderr, "Open this URL to authenticate:\n%s\n\n", authorize_url);
   fprintf(stderr, "Waiting for OAuth callback on %s\n", redirect_uri);
-  if (open_browser_flag && open_auth_url(authorize_url) != 0) {
+  if (open_browser_flag &&
+      cai_chatgpt_login_open_browser_with_config(&browser_config, authorize_url,
+                                                 &error) != CAI_OK) {
     fprintf(stderr, "Could not launch browser; open the URL manually.\n");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
   }
 
   for (;;) {

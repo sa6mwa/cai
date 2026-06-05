@@ -103,6 +103,16 @@ typedef struct cai_chatgpt_login_config {
 /** Opaque interactive ChatGPT OAuth login flow state. */
 typedef struct cai_chatgpt_login cai_chatgpt_login;
 
+/** Optional browser opener configuration for ChatGPT OAuth login helpers. */
+typedef struct cai_chatgpt_login_browser_config {
+  /**
+   * Browser opener executable. NULL selects the platform default: `open` on
+   * Darwin/macOS, `xdg-open` elsewhere. The URL is passed as one argv element;
+   * no shell is used.
+   */
+  const char *command;
+} cai_chatgpt_login_browser_config;
+
 /** Initialize ChatGPT auth config defaults. */
 void cai_chatgpt_auth_config_init(cai_chatgpt_auth_config *config);
 /** Return cai's default ChatGPT auth.json path. Free with cai_string_destroy.
@@ -121,6 +131,18 @@ void cai_chatgpt_auth_close(cai_chatgpt_auth *auth);
 
 /** Initialize ChatGPT OAuth login config defaults. */
 void cai_chatgpt_login_config_init(cai_chatgpt_login_config *config);
+/** Initialize browser opener helper config defaults. */
+void cai_chatgpt_login_browser_config_init(
+    cai_chatgpt_login_browser_config *config);
+/** Return the platform browser opener command, such as "open" or "xdg-open". */
+int cai_chatgpt_login_browser_command(char *out, size_t out_size,
+                                      cai_error *error);
+/** Launch the platform browser opener for an OAuth authorization URL. */
+int cai_chatgpt_login_open_browser(const char *authorize_url, cai_error *error);
+/** Launch a configured browser opener for an OAuth authorization URL. */
+int cai_chatgpt_login_open_browser_with_config(
+    const cai_chatgpt_login_browser_config *config, const char *authorize_url,
+    cai_error *error);
 /** Start an OAuth login flow and return the browser authorization URL. */
 int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
                             cai_chatgpt_login **out, char **out_authorize_url,

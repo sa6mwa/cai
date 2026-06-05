@@ -9490,6 +9490,107 @@ static void test_chatgpt_login_authorize_url(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_chatgpt_login_browser_helper(test_state *state) {
+  static const char test_url[] =
+      "https://auth.example.test/oauth/authorize?x=1;touch nope";
+  char template_dir[] = "/tmp/cai-browser-helper-XXXXXX";
+  char script_path[PATH_MAX];
+  char missing_path[PATH_MAX];
+  char output_path[PATH_MAX];
+  char script[PATH_MAX * 2];
+  char command[64];
+  char *recorded;
+  FILE *fp;
+  struct timespec delay;
+  cai_chatgpt_login_browser_config config;
+  cai_error error;
+  int i;
+
+  recorded = NULL;
+  script_path[0] = '\0';
+  missing_path[0] = '\0';
+  output_path[0] = '\0';
+  cai_error_init(&error);
+  expect_int(
+      state, "chatgpt_browser_command",
+      cai_chatgpt_login_browser_command(command, sizeof(command), &error),
+      CAI_OK);
+  if (command[0] == '\0') {
+    test_fail(state, "chatgpt_browser_command_nonempty", "empty command");
+  }
+  expect_int(state, "chatgpt_browser_command_small",
+             cai_chatgpt_login_browser_command(command, 1U, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "chatgpt_browser_open_missing_url",
+             cai_chatgpt_login_open_browser(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_browser_tmpdir", "mkdtemp failed");
+    goto cleanup;
+  }
+  snprintf(script_path, sizeof(script_path), "%s/open-browser", template_dir);
+  snprintf(missing_path, sizeof(missing_path), "%s/missing-browser",
+           template_dir);
+  snprintf(output_path, sizeof(output_path), "%s/url.txt", template_dir);
+  snprintf(script, sizeof(script), "#!/bin/sh\nprintf '%%s' \"$1\" > '%s'\n",
+           output_path);
+  fp = fopen(script_path, "w");
+  if (fp == NULL) {
+    test_fail(state, "chatgpt_browser_script_open", "fopen failed");
+    goto cleanup;
+  }
+  fputs(script, fp);
+  fclose(fp);
+  if (chmod(script_path, 0700) != 0) {
+    test_fail(state, "chatgpt_browser_script_chmod", "chmod failed");
+    goto cleanup;
+  }
+  cai_chatgpt_login_browser_config_init(&config);
+  config.command = missing_path;
+  expect_int(
+      state, "chatgpt_browser_missing_command",
+      cai_chatgpt_login_open_browser_with_config(&config, test_url, &error),
+      CAI_ERR_TRANSPORT);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.command = script_path;
+  expect_int(
+      state, "chatgpt_browser_custom_open",
+      cai_chatgpt_login_open_browser_with_config(&config, test_url, &error),
+      CAI_OK);
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  for (i = 0; i < 100; i++) {
+    if (access(output_path, F_OK) == 0) {
+      break;
+    }
+    (void)nanosleep(&delay, NULL);
+  }
+  if (access(output_path, F_OK) != 0) {
+    test_fail(state, "chatgpt_browser_output", "browser helper did not run");
+    goto cleanup;
+  }
+  recorded = read_file_or_die(output_path);
+  expect_str(state, "chatgpt_browser_url_argument", recorded, test_url);
+
+cleanup:
+  free(recorded);
+  if (output_path[0] != '\0') {
+    unlink(output_path);
+  }
+  if (script_path[0] != '\0') {
+    unlink(script_path);
+  }
+  if (template_dir[0] != '\0') {
+    rmdir(template_dir);
+  }
+  cai_error_cleanup(&error);
+}
+
 static void test_chatgpt_login_callback_validation(test_state *state) {
   cai_chatgpt_login_config config;
   cai_chatgpt_login_request request;
@@ -19405,6 +19506,7 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_agent_keeps_server_continuity",
      test_chatgpt_auth_agent_keeps_server_continuity},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
+    {"chatgpt_login_browser_helper", test_chatgpt_login_browser_helper},
     {"chatgpt_login_callback_validation",
      test_chatgpt_login_callback_validation},
     {"chatgpt_login_callback_exchange", test_chatgpt_login_callback_exchange},
