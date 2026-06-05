@@ -742,6 +742,9 @@ if(CAI_BUILD_TESTS)
     stream_responses_websocket
     stream_responses_websocket_large_frame
     stream_responses_websocket_transient_retry
+    stream_responses_websocket_midstream_drop
+    session_stream_responses_websocket_multi_turn
+    session_stream_responses_websocket_stale_reconnect
     stream_non_function_output_item
     stream_output_delta_failure
     stream_output_item_failure

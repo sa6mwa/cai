@@ -225,6 +225,7 @@ typedef struct cai_sse_state {
   size_t done_line_length;
   int done_line_start;
   int done_seen;
+  int event_seen;
   char **emitted_call_ids;
   size_t emitted_call_count;
   size_t emitted_call_capacity;
@@ -2411,6 +2412,7 @@ static int cai_ws_parse_error_event(cai_sse_state *state, cai_error *error) {
 static int cai_ws_process_text_message(cai_sse_state *state, cai_error *error) {
   int rc;
 
+  state->event_seen = 1;
   rc = cai_ws_parse_error_event(state, error);
   if (rc != CAI_OK) {
     state->event_json_storage.reset(&state->event_json_storage);
@@ -2536,13 +2538,14 @@ static int cai_client_stream_response_websocket_with_id(
   long http_status;
   int rc;
   int keep_alive;
+  int reused_keep_alive;
   int retried_auth;
   int retried_transient;
 
   impl = CAI_CLIENT_IMPL(client);
   retried_auth = 0;
   retried_transient = 0;
-  keep_alive = impl->chatgpt_auth != NULL;
+  keep_alive = 1;
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
@@ -2555,6 +2558,7 @@ retry_request:
   upload = NULL;
   http_url = NULL;
   url = NULL;
+  reused_keep_alive = 0;
   memset(&state, 0, sizeof(state));
   state.sinks = *sinks;
   state.out_response_id = out_response_id;
@@ -2567,7 +2571,7 @@ retry_request:
                          "failed to allocate websocket stream buffer");
   }
   rc = cai_response_request_upload_open(
-      params, 1, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0,
+      params, 0, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0,
       CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, "response.create", &upload,
       error);
   if (rc == CAI_OK) {
@@ -2614,6 +2618,7 @@ retry_request:
   }
   if (keep_alive && impl->responses_ws_curl != NULL) {
     curl = impl->responses_ws_curl;
+    reused_keep_alive = 1;
     curl_rc = CURLE_OK;
     http_status = 101L;
     curl_slist_free_all(headers);
@@ -2707,6 +2712,22 @@ retry_request:
       rc = cai_ws_receive_events(curl, &state, impl->timeout_ms, error);
     }
   }
+  if (keep_alive && rc != CAI_OK && reused_keep_alive && !state.event_seen &&
+      !retried_transient) {
+    cai_client_close_responses_websocket(impl);
+    curl_slist_free_all(headers);
+    cai_free_mem(&impl->allocator, http_url);
+    cai_free_mem(&impl->allocator, url);
+    cai_response_request_upload_close(upload);
+    cai_sse_cleanup_call_ids(&state);
+    cai_stream_event_json_cleanup(&state);
+    if (error != NULL) {
+      cai_error_cleanup(error);
+      cai_error_init(error);
+    }
+    retried_transient = 1;
+    goto retry_request;
+  }
   if (keep_alive) {
     if (rc != CAI_OK) {
       if (curl != NULL && curl != impl->responses_ws_curl) {
@@ -2738,6 +2759,9 @@ int cai_client_stream_response_websocket_test(
 
 static int cai_client_should_use_responses_websocket(cai_client *client) {
   const cai_client_impl *impl;
+#ifdef CAI_TESTING
+  const char *force_websocket;
+#endif
 
   if (client == NULL) {
     return 0;
@@ -2746,6 +2770,12 @@ static int cai_client_should_use_responses_websocket(cai_client *client) {
   if (impl == NULL || impl->base_url == NULL) {
     return 0;
   }
+#ifdef CAI_TESTING
+  force_websocket = getenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+  if (force_websocket != NULL && strcmp(force_websocket, "1") == 0) {
+    return 1;
+  }
+#endif
   if (strncmp(impl->base_url, "http://", 7U) == 0 ||
       strstr(impl->base_url, "127.0.0.1") != NULL ||
       strstr(impl->base_url, "localhost") != NULL) {

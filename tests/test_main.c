@@ -7415,6 +7415,51 @@ static int mock_websocket_read_text(int fd, char *out, size_t out_size) {
   }
 }
 
+static int mock_websocket_accept_openai_request(int server_fd, int *out_fd,
+                                                char *request,
+                                                size_t request_size) {
+  char key[128];
+  char accept[128];
+  char response[512];
+  int client_fd;
+  int response_len;
+
+  if (out_fd == NULL || request == NULL) {
+    return -1;
+  }
+  *out_fd = -1;
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+    if (client_fd >= 0) {
+      close(client_fd);
+    }
+    return -1;
+  }
+  if (mock_read_request(client_fd, request, request_size) != 0 ||
+      strstr(request, "GET /v1/responses HTTP/") == NULL ||
+      strstr(request, "Authorization: Bearer mock-key") == NULL ||
+      strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") == NULL ||
+      mock_websocket_header_value(request, "Sec-WebSocket-Key", key,
+                                  sizeof(key)) != 0 ||
+      mock_websocket_accept_value(key, accept, sizeof(accept)) != 0) {
+    close(client_fd);
+    return -1;
+  }
+  response_len = snprintf(response, sizeof(response),
+                          "HTTP/1.1 101 Switching Protocols\r\n"
+                          "Upgrade: websocket\r\n"
+                          "Connection: Upgrade\r\n"
+                          "Sec-WebSocket-Accept: %s\r\n\r\n",
+                          accept);
+  if (response_len <= 0 || (size_t)response_len >= sizeof(response) ||
+      mock_write_all(client_fd, response, (size_t)response_len) != 0) {
+    close(client_fd);
+    return -1;
+  }
+  *out_fd = client_fd;
+  return 0;
+}
+
 static void mock_websocket_openai_child(int pipe_fd, int transient_first,
                                         int large_completed) {
   static const char delta[] =
@@ -7518,7 +7563,7 @@ static void mock_websocket_openai_child(int pipe_fd, int transient_first,
     }
     if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
         strstr(message, "\"type\":\"response.create\"") == NULL ||
-        strstr(message, "\"stream\":true") == NULL ||
+        strstr(message, "\"stream\"") != NULL ||
         strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
         strstr(message, "\"text\":\"ws user turn\"") == NULL) {
       _exit(9);
@@ -7577,6 +7622,244 @@ websocket_mock_server_open_with_retry(test_state *state, const char *name,
 static int websocket_mock_server_open(test_state *state, const char *name,
                                       websocket_mock_server *server) {
   return websocket_mock_server_open_with_retry(state, name, 0, 0, server);
+}
+
+static int mock_websocket_listen_and_publish_port(int pipe_fd,
+                                                  int *out_server_fd) {
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int port;
+
+  if (out_server_fd == NULL) {
+    return -1;
+  }
+  *out_server_fd = -1;
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    return -1;
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+      listen(server_fd, 2) != 0 || mock_set_socket_deadline(server_fd) != 0) {
+    close(server_fd);
+    return -1;
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    close(server_fd);
+    return -1;
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    close(server_fd);
+    return -1;
+  }
+  close(pipe_fd);
+  *out_server_fd = server_fd;
+  return 0;
+}
+
+static void mock_websocket_drop_after_delta_child(int pipe_fd) {
+  static const char delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"partial ws\"}";
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = -1;
+  client_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(4);
+  }
+  if (mock_websocket_write_text(client_fd, delta) != 0) {
+    _exit(5);
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static void mock_websocket_multi_turn_child(int pipe_fd) {
+  static const char first_delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"first ws\"}";
+  static const char first_completed[] =
+      "{\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_ws_turn_1\",\"usage\":{\"input_tokens\":2,"
+      "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":0},"
+      "\"total_tokens\":5}}}";
+  static const char second_delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"second ws\"}";
+  static const char second_completed[] =
+      "{\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_ws_turn_2\",\"usage\":{\"input_tokens\":4,"
+      "\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":5,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":1},"
+      "\"total_tokens\":9}}}";
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+  int turn;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  client_fd = -1;
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  for (turn = 0; turn < 2; turn++) {
+    if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+        strstr(message, "\"type\":\"response.create\"") == NULL ||
+        strstr(message, "\"stream\"") != NULL) {
+      _exit(4);
+    }
+    if (turn == 0) {
+      if (strstr(message, "previous_response_id") != NULL ||
+          strstr(message, "\"text\":\"first ws turn\"") == NULL ||
+          mock_websocket_write_text(client_fd, first_delta) != 0 ||
+          mock_websocket_write_text(client_fd, first_completed) != 0) {
+        _exit(5);
+      }
+    } else {
+      if (strstr(message, "\"previous_response_id\":\"resp_ws_turn_1\"") ==
+              NULL ||
+          strstr(message, "\"text\":\"second ws turn\"") == NULL ||
+          mock_websocket_write_text(client_fd, second_delta) != 0 ||
+          mock_websocket_write_text(client_fd, second_completed) != 0) {
+        _exit(6);
+      }
+    }
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static void mock_websocket_stale_reconnect_child(int pipe_fd) {
+  static const char first_delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"first ws\"}";
+  static const char first_completed[] =
+      "{\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_ws_turn_1\",\"usage\":{\"input_tokens\":2,"
+      "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":0},"
+      "\"total_tokens\":5}}}";
+  static const char second_delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"second ws\"}";
+  static const char second_completed[] =
+      "{\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_ws_turn_2\",\"usage\":{\"input_tokens\":4,"
+      "\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":5,"
+      "\"output_tokens_details\":{\"reasoning_tokens\":1},"
+      "\"total_tokens\":9}}}";
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  client_fd = -1;
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "previous_response_id") != NULL ||
+      strstr(message, "\"text\":\"first ws turn\"") == NULL ||
+      mock_websocket_write_text(client_fd, first_delta) != 0 ||
+      mock_websocket_write_text(client_fd, first_completed) != 0) {
+    _exit(4);
+  }
+  close(client_fd);
+
+  client_fd = -1;
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(5);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_turn_1\"") == NULL ||
+      strstr(message, "\"text\":\"second ws turn\"") == NULL ||
+      mock_websocket_write_text(client_fd, second_delta) != 0 ||
+      mock_websocket_write_text(client_fd, second_completed) != 0) {
+    _exit(6);
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int websocket_mock_server_open_child(test_state *state, const char *name,
+                                            void (*child_fn)(int),
+                                            websocket_mock_server *server) {
+  int pipe_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    child_fn(pipe_fds[1]);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, server->pid, &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  return 0;
 }
 
 static void mock_searxng_child(int pipe_fd) {
@@ -15584,6 +15867,280 @@ cleanup:
   }
 }
 
+static void test_stream_responses_websocket_midstream_drop(test_state *state) {
+  websocket_mock_server server;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+
+  if (websocket_mock_server_open_child(state, "stream_ws_drop_mock",
+                                       mock_websocket_drop_after_delta_child,
+                                       &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_drop_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_drop_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_drop_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_drop_previous",
+             cai_response_create_params_set_previous_response_id(
+                 params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_drop_text",
+             cai_response_create_params_add_text(params, "user", "ws user turn",
+                                                 &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_drop_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  expect_int(state, "stream_ws_drop_run",
+             cai_client_stream_response_websocket_test(
+                 client, params, &stream_sinks, &response_id, &usage, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "stream_ws_drop_partial_output", writer.buffer,
+             "partial ws");
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_drop_no_response_id",
+              "dropped stream returned a response id");
+  }
+  expect_int(state, "stream_ws_drop_usage_total", usage.total_tokens, 0LL);
+  expect_substr(state, "stream_ws_drop_error", error.message,
+                "websocket closed before response.completed");
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_drop_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
+static void
+test_session_stream_responses_websocket_multi_turn(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  cai_usage_accounting usage;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(state, "session_ws_multi_mock",
+                                       mock_websocket_multi_turn_child,
+                                       &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 500L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_SERVER;
+  expect_int(state, "session_ws_multi_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "session_ws_multi_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "session_ws_multi_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "session_ws_multi_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+
+  expect_int(state, "session_ws_multi_add_first",
+             cai_session_add_user_text(session, "first ws turn", &error),
+             CAI_OK);
+  expect_int(state, "session_ws_multi_run_first",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "session_ws_multi_first_output", writer.buffer, "first ws");
+  expect_str(state, "session_ws_multi_first_previous",
+             cai_session_previous_response_id(session), "resp_ws_turn_1");
+  expect_int(state, "session_ws_multi_usage_first",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "session_ws_multi_usage_first_total",
+             usage.usage.total_tokens, 5LL);
+
+  expect_int(state, "session_ws_multi_add_second",
+             cai_session_add_user_text(session, "second ws turn", &error),
+             CAI_OK);
+  expect_int(state, "session_ws_multi_run_second",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "session_ws_multi_second_output", writer.buffer,
+             "first wssecond ws");
+  expect_str(state, "session_ws_multi_second_previous",
+             cai_session_previous_response_id(session), "resp_ws_turn_2");
+  expect_int(state, "session_ws_multi_usage_second",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "session_ws_multi_usage_second_total",
+             usage.usage.total_tokens, 14LL);
+
+cleanup:
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "session_ws_multi_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
+static void
+test_session_stream_responses_websocket_stale_reconnect(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  cai_usage_accounting usage;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(state, "session_ws_stale_mock",
+                                       mock_websocket_stale_reconnect_child,
+                                       &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 500L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_SERVER;
+  expect_int(state, "session_ws_stale_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "session_ws_stale_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "session_ws_stale_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "session_ws_stale_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+
+  expect_int(state, "session_ws_stale_add_first",
+             cai_session_add_user_text(session, "first ws turn", &error),
+             CAI_OK);
+  expect_int(state, "session_ws_stale_run_first",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "session_ws_stale_first_output", writer.buffer, "first ws");
+  expect_str(state, "session_ws_stale_first_previous",
+             cai_session_previous_response_id(session), "resp_ws_turn_1");
+
+  expect_int(state, "session_ws_stale_add_second",
+             cai_session_add_user_text(session, "second ws turn", &error),
+             CAI_OK);
+  expect_int(state, "session_ws_stale_run_second",
+             cai_session_stream_text(session, sink, &error), CAI_OK);
+  expect_str(state, "session_ws_stale_second_output", writer.buffer,
+             "first wssecond ws");
+  expect_str(state, "session_ws_stale_second_previous",
+             cai_session_previous_response_id(session), "resp_ws_turn_2");
+  expect_int(state, "session_ws_stale_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "session_ws_stale_usage_total", usage.usage.total_tokens,
+             14LL);
+
+cleanup:
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "session_ws_stale_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
 static void test_stream_non_function_output_item(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -18471,6 +19028,12 @@ static const test_entry test_entries[] = {
      test_stream_responses_websocket_large_frame},
     {"stream_responses_websocket_transient_retry",
      test_stream_responses_websocket_transient_retry},
+    {"stream_responses_websocket_midstream_drop",
+     test_stream_responses_websocket_midstream_drop},
+    {"session_stream_responses_websocket_multi_turn",
+     test_session_stream_responses_websocket_multi_turn},
+    {"session_stream_responses_websocket_stale_reconnect",
+     test_session_stream_responses_websocket_stale_reconnect},
     {"stream_non_function_output_item", test_stream_non_function_output_item},
     {"stream_output_delta_failure", test_stream_output_delta_failure},
     {"stream_output_item_failure", test_stream_output_item_failure},
