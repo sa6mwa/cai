@@ -173,6 +173,11 @@ double cai_model_estimate_usage_usd(const char *model_id,
                                     long long input_tokens,
                                     long long input_cached_tokens,
                                     long long output_tokens);
+/**
+ * Return non-zero if cai has enough pricing metadata to enforce a positive
+ * USD spend limit for this model. Verified zero-price models return non-zero.
+ */
+int cai_model_can_estimate_usage_usd(const char *model_id);
 
 #ifdef __cplusplus
 }

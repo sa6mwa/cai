@@ -711,6 +711,7 @@ if(CAI_BUILD_TESTS)
     usage_limits
     usage_client_limits
     usage_spend_limit
+    usage_spend_limit_requires_pricing
     usage_stream_limits
     usage_stream_missing_usage_limit
     http_mock_incomplete_request_timeout

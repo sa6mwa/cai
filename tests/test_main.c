@@ -863,6 +863,24 @@ static void test_model_capabilities(test_state *state) {
                                    1000000LL) > 0.46) {
     test_fail(state, "model_usage_usd", "unexpected gpt-5-nano cost estimate");
   }
+  expect_int(state, "model_usage_usd_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_NANO), 1L);
+  expect_int(state, "model_usage_usd_unknown",
+             cai_model_can_estimate_usage_usd("future-model"), 0L);
+  expect_int(state, "model_usage_usd_incomplete",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_PRO), 0L);
+  expect_int(state, "model_usage_usd_unpriced_supported",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_4_NANO), 0L);
+  expect_int(state, "model_usage_usd_verified_free",
+             cai_model_can_estimate_usage_usd(
+                 CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE),
+             1L);
+  if (cai_model_estimate_usage_usd(
+          CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE, 1000000LL, 0LL,
+          1000000LL) != 0.0) {
+    test_fail(state, "model_usage_usd_free",
+              "verified free model should estimate zero spend");
+  }
   cai_agent_config_init(&agent_config);
   expect_int(state, "agent_config_disable_auto_compaction_default",
              agent_config.disable_auto_compaction, 0L);
@@ -9760,6 +9778,94 @@ static void test_usage_spend_limit(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_usage_spend_limit_requires_pricing(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  cai_error_init(&error);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.timeout_ms = 1L;
+  expect_int(state, "usage_spend_pricing_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+
+  cai_usage_limits_init(&limits);
+  limits.max_spend_usd = 1.0;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.session_usage_limits = limits;
+  expect_int(state, "usage_spend_pricing_agent_config",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "usage_spend_pricing_agent_error", error.message,
+             "positive USD spend limit requires model pricing metadata");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  expect_int(state, "usage_spend_pricing_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_spend_pricing_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_spend_pricing_session_set",
+             cai_session_set_usage_limits(session, &limits, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "usage_spend_pricing_session_error", error.message,
+             "positive USD spend limit requires model pricing metadata");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "usage_spend_pricing_agent_set",
+             cai_agent_set_session_usage_limits(agent, &limits, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "usage_spend_pricing_agent_set_error", error.message,
+             "positive USD spend limit requires model pricing metadata");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  session = NULL;
+  agent = NULL;
+
+  expect_int(state, "usage_spend_pricing_client_limit",
+             cai_client_set_usage_limits(client, &limits, &error), CAI_OK);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  expect_int(state, "usage_spend_pricing_client_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_spend_pricing_client_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_spend_pricing_add",
+             cai_session_add_user_text(session, "must not transport", &error),
+             CAI_OK);
+  expect_int(state, "usage_spend_pricing_preflight",
+             cai_session_run(session, &response, &error), CAI_ERR_INVALID);
+  expect_str(state, "usage_spend_pricing_preflight_error", error.message,
+             "positive USD spend limit requires model pricing metadata");
+  if (response != NULL) {
+    test_fail(state, "usage_spend_pricing_response",
+              "preflight failure returned a response");
+    cai_response_destroy(response);
+  }
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_usage_stream_limits(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -18203,6 +18309,8 @@ static const test_entry test_entries[] = {
     {"usage_limits", test_usage_limits},
     {"usage_client_limits", test_usage_client_limits},
     {"usage_spend_limit", test_usage_spend_limit},
+    {"usage_spend_limit_requires_pricing",
+     test_usage_spend_limit_requires_pricing},
     {"usage_stream_limits", test_usage_stream_limits},
     {"usage_stream_missing_usage_limit", test_usage_stream_missing_usage_limit},
     {"http_mock_incomplete_request_timeout",

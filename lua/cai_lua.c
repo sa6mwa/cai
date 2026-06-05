@@ -5133,6 +5133,11 @@ static int cai_lua_model_info(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_model_can_estimate_usage_usd(lua_State *L) {
+  lua_pushboolean(L, cai_model_can_estimate_usage_usd(luaL_checkstring(L, 1)));
+  return 1;
+}
+
 static int cai_lua_conversation_from_id(lua_State *L) {
   cai_conversation *conversation;
   cai_error error;
@@ -6240,6 +6245,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "chatgpt_login");
   lua_pushcfunction(L, cai_lua_model_info);
   lua_setfield(L, -2, "model_info");
+  lua_pushcfunction(L, cai_lua_model_can_estimate_usage_usd);
+  lua_setfield(L, -2, "model_can_estimate_usage_usd");
   lua_pushstring(L, CAI_SESSION_CONTINUITY_SERVER == 0 ? "server" : "server");
   lua_setfield(L, -2, "CONTINUITY_SERVER_NAME");
   CAI_LUA_SET_INTEGER("CONTINUITY_SERVER", CAI_SESSION_CONTINUITY_SERVER);

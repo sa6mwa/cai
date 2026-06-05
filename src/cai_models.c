@@ -242,6 +242,23 @@ long long cai_model_auto_compact_token_limit(const char *model_id) {
   return info != NULL ? info->auto_compact_token_limit : 0LL;
 }
 
+int cai_model_can_estimate_usage_usd(const char *model_id) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  if (info == NULL ||
+      (info->metadata_flags & CAI_MODEL_META_INCOMPLETE) != 0U) {
+    return 0;
+  }
+  if (info->input_usd_per_million > 0.0 ||
+      info->cached_input_usd_per_million > 0.0 ||
+      info->output_usd_per_million > 0.0) {
+    return 1;
+  }
+  return (info->metadata_flags & CAI_MODEL_META_VERIFIED) != 0U &&
+         (info->metadata_flags & CAI_MODEL_META_PROVIDER_OPENROUTER) != 0U;
+}
+
 double cai_model_estimate_usage_usd(const char *model_id,
                                     long long input_tokens,
                                     long long input_cached_tokens,
@@ -249,9 +266,11 @@ double cai_model_estimate_usage_usd(const char *model_id,
   const cai_model_info *info;
   long long uncached_input_tokens;
 
+  if (!cai_model_can_estimate_usage_usd(model_id)) {
+    return 0.0;
+  }
   info = cai_model_info_by_id(model_id);
-  if (info == NULL || info->input_usd_per_million <= 0.0 ||
-      info->output_usd_per_million <= 0.0) {
+  if (info == NULL) {
     return 0.0;
   }
   if (input_tokens < 0LL) {

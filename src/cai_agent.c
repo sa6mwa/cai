@@ -317,6 +317,22 @@ static int cai_usage_limits_error(cai_error *error) {
                        "configured usage or spend limit exceeded");
 }
 
+static int cai_usage_spend_pricing_error(cai_error *error) {
+  return cai_set_error(
+      error, CAI_ERR_INVALID,
+      "positive USD spend limit requires model pricing metadata");
+}
+
+static int cai_usage_limits_require_pricing(const cai_usage_limits *limits,
+                                            const char *model,
+                                            cai_error *error) {
+  if (limits != NULL && limits->max_spend_usd > 0.0 &&
+      !cai_model_can_estimate_usage_usd(model)) {
+    return cai_usage_spend_pricing_error(error);
+  }
+  return CAI_OK;
+}
+
 static int cai_usage_limits_preflight(const cai_usage_accounting *usage,
                                       const cai_usage_limits *limits,
                                       cai_error *error) {
@@ -376,6 +392,11 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          "max tool calls must not be negative");
   }
   rc = cai_usage_limits_validate(&config->session_usage_limits, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_usage_limits_require_pricing(&config->session_usage_limits,
+                                        config->model, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -2557,6 +2578,12 @@ static int cai_session_record_usage(cai_session *session,
   }
   agent_impl = CAI_SESSION_AGENT_IMPL(session);
   client_impl = CAI_SESSION_CLIENT_IMPL(session);
+  if (cai_usage_limits_require_pricing(&CAI_SESSION_IMPL(session)->usage_limits,
+                                       agent_impl->model, error) != CAI_OK ||
+      cai_usage_limits_require_pricing(&client_impl->usage_limits,
+                                       agent_impl->model, error) != CAI_OK) {
+    return CAI_ERR_INVALID;
+  }
   estimated_spend_usd = cai_model_estimate_usage_usd(
       agent_impl->model, usage->input_tokens, usage->input_cached_tokens,
       usage->output_tokens);
@@ -2581,10 +2608,23 @@ static int cai_session_record_usage(cai_session *session,
 
 static int cai_session_check_usage_available(cai_session *session,
                                              cai_error *error) {
+  cai_agent_impl *agent_impl;
   int rc;
 
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  agent_impl = CAI_SESSION_AGENT_IMPL(session);
+  rc = cai_usage_limits_require_pricing(
+      &CAI_SESSION_IMPL(session)->usage_limits, agent_impl->model, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_usage_limits_require_pricing(
+      &CAI_SESSION_CLIENT_IMPL(session)->usage_limits, agent_impl->model,
+      error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   rc = cai_usage_limits_preflight(&CAI_SESSION_IMPL(session)->usage,
                                   &CAI_SESSION_IMPL(session)->usage_limits,
@@ -3767,6 +3807,11 @@ int cai_session_set_usage_limits(cai_session *session,
   if (rc != CAI_OK) {
     return rc;
   }
+  rc = cai_usage_limits_require_pricing(
+      limits, CAI_SESSION_AGENT_IMPL(session)->model, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   CAI_SESSION_IMPL(session)->usage_limits = *limits;
   if (cai_usage_accounting_exceeds(&CAI_SESSION_IMPL(session)->usage,
                                    &CAI_SESSION_IMPL(session)->usage_limits)) {
@@ -4807,6 +4852,10 @@ int cai_agent_set_session_usage_limits(cai_agent *agent,
     limits = &empty;
   }
   rc = cai_usage_limits_validate(limits, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_usage_limits_require_pricing(limits, impl->model, error);
   if (rc != CAI_OK) {
     return rc;
   }

@@ -200,8 +200,11 @@ handling, and session state save/restore. See
   budgets with `cai_usage_limits`. Zero leaves a limit unset. Client limits are
   shared across all agents/sessions on that client; session limits are per
   session and can be set directly or inherited from
-  `cai_agent_config.session_usage_limits`. A request that crosses a budget is
-  charged, returns `CAI_ERR_LIMIT`, and later requests are rejected before
+  `cai_agent_config.session_usage_limits`. If `max_spend_usd` is positive, the
+  selected model must have CAI pricing metadata; verified free OpenRouter models
+  are accepted as zero-cost, but unknown or incomplete model metadata fails
+  closed instead of silently estimating `$0.00`. A request that crosses a budget
+  is charged, returns `CAI_ERR_LIMIT`, and later requests are rejected before
   transport until the limit is raised or disabled. Use `cai_client_usage`,
   `cai_session_usage`, or `cai_session_close_with_usage` to report cumulative
   token usage and estimated USD spend:

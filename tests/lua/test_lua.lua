@@ -176,6 +176,17 @@ local model = cai.model_info(cai.MODEL_GPT_5_NANO)
 assert(type(model) == "table")
 assert(model.context_window_tokens > 0)
 assert(model.auto_compact_token_limit > 0)
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_NANO), true,
+  "priced model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_PRO), false,
+  "incomplete model cannot enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_4_NANO), false,
+  "supported model without price metadata cannot enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd("future-model"), false,
+  "unknown model cannot enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(
+  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE), true,
+  "verified free OpenRouter model can enforce spend")
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
@@ -194,6 +205,10 @@ assert_not_ok(dummy_client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   max_tool_calls = -1,
 }), "negative Lua agent max tool calls must fail")
+assert_not_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_4_NANO,
+  session_usage_limits = { max_spend_usd = 1.0 },
+}), "Lua agent spend cap with missing pricing must fail")
 local dotenv_path = "/tmp/cai-lua-dotenv-test.env"
 do
   local fp = assert(io.open(dotenv_path, "w"))
@@ -242,6 +257,17 @@ assert_ok(dummy_session:set_usage_limits({
 }))
 assert_not_ok(dummy_session:set_usage_limits({ max_spend_usd = -1 }),
   "negative Lua session spend limit must fail")
+local unpriced_agent = assert_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_4_NANO,
+  instructions = "offline lua unpriced spend test",
+}))
+local unpriced_session = assert_ok(unpriced_agent:new_session())
+assert_not_ok(unpriced_agent:set_session_usage_limits({ max_spend_usd = 1.0 }),
+  "Lua agent spend cap setter with missing pricing must fail")
+assert_not_ok(unpriced_session:set_usage_limits({ max_spend_usd = 1.0 }),
+  "Lua session spend cap setter with missing pricing must fail")
+unpriced_session:close()
+unpriced_agent:close()
 do
   local accounting = assert_ok(dummy_session:usage())
   assert_eq(accounting.usage.total_tokens, 0, "Lua session usage total")
