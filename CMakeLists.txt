@@ -736,6 +736,7 @@ if(CAI_BUILD_TESTS)
     agent_searxng_tool_auto_run
     agent_multi_tool_auto_run
     agent_tool_auto_round_limit
+    agent_tool_error_output_continues
     agent_tool_output_max_bytes
     conversations
     stream_response_text
@@ -753,6 +754,7 @@ if(CAI_BUILD_TESTS)
     stream_source_error_preserves_openai_error
     stream_openrouter_metadata_events
     session_stream_auto_tool_run
+    session_stream_auto_tool_error_output_continues
     session_stream_auto_source_tool_run
     session_stream_auto_reasoning_tool_response
     session_stream_auto_multi_tool_run

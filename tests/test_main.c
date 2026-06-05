@@ -236,10 +236,12 @@ typedef struct spooled_raw_tool_state {
 typedef struct tool_event_state {
   int starts;
   int outputs;
+  int errors;
   char name[32];
   char arguments[64];
   size_t arguments_spooled_size;
   char output[256];
+  char error[128];
 } tool_event_state;
 
 typedef struct failing_callback_state {
@@ -1899,6 +1901,16 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     snprintf(state->output, sizeof(state->output), "%.*s",
              (int)sizeof(state->output) - 1, writer.buffer);
     return rc;
+  }
+  if (event->type == CAI_TOOL_EVENT_ERROR) {
+    state->errors++;
+    snprintf(state->name, sizeof(state->name), "%s",
+             event->name != NULL ? event->name : "");
+    if (event->tool_error != NULL && event->tool_error->message != NULL) {
+      snprintf(state->error, sizeof(state->error), "%s",
+               event->tool_error->message);
+    }
+    return CAI_OK;
   }
   return CAI_OK;
 }
@@ -6124,6 +6136,17 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_large_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_large_1\",\"type\":\"function_call\",\"call_id\":"
       "\"call_large_1\",\"name\":\"large_raw\",\"arguments\":\"{}\"}]}";
+  static const char list_error_tool_call_body[] =
+      "{\"id\":\"resp_list_error_tool_1\",\"status\":\"completed\","
+      "\"output\":[{\"id\":\"fc_list_error_1\",\"type\":\"function_call\","
+      "\"call_id\":\"call_list_error_1\",\"name\":\"list_files\","
+      "\"arguments\":\"{\\\"path\\\":\\\"/home/mike/lab\\\","
+      "\\\"recursive\\\":true}\"}]}";
+  static const char list_error_tool_done_body[] =
+      "{\"id\":\"resp_list_error_tool_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_"
+      "text\","
+      "\"text\":\"list error handled\"}]}]}";
   static const char auto_tool_done_body[] =
       "{\"id\":\"resp_auto_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -6311,6 +6334,21 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_large_tool_1\",\"usage\":{\"input_tokens\":9,"
       "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_list_error_tool_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_stream_list_error_1\",\"type\":\"function_call\","
+      "\"call_id\":\"call_stream_list_error_1\",\"name\":\"list_files\","
+      "\"arguments\":\"{\\\"path\\\":\\\"/home/mike/lab\\\","
+      "\\\"recursive\\\":true}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_list_error_tool_1\",\"usage\":{\"input_tokens\":9,"
+      "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_list_error_tool_done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"list "
+      "error handled\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_list_error_tool_2\",\"usage\":{\"input_tokens\":19,"
+      "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
   static const char stream_tool_done_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stream "
       "\"}\n\n"
@@ -6634,6 +6672,17 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "stream large tool turn") != NULL) {
         return stream_large_tool_body;
       }
+      if (strstr(request, "stream list error tool turn") != NULL) {
+        return stream_list_error_tool_body;
+      }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_list_error_1\"") != NULL &&
+          strstr(request, "\\\"ok\\\":false") != NULL &&
+          strstr(request, "list path escapes configured root") != NULL &&
+          strstr(request, "\"previous_response_id\":"
+                          "\"resp_stream_list_error_tool_1\"") != NULL) {
+        return stream_list_error_tool_done_body;
+      }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_reason_1\"") != NULL &&
           strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
@@ -6715,6 +6764,18 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "large tool turn") != NULL &&
         strstr(request, "\"name\":\"large_raw\"") != NULL) {
       return large_tool_call_body;
+    }
+    if (strstr(request, "list error tool turn") != NULL &&
+        strstr(request, "\"name\":\"list_files\"") != NULL) {
+      return list_error_tool_call_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_list_error_1\"") != NULL &&
+        strstr(request, "\\\"ok\\\":false") != NULL &&
+        strstr(request, "list path escapes configured root") != NULL &&
+        strstr(request,
+               "\"previous_response_id\":\"resp_list_error_tool_1\"") != NULL) {
+      return list_error_tool_done_body;
     }
     if (strstr(request, "multi tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
@@ -14834,6 +14895,117 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   }
 }
 
+static void test_agent_tool_error_output_continues(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char dir_template[] = "/tmp/cai-tool-error-test-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_read_tool_config read_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  tool_event_state event_state;
+  cai_error error;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "agent_tool_error_tmpdir", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_tool_error_mock", "pipe failed");
+    rmdir(dir_template);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_tool_error_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(dir_template);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_tool_error_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(dir_template);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
+  memset(&read_config, 0, sizeof(read_config));
+  read_config.root_path = dir_template;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  memset(&event_state, 0, sizeof(event_state));
+
+  expect_int(state, "agent_tool_error_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_tool_error_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_error_register",
+             cai_agent_register_list_files_tool(agent, &read_config, &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_error_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_tool_error_add",
+             cai_session_add_user_text(session, "list error tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_tool_error_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_tool_error_response",
+             cai_response_output_text(response), "list error handled");
+  expect_int(state, "agent_tool_error_event_starts", event_state.starts, 1L);
+  expect_int(state, "agent_tool_error_event_outputs", event_state.outputs, 0L);
+  expect_int(state, "agent_tool_error_event_errors", event_state.errors, 1L);
+  expect_str(state, "agent_tool_error_event_name", event_state.name,
+             "list_files");
+  expect_str(state, "agent_tool_error_event_message", event_state.error,
+             "list path escapes configured root");
+
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_tool_error_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_tool_error_mock", "mock child failed");
+  }
+}
+
 static void test_http_response_limit(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -16830,6 +17002,138 @@ static void test_session_stream_auto_tool_run(test_state *state) {
     test_fail(state, "stream_auto_tool_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "stream_auto_tool_mock", "mock child failed");
+  }
+}
+
+static void
+test_session_stream_auto_tool_error_output_continues(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char dir_template[] = "/tmp/cai-stream-tool-error-test-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_read_tool_config read_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  tool_event_state event_state;
+  cai_token_usage usage;
+  cai_error error;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "stream_tool_error_tmpdir", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_tool_error_mock", "pipe failed");
+    rmdir(dir_template);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_tool_error_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(dir_template);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_tool_error_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(dir_template);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
+  memset(&read_config, 0, sizeof(read_config));
+  read_config.root_path = dir_template;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&event_state, 0, sizeof(event_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_tool_error_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_tool_error_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_tool_error_register",
+             cai_agent_register_list_files_tool(agent, &read_config, &error),
+             CAI_OK);
+  expect_int(state, "stream_tool_error_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_tool_error_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  expect_int(
+      state, "stream_tool_error_add",
+      cai_session_add_user_text(session, "stream list error tool turn", &error),
+      CAI_OK);
+  expect_int(
+      state, "stream_tool_error_run",
+      cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+      CAI_OK);
+  expect_str(state, "stream_tool_error_output", writer.buffer,
+             "list error handled");
+  expect_str(state, "stream_tool_error_previous",
+             cai_session_previous_response_id(session),
+             "resp_stream_list_error_tool_2");
+  expect_int(state, "stream_tool_error_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_tool_error_usage_total", usage.total_tokens, 22L);
+  expect_int(state, "stream_tool_error_event_starts", event_state.starts, 1L);
+  expect_int(state, "stream_tool_error_event_outputs", event_state.outputs, 0L);
+  expect_int(state, "stream_tool_error_event_errors", event_state.errors, 1L);
+  expect_str(state, "stream_tool_error_event_name", event_state.name,
+             "list_files");
+  expect_str(state, "stream_tool_error_event_message", event_state.error,
+             "list path escapes configured root");
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_tool_error_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_tool_error_mock", "mock child failed");
   }
 }
 
@@ -19020,6 +19324,8 @@ static const test_entry test_entries[] = {
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},
     {"agent_multi_tool_auto_run", test_agent_multi_tool_auto_run},
     {"agent_tool_auto_round_limit", test_agent_tool_auto_round_limit},
+    {"agent_tool_error_output_continues",
+     test_agent_tool_error_output_continues},
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
     {"conversations", test_conversations},
     {"stream_response_text", test_stream_response_text},
@@ -19045,6 +19351,8 @@ static const test_entry test_entries[] = {
     {"stream_openrouter_metadata_events",
      test_stream_openrouter_metadata_events},
     {"session_stream_auto_tool_run", test_session_stream_auto_tool_run},
+    {"session_stream_auto_tool_error_output_continues",
+     test_session_stream_auto_tool_error_output_continues},
     {"session_stream_auto_source_tool_run",
      test_session_stream_auto_source_tool_run},
     {"session_stream_auto_reasoning_tool_response",

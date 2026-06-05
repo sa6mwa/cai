@@ -3067,6 +3067,47 @@ static void cai_capture_cleanup(cai_tool_output_capture *capture) {
   capture->output.cleanup(&capture->output);
 }
 
+static int cai_capture_tool_error_output(cai_tool_output_capture *capture,
+                                         int tool_rc,
+                                         const cai_error *tool_error,
+                                         cai_error *error) {
+  cai_buffer_builder builder;
+  const char *message;
+  int rc;
+
+  if (capture == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool capture is required");
+  }
+  message = tool_error != NULL && tool_error->message != NULL
+                ? tool_error->message
+                : cai_status_string(tool_rc);
+  memset(&builder, 0, sizeof(builder));
+  rc = cai_buffer_append_cstr(&builder,
+                              "{\"ok\":false,\"error\":{\"message\":", error);
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_json_string(&builder, message, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, ",\"code\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_json_string(&builder,
+                                       tool_error != NULL &&
+                                               tool_error->server_code != NULL
+                                           ? tool_error->server_code
+                                           : cai_status_string(tool_rc),
+                                       error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, "}}", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_capture_tool_output(capture, builder.data, builder.length, error);
+  }
+  cai_free_mem(NULL, builder.data);
+  return rc;
+}
+
 static int cai_session_init_response_params(cai_session *session,
                                             cai_response_create_params **out,
                                             cai_error *error) {
@@ -3210,10 +3251,14 @@ static int cai_session_run_tool_round(cai_session *session,
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
        i++) {
     cai_tool_event event;
+    int tool_failed;
+    int tool_invoked;
 
     memset(&event, 0, sizeof(event));
     memset(&capture, 0, sizeof(capture));
     capture_output_owned = 1;
+    tool_failed = 0;
+    tool_invoked = 0;
     event.name = cai_response_tool_call_name(response, i);
     event.arguments_json = cai_response_tool_call_arguments(response, i);
     event.arguments_json_spooled =
@@ -3233,6 +3278,7 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK) {
       spooled_arguments = cai_response_tool_call_arguments_spooled(response, i);
+      tool_invoked = 1;
       if (spooled_arguments != NULL) {
         arguments_cursor = *spooled_arguments;
         rc = cai_tool_registry_run_spooled(
@@ -3247,16 +3293,33 @@ static int cai_session_run_tool_round(cai_session *session,
       }
     }
     cai_sink_close(sink);
+    tool_failed = rc != CAI_OK;
     if (options->tool_event != NULL) {
       int tool_rc;
+      int event_rc;
 
       tool_rc = rc;
       event.type = rc == CAI_OK ? CAI_TOOL_EVENT_OUTPUT : CAI_TOOL_EVENT_ERROR;
       event.output_json = rc == CAI_OK ? &capture.output : NULL;
       event.tool_error = rc == CAI_OK ? NULL : error;
-      rc = options->tool_event(options->tool_event_context, &event, error);
-      if (tool_rc != CAI_OK && rc == CAI_OK) {
+      event_rc =
+          options->tool_event(options->tool_event_context, &event, error);
+      if (event_rc != CAI_OK) {
+        rc = event_rc;
+        tool_failed = 0;
+      } else {
         rc = tool_rc;
+      }
+    }
+    if (tool_invoked && tool_failed && rc != CAI_OK &&
+        capture.output.cleanup != NULL) {
+      int tool_rc;
+
+      tool_rc = rc;
+      rc = cai_capture_tool_error_output(&capture, tool_rc, error, error);
+      if (rc == CAI_OK && error != NULL) {
+        cai_error_cleanup(error);
+        cai_error_init(error);
       }
     }
     if (rc == CAI_OK) {
@@ -3488,10 +3551,14 @@ static int cai_session_add_stream_tool_outputs(
                                                 error);
   for (i = 0U; rc == CAI_OK && i < calls->count; i++) {
     cai_tool_event event;
+    int tool_failed;
+    int tool_invoked;
 
     memset(&event, 0, sizeof(event));
     memset(&capture, 0, sizeof(capture));
     capture_output_owned = 1;
+    tool_failed = 0;
+    tool_invoked = 0;
     event.name = calls->items[i].name;
     event.arguments_json = calls->items[i].arguments;
     event.arguments_json_spooled = calls->items[i].has_arguments_spooled
@@ -3511,6 +3578,7 @@ static int cai_session_add_stream_tool_outputs(
     sink = NULL;
     rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK) {
+      tool_invoked = 1;
       if (calls->items[i].has_arguments_spooled) {
         rc = cai_tool_registry_run_spooled(
             CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
@@ -3522,16 +3590,33 @@ static int cai_session_add_stream_tool_outputs(
       }
     }
     cai_sink_close(sink);
+    tool_failed = rc != CAI_OK;
     if (options->tool_event != NULL) {
       int tool_rc;
+      int event_rc;
 
       tool_rc = rc;
       event.type = rc == CAI_OK ? CAI_TOOL_EVENT_OUTPUT : CAI_TOOL_EVENT_ERROR;
       event.output_json = rc == CAI_OK ? &capture.output : NULL;
       event.tool_error = rc == CAI_OK ? NULL : error;
-      rc = options->tool_event(options->tool_event_context, &event, error);
-      if (tool_rc != CAI_OK && rc == CAI_OK) {
+      event_rc =
+          options->tool_event(options->tool_event_context, &event, error);
+      if (event_rc != CAI_OK) {
+        rc = event_rc;
+        tool_failed = 0;
+      } else {
         rc = tool_rc;
+      }
+    }
+    if (tool_invoked && tool_failed && rc != CAI_OK &&
+        capture.output.cleanup != NULL) {
+      int tool_rc;
+
+      tool_rc = rc;
+      rc = cai_capture_tool_error_output(&capture, tool_rc, error, error);
+      if (rc == CAI_OK && error != NULL) {
+        cai_error_cleanup(error);
+        cai_error_init(error);
       }
     }
     if (rc == CAI_OK) {

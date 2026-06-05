@@ -339,8 +339,14 @@ while true do
         end
         io.write("\n")
       elseif event.kind == "error" then
-        io.write(string.format("%s[%stool%s]%s %s failed\n",
-          gray, cyan, gray, reset, event.name or "(unknown)"))
+        local message = event.error and (event.error.message or event.error.status_string)
+        if message then
+          io.write(string.format("%s[%stool%s]%s %s failed: %s\n",
+            gray, cyan, gray, reset, event.name or "(unknown)", message))
+        else
+          io.write(string.format("%s[%stool%s]%s %s failed\n",
+            gray, cyan, gray, reset, event.name or "(unknown)"))
+        end
       end
       io.flush()
       return true
