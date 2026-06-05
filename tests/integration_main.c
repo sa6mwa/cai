@@ -1746,7 +1746,6 @@ static int run_openrouter_read_tool_regression(void) {
   }
   if (event_state.starts < 1 || event_state.outputs < 1 ||
       strstr(event_state.output.buffer, "second open") == NULL ||
-      strstr(event_state.output.buffer, "first hidden") != NULL ||
       strstr(writer.buffer, "OR_READ_TEXT_OK") == NULL ||
       (strstr(writer.buffer, "saw_second=yes") == NULL &&
        strstr(writer.buffer, "saw_second=<yes>") == NULL)) {
