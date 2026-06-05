@@ -56,6 +56,7 @@ typedef struct cai_exec_context {
 
 typedef struct cai_exec_args {
   char *cmd;
+  char *command;
   char *workdir;
   char *shell;
   int tty;
@@ -115,7 +116,8 @@ typedef struct cai_exec_cgroup {
 } cai_exec_cgroup;
 
 static const lonejson_field cai_exec_arg_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_exec_args, cmd, "cmd"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, cmd, "cmd"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, command, "command"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, workdir, "workdir"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, shell, "shell"),
     LONEJSON_FIELD_BOOL_PRESENT_NULLABLE(cai_exec_args, tty, has_tty, "tty"),
@@ -155,7 +157,8 @@ static const char cai_exec_schema_json[] =
     "{"
     "\"type\":\"object\","
     "\"properties\":{"
-    "\"cmd\":{\"type\":\"string\"},"
+    "\"cmd\":{\"type\":[\"string\",\"null\"]},"
+    "\"command\":{\"type\":[\"string\",\"null\"]},"
     "\"workdir\":{\"type\":[\"string\",\"null\"]},"
     "\"shell\":{\"type\":[\"string\",\"null\"]},"
     "\"tty\":{\"type\":[\"boolean\",\"null\"]},"
@@ -163,7 +166,7 @@ static const char cai_exec_schema_json[] =
     "\"timeout_ms\":{\"type\":[\"integer\",\"null\"]},"
     "\"max_output_tokens\":{\"type\":[\"integer\",\"null\"]}"
     "},"
-    "\"required\":[\"cmd\"],"
+    "\"required\":[],"
     "\"additionalProperties\":false"
     "}";
 
@@ -1607,6 +1610,8 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   int have_output_data;
   int use_sandbox;
   int rc;
+  char *cmd;
+  cai_exec_args effective_args;
 
   ctx = (const cai_exec_context *)context;
   args = (const cai_exec_args *)params;
@@ -1615,16 +1620,25 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec tool callback received invalid state");
   }
-  if (args->cmd == NULL || args->cmd[0] == '\0') {
+  cmd = args->command != NULL && args->command[0] != '\0' ? args->command
+                                                          : args->cmd;
+  if (args->cmd != NULL && args->cmd[0] != '\0' && args->command != NULL &&
+      args->command[0] != '\0' && strcmp(args->cmd, args->command) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "exec cmd and command must match when both are set");
+  }
+  if (cmd == NULL || cmd[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec command must not be empty");
   }
-  if (!cai_exec_shell_allowed(ctx, args->shell)) {
+  effective_args = *args;
+  effective_args.cmd = (char *)cmd;
+  if (!cai_exec_shell_allowed(ctx, effective_args.shell)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec shell must be /bin/sh or bash");
   }
   workdir = NULL;
-  rc = cai_exec_resolve_workdir(ctx, args->workdir, &workdir, error);
+  rc = cai_exec_resolve_workdir(ctx, effective_args.workdir, &workdir, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1636,8 +1650,8 @@ static int cai_exec_callback(void *context, const void *params, void *result,
     cai_free_mem(NULL, workdir);
     return rc;
   }
-  rc = cai_exec_validate_sandbox_args(ctx, args, workdir, sandbox_path,
-                                      use_sandbox, error);
+  rc = cai_exec_validate_sandbox_args(ctx, &effective_args, workdir,
+                                      sandbox_path, use_sandbox, error);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, workdir);
     return rc;
@@ -1648,17 +1662,18 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   have_stderr_data = 1;
   have_output_data = 1;
   output_max_bytes = ctx->output_max_bytes;
-  if (args->has_max_output_tokens && args->max_output_tokens > 0LL &&
-      (unsigned long long)args->max_output_tokens <
+  if (effective_args.has_max_output_tokens &&
+      effective_args.max_output_tokens > 0LL &&
+      (unsigned long long)effective_args.max_output_tokens <
           (unsigned long long)output_max_bytes) {
-    output_max_bytes = (size_t)args->max_output_tokens;
+    output_max_bytes = (size_t)effective_args.max_output_tokens;
   }
   capture.max_bytes = output_max_bytes;
   runtime->spooled_init(runtime, &capture.stdout_data);
   runtime->spooled_init(runtime, &capture.stderr_data);
   runtime->spooled_init(runtime, &capture.output);
-  rc = cai_exec_run_process(ctx, args, workdir, sandbox_path, use_sandbox,
-                            &capture, &proc, error);
+  rc = cai_exec_run_process(ctx, &effective_args, workdir, sandbox_path,
+                            use_sandbox, &capture, &proc, error);
   if (rc == CAI_OK) {
     out->wall_time_seconds = (double)proc.duration_ms / 1000.0;
     out->timed_out = proc.timed_out;

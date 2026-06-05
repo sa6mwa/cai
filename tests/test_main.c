@@ -11637,6 +11637,32 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  if (run_exec_tool_case(state, "exec_command_alias", &config,
+                         "{\"command\":\"printf alias-ok\"}", CAI_OK, &writer,
+                         &error) == CAI_OK) {
+    expect_substr(state, "exec_command_alias_stdout", writer.buffer,
+                  "\"stdout\":\"alias-ok\"");
+    expect_valid_json(state, "exec_command_alias_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_exec_tool_case(state, "exec_reject_missing_command", &config,
+                     "{\"cmd\":null,\"command\":null}", CAI_ERR_INVALID,
+                     &writer, &error);
+  expect_substr(state, "exec_reject_missing_command_error", error.message,
+                "exec command must not be empty");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  run_exec_tool_case(state, "exec_reject_conflicting_command_alias", &config,
+                     "{\"cmd\":\"printf one\",\"command\":\"printf two\"}",
+                     CAI_ERR_INVALID, &writer, &error);
+  expect_substr(state, "exec_reject_conflicting_command_alias_error",
+                error.message, "cmd and command must match");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   if (access("/bin/true", X_OK) == 0) {
     strcpy(deep_dirs[0], dir_template);
     deep_count = 0U;
