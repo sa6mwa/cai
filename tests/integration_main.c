@@ -24,6 +24,8 @@
 
 #define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
 #define CAI_INTEGRATION_OPENROUTER_REQUEST_DEFAULT_DELAY_SEC 4U
+#define CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL CAI_MODEL_GPT_5_4_MINI
+#define CAI_INTEGRATION_CHATGPT_DEFAULT_REASONING CAI_REASONING_EFFORT_LOW
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -63,7 +65,7 @@ static const char *chatgpt_integration_model(void) {
 
   model = getenv("CAI_CHATGPT_TEST_MODEL");
   if (model == NULL || model[0] == '\0') {
-    model = CAI_MODEL_GPT_5_4;
+    model = CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL;
   }
   return model;
 }
@@ -3098,6 +3100,27 @@ static int integration_provider_run_auto_output(
   return cai_session_run_auto_output(session, run_options, output, error);
 }
 
+static int run_chatgpt_integration_defaults_check(void) {
+  const char *model;
+
+  model = chatgpt_integration_model();
+  if (strcmp(model, CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL) != 0) {
+    fprintf(stderr,
+            "ChatGPT integration default model mismatch: expected %s got %s\n",
+            CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL, model);
+    return 1;
+  }
+  if (strcmp(CAI_INTEGRATION_CHATGPT_DEFAULT_REASONING,
+             CAI_REASONING_EFFORT_LOW) != 0) {
+    fprintf(stderr,
+            "ChatGPT integration default reasoning mismatch: expected low got "
+            "%s\n",
+            CAI_INTEGRATION_CHATGPT_DEFAULT_REASONING);
+    return 1;
+  }
+  return 0;
+}
+
 static double usage_estimate_usd(const char *model,
                                  const cai_token_usage *usage) {
   if (usage == NULL) {
@@ -3522,7 +3545,7 @@ static int run_chatgpt_subscription_session_regression(void) {
       "PREV=value CURRENT=value. When the user asks for CHATGPT_LOOKUP, call "
       "integration_lookup exactly once and then include the tool report, city, "
       "and code in your answer. Never print placeholders or angle brackets.";
-  agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  agent_config.reasoning_effort = CAI_INTEGRATION_CHATGPT_DEFAULT_REASONING;
   agent_config.max_output_tokens = 160;
   run_options.max_tool_rounds = 2;
   run_options.tool_event = integration_tool_event;
@@ -3857,6 +3880,7 @@ done:
 int main(void) {
   const char *compaction;
   const char *chatgpt_subscription;
+  const char *chatgpt_defaults;
   const char *e2e;
   const char *exec_tool;
   const char *openrouter;
@@ -3881,6 +3905,10 @@ int main(void) {
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
   if (integration_flag_enabled(openrouter_dotenv)) {
     return run_openrouter_dotenv_response();
+  }
+  chatgpt_defaults = getenv("CAI_INTEGRATION_CHATGPT_DEFAULTS");
+  if (integration_flag_enabled(chatgpt_defaults)) {
+    return run_chatgpt_integration_defaults_check();
   }
   chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
   if (integration_flag_enabled(chatgpt_subscription)) {
