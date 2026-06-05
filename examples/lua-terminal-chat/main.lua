@@ -178,12 +178,16 @@ end
 
 if not model or model == "" then
   if chatgpt_auth then
-    model = cai.MODEL_GPT_5_4
+    model = cai.MODEL_GPT_5_4_MINI
   else
     model = cai.MODEL_GPT_5_NANO
   end
 end
 local model_info = cai.model_info(model)
+local reasoning_effort = cai.REASONING_EFFORT_LOW
+if chatgpt_auth then
+  reasoning_effort = cai.REASONING_EFFORT_MEDIUM
+end
 
 if chatgpt_auth_json then
   io.stderr:write("ChatGPT subscription auth enabled with: " .. chatgpt_auth_json .. "\n")
@@ -240,7 +244,7 @@ local client = ok(cai.open(client_config), nil, "cai.open")
 local agent = ok(client:new_agent({
   model = model,
   instructions = instructions,
-  reasoning_effort = cai.REASONING_EFFORT_LOW,
+  reasoning_effort = reasoning_effort,
   reasoning_summary = cai.REASONING_SUMMARY_AUTO,
   prompt_cache_key = "cai:example:lua-terminal-chat:v1",
   disable_parallel_tool_calls = 1,

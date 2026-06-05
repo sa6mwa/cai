@@ -107,7 +107,7 @@ static void print_help(const char *program) {
           "                          Use ChatGPT subscription auth from a "
           "specific Codex-style auth.json file.\n"
           "  --model <model>         Override the model. Defaults to "
-          "gpt-5-nano with API keys and gpt-5.4 with ChatGPT auth.\n"
+          "gpt-5-nano with API keys and gpt-5.4-mini with ChatGPT auth.\n"
           "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
           "  --read-tool-dir <path>  Register list_files/read_file rooted to "
           "<path>.\n"
@@ -393,11 +393,14 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (model == NULL || model[0] == '\0') {
-    model = chatgpt_auth_enabled ? CAI_MODEL_GPT_5_4 : CAI_MODEL_GPT_5_NANO;
+    model =
+        chatgpt_auth_enabled ? CAI_MODEL_GPT_5_4_MINI : CAI_MODEL_GPT_5_NANO;
   }
   agent_config.model = model;
   agent_config.session_usage_limits = usage_limits;
-  agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  agent_config.reasoning_effort = chatgpt_auth_enabled
+                                      ? CAI_REASONING_EFFORT_MEDIUM
+                                      : CAI_REASONING_EFFORT_LOW;
   if (exec_tool_dir != NULL || read_tool_dir != NULL) {
     agent_config.developer_instructions =
         "You are a concise terminal chat assistant. Tools: searxng_search, "

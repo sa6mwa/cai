@@ -841,9 +841,15 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_mcp_http_smoke PROPERTIES
     LABELS "smoke;local"
     TIMEOUT 3)
+  set(_cai_examples_help_smoke_args
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_help_smoke.sh"
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(TARGET cai_example_terminal_chat)
+    list(APPEND _cai_examples_help_smoke_args
+      $<TARGET_FILE:cai_example_terminal_chat>)
+  endif()
   add_test(NAME cai_examples_help_smoke
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_help_smoke.sh"
-      "${CMAKE_CURRENT_SOURCE_DIR}")
+    COMMAND ${_cai_examples_help_smoke_args})
   set_tests_properties(cai_examples_help_smoke PROPERTIES
     LABELS "smoke;local;example-smoke"
     TIMEOUT 3)
