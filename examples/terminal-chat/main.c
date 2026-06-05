@@ -54,6 +54,35 @@ static void trim_newline(char *line) {
   }
 }
 
+static char *join_strings(const char *const *parts) {
+  size_t total;
+  size_t offset;
+  size_t i;
+  char *joined;
+
+  if (parts == NULL) {
+    return NULL;
+  }
+  total = 0U;
+  for (i = 0U; parts[i] != NULL; i++) {
+    total += strlen(parts[i]);
+  }
+  joined = (char *)malloc(total + 1U);
+  if (joined == NULL) {
+    return NULL;
+  }
+  offset = 0U;
+  for (i = 0U; parts[i] != NULL; i++) {
+    size_t len;
+
+    len = strlen(parts[i]);
+    memcpy(joined + offset, parts[i], len);
+    offset += len;
+  }
+  joined[offset] = '\0';
+  return joined;
+}
+
 static void print_usage(const cai_token_usage *usage, double context_percent,
                         int has_context_percent, double total_spent_usd) {
   if (has_context_percent) {
@@ -364,6 +393,7 @@ int main(int argc, char **argv) {
   double total_spent_usd;
   char *dotenv_api_key;
   char *chatgpt_auth_path_display;
+  char *developer_instructions;
   const char *exec_tool_dir;
   const char *read_tool_dir;
   const char *chatgpt_auth_json;
@@ -373,7 +403,18 @@ int main(int argc, char **argv) {
   char line[4096];
   int exit_code;
   int rc;
+  static const char *const terminal_tool_instructions[] = {
+      "You are a concise terminal chat assistant. Tools: searxng_search, ",
+      "todo_kanban, list_files, read_file, and optionally exec_command. Cite ",
+      "search URLs. todo_kanban has a default board; omit board_id, ",
+      "board_key, and board_name for ordinary use. Use list_files before ",
+      "read_file when discovering paths. Prefer read_file for file contents. ",
+      "Use exec_command only when explicitly asked; set workdir when needed. ",
+      "For scripts, put source in exec_command stdin and set command to only ",
+      "python3 -, sh -s, bash -s, or lua -; do not use heredocs.",
+      NULL};
 
+  developer_instructions = NULL;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
@@ -402,16 +443,12 @@ int main(int argc, char **argv) {
                                       ? CAI_REASONING_EFFORT_MEDIUM
                                       : CAI_REASONING_EFFORT_LOW;
   if (exec_tool_dir != NULL || read_tool_dir != NULL) {
-    agent_config.developer_instructions =
-        "You are a concise terminal chat assistant. Tools: searxng_search, "
-        "todo_kanban, list_files, read_file, and optionally exec_command. Cite "
-        "search URLs. todo_kanban has a default board; omit board_id, "
-        "board_key, and board_name for ordinary use. Use list_files before "
-        "read_file when "
-        "discovering paths. Prefer read_file for file contents. Use "
-        "exec_command only when explicitly asked; set workdir when needed. "
-        "For scripts, use exec_command stdin with python3 -, sh -s, bash -s, "
-        "or lua -.";
+    developer_instructions = join_strings(terminal_tool_instructions);
+    if (developer_instructions == NULL) {
+      fprintf(stderr, "failed to allocate terminal chat instructions\n");
+      return 1;
+    }
+    agent_config.developer_instructions = developer_instructions;
   } else {
     agent_config.developer_instructions =
         "You are a concise terminal chat assistant. Answer plainly. You have "
@@ -632,6 +669,7 @@ done:
   cai_chatgpt_auth_close(chatgpt_auth);
   cai_string_destroy(chatgpt_auth_path_display);
   cai_string_destroy(dotenv_api_key);
+  free(developer_instructions);
   cai_error_cleanup(&error);
   return exit_code;
 }

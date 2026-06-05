@@ -84,6 +84,7 @@ assert_terminal_multi_turn_transcript() {
     printf 'exec_command printed empty tool input in %s\n' "$transcript" >&2
     return 1
   fi
+  grep -F '"stdin"' "$transcript" >/dev/null
   grep -F '[tool] exec_command output=' "$transcript" >/dev/null
   grep -F 'CAI_MULTI_TURN_ALPHA' "$transcript" >/dev/null
   grep -F 'NOTE_ALPHA' "$transcript" >/dev/null
@@ -128,7 +129,7 @@ write_terminal_fixture "$c_terminal_root"
     "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"add_item\",\"title\":\"CAI_MULTI_TURN_ALPHA\"}. Use the default board. After the tool result, answer TURN1_DONE." \
     "$tool_gate_prefix Use list_files with arguments {\"path\":\".\"}. After the tool result, answer TURN2_DONE and include note.txt if it is listed." \
     "$tool_gate_prefix Use read_file with arguments {\"path\":\"note.txt\"}. Do not set max_bytes, start_line, or end_line. After the tool result, answer TURN3_DONE and include NOTE_ALPHA if the file contains it." \
-    "$tool_gate_prefix Use exec_command with arguments {\"command\":\"printf EXEC_ALPHA; uname -s\"}. Do not set shell or workdir. After the tool result, answer TURN4_DONE and include EXEC_ALPHA." \
+    "$tool_gate_prefix Use exec_command with arguments {\"command\":\"sh -s\",\"stdin\":\"printf EXEC_ALPHA; uname -s\\n\"}. Do not set shell or workdir. After the tool result, answer TURN4_DONE and include EXEC_ALPHA." \
     "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"list_board\"}. Use the default board. After the tool result, answer TURN5_DONE and include CAI_MULTI_TURN_ALPHA if the item is present." \
     '/exit'
 } | env \
@@ -164,7 +165,7 @@ write_terminal_fixture "$lua_terminal_root"
     "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"add_item\",\"title\":\"CAI_MULTI_TURN_ALPHA\"}. Use the default board. After the tool result, answer TURN1_DONE." \
     "$tool_gate_prefix Use list_files with arguments {\"path\":\".\"}. After the tool result, answer TURN2_DONE and include note.txt if it is listed." \
     "$tool_gate_prefix Use read_file with arguments {\"path\":\"note.txt\"}. Do not set max_bytes, start_line, or end_line. After the tool result, answer TURN3_DONE and include NOTE_ALPHA if the file contains it." \
-    "$tool_gate_prefix Use exec_command with arguments {\"command\":\"printf EXEC_ALPHA; uname -s\"}. Do not set shell or workdir. After the tool result, answer TURN4_DONE and include EXEC_ALPHA." \
+    "$tool_gate_prefix Use exec_command with arguments {\"command\":\"sh -s\",\"stdin\":\"printf EXEC_ALPHA; uname -s\\n\"}. Do not set shell or workdir. After the tool result, answer TURN4_DONE and include EXEC_ALPHA." \
     "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"list_board\"}. Use the default board. After the tool result, answer TURN5_DONE and include CAI_MULTI_TURN_ALPHA if the item is present." \
     '/exit'
 } | env \

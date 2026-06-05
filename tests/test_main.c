@@ -13462,6 +13462,14 @@ static void test_exec_tool(test_state *state) {
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"tty\"") == NULL) {
     test_fail(state, "exec_schema", "schema missing Codex-compatible fields");
   }
+  if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "not in a heredoc") ==
+          NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U),
+             "instead of heredocs") == NULL) {
+    test_fail(state, "exec_schema_stdin_guidance",
+              "schema missing stdin script guidance");
+  }
   if (cai_tool_registry_schema_at(registry, 0U) != NULL &&
       strstr(cai_tool_registry_schema_at(registry, 0U), "yield_time_ms") !=
           NULL) {

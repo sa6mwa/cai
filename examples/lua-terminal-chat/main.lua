@@ -231,9 +231,9 @@ if exec_tool_dir or read_tool_dir then
     "paths. Prefer read_file over exec_command when the user " ..
     "asks to inspect file contents. Use exec_command only when the user explicitly " ..
     "asks you to inspect or run commands, always set workdir when a " ..
-    "specific directory matters, and do not assume network access. For generated " ..
-    "scripts, pass source in exec_command stdin and run an interpreter such as " ..
-    "python3 -, sh -s, bash -s, or lua -."
+    "specific directory matters, and do not assume network access. For scripts, " ..
+    "put source in exec_command stdin and set command to only python3 -, sh -s, " ..
+    "bash -s, or lua -; do not use heredocs."
 end
 
 local client_config

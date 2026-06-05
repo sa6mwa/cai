@@ -155,23 +155,32 @@ static const lonejson_field cai_exec_result_fields[] = {
 LONEJSON_MAP_DEFINE(cai_exec_result_map, cai_exec_result,
                     cai_exec_result_fields);
 
-static const char cai_exec_schema_json[] =
-    "{"
-    "\"type\":\"object\","
-    "\"properties\":{"
-    "\"cmd\":{\"type\":[\"string\",\"null\"]},"
-    "\"command\":{\"type\":[\"string\",\"null\"]},"
-    "\"stdin\":{\"type\":[\"string\",\"null\"]},"
-    "\"workdir\":{\"type\":[\"string\",\"null\"]},"
-    "\"shell\":{\"type\":[\"string\",\"null\"]},"
-    "\"tty\":{\"type\":[\"boolean\",\"null\"]},"
-    "\"login\":{\"type\":[\"boolean\",\"null\"]},"
-    "\"timeout_ms\":{\"type\":[\"integer\",\"null\"]},"
-    "\"max_output_tokens\":{\"type\":[\"integer\",\"null\"]}"
-    "},"
-    "\"required\":[],"
-    "\"additionalProperties\":false"
-    "}";
+static const char *const cai_exec_schema_json_parts[] = {
+    "{",
+    "\"type\":\"object\",",
+    "\"properties\":{",
+    "\"cmd\":{\"type\":[\"string\",\"null\"],",
+    "\"description\":\"Shell command to run. For scripts, set this to a ",
+    "stdin-capable interpreter such as python3 -, sh -s, bash -s, or lua -; ",
+    "put script source in stdin, not in a heredoc.\"},",
+    "\"command\":{\"type\":[\"string\",\"null\"],",
+    "\"description\":\"Alias for cmd. Use either cmd or command, not both ",
+    "unless identical.\"},",
+    "\"stdin\":{\"type\":[\"string\",\"null\"],",
+    "\"description\":\"Bytes written to child stdin and then closed. Use this ",
+    "for generated scripts or multi-line input instead of heredocs or nested ",
+    "shell quoting.\"},",
+    "\"workdir\":{\"type\":[\"string\",\"null\"]},",
+    "\"shell\":{\"type\":[\"string\",\"null\"]},",
+    "\"tty\":{\"type\":[\"boolean\",\"null\"]},",
+    "\"login\":{\"type\":[\"boolean\",\"null\"]},",
+    "\"timeout_ms\":{\"type\":[\"integer\",\"null\"]},",
+    "\"max_output_tokens\":{\"type\":[\"integer\",\"null\"]}",
+    "},",
+    "\"required\":[],",
+    "\"additionalProperties\":false",
+    "}",
+    NULL};
 
 static const char cai_exec_default_description[] =
     "Runs a sandboxed shell command non-interactively and returns its output. "
@@ -185,6 +194,38 @@ static const char cai_exec_default_description[] =
 static const char *cai_exec_default_string(const char *value,
                                            const char *fallback) {
   return value != NULL && value[0] != '\0' ? value : fallback;
+}
+
+static int cai_exec_join_strings(const char *const *parts, char **out,
+                                 const char *message, cai_error *error) {
+  size_t total;
+  size_t offset;
+  size_t i;
+  char *joined;
+
+  if (parts == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "string join input required");
+  }
+  *out = NULL;
+  total = 0U;
+  for (i = 0U; parts[i] != NULL; i++) {
+    total += strlen(parts[i]);
+  }
+  joined = (char *)cai_alloc(NULL, total + 1U);
+  if (joined == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, message);
+  }
+  offset = 0U;
+  for (i = 0U; parts[i] != NULL; i++) {
+    size_t len;
+
+    len = strlen(parts[i]);
+    memcpy(joined + offset, parts[i], len);
+    offset += len;
+  }
+  joined[offset] = '\0';
+  *out = joined;
+  return CAI_OK;
 }
 
 static int cai_exec_strdup_field(char **out, const char *value,
@@ -1868,9 +1909,11 @@ int cai_tool_registry_register_exec_tool(cai_tool_registry *registry,
   cai_exec_context *ctx;
   const char *name;
   const char *description;
+  char *schema_json;
   int rc;
 
   ctx = NULL;
+  schema_json = NULL;
   rc = cai_exec_context_new(config, &ctx, error);
   if (rc != CAI_OK) {
     return rc;
@@ -1880,13 +1923,20 @@ int cai_tool_registry_register_exec_tool(cai_tool_registry *registry,
   description =
       cai_exec_default_string(config != NULL ? config->description : NULL,
                               cai_exec_default_description);
+  rc = cai_exec_join_strings(cai_exec_schema_json_parts, &schema_json,
+                             "failed to allocate exec tool schema", error);
+  if (rc != CAI_OK) {
+    cai_exec_context_cleanup(ctx);
+    return rc;
+  }
   rc = cai_tool_registry_register_lonejson_schema_owned(
-      registry, name, description, cai_exec_schema_json, 0, &cai_exec_args_map,
+      registry, name, description, schema_json, 0, &cai_exec_args_map,
       &cai_exec_result_map, cai_exec_callback, ctx, cai_exec_context_cleanup,
       error);
   if (rc != CAI_OK) {
     cai_exec_context_cleanup(ctx);
   }
+  cai_free_mem(NULL, schema_json);
   return rc;
 }
 
