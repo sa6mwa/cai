@@ -32,9 +32,7 @@ typedef struct cai_stream_tool_capture {
   cai_stream_tool_call_list *tool_calls;
   lonejson_spooled *output_text;
   lonejson_spooled output_items;
-  lonejson_writer output_items_writer;
   int output_items_initialized;
-  int output_items_writer_initialized;
   size_t output_items_count;
 } cai_stream_tool_capture;
 
@@ -192,6 +190,7 @@ static void cai_stream_tool_call_list_cleanup(cai_stream_tool_call_list *list);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out, cai_error *error);
 static int cai_client_base_url_is_openrouter(const cai_client_impl *client);
+static int cai_client_uses_chatgpt_auth(const cai_client_impl *client);
 static void
 cai_agent_warn_openrouter_server_continuity(const cai_client_impl *client);
 
@@ -205,6 +204,10 @@ void cai_agent_config_init(cai_agent_config *config) {
 static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
   return client != NULL && client->base_url != NULL &&
          strstr(client->base_url, "openrouter.ai") != NULL;
+}
+
+static int cai_client_uses_chatgpt_auth(const cai_client_impl *client) {
+  return client != NULL && client->chatgpt_auth != NULL;
 }
 
 static void
@@ -338,8 +341,10 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid session continuity mode");
   }
-  if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO) {
-    impl->session_continuity = cai_client_base_url_is_openrouter(client_impl)
+  if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO ||
+      cai_client_uses_chatgpt_auth(client_impl)) {
+    impl->session_continuity = cai_client_base_url_is_openrouter(client_impl) ||
+                                       cai_client_uses_chatgpt_auth(client_impl)
                                    ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
                                    : CAI_SESSION_CONTINUITY_SERVER;
   } else {
@@ -1113,14 +1118,6 @@ static int cai_stream_tool_calls_spool(cai_session *session,
     if (status == LONEJSON_STATUS_OK) {
       status = writer.string(&writer, "function_call", 13U, &json_error);
     }
-    if (status == LONEJSON_STATUS_OK && calls->items[i].id != NULL &&
-        calls->items[i].id[0] != '\0') {
-      status = writer.key(&writer, "id", 2U, &json_error);
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.string(&writer, calls->items[i].id,
-                               strlen(calls->items[i].id), &json_error);
-      }
-    }
     if (status == LONEJSON_STATUS_OK) {
       status = writer.key(&writer, "call_id", 7U, &json_error);
     }
@@ -1273,56 +1270,76 @@ static int cai_stream_output_text_spool(cai_session *session,
   return CAI_OK;
 }
 
-static int cai_stream_capture_output_items_start(
-    cai_session *session, cai_stream_tool_capture *capture, cai_error *error) {
-  lonejson_error json_error;
-  lonejson_status status;
-
+static int
+cai_stream_capture_output_items_start(cai_stream_tool_capture *capture,
+                                      cai_error *error) {
+  if (capture == NULL || capture->session == NULL) {
+    return CAI_OK;
+  }
   if (capture->output_items_initialized) {
     return CAI_OK;
   }
-  cai_history_init_spooled(session, &capture->output_items);
+  cai_history_init_spooled(capture->session, &capture->output_items);
   capture->output_items_initialized = 1;
-  lonejson_error_init(&json_error);
-  status = CAI_LJ->writer_init_sink(CAI_LJ, &capture->output_items_writer,
-                                    cai_agent_spool_sink,
-                                    &capture->output_items, &json_error);
-  if (status == LONEJSON_STATUS_OK) {
-    capture->output_items_writer_initialized = 1;
-    status = capture->output_items_writer.begin_array(
-        &capture->output_items_writer, &json_error);
-  }
-  if (status != LONEJSON_STATUS_OK) {
-    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to start streamed output item capture",
-                                json_error.message);
-  }
-  return CAI_OK;
+  return cai_history_append_bytes(&capture->output_items, "[", 1U, error);
 }
 
 static int
 cai_stream_capture_output_items_finish(cai_stream_tool_capture *capture,
                                        cai_error *error) {
-  lonejson_error json_error;
-  lonejson_status status;
-
-  if (capture == NULL || !capture->output_items_writer_initialized) {
+  if (capture == NULL || !capture->output_items_initialized) {
     return CAI_OK;
   }
-  lonejson_error_init(&json_error);
-  status = capture->output_items_writer.end_array(&capture->output_items_writer,
-                                                  &json_error);
-  if (status == LONEJSON_STATUS_OK) {
-    status = capture->output_items_writer.finish(&capture->output_items_writer,
-                                                 &json_error);
+  return cai_history_append_bytes(&capture->output_items, "]", 1U, error);
+}
+
+static int
+cai_stream_capture_sanitized_output_item(cai_stream_tool_capture *capture,
+                                         const lonejson_spooled *item_json,
+                                         cai_error *error) {
+  cai_spooled_reader_context reader_context;
+  cai_history_sink_context sink_context;
+  lonejson_value_rewrite_selector_options options;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (capture == NULL || item_json == NULL ||
+      item_json->size_fn(item_json) == 0U) {
+    return CAI_OK;
   }
-  capture->output_items_writer.cleanup(&capture->output_items_writer);
-  capture->output_items_writer_initialized = 0;
+  rc = cai_stream_capture_output_items_start(capture, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (capture->output_items_count > 0U) {
+    rc = cai_history_append_bytes(&capture->output_items, ",", 1U, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  memset(&reader_context, 0, sizeof(reader_context));
+  reader_context.cursor = *item_json;
+  status = reader_context.cursor.rewind(&reader_context.cursor, NULL);
+  if (status != LONEJSON_STATUS_OK) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to rewind streamed output item");
+  }
+  memset(&sink_context, 0, sizeof(sink_context));
+  sink_context.spool = &capture->output_items;
+  memset(&options, 0, sizeof(options));
+  options.selector = "id";
+  options.action = LONEJSON_VALUE_REWRITE_DROP;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->value_rewrite_selector_reader(
+      CAI_LJ, cai_history_spooled_reader, &reader_context,
+      cai_history_lonejson_sink, &sink_context, &options, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to finish streamed output item capture",
+                                "failed to sanitize streamed output item",
                                 json_error.message);
   }
+  capture->output_items_count++;
   return CAI_OK;
 }
 
@@ -1409,29 +1426,14 @@ static int cai_stream_capture_output_item_done(
     void *context, const char *item_id, int output_index, const char *type,
     const lonejson_spooled *item_json, cai_error *error) {
   cai_stream_tool_capture *capture;
-  lonejson_error json_error;
-  lonejson_status status;
   int rc;
 
   capture = (cai_stream_tool_capture *)context;
   rc = CAI_OK;
-  if (capture != NULL && capture->output_text != NULL &&
-      (type == NULL || strcmp(type, "function_call") != 0) &&
-      item_json != NULL && item_json->size_fn(item_json) > 0U) {
-    rc =
-        cai_stream_capture_output_items_start(capture->session, capture, error);
-    if (rc == CAI_OK) {
-      lonejson_error_init(&json_error);
-      status = capture->output_items_writer.json_value_spooled(
-          &capture->output_items_writer, item_json, &json_error);
-      if (status != LONEJSON_STATUS_OK) {
-        rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                  "failed to capture streamed output item",
-                                  json_error.message);
-      } else {
-        capture->output_items_count++;
-      }
-    }
+  if (capture != NULL &&
+      CAI_SESSION_AGENT_IMPL(capture->session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    rc = cai_stream_capture_sanitized_output_item(capture, item_json, error);
   }
   if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
       capture->user_sinks->output_item_done != NULL) {
@@ -3195,7 +3197,8 @@ static int cai_session_stream_once(cai_session *session,
         &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
-    if (capture_stream && capture.output_items_writer_initialized) {
+    if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+        CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_stream_capture_output_items_finish(&capture, error);
     }
   }
@@ -3220,9 +3223,6 @@ static int cai_session_stream_once(cai_session *session,
     output_text.cleanup(&output_text);
   }
   if (capture_stream && capture.output_items_initialized) {
-    if (capture.output_items_writer_initialized) {
-      capture.output_items_writer.cleanup(&capture.output_items_writer);
-    }
     capture.output_items.cleanup(&capture.output_items);
   }
   if (rc == CAI_OK) {
@@ -3372,7 +3372,8 @@ static int cai_session_stream_tool_round(
         &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
-    if (capture.output_items_writer_initialized) {
+    if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+        CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_stream_capture_output_items_finish(&capture, error);
     }
   }
@@ -3397,9 +3398,6 @@ static int cai_session_stream_tool_round(
     output_text.cleanup(&output_text);
   }
   if (capture.output_items_initialized) {
-    if (capture.output_items_writer_initialized) {
-      capture.output_items_writer.cleanup(&capture.output_items_writer);
-    }
     capture.output_items.cleanup(&capture.output_items);
   }
   return rc;

@@ -325,6 +325,7 @@ int cai_response_create_params_write_json_sink(
 int cai_response_request_upload_open(const cai_response_create_params *params,
                                      int stream, int default_has_store,
                                      int default_store,
+                                     int omit_max_output_tokens,
                                      cai_response_request_upload **out,
                                      cai_error *error);
 size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,

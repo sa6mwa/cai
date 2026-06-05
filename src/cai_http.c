@@ -786,8 +786,8 @@ retry_request:
   upload = NULL;
 
   rc = cai_response_request_upload_open(
-      params, stream, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0, &upload,
-      error);
+      params, stream, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0,
+      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, &upload, error);
   if (rc == CAI_OK) {
     rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
                        CAI_CLIENT_IMPL(client)->base_url, path, &url, error);

@@ -155,7 +155,11 @@ typedef struct cai_client_config {
   cai_allocator allocator;
 } cai_client_config;
 
-/** Use previous_response_id/server-side state for session continuity. */
+/**
+ * Use previous_response_id/server-side state for session continuity on
+ * providers that support it. ChatGPT subscription auth uses client history
+ * because the ChatGPT/Codex backend rejects previous_response_id.
+ */
 #define CAI_SESSION_CONTINUITY_SERVER 0
 /** Use local client history when creating follow-up requests. */
 #define CAI_SESSION_CONTINUITY_CLIENT_HISTORY 1

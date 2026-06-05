@@ -6696,7 +6696,7 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "client history second") != NULL &&
         strstr(request, "client history first") != NULL &&
         strstr(request, "client history first answer") != NULL &&
-        strstr(request, "\"id\":\"msg_client_history_1\"") != NULL &&
+        strstr(request, "\"id\":\"msg_client_history_1\"") == NULL &&
         strstr(request, "\"status\":\"completed\"") != NULL &&
         strstr(request, "\"role\":\"assistant\"") != NULL &&
         strstr(request, "previous_response_id") == NULL &&
@@ -8500,6 +8500,139 @@ test_chatgpt_auth_client_defaults_to_codex_backend(test_state *state) {
   cai_client_close(client);
   cai_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
+static void test_chatgpt_auth_agent_uses_client_history(test_state *state) {
+  const char *future_token = "eyJhbGciOiJub25lIn0."
+                             "eyJleHAiOjQxMDI0NDQ4MDB9.future";
+  static const char first_body[] =
+      "{\"id\":\"resp_chatgpt_history_1\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"output_text\",\"text\":\"chatgpt first ok\"}]}]}";
+  static const char second_body[] =
+      "{\"id\":\"resp_chatgpt_history_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"output_text\",\"text\":\"chatgpt second ok\"}]}]}";
+  static const char *first_required[] = {
+      "POST /v1/responses HTTP/",
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.future",
+      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR, "\"store\":false",
+      "\"text\":\"chatgpt client history first\""};
+  static const char *second_required[] = {
+      "POST /v1/responses HTTP/",
+      "Authorization: Bearer "
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.future",
+      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR,
+      "\"store\":false",
+      "chatgpt client history first",
+      "chatgpt first ok",
+      "chatgpt client history second"};
+  static const char *forbidden[] = {"previous_response_id",
+                                    "\"max_output_tokens\"",
+                                    "\"id\":\"resp_chatgpt_history_1\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), forbidden,
+       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
+       NULL, first_body},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), forbidden,
+       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
+       NULL, second_body}};
+  char template_dir[] = "/tmp/cai-auth-history-test-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[2048];
+  http_mock_server server;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  server_opened = 0;
+  auth = NULL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_history_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"%s\","
+           "\"refresh_token\":\"refresh-future\",\"account_id\":\"acct_test\"},"
+           "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+           future_token);
+  write_file_or_die(auth_path, auth_json);
+  if (http_mock_server_open_script(state, "chatgpt_auth_history_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  expect_int(state, "chatgpt_auth_history_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  cai_client_config_init(&client_config);
+  client_config.base_url = server.base_url;
+  client_config.chatgpt_auth = auth;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 500L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_4;
+  agent_config.max_output_tokens = 64;
+  agent_config.max_output_tokens = 64;
+  expect_int(state, "chatgpt_auth_history_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_history_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "chatgpt_auth_history_continuity",
+             CAI_AGENT_IMPL(agent)->session_continuity,
+             CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
+  expect_int(state, "chatgpt_auth_history_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "chatgpt_auth_history_first",
+             cai_session_send_text(session, "chatgpt client history first",
+                                   &response, &error),
+             CAI_OK);
+  expect_str(state, "chatgpt_auth_history_first_text",
+             cai_response_output_text(response), "chatgpt first ok");
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "chatgpt_auth_history_second",
+             cai_session_send_text(session, "chatgpt client history second",
+                                   &response, &error),
+             CAI_OK);
+  expect_str(state, "chatgpt_auth_history_second_text",
+             cai_response_output_text(response), "chatgpt second ok");
+
+cleanup:
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_history_mock", server.pid,
+                      &server.child_status);
+  }
   unlink(auth_path);
   rmdir(template_dir);
 }
@@ -16927,6 +17060,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
     {"chatgpt_auth_client_defaults_to_codex_backend",
      test_chatgpt_auth_client_defaults_to_codex_backend},
+    {"chatgpt_auth_agent_uses_client_history",
+     test_chatgpt_auth_agent_uses_client_history},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
     {"chatgpt_login_callback_validation",
      test_chatgpt_login_callback_validation},

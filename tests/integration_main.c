@@ -1,3 +1,4 @@
+#include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/read.h>
@@ -53,6 +54,16 @@ static const char *integration_model(void) {
   model = getenv("CAI_TEST_MODEL");
   if (model == NULL || model[0] == '\0') {
     model = CAI_MODEL_GPT_5_NANO;
+  }
+  return model;
+}
+
+static const char *chatgpt_integration_model(void) {
+  const char *model;
+
+  model = getenv("CAI_CHATGPT_TEST_MODEL");
+  if (model == NULL || model[0] == '\0') {
+    model = CAI_MODEL_GPT_5_4;
   }
   return model;
 }
@@ -3282,6 +3293,232 @@ static int run_openrouter_e2e_session_regression(void) {
   return run_e2e_session_regression_with_provider(1);
 }
 
+static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
+                                                 cai_error *error) {
+  cai_chatgpt_auth_config auth_config;
+  char *auth_path;
+  int rc;
+
+  if (out == NULL) {
+    return integration_set_error(error, CAI_ERR_INVALID,
+                                 "ChatGPT auth output is required");
+  }
+  *out = NULL;
+  auth_path = NULL;
+  rc = cai_chatgpt_auth_default_path(&auth_path, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (access(auth_path, R_OK) != 0) {
+    fprintf(stderr,
+            "[integration-chatgpt-subscription] skipping; no readable default "
+            "auth file at %s\n",
+            auth_path);
+    cai_string_destroy(auth_path);
+    return 77;
+  }
+  fprintf(stderr, "[integration-chatgpt-subscription] auth_json=%s\n",
+          auth_path);
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  rc = cai_chatgpt_auth_open(&auth_config, out, error);
+  cai_string_destroy(auth_path);
+  return rc;
+}
+
+static int run_chatgpt_subscription_session_regression(void) {
+  static const char first_secret[] = "chatgpt-first-key-481";
+  static const char tool_code[] = "chatgpt-tool-code-739";
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  cai_token_usage usage;
+  integration_lookup_state tool_state;
+  integration_tool_event_state event_state;
+  integration_write_state writer;
+  const char *model;
+  const char *answer;
+  char prompt[512];
+  char current_secret[64];
+  char previous_secret[64];
+  int rc;
+  int turn;
+
+  cai_error_init(&error);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_client_config_init(&client_config);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&tool_state, 0, sizeof(tool_state));
+  memset(&event_state, 0, sizeof(event_state));
+  memset(&writer, 0, sizeof(writer));
+  auth = NULL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  model = chatgpt_integration_model();
+
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc == 77) {
+    cai_error_cleanup(&error);
+    return 77;
+  }
+  if (rc != CAI_OK) {
+    print_error("chatgpt auth open", rc, &error);
+    goto done;
+  }
+
+  client_config.chatgpt_auth = auth;
+  agent_config.model = model;
+  agent_config.developer_instructions =
+      "You are a strict ChatGPT subscription regression assistant. Maintain "
+      "session state from the full client-provided history. For numbered "
+      "turns, answer with one line containing TURN=number FIRST=value "
+      "PREV=value CURRENT=value. When the user asks for CHATGPT_LOOKUP, call "
+      "integration_lookup exactly once and then include the tool report, city, "
+      "and code in your answer. Never print placeholders or angle brackets.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  agent_config.max_output_tokens = 160;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_tool_event;
+  run_options.tool_event_context = &event_state;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  fprintf(stderr, "[integration-chatgpt-subscription] model=%s\n", model);
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_tool(
+        agent, "integration_lookup",
+        "Return a deterministic integration-test marker for a city and code.",
+        &integration_lookup_arg_map, &integration_lookup_result_map,
+        integration_lookup_tool, &tool_state, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("chatgpt subscription setup", rc, &error);
+    goto done;
+  }
+
+  stream_sinks.output_text = sink;
+  for (turn = 1; rc == CAI_OK && turn <= 11; turn++) {
+    snprintf(current_secret, sizeof(current_secret), "cgpt-turn-%02d-key-%03d",
+             turn, 900 + turn);
+    if (turn == 1) {
+      strcpy(previous_secret, "none");
+    } else {
+      snprintf(previous_secret, sizeof(previous_secret),
+               "cgpt-turn-%02d-key-%03d", turn - 1, 900 + turn - 1);
+    }
+    snprintf(prompt, sizeof(prompt),
+             "This is ChatGPT subscription regression turn %d. first_secret=%s "
+             "current_secret=%s. The previous turn secret is %s. Answer the "
+             "latest user message only.",
+             turn, first_secret, current_secret, previous_secret);
+
+    if (turn == 3 || turn == 8) {
+      snprintf(prompt, sizeof(prompt),
+               "CHATGPT_LOOKUP turn %d: call integration_lookup exactly once "
+               "for city=Gothenburg and code=%s. Then answer with TURN=%d "
+               "FIRST=%s PREV=%s CURRENT=%s and include the tool report, city, "
+               "and code.",
+               turn, tool_code, turn, first_secret, previous_secret,
+               current_secret);
+      tool_state.called = 0;
+      event_state.starts = 0;
+      event_state.outputs = 0;
+      event_state.start_arguments[0] = '\0';
+      event_state.start_arguments_size = 0U;
+      integration_write_reset(&writer);
+      rc = cai_session_add_user_text(session, prompt, &error);
+      if (rc == CAI_OK) {
+        rc = cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error);
+      }
+      answer = writer.buffer;
+      if (rc == CAI_OK && (tool_state.called == 0 || event_state.starts < 1 ||
+                           event_state.outputs < 1 ||
+                           strstr(answer, "openrouter-tool-verified") == NULL ||
+                           strstr(answer, "Gothenburg") == NULL ||
+                           strstr(answer, tool_code) == NULL)) {
+        fprintf(stderr,
+                "chatgpt subscription tool turn %d failed; called=%d "
+                "starts=%d outputs=%d answer:\n%s\n",
+                turn, tool_state.called, event_state.starts,
+                event_state.outputs, answer);
+        rc = CAI_ERR_PROTOCOL;
+      }
+    } else {
+      integration_write_reset(&writer);
+      rc = cai_session_add_user_text(session, prompt, &error);
+      if (rc == CAI_OK) {
+        if ((turn % 2) == 0) {
+          rc = cai_session_stream_text(session, sink, &error);
+        } else {
+          rc = cai_session_stream(session, &stream_sinks, &error);
+        }
+      }
+      answer = writer.buffer;
+    }
+    if (rc != CAI_OK) {
+      print_error("chatgpt subscription session turn", rc, &error);
+      break;
+    }
+    if (answer == NULL || strstr(answer, first_secret) == NULL ||
+        strstr(answer, current_secret) == NULL ||
+        !answer_contains_previous_secret(answer, previous_secret) ||
+        !answer_contains_turn(answer, turn)) {
+      fprintf(stderr,
+              "chatgpt subscription turn %d failed content check\n"
+              "expected first=%s prev=%s current=%s\nanswer:\n%s\n",
+              turn, first_secret, previous_secret, current_secret,
+              answer != NULL ? answer : "(null)");
+      rc = CAI_ERR_PROTOCOL;
+      break;
+    }
+    memset(&usage, 0, sizeof(usage));
+    if (cai_session_last_usage(session, &usage, &error) == CAI_OK) {
+      fprintf(stderr,
+              "[integration-chatgpt-subscription] turn=%d tokens=%lld "
+              "cached=%lld output=%lld reasoning=%lld\n",
+              turn, usage.total_tokens, usage.input_cached_tokens,
+              usage.output_tokens, usage.output_reasoning_tokens);
+    } else {
+      print_error("chatgpt subscription usage", error.code, &error);
+      rc = error.code != CAI_OK ? error.code : CAI_ERR_PROTOCOL;
+      break;
+    }
+    integration_write_reset(&writer);
+  }
+
+done:
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_compaction_recall(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
@@ -3483,6 +3720,7 @@ done:
 
 int main(void) {
   const char *compaction;
+  const char *chatgpt_subscription;
   const char *e2e;
   const char *exec_tool;
   const char *openrouter;
@@ -3506,6 +3744,10 @@ int main(void) {
   openrouter_dotenv = getenv("CAI_INTEGRATION_OPENROUTER_DOTENV");
   if (integration_flag_enabled(openrouter_dotenv)) {
     return run_openrouter_dotenv_response();
+  }
+  chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
+  if (integration_flag_enabled(chatgpt_subscription)) {
+    return run_chatgpt_subscription_session_regression();
   }
   openrouter_e2e = getenv("CAI_INTEGRATION_OPENROUTER_E2E");
   if (integration_flag_enabled(openrouter_e2e)) {

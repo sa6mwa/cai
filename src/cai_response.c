@@ -1184,7 +1184,7 @@ static int cai_build_history_output_docs(cai_response_doc *response_doc,
   items = (cai_response_output_doc *)response_doc->output.items;
   for (i = 0U; i < response_doc->output.count; i++) {
     docs[i].type = items[i].type;
-    docs[i].id = items[i].id;
+    docs[i].id = NULL;
     docs[i].status = items[i].status;
     if (items[i].type != NULL && strcmp(items[i].type, "message") == 0) {
       docs[i].role = items[i].role;
@@ -3639,7 +3639,8 @@ static lonejson_status cai_response_request_count_sink(void *user,
 
 static int cai_response_request_state_prepare(
     cai_response_request_state *state, const cai_response_create_params *params,
-    int stream, int default_has_store, int default_store, cai_error *error) {
+    int stream, int default_has_store, int default_store,
+    int omit_max_output_tokens, cai_error *error) {
   lonejson_error json_error;
   int rc;
 
@@ -3728,7 +3729,7 @@ static int cai_response_request_state_prepare(
     }
     cai_free_mem(NULL, choice_builder.data);
   }
-  if (params->max_output_tokens > 0) {
+  if (params->max_output_tokens > 0 && !omit_max_output_tokens) {
     state->doc.max_output_tokens = params->max_output_tokens;
     state->doc.has_max_output_tokens = 1;
   }
@@ -3827,7 +3828,8 @@ int cai_response_create_params_write_json_sink(
     return cai_set_error(error, CAI_ERR_INVALID, "JSON sink is required");
   }
   cai_response_request_state_init(&state);
-  rc = cai_response_request_state_prepare(&state, params, stream, 0, 0, error);
+  rc = cai_response_request_state_prepare(&state, params, stream, 0, 0, 0,
+                                          error);
   if (rc != CAI_OK) {
     cai_response_request_state_cleanup(&state);
     return rc;
@@ -3855,6 +3857,7 @@ int cai_response_create_params_write_json_sink(
 int cai_response_request_upload_open(const cai_response_create_params *params,
                                      int stream, int default_has_store,
                                      int default_store,
+                                     int omit_max_output_tokens,
                                      cai_response_request_upload **out,
                                      cai_error *error) {
   cai_response_request_upload *upload;
@@ -3875,8 +3878,9 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
     cai_response_request_write_context count_context;
 
     cai_response_request_state_init(&count_state);
-    rc = cai_response_request_state_prepare(
-        &count_state, params, stream, default_has_store, default_store, error);
+    rc = cai_response_request_state_prepare(&count_state, params, stream,
+                                            default_has_store, default_store,
+                                            omit_max_output_tokens, error);
     if (rc == CAI_OK) {
       count_context.sink = cai_response_request_count_sink;
       count_context.sink_user = &request_size;
@@ -3905,8 +3909,9 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
   memset(upload, 0, sizeof(*upload));
   upload->size = (curl_off_t)request_size;
   cai_response_request_state_init(&upload->state);
-  rc = cai_response_request_state_prepare(
-      &upload->state, params, stream, default_has_store, default_store, error);
+  rc = cai_response_request_state_prepare(&upload->state, params, stream,
+                                          default_has_store, default_store,
+                                          omit_max_output_tokens, error);
   if (rc != CAI_OK) {
     cai_response_request_upload_close(upload);
     return rc;

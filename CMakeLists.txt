@@ -693,6 +693,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_default_path
     chatgpt_auth_open_default_path
     chatgpt_auth_client_defaults_to_codex_backend
+    chatgpt_auth_agent_uses_client_history
     chatgpt_login_authorize_url
     chatgpt_login_callback_validation
     chatgpt_login_callback_exchange
@@ -994,6 +995,15 @@ if(CAI_BUILD_TESTS)
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_chatgpt_subscription_e2e
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_subscription_e2e PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG}
+      SKIP_RETURN_CODE 77)
     add_test(NAME cai_integration_state_restore
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_STATE_RESTORE=1"
