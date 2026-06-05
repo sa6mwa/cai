@@ -17,6 +17,7 @@ CAI_READ_TOOL_DIR ?=
 CAI_CHATGPT_AUTH ?=
 CAI_CHATGPT_AUTH_JSON ?=
 CAI_CHATGPT_LOGIN_PORT ?= 1455
+CAI_TERMINAL_CHAT_MODEL ?=
 
 ifneq ($(strip $(CAI_EXEC_TOOL_DIR)),)
 EXEC_TOOL_ARGS := --exec-tool-dir "$(CAI_EXEC_TOOL_DIR)"
@@ -29,6 +30,11 @@ else
 READ_TOOL_ARGS :=
 endif
 TERMINAL_TOOL_ARGS := $(EXEC_TOOL_ARGS) $(READ_TOOL_ARGS)
+ifneq ($(strip $(CAI_TERMINAL_CHAT_MODEL)),)
+TERMINAL_MODEL_ARGS := --model "$(CAI_TERMINAL_CHAT_MODEL)"
+else
+TERMINAL_MODEL_ARGS :=
+endif
 ifneq ($(strip $(CAI_CHATGPT_AUTH_JSON)),)
 CHATGPT_AUTH_ARGS := --chatgpt-auth-json "$(CAI_CHATGPT_AUTH_JSON)"
 CHATGPT_LOGIN_ARGS := --auth-json "$(CAI_CHATGPT_AUTH_JSON)" --port "$(CAI_CHATGPT_LOGIN_PORT)"
@@ -39,7 +45,7 @@ else
 CHATGPT_AUTH_ARGS :=
 CHATGPT_LOGIN_ARGS := --port "$(CAI_CHATGPT_LOGIN_PORT)"
 endif
-TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_TOOL_ARGS)
+TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS)
 
 define run_c_example
 	cd "$(ROOT)" && \
@@ -68,11 +74,11 @@ help:
 		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
 		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
-		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
+		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-mike-mind' \
 		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
+		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
 		'' \

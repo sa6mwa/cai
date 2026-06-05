@@ -200,11 +200,15 @@ not enabled by default. Pass `--exec-tool-dir <path>` to register
 that path. `list_files` reports `text_candidate`/`binary_candidate` hints for
 regular files, and `read_file` only returns UTF-8 text without unsafe control
 characters.
+With ChatGPT subscription auth, the example defaults to `gpt-5.4` because
+`gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
+mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 ```
@@ -256,10 +260,14 @@ inspection is also opt-in; pass `--read-tool-dir <path>` to register
 `list_files` and `read_file` rooted to that path. `list_files` reports
 `text_candidate`/`binary_candidate` hints for regular files, and `read_file`
 only returns UTF-8 text without unsafe control characters.
+With ChatGPT subscription auth, the example defaults to `gpt-5.4` because
+`gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
+mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
 
 ```sh
 OPENAI_API_KEY=... make -C examples run-terminal-chat
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1
+make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
 OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json

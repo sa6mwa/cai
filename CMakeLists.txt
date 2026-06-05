@@ -692,6 +692,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_stream_refresh_retry
     chatgpt_auth_default_path
     chatgpt_auth_open_default_path
+    chatgpt_auth_client_defaults_to_codex_backend
     chatgpt_login_authorize_url
     chatgpt_login_callback_validation
     chatgpt_login_callback_exchange

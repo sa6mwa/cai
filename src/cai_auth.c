@@ -1603,9 +1603,10 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
         cai_strdup(&login->allocator, effective->scopes != NULL
                                           ? effective->scopes
                                           : CAI_CHATGPT_AUTH_DEFAULT_SCOPES);
-    login->originator = cai_strdup(
-        &login->allocator,
-        effective->originator != NULL ? effective->originator : "cai");
+    login->originator = cai_strdup(&login->allocator,
+                                   effective->originator != NULL
+                                       ? effective->originator
+                                       : CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR);
     login->state = cai_strdup(&login->allocator, effective->state != NULL
                                                      ? effective->state
                                                      : generated_state);

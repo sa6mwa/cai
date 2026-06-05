@@ -96,7 +96,8 @@ static const char *searxng_base_url(void) {
 static void print_help(const char *program) {
   fprintf(stderr,
           "usage: %s [--chatgpt-auth] [--chatgpt-auth-json <path>] "
-          "[--exec-tool-dir <path>] [--read-tool-dir <path>]\n\n"
+          "[--model <model>] [--exec-tool-dir <path>] "
+          "[--read-tool-dir <path>]\n\n"
           "  --chatgpt-auth       Use ChatGPT subscription auth from cai's "
           "default auth.json path.\n",
           program != NULL ? program : "cai_example_terminal_chat");
@@ -104,6 +105,8 @@ static void print_help(const char *program) {
           "  --chatgpt-auth-json <path>\n"
           "                          Use ChatGPT subscription auth from a "
           "specific Codex-style auth.json file.\n"
+          "  --model <model>         Override the model. Defaults to "
+          "gpt-5-nano with API keys and gpt-5.4 with ChatGPT auth.\n"
           "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
           "  --read-tool-dir <path>  Register list_files/read_file rooted to "
           "<path>.\n"
@@ -113,12 +116,17 @@ static void print_help(const char *program) {
 
 static int parse_args(int argc, char **argv, const char **exec_tool_dir,
                       const char **read_tool_dir,
-                      const char **chatgpt_auth_json, int *chatgpt_auth) {
+                      const char **chatgpt_auth_json, const char **model,
+                      int *chatgpt_auth) {
   int i;
 
   *exec_tool_dir = NULL;
   *read_tool_dir = NULL;
   *chatgpt_auth_json = NULL;
+  *model = getenv("CAI_TERMINAL_CHAT_MODEL");
+  if (*model == NULL || (*model)[0] == '\0') {
+    *model = getenv("CAI_EXAMPLE_MODEL");
+  }
   *chatgpt_auth = 0;
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--chatgpt-auth") == 0) {
@@ -132,6 +140,14 @@ static int parse_args(int argc, char **argv, const char **exec_tool_dir,
       }
       *chatgpt_auth_json = argv[++i];
       *chatgpt_auth = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--model") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--model requires a model id\n");
+        return 0;
+      }
+      *model = argv[++i];
       continue;
     }
     if (strcmp(argv[i], "--exec-tool-dir") == 0) {
@@ -234,6 +250,7 @@ int main(int argc, char **argv) {
   const char *exec_tool_dir;
   const char *read_tool_dir;
   const char *chatgpt_auth_json;
+  const char *model;
   int chatgpt_auth_enabled;
   int has_context_percent;
   char line[4096];
@@ -250,14 +267,17 @@ int main(int argc, char **argv) {
   memset(&searxng_config, 0, sizeof(searxng_config));
   memset(&todo_config, 0, sizeof(todo_config));
   rc = parse_args(argc, argv, &exec_tool_dir, &read_tool_dir,
-                  &chatgpt_auth_json, &chatgpt_auth_enabled);
+                  &chatgpt_auth_json, &model, &chatgpt_auth_enabled);
   if (rc < 0) {
     return 0;
   }
   if (rc == 0) {
     return 2;
   }
-  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  if (model == NULL || model[0] == '\0') {
+    model = chatgpt_auth_enabled ? CAI_MODEL_GPT_5_4 : CAI_MODEL_GPT_5_NANO;
+  }
+  agent_config.model = model;
   agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   if (exec_tool_dir != NULL || read_tool_dir != NULL) {
     agent_config.developer_instructions =

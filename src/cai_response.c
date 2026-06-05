@@ -3637,10 +3637,9 @@ static lonejson_status cai_response_request_count_sink(void *user,
   return LONEJSON_STATUS_OK;
 }
 
-static int
-cai_response_request_state_prepare(cai_response_request_state *state,
-                                   const cai_response_create_params *params,
-                                   int stream, cai_error *error) {
+static int cai_response_request_state_prepare(
+    cai_response_request_state *state, const cai_response_create_params *params,
+    int stream, int default_has_store, int default_store, cai_error *error) {
   lonejson_error json_error;
   int rc;
 
@@ -3741,8 +3740,9 @@ cai_response_request_state_prepare(cai_response_request_state *state,
     state->doc.background = params->background ? true : false;
     state->doc.has_background = 1;
   }
-  if (params->has_store) {
-    state->doc.store = params->store ? true : false;
+  if (params->has_store || default_has_store) {
+    state->doc.store =
+        (params->has_store ? params->store : default_store) ? true : false;
     state->doc.has_store = 1;
   }
   state->doc.reasoning.effort = params->reasoning_effort;
@@ -3827,7 +3827,7 @@ int cai_response_create_params_write_json_sink(
     return cai_set_error(error, CAI_ERR_INVALID, "JSON sink is required");
   }
   cai_response_request_state_init(&state);
-  rc = cai_response_request_state_prepare(&state, params, stream, error);
+  rc = cai_response_request_state_prepare(&state, params, stream, 0, 0, error);
   if (rc != CAI_OK) {
     cai_response_request_state_cleanup(&state);
     return rc;
@@ -3853,7 +3853,8 @@ int cai_response_create_params_write_json_sink(
 }
 
 int cai_response_request_upload_open(const cai_response_create_params *params,
-                                     int stream,
+                                     int stream, int default_has_store,
+                                     int default_store,
                                      cai_response_request_upload **out,
                                      cai_error *error) {
   cai_response_request_upload *upload;
@@ -3869,9 +3870,30 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
   *out = NULL;
   request_size = 0U;
   lonejson_error_init(&json_error);
-  rc = cai_response_create_params_write_json_sink(
-      params, stream, cai_response_request_count_sink, &request_size,
-      &json_error, NULL, error);
+  {
+    cai_response_request_state count_state;
+    cai_response_request_write_context count_context;
+
+    cai_response_request_state_init(&count_state);
+    rc = cai_response_request_state_prepare(
+        &count_state, params, stream, default_has_store, default_store, error);
+    if (rc == CAI_OK) {
+      count_context.sink = cai_response_request_count_sink;
+      count_context.sink_user = &request_size;
+      count_context.sink_error = &json_error;
+      count_context.length = 0U;
+      rc = CAI_LJ->serialize_sink(
+               CAI_LJ, &cai_response_request_map, &count_state.doc,
+               cai_response_request_write_sink, &count_context,
+               &json_error) == LONEJSON_STATUS_OK
+               ? CAI_OK
+               : cai_set_error_detail(
+                     error, CAI_ERR_TRANSPORT,
+                     "failed to serialize response request JSON",
+                     json_error.message);
+    }
+    cai_response_request_state_cleanup(&count_state);
+  }
   if (rc != CAI_OK) {
     return rc;
   }
@@ -3883,8 +3905,8 @@ int cai_response_request_upload_open(const cai_response_create_params *params,
   memset(upload, 0, sizeof(*upload));
   upload->size = (curl_off_t)request_size;
   cai_response_request_state_init(&upload->state);
-  rc =
-      cai_response_request_state_prepare(&upload->state, params, stream, error);
+  rc = cai_response_request_state_prepare(
+      &upload->state, params, stream, default_has_store, default_store, error);
   if (rc != CAI_OK) {
     cai_response_request_upload_close(upload);
     return rc;

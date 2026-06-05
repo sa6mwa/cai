@@ -7520,10 +7520,12 @@ static void test_http_create_response(test_state *state) {
   static const char *required[] = {
       "OpenAI-Organization: org_mock", "OpenAI-Project: proj_mock",
       "\"model\":\"gpt-5-nano\"", "\"text\":\"hello\""};
+  static const char *forbidden[] = {"\"store\":false"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", required,
-       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
-       "application/json", NULL, http_create_body}};
+       sizeof(required) / sizeof(required[0]), forbidden,
+       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
+       NULL, http_create_body}};
 
   g_test_infof_count = 0;
   g_test_tracef_count = 0;
@@ -7904,6 +7906,9 @@ test_chatgpt_auth_expired_refreshes_before_request(test_state *state) {
       "POST /v1/responses HTTP/",
       "Authorization: Bearer "
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new",
+      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR,
+      "User-Agent: cai/1",
+      "\"store\":false",
       "\"text\":\"hello expired auth\""};
   static const char *response_forbidden[] = {
       "Authorization: Bearer "
@@ -8439,6 +8444,63 @@ cleanup:
   if (xdg_dir[0] != '\0') {
     rmdir(xdg_dir);
   }
+  rmdir(template_dir);
+}
+
+static void
+test_chatgpt_auth_client_defaults_to_codex_backend(test_state *state) {
+  const char *future_token = "eyJhbGciOiJub25lIn0."
+                             "eyJleHAiOjQxMDI0NDQ4MDB9.future";
+  char template_dir[] = "/tmp/cai-auth-backend-test-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[2048];
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_error error;
+
+  auth = NULL;
+  client = NULL;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_backend_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"%s\","
+           "\"refresh_token\":\"refresh-future\",\"account_id\":\"acct_test\"},"
+           "\"last_refresh\":\"2026-01-01T00:00:00Z\"}",
+           future_token);
+  write_file_or_die(auth_path, auth_json);
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  expect_int(state, "chatgpt_auth_backend_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+
+  cai_client_config_init(&client_config);
+  client_config.chatgpt_auth = auth;
+  expect_int(state, "chatgpt_auth_backend_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_str(state, "chatgpt_auth_backend_base_url",
+             CAI_CLIENT_IMPL(client)->base_url, CAI_CHATGPT_CODEX_BASE_URL);
+
+  cai_client_close(client);
+  client = NULL;
+  cai_client_config_init(&client_config);
+  client_config.chatgpt_auth = auth;
+  client_config.base_url = "http://127.0.0.1:9999/v1";
+  expect_int(state, "chatgpt_auth_backend_override_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_str(state, "chatgpt_auth_backend_override",
+             CAI_CLIENT_IMPL(client)->base_url, "http://127.0.0.1:9999/v1");
+
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  unlink(auth_path);
   rmdir(template_dir);
 }
 
@@ -16863,6 +16925,8 @@ static const test_entry test_entries[] = {
      test_chatgpt_auth_stream_refresh_retry},
     {"chatgpt_auth_default_path", test_chatgpt_auth_default_path},
     {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
+    {"chatgpt_auth_client_defaults_to_codex_backend",
+     test_chatgpt_auth_client_defaults_to_codex_backend},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
     {"chatgpt_login_callback_validation",
      test_chatgpt_login_callback_validation},

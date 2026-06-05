@@ -111,6 +111,8 @@ typedef struct cai_allocator {
 
 /** Default OpenAI REST API base URL. */
 #define CAI_OPENAI_BASE_URL "https://api.openai.com/v1"
+/** Default ChatGPT subscription/Codex backend base URL. */
+#define CAI_CHATGPT_CODEX_BASE_URL "https://chatgpt.com/backend-api/codex"
 /** Default OpenRouter OpenAI-compatible REST API base URL. */
 #define CAI_OPENROUTER_BASE_URL "https://openrouter.ai/api/v1"
 /** Default dotenv path used by explicit dotenv helper calls. */
@@ -126,7 +128,10 @@ typedef struct cai_client_config {
   const char *api_key;
   /** Environment variable to read when api_key is NULL. */
   const char *api_key_env;
-  /** API base URL; NULL selects CAI_OPENAI_BASE_URL. */
+  /**
+   * API base URL. NULL selects CAI_CHATGPT_CODEX_BASE_URL when chatgpt_auth is
+   * set, otherwise CAI_OPENAI_BASE_URL.
+   */
   const char *base_url;
   /** Optional OpenAI organization id header. */
   const char *organization_id;

@@ -323,7 +323,8 @@ int cai_response_create_params_write_json_sink(
     void *sink_user, lonejson_error *sink_error, size_t *out_len,
     cai_error *error);
 int cai_response_request_upload_open(const cai_response_create_params *params,
-                                     int stream,
+                                     int stream, int default_has_store,
+                                     int default_store,
                                      cai_response_request_upload **out,
                                      cai_error *error);
 size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
@@ -379,6 +380,8 @@ int cai_append_bearer_header(cai_client *client, struct curl_slist **headers,
 int cai_append_prefixed_header(cai_client *client, struct curl_slist **headers,
                                const char *prefix, const char *value,
                                cai_error *error);
+int cai_append_client_headers(cai_client *client, struct curl_slist **headers,
+                              cai_error *error);
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,

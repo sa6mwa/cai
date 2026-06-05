@@ -2125,7 +2125,9 @@ retry_request:
     return rc;
   }
 
-  rc = cai_response_request_upload_open(params, 1, &upload, error);
+  rc = cai_response_request_upload_open(
+      params, 1, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0, &upload,
+      error);
   if (rc == CAI_OK) {
     rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
                        CAI_CLIENT_IMPL(client)->base_url, "responses", &url,
@@ -2142,6 +2144,9 @@ retry_request:
   }
   if (rc == CAI_OK) {
     rc = cai_append_bearer_header(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_client_headers(client, &headers, error);
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",

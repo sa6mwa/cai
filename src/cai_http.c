@@ -1,5 +1,7 @@
 #include "cai_internal.h"
 
+#include <cai/auth.h>
+
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -453,6 +455,24 @@ int cai_append_prefixed_header(cai_client *client, struct curl_slist **headers,
   return rc;
 }
 
+int cai_append_client_headers(cai_client *client, struct curl_slist **headers,
+                              cai_error *error) {
+  int rc;
+
+  if (client == NULL || CAI_CLIENT_IMPL(client) == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is required");
+  }
+  if (CAI_CLIENT_IMPL(client)->chatgpt_auth == NULL) {
+    return CAI_OK;
+  }
+  rc = cai_append_prefixed_header(client, headers, "originator: ",
+                                  CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_append_header(headers, "User-Agent: cai/1", error);
+}
+
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
@@ -544,6 +564,9 @@ retry_request:
   }
   if (rc == CAI_OK) {
     rc = cai_append_bearer_header(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_client_headers(client, &headers, error);
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
@@ -762,7 +785,9 @@ retry_request:
   request_id = NULL;
   upload = NULL;
 
-  rc = cai_response_request_upload_open(params, stream, &upload, error);
+  rc = cai_response_request_upload_open(
+      params, stream, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0, &upload,
+      error);
   if (rc == CAI_OK) {
     rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
                        CAI_CLIENT_IMPL(client)->base_url, path, &url, error);
@@ -778,6 +803,9 @@ retry_request:
   }
   if (rc == CAI_OK) {
     rc = cai_append_bearer_header(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_client_headers(client, &headers, error);
   }
   if (rc == CAI_OK) {
     rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",

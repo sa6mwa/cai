@@ -24,6 +24,8 @@ extern "C" {
 #define CAI_CHATGPT_AUTH_DEFAULT_SCOPES                                        \
   "openid profile email offline_access api.connectors.read "                   \
   "api.connectors.invoke"
+/** Default originator sent in ChatGPT OAuth and backend requests. */
+#define CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR "cai"
 
 /** Codex-compatible ChatGPT auth session configuration. */
 typedef struct cai_chatgpt_auth_config {

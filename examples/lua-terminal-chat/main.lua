@@ -53,8 +53,7 @@ local function print_usage(usage, context, total_cost)
     bold_white, total_cost, reset))
 end
 
-local model = os.getenv("CAI_EXAMPLE_MODEL") or cai.MODEL_GPT_5_NANO
-local model_info = cai.model_info(model)
+local model = os.getenv("CAI_TERMINAL_CHAT_MODEL") or os.getenv("CAI_EXAMPLE_MODEL")
 local searxng_base_url = os.getenv("CAI_SEARXNG_BASE_URL") or "http://127.0.0.1:8888"
 local todo_store = os.getenv("CAI_LUA_TODO_STORE")
 local todo_lock = os.getenv("CAI_LUA_TODO_LOCK")
@@ -90,14 +89,30 @@ while i <= #arg do
     chatgpt_auth_json = arg[i + 1]
     chatgpt_auth = true
     i = i + 2
+  elseif arg[i] == "--model" then
+    if not arg[i + 1] or arg[i + 1] == "" then
+      io.stderr:write("--model requires a model id\n")
+      os.exit(2)
+    end
+    model = arg[i + 1]
+    i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--exec-tool-dir <path>] [--read-tool-dir <path>]\n")
+    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>] [--exec-tool-dir <path>] [--read-tool-dir <path>]\n")
     os.exit(0)
   else
     io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
     os.exit(2)
   end
 end
+
+if not model or model == "" then
+  if chatgpt_auth then
+    model = cai.MODEL_GPT_5_4
+  else
+    model = cai.MODEL_GPT_5_NANO
+  end
+end
+local model_info = cai.model_info(model)
 
 if chatgpt_auth_json then
   io.stderr:write("ChatGPT subscription auth enabled with: " .. chatgpt_auth_json .. "\n")
