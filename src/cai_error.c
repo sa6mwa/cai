@@ -41,6 +41,8 @@ const char *cai_status_string(int status) {
     return "server error";
   case CAI_ERR_CANCELLED:
     return "cancelled";
+  case CAI_ERR_LIMIT:
+    return "limit exceeded";
   default:
     return "unknown error";
   }

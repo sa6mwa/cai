@@ -378,6 +378,19 @@ static long long cai_lua_opt_ll_field(lua_State *L, int index, const char *name,
   return value;
 }
 
+static double cai_lua_opt_double_field(lua_State *L, int index,
+                                       const char *name, double fallback) {
+  double value;
+  index = lua_absindex(L, index);
+  value = fallback;
+  lua_getfield(L, index, name);
+  if (!lua_isnil(L, -1)) {
+    value = (double)luaL_checknumber(L, -1);
+  }
+  lua_pop(L, 1);
+  return value;
+}
+
 static size_t cai_lua_opt_size_field(lua_State *L, int index, const char *name,
                                      size_t fallback) {
   lua_Integer n;
@@ -1272,6 +1285,51 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
       L, index, "history_memory_limit", config->history_memory_limit);
   config->history_spool_dir = cai_lua_opt_string_field(
       L, index, "history_spool_dir", config->history_spool_dir);
+  lua_getfield(L, index, "session_usage_limits");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TTABLE);
+    config->session_usage_limits.max_input_tokens =
+        cai_lua_opt_ll_field(L, -1, "max_input_tokens",
+                             config->session_usage_limits.max_input_tokens);
+    config->session_usage_limits.max_input_cached_tokens = cai_lua_opt_ll_field(
+        L, -1, "max_input_cached_tokens",
+        config->session_usage_limits.max_input_cached_tokens);
+    config->session_usage_limits.max_output_tokens =
+        cai_lua_opt_ll_field(L, -1, "max_output_tokens",
+                             config->session_usage_limits.max_output_tokens);
+    config->session_usage_limits.max_output_reasoning_tokens =
+        cai_lua_opt_ll_field(
+            L, -1, "max_output_reasoning_tokens",
+            config->session_usage_limits.max_output_reasoning_tokens);
+    config->session_usage_limits.max_total_tokens =
+        cai_lua_opt_ll_field(L, -1, "max_total_tokens",
+                             config->session_usage_limits.max_total_tokens);
+    config->session_usage_limits.max_spend_usd = cai_lua_opt_double_field(
+        L, -1, "max_spend_usd", config->session_usage_limits.max_spend_usd);
+  }
+  lua_pop(L, 1);
+}
+
+static void cai_lua_usage_limits_from_table(lua_State *L, int index,
+                                            cai_usage_limits *limits) {
+  index = lua_absindex(L, index);
+  cai_usage_limits_init(limits);
+  if (lua_isnil(L, index)) {
+    return;
+  }
+  luaL_checktype(L, index, LUA_TTABLE);
+  limits->max_input_tokens =
+      cai_lua_opt_ll_field(L, index, "max_input_tokens", 0LL);
+  limits->max_input_cached_tokens =
+      cai_lua_opt_ll_field(L, index, "max_input_cached_tokens", 0LL);
+  limits->max_output_tokens =
+      cai_lua_opt_ll_field(L, index, "max_output_tokens", 0LL);
+  limits->max_output_reasoning_tokens =
+      cai_lua_opt_ll_field(L, index, "max_output_reasoning_tokens", 0LL);
+  limits->max_total_tokens =
+      cai_lua_opt_ll_field(L, index, "max_total_tokens", 0LL);
+  limits->max_spend_usd =
+      cai_lua_opt_double_field(L, index, "max_spend_usd", 0.0);
 }
 
 static int cai_lua_open(lua_State *L) {
@@ -1312,6 +1370,11 @@ static int cai_lua_open(lua_State *L) {
         L, 1, "insecure_skip_verify", config.insecure_skip_verify);
     config.json_response_limit_bytes = cai_lua_opt_size_field(
         L, 1, "json_response_limit_bytes", config.json_response_limit_bytes);
+    lua_getfield(L, 1, "usage_limits");
+    if (!lua_isnil(L, -1)) {
+      cai_lua_usage_limits_from_table(L, -1, &config.usage_limits);
+    }
+    lua_pop(L, 1);
     chatgpt_auth_json =
         cai_lua_opt_string_field(L, 1, "chatgpt_auth_json", NULL);
     chatgpt_auth_enabled =
@@ -2094,6 +2157,49 @@ static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage) {
   return 1;
 }
 
+static int cai_lua_push_accounting(lua_State *L,
+                                   const cai_usage_accounting *accounting) {
+  lua_newtable(L);
+  cai_lua_push_usage(L, &accounting->usage);
+  lua_setfield(L, -2, "usage");
+  lua_pushnumber(L, accounting->estimated_spend_usd);
+  lua_setfield(L, -2, "estimated_spend_usd");
+  lua_pushboolean(L, accounting->limit_exceeded != 0);
+  lua_setfield(L, -2, "limit_exceeded");
+  return 1;
+}
+
+static int cai_lua_client_set_usage_limits(lua_State *L) {
+  cai_lua_client *self;
+  cai_usage_limits limits;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_client(L, 1);
+  cai_lua_usage_limits_from_table(L, 2, &limits);
+  cai_error_init(&error);
+  rc = cai_client_set_usage_limits(self->ptr, &limits, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_client_usage(lua_State *L) {
+  cai_lua_client *self;
+  cai_usage_accounting accounting;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_client(L, 1);
+  cai_usage_accounting_init(&accounting);
+  cai_error_init(&error);
+  rc = cai_client_usage(self->ptr, &accounting, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_accounting(L, &accounting);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_last_usage(lua_State *L) {
   cai_lua_agent *self;
   cai_token_usage usage;
@@ -2106,6 +2212,37 @@ static int cai_lua_agent_last_usage(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_usage(L, &usage);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_set_session_usage_limits(lua_State *L) {
+  cai_lua_agent *self;
+  cai_usage_limits limits;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent(L, 1);
+  cai_lua_usage_limits_from_table(L, 2, &limits);
+  cai_error_init(&error);
+  rc = cai_agent_set_session_usage_limits(self->ptr, &limits, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_usage(lua_State *L) {
+  cai_lua_agent *self;
+  cai_usage_accounting accounting;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent(L, 1);
+  cai_usage_accounting_init(&accounting);
+  cai_error_init(&error);
+  rc = cai_agent_usage(self->ptr, &accounting, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_accounting(L, &accounting);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -3354,6 +3491,56 @@ static int cai_lua_session_last_usage(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_usage(L, &usage);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_session_set_usage_limits(lua_State *L) {
+  cai_lua_session *self;
+  cai_usage_limits limits;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_session(L, 1);
+  cai_lua_usage_limits_from_table(L, 2, &limits);
+  cai_error_init(&error);
+  rc = cai_session_set_usage_limits(self->ptr, &limits, &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_usage(lua_State *L) {
+  cai_lua_session *self;
+  cai_usage_accounting accounting;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_session(L, 1);
+  cai_usage_accounting_init(&accounting);
+  cai_error_init(&error);
+  rc = cai_session_usage(self->ptr, &accounting, &error);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_accounting(L, &accounting);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_session_close_with_usage(lua_State *L) {
+  cai_lua_session *self;
+  cai_usage_accounting accounting;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_session(L, 1);
+  cai_usage_accounting_init(&accounting);
+  cai_error_init(&error);
+  rc = cai_session_close_with_usage(self->ptr, &accounting, &error);
+  self->ptr = NULL;
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_accounting(L, &accounting);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -5733,6 +5920,8 @@ static const luaL_Reg cai_lua_client_methods[] = {
     {"create_conversation_items", cai_lua_client_create_conversation_items},
     {"retrieve_conversation_item", cai_lua_client_retrieve_conversation_item},
     {"delete_conversation_item", cai_lua_client_delete_conversation_item},
+    {"set_usage_limits", cai_lua_client_set_usage_limits},
+    {"usage", cai_lua_client_usage},
     {"close", cai_lua_client_close},
     {NULL, NULL}};
 
@@ -5754,6 +5943,8 @@ static const luaL_Reg cai_lua_agent_methods[] = {
     {"stream_text", cai_lua_agent_stream_text},
     {"stream", cai_lua_agent_stream},
     {"last_usage", cai_lua_agent_last_usage},
+    {"set_session_usage_limits", cai_lua_agent_set_session_usage_limits},
+    {"usage", cai_lua_agent_usage},
     {"context_percent", cai_lua_agent_context_percent},
     {"register_raw_tool", cai_lua_agent_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_agent_register_raw_spooled_tool},
@@ -5788,6 +5979,9 @@ static const luaL_Reg cai_lua_session_methods[] = {
     {"stream", cai_lua_session_stream},
     {"stream_text", cai_lua_session_stream_text},
     {"last_usage", cai_lua_session_last_usage},
+    {"set_usage_limits", cai_lua_session_set_usage_limits},
+    {"usage", cai_lua_session_usage},
+    {"close_with_usage", cai_lua_session_close_with_usage},
     {"context", cai_lua_session_context},
     {"export_state", cai_lua_session_export_state},
     {"import_state", cai_lua_session_import_state},

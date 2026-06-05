@@ -707,6 +707,12 @@ if(CAI_BUILD_TESTS)
     http_delete_response
     http_count_response_input_tokens
     http_list_response_input_items
+    usage_accounting
+    usage_limits
+    usage_client_limits
+    usage_spend_limit
+    usage_stream_limits
+    usage_stream_missing_usage_limit
     http_mock_incomplete_request_timeout
     http_error_details
     agent_session

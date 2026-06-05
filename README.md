@@ -196,6 +196,32 @@ handling, and session state save/restore. See
   (default 1 MiB). Tool output can spill to disk with
   `tool_output_memory_limit` and can be hard-capped per auto-run with
   `tool_output_max_bytes`.
+- Clients and sessions can enforce cumulative token and estimated USD spend
+  budgets with `cai_usage_limits`. Zero leaves a limit unset. Client limits are
+  shared across all agents/sessions on that client; session limits are per
+  session and can be set directly or inherited from
+  `cai_agent_config.session_usage_limits`. A request that crosses a budget is
+  charged, returns `CAI_ERR_LIMIT`, and later requests are rejected before
+  transport until the limit is raised or disabled. Use `cai_client_usage`,
+  `cai_session_usage`, or `cai_session_close_with_usage` to report cumulative
+  token usage and estimated USD spend:
+
+  ```c
+  cai_usage_limits limits;
+  cai_usage_accounting spent;
+
+  cai_usage_limits_init(&limits);
+  limits.max_total_tokens = 100000;
+  limits.max_spend_usd = 5.00;
+  config.usage_limits = limits;
+
+  /* ... run one or more sessions ... */
+  cai_session_usage(session, &spent, &error);
+  ```
+
+  Lua exposes the same surface with `usage_limits` on `cai.open`,
+  `session_usage_limits` on `client:new_agent`, and `usage()` /
+  `set_usage_limits()` methods on clients and sessions.
 - Production SDK calls should choose a model explicitly.
 - Session auto-compaction is enabled by default and uses Responses
   server-side compaction.

@@ -7876,6 +7876,33 @@ static const char http_input_items_body[] =
     "\"assistant\"}],\"first_id\":\"msg_1\",\"last_id\":\"msg_2\","
     "\"has_more\":true}";
 
+static const char usage_body_one[] =
+    "{\"id\":\"resp_usage_1\",\"status\":\"completed\",\"output\":[{\"type\":"
+    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"usage "
+    "one\"}]}],\"usage\":{\"input_tokens\":10,\"input_tokens_details\":{"
+    "\"cached_tokens\":2},\"output_tokens\":5,\"output_tokens_details\":{"
+    "\"reasoning_tokens\":1},\"total_tokens\":15}}";
+
+static const char usage_body_two[] =
+    "{\"id\":\"resp_usage_2\",\"status\":\"completed\",\"output\":[{\"type\":"
+    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"usage "
+    "two\"}]}],\"usage\":{\"input_tokens\":20,\"input_tokens_details\":{"
+    "\"cached_tokens\":3},\"output_tokens\":7,\"output_tokens_details\":{"
+    "\"reasoning_tokens\":2},\"total_tokens\":27}}";
+
+static const char usage_body_small_two[] =
+    "{\"id\":\"resp_usage_2\",\"status\":\"completed\",\"output\":[{\"type\":"
+    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"usage "
+    "two\"}]}],\"usage\":{\"input_tokens\":6,\"output_tokens\":4,"
+    "\"total_tokens\":10}}";
+
+static const char usage_body_costly[] =
+    "{\"id\":\"resp_usage_costly\",\"status\":\"completed\",\"output\":[{"
+    "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+    "\"costly\"}]}],\"usage\":{\"input_tokens\":1000000,"
+    "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1000000,"
+    "\"total_tokens\":2000000}}";
+
 static void test_http_create_response(test_state *state) {
   cai_response_create_params *params;
   cai_response *response;
@@ -9465,6 +9492,466 @@ static void test_http_list_response_input_items(test_state *state) {
              cai_input_item_role(items, 1U), "assistant");
   cai_input_item_list_destroy(items);
   http_mock_client_close(state, "http_list_items_mock", &mock);
+}
+
+static void test_usage_accounting(test_state *state) {
+  static const char *first_required[] = {"POST /v1/responses", "usage one"};
+  static const char *second_required[] = {"POST /v1/responses", "usage two"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses", first_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_one},
+      {"POST /v1/responses", second_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_two}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_usage_accounting usage;
+  cai_usage_accounting closed_usage;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  if (http_mock_client_open_script(state, "usage_accounting_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+
+  expect_int(state, "usage_accounting_agent",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_accounting_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_accounting_add_one",
+             cai_session_add_user_text(session, "usage one", &error), CAI_OK);
+  expect_int(state, "usage_accounting_run_one",
+             cai_session_run(session, &response, &error), CAI_OK);
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "usage_accounting_add_two",
+             cai_session_add_user_text(session, "usage two", &error), CAI_OK);
+  expect_int(state, "usage_accounting_run_two",
+             cai_session_run(session, &response, &error), CAI_OK);
+  cai_response_destroy(response);
+  response = NULL;
+
+  expect_int(state, "usage_accounting_session_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "usage_accounting_input", usage.usage.input_tokens, 30L);
+  expect_int(state, "usage_accounting_cached", usage.usage.input_cached_tokens,
+             5L);
+  expect_int(state, "usage_accounting_output", usage.usage.output_tokens, 12L);
+  expect_int(state, "usage_accounting_reasoning",
+             usage.usage.output_reasoning_tokens, 3L);
+  expect_int(state, "usage_accounting_total", usage.usage.total_tokens, 42L);
+  if (usage.estimated_spend_usd <= 0.0) {
+    test_fail(state, "usage_accounting_spend", "spend estimate not positive");
+  }
+  expect_int(state, "usage_accounting_client_usage",
+             cai_client_usage(mock.client, &closed_usage, &error), CAI_OK);
+  expect_int(state, "usage_accounting_client_total",
+             closed_usage.usage.total_tokens, 42L);
+  expect_int(state, "usage_accounting_close",
+             cai_session_close_with_usage(session, &closed_usage, &error),
+             CAI_OK);
+  session = NULL;
+  expect_int(state, "usage_accounting_close_total",
+             closed_usage.usage.total_tokens, 42L);
+
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "usage_accounting_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_usage_limits(test_state *state) {
+  static const char *first_required[] = {"POST /v1/responses", "limit one"};
+  static const char *second_required[] = {"POST /v1/responses", "limit two"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses", first_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_one},
+      {"POST /v1/responses", second_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_small_two}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_usage_accounting usage;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  if (http_mock_client_open_script(state, "usage_limits_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_usage_limits_init(&limits);
+  limits.max_total_tokens = 20LL;
+
+  expect_int(state, "usage_limits_agent",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_limits_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_limits_set",
+             cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+  expect_int(state, "usage_limits_add_one",
+             cai_session_add_user_text(session, "limit one", &error), CAI_OK);
+  expect_int(state, "usage_limits_run_one",
+             cai_session_run(session, &response, &error), CAI_OK);
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "usage_limits_add_two",
+             cai_session_add_user_text(session, "limit two", &error), CAI_OK);
+  expect_int(state, "usage_limits_run_two",
+             cai_session_run(session, &response, &error), CAI_ERR_LIMIT);
+  expect_str(state, "usage_limits_error", error.message,
+             "configured usage or spend limit exceeded");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "usage_limits_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "usage_limits_total", usage.usage.total_tokens, 25L);
+  expect_int(state, "usage_limits_exceeded", usage.limit_exceeded, 1L);
+  expect_int(state, "usage_limits_preflight",
+             cai_session_run(session, &response, &error), CAI_ERR_LIMIT);
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "usage_limits_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_usage_client_limits(test_state *state) {
+  static const char *first_required[] = {"POST /v1/responses", "client one"};
+  static const char *second_required[] = {"POST /v1/responses", "client two"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses", first_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_one},
+      {"POST /v1/responses", second_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_small_two}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_usage_accounting usage;
+  cai_agent *agent;
+  cai_session *first;
+  cai_session *second;
+  cai_response *response;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  first = NULL;
+  second = NULL;
+  response = NULL;
+  if (http_mock_client_open_script(state, "usage_client_limits_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_usage_limits_init(&limits);
+  limits.max_total_tokens = 20LL;
+  expect_int(state, "usage_client_limits_set",
+             cai_client_set_usage_limits(mock.client, &limits, &error), CAI_OK);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  expect_int(state, "usage_client_limits_agent",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_client_limits_first_session",
+             cai_agent_new_session(agent, &first, &error), CAI_OK);
+  expect_int(state, "usage_client_limits_second_session",
+             cai_agent_new_session(agent, &second, &error), CAI_OK);
+  expect_int(state, "usage_client_limits_add_first",
+             cai_session_add_user_text(first, "client one", &error), CAI_OK);
+  expect_int(state, "usage_client_limits_run_first",
+             cai_session_run(first, &response, &error), CAI_OK);
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "usage_client_limits_add_second",
+             cai_session_add_user_text(second, "client two", &error), CAI_OK);
+  expect_int(state, "usage_client_limits_run_second",
+             cai_session_run(second, &response, &error), CAI_ERR_LIMIT);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "usage_client_limits_usage",
+             cai_client_usage(mock.client, &usage, &error), CAI_OK);
+  expect_int(state, "usage_client_limits_total", usage.usage.total_tokens, 25L);
+  expect_int(state, "usage_client_limits_exceeded", usage.limit_exceeded, 1L);
+  expect_int(state, "usage_client_limits_add_preflight",
+             cai_session_add_user_text(first, "client blocked", &error),
+             CAI_OK);
+  expect_int(state, "usage_client_limits_preflight",
+             cai_session_run(first, &response, &error), CAI_ERR_LIMIT);
+
+  cai_session_destroy(first);
+  cai_session_destroy(second);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "usage_client_limits_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_usage_spend_limit(test_state *state) {
+  static const char *required[] = {"POST /v1/responses", "costly"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses", required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_costly}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_usage_accounting usage;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  if (http_mock_client_open_script(state, "usage_spend_limit_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_usage_limits_init(&limits);
+  limits.max_spend_usd = 0.000001;
+
+  expect_int(state, "usage_spend_limit_agent",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_spend_limit_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_spend_limit_set",
+             cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+  expect_int(state, "usage_spend_limit_add",
+             cai_session_add_user_text(session, "costly", &error), CAI_OK);
+  expect_int(state, "usage_spend_limit_run",
+             cai_session_run(session, &response, &error), CAI_ERR_LIMIT);
+  expect_int(state, "usage_spend_limit_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "usage_spend_limit_exceeded", usage.limit_exceeded, 1L);
+  if (usage.estimated_spend_usd <= limits.max_spend_usd) {
+    test_fail(state, "usage_spend_limit_value", "spend limit not exceeded");
+  }
+
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "usage_spend_limit_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_usage_stream_limits(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_usage_accounting usage;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "usage_stream_limits_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "usage_stream_limits_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "usage_stream_limits_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_usage_limits_init(&limits);
+  limits.max_total_tokens = 12LL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "usage_stream_limits_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "usage_stream_limits_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_stream_limits_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_stream_limits_set",
+             cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+  expect_int(state, "usage_stream_limits_add",
+             cai_session_add_user_text(session, "session stream one", &error),
+             CAI_OK);
+  expect_int(state, "usage_stream_limits_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "usage_stream_limits_run",
+             cai_session_stream_text(session, sink, &error), CAI_ERR_LIMIT);
+  expect_str(state, "usage_stream_limits_text", writer.buffer, "one");
+  expect_int(state, "usage_stream_limits_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "usage_stream_limits_total", usage.usage.total_tokens, 13L);
+  expect_int(state, "usage_stream_limits_exceeded", usage.limit_exceeded, 1L);
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "usage_stream_limits_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "usage_stream_limits_mock", "mock child failed");
+  }
+}
+
+static void test_usage_stream_missing_usage_limit(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "usage_stream_missing_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "usage_stream_missing_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "usage_stream_missing_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_usage_limits_init(&limits);
+  limits.max_total_tokens = 100LL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "usage_stream_missing_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "usage_stream_missing_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "usage_stream_missing_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "usage_stream_missing_set",
+             cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+  expect_int(state, "usage_stream_missing_add",
+             cai_session_add_user_text(
+                 session, "session stream missing retrieve", &error),
+             CAI_OK);
+  expect_int(state, "usage_stream_missing_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "usage_stream_missing_run",
+             cai_session_stream_text(session, sink, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "usage_stream_missing_error", error.message,
+             "response usage is required when usage limits are enabled");
+  expect_str(state, "usage_stream_missing_text", writer.buffer, "four");
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "usage_stream_missing_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "usage_stream_missing_mock", "mock child failed");
+  }
 }
 
 static void test_http_mock_incomplete_request_timeout(test_state *state) {
@@ -17712,6 +18199,12 @@ static const test_entry test_entries[] = {
     {"http_delete_response", test_http_delete_response},
     {"http_count_response_input_tokens", test_http_count_response_input_tokens},
     {"http_list_response_input_items", test_http_list_response_input_items},
+    {"usage_accounting", test_usage_accounting},
+    {"usage_limits", test_usage_limits},
+    {"usage_client_limits", test_usage_client_limits},
+    {"usage_spend_limit", test_usage_spend_limit},
+    {"usage_stream_limits", test_usage_stream_limits},
+    {"usage_stream_missing_usage_limit", test_usage_stream_missing_usage_limit},
     {"http_mock_incomplete_request_timeout",
      test_http_mock_incomplete_request_timeout},
     {"http_error_details", test_http_error_details},

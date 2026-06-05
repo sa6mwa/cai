@@ -71,7 +71,9 @@ typedef enum cai_status {
   /** Server returned an error response. */
   CAI_ERR_SERVER = 5,
   /** Operation was cancelled. */
-  CAI_ERR_CANCELLED = 6
+  CAI_ERR_CANCELLED = 6,
+  /** Configured usage or spend budget was exceeded. */
+  CAI_ERR_LIMIT = 7
 } cai_status;
 
 /** Detailed error information populated by failing cai APIs. */
@@ -122,6 +124,46 @@ typedef struct cai_allocator {
 /** Environment variable name for OpenRouter API keys. */
 #define CAI_OPENROUTER_API_KEY_ENV "OPENROUTER_API_KEY"
 
+/** Token usage counters reported by Responses. */
+typedef struct cai_token_usage {
+  /** Input tokens charged for the request. */
+  long long input_tokens;
+  /** Input tokens served from prompt cache. */
+  long long input_cached_tokens;
+  /** Output tokens produced by the model. */
+  long long output_tokens;
+  /** Output tokens attributed to reasoning. */
+  long long output_reasoning_tokens;
+  /** Total tokens reported by the API. */
+  long long total_tokens;
+} cai_token_usage;
+
+/** Cumulative token and USD spend limits; zero means unset. */
+typedef struct cai_usage_limits {
+  /** Maximum cumulative input tokens; zero disables this limit. */
+  long long max_input_tokens;
+  /** Maximum cumulative cached input tokens; zero disables this limit. */
+  long long max_input_cached_tokens;
+  /** Maximum cumulative output tokens; zero disables this limit. */
+  long long max_output_tokens;
+  /** Maximum cumulative output reasoning tokens; zero disables this limit. */
+  long long max_output_reasoning_tokens;
+  /** Maximum cumulative total tokens; zero disables this limit. */
+  long long max_total_tokens;
+  /** Maximum estimated cumulative spend in USD; zero disables this limit. */
+  double max_spend_usd;
+} cai_usage_limits;
+
+/** Cumulative usage and estimated USD spend recorded by a client or session. */
+typedef struct cai_usage_accounting {
+  /** Cumulative token usage. */
+  cai_token_usage usage;
+  /** Cumulative estimated spend in USD using cai's model price table. */
+  double estimated_spend_usd;
+  /** Non-zero once a configured limit has been exceeded. */
+  int limit_exceeded;
+} cai_usage_accounting;
+
 /** Configuration for opening a cai client. */
 typedef struct cai_client_config {
   /** API key string; when NULL cai looks at api_key_env. */
@@ -151,6 +193,8 @@ typedef struct cai_client_config {
   int logger_disabled;
   /** Optional ChatGPT OAuth auth session; when set, supplies bearer tokens. */
   cai_chatgpt_auth *chatgpt_auth;
+  /** Optional cumulative usage and USD spend limits for the client. */
+  cai_usage_limits usage_limits;
   /** Optional custom allocator callbacks. */
   cai_allocator allocator;
 } cai_client_config;
@@ -210,6 +254,8 @@ typedef struct cai_agent_config {
   size_t history_memory_limit;
   /** Optional local history spool directory. */
   const char *history_spool_dir;
+  /** Optional usage and USD spend limits inherited by new sessions. */
+  cai_usage_limits session_usage_limits;
 } cai_agent_config;
 
 /** Low text verbosity setting for supported models. */
@@ -352,20 +398,6 @@ typedef struct cai_run_options {
   void *tool_event_context;
 } cai_run_options;
 
-/** Token usage counters reported by Responses. */
-typedef struct cai_token_usage {
-  /** Input tokens charged for the request. */
-  long long input_tokens;
-  /** Input tokens served from prompt cache. */
-  long long input_cached_tokens;
-  /** Output tokens produced by the model. */
-  long long output_tokens;
-  /** Output tokens attributed to reasoning. */
-  long long output_reasoning_tokens;
-  /** Total tokens reported by the API. */
-  long long total_tokens;
-} cai_token_usage;
-
 /** Source read callback. Returns bytes read, 0 for EOF or error. */
 typedef size_t (*cai_source_read_fn)(void *context, void *buffer, size_t count,
                                      cai_error *error);
@@ -495,6 +527,12 @@ struct cai_client {
   /** Create a new server-side conversation. */
   int (*create_conversation)(cai_client *client, cai_conversation **out,
                              cai_error *error);
+  /** Replace cumulative usage and USD spend limits for this client. */
+  int (*set_usage_limits)(cai_client *client, const cai_usage_limits *limits,
+                          cai_error *error);
+  /** Return cumulative usage and estimated USD spend for this client. */
+  int (*usage)(const cai_client *client, cai_usage_accounting *out,
+               cai_error *error);
   /** Close and destroy the client. */
   void (*close)(cai_client *client);
   /** Private implementation pointer; do not access directly. */
@@ -588,6 +626,13 @@ struct cai_agent {
   /** Return last recorded usage for the implicit session. */
   int (*last_usage)(const cai_agent *agent, cai_token_usage *out,
                     cai_error *error);
+  /** Replace usage and USD spend limits inherited by new sessions. */
+  int (*set_session_usage_limits)(cai_agent *agent,
+                                  const cai_usage_limits *limits,
+                                  cai_error *error);
+  /** Return cumulative usage for the implicit session. */
+  int (*usage)(const cai_agent *agent, cai_usage_accounting *out,
+               cai_error *error);
   /** Return estimated context-window percentage for the implicit session. */
   int (*context_percent)(const cai_agent *agent, double *out, cai_error *error);
   /** Close and destroy the agent. */
@@ -666,6 +711,15 @@ struct cai_session {
   /** Return last recorded usage for the session. */
   int (*last_usage)(const cai_session *session, cai_token_usage *out,
                     cai_error *error);
+  /** Replace cumulative usage and USD spend limits for this session. */
+  int (*set_usage_limits)(cai_session *session, const cai_usage_limits *limits,
+                          cai_error *error);
+  /** Return cumulative usage and estimated USD spend for this session. */
+  int (*usage)(const cai_session *session, cai_usage_accounting *out,
+               cai_error *error);
+  /** Return cumulative usage while closing and destroying the session. */
+  int (*close_with_usage)(cai_session *session, cai_usage_accounting *out,
+                          cai_error *error);
   /** Return the model context window in tokens, or zero if unknown. */
   long long (*context_window_tokens)(const cai_session *session);
   /** Return the configured auto-compaction token threshold. */
@@ -738,6 +792,10 @@ struct cai_tool_schema {
 
 /** Initialize client config with default values. */
 void cai_client_config_init(cai_client_config *config);
+/** Initialize usage limits with all limits disabled. */
+void cai_usage_limits_init(cai_usage_limits *limits);
+/** Initialize usage accounting with zero usage and spend. */
+void cai_usage_accounting_init(cai_usage_accounting *accounting);
 /** Configure a client config to use OpenRouter defaults. */
 void cai_client_config_use_openrouter(cai_client_config *config);
 /** Explicitly load one API key from a dotenv-formatted file. */
@@ -750,6 +808,13 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
 /** Close and destroy a cai client. */
 void cai_client_close(cai_client *client);
+/** Replace cumulative usage and USD spend limits for a client. */
+int cai_client_set_usage_limits(cai_client *client,
+                                const cai_usage_limits *limits,
+                                cai_error *error);
+/** Return cumulative usage and estimated USD spend for a client. */
+int cai_client_usage(const cai_client *client, cai_usage_accounting *out,
+                     cai_error *error);
 
 /** Initialize agent config with default values. */
 void cai_agent_config_init(cai_agent_config *config);
@@ -758,6 +823,13 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          cai_agent **out, cai_error *error);
 /** Destroy an agent. */
 void cai_agent_destroy(cai_agent *agent);
+/** Replace usage and USD spend limits inherited by new agent sessions. */
+int cai_agent_set_session_usage_limits(cai_agent *agent,
+                                       const cai_usage_limits *limits,
+                                       cai_error *error);
+/** Return cumulative usage for the agent's implicit session. */
+int cai_agent_usage(const cai_agent *agent, cai_usage_accounting *out,
+                    cai_error *error);
 /** Register a typed lonejson-backed tool on an agent. */
 int cai_agent_register_tool(cai_agent *agent, const char *name,
                             const char *description,
@@ -806,6 +878,9 @@ int cai_agent_new_session_for_conversation(cai_agent *agent,
                                            cai_session **out, cai_error *error);
 /** Destroy a session. */
 void cai_session_destroy(cai_session *session);
+/** Return cumulative usage while closing and destroying a session. */
+int cai_session_close_with_usage(cai_session *session,
+                                 cai_usage_accounting *out, cai_error *error);
 /** Bind a session to a server-side conversation id. */
 int cai_session_set_conversation_id(cai_session *session,
                                     const char *conversation_id,
@@ -888,6 +963,13 @@ int cai_session_send_text(cai_session *session, const char *text,
 /** Return last recorded token usage for the session. */
 int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
                            cai_error *error);
+/** Replace cumulative usage and USD spend limits for a session. */
+int cai_session_set_usage_limits(cai_session *session,
+                                 const cai_usage_limits *limits,
+                                 cai_error *error);
+/** Return cumulative usage and estimated USD spend for a session. */
+int cai_session_usage(const cai_session *session, cai_usage_accounting *out,
+                      cai_error *error);
 /** Return the model context window in tokens, or zero if unknown. */
 long long cai_session_context_window_tokens(const cai_session *session);
 /** Return the configured auto-compaction token threshold. */

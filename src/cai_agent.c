@@ -130,6 +130,15 @@ static int cai_session_init_response_params(cai_session *session,
 static int cai_session_remember_response_id(cai_session *session,
                                             const char *response_id,
                                             cai_error *error);
+static int cai_session_set_last_usage(cai_session *session,
+                                      const cai_token_usage *usage,
+                                      cai_error *error);
+static int cai_session_record_usage(cai_session *session,
+                                    const cai_token_usage *usage,
+                                    cai_error *error);
+static int cai_session_check_usage_available(cai_session *session,
+                                             cai_error *error);
+static int cai_session_usage_limits_enabled(cai_session *session);
 static int cai_session_remember_stream(cai_session *session,
                                        const char *response_id,
                                        const cai_token_usage *usage,
@@ -178,6 +187,11 @@ static int cai_agent_send_text(cai_agent *agent, const char *text,
                                cai_response **out, cai_error *error);
 static int cai_agent_last_usage(const cai_agent *agent, cai_token_usage *out,
                                 cai_error *error);
+int cai_agent_set_session_usage_limits(cai_agent *agent,
+                                       const cai_usage_limits *limits,
+                                       cai_error *error);
+int cai_agent_usage(const cai_agent *agent, cai_usage_accounting *out,
+                    cai_error *error);
 static int cai_agent_context_percent(const cai_agent *agent, double *out,
                                      cai_error *error);
 static void cai_agent_init_methods(cai_agent *agent);
@@ -257,6 +271,74 @@ static int cai_run_options_open_tool_output_runtime(
   return cai_lonejson_runtime_open(&config, out_runtime, error);
 }
 
+static void cai_token_usage_add(cai_token_usage *total,
+                                const cai_token_usage *usage) {
+  if (total == NULL || usage == NULL) {
+    return;
+  }
+  total->input_tokens += usage->input_tokens;
+  total->input_cached_tokens += usage->input_cached_tokens;
+  total->output_tokens += usage->output_tokens;
+  total->output_reasoning_tokens += usage->output_reasoning_tokens;
+  total->total_tokens += usage->total_tokens;
+}
+
+static int cai_usage_limits_active(const cai_usage_limits *limits) {
+  return limits != NULL &&
+         (limits->max_input_tokens > 0LL ||
+          limits->max_input_cached_tokens > 0LL ||
+          limits->max_output_tokens > 0LL ||
+          limits->max_output_reasoning_tokens > 0LL ||
+          limits->max_total_tokens > 0LL || limits->max_spend_usd > 0.0);
+}
+
+static int cai_usage_accounting_exceeds(const cai_usage_accounting *usage,
+                                        const cai_usage_limits *limits) {
+  if (usage == NULL || !cai_usage_limits_active(limits)) {
+    return 0;
+  }
+  return (limits->max_input_tokens > 0LL &&
+          usage->usage.input_tokens > limits->max_input_tokens) ||
+         (limits->max_input_cached_tokens > 0LL &&
+          usage->usage.input_cached_tokens > limits->max_input_cached_tokens) ||
+         (limits->max_output_tokens > 0LL &&
+          usage->usage.output_tokens > limits->max_output_tokens) ||
+         (limits->max_output_reasoning_tokens > 0LL &&
+          usage->usage.output_reasoning_tokens >
+              limits->max_output_reasoning_tokens) ||
+         (limits->max_total_tokens > 0LL &&
+          usage->usage.total_tokens > limits->max_total_tokens) ||
+         (limits->max_spend_usd > 0.0 &&
+          usage->estimated_spend_usd > limits->max_spend_usd);
+}
+
+static int cai_usage_limits_error(cai_error *error) {
+  return cai_set_error(error, CAI_ERR_LIMIT,
+                       "configured usage or spend limit exceeded");
+}
+
+static int cai_usage_limits_preflight(const cai_usage_accounting *usage,
+                                      const cai_usage_limits *limits,
+                                      cai_error *error) {
+  if (usage != NULL && usage->limit_exceeded) {
+    return cai_usage_limits_error(error);
+  }
+  if (cai_usage_accounting_exceeds(usage, limits)) {
+    return cai_usage_limits_error(error);
+  }
+  return CAI_OK;
+}
+
+static void cai_usage_accounting_add(cai_usage_accounting *total,
+                                     const cai_token_usage *usage,
+                                     double estimated_spend_usd) {
+  if (total == NULL || usage == NULL) {
+    return;
+  }
+  cai_token_usage_add(&total->usage, usage);
+  total->estimated_spend_usd += estimated_spend_usd;
+}
+
 void cai_run_options_init(cai_run_options *options) {
   if (options == NULL) {
     return;
@@ -269,6 +351,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   cai_agent *agent;
   cai_agent_impl *impl;
   cai_client_impl *client_impl;
+  int rc;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -291,6 +374,10 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   if (config->max_tool_calls < 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "max tool calls must not be negative");
+  }
+  rc = cai_usage_limits_validate(&config->session_usage_limits, error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   agent = (cai_agent *)cai_alloc(&client_impl->allocator, sizeof(*agent));
   if (agent == NULL) {
@@ -378,6 +465,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                                    : 128U * 1024U;
   impl->history_spool_dir =
       cai_strdup(&client_impl->allocator, config->history_spool_dir);
+  impl->session_usage_limits = config->session_usage_limits;
   impl->history_runtime = NULL;
   impl->hosted_tools.items = NULL;
   impl->hosted_tools.count = 0U;
@@ -702,6 +790,8 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->conversation_id = NULL;
   memset(&impl->last_usage, 0, sizeof(impl->last_usage));
   impl->has_last_usage = 0;
+  impl->usage_limits = agent_impl->session_usage_limits;
+  cai_usage_accounting_init(&impl->usage);
   agent_impl->history_runtime->spooled_init(agent_impl->history_runtime,
                                             &impl->history);
   impl->inputs = NULL;
@@ -1461,8 +1551,7 @@ static int cai_session_after_stream_tool_calls(
   has_output_items = 0;
   rc = cai_session_remember_response_id(session, response_id, error);
   if (rc == CAI_OK && !cai_token_usage_is_empty(usage)) {
-    CAI_SESSION_IMPL(session)->last_usage = *usage;
-    CAI_SESSION_IMPL(session)->has_last_usage = 1;
+    rc = cai_session_record_usage(session, usage, error);
   }
   if (rc == CAI_OK && !CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     return rc;
@@ -2415,23 +2504,109 @@ static int cai_session_remember_response(cai_session *session,
                                          const cai_response *response,
                                          cai_error *error) {
   int rc;
+  cai_token_usage usage;
 
   rc = cai_session_remember_response_id(session, cai_response_id(response),
                                         error);
   if (rc == CAI_OK && response != NULL) {
-    CAI_SESSION_IMPL(session)->last_usage.input_tokens =
-        cai_response_input_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens =
-        cai_response_input_cached_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.output_tokens =
-        cai_response_output_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens =
+    memset(&usage, 0, sizeof(usage));
+    usage.input_tokens = cai_response_input_tokens(response);
+    usage.input_cached_tokens = cai_response_input_cached_tokens(response);
+    usage.output_tokens = cai_response_output_tokens(response);
+    usage.output_reasoning_tokens =
         cai_response_output_reasoning_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.total_tokens =
-        cai_response_total_tokens(response);
-    CAI_SESSION_IMPL(session)->has_last_usage = 1;
+    usage.total_tokens = cai_response_total_tokens(response);
+    rc = cai_session_record_usage(session, &usage, error);
   }
   return rc;
+}
+
+static int cai_session_set_last_usage(cai_session *session,
+                                      const cai_token_usage *usage,
+                                      cai_error *error) {
+  if (session == NULL || usage == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and usage are required");
+  }
+  CAI_SESSION_IMPL(session)->last_usage = *usage;
+  CAI_SESSION_IMPL(session)->has_last_usage = 1;
+  return CAI_OK;
+}
+
+static int cai_session_record_usage(cai_session *session,
+                                    const cai_token_usage *usage,
+                                    cai_error *error) {
+  cai_client_impl *client_impl;
+  cai_agent_impl *agent_impl;
+  double estimated_spend_usd;
+
+  if (session == NULL || usage == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session and usage are required");
+  }
+  if (cai_token_usage_is_empty(usage) &&
+      (cai_usage_limits_active(&CAI_SESSION_IMPL(session)->usage_limits) ||
+       cai_usage_limits_active(
+           &CAI_SESSION_CLIENT_IMPL(session)->usage_limits))) {
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "response usage is required when usage limits are enabled");
+  }
+  if (cai_token_usage_is_empty(usage)) {
+    return CAI_OK;
+  }
+  agent_impl = CAI_SESSION_AGENT_IMPL(session);
+  client_impl = CAI_SESSION_CLIENT_IMPL(session);
+  estimated_spend_usd = cai_model_estimate_usage_usd(
+      agent_impl->model, usage->input_tokens, usage->input_cached_tokens,
+      usage->output_tokens);
+  cai_session_set_last_usage(session, usage, NULL);
+  cai_usage_accounting_add(&CAI_SESSION_IMPL(session)->usage, usage,
+                           estimated_spend_usd);
+  cai_usage_accounting_add(&client_impl->usage, usage, estimated_spend_usd);
+  if (cai_usage_accounting_exceeds(&CAI_SESSION_IMPL(session)->usage,
+                                   &CAI_SESSION_IMPL(session)->usage_limits)) {
+    CAI_SESSION_IMPL(session)->usage.limit_exceeded = 1;
+  }
+  if (cai_usage_accounting_exceeds(&client_impl->usage,
+                                   &client_impl->usage_limits)) {
+    client_impl->usage.limit_exceeded = 1;
+  }
+  if (CAI_SESSION_IMPL(session)->usage.limit_exceeded ||
+      client_impl->usage.limit_exceeded) {
+    return cai_usage_limits_error(error);
+  }
+  return CAI_OK;
+}
+
+static int cai_session_check_usage_available(cai_session *session,
+                                             cai_error *error) {
+  int rc;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  rc = cai_usage_limits_preflight(&CAI_SESSION_IMPL(session)->usage,
+                                  &CAI_SESSION_IMPL(session)->usage_limits,
+                                  error);
+  if (rc != CAI_OK) {
+    CAI_SESSION_IMPL(session)->usage.limit_exceeded = 1;
+    return rc;
+  }
+  rc = cai_usage_limits_preflight(
+      &CAI_SESSION_CLIENT_IMPL(session)->usage,
+      &CAI_SESSION_CLIENT_IMPL(session)->usage_limits, error);
+  if (rc != CAI_OK) {
+    CAI_SESSION_CLIENT_IMPL(session)->usage.limit_exceeded = 1;
+  }
+  return rc;
+}
+
+static int cai_session_usage_limits_enabled(cai_session *session) {
+  return session != NULL &&
+         (cai_usage_limits_active(&CAI_SESSION_IMPL(session)->usage_limits) ||
+          cai_usage_limits_active(
+              &CAI_SESSION_CLIENT_IMPL(session)->usage_limits));
 }
 
 static int cai_token_usage_is_empty(const cai_token_usage *usage) {
@@ -2506,6 +2681,9 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     if (rc == CAI_OK) {
       has_history_items = 0;
     }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
     rc = cai_http_response_params_request(
@@ -2616,8 +2794,7 @@ static int cai_session_after_stream(cai_session *session,
   }
   rc = cai_session_remember_response_id(session, response_id, error);
   if (rc == CAI_OK && !cai_token_usage_is_empty(usage)) {
-    CAI_SESSION_IMPL(session)->last_usage = *usage;
-    CAI_SESSION_IMPL(session)->has_last_usage = 1;
+    rc = cai_session_record_usage(session, usage, error);
   }
   if (rc == CAI_OK) {
     cai_error_init(&retrieve_error);
@@ -2625,23 +2802,30 @@ static int cai_session_after_stream(cai_session *session,
                                       response_id, &response, &retrieve_error);
     if (rc != CAI_OK) {
       cai_error_cleanup(&retrieve_error);
+      if (cai_token_usage_is_empty(usage) &&
+          cai_session_usage_limits_enabled(session)) {
+        rc = cai_set_error(
+            error, CAI_ERR_PROTOCOL,
+            "response usage is required when usage limits are enabled");
+        goto done;
+      }
       rc = CAI_OK;
       goto done;
     }
     cai_error_cleanup(&retrieve_error);
   }
   if (rc == CAI_OK && cai_token_usage_is_empty(usage)) {
-    CAI_SESSION_IMPL(session)->last_usage.input_tokens =
-        cai_response_input_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens =
+    cai_token_usage retrieved_usage;
+
+    memset(&retrieved_usage, 0, sizeof(retrieved_usage));
+    retrieved_usage.input_tokens = cai_response_input_tokens(response);
+    retrieved_usage.input_cached_tokens =
         cai_response_input_cached_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.output_tokens =
-        cai_response_output_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens =
+    retrieved_usage.output_tokens = cai_response_output_tokens(response);
+    retrieved_usage.output_reasoning_tokens =
         cai_response_output_reasoning_tokens(response);
-    CAI_SESSION_IMPL(session)->last_usage.total_tokens =
-        cai_response_total_tokens(response);
-    CAI_SESSION_IMPL(session)->has_last_usage = 1;
+    retrieved_usage.total_tokens = cai_response_total_tokens(response);
+    rc = cai_session_record_usage(session, &retrieved_usage, error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_output_items_spool(response, &output_items,
@@ -2698,9 +2882,7 @@ static int cai_session_remember_stream(cai_session *session,
     return rc;
   }
   if (!cai_token_usage_is_empty(usage)) {
-    CAI_SESSION_IMPL(session)->last_usage = *usage;
-    CAI_SESSION_IMPL(session)->has_last_usage = 1;
-    return CAI_OK;
+    return cai_session_record_usage(session, usage, error);
   }
   response = NULL;
   cai_error_init(&retrieve_error);
@@ -2708,6 +2890,11 @@ static int cai_session_remember_stream(cai_session *session,
                                     response_id, &response, &retrieve_error);
   if (rc != CAI_OK) {
     cai_error_cleanup(&retrieve_error);
+    if (cai_session_usage_limits_enabled(session)) {
+      return cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "response usage is required when usage limits are enabled");
+    }
     return CAI_OK;
   }
   cai_error_cleanup(&retrieve_error);
@@ -2735,6 +2922,10 @@ static int cai_session_create_response_from_params(
   int rc;
 
   response = NULL;
+  rc = cai_session_check_usage_available(session, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   rc = cai_client_create_response(CAI_SESSION_AGENT_IMPL(session)->client,
                                   params, &response, error);
   if (rc != CAI_OK) {
@@ -2970,6 +3161,9 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
   }
   if (rc == CAI_OK) {
+    rc = cai_session_check_usage_available(session, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_run_options_open_tool_output_runtime(options, &tool_output_runtime,
                                                   error);
   }
@@ -3082,18 +3276,11 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
   rounds = 0;
   while (rc == CAI_OK && cai_response_tool_call_count(current) > 0U &&
          rounds < cai_run_options_effective_max_tool_rounds(effective)) {
-    if (cai_session_remember_response(session, current, error) != CAI_OK) {
-      rc = error != NULL ? error->code : CAI_ERR_NOMEM;
-      break;
-    }
     next = NULL;
     rc = cai_session_run_tool_round(session, current, effective, &next, error);
     cai_response_destroy(current);
     current = next;
     rounds++;
-    if (rc == CAI_OK) {
-      rc = cai_session_remember_response(session, current, error);
-    }
   }
   if (rc != CAI_OK) {
     cai_response_destroy(current);
@@ -3192,6 +3379,9 @@ static int cai_session_stream_once(cai_session *session,
   if (rc == CAI_OK) {
     rc = cai_session_prepare_history_params(session, params, &pending_items,
                                             &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_stream_response_with_id(
@@ -3364,12 +3554,18 @@ static int cai_session_stream_tool_round(
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
   }
   if (rc == CAI_OK) {
+    rc = cai_session_check_usage_available(session, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_session_add_stream_tool_outputs(session, params, input_calls,
                                              options, error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_stream_response_with_id(
@@ -3500,6 +3696,9 @@ int cai_session_open_text_source(cai_session *session, cai_source **out,
                                             &has_pending_items, error);
   }
   if (rc == CAI_OK) {
+    rc = cai_session_check_usage_available(session, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_client_open_response_text_source_take_params(
         CAI_SESSION_AGENT_IMPL(session)->client, params,
         cai_session_stream_complete, session, out, error);
@@ -3549,6 +3748,59 @@ int cai_session_last_usage(const cai_session *session, cai_token_usage *out,
   }
   *out = CAI_SESSION_IMPL(session)->last_usage;
   return CAI_OK;
+}
+
+int cai_session_set_usage_limits(cai_session *session,
+                                 const cai_usage_limits *limits,
+                                 cai_error *error) {
+  cai_usage_limits empty;
+  int rc;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (limits == NULL) {
+    cai_usage_limits_init(&empty);
+    limits = &empty;
+  }
+  rc = cai_usage_limits_validate(limits, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  CAI_SESSION_IMPL(session)->usage_limits = *limits;
+  if (cai_usage_accounting_exceeds(&CAI_SESSION_IMPL(session)->usage,
+                                   &CAI_SESSION_IMPL(session)->usage_limits)) {
+    CAI_SESSION_IMPL(session)->usage.limit_exceeded = 1;
+  } else {
+    CAI_SESSION_IMPL(session)->usage.limit_exceeded = 0;
+  }
+  return CAI_OK;
+}
+
+int cai_session_usage(const cai_session *session, cai_usage_accounting *out,
+                      cai_error *error) {
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "usage accounting output pointer is required");
+  }
+  cai_usage_accounting_init(out);
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  *out = CAI_SESSION_IMPL(session)->usage;
+  return CAI_OK;
+}
+
+int cai_session_close_with_usage(cai_session *session,
+                                 cai_usage_accounting *out, cai_error *error) {
+  int rc;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  rc = cai_session_usage(session, out, error);
+  cai_session_destroy(session);
+  return rc;
 }
 
 long long cai_session_context_window_tokens(const cai_session *session) {
@@ -4243,6 +4495,8 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->open_text_source = cai_agent_open_text_source;
   agent->send_text = cai_agent_send_text;
   agent->last_usage = cai_agent_last_usage;
+  agent->set_session_usage_limits = cai_agent_set_session_usage_limits;
+  agent->usage = cai_agent_usage;
   agent->context_percent = cai_agent_context_percent;
   agent->close = cai_agent_destroy;
 }
@@ -4271,6 +4525,9 @@ static void cai_session_init_methods(cai_session *session) {
   session->open_text_source = cai_session_open_text_source;
   session->send_text = cai_session_send_text;
   session->last_usage = cai_session_last_usage;
+  session->set_usage_limits = cai_session_set_usage_limits;
+  session->usage = cai_session_usage;
+  session->close_with_usage = cai_session_close_with_usage;
   session->context_window_tokens = cai_session_context_window_tokens;
   session->auto_compact_token_limit = cai_session_auto_compact_token_limit;
   session->context_percent = cai_session_context_percent;
@@ -4529,6 +4786,60 @@ static int cai_agent_last_usage(const cai_agent *agent, cai_token_usage *out,
                          "agent has no default session usage");
   }
   return cai_session_last_usage(impl->default_session, out, error);
+}
+
+int cai_agent_set_session_usage_limits(cai_agent *agent,
+                                       const cai_usage_limits *limits,
+                                       cai_error *error) {
+  cai_agent_impl *impl;
+  cai_usage_limits empty;
+  int rc;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  if (limits == NULL) {
+    cai_usage_limits_init(&empty);
+    limits = &empty;
+  }
+  rc = cai_usage_limits_validate(limits, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  impl->session_usage_limits = *limits;
+  if (impl->default_session != NULL) {
+    rc = cai_session_set_usage_limits(impl->default_session, limits, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  return CAI_OK;
+}
+
+int cai_agent_usage(const cai_agent *agent, cai_usage_accounting *out,
+                    cai_error *error) {
+  const cai_agent_impl *impl;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "usage accounting output pointer is required");
+  }
+  cai_usage_accounting_init(out);
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  if (impl->default_session == NULL) {
+    return CAI_OK;
+  }
+  return cai_session_usage(impl->default_session, out, error);
 }
 
 static int cai_agent_context_percent(const cai_agent *agent, double *out,

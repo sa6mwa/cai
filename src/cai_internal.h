@@ -30,6 +30,8 @@ typedef struct cai_client_impl {
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;
   int logger_disabled;
+  cai_usage_limits usage_limits;
+  cai_usage_accounting usage;
   CURL *responses_ws_curl;
   struct curl_slist *responses_ws_headers;
 } cai_client_impl;
@@ -61,6 +63,7 @@ typedef struct cai_agent_impl {
   int local_history_enabled;
   size_t history_memory_limit;
   char *history_spool_dir;
+  cai_usage_limits session_usage_limits;
   lonejson *history_runtime;
   lonejson_object_array hosted_tools;
   cai_tool_registry *tools;
@@ -88,6 +91,8 @@ typedef struct cai_session_impl {
   char *conversation_id;
   cai_token_usage last_usage;
   int has_last_usage;
+  cai_usage_limits usage_limits;
+  cai_usage_accounting usage;
   lonejson_spooled history;
   cai_session_input *inputs;
   size_t input_count;
@@ -116,6 +121,7 @@ int cai_set_error_detail(cai_error *error, int code, const char *message,
 int cai_set_error_http(cai_error *error, int code, long http_status,
                        const char *message, const char *detail,
                        const char *server_code, const char *request_id);
+int cai_usage_limits_validate(const cai_usage_limits *limits, cai_error *error);
 
 int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, const char *env_name,

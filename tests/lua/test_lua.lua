@@ -122,10 +122,30 @@ assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
 
 do
   local registry = debug.getregistry()
+  local client_methods = assert(registry["cai.client"].__index,
+    "Lua client metatable")
+  local agent_methods = assert(registry["cai.agent"].__index,
+    "Lua agent metatable")
+  local session_methods = assert(registry["cai.session"].__index,
+    "Lua session metatable")
   local response_methods = assert(registry["cai.response"].__index,
     "Lua response metatable")
   local output_methods = assert(registry["cai.output"].__index,
     "Lua output metatable")
+  assert(type(client_methods.set_usage_limits) == "function",
+    "Lua client set_usage_limits method missing")
+  assert(type(client_methods.usage) == "function",
+    "Lua client usage method missing")
+  assert(type(agent_methods.set_session_usage_limits) == "function",
+    "Lua agent set_session_usage_limits method missing")
+  assert(type(agent_methods.usage) == "function",
+    "Lua agent usage method missing")
+  assert(type(session_methods.set_usage_limits) == "function",
+    "Lua session set_usage_limits method missing")
+  assert(type(session_methods.usage) == "function",
+    "Lua session usage method missing")
+  assert(type(session_methods.close_with_usage) == "function",
+    "Lua session close_with_usage method missing")
   for _, name in ipairs({
     "conversation_id",
     "created_at",
@@ -158,6 +178,14 @@ assert(model.context_window_tokens > 0)
 assert(model.auto_compact_token_limit > 0)
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
+assert_not_ok(dummy_client:set_usage_limits({ max_total_tokens = -1 }),
+  "negative Lua client usage limit must fail")
+do
+  local accounting = assert_ok(dummy_client:usage())
+  assert_eq(accounting.usage.total_tokens, 0, "Lua client usage total")
+  assert_eq(accounting.limit_exceeded, false, "Lua client limit flag")
+end
 assert_not_ok(dummy_client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   max_output_tokens = -1,
@@ -181,7 +209,15 @@ local dummy_agent = assert_ok(dummy_client:new_agent({
   instructions = "offline lua test",
   session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
   history_memory_limit = 128,
+  session_usage_limits = { max_total_tokens = 100 },
 }))
+assert_ok(dummy_agent:set_session_usage_limits({ max_total_tokens = 120 }))
+assert_not_ok(dummy_agent:set_session_usage_limits({ max_total_tokens = -1 }),
+  "negative Lua agent session usage limit must fail")
+do
+  local accounting = assert_ok(dummy_agent:usage())
+  assert_eq(accounting.usage.total_tokens, 0, "Lua agent usage total")
+end
 assert_ok(dummy_agent:add_simple_hosted_tool(cai.HOSTED_TOOL_WEB_SEARCH))
 assert_ok(dummy_agent:add_hosted_mcp_tool({
   server_label = "dice",
@@ -196,6 +232,21 @@ assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
 assert_not_ok(dummy_agent:add_user_text_spooled({ read = "not callable" }),
   "agent spooled reader with non-callable read must fail")
 local dummy_session = assert_ok(dummy_agent:new_session())
+assert_ok(dummy_session:set_usage_limits({
+  max_input_tokens = 10,
+  max_input_cached_tokens = 10,
+  max_output_tokens = 10,
+  max_output_reasoning_tokens = 10,
+  max_total_tokens = 100,
+  max_spend_usd = 1.0,
+}))
+assert_not_ok(dummy_session:set_usage_limits({ max_spend_usd = -1 }),
+  "negative Lua session spend limit must fail")
+do
+  local accounting = assert_ok(dummy_session:usage())
+  assert_eq(accounting.usage.total_tokens, 0, "Lua session usage total")
+  assert_eq(accounting.limit_exceeded, false, "Lua session limit flag")
+end
 assert_ok(dummy_session:set_previous_response_id("resp_lua_test"))
 assert_ok(dummy_session:set_conversation_id("conv_lua_test"))
 assert_not_ok(dummy_session:set_conversation_id(""),

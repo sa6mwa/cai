@@ -25,6 +25,20 @@ void cai_client_config_init(cai_client_config *config) {
   memset(config, 0, sizeof(*config));
 }
 
+void cai_usage_limits_init(cai_usage_limits *limits) {
+  if (limits == NULL) {
+    return;
+  }
+  memset(limits, 0, sizeof(*limits));
+}
+
+void cai_usage_accounting_init(cai_usage_accounting *accounting) {
+  if (accounting == NULL) {
+    return;
+  }
+  memset(accounting, 0, sizeof(*accounting));
+}
+
 void cai_client_config_use_openrouter(cai_client_config *config) {
   if (config == NULL) {
     return;
@@ -43,6 +57,41 @@ static int cai_allocator_is_empty(const cai_allocator *allocator) {
 static int cai_allocator_is_complete(const cai_allocator *allocator) {
   return allocator->malloc_fn != NULL && allocator->realloc_fn != NULL &&
          allocator->free_fn != NULL;
+}
+
+int cai_usage_limits_validate(const cai_usage_limits *limits,
+                              cai_error *error) {
+  if (limits == NULL) {
+    return CAI_OK;
+  }
+  if (limits->max_input_tokens < 0LL || limits->max_input_cached_tokens < 0LL ||
+      limits->max_output_tokens < 0LL ||
+      limits->max_output_reasoning_tokens < 0LL ||
+      limits->max_total_tokens < 0LL || limits->max_spend_usd < 0.0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "usage limits must not be negative");
+  }
+  return CAI_OK;
+}
+
+static int cai_client_usage_exceeds_limits(const cai_usage_accounting *usage,
+                                           const cai_usage_limits *limits) {
+  if (usage == NULL || limits == NULL) {
+    return 0;
+  }
+  return (limits->max_input_tokens > 0LL &&
+          usage->usage.input_tokens > limits->max_input_tokens) ||
+         (limits->max_input_cached_tokens > 0LL &&
+          usage->usage.input_cached_tokens > limits->max_input_cached_tokens) ||
+         (limits->max_output_tokens > 0LL &&
+          usage->usage.output_tokens > limits->max_output_tokens) ||
+         (limits->max_output_reasoning_tokens > 0LL &&
+          usage->usage.output_reasoning_tokens >
+              limits->max_output_reasoning_tokens) ||
+         (limits->max_total_tokens > 0LL &&
+          usage->usage.total_tokens > limits->max_total_tokens) ||
+         (limits->max_spend_usd > 0.0 &&
+          usage->estimated_spend_usd > limits->max_spend_usd);
 }
 
 static void cai_client_destroy_fields(cai_client_impl *impl) {
@@ -80,6 +129,10 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "custom allocator requires malloc, realloc, and free");
   }
+  rc = cai_usage_limits_validate(&effective->usage_limits, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   client = (cai_client *)cai_alloc(&effective->allocator, sizeof(*client));
   if (client == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate client");
@@ -105,6 +158,8 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->json_response_limit_bytes = effective->json_response_limit_bytes;
   impl->logger = effective->logger_disabled ? NULL : effective->logger;
   impl->logger_disabled = effective->logger_disabled;
+  impl->usage_limits = effective->usage_limits;
+  cai_usage_accounting_init(&impl->usage);
   impl->responses_ws_curl = NULL;
   impl->responses_ws_headers = NULL;
 
@@ -157,10 +212,60 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   }
   client->new_agent = cai_client_new_agent;
   client->create_conversation = cai_client_create_conversation;
+  client->set_usage_limits = cai_client_set_usage_limits;
+  client->usage = cai_client_usage;
   client->close = cai_client_close;
   client->impl = impl;
   *out = client;
   cai_log_client_opened(impl);
+  return CAI_OK;
+}
+
+int cai_client_set_usage_limits(cai_client *client,
+                                const cai_usage_limits *limits,
+                                cai_error *error) {
+  cai_client_impl *impl;
+  cai_usage_limits empty;
+  int rc;
+
+  if (client == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is required");
+  }
+  impl = CAI_CLIENT_IMPL(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
+  }
+  if (limits == NULL) {
+    cai_usage_limits_init(&empty);
+    limits = &empty;
+  }
+  rc = cai_usage_limits_validate(limits, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  impl->usage_limits = *limits;
+  impl->usage.limit_exceeded =
+      cai_client_usage_exceeds_limits(&impl->usage, &impl->usage_limits);
+  return CAI_OK;
+}
+
+int cai_client_usage(const cai_client *client, cai_usage_accounting *out,
+                     cai_error *error) {
+  const cai_client_impl *impl;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "usage accounting output pointer is required");
+  }
+  cai_usage_accounting_init(out);
+  if (client == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is required");
+  }
+  impl = CAI_CLIENT_IMPL(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
+  }
+  *out = impl->usage;
   return CAI_OK;
 }
 
