@@ -295,9 +295,21 @@ static int print_tool_event(void *context, const cai_tool_event *event,
     return CAI_OK;
   }
   if (event->type == CAI_TOOL_EVENT_START) {
-    fprintf(trace->fp, CAI_TOOL_LABEL " %s input=%s\n",
-            event->name != NULL ? event->name : "(unknown)",
-            event->arguments_json != NULL ? event->arguments_json : "{}");
+    int rc;
+
+    fprintf(trace->fp, CAI_TOOL_LABEL " %s input=",
+            event->name != NULL ? event->name : "(unknown)");
+    fflush(trace->fp);
+    if (trace->sink != NULL) {
+      rc = cai_tool_event_write_arguments(event, trace->sink, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    } else {
+      fputs(event->arguments_json != NULL ? event->arguments_json : "{}",
+            trace->fp);
+    }
+    fputc('\n', trace->fp);
     fflush(trace->fp);
     return CAI_OK;
   }

@@ -1640,6 +1640,38 @@ int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
                               json_error.message);
 }
 
+int cai_tool_event_write_arguments(const cai_tool_event *event, cai_sink *sink,
+                                   cai_error *error) {
+  cai_lonejson_cai_sink_context context;
+  lonejson_error json_error;
+
+  if (event == NULL || sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool event and sink are required");
+  }
+  if (event->arguments_json != NULL) {
+    return cai_sink_write(sink, event->arguments_json,
+                          strlen(event->arguments_json), error);
+  }
+  if (event->arguments_json_spooled == NULL) {
+    return cai_sink_write(sink, "{}", 2U, error);
+  }
+  context.sink = sink;
+  context.error = error;
+  lonejson_error_init(&json_error);
+  if (event->arguments_json_spooled->write_to_sink(
+          event->arguments_json_spooled, cai_lonejson_write_cai_sink, &context,
+          &json_error) == LONEJSON_STATUS_OK) {
+    return CAI_OK;
+  }
+  if (error != NULL && error->message != NULL) {
+    return error->code;
+  }
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to write tool event arguments",
+                              json_error.message);
+}
+
 static void cai_history_init_spooled(cai_session *session,
                                      lonejson_spooled *spool) {
   lonejson *runtime;

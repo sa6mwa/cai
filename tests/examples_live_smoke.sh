@@ -68,10 +68,22 @@ assert_terminal_multi_turn_transcript() {
   grep -F '[tool] todo_kanban input=' "$transcript" >/dev/null
   grep -F '[tool] todo_kanban output=' "$transcript" >/dev/null
   grep -F '[tool] list_files input=' "$transcript" >/dev/null
+  if grep -F '[tool] list_files input={}' "$transcript" >/dev/null; then
+    printf 'list_files printed empty tool input in %s\n' "$transcript" >&2
+    return 1
+  fi
   grep -F '[tool] list_files output=' "$transcript" >/dev/null
   grep -F '[tool] read_file input=' "$transcript" >/dev/null
+  if grep -F '[tool] read_file input={}' "$transcript" >/dev/null; then
+    printf 'read_file printed empty tool input in %s\n' "$transcript" >&2
+    return 1
+  fi
   grep -F '[tool] read_file output=' "$transcript" >/dev/null
   grep -F '[tool] exec_command input=' "$transcript" >/dev/null
+  if grep -F '[tool] exec_command input={}' "$transcript" >/dev/null; then
+    printf 'exec_command printed empty tool input in %s\n' "$transcript" >&2
+    return 1
+  fi
   grep -F '[tool] exec_command output=' "$transcript" >/dev/null
   grep -F 'CAI_MULTI_TURN_ALPHA' "$transcript" >/dev/null
   grep -F 'NOTE_ALPHA' "$transcript" >/dev/null

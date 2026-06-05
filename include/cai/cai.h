@@ -1072,6 +1072,9 @@ void cai_output_destroy(cai_output *output);
 /** Write a tool event's spooled output JSON to a sink. */
 int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
                                 cai_error *error);
+/** Write a tool event's arguments JSON to a sink. */
+int cai_tool_event_write_arguments(const cai_tool_event *event, cai_sink *sink,
+                                   cai_error *error);
 
 /** Create an empty local tool registry. */
 int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);

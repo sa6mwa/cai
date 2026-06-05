@@ -1855,28 +1855,31 @@ static int test_tool_event(void *context, const cai_tool_event *event,
   write_state writer;
   int rc;
 
-  (void)error;
   state = (tool_event_state *)context;
   if (state == NULL || event == NULL) {
     return CAI_OK;
   }
   if (event->type == CAI_TOOL_EVENT_START) {
-    char *arguments;
-
     state->starts++;
     snprintf(state->name, sizeof(state->name), "%s",
              event->name != NULL ? event->name : "");
-    if (event->arguments_json != NULL) {
-      snprintf(state->arguments, sizeof(state->arguments), "%s",
-               event->arguments_json);
-    } else if (event->arguments_json_spooled != NULL) {
-      arguments = test_spooled_to_cstr(event->arguments_json_spooled);
-      if (arguments == NULL) {
-        return CAI_ERR_NOMEM;
-      }
-      snprintf(state->arguments, sizeof(state->arguments), "%s", arguments);
-      free(arguments);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    writer.closed = 0;
+    callbacks.write = test_write;
+    callbacks.close = test_write_close;
+    callbacks.context = &writer;
+    sink = NULL;
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+    if (rc == CAI_OK) {
+      rc = cai_tool_event_write_arguments(event, sink, error);
+      cai_sink_close(sink);
     }
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    snprintf(state->arguments, sizeof(state->arguments), "%.*s",
+             (int)sizeof(state->arguments) - 1, writer.buffer);
     state->arguments_spooled_size =
         event->arguments_json_spooled != NULL
             ? event->arguments_json_spooled->size_fn(
