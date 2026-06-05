@@ -681,6 +681,19 @@ assert(exec_json:match('"stdout":"lua%-out"'))
 assert(exec_json:match('"stderr":"lua%-err'))
 assert(exec_json:match('"exit_code":0'))
 chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"cat","stdin":"lua-stdin-alpha\\nlua-stdin-beta\\n"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("lua%-stdin%-alpha"), "exec tool must pass stdin data")
+assert(table.concat(chunks):match("lua%-stdin%-beta"), "exec tool must pass multiline stdin data")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"sh -s","stdin":"printf lua-script-ok:%s\\\\n \\"$PWD\\"\\n"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("lua%-script%-ok:"), "exec tool must run stdin scripts")
+chunks = {}
 assert_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"sub","tty":null}', function(chunk)
   chunks[#chunks + 1] = chunk
   return true
@@ -717,13 +730,13 @@ local env_output = table.concat(chunks)
 assert(env_output:match("env:unset:"), "exec tool must clear host environment")
 assert(env_output:match(":/tmp:"), "exec tool must set sandbox TMPDIR")
 chunks = {}
-assert_ok(registry:run("exec_command", '{"cmd":"if test -t 0; then printf in-tty; else printf in-notty; fi; read x || printf read-eof","tty":true}', function(chunk)
+assert_ok(registry:run("exec_command", '{"cmd":"if test -t 0; then printf in-tty; else printf in-notty; fi; read x && printf got:$x || printf read-eof","stdin":"pty-input\\n","tty":true}', function(chunk)
   chunks[#chunks + 1] = chunk
   return true
 end))
 local tty_output = table.concat(chunks)
 assert(tty_output:match("in%-notty"), "exec PTY mode must not expose stdin as tty")
-assert(tty_output:match("read%-eof"), "exec PTY stdin must be closed")
+assert(tty_output:match("got:pty%-input"), "exec PTY mode must receive configured stdin")
 
 local read_root = "/tmp/cai-lua-read-test"
 os.execute("rm -rf " .. read_root)

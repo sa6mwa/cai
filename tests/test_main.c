@@ -12960,6 +12960,40 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  if (run_exec_tool_case(state, "exec_stdin_data", &config,
+                         "{\"cmd\":\"cat\",\"stdin\":\"stdin-alpha\\nstdin-"
+                         "beta\\n\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_stdin_data_stdout", writer.buffer,
+                  "stdin-alpha\\nstdin-beta");
+    expect_valid_json(state, "exec_stdin_data_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_exec_tool_case(state, "exec_stdin_script", &config,
+                         "{\"cmd\":\"sh -s\",\"stdin\":\"printf "
+                         "script-ok:%s\\\\n \\\"$PWD\\\"\\n\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_stdin_script_output", writer.buffer,
+                  "script-ok:");
+    expect_substr(state, "exec_stdin_script_cwd", writer.buffer, dir_template);
+    expect_valid_json(state, "exec_stdin_script_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  if (run_exec_tool_case(state, "exec_stdin_early_exit", &config,
+                         "{\"cmd\":\"true\",\"stdin\":\"ignored stdin must not "
+                         "raise sigpipe\"}",
+                         CAI_OK, &writer, &error) == CAI_OK) {
+    expect_substr(state, "exec_stdin_early_exit_code", writer.buffer,
+                  "\"exit_code\":0");
+    expect_valid_json(state, "exec_stdin_early_exit_json", writer.buffer);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   run_exec_tool_case(state, "exec_reject_missing_command", &config,
                      "{\"cmd\":null,\"command\":null}", CAI_ERR_INVALID,
                      &writer, &error);
@@ -13398,12 +13432,15 @@ static void test_exec_tool(test_state *state) {
   if (run_exec_tool_case(state, "exec_pty_output_only", &config,
                          "{\"cmd\":\"if test -t 1; then printf out-tty; fi; "
                          "if test -t 0; then printf in-tty; else printf "
-                         "in-notty; fi; read x || printf read-eof\","
+                         "in-notty; fi; read x && printf got:$x || printf "
+                         "read-eof\","
+                         "\"stdin\":\"pty-input\\n\","
                          "\"tty\":true}",
                          CAI_OK, &writer, &error) == CAI_OK) {
     expect_substr(state, "exec_pty_stdout_is_tty", writer.buffer, "out-tty");
     expect_substr(state, "exec_pty_stdin_not_tty", writer.buffer, "in-notty");
-    expect_substr(state, "exec_pty_read_eof", writer.buffer, "read-eof");
+    expect_substr(state, "exec_pty_stdin_value", writer.buffer,
+                  "got:pty-input");
     if (strstr(writer.buffer, "in-tty") != NULL) {
       test_fail(state, "exec_pty_no_interactive_stdin",
                 "PTY mode exposed stdin as a tty");
@@ -13421,6 +13458,7 @@ static void test_exec_tool(test_state *state) {
              CAI_OK);
   if (cai_tool_registry_schema_at(registry, 0U) == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"cmd\"") == NULL ||
+      strstr(cai_tool_registry_schema_at(registry, 0U), "\"stdin\"") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U), "\"tty\"") == NULL) {
     test_fail(state, "exec_schema", "schema missing Codex-compatible fields");
   }

@@ -854,12 +854,17 @@ Agents or registries can register the opt-in command execution preset by
 including `<cai/tools/exec.h>` and calling `cai_agent_register_exec_tool` or
 `cai_tool_registry_register_exec_tool`. The default tool name is
 `exec_command`, intentionally matching the Codex-compatible model-facing
-shape. Its required input is `cmd`; optional inputs are `workdir`, `shell`,
-`tty`, `login`, `timeout_ms`, and `max_output_tokens`. This preset returns
-after the process exits. `max_output_tokens` is treated as a per-call output
-budget cap against the byte-oriented capture limit configured in
-`cai_exec_tool_config`. When `tty=true` is allowed, cai uses the PTY only for
-stdout/stderr capture; child stdin remains `/dev/null` and is not a terminal.
+shape. Its required input is `cmd`; optional inputs are `command` as a
+Codex-compatible alias, `stdin`, `workdir`, `shell`, `tty`, `login`,
+`timeout_ms`, and `max_output_tokens`. This preset returns after the process
+exits. `stdin` is written to child stdin and then closed, which lets agents run
+stdin-capable interpreters such as `python3 -`, `sh -s`, `bash -s`, or `lua -`
+without fragile shell heredocs. `timeout_ms` defaults to 120 seconds and is
+capped by `cai_exec_tool_config.max_timeout_ms`, which defaults to 3 hours.
+`max_output_tokens` is treated as a per-call output budget cap against the
+byte-oriented capture limit configured in `cai_exec_tool_config`. When
+`tty=true` is allowed, cai uses the PTY only for stdout/stderr capture; child
+stdin is still not a terminal and is closed after configured input is written.
 
 Command execution is never registered by default. Callers must provide a
 `root_path`; every requested `workdir` is resolved under that root before

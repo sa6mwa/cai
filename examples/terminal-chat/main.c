@@ -409,7 +409,9 @@ int main(int argc, char **argv) {
         "board_key, and board_name for ordinary use. Use list_files before "
         "read_file when "
         "discovering paths. Prefer read_file for file contents. Use "
-        "exec_command only when explicitly asked; set workdir when needed.";
+        "exec_command only when explicitly asked; set workdir when needed. "
+        "For scripts, use exec_command stdin with python3 -, sh -s, bash -s, "
+        "or lua -.";
   } else {
     agent_config.developer_instructions =
         "You are a concise terminal chat assistant. Answer plainly. You have "
@@ -438,8 +440,6 @@ int main(int argc, char **argv) {
   if (exec_tool_dir != NULL) {
     exec_config.root_path = exec_tool_dir;
     exec_config.default_workdir = exec_tool_dir;
-    exec_config.timeout_ms = 10000L;
-    exec_config.max_timeout_ms = 60000L;
     exec_config.output_memory_limit = 128U * 1024U;
     exec_config.output_max_bytes = 3U * 1024U * 1024U;
     exec_config.allow_pty = 1;

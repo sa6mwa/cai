@@ -27,8 +27,8 @@
 
 extern char *realpath(const char *path, char *resolved_path);
 
-#define CAI_EXEC_DEFAULT_TIMEOUT_MS 10000L
-#define CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS 60000L
+#define CAI_EXEC_DEFAULT_TIMEOUT_MS 120000L
+#define CAI_EXEC_DEFAULT_MAX_TIMEOUT_MS 10800000L
 #define CAI_EXEC_DEFAULT_OUTPUT_MEMORY_LIMIT (128U * 1024U)
 #define CAI_EXEC_DEFAULT_OUTPUT_MAX_BYTES (3U * 1024U * 1024U)
 #define CAI_EXEC_DEFAULT_CGROUP_PARENT "/sys/fs/cgroup"
@@ -57,6 +57,7 @@ typedef struct cai_exec_context {
 typedef struct cai_exec_args {
   char *cmd;
   char *command;
+  char *stdin_data;
   char *workdir;
   char *shell;
   int tty;
@@ -118,6 +119,7 @@ typedef struct cai_exec_cgroup {
 static const lonejson_field cai_exec_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, cmd, "cmd"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, command, "command"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, stdin_data, "stdin"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, workdir, "workdir"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_exec_args, shell, "shell"),
     LONEJSON_FIELD_BOOL_PRESENT_NULLABLE(cai_exec_args, tty, has_tty, "tty"),
@@ -159,6 +161,7 @@ static const char cai_exec_schema_json[] =
     "\"properties\":{"
     "\"cmd\":{\"type\":[\"string\",\"null\"]},"
     "\"command\":{\"type\":[\"string\",\"null\"]},"
+    "\"stdin\":{\"type\":[\"string\",\"null\"]},"
     "\"workdir\":{\"type\":[\"string\",\"null\"]},"
     "\"shell\":{\"type\":[\"string\",\"null\"]},"
     "\"tty\":{\"type\":[\"boolean\",\"null\"]},"
@@ -174,8 +177,10 @@ static const char cai_exec_default_description[] =
     "Runs a sandboxed shell command non-interactively and returns its output. "
     "Linux uses bubblewrap; Darwin uses experimental sandbox-exec support. "
     "Always set workdir when a specific directory matters; do not use cd "
-    "unless absolutely necessary. The embedding application controls "
-    "sandboxing, writable roots, timeout caps, PTY support, and shell policy.";
+    "unless absolutely necessary. For generated scripts, pass source in stdin "
+    "and run a stdin-capable interpreter such as `python3 -`, `sh -s`, "
+    "`bash -s`, or `lua -`. The embedding application controls sandboxing, "
+    "timeout caps, PTY support, and shell policy.";
 
 static const char *cai_exec_default_string(const char *value,
                                            const char *fallback) {
@@ -554,6 +559,16 @@ static int cai_exec_set_cloexec(int fd) {
     return -1;
   }
   return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+static int cai_exec_set_nonblock(int fd) {
+  int flags;
+
+  flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    return -1;
+  }
+  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 static int cai_exec_write_file_text(const char *path, const char *text,
@@ -1232,8 +1247,8 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
                           const cai_exec_args *args, const char *workdir,
                           const char *bwrap_path, int use_sandbox,
                           const cai_exec_cgroup *cgroup, int stdout_fd[2],
-                          int stderr_fd[2], int *pty_master, pid_t *pid_out,
-                          cai_error *error) {
+                          int stderr_fd[2], int stdin_pipe[2], int *pty_master,
+                          pid_t *pid_out, cai_error *error) {
   int stdin_fd;
   int slave_fd;
   int sync_fd[2];
@@ -1242,6 +1257,7 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
   stdin_fd = -1;
   slave_fd = -1;
   sync_fd[0] = sync_fd[1] = -1;
+  stdin_pipe[0] = stdin_pipe[1] = -1;
   *pty_master = -1;
   stdout_fd[0] = stdout_fd[1] = -1;
   stderr_fd[0] = stderr_fd[1] = -1;
@@ -1279,12 +1295,31 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
                                   strerror(errno));
     }
   }
-  stdin_fd = open("/dev/null", O_RDONLY);
+  if (args->stdin_data != NULL) {
+    if (pipe(stdin_pipe) != 0) {
+      cai_exec_close_fd(&sync_fd[0]);
+      cai_exec_close_fd(&sync_fd[1]);
+      cai_exec_close_fd(pty_master);
+      cai_exec_close_fd(&slave_fd);
+      cai_exec_close_fd(&stdout_fd[0]);
+      cai_exec_close_fd(&stdout_fd[1]);
+      cai_exec_close_fd(&stderr_fd[0]);
+      cai_exec_close_fd(&stderr_fd[1]);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to create command stdin pipe",
+                                  strerror(errno));
+    }
+    stdin_fd = stdin_pipe[0];
+  } else {
+    stdin_fd = open("/dev/null", O_RDONLY);
+  }
   if (stdin_fd < 0) {
     cai_exec_close_fd(&sync_fd[0]);
     cai_exec_close_fd(&sync_fd[1]);
     cai_exec_close_fd(pty_master);
     cai_exec_close_fd(&slave_fd);
+    cai_exec_close_fd(&stdin_pipe[0]);
+    cai_exec_close_fd(&stdin_pipe[1]);
     cai_exec_close_fd(&stdout_fd[0]);
     cai_exec_close_fd(&stdout_fd[1]);
     cai_exec_close_fd(&stderr_fd[0]);
@@ -1294,11 +1329,15 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
   }
   pid = fork();
   if (pid < 0) {
-    close(stdin_fd);
+    if (args->stdin_data == NULL) {
+      close(stdin_fd);
+    }
     cai_exec_close_fd(&sync_fd[0]);
     cai_exec_close_fd(&sync_fd[1]);
     cai_exec_close_fd(pty_master);
     cai_exec_close_fd(&slave_fd);
+    cai_exec_close_fd(&stdin_pipe[0]);
+    cai_exec_close_fd(&stdin_pipe[1]);
     cai_exec_close_fd(&stdout_fd[0]);
     cai_exec_close_fd(&stdout_fd[1]);
     cai_exec_close_fd(&stderr_fd[0]);
@@ -1311,6 +1350,7 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
 
     setpgid(0, 0);
     cai_exec_close_fd(&sync_fd[1]);
+    cai_exec_close_fd(&stdin_pipe[1]);
     if (args->has_tty && args->tty) {
       close(*pty_master);
       dup2(stdin_fd, STDIN_FILENO);
@@ -1334,7 +1374,28 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
     cai_exec_child_exec(ctx, args, workdir, bwrap_path, use_sandbox);
   }
   setpgid(pid, pid);
-  close(stdin_fd);
+  if (args->stdin_data == NULL) {
+    close(stdin_fd);
+  } else {
+    cai_exec_close_fd(&stdin_pipe[0]);
+    if (cai_exec_set_nonblock(stdin_pipe[1]) != 0) {
+      cai_exec_close_fd(&sync_fd[0]);
+      cai_exec_close_fd(&sync_fd[1]);
+      cai_exec_close_fd(&stdin_pipe[1]);
+      kill(-pid, SIGKILL);
+      kill(pid, SIGKILL);
+      waitpid(pid, NULL, 0);
+      cai_exec_close_fd(pty_master);
+      cai_exec_close_fd(&slave_fd);
+      cai_exec_close_fd(&stdout_fd[0]);
+      cai_exec_close_fd(&stdout_fd[1]);
+      cai_exec_close_fd(&stderr_fd[0]);
+      cai_exec_close_fd(&stderr_fd[1]);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to configure command stdin pipe",
+                                  strerror(errno));
+    }
+  }
   cai_exec_close_fd(&sync_fd[0]);
   if (cai_exec_cgroup_add_pid(cgroup, pid, error) != CAI_OK) {
     cai_exec_close_fd(&sync_fd[1]);
@@ -1343,6 +1404,7 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
     waitpid(pid, NULL, 0);
     cai_exec_close_fd(pty_master);
     cai_exec_close_fd(&slave_fd);
+    cai_exec_close_fd(&stdin_pipe[1]);
     cai_exec_close_fd(&stdout_fd[0]);
     cai_exec_close_fd(&stdout_fd[1]);
     cai_exec_close_fd(&stderr_fd[0]);
@@ -1351,6 +1413,7 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
   }
   if (write(sync_fd[1], "x", 1U) != 1) {
     cai_exec_close_fd(&sync_fd[1]);
+    cai_exec_close_fd(&stdin_pipe[1]);
     kill(-pid, SIGKILL);
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
@@ -1369,21 +1432,40 @@ static int cai_exec_spawn(const cai_exec_context *ctx,
 }
 
 static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
-                          int pty_fd, pid_t pid, long timeout_ms,
+                          int pty_fd, int input_fd, const char *input_data,
+                          pid_t pid, long timeout_ms,
                           cai_exec_proc_result *result, cai_error *error) {
   char buffer[8192];
+  size_t input_len;
+  size_t input_offset;
+  sigset_t pipe_signal;
+  sigset_t saved_signal_mask;
   long start_ms;
   long now_ms;
   int status;
   int process_done;
+  int pipe_signal_blocked;
   int rc;
 
   memset(result, 0, sizeof(*result));
+  input_len = input_data != NULL ? strlen(input_data) : 0U;
+  input_offset = 0U;
+  pipe_signal_blocked = 0;
+  sigemptyset(&saved_signal_mask);
+  if (input_fd >= 0) {
+    sigemptyset(&pipe_signal);
+    sigaddset(&pipe_signal, SIGPIPE);
+    if (sigprocmask(SIG_BLOCK, &pipe_signal, &saved_signal_mask) == 0) {
+      pipe_signal_blocked = 1;
+    }
+  }
   start_ms = cai_exec_now_ms();
   process_done = 0;
   status = 0;
-  while (out_fd >= 0 || err_fd >= 0 || pty_fd >= 0 || !process_done) {
+  while (out_fd >= 0 || err_fd >= 0 || pty_fd >= 0 || input_fd >= 0 ||
+         !process_done) {
     fd_set readfds;
+    fd_set writefds;
     int maxfd;
     struct timeval tv;
 
@@ -1402,6 +1484,7 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
       }
     }
     FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
     maxfd = -1;
     if (out_fd >= 0) {
       FD_SET(out_fd, &readfds);
@@ -1421,6 +1504,17 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
         maxfd = pty_fd;
       }
     }
+    if (input_fd >= 0) {
+      if (input_offset < input_len) {
+        FD_SET(input_fd, &writefds);
+        if (input_fd > maxfd) {
+          maxfd = input_fd;
+        }
+      } else {
+        close(input_fd);
+        input_fd = -1;
+      }
+    }
     if (maxfd < 0) {
       if (process_done) {
         break;
@@ -1430,14 +1524,31 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
     }
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
-    rc = select(maxfd + 1, &readfds, NULL, NULL, &tv);
+    rc = select(maxfd + 1, &readfds, &writefds, NULL, &tv);
     if (rc < 0) {
       if (errno == EINTR) {
         continue;
       }
-      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                  "failed to read command output",
-                                  strerror(errno));
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to read command output",
+                                strerror(errno));
+      goto cleanup;
+    }
+    if (input_fd >= 0 && FD_ISSET(input_fd, &writefds)) {
+      ssize_t nwritten;
+
+      nwritten =
+          write(input_fd, input_data + input_offset, input_len - input_offset);
+      if (nwritten > 0) {
+        input_offset += (size_t)nwritten;
+      } else if (nwritten < 0 && errno == EINTR) {
+        continue;
+      } else if (nwritten < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        continue;
+      } else {
+        close(input_fd);
+        input_fd = -1;
+      }
     }
     if (out_fd >= 0 && FD_ISSET(out_fd, &readfds)) {
       ssize_t nread;
@@ -1446,7 +1557,7 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
       if (nread > 0) {
         rc = cai_exec_capture_append(capture, 0, buffer, (size_t)nread, error);
         if (rc != CAI_OK) {
-          return rc;
+          goto cleanup;
         }
       } else if (nread == 0 || errno != EINTR) {
         close(out_fd);
@@ -1460,7 +1571,7 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
       if (nread > 0) {
         rc = cai_exec_capture_append(capture, 1, buffer, (size_t)nread, error);
         if (rc != CAI_OK) {
-          return rc;
+          goto cleanup;
         }
       } else if (nread == 0 || errno != EINTR) {
         close(err_fd);
@@ -1474,7 +1585,7 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
       if (nread > 0) {
         rc = cai_exec_capture_append(capture, 0, buffer, (size_t)nread, error);
         if (rc != CAI_OK) {
-          return rc;
+          goto cleanup;
         }
       } else if (nread == 0 || errno != EINTR) {
         close(pty_fd);
@@ -1493,7 +1604,23 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
     result->has_signal = 1;
     result->signal_number = WTERMSIG(status);
   }
-  return CAI_OK;
+  rc = CAI_OK;
+
+cleanup:
+  if (input_fd >= 0) {
+    close(input_fd);
+  }
+  if (pipe_signal_blocked) {
+    sigset_t pending;
+
+    if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) {
+      int signo;
+
+      (void)sigwait(&pipe_signal, &signo);
+    }
+    sigprocmask(SIG_SETMASK, &saved_signal_mask, NULL);
+  }
+  return rc;
 }
 
 static int cai_exec_run_process(const cai_exec_context *ctx,
@@ -1504,6 +1631,7 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
                                 cai_error *error) {
   int stdout_fd[2];
   int stderr_fd[2];
+  int stdin_pipe[2];
   int pty_master;
   cai_exec_cgroup cgroup;
   pid_t pid;
@@ -1525,13 +1653,15 @@ static int cai_exec_run_process(const cai_exec_context *ctx,
     return rc;
   }
   rc = cai_exec_spawn(ctx, args, workdir, bwrap_path, use_sandbox, &cgroup,
-                      stdout_fd, stderr_fd, &pty_master, &pid, error);
+                      stdout_fd, stderr_fd, stdin_pipe, &pty_master, &pid,
+                      error);
   if (rc != CAI_OK) {
     cai_exec_cgroup_cleanup(&cgroup);
     return rc;
   }
-  rc = cai_exec_drain(capture, stdout_fd[0], stderr_fd[0], pty_master, pid,
-                      timeout_ms, result, error);
+  rc = cai_exec_drain(capture, stdout_fd[0], stderr_fd[0], pty_master,
+                      stdin_pipe[1], args->stdin_data, pid, timeout_ms, result,
+                      error);
   if (rc != CAI_OK) {
     kill(-pid, SIGKILL);
     kill(pid, SIGKILL);

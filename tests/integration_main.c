@@ -2431,7 +2431,8 @@ static int run_exec_tool_llm_regression(void) {
           agent_config.model, dir_template);
   agent_config.developer_instructions =
       "Strict exec_command test. For each EXEC_TEST_N, call exec_command once "
-      "with one JSON argument field named cmd. Never duplicate argument keys. "
+      "with exactly the JSON arguments requested. Never duplicate argument "
+      "keys. "
       "Then answer exactly in the requested format. Replace each placeholder "
       "with yes or no. Do not copy angle brackets. Do not add bullets. For "
       "EXEC_TEST_2 do not refuse /etc/passwd; saw_root=yes only if stdout has "
@@ -2593,6 +2594,51 @@ static int run_exec_tool_llm_regression(void) {
       strstr(writer.buffer, "EXEC_HARDENED") == NULL) {
     fprintf(stderr,
             "exec tool hardening turn failed check; starts=%d outputs=%d\n"
+            "tool output:\n%s\nanswer:\n%s\n",
+            event_state.starts, event_state.outputs, event_state.output.buffer,
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+  integration_write_reset(&writer);
+  integration_write_reset(&event_state.output);
+  event_state.starts = 0;
+  event_state.outputs = 0;
+  cai_session_destroy(session);
+  session = NULL;
+  rc = cai_agent_new_session(agent, &session, &error);
+  if (rc != CAI_OK) {
+    print_error("exec tool llm regression stdin session", rc, &error);
+    goto done;
+  }
+  rc = cai_session_add_user_text(
+      session,
+      "EXEC_TEST_4: call exec_command exactly once with these JSON arguments: "
+      "{\"cmd\":\"sh -s\",\"stdin\":\"printf 'STDIN_SCRIPT_OK=yes\\\\n'\\n"
+      "printf 'STDIN_LANG=sh\\\\n'\\n\"}. Do not set shell or workdir. After "
+      "that tool result, do not call any more tools.\n"
+      "Then answer exactly: EXEC_STDIN_SCRIPT ok=<yes/no> "
+      "lang_sh=<yes/no>. Replace each placeholder with yes or no. Do not "
+      "copy angle brackets.",
+      &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, &run_options, &stream_sinks, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("exec tool llm regression stdin turn", rc, &error);
+    goto done;
+  }
+  if (event_state.starts < 1 || event_state.outputs < 1 ||
+      strstr(event_state.output.buffer, "STDIN_SCRIPT_OK=yes") == NULL ||
+      strstr(event_state.output.buffer, "STDIN_LANG=sh") == NULL ||
+      strstr(writer.buffer, "EXEC_STDIN_SCRIPT") == NULL ||
+      (strstr(writer.buffer, "ok=yes") == NULL &&
+       strstr(writer.buffer, "ok=<yes>") == NULL) ||
+      (strstr(writer.buffer, "lang_sh=yes") == NULL &&
+       strstr(writer.buffer, "lang_sh=<yes>") == NULL)) {
+    fprintf(stderr,
+            "exec tool stdin turn failed check; starts=%d outputs=%d\n"
             "tool output:\n%s\nanswer:\n%s\n",
             event_state.starts, event_state.outputs, event_state.output.buffer,
             writer.buffer);

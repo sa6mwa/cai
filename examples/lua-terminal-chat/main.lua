@@ -231,7 +231,9 @@ if exec_tool_dir or read_tool_dir then
     "paths. Prefer read_file over exec_command when the user " ..
     "asks to inspect file contents. Use exec_command only when the user explicitly " ..
     "asks you to inspect or run commands, always set workdir when a " ..
-    "specific directory matters, and do not assume network access."
+    "specific directory matters, and do not assume network access. For generated " ..
+    "scripts, pass source in exec_command stdin and run an interpreter such as " ..
+    "python3 -, sh -s, bash -s, or lua -."
 end
 
 local client_config
@@ -266,8 +268,6 @@ if exec_tool_dir then
   ok(agent:register_exec_tool({
     root_path = exec_tool_dir,
     default_workdir = exec_tool_dir,
-    timeout_ms = 10000,
-    max_timeout_ms = 60000,
     output_memory_limit = 128 * 1024,
     output_max_bytes = 3 * 1024 * 1024,
     allow_pty = true,

@@ -34,9 +34,9 @@ typedef struct cai_exec_tool_config {
   int allow_login_shell;
   /** Non-zero to apply configured Linux cgroup v2 limits. */
   int enable_cgroup_limits;
-  /** Default command timeout in milliseconds; zero selects cai's default. */
+  /** Default command timeout in milliseconds; zero uses 120 seconds. */
   long timeout_ms;
-  /** Maximum accepted per-call timeout in milliseconds; zero uses default. */
+  /** Maximum accepted per-call timeout in milliseconds; zero uses 3 hours. */
   long max_timeout_ms;
   /** Optional cgroup pids.max limit; zero leaves it unset. */
   long long pids_max;
