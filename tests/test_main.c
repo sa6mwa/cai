@@ -16,6 +16,8 @@
 #include <limits.h>
 #include <locale.h>
 #include <netinet/in.h>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 #include <pslog.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -7170,6 +7172,277 @@ static void http_mock_client_close(test_state *state, const char *name,
   }
 }
 
+typedef struct websocket_mock_server {
+  pid_t pid;
+  int child_status;
+  char base_url[128];
+} websocket_mock_server;
+
+static int mock_read_exact(int fd, unsigned char *buffer, size_t length) {
+  size_t offset;
+  ssize_t nread;
+
+  offset = 0U;
+  while (offset < length) {
+    if (mock_wait_fd(fd, 0, MOCK_IO_TIMEOUT_MS) != 0) {
+      return -1;
+    }
+    do {
+      nread = read(fd, buffer + offset, length - offset);
+    } while (nread < 0 && errno == EINTR);
+    if (nread <= 0) {
+      return -1;
+    }
+    offset += (size_t)nread;
+  }
+  return 0;
+}
+
+static int mock_websocket_accept_value(const char *key, char *out,
+                                       size_t out_size) {
+  static const char guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+  char input[256];
+  unsigned char digest[SHA_DIGEST_LENGTH];
+  int input_len;
+
+  input_len = snprintf(input, sizeof(input), "%s%s", key, guid);
+  if (input_len <= 0 || (size_t)input_len >= sizeof(input) || out_size < 32U) {
+    return -1;
+  }
+  SHA1((const unsigned char *)input, (size_t)input_len, digest);
+  EVP_EncodeBlock((unsigned char *)out, digest, SHA_DIGEST_LENGTH);
+  return 0;
+}
+
+static int mock_websocket_header_value(const char *request, const char *name,
+                                       char *out, size_t out_size) {
+  char needle[64];
+  const char *cursor;
+  const char *end;
+  size_t len;
+
+  if (snprintf(needle, sizeof(needle), "%s:", name) <= 0) {
+    return -1;
+  }
+  cursor = strstr(request, needle);
+  if (cursor == NULL) {
+    return -1;
+  }
+  cursor += strlen(needle);
+  while (*cursor == ' ' || *cursor == '\t') {
+    cursor++;
+  }
+  end = strstr(cursor, "\r\n");
+  if (end == NULL || end <= cursor) {
+    return -1;
+  }
+  len = (size_t)(end - cursor);
+  if (len + 1U > out_size) {
+    return -1;
+  }
+  memcpy(out, cursor, len);
+  out[len] = '\0';
+  return 0;
+}
+
+static int mock_websocket_write_text(int fd, const char *payload) {
+  unsigned char header[10];
+  size_t length;
+  size_t header_len;
+
+  length = strlen(payload);
+  header[0] = 0x81U;
+  if (length < 126U) {
+    header[1] = (unsigned char)length;
+    header_len = 2U;
+  } else if (length <= 0xffffU) {
+    header[1] = 126U;
+    header[2] = (unsigned char)((length >> 8U) & 0xffU);
+    header[3] = (unsigned char)(length & 0xffU);
+    header_len = 4U;
+  } else {
+    return -1;
+  }
+  return mock_write_all(fd, (const char *)header, header_len) == 0 &&
+                 mock_write_all(fd, payload, length) == 0
+             ? 0
+             : -1;
+}
+
+static int mock_websocket_read_text(int fd, char *out, size_t out_size) {
+  unsigned char header[2];
+  unsigned char ext[8];
+  unsigned char mask[4];
+  unsigned char payload[4096];
+  unsigned long long length;
+  size_t offset;
+  size_t i;
+  int fin;
+  int opcode;
+  int masked;
+
+  offset = 0U;
+  for (;;) {
+    if (mock_read_exact(fd, header, sizeof(header)) != 0) {
+      return -1;
+    }
+    fin = (header[0] & 0x80U) != 0;
+    opcode = header[0] & 0x0fU;
+    masked = (header[1] & 0x80U) != 0;
+    length = header[1] & 0x7fU;
+    if (length == 126U) {
+      if (mock_read_exact(fd, ext, 2U) != 0) {
+        return -1;
+      }
+      length = ((unsigned long long)ext[0] << 8U) | ext[1];
+    } else if (length == 127U) {
+      if (mock_read_exact(fd, ext, 8U) != 0) {
+        return -1;
+      }
+      length = 0ULL;
+      for (i = 0U; i < 8U; i++) {
+        length = (length << 8U) | ext[i];
+      }
+    }
+    if (!masked || length > sizeof(payload) ||
+        offset + (size_t)length + 1U > out_size ||
+        (opcode != 0x1 && opcode != 0x0)) {
+      return -1;
+    }
+    if (mock_read_exact(fd, mask, sizeof(mask)) != 0 ||
+        mock_read_exact(fd, payload, (size_t)length) != 0) {
+      return -1;
+    }
+    for (i = 0U; i < (size_t)length; i++) {
+      out[offset + i] = (char)(payload[i] ^ mask[i % 4U]);
+    }
+    offset += (size_t)length;
+    if (fin) {
+      out[offset] = '\0';
+      return 0;
+    }
+  }
+}
+
+static void mock_websocket_openai_child(int pipe_fd) {
+  static const char delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"ws ok\"}";
+  static const char completed[] =
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_done\","
+      "\"usage\":{\"input_tokens\":2,\"input_tokens_details\":{"
+      "\"cached_tokens\":1},\"output_tokens\":3,\"output_tokens_details\":{"
+      "\"reasoning_tokens\":1},\"total_tokens\":5}}}";
+  char request[4096];
+  char key[128];
+  char accept[128];
+  char response[512];
+  char message[8192];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  int response_len;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+      listen(server_fd, 1) != 0 || mock_set_socket_deadline(server_fd) != 0) {
+    _exit(3);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(4);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(5);
+  }
+  close(pipe_fd);
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+    _exit(6);
+  }
+  if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "GET /v1/responses HTTP/") == NULL ||
+      strstr(request, "Authorization: Bearer mock-key") == NULL ||
+      strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") == NULL ||
+      mock_websocket_header_value(request, "Sec-WebSocket-Key", key,
+                                  sizeof(key)) != 0 ||
+      mock_websocket_accept_value(key, accept, sizeof(accept)) != 0) {
+    _exit(7);
+  }
+  response_len = snprintf(response, sizeof(response),
+                          "HTTP/1.1 101 Switching Protocols\r\n"
+                          "Upgrade: websocket\r\n"
+                          "Connection: Upgrade\r\n"
+                          "Sec-WebSocket-Accept: %s\r\n\r\n",
+                          accept);
+  if (response_len <= 0 || (size_t)response_len >= sizeof(response) ||
+      mock_write_all(client_fd, response, (size_t)response_len) != 0) {
+    _exit(8);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\":true") == NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(9);
+  }
+  if (mock_websocket_write_text(client_fd, delta) != 0 ||
+      mock_websocket_write_text(client_fd, completed) != 0) {
+    _exit(10);
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int websocket_mock_server_open(test_state *state, const char *name,
+                                      websocket_mock_server *server) {
+  int pipe_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    mock_websocket_openai_child(pipe_fds[1]);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, server->pid, &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  return 0;
+}
+
 static void mock_searxng_child(int pipe_fd) {
   static const char body[] =
       "{\"query\":\"OpenAI\",\"number_of_results\":2,\"results\":["
@@ -8504,7 +8777,7 @@ test_chatgpt_auth_client_defaults_to_codex_backend(test_state *state) {
   rmdir(template_dir);
 }
 
-static void test_chatgpt_auth_agent_uses_client_history(test_state *state) {
+static void test_chatgpt_auth_agent_keeps_server_continuity(test_state *state) {
   const char *future_token = "eyJhbGciOiJub25lIn0."
                              "eyJleHAiOjQxMDI0NDQ4MDB9.future";
   static const char first_body[] =
@@ -8519,29 +8792,25 @@ static void test_chatgpt_auth_agent_uses_client_history(test_state *state) {
       "POST /v1/responses HTTP/",
       "Authorization: Bearer "
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.future",
-      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR, "\"store\":false",
+      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR,
       "\"text\":\"chatgpt client history first\""};
   static const char *second_required[] = {
       "POST /v1/responses HTTP/",
       "Authorization: Bearer "
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.future",
       "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR,
-      "\"store\":false",
-      "chatgpt client history first",
-      "chatgpt first ok",
+      "\"previous_response_id\":\"resp_chatgpt_history_1\"",
       "chatgpt client history second"};
-  static const char *forbidden[] = {"previous_response_id",
-                                    "\"max_output_tokens\"",
-                                    "\"id\":\"resp_chatgpt_history_1\""};
+  static const char *second_forbidden[] = {"chatgpt client history first",
+                                           "chatgpt first ok"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", first_required,
-       sizeof(first_required) / sizeof(first_required[0]), forbidden,
-       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
-       NULL, first_body},
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, first_body},
       {"POST /v1/responses HTTP/", second_required,
-       sizeof(second_required) / sizeof(second_required[0]), forbidden,
-       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
-       NULL, second_body}};
+       sizeof(second_required) / sizeof(second_required[0]), second_forbidden,
+       sizeof(second_forbidden) / sizeof(second_forbidden[0]), 200, "OK",
+       "application/json", NULL, second_body}};
   char template_dir[] = "/tmp/cai-auth-history-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
@@ -8604,7 +8873,7 @@ static void test_chatgpt_auth_agent_uses_client_history(test_state *state) {
              CAI_OK);
   expect_int(state, "chatgpt_auth_history_continuity",
              CAI_AGENT_IMPL(agent)->session_continuity,
-             CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
+             CAI_SESSION_CONTINUITY_SERVER);
   expect_int(state, "chatgpt_auth_history_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "chatgpt_auth_history_first",
@@ -14233,6 +14502,89 @@ static void test_stream_response_text(test_state *state) {
   }
 }
 
+static void test_stream_responses_websocket(test_state *state) {
+  websocket_mock_server server;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+
+  if (websocket_mock_server_open(state, "stream_ws_mock", &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_previous",
+             cai_response_create_params_set_previous_response_id(
+                 params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_text",
+             cai_response_create_params_add_text(params, "user", "ws user turn",
+                                                 &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  expect_int(state, "stream_ws_run",
+             cai_client_stream_response_websocket_test(
+                 client, params, &stream_sinks, &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_output", writer.buffer, "ws ok");
+  expect_str(state, "stream_ws_response_id", response_id, "resp_ws_done");
+  expect_int(state, "stream_ws_usage_input", usage.input_tokens, 2LL);
+  expect_int(state, "stream_ws_usage_cached", usage.input_cached_tokens, 1LL);
+  expect_int(state, "stream_ws_usage_output", usage.output_tokens, 3LL);
+  expect_int(state, "stream_ws_usage_reasoning", usage.output_reasoning_tokens,
+             1LL);
+  expect_int(state, "stream_ws_usage_total", usage.total_tokens, 5LL);
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
 static void test_stream_non_function_output_item(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -17060,8 +17412,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
     {"chatgpt_auth_client_defaults_to_codex_backend",
      test_chatgpt_auth_client_defaults_to_codex_backend},
-    {"chatgpt_auth_agent_uses_client_history",
-     test_chatgpt_auth_agent_uses_client_history},
+    {"chatgpt_auth_agent_keeps_server_continuity",
+     test_chatgpt_auth_agent_keeps_server_continuity},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
     {"chatgpt_login_callback_validation",
      test_chatgpt_login_callback_validation},
@@ -17100,6 +17452,7 @@ static const test_entry test_entries[] = {
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
     {"conversations", test_conversations},
     {"stream_response_text", test_stream_response_text},
+    {"stream_responses_websocket", test_stream_responses_websocket},
     {"stream_non_function_output_item", test_stream_non_function_output_item},
     {"stream_output_delta_failure", test_stream_output_delta_failure},
     {"stream_output_item_failure", test_stream_output_item_failure},

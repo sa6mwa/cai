@@ -273,6 +273,7 @@ release-matrix:
 
 release:
 	$(MAKE) clean
+	CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) prerelease-live
 	$(MAKE) release-matrix
 
 compose-check:

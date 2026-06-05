@@ -157,8 +157,8 @@ typedef struct cai_client_config {
 
 /**
  * Use previous_response_id/server-side state for session continuity on
- * providers that support it. ChatGPT subscription auth uses client history
- * because the ChatGPT/Codex backend rejects previous_response_id.
+ * providers that support it. OpenAI and ChatGPT subscription streaming use
+ * the Responses WebSocket transport when available.
  */
 #define CAI_SESSION_CONTINUITY_SERVER 0
 /** Use local client history when creating follow-up requests. */

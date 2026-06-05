@@ -322,12 +322,10 @@ int cai_response_create_params_write_json_sink(
     const cai_response_create_params *params, int stream, lonejson_sink_fn sink,
     void *sink_user, lonejson_error *sink_error, size_t *out_len,
     cai_error *error);
-int cai_response_request_upload_open(const cai_response_create_params *params,
-                                     int stream, int default_has_store,
-                                     int default_store,
-                                     int omit_max_output_tokens,
-                                     cai_response_request_upload **out,
-                                     cai_error *error);
+int cai_response_request_upload_open(
+    const cai_response_create_params *params, int stream, int default_has_store,
+    int default_store, int omit_max_output_tokens, const char *event_type,
+    cai_response_request_upload **out, cai_error *error);
 size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
                                         void *userdata);
 curl_off_t
@@ -418,6 +416,12 @@ int cai_client_stream_response_with_id(cai_client *client,
                                        char **out_response_id,
                                        cai_token_usage *out_usage,
                                        cai_error *error);
+#ifdef CAI_TESTING
+int cai_client_stream_response_websocket_test(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error);
+#endif
 int cai_stream_fuzz_sse(const unsigned char *data, size_t size);
 int cai_tool_registry_register_lonejson_owned(
     cai_tool_registry *registry, const char *name, const char *description,

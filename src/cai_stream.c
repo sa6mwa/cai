@@ -6,10 +6,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #define CAI_STREAM_FIELD_MEMORY_LIMIT (64U * 1024U)
+#define CAI_RESPONSES_WEBSOCKET_BETA "responses_websockets=2026-02-06"
+#define CAI_WEBSOCKET_FRAME_BUFFER_SIZE 16384U
 
 static const char *const cai_stream_json_event_names[] = {
     "",
@@ -54,6 +57,18 @@ typedef struct cai_stream_response_event_doc {
   lonejson_spooled response_storage;
   lonejson_json_value response;
 } cai_stream_response_event_doc;
+
+typedef struct cai_stream_ws_error_detail_doc {
+  char *type;
+  char *code;
+  char *message;
+} cai_stream_ws_error_detail_doc;
+
+typedef struct cai_stream_ws_error_event_doc {
+  char *type;
+  long long status;
+  cai_stream_ws_error_detail_doc error;
+} cai_stream_ws_error_event_doc;
 
 typedef struct cai_stream_output_item_doc {
   char *id;
@@ -151,6 +166,27 @@ static const lonejson_field cai_stream_response_event_fields[] = {
 LONEJSON_MAP_DEFINE(cai_stream_response_event_map,
                     cai_stream_response_event_doc,
                     cai_stream_response_event_fields);
+
+static const lonejson_field cai_stream_ws_error_detail_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_stream_ws_error_detail_doc, type,
+                                          "type"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_stream_ws_error_detail_doc, code,
+                                          "code"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_stream_ws_error_detail_doc,
+                                          message, "message")};
+LONEJSON_MAP_DEFINE(cai_stream_ws_error_detail_map,
+                    cai_stream_ws_error_detail_doc,
+                    cai_stream_ws_error_detail_fields);
+
+static const lonejson_field cai_stream_ws_error_event_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_stream_ws_error_event_doc, type,
+                                          "type"),
+    LONEJSON_FIELD_I64(cai_stream_ws_error_event_doc, status, "status"),
+    LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_stream_ws_error_event_doc, error,
+                                     "error", &cai_stream_ws_error_detail_map)};
+LONEJSON_MAP_DEFINE(cai_stream_ws_error_event_map,
+                    cai_stream_ws_error_event_doc,
+                    cai_stream_ws_error_event_fields);
 
 typedef struct cai_sse_state {
   cai_stream_sinks sinks;
@@ -1621,6 +1657,7 @@ static int cai_sse_emit_event(cai_sse_state *state,
   }
 
   if (strcmp(event_name, "response.completed") == 0) {
+    state->done_seen = 1;
     rc = cai_stream_parse_response_event(&state->event_json_storage,
                                          &response_event);
     if (rc != CAI_OK) {
@@ -2043,6 +2080,539 @@ int cai_stream_fuzz_sse(const unsigned char *data, size_t size) {
   return 0;
 }
 
+static int cai_ws_url_from_http_url(const cai_allocator *allocator,
+                                    const char *http_url, char **out,
+                                    cai_error *error) {
+  char *url;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "websocket URL output pointer is required");
+  }
+  *out = NULL;
+  if (http_url == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "HTTP URL is required");
+  }
+  url = cai_strdup(allocator, http_url);
+  if (url == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate websocket URL");
+  }
+  if (strncmp(url, "https://", 8U) == 0) {
+    url[0] = 'w';
+    url[1] = 's';
+    url[2] = 's';
+    memmove(url + 3, url + 5, strlen(url + 5) + 1U);
+  } else if (strncmp(url, "http://", 7U) == 0) {
+    url[0] = 'w';
+    url[1] = 's';
+    memmove(url + 2, url + 4, strlen(url + 4) + 1U);
+  }
+  *out = url;
+  return CAI_OK;
+}
+
+static int cai_ws_wait(CURL *curl, int want_write, long timeout_ms,
+                       cai_error *error) {
+  curl_socket_t sockfd;
+  struct timeval tv;
+  fd_set readfds;
+  fd_set writefds;
+  int ready;
+
+  if (curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sockfd) != CURLE_OK ||
+      sockfd == CURL_SOCKET_BAD) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to get websocket socket");
+  }
+  FD_ZERO(&readfds);
+  FD_ZERO(&writefds);
+  if (want_write) {
+    FD_SET(sockfd, &writefds);
+  } else {
+    FD_SET(sockfd, &readfds);
+  }
+  tv.tv_sec = timeout_ms > 0L ? timeout_ms / 1000L : 60L;
+  tv.tv_usec = timeout_ms > 0L ? (timeout_ms % 1000L) * 1000L : 0L;
+  ready = select((int)sockfd + 1, want_write ? NULL : &readfds,
+                 want_write ? &writefds : NULL, NULL, &tv);
+  if (ready > 0) {
+    return CAI_OK;
+  }
+  if (ready == 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         want_write ? "timeout sending websocket frame"
+                                    : "timeout waiting for websocket frame");
+  }
+  return cai_set_error(error, CAI_ERR_TRANSPORT,
+                       want_write ? "failed waiting to send websocket frame"
+                                  : "failed waiting for websocket frame");
+}
+
+static int cai_ws_send_all(CURL *curl, const unsigned char *buffer,
+                           size_t length, unsigned int flags, long timeout_ms,
+                           cai_error *error) {
+  size_t offset;
+  size_t sent;
+  unsigned int send_flags;
+  CURLcode curl_rc;
+
+  offset = 0U;
+  while (offset < length) {
+    sent = 0U;
+    send_flags = flags;
+    if (offset > 0U) {
+      send_flags |= CURLWS_OFFSET;
+    }
+    curl_rc = curl_ws_send(curl, buffer + offset, length - offset, &sent, 0,
+                           send_flags);
+    if (curl_rc == CURLE_AGAIN) {
+      if (cai_ws_wait(curl, 1, timeout_ms, error) != CAI_OK) {
+        return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+      }
+      continue;
+    }
+    if (curl_rc != CURLE_OK) {
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to send websocket frame",
+                                  curl_easy_strerror(curl_rc));
+    }
+    if (sent == 0U) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "websocket send made no progress");
+    }
+    offset += sent;
+  }
+  return CAI_OK;
+}
+
+static int cai_ws_send_request(CURL *curl, cai_response_request_upload *upload,
+                               long timeout_ms, cai_error *error) {
+  unsigned char buffer[CAI_WEBSOCKET_FRAME_BUFFER_SIZE];
+  curl_off_t total;
+  curl_off_t offset;
+  size_t nread;
+  unsigned int flags;
+  int rc;
+
+  total = cai_response_request_upload_size(upload);
+  if (total <= 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "websocket request body is empty");
+  }
+  offset = 0;
+  while (offset < total) {
+    nread = cai_response_request_upload_read((char *)buffer, 1U, sizeof(buffer),
+                                             upload);
+    if (nread == CURL_READFUNC_ABORT || nread == CURL_READFUNC_PAUSE) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read websocket request body");
+    }
+    if (nread == 0U) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "websocket request body ended early");
+    }
+    offset += (curl_off_t)nread;
+    flags = CURLWS_TEXT;
+    if (offset < total) {
+      flags |= CURLWS_CONT;
+    }
+    rc = cai_ws_send_all(curl, buffer, nread, flags, timeout_ms, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  return CAI_OK;
+}
+
+static int cai_ws_spooled_to_cstr(const lonejson_spooled *value, char **out,
+                                  cai_error *error) {
+  cai_stream_spooled_reader reader;
+  lonejson_read_result chunk;
+  unsigned char buffer[1024];
+  char *data;
+  char *grown;
+  size_t length;
+  size_t capacity;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "string output pointer is required");
+  }
+  *out = NULL;
+  if (value == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "spooled value is required");
+  }
+  reader.cursor = *value;
+  if (reader.cursor.rewind(&reader.cursor, NULL) != LONEJSON_STATUS_OK) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to rewind websocket message");
+  }
+  data = NULL;
+  length = 0U;
+  capacity = 0U;
+  for (;;) {
+    chunk = reader.cursor.read(&reader.cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      cai_free_mem(NULL, data);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to read websocket message");
+    }
+    if (length + chunk.bytes_read + 1U > capacity) {
+      capacity = capacity == 0U ? 1024U : capacity * 2U;
+      while (capacity < length + chunk.bytes_read + 1U) {
+        capacity *= 2U;
+      }
+      grown = (char *)cai_realloc_mem(NULL, data, capacity);
+      if (grown == NULL) {
+        cai_free_mem(NULL, data);
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to allocate websocket message");
+      }
+      data = grown;
+    }
+    if (chunk.bytes_read > 0U) {
+      memcpy(data + length, buffer, chunk.bytes_read);
+      length += chunk.bytes_read;
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  if (data == NULL) {
+    data = cai_strdup(NULL, "");
+    if (data == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate websocket message");
+    }
+  } else {
+    data[length] = '\0';
+  }
+  *out = data;
+  return CAI_OK;
+}
+
+static int cai_ws_parse_error_event(cai_sse_state *state, cai_error *error) {
+  cai_stream_ws_error_event_doc doc;
+  char *body;
+  int rc;
+
+  memset(&doc, 0, sizeof(doc));
+  CAI_LJ_STREAM->init(CAI_LJ_STREAM, &cai_stream_ws_error_event_map, &doc);
+  rc = cai_stream_parse_spooled(&cai_stream_ws_error_event_map, &doc,
+                                &state->event_json_storage);
+  if (rc != CAI_OK || doc.type == NULL || strcmp(doc.type, "error") != 0 ||
+      doc.status < 400LL) {
+    CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_ws_error_event_map, &doc);
+    return CAI_OK;
+  }
+  body = NULL;
+  rc = cai_ws_spooled_to_cstr(&state->event_json_storage, &body, error);
+  if (rc == CAI_OK) {
+    rc = cai_set_openai_error(error, (long)doc.status, body, NULL);
+  }
+  cai_free_mem(NULL, body);
+  CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_ws_error_event_map, &doc);
+  return rc != CAI_OK ? rc : CAI_ERR_SERVER;
+}
+
+static int cai_ws_process_text_message(cai_sse_state *state, cai_error *error) {
+  int rc;
+
+  rc = cai_ws_parse_error_event(state, error);
+  if (rc != CAI_OK) {
+    state->event_json_storage.reset(&state->event_json_storage);
+    return rc;
+  }
+  rc = cai_sse_emit_event(state, NULL);
+  state->event_json_storage.reset(&state->event_json_storage);
+  if (rc == CAI_ERR_NOMEM) {
+    state->failed = 1;
+    state->failed_code = CAI_ERR_NOMEM;
+    state->failed_message = "failed to allocate websocket stream buffer";
+  } else if (rc != CAI_OK) {
+    state->failed = 1;
+    state->failed_code = rc;
+    state->failed_message = "websocket response callback failed";
+  }
+  return rc;
+}
+
+static int cai_ws_append_message_bytes(cai_sse_state *state,
+                                       const unsigned char *bytes,
+                                       size_t length, cai_error *error) {
+  lonejson_error json_error;
+
+  if (length == 0U) {
+    return CAI_OK;
+  }
+  if (state->event_json_storage.size_fn(&state->event_json_storage) + length >
+      CAI_DEFAULT_SSE_EVENT_LIMIT) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "websocket event exceeded configured limit");
+  }
+  lonejson_error_init(&json_error);
+  if (state->event_json_storage.append(&state->event_json_storage, bytes,
+                                       length,
+                                       &json_error) == LONEJSON_STATUS_OK) {
+    return CAI_OK;
+  }
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to spool websocket message",
+                              json_error.message);
+}
+
+static int cai_ws_receive_events(CURL *curl, cai_sse_state *state,
+                                 long timeout_ms, cai_error *error) {
+  unsigned char buffer[CAI_WEBSOCKET_FRAME_BUFFER_SIZE];
+  const struct curl_ws_frame *meta;
+  size_t received;
+  CURLcode curl_rc;
+  int rc;
+  int receiving_text;
+
+  receiving_text = 0;
+  while (!state->done_seen && !state->failed) {
+    received = 0U;
+    meta = NULL;
+    curl_rc = curl_ws_recv(curl, buffer, sizeof(buffer), &received, &meta);
+    if (curl_rc == CURLE_AGAIN) {
+      rc = cai_ws_wait(curl, 0, timeout_ms, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+      continue;
+    }
+    if (curl_rc == CURLE_GOT_NOTHING) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "websocket closed before response.completed");
+    }
+    if (curl_rc != CURLE_OK) {
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to receive websocket frame",
+                                  curl_easy_strerror(curl_rc));
+    }
+    if (meta == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "websocket frame metadata missing");
+    }
+    if (meta->flags & CURLWS_CLOSE) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "websocket closed before response.completed");
+    }
+    if (meta->flags & CURLWS_BINARY) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "unexpected binary websocket event");
+    }
+    if (meta->flags & (CURLWS_PING | CURLWS_PONG)) {
+      continue;
+    }
+    if (meta->flags & CURLWS_TEXT) {
+      receiving_text = 1;
+      state->event_json_storage.reset(&state->event_json_storage);
+    } else if (!(meta->flags & CURLWS_CONT) || !receiving_text) {
+      continue;
+    }
+    rc = cai_ws_append_message_bytes(state, buffer, received, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (meta->bytesleft == 0 && !(meta->flags & CURLWS_CONT)) {
+      rc = cai_ws_process_text_message(state, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+      receiving_text = 0;
+    }
+  }
+  return state->failed ? state->failed_code : CAI_OK;
+}
+
+static int cai_client_stream_response_websocket_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error) {
+  CURL *curl;
+  CURLcode curl_rc;
+  struct curl_slist *headers;
+  cai_sse_state state;
+  cai_response_request_upload *upload;
+  char *http_url;
+  char *url;
+  long http_status;
+  int rc;
+  int retried_auth;
+
+  retried_auth = 0;
+  if (out_response_id != NULL) {
+    *out_response_id = NULL;
+  }
+  if (out_usage != NULL) {
+    memset(out_usage, 0, sizeof(*out_usage));
+  }
+retry_request:
+  curl = NULL;
+  headers = NULL;
+  upload = NULL;
+  http_url = NULL;
+  url = NULL;
+  memset(&state, 0, sizeof(state));
+  state.sinks = *sinks;
+  state.out_response_id = out_response_id;
+  state.out_usage = out_usage;
+  state.failed_code = CAI_ERR_TRANSPORT;
+  state.failed_message = "websocket response callback failed";
+  if (cai_stream_event_json_init(&state, NULL) != LONEJSON_STATUS_OK) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate websocket stream buffer");
+  }
+  rc = cai_response_request_upload_open(
+      params, 1, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0,
+      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, "response.create", &upload,
+      error);
+  if (rc == CAI_OK) {
+    rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
+                       CAI_CLIENT_IMPL(client)->base_url, "responses",
+                       &http_url, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_ws_url_from_http_url(&CAI_CLIENT_IMPL(client)->allocator, http_url,
+                                  &url, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Content-Type: application/json", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Accept: application/json", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers,
+                           "OpenAI-Beta: " CAI_RESPONSES_WEBSOCKET_BETA, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_bearer_header(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_client_headers(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
+                                    CAI_CLIENT_IMPL(client)->organization_id,
+                                    error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Project: ",
+                                    CAI_CLIENT_IMPL(client)->project_id, error);
+  }
+  if (rc != CAI_OK) {
+    curl_slist_free_all(headers);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_response_request_upload_close(upload);
+    cai_stream_event_json_cleanup(&state);
+    return rc;
+  }
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    curl_slist_free_all(headers);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_response_request_upload_close(upload);
+    cai_stream_event_json_cleanup(&state);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize curl websocket");
+  }
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
+  if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
+                     CAI_CLIENT_IMPL(client)->timeout_ms);
+  }
+  if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+  }
+  cai_log_http_request_start(CAI_CLIENT_IMPL(client), "WS", "responses", 1,
+                             (size_t)cai_response_request_upload_size(upload));
+  curl_rc = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+  if (curl_rc == CURLE_OK) {
+    cai_log_http_request_done(CAI_CLIENT_IMPL(client), "WS", "responses",
+                              http_status, 0U, NULL);
+  }
+  if (curl_rc == CURLE_OK && (http_status == 401L || http_status == 403L) &&
+      !retried_auth && CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_response_request_upload_close(upload);
+    cai_stream_event_json_cleanup(&state);
+    rc = cai_client_refresh_chatgpt_auth_after_http(client, http_status, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    retried_auth = 1;
+    goto retry_request;
+  }
+  if (curl_rc != CURLE_OK) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "websocket upgrade failed",
+                              curl_easy_strerror(curl_rc));
+  } else if (http_status != 101L &&
+             (http_status < 200L || http_status >= 300L)) {
+    rc = cai_set_openai_error(error, http_status, "", NULL);
+  } else {
+    rc = cai_ws_send_request(curl, upload, CAI_CLIENT_IMPL(client)->timeout_ms,
+                             error);
+    if (rc == CAI_OK) {
+      rc = cai_ws_receive_events(curl, &state,
+                                 CAI_CLIENT_IMPL(client)->timeout_ms, error);
+    }
+  }
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+  cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
+  cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+  cai_response_request_upload_close(upload);
+  cai_stream_event_json_cleanup(&state);
+  return rc;
+}
+
+#ifdef CAI_TESTING
+int cai_client_stream_response_websocket_test(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error) {
+  return cai_client_stream_response_websocket_with_id(
+      client, params, sinks, out_response_id, out_usage, error);
+}
+#endif
+
+static int cai_client_should_use_responses_websocket(cai_client *client) {
+  const cai_client_impl *impl;
+
+  if (client == NULL) {
+    return 0;
+  }
+  impl = CAI_CLIENT_IMPL(client);
+  if (impl == NULL || impl->base_url == NULL) {
+    return 0;
+  }
+  if (strncmp(impl->base_url, "http://", 7U) == 0 ||
+      strstr(impl->base_url, "127.0.0.1") != NULL ||
+      strstr(impl->base_url, "localhost") != NULL) {
+    return 0;
+  }
+  if (impl->chatgpt_auth != NULL) {
+    return 1;
+  }
+  return strstr(impl->base_url, "api.openai.com") != NULL;
+}
+
 static int cai_client_stream_response_params_with_id(
     cai_client *client, const cai_response_create_params *params,
     const cai_stream_sinks *sinks, char **out_response_id,
@@ -2076,6 +2646,10 @@ static int cai_client_stream_response_params_with_id(
   }
   if (out_usage != NULL) {
     memset(out_usage, 0, sizeof(*out_usage));
+  }
+  if (cai_client_should_use_responses_websocket(client)) {
+    return cai_client_stream_response_websocket_with_id(
+        client, params, sinks, out_response_id, out_usage, error);
   }
 retry_request:
   url = NULL;
@@ -2127,7 +2701,7 @@ retry_request:
 
   rc = cai_response_request_upload_open(
       params, 1, CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, 0,
-      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, &upload, error);
+      CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL, NULL, &upload, error);
   if (rc == CAI_OK) {
     rc = cai_build_url(&CAI_CLIENT_IMPL(client)->allocator,
                        CAI_CLIENT_IMPL(client)->base_url, "responses", &url,

@@ -523,6 +523,9 @@ if(CAI_BUILD_STATIC)
   add_library(cai_static STATIC ${CAI_SOURCES})
   add_library(cai::static ALIAS cai_static)
   set_target_properties(cai_static PROPERTIES OUTPUT_NAME cai)
+  if(CAI_BUILD_TESTS)
+    target_compile_definitions(cai_static PRIVATE CAI_TESTING)
+  endif()
 endif()
 
 if(CAI_BUILD_SHARED)
@@ -662,8 +665,9 @@ if(CAI_BUILD_TESTS)
     "${CAI_PSLOG_INCLUDE_DIR}"
     ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_compile_definitions(cai_tests PRIVATE CAI_TESTING)
   target_link_libraries(cai_tests PRIVATE ${_cai_internal_link_target} CURL::libcurl
-    Threads::Threads ${CAI_LONEJSON_LINK})
+    Threads::Threads OpenSSL::Crypto ${CAI_LONEJSON_LINK})
   cai_configure_c_target(cai_tests)
   set(CAI_UNIT_TEST_GROUPS
     model_capabilities
@@ -693,7 +697,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_default_path
     chatgpt_auth_open_default_path
     chatgpt_auth_client_defaults_to_codex_backend
-    chatgpt_auth_agent_uses_client_history
+    chatgpt_auth_agent_keeps_server_continuity
     chatgpt_login_authorize_url
     chatgpt_login_callback_validation
     chatgpt_login_callback_exchange
@@ -727,6 +731,7 @@ if(CAI_BUILD_TESTS)
     agent_tool_output_max_bytes
     conversations
     stream_response_text
+    stream_responses_websocket
     stream_non_function_output_item
     stream_output_delta_failure
     stream_output_item_failure
@@ -1002,8 +1007,7 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_chatgpt_subscription_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG}
-      SKIP_RETURN_CODE 77)
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_state_restore
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_STATE_RESTORE=1"

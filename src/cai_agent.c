@@ -190,7 +190,6 @@ static void cai_stream_tool_call_list_cleanup(cai_stream_tool_call_list *list);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out, cai_error *error);
 static int cai_client_base_url_is_openrouter(const cai_client_impl *client);
-static int cai_client_uses_chatgpt_auth(const cai_client_impl *client);
 static void
 cai_agent_warn_openrouter_server_continuity(const cai_client_impl *client);
 
@@ -204,10 +203,6 @@ void cai_agent_config_init(cai_agent_config *config) {
 static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
   return client != NULL && client->base_url != NULL &&
          strstr(client->base_url, "openrouter.ai") != NULL;
-}
-
-static int cai_client_uses_chatgpt_auth(const cai_client_impl *client) {
-  return client != NULL && client->chatgpt_auth != NULL;
 }
 
 static void
@@ -341,10 +336,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid session continuity mode");
   }
-  if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO ||
-      cai_client_uses_chatgpt_auth(client_impl)) {
-    impl->session_continuity = cai_client_base_url_is_openrouter(client_impl) ||
-                                       cai_client_uses_chatgpt_auth(client_impl)
+  if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO) {
+    impl->session_continuity = cai_client_base_url_is_openrouter(client_impl)
                                    ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
                                    : CAI_SESSION_CONTINUITY_SERVER;
   } else {
