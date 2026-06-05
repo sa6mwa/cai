@@ -780,7 +780,7 @@ static void test_model_capabilities(test_state *state) {
                     CAI_MODEL_META_VERIFIED),
              CAI_MODEL_META_VERIFIED);
   expect_int(state, "model_metadata_incomplete",
-             (long)(cai_model_metadata_flags(CAI_MODEL_GPT_5_PRO) &
+             (long)(cai_model_metadata_flags(CAI_MODEL_CODEX_MINI_LATEST) &
                     CAI_MODEL_META_INCOMPLETE),
              CAI_MODEL_META_INCOMPLETE);
   expect_str(state, "model_default", CAI_MODEL_DEFAULT_RESPONSES,
@@ -809,6 +809,19 @@ static void test_model_capabilities(test_state *state) {
       0L);
   expect_int(state, "model_gpt_5_5_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
+  expect_int(state, "model_gpt_5_5_pro_context",
+             cai_model_context_window_tokens(CAI_MODEL_GPT_5_5_PRO), 1050000L);
+  expect_int(state, "model_gpt_5_5_pro_not_streaming",
+             cai_model_supports(CAI_MODEL_GPT_5_5_PRO, CAI_MODEL_CAP_STREAMING),
+             0L);
+  expect_int(state, "model_gpt_5_4_pro_no_structured",
+             cai_model_supports(CAI_MODEL_GPT_5_4_PRO,
+                                CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
+             0L);
+  expect_int(state, "model_gpt_5_3_codex_context",
+             cai_model_context_window_tokens(CAI_MODEL_GPT_5_3_CODEX), 400000L);
+  expect_int(state, "model_chat_latest_context",
+             cai_model_context_window_tokens(CAI_MODEL_CHAT_LATEST), 400000L);
   expect_int(state, "model_compact_limit",
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
   expect_str(state, "openrouter_model_default",
@@ -863,14 +876,29 @@ static void test_model_capabilities(test_state *state) {
                                    1000000LL) > 0.46) {
     test_fail(state, "model_usage_usd", "unexpected gpt-5-nano cost estimate");
   }
+  if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_5, 300000LL, 100000LL,
+                                   100000LL) < 6.4 ||
+      cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_5, 300000LL, 100000LL,
+                                   100000LL) > 6.6) {
+    test_fail(state, "model_usage_usd_long",
+              "unexpected gpt-5.5 long-context cost estimate");
+  }
   expect_int(state, "model_usage_usd_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_NANO), 1L);
+  expect_int(state, "model_usage_usd_latest_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_5), 1L);
+  expect_int(state, "model_usage_usd_latest_pro_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_5_PRO), 1L);
+  expect_int(state, "model_usage_usd_5_4_nano_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_4_NANO), 1L);
+  expect_int(state, "model_usage_usd_5_pro_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_PRO), 1L);
   expect_int(state, "model_usage_usd_unknown",
              cai_model_can_estimate_usage_usd("future-model"), 0L);
   expect_int(state, "model_usage_usd_incomplete",
-             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_PRO), 0L);
+             cai_model_can_estimate_usage_usd(CAI_MODEL_CODEX_MINI_LATEST), 0L);
   expect_int(state, "model_usage_usd_unpriced_supported",
-             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_4_NANO), 0L);
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_4_TURBO), 0L);
   expect_int(state, "model_usage_usd_verified_free",
              cai_model_can_estimate_usage_usd(
                  CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE),
@@ -9802,7 +9830,7 @@ static void test_usage_spend_limit_requires_pricing(test_state *state) {
   cai_usage_limits_init(&limits);
   limits.max_spend_usd = 1.0;
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_4_TURBO;
   agent_config.session_usage_limits = limits;
   expect_int(state, "usage_spend_pricing_agent_config",
              cai_client_new_agent(client, &agent_config, &agent, &error),
@@ -9813,7 +9841,7 @@ static void test_usage_spend_limit_requires_pricing(test_state *state) {
   cai_error_init(&error);
 
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_4_TURBO;
   expect_int(state, "usage_spend_pricing_agent",
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
@@ -9841,7 +9869,7 @@ static void test_usage_spend_limit_requires_pricing(test_state *state) {
   expect_int(state, "usage_spend_pricing_client_limit",
              cai_client_set_usage_limits(client, &limits, &error), CAI_OK);
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_4_NANO;
+  agent_config.model = CAI_MODEL_GPT_4_TURBO;
   expect_int(state, "usage_spend_pricing_client_agent",
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);

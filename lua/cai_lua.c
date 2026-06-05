@@ -5130,6 +5130,14 @@ static int cai_lua_model_info(lua_State *L) {
   lua_setfield(L, -2, "cached_input_usd_per_million");
   lua_pushnumber(L, info->output_usd_per_million);
   lua_setfield(L, -2, "output_usd_per_million");
+  lua_pushinteger(L, (lua_Integer)info->long_context_threshold_tokens);
+  lua_setfield(L, -2, "long_context_threshold_tokens");
+  lua_pushnumber(L, info->long_input_usd_per_million);
+  lua_setfield(L, -2, "long_input_usd_per_million");
+  lua_pushnumber(L, info->long_cached_input_usd_per_million);
+  lua_setfield(L, -2, "long_cached_input_usd_per_million");
+  lua_pushnumber(L, info->long_output_usd_per_million);
+  lua_setfield(L, -2, "long_output_usd_per_million");
   return 1;
 }
 
@@ -6327,12 +6335,17 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("MODEL_GPT_5_4_NANO", CAI_MODEL_GPT_5_4_NANO);
   CAI_LUA_SET_STRING("MODEL_GPT_5_4_MINI", CAI_MODEL_GPT_5_4_MINI);
   CAI_LUA_SET_STRING("MODEL_GPT_5_4", CAI_MODEL_GPT_5_4);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4_PRO", CAI_MODEL_GPT_5_4_PRO);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_4_PRO_2026_03_05",
+                     CAI_MODEL_GPT_5_4_PRO_2026_03_05);
   CAI_LUA_SET_STRING("MODEL_GPT_5_4_MINI_2026_03_17",
                      CAI_MODEL_GPT_5_4_MINI_2026_03_17);
   CAI_LUA_SET_STRING("MODEL_GPT_5_4_NANO_2026_03_17",
                      CAI_MODEL_GPT_5_4_NANO_2026_03_17);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_3_CODEX", CAI_MODEL_GPT_5_3_CODEX);
   CAI_LUA_SET_STRING("MODEL_GPT_5_3_CHAT_LATEST",
                      CAI_MODEL_GPT_5_3_CHAT_LATEST);
+  CAI_LUA_SET_STRING("MODEL_CHAT_LATEST", CAI_MODEL_CHAT_LATEST);
   CAI_LUA_SET_STRING("MODEL_GPT_5_2", CAI_MODEL_GPT_5_2);
   CAI_LUA_SET_STRING("MODEL_GPT_5_2_2025_12_11", CAI_MODEL_GPT_5_2_2025_12_11);
   CAI_LUA_SET_STRING("MODEL_GPT_5_2_CHAT_LATEST",

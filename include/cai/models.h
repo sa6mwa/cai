@@ -13,9 +13,13 @@ extern "C" {
 #define CAI_MODEL_GPT_5_4_NANO "gpt-5.4-nano"
 #define CAI_MODEL_GPT_5_4_MINI "gpt-5.4-mini"
 #define CAI_MODEL_GPT_5_4 "gpt-5.4"
+#define CAI_MODEL_GPT_5_4_PRO "gpt-5.4-pro"
+#define CAI_MODEL_GPT_5_4_PRO_2026_03_05 "gpt-5.4-pro-2026-03-05"
 #define CAI_MODEL_GPT_5_4_MINI_2026_03_17 "gpt-5.4-mini-2026-03-17"
 #define CAI_MODEL_GPT_5_4_NANO_2026_03_17 "gpt-5.4-nano-2026-03-17"
+#define CAI_MODEL_GPT_5_3_CODEX "gpt-5.3-codex"
 #define CAI_MODEL_GPT_5_3_CHAT_LATEST "gpt-5.3-chat-latest"
+#define CAI_MODEL_CHAT_LATEST "chat-latest"
 #define CAI_MODEL_GPT_5_2 "gpt-5.2"
 #define CAI_MODEL_GPT_5_2_2025_12_11 "gpt-5.2-2025-12-11"
 #define CAI_MODEL_GPT_5_2_CHAT_LATEST "gpt-5.2-chat-latest"
@@ -156,6 +160,14 @@ typedef struct cai_model_info {
   double cached_input_usd_per_million;
   /** Estimated output price in USD per million tokens. */
   double output_usd_per_million;
+  /** Input token threshold where long-context prices apply, or zero. */
+  long long long_context_threshold_tokens;
+  /** Long-context uncached input price in USD per million tokens, or zero. */
+  double long_input_usd_per_million;
+  /** Long-context cached input price in USD per million tokens, or zero. */
+  double long_cached_input_usd_per_million;
+  /** Long-context output price in USD per million tokens, or zero. */
+  double long_output_usd_per_million;
 } cai_model_info;
 
 /** Look up bundled metadata for a model id. */

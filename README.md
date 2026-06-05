@@ -203,9 +203,12 @@ handling, and session state save/restore. See
   `cai_agent_config.session_usage_limits`. If `max_spend_usd` is positive, the
   selected model must have CAI pricing metadata; verified free OpenRouter models
   are accepted as zero-cost, but unknown or incomplete model metadata fails
-  closed instead of silently estimating `$0.00`. A request that crosses a budget
-  is charged, returns `CAI_ERR_LIMIT`, and later requests are rejected before
-  transport until the limit is raised or disabled. Use `cai_client_usage`,
+  closed instead of silently estimating `$0.00`. CAI estimates spend with
+  bundled Standard API token prices and applies known long-context token prices
+  for models whose pricing changes above a documented input-token threshold. A
+  request that crosses a budget is charged, returns `CAI_ERR_LIMIT`, and later
+  requests are rejected before transport until the limit is raised or disabled.
+  Use `cai_client_usage`,
   `cai_session_usage`, or `cai_session_close_with_usage` to report cumulative
   token usage and estimated USD spend:
 

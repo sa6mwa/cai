@@ -172,15 +172,37 @@ assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE) == "string")
 assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
   cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
   "OpenRouter default model")
+assert_eq(cai.MODEL_GPT_5_4_PRO, "gpt-5.4-pro", "GPT-5.4 pro constant")
+assert_eq(cai.MODEL_GPT_5_3_CODEX, "gpt-5.3-codex",
+  "GPT-5.3-Codex constant")
+assert_eq(cai.MODEL_CHAT_LATEST, "chat-latest", "Chat latest constant")
 local model = cai.model_info(cai.MODEL_GPT_5_NANO)
 assert(type(model) == "table")
 assert(model.context_window_tokens > 0)
 assert(model.auto_compact_token_limit > 0)
+local latest_model = cai.model_info(cai.MODEL_GPT_5_5)
+assert(type(latest_model) == "table")
+assert_eq(latest_model.input_usd_per_million, 5.0, "gpt-5.5 input price")
+assert_eq(latest_model.cached_input_usd_per_million, 0.5,
+  "gpt-5.5 cached input price")
+assert_eq(latest_model.output_usd_per_million, 30.0, "gpt-5.5 output price")
+assert_eq(latest_model.long_context_threshold_tokens, 272000,
+  "gpt-5.5 long context threshold")
+assert_eq(latest_model.long_input_usd_per_million, 10.0,
+  "gpt-5.5 long input price")
 assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_NANO), true,
   "priced model can enforce spend")
-assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_PRO), false,
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5), true,
+  "latest model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5_PRO), true,
+  "latest pro model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_4_NANO), true,
+  "priced GPT-5.4 nano can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_PRO), true,
+  "GPT-5 pro can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_CODEX_MINI_LATEST), false,
   "incomplete model cannot enforce spend")
-assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_4_NANO), false,
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_4_TURBO), false,
   "supported model without price metadata cannot enforce spend")
 assert_eq(cai.model_can_estimate_usage_usd("future-model"), false,
   "unknown model cannot enforce spend")
@@ -206,7 +228,7 @@ assert_not_ok(dummy_client:new_agent({
   max_tool_calls = -1,
 }), "negative Lua agent max tool calls must fail")
 assert_not_ok(dummy_client:new_agent({
-  model = cai.MODEL_GPT_5_4_NANO,
+  model = cai.MODEL_GPT_4_TURBO,
   session_usage_limits = { max_spend_usd = 1.0 },
 }), "Lua agent spend cap with missing pricing must fail")
 local dotenv_path = "/tmp/cai-lua-dotenv-test.env"
@@ -258,7 +280,7 @@ assert_ok(dummy_session:set_usage_limits({
 assert_not_ok(dummy_session:set_usage_limits({ max_spend_usd = -1 }),
   "negative Lua session spend limit must fail")
 local unpriced_agent = assert_ok(dummy_client:new_agent({
-  model = cai.MODEL_GPT_5_4_NANO,
+  model = cai.MODEL_GPT_4_TURBO,
   instructions = "offline lua unpriced spend test",
 }))
 local unpriced_session = assert_ok(unpriced_agent:new_session())
