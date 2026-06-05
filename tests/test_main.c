@@ -6058,6 +6058,11 @@ static const char *mock_response_for_request(const char *request) {
       "\"id\":\"fc_auto_1\",\"type\":\"function_call\",\"call_id\":"
       "\"call_auto_1\",\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":1}\""
       "}]}";
+  static const char round_limit_tool_call_body[] =
+      "{\"id\":\"resp_round_limit_tool_1\",\"status\":\"completed\","
+      "\"output\":[{\"id\":\"fc_round_limit_1\",\"type\":\"function_call\","
+      "\"call_id\":\"call_round_limit_1\",\"name\":\"raw_echo\","
+      "\"arguments\":\"{\\\"x\\\":1}\"}]}";
   static const char large_tool_call_body[] =
       "{\"id\":\"resp_large_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_large_1\",\"type\":\"function_call\",\"call_id\":"
@@ -6388,7 +6393,8 @@ static const char *mock_response_for_request(const char *request) {
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
-          strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL) {
+          strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
+          strstr(request, "\"tool_choice\"") == NULL) {
         return stream_tool_done_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
@@ -6436,7 +6442,8 @@ static const char *mock_response_for_request(const char *request) {
         }
         return stream_tool_body;
       }
-      if (strstr(request, "stream malformed delta tool turn") != NULL) {
+      if (strstr(request, "stream malformed delta tool turn") != NULL &&
+          strstr(request, "\"tool_choice\":\"required\"") != NULL) {
         if (stream_malformed_delta_tool_body[0] == '\0') {
           strcpy(stream_malformed_delta_tool_body,
                  "data: {\"type\":\"response.function_call_arguments.delta\","
@@ -6596,15 +6603,29 @@ static const char *mock_response_for_request(const char *request) {
       return manual_tool_done_body;
     }
     if (strstr(request, "auto tool turn") != NULL &&
-        strstr(request, "\"name\":\"raw_echo\"") != NULL) {
+        strstr(request, "\"name\":\"raw_echo\"") != NULL &&
+        strstr(request, "\"tool_choice\":\"required\"") != NULL) {
       return auto_tool_call_body;
+    }
+    if (strstr(request, "round limit tool turn") != NULL &&
+        strstr(request, "\"name\":\"raw_echo\"") != NULL) {
+      return round_limit_tool_call_body;
     }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
         strstr(request, "\"output\":\"{\\\"x\\\":1}\"") != NULL &&
         strstr(request, "auto tool turn") != NULL &&
-        strstr(request, "auto client history tool turn") == NULL) {
+        strstr(request, "auto client history tool turn") == NULL &&
+        strstr(request, "\"tool_choice\"") == NULL) {
       return auto_tool_done_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_round_limit_1\"") != NULL &&
+        strstr(request,
+               "\"previous_response_id\":\"resp_round_limit_tool_1\"") !=
+            NULL &&
+        strstr(request, "\"tool_choice\"") == NULL) {
+      return round_limit_tool_call_body;
     }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_auto_1\"") != NULL &&
@@ -10418,6 +10439,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
   cai_run_options_init(&run_options);
   if (mkdtemp(spool_dir) == NULL) {
     test_fail(state, "agent_auto_spool", "mkdtemp failed");
@@ -13705,7 +13727,7 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 1);
+    mock_openai_child(pipe_fds[1], 2);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -13726,7 +13748,7 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
-  run_options.disable_tool_auto_run = 1;
+  run_options.max_tool_rounds = 1;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -13745,9 +13767,10 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
              CAI_OK);
   expect_int(state, "agent_limit_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
-  expect_int(state, "agent_limit_add",
-             cai_session_add_user_text(session, "auto tool turn", &error),
-             CAI_OK);
+  expect_int(
+      state, "agent_limit_add",
+      cai_session_add_user_text(session, "round limit tool turn", &error),
+      CAI_OK);
   expect_int(state, "agent_limit_run",
              cai_session_run_auto(session, &run_options, &response, &error),
              CAI_ERR_CANCELLED);
@@ -15322,6 +15345,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
   cai_run_options_init(&run_options);
   run_options.max_tool_rounds = 2;
   run_options.tool_event = test_tool_event;

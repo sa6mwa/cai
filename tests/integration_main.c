@@ -1871,11 +1871,11 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
                                       ? CAI_REASONING_EFFORT_NONE
                                       : CAI_REASONING_EFFORT_MINIMAL;
   agent_config.max_output_tokens = 48;
+  agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
+  agent_config.max_tool_calls = 1;
+  agent_config.disable_parallel_tool_calls = 1;
   if (use_openrouter != 0) {
     agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
-    agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
-    agent_config.max_tool_calls = 1;
-    agent_config.disable_parallel_tool_calls = 1;
   }
   run_options.max_tool_rounds = 2;
 

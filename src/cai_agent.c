@@ -2938,6 +2938,11 @@ static int cai_session_init_response_params(cai_session *session,
   return CAI_OK;
 }
 
+static int cai_session_clear_tool_choice_for_tool_continuation(
+    cai_response_create_params *params, cai_error *error) {
+  return cai_response_create_params_set_tool_choice(params, NULL, error);
+}
+
 static int cai_session_run_tool_round(cai_session *session,
                                       const cai_response *response,
                                       const cai_run_options *options,
@@ -2960,6 +2965,9 @@ static int cai_session_run_tool_round(cai_session *session,
   has_pending_items = 0;
   tool_output_runtime = NULL;
   rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_run_options_open_tool_output_runtime(options, &tool_output_runtime,
                                                   error);
@@ -3351,6 +3359,9 @@ static int cai_session_stream_tool_round(
   effective_sinks.function_call_arguments_done = cai_stream_capture_tool_done;
   effective_sinks.function_call_context = &capture;
   rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_session_add_stream_tool_outputs(session, params, input_calls,
                                              options, error);
