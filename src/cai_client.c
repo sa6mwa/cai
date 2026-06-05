@@ -105,6 +105,8 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->json_response_limit_bytes = effective->json_response_limit_bytes;
   impl->logger = effective->logger_disabled ? NULL : effective->logger;
   impl->logger_disabled = effective->logger_disabled;
+  impl->responses_ws_curl = NULL;
+  impl->responses_ws_headers = NULL;
 
   if (impl->json_response_limit_bytes == 0U) {
     impl->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;
@@ -187,6 +189,7 @@ int cai_client_refresh_chatgpt_auth(cai_client *client, cai_error *error) {
     cai_free_mem(NULL, access_token);
     return rc;
   }
+  cai_client_close_responses_websocket(impl);
   cai_client_clear_secret(impl->api_key);
   cai_free_mem(&impl->allocator, impl->api_key);
   impl->api_key = cai_strdup(&impl->allocator, access_token);
@@ -223,6 +226,7 @@ void cai_client_close(cai_client *client) {
     return;
   }
   allocator = impl->allocator;
+  cai_client_close_responses_websocket(impl);
   cai_client_destroy_fields(impl);
   cai_free_mem(&allocator, impl);
   client->impl = NULL;

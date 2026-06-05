@@ -14,6 +14,20 @@
 #define CAI_RESPONSES_WEBSOCKET_BETA "responses_websockets=2026-02-06"
 #define CAI_WEBSOCKET_FRAME_BUFFER_SIZE 16384U
 
+void cai_client_close_responses_websocket(cai_client_impl *impl) {
+  if (impl == NULL) {
+    return;
+  }
+  if (impl->responses_ws_curl != NULL) {
+    curl_easy_cleanup(impl->responses_ws_curl);
+    impl->responses_ws_curl = NULL;
+  }
+  if (impl->responses_ws_headers != NULL) {
+    curl_slist_free_all(impl->responses_ws_headers);
+    impl->responses_ws_headers = NULL;
+  }
+}
+
 static const char *const cai_stream_json_event_names[] = {
     "",
     "response.created",
@@ -2447,17 +2461,21 @@ static int cai_client_stream_response_websocket_with_id(
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
+  cai_client_impl *impl;
   cai_sse_state state;
   cai_response_request_upload *upload;
   char *http_url;
   char *url;
   long http_status;
   int rc;
+  int keep_alive;
   int retried_auth;
   int retried_transient;
 
+  impl = CAI_CLIENT_IMPL(client);
   retried_auth = 0;
   retried_transient = 0;
+  keep_alive = impl->chatgpt_auth != NULL;
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
@@ -2520,49 +2538,64 @@ retry_request:
   }
   if (rc != CAI_OK) {
     curl_slist_free_all(headers);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_free_mem(&impl->allocator, http_url);
+    cai_free_mem(&impl->allocator, url);
     cai_response_request_upload_close(upload);
     cai_stream_event_json_cleanup(&state);
     return rc;
   }
-  curl = curl_easy_init();
-  if (curl == NULL) {
+  if (keep_alive && impl->responses_ws_curl != NULL) {
+    curl = impl->responses_ws_curl;
+    curl_rc = CURLE_OK;
+    http_status = 101L;
     curl_slist_free_all(headers);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
-    cai_response_request_upload_close(upload);
-    cai_stream_event_json_cleanup(&state);
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to initialize curl websocket");
-  }
-  curl_easy_setopt(curl, CURLOPT_URL, url);
-  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
-  if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
-                     CAI_CLIENT_IMPL(client)->timeout_ms);
-  }
-  if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-  }
-  cai_log_http_request_start(CAI_CLIENT_IMPL(client), "WS", "responses", 1,
-                             (size_t)cai_response_request_upload_size(upload));
-  curl_rc = curl_easy_perform(curl);
-  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
-  if (curl_rc == CURLE_OK) {
-    cai_log_http_request_done(CAI_CLIENT_IMPL(client), "WS", "responses",
-                              http_status, 0U, NULL);
+    headers = NULL;
+    cai_free_mem(&impl->allocator, http_url);
+    http_url = NULL;
+    cai_free_mem(&impl->allocator, url);
+    url = NULL;
+  } else {
+    curl = curl_easy_init();
+    if (curl == NULL) {
+      curl_slist_free_all(headers);
+      cai_free_mem(&impl->allocator, http_url);
+      cai_free_mem(&impl->allocator, url);
+      cai_response_request_upload_close(upload);
+      cai_stream_event_json_cleanup(&state);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to initialize curl websocket");
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
+    if (impl->timeout_ms > 0L) {
+      curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
+    }
+    if (impl->insecure_skip_verify) {
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    cai_log_http_request_start(
+        impl, "WS", "responses", 1,
+        (size_t)cai_response_request_upload_size(upload));
+    curl_rc = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    if (curl_rc == CURLE_OK) {
+      cai_log_http_request_done(impl, "WS", "responses", http_status, 0U, NULL);
+    }
   }
   if (curl_rc == CURLE_OK && (http_status == 401L || http_status == 403L) &&
-      !retried_auth && CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL) {
-    curl_easy_cleanup(curl);
+      !retried_auth && impl->chatgpt_auth != NULL) {
+    if (keep_alive && curl == impl->responses_ws_curl) {
+      cai_client_close_responses_websocket(impl);
+    } else {
+      curl_easy_cleanup(curl);
+    }
     curl_slist_free_all(headers);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_free_mem(&impl->allocator, http_url);
+    cai_free_mem(&impl->allocator, url);
     cai_response_request_upload_close(upload);
     cai_stream_event_json_cleanup(&state);
     rc = cai_client_refresh_chatgpt_auth_after_http(client, http_status, error);
@@ -2575,10 +2608,14 @@ retry_request:
   if ((cai_ws_http_status_is_transient(http_status) ||
        (curl_rc != CURLE_OK && cai_ws_curl_error_is_transient(curl_rc))) &&
       !retried_transient) {
-    curl_easy_cleanup(curl);
+    if (keep_alive && curl == impl->responses_ws_curl) {
+      cai_client_close_responses_websocket(impl);
+    } else {
+      curl_easy_cleanup(curl);
+    }
     curl_slist_free_all(headers);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
-    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_free_mem(&impl->allocator, http_url);
+    cai_free_mem(&impl->allocator, url);
     cai_response_request_upload_close(upload);
     cai_stream_event_json_cleanup(&state);
     retried_transient = 1;
@@ -2592,24 +2629,31 @@ retry_request:
              (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status, "", NULL);
   } else {
-    rc = cai_ws_send_request(curl, upload, CAI_CLIENT_IMPL(client)->timeout_ms,
-                             error);
+    if (keep_alive && impl->responses_ws_curl == NULL) {
+      impl->responses_ws_curl = curl;
+      impl->responses_ws_headers = headers;
+      headers = NULL;
+    }
+    rc = cai_ws_send_request(curl, upload, impl->timeout_ms, error);
     if (rc == CAI_OK) {
-      rc = cai_ws_receive_events(curl, &state,
-                                 CAI_CLIENT_IMPL(client)->timeout_ms, error);
-      if (rc == CAI_OK) {
-        size_t sent;
-
-        sent = 0U;
-        (void)curl_ws_send(curl, "", 0U, &sent, 0, CURLWS_CLOSE);
-      }
+      rc = cai_ws_receive_events(curl, &state, impl->timeout_ms, error);
     }
   }
-  curl_easy_cleanup(curl);
+  if (keep_alive) {
+    if (rc != CAI_OK) {
+      if (curl != NULL && curl != impl->responses_ws_curl) {
+        curl_easy_cleanup(curl);
+      }
+      cai_client_close_responses_websocket(impl);
+    }
+  } else {
+    curl_easy_cleanup(curl);
+  }
   curl_slist_free_all(headers);
-  cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
-  cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+  cai_free_mem(&impl->allocator, http_url);
+  cai_free_mem(&impl->allocator, url);
   cai_response_request_upload_close(upload);
+  cai_sse_cleanup_call_ids(&state);
   cai_stream_event_json_cleanup(&state);
   return rc;
 }

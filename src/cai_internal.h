@@ -30,6 +30,8 @@ typedef struct cai_client_impl {
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;
   int logger_disabled;
+  CURL *responses_ws_curl;
+  struct curl_slist *responses_ws_headers;
 } cai_client_impl;
 
 typedef struct cai_response_request_upload cai_response_request_upload;
@@ -416,6 +418,7 @@ int cai_client_stream_response_with_id(cai_client *client,
                                        char **out_response_id,
                                        cai_token_usage *out_usage,
                                        cai_error *error);
+void cai_client_close_responses_websocket(cai_client_impl *impl);
 #ifdef CAI_TESTING
 int cai_client_stream_response_websocket_test(
     cai_client *client, const cai_response_create_params *params,
