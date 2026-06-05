@@ -2975,6 +2975,9 @@ static int cai_session_create_response_from_params(
   rc = cai_session_after_response(session, pending_items, has_pending_items,
                                   response, error);
   if (rc != CAI_OK) {
+    if (rc == CAI_ERR_LIMIT) {
+      cai_session_clear_inputs(session);
+    }
     cai_response_destroy(response);
     return rc;
   }
@@ -3524,7 +3527,7 @@ static int cai_session_stream_once(cai_session *session,
   if (capture_stream && capture.output_items_initialized) {
     capture.output_items.cleanup(&capture.output_items);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK || (rc == CAI_ERR_LIMIT && response_id != NULL)) {
     cai_session_clear_inputs(session);
   }
   return rc;

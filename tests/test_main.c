@@ -9990,10 +9990,15 @@ static void test_usage_accounting(test_state *state) {
 static void test_usage_limits(test_state *state) {
   static const char *first_required[] = {"POST /v1/responses", "limit one"};
   static const char *second_required[] = {"POST /v1/responses", "limit two"};
+  static const char *third_required[] = {"POST /v1/responses", "limit blocked"};
+  static const char *third_forbidden[] = {"limit two"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses", first_required, 2U, NULL, 0U, 200, "OK",
        "application/json", NULL, usage_body_one},
       {"POST /v1/responses", second_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_small_two},
+      {"POST /v1/responses", third_required, 2U, third_forbidden,
+       sizeof(third_forbidden) / sizeof(third_forbidden[0]), 200, "OK",
        "application/json", NULL, usage_body_small_two}};
   http_mock_client mock;
   cai_agent_config agent_config;
@@ -10044,8 +10049,32 @@ static void test_usage_limits(test_state *state) {
              cai_session_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "usage_limits_total", usage.usage.total_tokens, 25L);
   expect_int(state, "usage_limits_exceeded", usage.limit_exceeded, 1L);
+  expect_int(state, "usage_limits_no_pending_after_post_response_limit",
+             cai_session_run(session, &response, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "usage_limits_add_blocked",
+             cai_session_add_user_text(session, "limit blocked", &error),
+             CAI_OK);
   expect_int(state, "usage_limits_preflight",
              cai_session_run(session, &response, &error), CAI_ERR_LIMIT);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  limits.max_total_tokens = 40LL;
+  expect_int(state, "usage_limits_raise",
+             cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+  expect_int(state, "usage_limits_after_raise_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "usage_limits_after_raise_exceeded", usage.limit_exceeded,
+             0L);
+  expect_int(state, "usage_limits_run_three",
+             cai_session_run(session, &response, &error), CAI_OK);
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "usage_limits_final_usage",
+             cai_session_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "usage_limits_final_total", usage.usage.total_tokens, 35L);
+  expect_int(state, "usage_limits_final_exceeded", usage.limit_exceeded, 0L);
 
   cai_session_destroy(session);
   cai_agent_destroy(agent);
@@ -10152,10 +10181,16 @@ static void test_usage_limit_lanes(test_state *state) {
 static void test_usage_client_limits(test_state *state) {
   static const char *first_required[] = {"POST /v1/responses", "client one"};
   static const char *second_required[] = {"POST /v1/responses", "client two"};
+  static const char *third_required[] = {"POST /v1/responses",
+                                         "client blocked"};
+  static const char *third_forbidden[] = {"client two"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses", first_required, 2U, NULL, 0U, 200, "OK",
        "application/json", NULL, usage_body_one},
       {"POST /v1/responses", second_required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL, usage_body_small_two},
+      {"POST /v1/responses", third_required, 2U, third_forbidden,
+       sizeof(third_forbidden) / sizeof(third_forbidden[0]), 200, "OK",
        "application/json", NULL, usage_body_small_two}};
   http_mock_client mock;
   cai_agent_config agent_config;
@@ -10212,6 +10247,25 @@ static void test_usage_client_limits(test_state *state) {
              CAI_OK);
   expect_int(state, "usage_client_limits_preflight",
              cai_session_run(first, &response, &error), CAI_ERR_LIMIT);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  limits.max_total_tokens = 40LL;
+  expect_int(state, "usage_client_limits_raise",
+             cai_client_set_usage_limits(mock.client, &limits, &error), CAI_OK);
+  expect_int(state, "usage_client_limits_after_raise_usage",
+             cai_client_usage(mock.client, &usage, &error), CAI_OK);
+  expect_int(state, "usage_client_limits_after_raise_exceeded",
+             usage.limit_exceeded, 0L);
+  expect_int(state, "usage_client_limits_run_third",
+             cai_session_run(first, &response, &error), CAI_OK);
+  cai_response_destroy(response);
+  response = NULL;
+  expect_int(state, "usage_client_limits_final_usage",
+             cai_client_usage(mock.client, &usage, &error), CAI_OK);
+  expect_int(state, "usage_client_limits_final_total", usage.usage.total_tokens,
+             35L);
+  expect_int(state, "usage_client_limits_final_exceeded", usage.limit_exceeded,
+             0L);
 
   cai_session_destroy(first);
   cai_session_destroy(second);
