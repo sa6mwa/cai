@@ -6136,6 +6136,11 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_large_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_large_1\",\"type\":\"function_call\",\"call_id\":"
       "\"call_large_1\",\"name\":\"large_raw\",\"arguments\":\"{}\"}]}";
+  static const char large_tool_done_body[] =
+      "{\"id\":\"resp_large_tool_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_"
+      "text\","
+      "\"text\":\"large tool error handled\"}]}]}";
   static const char list_error_tool_call_body[] =
       "{\"id\":\"resp_list_error_tool_1\",\"status\":\"completed\","
       "\"output\":[{\"id\":\"fc_list_error_1\",\"type\":\"function_call\","
@@ -6334,6 +6339,12 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_large_tool_1\",\"usage\":{\"input_tokens\":9,"
       "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_large_tool_done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"large "
+      "tool error handled\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_large_tool_2\",\"usage\":{\"input_tokens\":19,"
+      "\"output_tokens\":4,\"total_tokens\":23}}}\n\n";
   static const char stream_list_error_tool_body[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_stream_list_error_1\",\"type\":\"function_call\","
@@ -6672,6 +6683,14 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "stream large tool turn") != NULL) {
         return stream_large_tool_body;
       }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_large_1\"") != NULL &&
+          strstr(request, "\\\"ok\\\":false") != NULL &&
+          strstr(request, "failed to spool tool output") != NULL &&
+          strstr(request, "\"previous_response_id\":"
+                          "\"resp_stream_large_tool_1\"") != NULL) {
+        return stream_large_tool_done_body;
+      }
       if (strstr(request, "stream list error tool turn") != NULL) {
         return stream_list_error_tool_body;
       }
@@ -6764,6 +6783,14 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "large tool turn") != NULL &&
         strstr(request, "\"name\":\"large_raw\"") != NULL) {
       return large_tool_call_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_large_1\"") != NULL &&
+        strstr(request, "\\\"ok\\\":false") != NULL &&
+        strstr(request, "failed to spool tool output") != NULL &&
+        strstr(request, "\"previous_response_id\":\"resp_large_tool_1\"") !=
+            NULL) {
+      return large_tool_done_body;
     }
     if (strstr(request, "list error tool turn") != NULL &&
         strstr(request, "\"name\":\"list_files\"") != NULL) {
@@ -15102,6 +15129,7 @@ static void test_agent_tool_output_max_bytes(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   cai_response *response;
+  tool_event_state event_state;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -15117,7 +15145,7 @@ static void test_agent_tool_output_max_bytes(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 1);
+    mock_openai_child(pipe_fds[1], 2);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -15139,10 +15167,13 @@ static void test_agent_tool_output_max_bytes(test_state *state) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
   run_options.tool_output_max_bytes = 16U;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
   client = NULL;
   agent = NULL;
   session = NULL;
   response = NULL;
+  memset(&event_state, 0, sizeof(event_state));
 
   expect_int(state, "agent_tool_max_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -15161,8 +15192,14 @@ static void test_agent_tool_output_max_bytes(test_state *state) {
              CAI_OK);
   expect_int(state, "agent_tool_max_run",
              cai_session_run_auto(session, &run_options, &response, &error),
-             CAI_ERR_TRANSPORT);
-  expect_str(state, "agent_tool_max_error", error.message,
+             CAI_OK);
+  expect_str(state, "agent_tool_max_response",
+             cai_response_output_text(response), "large tool error handled");
+  expect_int(state, "agent_tool_max_event_starts", event_state.starts, 1L);
+  expect_int(state, "agent_tool_max_event_outputs", event_state.outputs, 0L);
+  expect_int(state, "agent_tool_max_event_errors", event_state.errors, 1L);
+  expect_str(state, "agent_tool_max_event_name", event_state.name, "large_raw");
+  expect_str(state, "agent_tool_max_event_message", event_state.error,
              "failed to spool tool output");
   cai_response_destroy(response);
   cai_session_destroy(session);
@@ -17829,6 +17866,11 @@ static void test_session_stream_auto_tool_output_max_bytes(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  tool_event_state event_state;
+  cai_token_usage usage;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -17844,7 +17886,7 @@ static void test_session_stream_auto_tool_output_max_bytes(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 1);
+    mock_openai_child(pipe_fds[1], 2);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -17866,9 +17908,17 @@ static void test_session_stream_auto_tool_output_max_bytes(test_state *state) {
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   cai_run_options_init(&run_options);
   run_options.tool_output_max_bytes = 16U;
+  run_options.tool_event = test_tool_event;
+  run_options.tool_event_context = &event_state;
   client = NULL;
   agent = NULL;
   session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&event_state, 0, sizeof(event_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
 
   expect_int(state, "stream_auto_max_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -17882,7 +17932,10 @@ static void test_session_stream_auto_tool_output_max_bytes(test_state *state) {
              CAI_OK);
   expect_int(state, "stream_auto_max_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_auto_max_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
   cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
   expect_int(
       state, "stream_auto_max_add",
       cai_session_add_user_text(session, "stream large tool turn", &error),
@@ -17890,10 +17943,24 @@ static void test_session_stream_auto_tool_output_max_bytes(test_state *state) {
   expect_int(
       state, "stream_auto_max_run",
       cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
-      CAI_ERR_TRANSPORT);
-  expect_str(state, "stream_auto_max_error", error.message,
+      CAI_OK);
+  expect_str(state, "stream_auto_max_output", writer.buffer,
+             "large tool error handled");
+  expect_str(state, "stream_auto_max_previous",
+             cai_session_previous_response_id(session),
+             "resp_stream_large_tool_2");
+  expect_int(state, "stream_auto_max_usage",
+             cai_session_last_usage(session, &usage, &error), CAI_OK);
+  expect_int(state, "stream_auto_max_usage_total", usage.total_tokens, 23L);
+  expect_int(state, "stream_auto_max_event_starts", event_state.starts, 1L);
+  expect_int(state, "stream_auto_max_event_outputs", event_state.outputs, 0L);
+  expect_int(state, "stream_auto_max_event_errors", event_state.errors, 1L);
+  expect_str(state, "stream_auto_max_event_name", event_state.name,
+             "large_raw");
+  expect_str(state, "stream_auto_max_event_message", event_state.error,
              "failed to spool tool output");
 
+  cai_sink_close(sink);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);

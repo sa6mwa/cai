@@ -3081,6 +3081,10 @@ static int cai_capture_tool_error_output(cai_tool_output_capture *capture,
   message = tool_error != NULL && tool_error->message != NULL
                 ? tool_error->message
                 : cai_status_string(tool_rc);
+  if (capture->output.cleanup != NULL) {
+    capture->output.cleanup(&capture->output);
+  }
+  CAI_LJ->spooled_init(CAI_LJ, &capture->output);
   memset(&builder, 0, sizeof(builder));
   rc = cai_buffer_append_cstr(&builder,
                               "{\"ok\":false,\"error\":{\"message\":", error);
