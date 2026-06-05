@@ -1309,6 +1309,9 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
     "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai")
+  install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
 
   set(_cai_package_deps "")
   if(TARGET cai_static)

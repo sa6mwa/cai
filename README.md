@@ -66,7 +66,7 @@ The verification tiers are split intentionally:
 - Binary SDK archives contain installed headers, CMake/pkg-config metadata,
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under
-  `share/doc/libcai/`.
+  `share/doc/libcai/`, plus supplemental docs under `share/doc/libcai/docs/`.
 - Dependency mode defaults to `cpkt`: the build uses the official
   `github.com/sa6mwa/c.pkt.systems` release tarball for the selected target to
   provide curl, OpenSSL, nghttp2, libssh2, zlib, and the native dependency
@@ -722,6 +722,9 @@ As a result, `cai` will treat model metadata as curated SDK data:
   facts.
 - Auto-compaction must require known context metadata or an explicit caller
   token threshold. It should not guess.
+
+The repeatable maintenance process for this curated table is documented in
+[docs/model-metadata.md](docs/model-metadata.md).
 
 In practice this means `cai` will likely need a reviewed generated metadata file
 built from official OpenAI documentation/model comparison data. That is

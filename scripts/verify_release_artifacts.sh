@@ -294,6 +294,7 @@ verify_binary_archive() {
   require_member "$listing" "$root/lib/cmake/cai/cai-config.cmake"
   require_member "$listing" "$root/share/doc/libcai/README.md"
   require_member "$listing" "$root/share/doc/libcai/LICENSE"
+  require_member "$listing" "$root/share/doc/libcai/docs/model-metadata.md"
   require_no_member "$listing" "$root/include/lonejson.h"
   require_no_member "$listing" "$root/include/pslog.h"
   require_no_member_glob "$listing" "^$root/lib/lib(lonejson|pslog|curl)\\."
@@ -313,6 +314,7 @@ verify_source_archive() {
 
   require_member "$listing" "$root/CMakeLists.txt"
   require_member "$listing" "$root/README.md"
+  require_member "$listing" "$root/docs/model-metadata.md"
   require_member "$listing" "$root/LICENSE"
   require_member "$listing" "$root/VERSION"
   require_member "$listing" "$root/RELEASE_MANIFEST"
@@ -328,6 +330,7 @@ verify_lua_source_archive() {
 
   require_member "$listing" "$root/LICENSE"
   require_member "$listing" "$root/README.md"
+  require_member "$listing" "$root/docs/model-metadata.md"
   require_member "$listing" "$root/VERSION"
   require_member "$listing" "$root/RELEASE_MANIFEST"
   require_member "$listing" "$root/cai.rockspec.in"

@@ -13,6 +13,7 @@ release_version=$3
 files=(
   LICENSE
   README.md
+  docs/model-metadata.md
   cai.rockspec.in
   scripts/build_lua_rock.sh
   scripts/render_release_rockspec.sh
