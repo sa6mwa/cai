@@ -61,9 +61,9 @@ write_terminal_fixture() {
 assert_terminal_multi_turn_transcript() {
   local transcript=$1
 
-  assert_count_at_least '> ' 4 "$transcript"
-  assert_count_at_least '[response]' 4 "$transcript"
-  assert_count_at_least '[usage]' 4 "$transcript"
+  assert_count_at_least '> ' 5 "$transcript"
+  assert_count_at_least '[response]' 5 "$transcript"
+  assert_count_at_least '[usage]' 5 "$transcript"
   assert_count_at_least '[tool]' 4 "$transcript"
   grep -F '[tool] todo_kanban input=' "$transcript" >/dev/null
   grep -F '[tool] todo_kanban output=' "$transcript" >/dev/null
@@ -77,6 +77,8 @@ assert_terminal_multi_turn_transcript() {
   grep -F 'NOTE_ALPHA' "$transcript" >/dev/null
   grep -F 'EXEC_ALPHA' "$transcript" >/dev/null
 }
+
+tool_gate_prefix='Release-gate tool-use test. You MUST call exactly the named tool before answering. If you answer without that tool call, the test fails.'
 
 "$basic_example" >"$tmpdir/basic.out"
 grep -F 'hello from cai' "$tmpdir/basic.out" >/dev/null
@@ -111,10 +113,11 @@ c_terminal_root="$tmpdir/c-terminal-root"
 write_terminal_fixture "$c_terminal_root"
 {
   printf '%s\n' \
-    'Integration test turn 1: use todo_kanban to create one item titled CAI_MULTI_TURN_ALPHA on the default board, then answer TURN1_DONE.' \
-    'Integration test turn 2: use list_files on "." and read_file with only path "note.txt". Do not set max_bytes, start_line, or end_line. Then answer TURN2_DONE and include NOTE_ALPHA if the file contains it.' \
-    'Integration test turn 3: use exec_command to run only command text `printf EXEC_ALPHA; uname -s`. Do not set shell or workdir. Then answer TURN3_DONE and include EXEC_ALPHA.' \
-    'Integration test turn 4: use todo_kanban to list the default board, then answer TURN4_DONE and include CAI_MULTI_TURN_ALPHA if the item is present.' \
+    "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"add_item\",\"title\":\"CAI_MULTI_TURN_ALPHA\"}. Use the default board. After the tool result, answer TURN1_DONE." \
+    "$tool_gate_prefix Use list_files with arguments {\"path\":\".\"}. After the tool result, answer TURN2_DONE and include note.txt if it is listed." \
+    "$tool_gate_prefix Use read_file with arguments {\"path\":\"note.txt\"}. Do not set max_bytes, start_line, or end_line. After the tool result, answer TURN3_DONE and include NOTE_ALPHA if the file contains it." \
+    "$tool_gate_prefix Use exec_command with arguments {\"command\":\"printf EXEC_ALPHA; uname -s\"}. Do not set shell or workdir. After the tool result, answer TURN4_DONE and include EXEC_ALPHA." \
+    "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"list_board\"}. Use the default board. After the tool result, answer TURN5_DONE and include CAI_MULTI_TURN_ALPHA if the item is present." \
     '/exit'
 } | env \
   CAI_TODO_STORE="$tmpdir/terminal-multiturn-todo.json" \
@@ -146,10 +149,11 @@ lua_terminal_root="$tmpdir/lua-terminal-root"
 write_terminal_fixture "$lua_terminal_root"
 {
   printf '%s\n' \
-    'Integration test turn 1: use todo_kanban to create one item titled CAI_MULTI_TURN_ALPHA on the default board, then answer TURN1_DONE.' \
-    'Integration test turn 2: use list_files on "." and read_file with only path "note.txt". Do not set max_bytes, start_line, or end_line. Then answer TURN2_DONE and include NOTE_ALPHA if the file contains it.' \
-    'Integration test turn 3: use exec_command to run only command text `printf EXEC_ALPHA; uname -s`. Do not set shell or workdir. Then answer TURN3_DONE and include EXEC_ALPHA.' \
-    'Integration test turn 4: use todo_kanban to list the default board, then answer TURN4_DONE and include CAI_MULTI_TURN_ALPHA if the item is present.' \
+    "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"add_item\",\"title\":\"CAI_MULTI_TURN_ALPHA\"}. Use the default board. After the tool result, answer TURN1_DONE." \
+    "$tool_gate_prefix Use list_files with arguments {\"path\":\".\"}. After the tool result, answer TURN2_DONE and include note.txt if it is listed." \
+    "$tool_gate_prefix Use read_file with arguments {\"path\":\"note.txt\"}. Do not set max_bytes, start_line, or end_line. After the tool result, answer TURN3_DONE and include NOTE_ALPHA if the file contains it." \
+    "$tool_gate_prefix Use exec_command with arguments {\"command\":\"printf EXEC_ALPHA; uname -s\"}. Do not set shell or workdir. After the tool result, answer TURN4_DONE and include EXEC_ALPHA." \
+    "$tool_gate_prefix Use todo_kanban with arguments {\"operation\":\"list_board\"}. Use the default board. After the tool result, answer TURN5_DONE and include CAI_MULTI_TURN_ALPHA if the item is present." \
     '/exit'
 } | env \
   CAI_LUA_TODO_STORE="$tmpdir/lua-terminal-multiturn-todo.json" \

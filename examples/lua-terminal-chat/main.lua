@@ -53,6 +53,22 @@ local function print_usage(usage, context, total_cost)
     bold_white, total_cost, reset))
 end
 
+local function tool_arguments_json(event)
+  if event.arguments_json then
+    return event.arguments_json
+  end
+  if event.arguments_spooled and event.arguments_spooled.read_all then
+    local ok_read, value = pcall(function()
+      return event.arguments_spooled:read_all()
+    end)
+    if ok_read and value then
+      return value
+    end
+    return "<failed to read arguments>"
+  end
+  return "{}"
+end
+
 local model = os.getenv("CAI_TERMINAL_CHAT_MODEL") or os.getenv("CAI_EXAMPLE_MODEL")
 local searxng_base_url = os.getenv("CAI_SEARXNG_BASE_URL") or "http://127.0.0.1:8888"
 local todo_store = os.getenv("CAI_LUA_TODO_STORE")
@@ -172,6 +188,7 @@ local agent = ok(client:new_agent({
   reasoning_effort = cai.REASONING_EFFORT_LOW,
   reasoning_summary = cai.REASONING_SUMMARY_AUTO,
   prompt_cache_key = "cai:example:lua-terminal-chat:v1",
+  disable_parallel_tool_calls = 1,
 }), nil, "client:new_agent")
 
 ok(agent:register_searxng_tool({
@@ -252,7 +269,7 @@ while true do
     tool_event = function(event)
       if event.kind == "start" then
         io.write(string.format("%s[%stool%s]%s %s input=%s\n",
-          gray, cyan, gray, reset, event.name or "(unknown)", event.arguments_json or "{}"))
+          gray, cyan, gray, reset, event.name or "(unknown)", tool_arguments_json(event)))
       elseif event.kind == "output" then
         io.write(string.format("%s[%stool%s]%s %s output=",
           gray, cyan, gray, reset, event.name or "(unknown)"))

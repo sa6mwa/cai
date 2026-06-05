@@ -813,7 +813,7 @@ static void test_model_capabilities(test_state *state) {
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
   expect_str(state, "openrouter_model_default",
              CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES,
-             CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE);
+             CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE);
   expect_int(
       state, "openrouter_nemotron_context",
       cai_model_context_window_tokens(
@@ -849,6 +849,14 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE,
                                 CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
              0L);
+  expect_int(state, "openrouter_poolside_m_context",
+             cai_model_context_window_tokens(
+                 CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE),
+             262144L);
+  expect_int(state, "openrouter_poolside_m_streaming",
+             cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
+                                CAI_MODEL_CAP_STREAMING),
+             1L);
   if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL, 200000LL,
                                    1000000LL) < 0.44 ||
       cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL, 200000LL,
@@ -5731,22 +5739,25 @@ static int mock_write_status_response(int fd, int status,
                                       const char *content_type,
                                       const char *request_id,
                                       const char *body) {
-  char response[1024];
-  int response_len;
+  char header[512];
+  int header_len;
 
-  response_len = snprintf(
-      response, sizeof(response),
+  header_len = snprintf(
+      header, sizeof(header),
       "HTTP/1.1 %d %s\r\nContent-Type: %s\r\n"
       "%s%s%s"
-      "Content-Length: %lu\r\nConnection: close\r\n\r\n%s",
+      "Content-Length: %lu\r\nConnection: close\r\n\r\n",
       status, status_text, content_type != NULL ? content_type : "text/plain",
       request_id != NULL ? "x-request-id: " : "",
       request_id != NULL ? request_id : "", request_id != NULL ? "\r\n" : "",
-      (unsigned long)strlen(body), body);
-  if (response_len <= 0 || (size_t)response_len >= sizeof(response)) {
+      (unsigned long)strlen(body));
+  if (header_len <= 0 || (size_t)header_len >= sizeof(header)) {
     return -1;
   }
-  return mock_write_all(fd, response, (size_t)response_len);
+  if (mock_write_all(fd, header, (size_t)header_len) != 0) {
+    return -1;
+  }
+  return mock_write_all(fd, body, strlen(body));
 }
 
 static int mock_write_status_json_response(int fd, int status,
@@ -6223,7 +6234,7 @@ static const char *mock_response_for_request(const char *request) {
   static char stream_tool_body[1024];
   static char stream_malformed_delta_tool_body[1024];
   static char stream_source_tool_body[1024];
-  static char stream_tool_reasoning_body[1024];
+  static char stream_tool_reasoning_body[4096];
   static char stream_tool_reasoning_duplicate_body[1400];
   static const char stream_tool_reasoning_done_body[] =
       "data: {\"type\":\"response.reasoning_summary_text.delta\","
@@ -6493,10 +6504,23 @@ static const char *mock_response_for_request(const char *request) {
           strcat(stream_tool_reasoning_body,
                  "data: {\"type\":\"response.reasoning_summary_text.done\"}"
                  "\n\n");
+          strcat(stream_tool_reasoning_body,
+                 "data: {\"type\":\"response.output_item.done\","
+                 "\"output_index\":0,\"item\":{\"id\":\"rs_stream_reason_1\","
+                 "\"type\":\"reasoning\",\"content\":[],\"summary\":[{"
+                 "\"type\":\"summary_text\",\"text\":\"before\"}]}}\n\n");
+          strcat(stream_tool_reasoning_body,
+                 "data: {\"type\":\"response.function_call_arguments.delta\","
+                 "\"item_id\":\"fc_stream_reason_1\",\"output_index\":1,"
+                 "\"delta\":\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}\n\n");
+          strcat(stream_tool_reasoning_body,
+                 "data: {\"type\":\"response.function_call_arguments.done\","
+                 "\"item_id\":\"fc_stream_reason_1\",\"output_index\":1,"
+                 "\"arguments\":\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}\n\n");
           strcat(
               stream_tool_reasoning_body,
               "data: {\"type\":\"response.output_item.done\","
-              "\"output_index\":0,\"item\":{\"id\":\"fc_stream_reason_1\","
+              "\"output_index\":1,\"item\":{\"id\":\"fc_stream_reason_1\","
               "\"type\":\"function_call\",\"call_id\":\"call_stream_reason_1\","
               "\"name\":\"weather\",\"arguments\":"
               "\"{\\\"city\\\":\\\"Gothenburg\\\"}\"}}\n\n");
@@ -6865,7 +6889,7 @@ static const char *mock_response_for_request(const char *request) {
 }
 
 static void mock_openai_child(int pipe_fd, int request_count) {
-  char request[4096];
+  char request[65536];
   struct sockaddr_in addr;
   socklen_t addr_len;
   int server_fd;
@@ -6992,7 +7016,7 @@ static void
 mock_scripted_openai_child(int pipe_fd,
                            const mock_http_expectation *expectations,
                            size_t expectation_count) {
-  char request[4096];
+  char request[65536];
   struct sockaddr_in addr;
   socklen_t addr_len;
   int server_fd;
@@ -7345,7 +7369,8 @@ static int mock_websocket_read_text(int fd, char *out, size_t out_size) {
   }
 }
 
-static void mock_websocket_openai_child(int pipe_fd, int transient_first) {
+static void mock_websocket_openai_child(int pipe_fd, int transient_first,
+                                        int large_completed) {
   static const char delta[] =
       "{\"type\":\"response.output_text.delta\",\"delta\":\"ws ok\"}";
   static const char completed[] =
@@ -7353,6 +7378,8 @@ static void mock_websocket_openai_child(int pipe_fd, int transient_first) {
       "\"usage\":{\"input_tokens\":2,\"input_tokens_details\":{"
       "\"cached_tokens\":1},\"output_tokens\":3,\"output_tokens_details\":{"
       "\"reasoning_tokens\":1},\"total_tokens\":5}}}";
+  char large_completed_body[16384];
+  char padding[8192];
   char request[4096];
   char key[128];
   char accept[128];
@@ -7366,9 +7393,25 @@ static void mock_websocket_openai_child(int pipe_fd, int transient_first) {
   int response_len;
   int attempt;
   int attempt_count;
+  size_t i;
 
   signal(SIGALRM, mock_child_timeout_handler);
   alarm(2U);
+  for (i = 0U; i + 1U < sizeof(padding); i++) {
+    padding[i] = 'A';
+  }
+  padding[sizeof(padding) - 1U] = '\0';
+  if (large_completed &&
+      snprintf(large_completed_body, sizeof(large_completed_body),
+               "{\"type\":\"response.completed\",\"response\":{\"id\":"
+               "\"resp_ws_done\",\"instructions\":\"%s\",\"status\":"
+               "\"completed\",\"usage\":{\"input_tokens\":2,"
+               "\"input_tokens_details\":{\"cached_tokens\":1},"
+               "\"output_tokens\":3,\"output_tokens_details\":{"
+               "\"reasoning_tokens\":1},\"total_tokens\":5}}}",
+               padding) <= 0) {
+    _exit(2);
+  }
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
     _exit(2);
@@ -7435,7 +7478,9 @@ static void mock_websocket_openai_child(int pipe_fd, int transient_first) {
       _exit(9);
     }
     if (mock_websocket_write_text(client_fd, delta) != 0 ||
-        mock_websocket_write_text(client_fd, completed) != 0) {
+        mock_websocket_write_text(client_fd, large_completed
+                                                 ? large_completed_body
+                                                 : completed) != 0) {
       _exit(10);
     }
     close(client_fd);
@@ -7447,7 +7492,7 @@ static void mock_websocket_openai_child(int pipe_fd, int transient_first) {
 
 static int
 websocket_mock_server_open_with_retry(test_state *state, const char *name,
-                                      int transient_first,
+                                      int transient_first, int large_completed,
                                       websocket_mock_server *server) {
   int pipe_fds[2];
   int port;
@@ -7467,7 +7512,7 @@ websocket_mock_server_open_with_retry(test_state *state, const char *name,
   }
   if (server->pid == 0) {
     close(pipe_fds[0]);
-    mock_websocket_openai_child(pipe_fds[1], transient_first);
+    mock_websocket_openai_child(pipe_fds[1], transient_first, large_completed);
   }
   close(pipe_fds[1]);
   if (mock_read_port(pipe_fds[0], &port) != 0) {
@@ -7485,7 +7530,7 @@ websocket_mock_server_open_with_retry(test_state *state, const char *name,
 
 static int websocket_mock_server_open(test_state *state, const char *name,
                                       websocket_mock_server *server) {
-  return websocket_mock_server_open_with_retry(state, name, 0, server);
+  return websocket_mock_server_open_with_retry(state, name, 0, 0, server);
 }
 
 static void mock_searxng_child(int pipe_fd) {
@@ -7902,8 +7947,8 @@ static void test_chatgpt_auth_refresh_retry(test_state *state) {
       "\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
   static const char *first_required[] = {
       "POST /v1/responses HTTP/",
-      "Authorization: Bearer "
-      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old",
+      ("Authorization: Bearer "
+       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old"),
       "\"text\":\"hello auth\""};
   static const char *refresh_required[] = {
       "POST /v1/oauth/token HTTP/",
@@ -7911,8 +7956,8 @@ static void test_chatgpt_auth_refresh_retry(test_state *state) {
       "\"grant_type\":\"refresh_token\"", "\"refresh_token\":\"refresh-old\""};
   static const char *second_required[] = {
       "POST /v1/responses HTTP/",
-      "Authorization: Bearer "
-      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new",
+      ("Authorization: Bearer "
+       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new"),
       "\"text\":\"hello auth\""};
   static const char *second_forbidden[] = {
       "Authorization: Bearer "
@@ -8344,8 +8389,8 @@ test_chatgpt_auth_reloads_changed_file_before_refresh(test_state *state) {
       "\"text\":\"disk auth ok\"}]}]}";
   static const char *response_required[] = {
       "POST /v1/responses HTTP/",
-      "Authorization: Bearer "
-      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.disk",
+      ("Authorization: Bearer "
+       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.disk"),
       "\"text\":\"hello disk auth\""};
   static const char *response_forbidden[] = {
       "POST /v1/oauth/token HTTP/",
@@ -8516,8 +8561,8 @@ static void test_chatgpt_auth_stream_refresh_retry(test_state *state) {
       "\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
   static const char *first_required[] = {
       "POST /v1/responses HTTP/",
-      "Authorization: Bearer "
-      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old",
+      ("Authorization: Bearer "
+       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old"),
       "\"stream\":true", "\"text\":\"hello stream auth\""};
   static const char *refresh_required[] = {
       "POST /v1/oauth/token HTTP/",
@@ -8525,8 +8570,8 @@ static void test_chatgpt_auth_stream_refresh_retry(test_state *state) {
       "\"grant_type\":\"refresh_token\"", "\"refresh_token\":\"refresh-old\""};
   static const char *second_required[] = {
       "POST /v1/responses HTTP/",
-      "Authorization: Bearer "
-      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new",
+      ("Authorization: Bearer "
+       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new"),
       "\"stream\":true", "\"text\":\"hello stream auth\""};
   static const char *second_forbidden[] = {
       "Authorization: Bearer "
@@ -9067,7 +9112,7 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
       "grant_type=authorization_code",
       "code=mock-code",
       "redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback",
-      "client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID,
+      ("client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID),
       "code_verifier=test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789"};
   static const mock_http_expectation script[] = {
       {"POST /v1/oauth/token HTTP/", required,
@@ -9165,7 +9210,7 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
       "grant_type=authorization_code",
       "code=mock-code",
       "redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback",
-      "client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID,
+      ("client_id=" CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID),
       "code_verifier=test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789"};
   static const mock_http_expectation script[] = {
       {"POST /v1/oauth/token HTTP/", required,
@@ -14658,6 +14703,91 @@ cleanup:
   }
 }
 
+static void test_stream_responses_websocket_large_frame(test_state *state) {
+  websocket_mock_server server;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+
+  if (websocket_mock_server_open_with_retry(state, "stream_ws_large_mock", 0, 1,
+                                            &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_large_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_large_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_large_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_large_previous",
+             cai_response_create_params_set_previous_response_id(
+                 params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_large_text",
+             cai_response_create_params_add_text(params, "user", "ws user turn",
+                                                 &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_large_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  expect_int(state, "stream_ws_large_run",
+             cai_client_stream_response_websocket_test(
+                 client, params, &stream_sinks, &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_large_output", writer.buffer, "ws ok");
+  expect_str(state, "stream_ws_large_response_id", response_id, "resp_ws_done");
+  expect_int(state, "stream_ws_large_usage_input", usage.input_tokens, 2LL);
+  expect_int(state, "stream_ws_large_usage_cached", usage.input_cached_tokens,
+             1LL);
+  expect_int(state, "stream_ws_large_usage_output", usage.output_tokens, 3LL);
+  expect_int(state, "stream_ws_large_usage_reasoning",
+             usage.output_reasoning_tokens, 1LL);
+  expect_int(state, "stream_ws_large_usage_total", usage.total_tokens, 5LL);
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_large_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
 static void test_stream_responses_websocket_transient_retry(test_state *state) {
   websocket_mock_server server;
   cai_client_config config;
@@ -14683,7 +14813,7 @@ static void test_stream_responses_websocket_transient_retry(test_state *state) {
   response_id = NULL;
   server_opened = 0;
 
-  if (websocket_mock_server_open_with_retry(state, "stream_ws_retry_mock", 1,
+  if (websocket_mock_server_open_with_retry(state, "stream_ws_retry_mock", 1, 0,
                                             &server) != 0) {
     goto cleanup;
   }
@@ -16903,6 +17033,11 @@ static void test_stream_client_history_tool_order(test_state *state) {
       test_fail(state, "stream_client_history_tool_order",
                 "client history did not preserve streamed tool order");
     }
+    if (test_count_substrings(history_json, "\"type\":\"function_call\"") !=
+        1U) {
+      test_fail(state, "stream_client_history_tool_call_once",
+                "client history duplicated streamed function call output");
+    }
   }
 
   cai_source_close(history_source);
@@ -17606,6 +17741,8 @@ static const test_entry test_entries[] = {
     {"conversations", test_conversations},
     {"stream_response_text", test_stream_response_text},
     {"stream_responses_websocket", test_stream_responses_websocket},
+    {"stream_responses_websocket_large_frame",
+     test_stream_responses_websocket_large_frame},
     {"stream_responses_websocket_transient_retry",
      test_stream_responses_websocket_transient_retry},
     {"stream_non_function_output_item", test_stream_non_function_output_item},

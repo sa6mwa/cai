@@ -302,6 +302,7 @@ int main(int argc, char **argv) {
   }
   agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
   agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  agent_config.disable_parallel_tool_calls = 1;
   run_options.max_tool_rounds = 10;
   searxng_config.base_url = searxng_base_url();
   searxng_config.engine = getenv("CAI_SEARXNG_ENGINE");

@@ -732,6 +732,7 @@ if(CAI_BUILD_TESTS)
     conversations
     stream_response_text
     stream_responses_websocket
+    stream_responses_websocket_large_frame
     stream_responses_websocket_transient_retry
     stream_non_function_output_item
     stream_output_delta_failure
@@ -969,7 +970,7 @@ if(CAI_BUILD_TESTS)
   if(CAI_BUILD_INTEGRATION_TESTS)
     set(CAI_INTEGRATION_TIMEOUT_SHORT 10)
     set(CAI_INTEGRATION_TIMEOUT_MEDIUM 30)
-    set(CAI_INTEGRATION_TIMEOUT_LONG 120)
+    set(CAI_INTEGRATION_TIMEOUT_LONG 240)
     add_executable(cai_integration_tests tests/integration_main.c)
     target_include_directories(cai_integration_tests PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"

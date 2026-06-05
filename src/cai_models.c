@@ -190,6 +190,11 @@ static const cai_model_info cai_models[] = {
             CAI_MODEL_CAP_FUNCTION_CALLING,
         CAI_MODEL_META_VERIFIED | CAI_MODEL_META_PROVIDER_OPENROUTER, 131072LL,
         0.0, 0.0, 0.0),
+    CAI_MODEL_ROW_META_PRICED(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
+                              CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING,
+                              CAI_MODEL_META_VERIFIED |
+                                  CAI_MODEL_META_PROVIDER_OPENROUTER,
+                              262144LL, 0.0, 0.0, 0.0),
     {NULL, 0U, 0U, 0LL, 0LL, 0.0, 0.0, 0.0}};
 
 const cai_model_info *cai_model_info_by_id(const char *model_id) {

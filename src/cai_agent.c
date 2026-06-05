@@ -1425,7 +1425,8 @@ static int cai_stream_capture_output_item_done(
   rc = CAI_OK;
   if (capture != NULL &&
       CAI_SESSION_AGENT_IMPL(capture->session)->session_continuity ==
-          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
+      (type == NULL || strcmp(type, "function_call") != 0)) {
     rc = cai_stream_capture_sanitized_output_item(capture, item_json, error);
   }
   if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
@@ -3379,6 +3380,10 @@ static int cai_session_stream_tool_round(
     if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
         CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_stream_capture_output_items_finish(&capture, error);
+      if (rc != CAI_OK && (error == NULL || error->message == NULL)) {
+        rc = cai_set_error(error, rc,
+                           "failed to finish streamed output item history");
+      }
     }
   }
   if (rc == CAI_OK) {
@@ -3388,9 +3393,16 @@ static int cai_session_stream_tool_round(
           session, &pending_items, has_pending_items, response_id, &usage,
           output_calls, &output_text, &capture.output_items,
           capture.output_items_count, error);
+      if (rc != CAI_OK && (error == NULL || error->message == NULL)) {
+        rc = cai_set_error(error, rc,
+                           "failed to record streamed tool-call response");
+      }
     } else {
       rc = cai_session_after_stream(session, &pending_items, has_pending_items,
                                     response_id, &usage, error);
+      if (rc != CAI_OK && (error == NULL || error->message == NULL)) {
+        rc = cai_set_error(error, rc, "failed to record streamed response");
+      }
     }
   }
   cai_response_create_params_destroy(params);

@@ -208,9 +208,8 @@ handling, and session state save/restore. See
 - Examples and integration development tests default to `gpt-5-nano`.
 - OpenRouter development can use
   `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`, currently
-  `poolside/laguna-xs.2:free`, because it passes cai's Responses
-  compatibility, tool-calling, and client-side continuity integration
-  regressions.
+  `poolside/laguna-m.1:free`, because it passes cai's generic Responses
+  compatibility and client-side continuity integration regressions.
 - OpenRouter tool-calling integration uses
   `CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE` by default. The
   `openrouter/free` router advertises feature filtering for tool calls, but in
@@ -949,12 +948,12 @@ OpenRouter through the real Responses-compatible API. It verifies list hints,
 text reads, client-side continuation, and binary-file denial using the known
 working free tool-call model.
 
-`CAI_INTEGRATION_OPENROUTER_E2E=1` runs the same 20-turn continuity eval as
-`CAI_INTEGRATION_E2E=1`, but against OpenRouter using
+`CAI_INTEGRATION_OPENROUTER_E2E=1` runs a multi-turn continuity eval against
+OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
 mode. The test paces requests by `CAI_OPENROUTER_E2E_DELAY_SEC`, defaulting to
 4 seconds, because free OpenRouter models can have low per-minute request
-limits.
+limits. The OpenAI API-key E2E remains the longer 20-turn eval.
 
 `CAI_INTEGRATION_SEARXNG_TOOL=1` runs a real OpenAI tool-calling regression
 against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the

@@ -148,6 +148,10 @@ assert_eq(cai.MODEL_GPT_4O, "gpt-4o", "model constant")
 assert(type(cai.MODEL_CAP_RESPONSES) == "number")
 assert(type(cai.MODEL_META_PROVIDER_OPENROUTER) == "number")
 assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE) == "string")
+assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE) == "string")
+assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
+  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
+  "OpenRouter default model")
 local model = cai.model_info(cai.MODEL_GPT_5_NANO)
 assert(type(model) == "table")
 assert(model.context_window_tokens > 0)
