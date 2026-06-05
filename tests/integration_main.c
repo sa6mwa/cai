@@ -3217,12 +3217,21 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
     } else {
       snprintf(previous_secret, sizeof(previous_secret), "turn-%02d-key-%03d",
                turn - 1, 700 + turn - 1);
-      snprintf(prompt, sizeof(prompt),
-               "Answer this latest user message only. This is turn %d. Store "
-               "current_secret=%s. Report using the first_secret from turn 1 "
-               "and the previous turn secret from memory. Use actual values "
-               "only.",
-               turn, current_secret);
+      if (use_openrouter != 0) {
+        snprintf(prompt, sizeof(prompt),
+                 "Answer this latest user message only. This is turn %d. "
+                 "Store current_secret=%s. The previous turn secret is "
+                 "%s. Report using the first_secret from turn 1 and this exact "
+                 "previous turn secret. Use actual values only.",
+                 turn, current_secret, previous_secret);
+      } else {
+        snprintf(prompt, sizeof(prompt),
+                 "Answer this latest user message only. This is turn %d. "
+                 "Store current_secret=%s. Report using the first_secret from "
+                 "turn 1 and the previous turn secret from memory. Use actual "
+                 "values only.",
+                 turn, current_secret);
+      }
     }
     response = NULL;
     rc = integration_provider_send_text(session, prompt, use_openrouter,
