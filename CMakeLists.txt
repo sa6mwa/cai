@@ -732,6 +732,7 @@ if(CAI_BUILD_TESTS)
     conversations
     stream_response_text
     stream_responses_websocket
+    stream_responses_websocket_transient_retry
     stream_non_function_output_item
     stream_output_delta_failure
     stream_output_item_failure

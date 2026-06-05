@@ -7324,7 +7324,7 @@ static int mock_websocket_read_text(int fd, char *out, size_t out_size) {
   }
 }
 
-static void mock_websocket_openai_child(int pipe_fd) {
+static void mock_websocket_openai_child(int pipe_fd, int transient_first) {
   static const char delta[] =
       "{\"type\":\"response.output_text.delta\",\"delta\":\"ws ok\"}";
   static const char completed[] =
@@ -7343,6 +7343,8 @@ static void mock_websocket_openai_child(int pipe_fd) {
   int client_fd;
   int port;
   int response_len;
+  int attempt;
+  int attempt_count;
 
   signal(SIGALRM, mock_child_timeout_handler);
   alarm(2U);
@@ -7367,47 +7369,64 @@ static void mock_websocket_openai_child(int pipe_fd) {
     _exit(5);
   }
   close(pipe_fd);
-  client_fd = mock_accept_with_deadline(server_fd);
-  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
-    _exit(6);
+  attempt_count = transient_first ? 2 : 1;
+  for (attempt = 0; attempt < attempt_count; attempt++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+      _exit(6);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+        strstr(request, "GET /v1/responses HTTP/") == NULL ||
+        strstr(request, "Authorization: Bearer mock-key") == NULL ||
+        strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") ==
+            NULL ||
+        mock_websocket_header_value(request, "Sec-WebSocket-Key", key,
+                                    sizeof(key)) != 0 ||
+        mock_websocket_accept_value(key, accept, sizeof(accept)) != 0) {
+      _exit(7);
+    }
+    if (transient_first && attempt == 0) {
+      if (mock_write_status_json_response(
+              client_fd, 503, "Service Unavailable", "req_ws_retry",
+              "{\"error\":{\"message\":\"temporary websocket upstream "
+              "timeout\",\"type\":\"server_error\",\"code\":\"upstream_"
+              "timeout\"}}") != 0) {
+        _exit(8);
+      }
+      close(client_fd);
+      continue;
+    }
+    response_len = snprintf(response, sizeof(response),
+                            "HTTP/1.1 101 Switching Protocols\r\n"
+                            "Upgrade: websocket\r\n"
+                            "Connection: Upgrade\r\n"
+                            "Sec-WebSocket-Accept: %s\r\n\r\n",
+                            accept);
+    if (response_len <= 0 || (size_t)response_len >= sizeof(response) ||
+        mock_write_all(client_fd, response, (size_t)response_len) != 0) {
+      _exit(8);
+    }
+    if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+        strstr(message, "\"type\":\"response.create\"") == NULL ||
+        strstr(message, "\"stream\":true") == NULL ||
+        strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+        strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+      _exit(9);
+    }
+    if (mock_websocket_write_text(client_fd, delta) != 0 ||
+        mock_websocket_write_text(client_fd, completed) != 0) {
+      _exit(10);
+    }
+    close(client_fd);
   }
-  if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
-      strstr(request, "GET /v1/responses HTTP/") == NULL ||
-      strstr(request, "Authorization: Bearer mock-key") == NULL ||
-      strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") == NULL ||
-      mock_websocket_header_value(request, "Sec-WebSocket-Key", key,
-                                  sizeof(key)) != 0 ||
-      mock_websocket_accept_value(key, accept, sizeof(accept)) != 0) {
-    _exit(7);
-  }
-  response_len = snprintf(response, sizeof(response),
-                          "HTTP/1.1 101 Switching Protocols\r\n"
-                          "Upgrade: websocket\r\n"
-                          "Connection: Upgrade\r\n"
-                          "Sec-WebSocket-Accept: %s\r\n\r\n",
-                          accept);
-  if (response_len <= 0 || (size_t)response_len >= sizeof(response) ||
-      mock_write_all(client_fd, response, (size_t)response_len) != 0) {
-    _exit(8);
-  }
-  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
-      strstr(message, "\"type\":\"response.create\"") == NULL ||
-      strstr(message, "\"stream\":true") == NULL ||
-      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
-      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
-    _exit(9);
-  }
-  if (mock_websocket_write_text(client_fd, delta) != 0 ||
-      mock_websocket_write_text(client_fd, completed) != 0) {
-    _exit(10);
-  }
-  close(client_fd);
   close(server_fd);
   alarm(0U);
   _exit(0);
 }
 
-static int websocket_mock_server_open(test_state *state, const char *name,
+static int
+websocket_mock_server_open_with_retry(test_state *state, const char *name,
+                                      int transient_first,
                                       websocket_mock_server *server) {
   int pipe_fds[2];
   int port;
@@ -7427,7 +7446,7 @@ static int websocket_mock_server_open(test_state *state, const char *name,
   }
   if (server->pid == 0) {
     close(pipe_fds[0]);
-    mock_websocket_openai_child(pipe_fds[1]);
+    mock_websocket_openai_child(pipe_fds[1], transient_first);
   }
   close(pipe_fds[1]);
   if (mock_read_port(pipe_fds[0], &port) != 0) {
@@ -7441,6 +7460,11 @@ static int websocket_mock_server_open(test_state *state, const char *name,
   snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
            port);
   return 0;
+}
+
+static int websocket_mock_server_open(test_state *state, const char *name,
+                                      websocket_mock_server *server) {
+  return websocket_mock_server_open_with_retry(state, name, 0, server);
 }
 
 static void mock_searxng_child(int pipe_fd) {
@@ -14585,6 +14609,85 @@ cleanup:
   }
 }
 
+static void test_stream_responses_websocket_transient_retry(test_state *state) {
+  websocket_mock_server server;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+
+  if (websocket_mock_server_open_with_retry(state, "stream_ws_retry_mock", 1,
+                                            &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_retry_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_retry_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_retry_model",
+             cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
+                                                  &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_retry_previous",
+             cai_response_create_params_set_previous_response_id(
+                 params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_retry_text",
+             cai_response_create_params_add_text(params, "user", "ws user turn",
+                                                 &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_retry_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  expect_int(state, "stream_ws_retry_run",
+             cai_client_stream_response_websocket_test(
+                 client, params, &stream_sinks, &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_retry_output", writer.buffer, "ws ok");
+  expect_str(state, "stream_ws_retry_response_id", response_id, "resp_ws_done");
+  expect_int(state, "stream_ws_retry_usage_total", usage.total_tokens, 5LL);
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_retry_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
 static void test_stream_non_function_output_item(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -17453,6 +17556,8 @@ static const test_entry test_entries[] = {
     {"conversations", test_conversations},
     {"stream_response_text", test_stream_response_text},
     {"stream_responses_websocket", test_stream_responses_websocket},
+    {"stream_responses_websocket_transient_retry",
+     test_stream_responses_websocket_transient_retry},
     {"stream_non_function_output_item", test_stream_non_function_output_item},
     {"stream_output_delta_failure", test_stream_output_delta_failure},
     {"stream_output_item_failure", test_stream_output_item_failure},

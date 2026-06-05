@@ -2225,6 +2225,18 @@ static int cai_ws_send_request(CURL *curl, cai_response_request_upload *upload,
   return CAI_OK;
 }
 
+static int cai_ws_http_status_is_transient(long http_status) {
+  return http_status == 408L || http_status == 425L || http_status == 429L ||
+         http_status == 500L || http_status == 502L || http_status == 503L ||
+         http_status == 504L;
+}
+
+static int cai_ws_curl_error_is_transient(CURLcode curl_rc) {
+  return curl_rc == CURLE_COULDNT_CONNECT ||
+         curl_rc == CURLE_OPERATION_TIMEDOUT || curl_rc == CURLE_RECV_ERROR ||
+         curl_rc == CURLE_SEND_ERROR || curl_rc == CURLE_GOT_NOTHING;
+}
+
 static int cai_ws_spooled_to_cstr(const lonejson_spooled *value, char **out,
                                   cai_error *error) {
   cai_stream_spooled_reader reader;
@@ -2442,8 +2454,10 @@ static int cai_client_stream_response_websocket_with_id(
   long http_status;
   int rc;
   int retried_auth;
+  int retried_transient;
 
   retried_auth = 0;
+  retried_transient = 0;
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
@@ -2558,6 +2572,18 @@ retry_request:
     retried_auth = 1;
     goto retry_request;
   }
+  if ((cai_ws_http_status_is_transient(http_status) ||
+       (curl_rc != CURLE_OK && cai_ws_curl_error_is_transient(curl_rc))) &&
+      !retried_transient) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, http_url);
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, url);
+    cai_response_request_upload_close(upload);
+    cai_stream_event_json_cleanup(&state);
+    retried_transient = 1;
+    goto retry_request;
+  }
   if (curl_rc != CURLE_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                               "websocket upgrade failed",
@@ -2571,6 +2597,12 @@ retry_request:
     if (rc == CAI_OK) {
       rc = cai_ws_receive_events(curl, &state,
                                  CAI_CLIENT_IMPL(client)->timeout_ms, error);
+      if (rc == CAI_OK) {
+        size_t sent;
+
+        sent = 0U;
+        (void)curl_ws_send(curl, "", 0U, &sent, 0, CURLWS_CLOSE);
+      }
     }
   }
   curl_easy_cleanup(curl);
