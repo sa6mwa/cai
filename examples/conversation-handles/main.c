@@ -99,8 +99,8 @@ int main(int argc, char **argv) {
   printf("response: %s\n",
          cai_output_text(output) != NULL ? cai_output_text(output) : "");
 
-  rc = cai_client_list_conversation_items_handle(client, conversation, NULL,
-                                                 &items, &error);
+  rc = client->list_conversation_items_handle(client, conversation, NULL,
+                                              &items, &error);
   if (rc != CAI_OK) {
     exit_code =
         print_error("cai_client_list_conversation_items_handle", rc, &error);

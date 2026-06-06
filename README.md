@@ -217,9 +217,10 @@ handling, and session state save/restore. See
   for models whose pricing changes above a documented input-token threshold. A
   request that crosses a budget is charged, returns `CAI_ERR_LIMIT`, and later
   requests are rejected before transport until the limit is raised or disabled.
-  Use `cai_client_usage`,
-  `cai_session_usage`, or `cai_session_close_with_usage` to report cumulative
-  token usage and estimated USD spend:
+  Use `client->usage`, `session->usage`, or `session->close_with_usage` to
+  report cumulative token usage and estimated USD spend. The matching
+  `cai_client_usage`, `cai_session_usage`, and
+  `cai_session_close_with_usage` free functions remain available:
 
   ```c
   cai_usage_limits limits;
@@ -231,7 +232,7 @@ handling, and session state save/restore. See
   config.usage_limits = limits;
 
   /* ... run one or more sessions ... */
-  cai_session_usage(session, &spent, &error);
+  session->usage(session, &spent, &error);
   ```
 
   Lua exposes the same surface with `usage_limits` on `cai.open`,
@@ -327,6 +328,14 @@ agent->close(agent);
 client->close(client);
 ```
 
+The receiver form is the primary style for instantiated cai handles that expose
+method tables. `cai_client` includes the full client-owned Responses,
+streaming, input-token counting, response lifecycle, conversation, agent, and
+usage operations. `cai_agent`, `cai_session`, and `cai_tool_schema` follow the
+same convention. The matching `cai_*` free functions remain part of the public
+API for compatibility, callback wiring, and places where a value is still an
+opaque builder or result handle.
+
 Agent-level calls lazily create a default session and reuse it for follow-up
 turns, so simple chat and workflow drivers get Responses context continuity
 without manually carrying a `cai_session`. Explicit sessions remain available
@@ -346,9 +355,9 @@ failed request does not consume the queued file input.
 
 Process restart/resume has two separate pieces by design. To continue
 inference against OpenAI-held Responses context, persist either
-`cai_session_previous_response_id(session)` or
-`cai_session_conversation_id(session)` and restore it into a new session with
-`cai_session_set_previous_response_id` or `cai_session_set_conversation_id`.
+`session->previous_response_id(session)` or `session->conversation_id(session)`
+and restore it into a new session with `session->set_previous_response_id` or
+`session->set_conversation_id`.
 That is the actual server-side continuation handle. Opt-in local history
 export/import is for offline inspection, experimental manual compaction, and
 host-owned replay state; by itself it is not a substitute for the OpenAI
@@ -361,7 +370,8 @@ plus local history when `enable_local_history` is on. Import restores the
 continuation handle in all sessions and restores local history only for
 local-history-enabled sessions. `cai_session_save_state_path` and
 `cai_session_load_state_path` are the file-backed convenience helpers around
-the same source/sink state envelope.
+the same source/sink state envelope; the primary handle style is
+`session->save_state_path` and `session->load_state_path`.
 
 Set `prompt_cache_key` on `cai_agent_config` when an agent has a stable prompt
 prefix, large developer instructions, or stable tool schemas. cai sends it on
@@ -379,7 +389,7 @@ The agent/session facade does not expose a normal `system` prompt layer. Root
 instructions are OpenAI/model policy and are not API-settable. The Responses
 wire format still has low-level message roles, but normal cai users should set
 `developer_instructions` on the agent and add user input with
-`cai_session_add_user_text` or `cai_session_add_user_image_url`.
+`session->add_user_text` or `session->add_user_image_url`.
 
 `assistant` is not an instruction surface. In the Responses API it represents
 model-generated messages, and it is mainly useful when manually reconstructing

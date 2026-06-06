@@ -11158,8 +11158,31 @@ static void test_agent_session(test_state *state) {
   expect_int(state, "agent_new",
              cai_client_new_agent(client, &agent_config, &agent, &error),
              CAI_OK);
-  if (client->new_agent == NULL || client->close == NULL ||
-      agent->register_tool == NULL || agent->register_raw_tool == NULL ||
+  if (client->new_agent == NULL || client->create_response == NULL ||
+      client->count_response_input_tokens == NULL ||
+      client->stream_response_text == NULL ||
+      client->open_response_text_source == NULL ||
+      client->retrieve_response == NULL || client->cancel_response == NULL ||
+      client->delete_response == NULL ||
+      client->list_response_input_items == NULL ||
+      client->create_conversation == NULL ||
+      client->retrieve_conversation == NULL ||
+      client->retrieve_conversation_handle == NULL ||
+      client->update_conversation_metadata == NULL ||
+      client->update_conversation_metadata_handle == NULL ||
+      client->delete_conversation == NULL ||
+      client->delete_conversation_handle == NULL ||
+      client->list_conversation_items == NULL ||
+      client->list_conversation_items_handle == NULL ||
+      client->delete_conversation_item == NULL ||
+      client->delete_conversation_item_handle == NULL ||
+      client->retrieve_conversation_item == NULL ||
+      client->retrieve_conversation_item_handle == NULL ||
+      client->create_conversation_items == NULL ||
+      client->create_conversation_items_handle == NULL ||
+      client->set_usage_limits == NULL || client->usage == NULL ||
+      client->close == NULL || agent->register_tool == NULL ||
+      agent->register_raw_tool == NULL ||
       agent->register_raw_spooled_tool == NULL ||
       agent->add_hosted_tool_json == NULL ||
       agent->add_simple_hosted_tool == NULL ||

@@ -61,7 +61,7 @@ int main(void) {
         params, "user", "Reply with exactly: hello from cai", &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_create_response(client, params, &response, &error);
+    rc = client->create_response(client, params, &response, &error);
   }
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_create_response", rc, &error);
@@ -75,7 +75,9 @@ int main(void) {
 done:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
-  cai_client_close(client);
+  if (client != NULL) {
+    client->close(client);
+  }
   cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return exit_code;

@@ -211,7 +211,36 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate project id");
   }
   client->new_agent = cai_client_new_agent;
+  client->create_response = cai_client_create_response;
+  client->count_response_input_tokens = cai_client_count_response_input_tokens;
+  client->stream_response_text = cai_client_stream_response_text;
+  client->open_response_text_source = cai_client_open_response_text_source;
+  client->retrieve_response = cai_client_retrieve_response;
+  client->cancel_response = cai_client_cancel_response;
+  client->delete_response = cai_client_delete_response;
+  client->list_response_input_items = cai_client_list_response_input_items;
   client->create_conversation = cai_client_create_conversation;
+  client->retrieve_conversation = cai_client_retrieve_conversation;
+  client->retrieve_conversation_handle =
+      cai_client_retrieve_conversation_handle;
+  client->update_conversation_metadata =
+      cai_client_update_conversation_metadata;
+  client->update_conversation_metadata_handle =
+      cai_client_update_conversation_metadata_handle;
+  client->delete_conversation = cai_client_delete_conversation;
+  client->delete_conversation_handle = cai_client_delete_conversation_handle;
+  client->list_conversation_items = cai_client_list_conversation_items;
+  client->list_conversation_items_handle =
+      cai_client_list_conversation_items_handle;
+  client->delete_conversation_item = cai_client_delete_conversation_item;
+  client->delete_conversation_item_handle =
+      cai_client_delete_conversation_item_handle;
+  client->retrieve_conversation_item = cai_client_retrieve_conversation_item;
+  client->retrieve_conversation_item_handle =
+      cai_client_retrieve_conversation_item_handle;
+  client->create_conversation_items = cai_client_create_conversation_items;
+  client->create_conversation_items_handle =
+      cai_client_create_conversation_items_handle;
   client->set_usage_limits = cai_client_set_usage_limits;
   client->usage = cai_client_usage;
   client->close = cai_client_close;

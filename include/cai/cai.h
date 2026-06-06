@@ -524,9 +524,102 @@ struct cai_client {
   /** Create a new agent bound to this client. */
   int (*new_agent)(cai_client *client, const cai_agent_config *config,
                    cai_agent **out, cai_error *error);
+  /** Create a Responses API response. */
+  int (*create_response)(cai_client *client,
+                         const cai_response_create_params *params,
+                         cai_response **out, cai_error *error);
+  /** Count input tokens for a Responses request. */
+  int (*count_response_input_tokens)(cai_client *client,
+                                     const cai_response_create_params *params,
+                                     cai_token_usage *out, cai_error *error);
+  /** Stream response output text to a sink. */
+  int (*stream_response_text)(cai_client *client,
+                              const cai_response_create_params *params,
+                              cai_sink *sink, cai_error *error);
+  /** Open response output text as a streaming source. */
+  int (*open_response_text_source)(cai_client *client,
+                                   const cai_response_create_params *params,
+                                   cai_source **out, cai_error *error);
+  /** Retrieve a stored response by id. */
+  int (*retrieve_response)(cai_client *client, const char *response_id,
+                           cai_response **out, cai_error *error);
+  /** Cancel a background response by id. */
+  int (*cancel_response)(cai_client *client, const char *response_id,
+                         cai_response **out, cai_error *error);
+  /** Delete a stored response by id. */
+  int (*delete_response)(cai_client *client, const char *response_id,
+                         cai_error *error);
+  /** List input items for a response. */
+  int (*list_response_input_items)(cai_client *client, const char *response_id,
+                                   const cai_list_params *params,
+                                   cai_input_item_list **out, cai_error *error);
   /** Create a new server-side conversation. */
   int (*create_conversation)(cai_client *client, cai_conversation **out,
                              cai_error *error);
+  /** Retrieve a conversation by id. */
+  int (*retrieve_conversation)(cai_client *client, const char *conversation_id,
+                               cai_conversation **out, cai_error *error);
+  /** Retrieve a conversation by handle. */
+  int (*retrieve_conversation_handle)(cai_client *client,
+                                      const cai_conversation *conversation,
+                                      cai_conversation **out, cai_error *error);
+  /** Update conversation metadata by id. */
+  int (*update_conversation_metadata)(cai_client *client,
+                                      const char *conversation_id,
+                                      const char *metadata_json,
+                                      cai_conversation **out, cai_error *error);
+  /** Update conversation metadata by handle. */
+  int (*update_conversation_metadata_handle)(
+      cai_client *client, const cai_conversation *conversation,
+      const char *metadata_json, cai_conversation **out, cai_error *error);
+  /** Delete a conversation by id. */
+  int (*delete_conversation)(cai_client *client, const char *conversation_id,
+                             cai_error *error);
+  /** Delete a conversation by handle. */
+  int (*delete_conversation_handle)(cai_client *client,
+                                    const cai_conversation *conversation,
+                                    cai_error *error);
+  /** List conversation items by conversation id. */
+  int (*list_conversation_items)(cai_client *client,
+                                 const char *conversation_id,
+                                 const cai_list_params *params,
+                                 cai_input_item_list **out, cai_error *error);
+  /** List conversation items by handle. */
+  int (*list_conversation_items_handle)(cai_client *client,
+                                        const cai_conversation *conversation,
+                                        const cai_list_params *params,
+                                        cai_input_item_list **out,
+                                        cai_error *error);
+  /** Delete one conversation item by ids. */
+  int (*delete_conversation_item)(cai_client *client,
+                                  const char *conversation_id,
+                                  const char *item_id, cai_error *error);
+  /** Delete one conversation item by conversation handle. */
+  int (*delete_conversation_item_handle)(cai_client *client,
+                                         const cai_conversation *conversation,
+                                         const char *item_id, cai_error *error);
+  /** Retrieve one conversation item by ids. */
+  int (*retrieve_conversation_item)(cai_client *client,
+                                    const char *conversation_id,
+                                    const char *item_id,
+                                    cai_conversation_item **out,
+                                    cai_error *error);
+  /** Retrieve one conversation item by conversation handle. */
+  int (*retrieve_conversation_item_handle)(cai_client *client,
+                                           const cai_conversation *conversation,
+                                           const char *item_id,
+                                           cai_conversation_item **out,
+                                           cai_error *error);
+  /** Create conversation items by conversation id. */
+  int (*create_conversation_items)(cai_client *client,
+                                   const char *conversation_id,
+                                   const cai_conversation_items_params *params,
+                                   cai_input_item_list **out, cai_error *error);
+  /** Create conversation items by conversation handle. */
+  int (*create_conversation_items_handle)(
+      cai_client *client, const cai_conversation *conversation,
+      const cai_conversation_items_params *params, cai_input_item_list **out,
+      cai_error *error);
   /** Replace cumulative usage and USD spend limits for this client. */
   int (*set_usage_limits)(cai_client *client, const cai_usage_limits *limits,
                           cai_error *error);

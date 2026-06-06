@@ -64,7 +64,7 @@ int main(void) {
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_open_response_text_source(client, params, &source, &error);
+    rc = client->open_response_text_source(client, params, &source, &error);
   }
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_open_response_text_source", rc, &error);
@@ -81,7 +81,9 @@ int main(void) {
 done:
   cai_source_close(source);
   cai_response_create_params_destroy(params);
-  cai_client_close(client);
+  if (client != NULL) {
+    client->close(client);
+  }
   cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return exit_code;
