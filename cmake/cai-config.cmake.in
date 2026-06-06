@@ -15,7 +15,7 @@ set(cai_C_PKT_SYSTEMS_URL
     "https://github.com/sa6mwa/c.pkt.systems/releases/download/v@CAI_C_PKT_SYSTEMS_VERSION@/c.pkt.systems-@CAI_C_PKT_SYSTEMS_VERSION@-@CAI_TARGET_ID@.tar.gz")
 set(cai_C_PKT_SYSTEMS_SHA256 "@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@")
 
-find_dependency(CURL)
+find_dependency(CURL @CAI_MINIMUM_CURL_VERSION@)
 find_dependency(OpenSSL COMPONENTS Crypto)
 find_dependency(Threads)
 find_package(lonejson CONFIG QUIET)

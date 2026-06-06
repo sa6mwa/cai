@@ -35,6 +35,7 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
+set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.31.0")
 set(CAI_LONEJSON_ABI_VERSION "16")
 set(CAI_PSLOG_VERSION "0.4.1")
@@ -178,7 +179,7 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   find_path(_cai_auto_pslog_include pslog.h)
   find_library(_cai_auto_lonejson_library NAMES lonejson)
   find_library(_cai_auto_pslog_library NAMES pslog)
-  find_package(CURL QUIET)
+  find_package(CURL ${CAI_MINIMUM_CURL_VERSION} QUIET)
   set(_cai_auto_lonejson_abi_ok FALSE)
   if(_cai_auto_lonejson_library)
     cai_probe_lonejson_library_abi(
@@ -362,7 +363,7 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_SHA256}")
 endif()
 
-find_package(CURL REQUIRED)
+find_package(CURL ${CAI_MINIMUM_CURL_VERSION} REQUIRED)
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND TARGET CURL::libcurl)
   set_target_properties(CURL::libcurl PROPERTIES
     IMPORTED_LOCATION "${_cai_cpkt_curl_library}"
@@ -706,6 +707,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_login_callback_exchange
     chatgpt_login_exchange_http_timeout
     chatgpt_login_default_path_write
+    chatgpt_auth_rejects_partial_allocator
     http_retrieve_response
     http_cancel_response
     http_delete_response
@@ -1297,14 +1299,16 @@ if(CAI_INSTALL)
       CACHE STRING "Install path for cai CMake package files.")
   set(CAI_PACKAGE_REQUIRES "lonejson")
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
-    set(CAI_PACKAGE_REQUIRES_PRIVATE "libcurl openssl")
+    set(CAI_PACKAGE_REQUIRES_PRIVATE
+        "libcurl >= ${CAI_MINIMUM_CURL_VERSION}, openssl")
     set(CAI_PC_DEPENDENCY_CFLAGS "")
     set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "")
     set(CAI_CONFIG_LONEJSON_INCLUDE_HINT "")
     set(CAI_CONFIG_PSLOG_INCLUDE_HINT "")
     set(CAI_CONFIG_LONEJSON_LIBRARY_HINT "")
   else()
-    set(CAI_PACKAGE_REQUIRES_PRIVATE "libcurl openssl")
+    set(CAI_PACKAGE_REQUIRES_PRIVATE
+        "libcurl >= ${CAI_MINIMUM_CURL_VERSION}, openssl")
     get_filename_component(CAI_CONFIG_LONEJSON_LIBRARY_HINT
       "${CAI_LONEJSON_LIBRARY}" DIRECTORY)
     set(CAI_PC_DEPENDENCY_CFLAGS "")

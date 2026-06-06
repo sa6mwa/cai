@@ -142,7 +142,7 @@ if(pc_version_pos EQUAL -1)
 endif()
 
 file(READ "${prefix}/lib/cmake/cai/cai-config.cmake" config_text)
-string(FIND "${config_text}" "find_dependency(CURL)" curl_dep_pos)
+string(FIND "${config_text}" "find_dependency(CURL 7.86.0)" curl_dep_pos)
 string(FIND "${config_text}" "find_dependency(Threads)" threads_dep_pos)
 string(FIND "${config_text}" "find_package(lonejson CONFIG QUIET)"
        lonejson_dep_pos)
@@ -156,7 +156,7 @@ if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1 OR
   message(FATAL_ERROR "cai CMake package does not declare dependencies")
 endif()
 
-string(FIND "${pc_text}" "Requires.private: libcurl" pc_curl_pos)
+string(FIND "${pc_text}" "Requires.private: libcurl >= 7.86.0" pc_curl_pos)
 string(FIND "${pc_text}" "Requires: lonejson" pc_public_deps_pos)
 string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
 string(FIND "${pc_text}" "lonejson_url=" pc_lonejson_url_pos)
