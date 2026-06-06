@@ -196,6 +196,55 @@ static int integration_apply_dotenv_api_key(const char *env_name) {
   return 0;
 }
 
+typedef struct integration_env_restore {
+  const char *name;
+  char *value;
+  int had_value;
+} integration_env_restore;
+
+static int integration_env_force(integration_env_restore *restore,
+                                 const char *name, const char *value) {
+  const char *current;
+
+  if (restore == NULL || name == NULL || value == NULL) {
+    return 1;
+  }
+  restore->name = name;
+  restore->value = NULL;
+  restore->had_value = 0;
+  current = getenv(name);
+  if (current != NULL) {
+    restore->value = (char *)malloc(strlen(current) + 1U);
+    if (restore->value == NULL) {
+      return 1;
+    }
+    strcpy(restore->value, current);
+    restore->had_value = 1;
+  }
+  if (setenv(name, value, 1) != 0) {
+    free(restore->value);
+    restore->value = NULL;
+    restore->had_value = 0;
+    return 1;
+  }
+  return 0;
+}
+
+static void integration_env_restore_value(integration_env_restore *restore) {
+  if (restore == NULL || restore->name == NULL) {
+    return;
+  }
+  if (restore->had_value) {
+    setenv(restore->name, restore->value != NULL ? restore->value : "", 1);
+  } else {
+    unsetenv(restore->name);
+  }
+  free(restore->value);
+  restore->name = NULL;
+  restore->value = NULL;
+  restore->had_value = 0;
+}
+
 typedef struct integration_lookup_args {
   char *city;
   char *code;
@@ -3762,6 +3811,201 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_responses_websocket_live_regression(void) {
+  static const char first_secret[] = "ws-first-key-314";
+  static const char tool_code[] = "ws-tool-code-271";
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  cai_token_usage usage;
+  integration_lookup_state tool_state;
+  integration_tool_event_state event_state;
+  integration_write_state writer;
+  integration_env_restore force_ws_restore;
+  const char *model;
+  const char *answer;
+  char prompt[512];
+  char current_secret[64];
+  char previous_secret[64];
+  int rc;
+  int turn;
+
+  cai_error_init(&error);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_client_config_init(&client_config);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&tool_state, 0, sizeof(tool_state));
+  memset(&event_state, 0, sizeof(event_state));
+  memset(&writer, 0, sizeof(writer));
+  memset(&force_ws_restore, 0, sizeof(force_ws_restore));
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  model = integration_model();
+  rc = CAI_OK;
+
+  if (integration_env_force(&force_ws_restore,
+                            "CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1") != 0) {
+    fprintf(stderr, "failed to force Responses WebSocket integration path\n");
+    return 1;
+  }
+
+  agent_config.model = model;
+  fprintf(stderr, "[integration-responses-websocket] model=%s forced_ws=1\n",
+          model);
+  agent_config.developer_instructions =
+      "You are a strict Responses WebSocket regression assistant. Maintain "
+      "server-side session state. For ordinary turns, answer with one line "
+      "containing WS_TURN=number FIRST=value PREV=value CURRENT=value. When "
+      "the user asks for WS_LOOKUP, call integration_lookup exactly once and "
+      "then include WS_TOOL_OK, the tool report, city, and code. Do not print "
+      "placeholders.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 160;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_tool_event;
+  run_options.tool_event_context = &event_state;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_tool(
+        agent, "integration_lookup",
+        "Return a deterministic integration-test marker for a city and code.",
+        &integration_lookup_arg_map, &integration_lookup_result_map,
+        integration_lookup_tool, &tool_state, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("responses websocket setup", rc, &error);
+    goto done;
+  }
+
+  stream_sinks.output_text = sink;
+  for (turn = 1; rc == CAI_OK && turn <= 5; turn++) {
+    snprintf(current_secret, sizeof(current_secret), "ws-turn-%02d-key-%03d",
+             turn, 700 + turn);
+    if (turn == 1) {
+      strcpy(previous_secret, "none");
+    } else {
+      snprintf(previous_secret, sizeof(previous_secret),
+               "ws-turn-%02d-key-%03d", turn - 1, 700 + turn - 1);
+    }
+
+    if (turn == 3) {
+      snprintf(prompt, sizeof(prompt),
+               "WS_LOOKUP turn %d: call integration_lookup exactly once for "
+               "city=Gothenburg and code=%s. Then answer with WS_TURN=%d "
+               "FIRST=%s PREV=%s CURRENT=%s WS_TOOL_OK and include the tool "
+               "report, city, and code.",
+               turn, tool_code, turn, first_secret, previous_secret,
+               current_secret);
+      tool_state.called = 0;
+      event_state.starts = 0;
+      event_state.outputs = 0;
+      event_state.start_arguments[0] = '\0';
+      event_state.start_arguments_size = 0U;
+      integration_write_reset(&writer);
+      rc = cai_session_add_user_text(session, prompt, &error);
+      if (rc == CAI_OK) {
+        rc = cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error);
+      }
+      answer = writer.buffer;
+      if (rc == CAI_OK &&
+          (tool_state.called == 0 || event_state.starts != 1 ||
+           event_state.outputs != 1 || event_state.start_arguments_size == 0U ||
+           strstr(event_state.start_arguments, "Gothenburg") == NULL ||
+           strstr(event_state.start_arguments, tool_code) == NULL ||
+           strstr(answer, "WS_TOOL_OK") == NULL ||
+           strstr(answer, "openrouter-tool-verified") == NULL ||
+           strstr(answer, "Gothenburg") == NULL ||
+           strstr(answer, tool_code) == NULL)) {
+        fprintf(stderr,
+                "responses websocket tool turn failed; called=%d starts=%d "
+                "outputs=%d arg_bytes=%lu args=%s answer:\n%s\n",
+                tool_state.called, event_state.starts, event_state.outputs,
+                (unsigned long)event_state.start_arguments_size,
+                event_state.start_arguments, answer != NULL ? answer : "");
+        rc = CAI_ERR_PROTOCOL;
+      }
+    } else {
+      snprintf(prompt, sizeof(prompt),
+               "This is Responses WebSocket regression turn %d. "
+               "first_secret=%s current_secret=%s previous_secret=%s. Answer "
+               "the latest user message only.",
+               turn, first_secret, current_secret, previous_secret);
+      integration_write_reset(&writer);
+      rc = cai_session_add_user_text(session, prompt, &error);
+      if (rc == CAI_OK) {
+        if ((turn % 2) == 0) {
+          rc = cai_session_stream_text(session, sink, &error);
+        } else {
+          rc = cai_session_stream(session, &stream_sinks, &error);
+        }
+      }
+      answer = writer.buffer;
+    }
+    if (rc != CAI_OK) {
+      print_error("responses websocket turn", rc, &error);
+      break;
+    }
+    if (answer == NULL || strstr(answer, first_secret) == NULL ||
+        strstr(answer, current_secret) == NULL ||
+        !answer_contains_previous_secret(answer, previous_secret) ||
+        !answer_contains_turn(answer, turn)) {
+      fprintf(stderr,
+              "responses websocket turn %d failed content check\n"
+              "expected first=%s prev=%s current=%s\nanswer:\n%s\n",
+              turn, first_secret, previous_secret, current_secret,
+              answer != NULL ? answer : "(null)");
+      rc = CAI_ERR_PROTOCOL;
+      break;
+    }
+    memset(&usage, 0, sizeof(usage));
+    if (cai_session_last_usage(session, &usage, &error) != CAI_OK ||
+        usage.total_tokens <= 0LL) {
+      print_error("responses websocket usage", error.code, &error);
+      rc = error.code != CAI_OK ? error.code : CAI_ERR_PROTOCOL;
+      break;
+    }
+    fprintf(stderr,
+            "[integration-responses-websocket] turn=%d tokens=%lld cached=%lld "
+            "output=%lld reasoning=%lld\n",
+            turn, usage.total_tokens, usage.input_cached_tokens,
+            usage.output_tokens, usage.output_reasoning_tokens);
+    integration_write_reset(&writer);
+  }
+
+done:
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  integration_env_restore_value(&force_ws_restore);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_compaction_recall(void) {
   cai_agent_config agent_config;
   cai_client_config client_config;
@@ -3977,6 +4221,7 @@ int main(void) {
   const char *openrouter_read_tool;
   const char *openrouter_tool_security;
   const char *hosted_web_search;
+  const char *responses_websocket;
   const char *usage_limits;
   const char *searxng_tool;
   const char *searxng_stream_tool;
@@ -4068,6 +4313,13 @@ int main(void) {
       return 1;
     }
     return run_hosted_web_search_regression();
+  }
+  responses_websocket = getenv("CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E");
+  if (integration_flag_enabled(responses_websocket)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
+    return run_responses_websocket_live_regression();
   }
   tool_security = getenv("CAI_INTEGRATION_TOOL_SECURITY");
   if (integration_flag_enabled(tool_security)) {

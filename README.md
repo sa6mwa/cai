@@ -665,9 +665,10 @@ large frames, pre-stream transient retry, midstream disconnect failure,
 multi-turn server-side continuation, stale keepalive reconnect, usage capture,
 and response id propagation. Live integration tests exercise the same public
 streaming APIs against OpenAI and ChatGPT subscription auth, including
-multi-turn sessions and streaming tool calls, but live disconnect/reconnect
-fault injection is intentionally covered by the mock WebSocket server rather
-than by trying to break the real OpenAI service connection.
+multi-turn sessions and streaming tool calls. The dedicated live OpenAI
+WebSocket selector is `CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1`; simulated
+disconnect/reconnect fault injection is covered by the mock WebSocket server
+instead of trying to break the real OpenAI service connection.
 
 The ASAN preset is part of the local quality gate:
 
@@ -971,6 +972,7 @@ CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tes
 CAI_INTEGRATION_OPENROUTER_READ_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_STREAM_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
@@ -1043,6 +1045,13 @@ regression. It uses the generic hosted-tool JSON path, requires a hosted tool
 call, validates structured raw JSON `tool_choice`, verifies
 `max_tool_calls`, checks `/responses/input_tokens`, and fails unless the
 response output items include `web_search_call`.
+
+`CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1` forces the Responses WebSocket
+transport against the real OpenAI API. It runs a multi-turn streamed session,
+alternates `stream`, `stream_text`, and `stream_auto`, forces a streamed local
+tool call, validates streamed tool events and arguments, checks state
+continuity, and verifies token usage on every turn.
+
 `CAI_LUA_HOSTED_WEB_SEARCH_E2E=1` runs the same hosted-tool path from Lua using
 low-level `response_params` and fails unless the Lua response wrapper exposes a
 `web_search_call` output item, `/responses/input_tokens` returns a positive

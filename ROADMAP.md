@@ -117,6 +117,10 @@ Recent hardening runs have covered:
   streaming, large frames, pre-stream transient retry, midstream disconnect
   failure, multi-turn server-side continuation, stale keepalive reconnect,
   response id propagation, and usage capture.
+- Dedicated live OpenAI Responses WebSocket e2e that forces the WebSocket
+  transport, alternates `stream`, `stream_text`, and `stream_auto`, exercises a
+  streamed local tool call, validates streamed tool events/arguments, checks
+  state continuity, and verifies per-turn token usage.
 - OpenRouter basic/session/tool/stream-tool/stream-history/tool-security and
   read/list preset e2e.
 - OpenRouter 20-turn client-history e2e with request pacing.
@@ -181,14 +185,17 @@ Covered locally:
 - Multi-turn server-side continuation over a persistent connection.
 - Stale keepalive reconnect between turns.
 
-Remaining hardening that would improve release confidence further:
+Covered against live providers:
 
-- Add a live OpenAI WebSocket proxy/fault harness if we want real-provider
-  disconnect/reconnect injection. Current live tests exercise the real
-  WebSocket transport, but disconnect/reconnect failure injection is mock-only.
-- Add a dedicated live test label that forces and reports the WebSocket
-  transport explicitly, separate from the current streaming integration tests
-  that select it automatically for OpenAI/ChatGPT.
+- `CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1` forces the OpenAI Responses
+  WebSocket path and verifies multi-turn continuity, streamed text, streamed
+  local tool calls, tool arguments/events, and token usage.
+- `CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1` exercises the ChatGPT
+  subscription-auth WebSocket path across 11 turns with streamed tool calls and
+  OAuth refresh behavior.
+- Simulated disconnect/reconnect fault injection is intentionally covered by
+  the mock WebSocket server rather than by trying to break the real OpenAI
+  service connection.
 
 Official OpenAI docs checked:
 
