@@ -633,6 +633,83 @@ struct cai_output {
   void *impl;
 };
 
+/** Private input-item storage for cai_input_item_list. */
+typedef struct cai_input_item {
+  char *id;
+  char *type;
+  char *role;
+} cai_input_item;
+
+/** List response for response/conversation input items with receiver methods.
+ */
+struct cai_input_item_list {
+  /** Return item count in the list page. */
+  size_t (*count)(const cai_input_item_list *list);
+  /** Return non-zero if more items are available. */
+  int (*has_more)(const cai_input_item_list *list);
+  /** Return first item id in the page, or NULL. */
+  const char *(*first_id)(const cai_input_item_list *list);
+  /** Return last item id in the page, or NULL. */
+  const char *(*last_id)(const cai_input_item_list *list);
+  /** Return raw list JSON, or NULL. */
+  const char *(*raw_json)(const cai_input_item_list *list);
+  /** Return input item id by index, or NULL. */
+  const char *(*item_id)(const cai_input_item_list *list, size_t index);
+  /** Return input item type by index, or NULL. */
+  const char *(*item_type)(const cai_input_item_list *list, size_t index);
+  /** Return input item role by index, or NULL. */
+  const char *(*item_role)(const cai_input_item_list *list, size_t index);
+  /** Close and destroy the list. */
+  void (*close)(cai_input_item_list *list);
+
+  /** Private object type storage. */
+  char *object;
+  /** Private pagination id storage. */
+  char *first_id_value;
+  char *last_id_value;
+  /** Private raw JSON storage. */
+  char *raw_json_value;
+  /** Private has_more value. */
+  int has_more_value;
+  /** Private item storage. */
+  cai_input_item *items;
+  size_t count_value;
+};
+
+/** Retrieved conversation item handle with receiver methods. */
+struct cai_conversation_item {
+  /** Return a conversation item id, or NULL. */
+  const char *(*id)(const cai_conversation_item *item);
+  /** Return a conversation item type, or NULL. */
+  const char *(*type)(const cai_conversation_item *item);
+  /** Return a conversation item role, or NULL. */
+  const char *(*role)(const cai_conversation_item *item);
+  /** Return raw conversation item JSON, or NULL. */
+  const char *(*raw_json)(const cai_conversation_item *item);
+  /** Close and destroy the conversation item. */
+  void (*close)(cai_conversation_item *item);
+
+  /** Private parsed storage. */
+  char *id_value;
+  char *type_value;
+  char *role_value;
+  char *raw_json_value;
+};
+
+/** Server-side conversation handle with receiver methods. */
+struct cai_conversation {
+  /** Return a conversation id, or NULL. */
+  const char *(*id)(const cai_conversation *conversation);
+  /** Return a conversation object type, or NULL. */
+  const char *(*object)(const cai_conversation *conversation);
+  /** Close and destroy the conversation handle. */
+  void (*close)(cai_conversation *conversation);
+
+  /** Private parsed storage. */
+  char *id_value;
+  char *object_value;
+};
+
 /** Callback returning dynamic stream prefix/suffix text. */
 typedef const char *(*cai_stream_affix_fn)(void *context);
 /** Callback for incremental function-call argument deltas. */

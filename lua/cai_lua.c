@@ -5197,7 +5197,7 @@ static int cai_lua_conversation_gc(lua_State *L) {
   cai_lua_conversation *self;
   self = (cai_lua_conversation *)luaL_checkudata(L, 1, CAI_LUA_CONVERSATION);
   if (self->ptr != NULL) {
-    cai_conversation_destroy(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   return 0;
@@ -5210,14 +5210,14 @@ static int cai_lua_conversation_close(lua_State *L) {
 static int cai_lua_conversation_id(lua_State *L) {
   cai_lua_conversation *self;
   self = cai_lua_check_conversation(L, 1);
-  lua_pushstring(L, cai_conversation_id(self->ptr));
+  lua_pushstring(L, self->ptr->id(self->ptr));
   return 1;
 }
 
 static int cai_lua_conversation_object(lua_State *L) {
   cai_lua_conversation *self;
   self = cai_lua_check_conversation(L, 1);
-  lua_pushstring(L, cai_conversation_object(self->ptr));
+  lua_pushstring(L, self->ptr->object(self->ptr));
   return 1;
 }
 
@@ -5225,7 +5225,7 @@ static int cai_lua_input_items_gc(lua_State *L) {
   cai_lua_input_items *self;
   self = (cai_lua_input_items *)luaL_checkudata(L, 1, CAI_LUA_INPUT_ITEMS);
   if (self->ptr != NULL) {
-    cai_input_item_list_destroy(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   return 0;
@@ -5240,24 +5240,24 @@ static int cai_lua_input_items_summary(lua_State *L) {
   size_t i;
   size_t count;
   self = cai_lua_check_input_items(L, 1);
-  count = cai_input_item_list_count(self->ptr);
+  count = self->ptr->count(self->ptr);
   lua_newtable(L);
   lua_pushinteger(L, (lua_Integer)count);
   lua_setfield(L, -2, "count");
-  lua_pushboolean(L, cai_input_item_list_has_more(self->ptr));
+  lua_pushboolean(L, self->ptr->has_more(self->ptr));
   lua_setfield(L, -2, "has_more");
-  lua_pushstring(L, cai_input_item_list_first_id(self->ptr));
+  lua_pushstring(L, self->ptr->first_id(self->ptr));
   lua_setfield(L, -2, "first_id");
-  lua_pushstring(L, cai_input_item_list_last_id(self->ptr));
+  lua_pushstring(L, self->ptr->last_id(self->ptr));
   lua_setfield(L, -2, "last_id");
   lua_newtable(L);
   for (i = 0u; i < count; i++) {
     lua_newtable(L);
-    lua_pushstring(L, cai_input_item_id(self->ptr, i));
+    lua_pushstring(L, self->ptr->item_id(self->ptr, i));
     lua_setfield(L, -2, "id");
-    lua_pushstring(L, cai_input_item_type(self->ptr, i));
+    lua_pushstring(L, self->ptr->item_type(self->ptr, i));
     lua_setfield(L, -2, "type");
-    lua_pushstring(L, cai_input_item_role(self->ptr, i));
+    lua_pushstring(L, self->ptr->item_role(self->ptr, i));
     lua_setfield(L, -2, "role");
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
@@ -5268,7 +5268,7 @@ static int cai_lua_input_items_summary(lua_State *L) {
 static int cai_lua_input_items_raw_json(lua_State *L) {
   cai_lua_input_items *self;
   self = cai_lua_check_input_items(L, 1);
-  lua_pushstring(L, cai_input_item_list_raw_json(self->ptr));
+  lua_pushstring(L, self->ptr->raw_json(self->ptr));
   return 1;
 }
 
@@ -5277,7 +5277,7 @@ static int cai_lua_conversation_item_gc(lua_State *L) {
   self = (cai_lua_conversation_item *)luaL_checkudata(
       L, 1, CAI_LUA_CONVERSATION_ITEM);
   if (self->ptr != NULL) {
-    cai_conversation_item_destroy(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   return 0;
@@ -5291,13 +5291,13 @@ static int cai_lua_conversation_item_summary(lua_State *L) {
   cai_lua_conversation_item *self;
   self = cai_lua_check_conversation_item(L, 1);
   lua_newtable(L);
-  lua_pushstring(L, cai_conversation_item_id(self->ptr));
+  lua_pushstring(L, self->ptr->id(self->ptr));
   lua_setfield(L, -2, "id");
-  lua_pushstring(L, cai_conversation_item_type(self->ptr));
+  lua_pushstring(L, self->ptr->type(self->ptr));
   lua_setfield(L, -2, "type");
-  lua_pushstring(L, cai_conversation_item_role(self->ptr));
+  lua_pushstring(L, self->ptr->role(self->ptr));
   lua_setfield(L, -2, "role");
-  lua_pushstring(L, cai_conversation_item_raw_json(self->ptr));
+  lua_pushstring(L, self->ptr->raw_json(self->ptr));
   lua_setfield(L, -2, "raw_json");
   return 1;
 }

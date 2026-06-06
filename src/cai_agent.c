@@ -846,10 +846,10 @@ int cai_agent_new_conversation_session(cai_agent *agent, cai_session **out,
   }
   rc = cai_agent_new_session(agent, &session, error);
   if (rc == CAI_OK) {
-    rc = cai_session_set_conversation_id(
-        session, cai_conversation_id(conversation), error);
+    rc = cai_session_set_conversation_id(session,
+                                         conversation->id(conversation), error);
   }
-  cai_conversation_destroy(conversation);
+  conversation->close(conversation);
   if (rc != CAI_OK) {
     cai_session_destroy(session);
     return rc;
@@ -1803,8 +1803,8 @@ int cai_session_set_conversation(cai_session *session,
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_session_set_conversation_id(
-      session, cai_conversation_id(conversation), error);
+  return cai_session_set_conversation_id(session,
+                                         conversation->id(conversation), error);
 }
 
 const char *cai_session_conversation_id(const cai_session *session) {

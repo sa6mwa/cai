@@ -1366,8 +1366,7 @@ int cai_response_create_params_set_model(cai_response_create_params *params,
   if (params == NULL || model == NULL || model[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "model is required");
   }
-  return cai_replace_string(&params->allocator, &params->model, model,
-                            error);
+  return cai_replace_string(&params->allocator, &params->model, model, error);
 }
 
 int cai_response_create_params_set_instructions(
@@ -3654,8 +3653,7 @@ static int cai_response_request_state_prepare(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model and at least one input message are required");
   }
-  if (params->previous_response_id != NULL &&
-      params->conversation_id != NULL) {
+  if (params->previous_response_id != NULL && params->conversation_id != NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "previous response id and conversation id are "
                          "mutually exclusive");

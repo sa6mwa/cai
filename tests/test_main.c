@@ -10078,21 +10078,28 @@ static void test_http_list_response_input_items(test_state *state) {
              cai_client_list_response_input_items(
                  mock.client, "resp_get", &list_params, &items, &mock.error),
              CAI_OK);
-  expect_int(state, "http_list_input_items_count",
-             (long)cai_input_item_list_count(items), 2L);
-  expect_int(state, "http_list_input_items_more",
-             cai_input_item_list_has_more(items), 1L);
-  expect_str(state, "http_list_input_items_first",
-             cai_input_item_list_first_id(items), "msg_1");
-  expect_str(state, "http_list_input_items_last",
-             cai_input_item_list_last_id(items), "msg_2");
-  expect_str(state, "http_list_input_items_id", cai_input_item_id(items, 0U),
+  if (items == NULL || items->count == NULL || items->has_more == NULL ||
+      items->first_id == NULL || items->last_id == NULL ||
+      items->raw_json == NULL || items->item_id == NULL ||
+      items->item_type == NULL || items->item_role == NULL ||
+      items->close == NULL) {
+    test_fail(state, "input_item_list_methods",
+              "input item list method facade not initialized");
+  }
+  expect_int(state, "http_list_input_items_count", (long)items->count(items),
+             2L);
+  expect_int(state, "http_list_input_items_more", items->has_more(items), 1L);
+  expect_str(state, "http_list_input_items_first", items->first_id(items),
              "msg_1");
-  expect_str(state, "http_list_input_items_type",
-             cai_input_item_type(items, 0U), "message");
-  expect_str(state, "http_list_input_items_role",
-             cai_input_item_role(items, 1U), "assistant");
-  cai_input_item_list_destroy(items);
+  expect_str(state, "http_list_input_items_last", items->last_id(items),
+             "msg_2");
+  expect_str(state, "http_list_input_items_id", items->item_id(items, 0U),
+             "msg_1");
+  expect_str(state, "http_list_input_items_type", items->item_type(items, 0U),
+             "message");
+  expect_str(state, "http_list_input_items_role", items->item_role(items, 1U),
+             "assistant");
+  items->close(items);
   http_mock_client_close(state, "http_list_items_mock", &mock);
 }
 
@@ -10988,33 +10995,38 @@ static void test_conversations(test_state *state) {
   expect_int(state, "conversation_create",
              cai_client_create_conversation(client, &conversation, &error),
              CAI_OK);
-  expect_str(state, "conversation_create_id", cai_conversation_id(conversation),
+  if (conversation == NULL || conversation->id == NULL ||
+      conversation->object == NULL || conversation->close == NULL) {
+    test_fail(state, "conversation_methods",
+              "conversation method facade not initialized");
+  }
+  expect_str(state, "conversation_create_id", conversation->id(conversation),
              "conv_mock");
   expect_str(state, "conversation_create_object",
-             cai_conversation_object(conversation), "conversation");
-  cai_conversation_destroy(conversation);
+             conversation->object(conversation), "conversation");
+  conversation->close(conversation);
   conversation = NULL;
   expect_int(state, "conversation_retrieve",
              cai_client_retrieve_conversation(client, "conv_get", &conversation,
                                               &error),
              CAI_OK);
-  expect_str(state, "conversation_retrieve_id",
-             cai_conversation_id(conversation), "conv_get");
-  cai_conversation_destroy(conversation);
+  expect_str(state, "conversation_retrieve_id", conversation->id(conversation),
+             "conv_get");
+  conversation->close(conversation);
   conversation = NULL;
   expect_int(state, "conversation_from_id",
              cai_conversation_from_id("conv_get", &conversation_ref, &error),
              CAI_OK);
   expect_str(state, "conversation_from_id_value",
-             cai_conversation_id(conversation_ref), "conv_get");
+             conversation_ref->id(conversation_ref), "conv_get");
   expect_int(state, "conversation_update_metadata",
              cai_client_update_conversation_metadata_handle(
                  client, conversation_ref, "{\"tenant\":\"vectis\"}",
                  &conversation, &error),
              CAI_OK);
   expect_str(state, "conversation_update_metadata_id",
-             cai_conversation_id(conversation), "conv_get");
-  cai_conversation_destroy(conversation);
+             conversation->id(conversation), "conv_get");
+  conversation->close(conversation);
   conversation = NULL;
   expect_int(state, "conversation_items_params_new",
              cai_conversation_items_params_new(&item_params, &error), CAI_OK);
@@ -11095,9 +11107,9 @@ static void test_conversations(test_state *state) {
              cai_client_create_conversation_items_handle(
                  client, conversation_ref, item_params, &items, &error),
              CAI_OK);
-  expect_str(state, "conversation_create_items_id",
-             cai_input_item_id(items, 0U), "conv_msg_new");
-  cai_input_item_list_destroy(items);
+  expect_str(state, "conversation_create_items_id", items->item_id(items, 0U),
+             "conv_msg_new");
+  items->close(items);
   items = NULL;
   cai_conversation_items_params_destroy(item_params);
   cai_list_params_init(&list_params);
@@ -11107,25 +11119,30 @@ static void test_conversations(test_state *state) {
              cai_client_list_conversation_items_handle(
                  client, conversation_ref, &list_params, &items, &error),
              CAI_OK);
-  expect_int(state, "conversation_list_items_count",
-             (long)cai_input_item_list_count(items), 1L);
-  expect_str(state, "conversation_list_items_id", cai_input_item_id(items, 0U),
+  expect_int(state, "conversation_list_items_count", (long)items->count(items),
+             1L);
+  expect_str(state, "conversation_list_items_id", items->item_id(items, 0U),
              "conv_msg_1");
-  expect_str(state, "conversation_list_items_role",
-             cai_input_item_role(items, 0U), "user");
-  cai_input_item_list_destroy(items);
+  expect_str(state, "conversation_list_items_role", items->item_role(items, 0U),
+             "user");
+  items->close(items);
   items = NULL;
   expect_int(state, "conversation_retrieve_item",
              cai_client_retrieve_conversation_item_handle(
                  client, conversation_ref, "conv_msg_1", &item, &error),
              CAI_OK);
-  expect_str(state, "conversation_retrieve_item_id",
-             cai_conversation_item_id(item), "conv_msg_1");
-  expect_str(state, "conversation_retrieve_item_type",
-             cai_conversation_item_type(item), "message");
-  expect_str(state, "conversation_retrieve_item_role",
-             cai_conversation_item_role(item), "user");
-  cai_conversation_item_destroy(item);
+  if (item == NULL || item->id == NULL || item->type == NULL ||
+      item->role == NULL || item->raw_json == NULL || item->close == NULL) {
+    test_fail(state, "conversation_item_methods",
+              "conversation item method facade not initialized");
+  }
+  expect_str(state, "conversation_retrieve_item_id", item->id(item),
+             "conv_msg_1");
+  expect_str(state, "conversation_retrieve_item_type", item->type(item),
+             "message");
+  expect_str(state, "conversation_retrieve_item_role", item->role(item),
+             "user");
+  item->close(item);
   item = NULL;
   expect_int(state, "conversation_delete_item",
              cai_client_delete_conversation_item_handle(
@@ -11135,7 +11152,7 @@ static void test_conversations(test_state *state) {
       state, "conversation_delete",
       cai_client_delete_conversation_handle(client, conversation_ref, &error),
       CAI_OK);
-  cai_conversation_destroy(conversation_ref);
+  conversation_ref->close(conversation_ref);
   cai_client_close(client);
   cai_error_cleanup(&error);
 
@@ -11469,7 +11486,7 @@ static void test_agent_session(test_state *state) {
   session->close(session);
   session = NULL;
   response = NULL;
-  cai_conversation_destroy(conversation);
+  conversation->close(conversation);
   conversation = NULL;
   expect_int(state, "agent_conversation_from_id",
              cai_conversation_from_id("conv_session", &conversation, &error),
@@ -11482,7 +11499,7 @@ static void test_agent_session(test_state *state) {
              session->conversation_id(session), "conv_session");
   session->close(session);
   session = NULL;
-  cai_conversation_destroy(conversation);
+  conversation->close(conversation);
   conversation = NULL;
   expect_int(state, "agent_auto_conversation_session",
              agent->new_conversation_session(agent, &session, &error), CAI_OK);

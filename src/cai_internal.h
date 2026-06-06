@@ -222,34 +222,6 @@ struct cai_conversation_items_params {
   lonejson_object_array items;
 };
 
-typedef struct cai_input_item {
-  char *id;
-  char *type;
-  char *role;
-} cai_input_item;
-
-struct cai_input_item_list {
-  char *object;
-  char *first_id;
-  char *last_id;
-  char *raw_json;
-  int has_more;
-  cai_input_item *items;
-  size_t count;
-};
-
-struct cai_conversation_item {
-  char *id;
-  char *type;
-  char *role;
-  char *raw_json;
-};
-
-struct cai_conversation {
-  char *id;
-  char *object;
-};
-
 typedef struct cai_buffer_builder {
   char *data;
   size_t length;

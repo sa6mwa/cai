@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
     exit_code = print_error("cai_session_run_output", rc, &error);
     goto done;
   }
-  printf("conversation: %s\n", cai_conversation_id(conversation));
+  printf("conversation: %s\n", conversation->id(conversation));
   printf("response: %s\n",
          output->text(output) != NULL ? output->text(output) : "");
 
@@ -106,18 +106,22 @@ int main(int argc, char **argv) {
         print_error("cai_client_list_conversation_items_handle", rc, &error);
     goto done;
   }
-  printf("items: %lu\n", (unsigned long)cai_input_item_list_count(items));
+  printf("items: %lu\n", (unsigned long)items->count(items));
   exit_code = 0;
 
 done:
-  cai_input_item_list_destroy(items);
+  if (items != NULL) {
+    items->close(items);
+  }
   if (output != NULL) {
     output->close(output);
   }
   if (session != NULL) {
     session->close(session);
   }
-  cai_conversation_destroy(conversation);
+  if (conversation != NULL) {
+    conversation->close(conversation);
+  }
   if (agent != NULL) {
     agent->close(agent);
   }

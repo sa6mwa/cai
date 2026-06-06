@@ -134,6 +134,12 @@ cai_conversation_input_message_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, message->content.items);
 }
 
+static void cai_conversation_init_methods(cai_conversation *conversation) {
+  conversation->id = cai_conversation_id;
+  conversation->object = cai_conversation_object;
+  conversation->close = cai_conversation_destroy;
+}
+
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error) {
   cai_conversation_doc doc;
@@ -171,9 +177,11 @@ int cai_conversation_parse_json(const char *json, cai_conversation **out,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation");
   }
-  conversation->id = cai_strdup(NULL, doc.id);
-  conversation->object = cai_strdup(NULL, doc.object);
-  if (conversation->id == NULL || conversation->object == NULL) {
+  memset(conversation, 0, sizeof(*conversation));
+  cai_conversation_init_methods(conversation);
+  conversation->id_value = cai_strdup(NULL, doc.id);
+  conversation->object_value = cai_strdup(NULL, doc.object);
+  if (conversation->id_value == NULL || conversation->object_value == NULL) {
     cai_conversation_destroy(conversation);
     CAI_LJ->cleanup(CAI_LJ, &cai_conversation_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -201,9 +209,11 @@ int cai_conversation_from_id(const char *conversation_id,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation");
   }
-  conversation->id = cai_strdup(NULL, conversation_id);
-  conversation->object = cai_strdup(NULL, "conversation");
-  if (conversation->id == NULL || conversation->object == NULL) {
+  memset(conversation, 0, sizeof(*conversation));
+  cai_conversation_init_methods(conversation);
+  conversation->id_value = cai_strdup(NULL, conversation_id);
+  conversation->object_value = cai_strdup(NULL, "conversation");
+  if (conversation->id_value == NULL || conversation->object_value == NULL) {
     cai_conversation_destroy(conversation);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation");
@@ -364,7 +374,8 @@ int cai_client_retrieve_conversation_handle(
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_retrieve_conversation(client, conversation->id, out, error);
+  return cai_client_retrieve_conversation(client, conversation->id_value, out,
+                                          error);
 }
 
 int cai_client_update_conversation_metadata(cai_client *client,
@@ -436,7 +447,7 @@ int cai_client_update_conversation_metadata_handle(
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_update_conversation_metadata(client, conversation->id,
+  return cai_client_update_conversation_metadata(client, conversation->id_value,
                                                  metadata_json, out, error);
 }
 
@@ -467,7 +478,7 @@ int cai_client_delete_conversation_handle(cai_client *client,
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_delete_conversation(client, conversation->id, error);
+  return cai_client_delete_conversation(client, conversation->id_value, error);
 }
 
 int cai_client_list_conversation_items(cai_client *client,
@@ -528,8 +539,8 @@ int cai_client_list_conversation_items_handle(
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_list_conversation_items(client, conversation->id, params,
-                                            out, error);
+  return cai_client_list_conversation_items(client, conversation->id_value,
+                                            params, out, error);
 }
 
 int cai_client_delete_conversation_item(cai_client *client,
@@ -560,8 +571,8 @@ int cai_client_delete_conversation_item_handle(
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_delete_conversation_item(client, conversation->id, item_id,
-                                             error);
+  return cai_client_delete_conversation_item(client, conversation->id_value,
+                                             item_id, error);
 }
 
 int cai_client_retrieve_conversation_item(cai_client *client,
@@ -613,7 +624,7 @@ int cai_client_retrieve_conversation_item_handle(
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_retrieve_conversation_item(client, conversation->id,
+  return cai_client_retrieve_conversation_item(client, conversation->id_value,
                                                item_id, out, error);
 }
 
@@ -1091,23 +1102,23 @@ int cai_client_create_conversation_items_handle(
   if (conversation == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "conversation is required");
   }
-  return cai_client_create_conversation_items(client, conversation->id, params,
-                                              out, error);
+  return cai_client_create_conversation_items(client, conversation->id_value,
+                                              params, out, error);
 }
 
 const char *cai_conversation_id(const cai_conversation *conversation) {
-  return conversation != NULL ? conversation->id : NULL;
+  return conversation != NULL ? conversation->id_value : NULL;
 }
 
 const char *cai_conversation_object(const cai_conversation *conversation) {
-  return conversation != NULL ? conversation->object : NULL;
+  return conversation != NULL ? conversation->object_value : NULL;
 }
 
 void cai_conversation_destroy(cai_conversation *conversation) {
   if (conversation == NULL) {
     return;
   }
-  cai_free_mem(NULL, conversation->id);
-  cai_free_mem(NULL, conversation->object);
+  cai_free_mem(NULL, conversation->id_value);
+  cai_free_mem(NULL, conversation->object_value);
   cai_free_mem(NULL, conversation);
 }
