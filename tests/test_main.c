@@ -10320,6 +10320,75 @@ cleanup:
   rmdir(template_dir);
 }
 
+static void test_chatgpt_auth_rejects_partial_allocator(test_state *state) {
+  char template_dir[] = "/tmp/cai-auth-partial-alloc-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[1024];
+  alloc_count_state auth_alloc_state;
+  alloc_count_state login_alloc_state;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_chatgpt_login_config login_config;
+  cai_chatgpt_login *login;
+  cai_error error;
+  char *authorize_url;
+
+  memset(&auth_alloc_state, 0, sizeof(auth_alloc_state));
+  memset(&login_alloc_state, 0, sizeof(login_alloc_state));
+  auth = NULL;
+  login = NULL;
+  authorize_url = NULL;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_partial_alloc_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"%s\","
+           "\"refresh_token\":\"refresh-partial\"}}",
+           "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.partial");
+  write_file_or_die(auth_path, auth_json);
+
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  auth_config.allocator.malloc_fn = test_allocator_malloc;
+  auth_config.allocator.context = &auth_alloc_state;
+  expect_int(state, "chatgpt_auth_partial_allocator_rejected",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "chatgpt_auth_partial_allocator_no_handle", auth == NULL,
+             1L);
+  expect_int(state, "chatgpt_auth_partial_allocator_no_alloc",
+             (long)auth_alloc_state.allocs, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  cai_chatgpt_login_config_init(&login_config);
+  login_config.auth_json_path = auth_path;
+  login_config.redirect_uri = "http://localhost:1455/auth/callback";
+  login_config.allocator.malloc_fn = test_allocator_malloc;
+  login_config.allocator.context = &login_alloc_state;
+  expect_int(
+      state, "chatgpt_login_partial_allocator_rejected",
+      cai_chatgpt_login_start(&login_config, &login, &authorize_url, &error),
+      CAI_ERR_INVALID);
+  expect_int(state, "chatgpt_login_partial_allocator_no_handle", login == NULL,
+             1L);
+  expect_int(state, "chatgpt_login_partial_allocator_no_url",
+             authorize_url == NULL, 1L);
+  expect_int(state, "chatgpt_login_partial_allocator_no_alloc",
+             (long)login_alloc_state.allocs, 0L);
+
+  cai_string_destroy(authorize_url);
+  test_chatgpt_login_close(login);
+  test_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
 static void test_http_retrieve_response(test_state *state) {
   cai_response *response;
   http_mock_client mock;
@@ -20074,6 +20143,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_login_exchange_http_timeout",
      test_chatgpt_login_exchange_http_timeout},
     {"chatgpt_login_default_path_write", test_chatgpt_login_default_path_write},
+    {"chatgpt_auth_rejects_partial_allocator",
+     test_chatgpt_auth_rejects_partial_allocator},
     {"http_retrieve_response", test_http_retrieve_response},
     {"http_cancel_response", test_http_cancel_response},
     {"http_delete_response", test_http_delete_response},

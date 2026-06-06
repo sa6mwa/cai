@@ -99,6 +99,16 @@ cai_chatgpt_login_impl_from_public(cai_chatgpt_login *login) {
   return login != NULL ? (cai_chatgpt_login_impl *)login->impl : NULL;
 }
 
+static int cai_auth_allocator_is_empty(const cai_allocator *allocator) {
+  return allocator->malloc_fn == NULL && allocator->realloc_fn == NULL &&
+         allocator->free_fn == NULL;
+}
+
+static int cai_auth_allocator_is_complete(const cai_allocator *allocator) {
+  return allocator->malloc_fn != NULL && allocator->realloc_fn != NULL &&
+         allocator->free_fn != NULL;
+}
+
 static const lonejson_field cai_auth_tokens_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_auth_tokens_doc, id_token,
                                           "id_token"),
@@ -921,6 +931,11 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   } else {
     effective = config;
   }
+  if (!cai_auth_allocator_is_empty(&effective->allocator) &&
+      !cai_auth_allocator_is_complete(&effective->allocator)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom allocator requires malloc, realloc, and free");
+  }
   auth_json_path = effective->auth_json_path;
   if (auth_json_path == NULL || auth_json_path[0] == '\0') {
     rc = cai_chatgpt_auth_default_path(&default_auth_json_path, error);
@@ -1724,6 +1739,11 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
     effective = &defaults;
   } else {
     effective = config;
+  }
+  if (!cai_auth_allocator_is_empty(&effective->allocator) &&
+      !cai_auth_allocator_is_complete(&effective->allocator)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom allocator requires malloc, realloc, and free");
   }
   auth_json_path = effective->auth_json_path;
   if (auth_json_path == NULL || auth_json_path[0] == '\0') {
