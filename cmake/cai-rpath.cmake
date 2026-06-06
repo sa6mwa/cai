@@ -1,0 +1,7 @@
+function(cai_install_rpath_token target_id out_var)
+  if(target_id MATCHES "darwin")
+    set(${out_var} "@loader_path" PARENT_SCOPE)
+  else()
+    set(${out_var} "$ORIGIN" PARENT_SCOPE)
+  endif()
+endfunction()

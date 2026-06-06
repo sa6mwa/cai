@@ -1,0 +1,396 @@
+#include <cai/models.h>
+
+#include <string.h>
+
+#define CAI_MODEL_CAP_TEXT                                                     \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                         \
+   CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_STRUCTURED_OUTPUTS)
+#define CAI_MODEL_CAP_TEXT_IMAGE                                               \
+  (CAI_MODEL_CAP_TEXT | CAI_MODEL_CAP_IMAGE_INPUT)
+#define CAI_MODEL_CAP_TEXT_REALTIME                                            \
+  (CAI_MODEL_CAP_TEXT_IMAGE | CAI_MODEL_CAP_REALTIME)
+#define CAI_MODEL_CAP_TEXT_IMAGE_NO_STREAM                                     \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_FUNCTION_CALLING |                  \
+   CAI_MODEL_CAP_STRUCTURED_OUTPUTS | CAI_MODEL_CAP_IMAGE_INPUT)
+#define CAI_MODEL_CAP_TEXT_IMAGE_NO_STRUCTURED                                 \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                         \
+   CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_IMAGE_INPUT)
+#define CAI_MODEL_CAP_TEXT_AUDIO                                               \
+  (CAI_MODEL_CAP_TEXT_REALTIME | CAI_MODEL_CAP_AUDIO_INPUT |                   \
+   CAI_MODEL_CAP_AUDIO_OUTPUT)
+#define CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT                                   \
+  (CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING |                         \
+   CAI_MODEL_CAP_FUNCTION_CALLING | CAI_MODEL_CAP_IMAGE_INPUT |                \
+   CAI_MODEL_CAP_AUDIO_INPUT)
+#define CAI_MODEL_ROW_META_PRICED(model_id, caps, flags, context_tokens,       \
+                                  input_price, cached_price, output_price)     \
+  {model_id,                                                                   \
+   caps,                                                                       \
+   flags,                                                                      \
+   context_tokens,                                                             \
+   ((context_tokens) * 8LL) / 10LL,                                            \
+   input_price,                                                                \
+   cached_price,                                                               \
+   output_price,                                                               \
+   0LL,                                                                        \
+   0.0,                                                                        \
+   0.0,                                                                        \
+   0.0}
+#define CAI_MODEL_ROW_META_PRICED_LONG(                                        \
+    model_id, caps, flags, context_tokens, input_price, cached_price,          \
+    output_price, long_threshold, long_input_price, long_cached_price,         \
+    long_output_price)                                                         \
+  {model_id,                                                                   \
+   caps,                                                                       \
+   flags,                                                                      \
+   context_tokens,                                                             \
+   ((context_tokens) * 8LL) / 10LL,                                            \
+   input_price,                                                                \
+   cached_price,                                                               \
+   output_price,                                                               \
+   long_threshold,                                                             \
+   long_input_price,                                                           \
+   long_cached_price,                                                          \
+   long_output_price}
+#define CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, input_price,      \
+                             cached_price, output_price)                       \
+  CAI_MODEL_ROW_META_PRICED(model_id, caps, CAI_MODEL_META_VERIFIED,           \
+                            context_tokens, input_price, cached_price,         \
+                            output_price)
+#define CAI_MODEL_ROW_PRICED_LONG(                                             \
+    model_id, caps, context_tokens, input_price, cached_price, output_price,   \
+    long_threshold, long_input_price, long_cached_price, long_output_price)    \
+  CAI_MODEL_ROW_META_PRICED_LONG(                                              \
+      model_id, caps, CAI_MODEL_META_VERIFIED, context_tokens, input_price,    \
+      cached_price, output_price, long_threshold, long_input_price,            \
+      long_cached_price, long_output_price)
+#define CAI_MODEL_ROW(model_id, caps, context_tokens)                          \
+  CAI_MODEL_ROW_PRICED(model_id, caps, context_tokens, 0.0, 0.0, 0.0)
+#define CAI_MODEL_ROW_UNKNOWN(model_id, caps)                                  \
+  {                                                                            \
+      model_id, caps, CAI_MODEL_META_INCOMPLETE,                               \
+      0LL,      0LL,  0.0,                                                     \
+      0.0,      0.0,  0LL,                                                     \
+      0.0,      0.0,  0.0}
+
+static const cai_model_info cai_models[] = {
+    CAI_MODEL_ROW_PRICED_LONG(CAI_MODEL_GPT_5_5, CAI_MODEL_CAP_TEXT_IMAGE,
+                              1050000LL, 5.00, 0.50, 30.00, 272000LL, 10.00,
+                              1.00, 45.00),
+    CAI_MODEL_ROW_PRICED_LONG(CAI_MODEL_GPT_5_5_2026_04_23,
+                              CAI_MODEL_CAP_TEXT_IMAGE, 1050000LL, 5.00, 0.50,
+                              30.00, 272000LL, 10.00, 1.00, 45.00),
+    CAI_MODEL_ROW_PRICED_LONG(
+        CAI_MODEL_GPT_5_5_PRO, CAI_MODEL_CAP_TEXT_IMAGE_NO_STREAM, 1050000LL,
+        30.00, 30.00, 180.00, 272000LL, 60.00, 60.00, 270.00),
+    CAI_MODEL_ROW_PRICED_LONG(
+        CAI_MODEL_GPT_5_5_PRO_2026_04_23, CAI_MODEL_CAP_TEXT_IMAGE_NO_STREAM,
+        1050000LL, 30.00, 30.00, 180.00, 272000LL, 60.00, 60.00, 270.00),
+    CAI_MODEL_ROW_PRICED_LONG(CAI_MODEL_GPT_5_4, CAI_MODEL_CAP_TEXT_REALTIME,
+                              1050000LL, 2.50, 0.25, 15.00, 272000LL, 5.00,
+                              0.50, 22.50),
+    CAI_MODEL_ROW_PRICED_LONG(
+        CAI_MODEL_GPT_5_4_PRO, CAI_MODEL_CAP_TEXT_IMAGE_NO_STRUCTURED,
+        1050000LL, 30.00, 30.00, 180.00, 272000LL, 60.00, 60.00, 270.00),
+    CAI_MODEL_ROW_PRICED_LONG(CAI_MODEL_GPT_5_4_PRO_2026_03_05,
+                              CAI_MODEL_CAP_TEXT_IMAGE_NO_STRUCTURED, 1050000LL,
+                              30.00, 30.00, 180.00, 272000LL, 60.00, 60.00,
+                              270.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_4_MINI, CAI_MODEL_CAP_TEXT_REALTIME,
+                         400000LL, 0.75, 0.075, 4.50),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_4_NANO, CAI_MODEL_CAP_TEXT_REALTIME,
+                         400000LL, 0.20, 0.02, 1.25),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_4_MINI_2026_03_17,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 400000LL, 0.75, 0.075,
+                         4.50),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_4_NANO_2026_03_17,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 400000LL, 0.20, 0.02,
+                         1.25),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_3_CODEX, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.75, 0.175, 14.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_CHAT_LATEST, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 5.00, 0.50, 30.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_2, CAI_MODEL_CAP_TEXT_IMAGE, 400000LL,
+                         1.75, 0.175, 14.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_2_2025_12_11, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.75, 0.175, 14.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_2_PRO,
+                         CAI_MODEL_CAP_TEXT_IMAGE_NO_STRUCTURED, 400000LL,
+                         21.00, 21.00, 168.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_2_PRO_2025_12_11,
+                         CAI_MODEL_CAP_TEXT_IMAGE_NO_STRUCTURED, 400000LL,
+                         21.00, 21.00, 168.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_1, CAI_MODEL_CAP_TEXT_IMAGE, 400000LL,
+                         1.25, 0.125, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_1_2025_11_13, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.25, 0.125, 10.00),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_5_1_MINI, CAI_MODEL_CAP_TEXT_IMAGE, 400000LL),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5, CAI_MODEL_CAP_TEXT_REALTIME, 400000LL,
+                         1.25, 0.125, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_MINI, CAI_MODEL_CAP_TEXT_REALTIME,
+                         400000LL, 0.25, 0.025, 2.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_NANO, CAI_MODEL_CAP_TEXT_REALTIME,
+                         400000LL, 0.05, 0.005, 0.40),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_2025_08_07,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 400000LL, 1.25, 0.125,
+                         10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_MINI_2025_08_07,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 400000LL, 0.25, 0.025,
+                         2.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_NANO_2025_08_07,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 400000LL, 0.05, 0.005,
+                         0.40),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4_1, CAI_MODEL_CAP_TEXT_REALTIME,
+                         1047576LL, 2.00, 0.50, 8.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4_1_MINI, CAI_MODEL_CAP_TEXT_REALTIME,
+                         1047576LL, 0.40, 0.10, 1.60),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4_1_NANO, CAI_MODEL_CAP_TEXT_REALTIME,
+                         1047576LL, 0.10, 0.025, 0.40),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4_1_2025_04_14,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 1047576LL, 2.00, 0.50,
+                         8.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4_1_MINI_2025_04_14,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 1047576LL, 0.40, 0.10,
+                         1.60),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4_1_NANO_2025_04_14,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 1047576LL, 0.10, 0.025,
+                         0.40),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_O4_MINI, CAI_MODEL_CAP_TEXT_IMAGE, 200000LL,
+                         1.10, 0.275, 4.40),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_O4_MINI_2025_04_16, CAI_MODEL_CAP_TEXT_IMAGE,
+                         200000LL, 1.10, 0.275, 4.40),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_O3, CAI_MODEL_CAP_TEXT_IMAGE, 200000LL, 2.00,
+                         0.50, 8.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_O3_2025_04_16, CAI_MODEL_CAP_TEXT_IMAGE,
+                         200000LL, 2.00, 0.50, 8.00),
+    CAI_MODEL_ROW(CAI_MODEL_O3_MINI, CAI_MODEL_CAP_TEXT, 200000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O3_MINI_2025_01_31, CAI_MODEL_CAP_TEXT, 200000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O1, CAI_MODEL_CAP_TEXT, 200000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O1_2024_12_17, CAI_MODEL_CAP_TEXT, 200000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O1_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O1_PREVIEW_2024_09_12, CAI_MODEL_CAP_TEXT,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O1_MINI, CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_O1_MINI_2024_09_12, CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4O, CAI_MODEL_CAP_TEXT_REALTIME,
+                         128000LL, 2.50, 1.25, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4O_2024_11_20,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 128000LL, 2.50, 1.25,
+                         10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4O_2024_08_06,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 128000LL, 2.50, 1.25,
+                         10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4O_2024_05_13,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 128000LL, 5.00, 5.00,
+                         15.00),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_AUDIO_PREVIEW, CAI_MODEL_CAP_TEXT_AUDIO,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_10_01,
+                  CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2024_12_17,
+                  CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_AUDIO_PREVIEW_2025_06_03,
+                  CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW, CAI_MODEL_CAP_TEXT_AUDIO,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_AUDIO_PREVIEW_2024_12_17,
+                  CAI_MODEL_CAP_TEXT_AUDIO, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_SEARCH_PREVIEW, CAI_MODEL_CAP_TEXT,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW, CAI_MODEL_CAP_TEXT,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_SEARCH_PREVIEW_2025_03_11,
+                  CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4O_MINI_SEARCH_PREVIEW_2025_03_11,
+                  CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_CHATGPT_4O_LATEST, CAI_MODEL_CAP_TEXT_REALTIME,
+                  128000LL),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4O_MINI, CAI_MODEL_CAP_TEXT_REALTIME,
+                         128000LL, 0.15, 0.075, 0.60),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_4O_MINI_2024_07_18,
+                         CAI_MODEL_CAP_TEXT_REALTIME, 128000LL, 0.15, 0.075,
+                         0.60),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO, CAI_MODEL_CAP_TEXT_IMAGE, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO_2024_04_09, CAI_MODEL_CAP_TEXT_IMAGE,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_0125_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_TURBO_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_1106_PREVIEW, CAI_MODEL_CAP_TEXT, 128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_VISION_PREVIEW, CAI_MODEL_CAP_TEXT_IMAGE,
+                  128000LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4, CAI_MODEL_CAP_TEXT, 8192LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_0314, CAI_MODEL_CAP_TEXT, 8192LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_0613, CAI_MODEL_CAP_TEXT, 8192LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_32K, CAI_MODEL_CAP_TEXT, 32768LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_32K_0314, CAI_MODEL_CAP_TEXT, 32768LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_4_32K_0613, CAI_MODEL_CAP_TEXT, 32768LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO, CAI_MODEL_CAP_TEXT, 16385LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO_16K, CAI_MODEL_CAP_TEXT, 16385LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO_0301, CAI_MODEL_CAP_TEXT, 4096LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO_0613, CAI_MODEL_CAP_TEXT, 4096LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO_1106, CAI_MODEL_CAP_TEXT, 16385LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO_0125, CAI_MODEL_CAP_TEXT, 16385LL),
+    CAI_MODEL_ROW(CAI_MODEL_GPT_3_5_TURBO_16K_0613, CAI_MODEL_CAP_TEXT,
+                  16385LL),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_3_CHAT_LATEST,
+                         CAI_MODEL_CAP_TEXT_IMAGE, 400000LL, 5.00, 0.50, 30.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_2_CHAT_LATEST,
+                         CAI_MODEL_CAP_TEXT_IMAGE, 400000LL, 1.75, 0.175,
+                         14.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_1_CODEX, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.25, 0.125, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_1_CODEX_MAX, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.25, 0.125, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_1_CHAT_LATEST,
+                         CAI_MODEL_CAP_TEXT_IMAGE, 400000LL, 1.25, 0.125,
+                         10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_CHAT_LATEST, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.25, 0.125, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_CODEX, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 1.25, 0.125, 10.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_PRO, CAI_MODEL_CAP_TEXT_IMAGE,
+                         400000LL, 15.00, 15.00, 120.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_GPT_5_PRO_2025_10_06,
+                         CAI_MODEL_CAP_TEXT_IMAGE, 400000LL, 15.00, 15.00,
+                         120.00),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O1_PRO, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O1_PRO_2025_03_19, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_O3_PRO, CAI_MODEL_CAP_TEXT_IMAGE_NO_STREAM,
+                         200000LL, 20.00, 20.00, 80.00),
+    CAI_MODEL_ROW_PRICED(CAI_MODEL_O3_PRO_2025_06_10,
+                         CAI_MODEL_CAP_TEXT_IMAGE_NO_STREAM, 200000LL, 20.00,
+                         20.00, 80.00),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O3_DEEP_RESEARCH, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O3_DEEP_RESEARCH_2025_06_26,
+                          CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O4_MINI_DEEP_RESEARCH, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_O4_MINI_DEEP_RESEARCH_2025_06_26,
+                          CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_COMPUTER_USE_PREVIEW, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_COMPUTER_USE_PREVIEW_2025_03_11,
+                          CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_UNKNOWN(CAI_MODEL_CODEX_MINI_LATEST, CAI_MODEL_CAP_TEXT),
+    CAI_MODEL_ROW_META_PRICED(
+        CAI_OPENROUTER_MODEL_NVIDIA_NEMOTRON_3_NANO_OMNI_30B_A3B_REASONING_FREE,
+        CAI_MODEL_CAP_TEXT_IMAGE_AUDIO_INPUT,
+        CAI_MODEL_META_VERIFIED | CAI_MODEL_META_PROVIDER_OPENROUTER, 256000LL,
+        0.0, 0.0, 0.0),
+    CAI_MODEL_ROW_META_PRICED(
+        CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE,
+        CAI_MODEL_CAP_RESPONSES |
+            CAI_MODEL_CAP_STREAMING | CAI_MODEL_CAP_FUNCTION_CALLING,
+        CAI_MODEL_META_VERIFIED | CAI_MODEL_META_PROVIDER_OPENROUTER, 131072LL,
+        0.0, 0.0, 0.0),
+    CAI_MODEL_ROW_META_PRICED(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
+                              CAI_MODEL_CAP_RESPONSES | CAI_MODEL_CAP_STREAMING,
+                              CAI_MODEL_META_VERIFIED |
+                                  CAI_MODEL_META_PROVIDER_OPENROUTER,
+                              262144LL, 0.0, 0.0, 0.0),
+    {NULL, 0U, 0U, 0LL, 0LL, 0.0, 0.0, 0.0, 0LL, 0.0, 0.0, 0.0}};
+
+const cai_model_info *cai_model_info_by_id(const char *model_id) {
+  size_t i;
+
+  if (model_id == NULL) {
+    return NULL;
+  }
+  for (i = 0U; cai_models[i].id != NULL; i++) {
+    if (strcmp(cai_models[i].id, model_id) == 0) {
+      return &cai_models[i];
+    }
+  }
+  return NULL;
+}
+
+int cai_model_supports(const char *model_id, unsigned int capability) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  if (info == NULL) {
+    return 0;
+  }
+  return (info->capabilities & capability) == capability;
+}
+
+unsigned int cai_model_metadata_flags(const char *model_id) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  return info != NULL ? info->metadata_flags : 0U;
+}
+
+long long cai_model_context_window_tokens(const char *model_id) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  return info != NULL ? info->context_window_tokens : 0LL;
+}
+
+long long cai_model_auto_compact_token_limit(const char *model_id) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  return info != NULL ? info->auto_compact_token_limit : 0LL;
+}
+
+int cai_model_can_estimate_usage_usd(const char *model_id) {
+  const cai_model_info *info;
+
+  info = cai_model_info_by_id(model_id);
+  if (info == NULL ||
+      (info->metadata_flags & CAI_MODEL_META_INCOMPLETE) != 0U) {
+    return 0;
+  }
+  if (info->input_usd_per_million > 0.0 ||
+      info->cached_input_usd_per_million > 0.0 ||
+      info->output_usd_per_million > 0.0) {
+    return 1;
+  }
+  return (info->metadata_flags & CAI_MODEL_META_VERIFIED) != 0U &&
+         (info->metadata_flags & CAI_MODEL_META_PROVIDER_OPENROUTER) != 0U;
+}
+
+double cai_model_estimate_usage_usd(const char *model_id,
+                                    long long input_tokens,
+                                    long long input_cached_tokens,
+                                    long long output_tokens) {
+  const cai_model_info *info;
+  long long uncached_input_tokens;
+  double cached_price;
+  double input_price;
+  double output_price;
+
+  if (!cai_model_can_estimate_usage_usd(model_id)) {
+    return 0.0;
+  }
+  info = cai_model_info_by_id(model_id);
+  if (info == NULL) {
+    return 0.0;
+  }
+  if (input_tokens < 0LL) {
+    input_tokens = 0LL;
+  }
+  if (input_cached_tokens < 0LL) {
+    input_cached_tokens = 0LL;
+  }
+  if (output_tokens < 0LL) {
+    output_tokens = 0LL;
+  }
+  if (input_cached_tokens > input_tokens) {
+    input_cached_tokens = input_tokens;
+  }
+  input_price = info->input_usd_per_million;
+  cached_price = info->cached_input_usd_per_million;
+  output_price = info->output_usd_per_million;
+  if (info->long_context_threshold_tokens > 0LL &&
+      input_tokens > info->long_context_threshold_tokens) {
+    input_price = info->long_input_usd_per_million;
+    cached_price = info->long_cached_input_usd_per_million;
+    output_price = info->long_output_usd_per_million;
+  }
+  uncached_input_tokens = input_tokens - input_cached_tokens;
+  return ((double)uncached_input_tokens * input_price +
+          (double)input_cached_tokens * cached_price +
+          (double)output_tokens * output_price) /
+         1000000.0;
+}

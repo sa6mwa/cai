@@ -1,0 +1,20 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_seed_1","instructions":"seed instructions","usage":null}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_seed_1","output_index":0,"delta":"hello"}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_seed_1","output_index":1,"call_id":"call_seed_1","name":"seed_tool","arguments":"{\"city\":\"Gothenburg\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_seed_1","type":"function_call","call_id":"call_seed_1","name":"seed_tool","arguments":"{\"city\":\"Gothenburg\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_seed_1","usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":17}}}
+
+data: [DONE]
+

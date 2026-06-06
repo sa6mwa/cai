@@ -1,0 +1,1061 @@
+local cai = require("cai")
+
+local function assert_eq(actual, expected, label)
+  if actual ~= expected then
+    error((label or "value") .. ": expected " .. tostring(expected) ..
+      " got " .. tostring(actual), 2)
+  end
+end
+
+local function assert_ok(value, err, label)
+  if not value then
+    error((label or "operation") .. " failed: " ..
+      (type(err) == "table" and (err.message or err.status_string) or tostring(err)), 2)
+  end
+  return value
+end
+
+local function assert_not_ok(value, err, label)
+  if value then
+    error((label or "operation") .. ": expected failure", 2)
+  end
+  assert(err ~= nil, (label or "operation") .. ": expected error detail")
+  return err
+end
+
+local function assert_throws(fn, label)
+  local ok, err = pcall(fn)
+  if ok then
+    error((label or "operation") .. ": expected Lua error", 2)
+  end
+  assert(err ~= nil, (label or "operation") .. ": expected Lua error detail")
+  return err
+end
+
+local function spool_text(text, chunk_size)
+  return {
+    pos = 1,
+    rewind = function(self)
+      self.pos = 1
+      return true
+    end,
+    read = function(self, n)
+      local size = chunk_size or n or 4096
+      local first = self.pos
+      local last
+      if first > #text then
+        return nil
+      end
+      last = first + size - 1
+      self.pos = last + 1
+      return text:sub(first, last)
+    end,
+  }
+end
+
+local function bad_spool_read_error()
+  return {
+    rewind = function()
+      return true
+    end,
+    read = function()
+      error("reader exploded")
+    end,
+  }
+end
+
+local function bad_spool_rewind_false()
+  return {
+    rewind = function()
+      return nil, "no rewind"
+    end,
+    read = function()
+      return "unreachable"
+    end,
+  }
+end
+
+local function bad_spool_empty_forever()
+  return {
+    rewind = function()
+      return true
+    end,
+    read = function()
+      return ""
+    end,
+  }
+end
+
+assert(type(cai.open) == "function")
+assert(type(cai.tool_registry) == "function")
+assert(type(cai.mcp_handler) == "function")
+assert(type(cai.chatgpt_auth) == "function")
+assert(type(cai.chatgpt_login) == "function")
+assert(type(cai.chatgpt_login_browser_command) == "function")
+assert(type(cai.chatgpt_login_open_browser) == "function")
+assert(type(cai.chatgpt_auth_default_path) == "function")
+assert(type(cai.chatgpt_login_browser_command()) == "string")
+assert(cai.chatgpt_login_browser_command() ~= "")
+assert(cai.MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES > 0)
+assert_eq(cai.MCP_TOOL_OUTPUT_UNLIMITED, -1, "mcp unlimited sentinel")
+assert(type(cai.tool_schema) == "function")
+assert(type(cai.load_dotenv_api_key) == "function")
+assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
+assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
+assert_eq(cai.CHATGPT_AUTH_DEFAULT_ISSUER, "https://auth.openai.com",
+  "ChatGPT auth issuer")
+assert_eq(cai.CHATGPT_AUTH_DEFAULT_CALLBACK_PATH, "/auth/callback",
+  "ChatGPT callback path")
+assert_eq(cai.CHATGPT_AUTH_DEFAULT_CALLBACK_PORT, 1455,
+  "ChatGPT callback port")
+assert_eq(cai.CHATGPT_AUTH_FALLBACK_CALLBACK_PORT, 1457,
+  "ChatGPT fallback callback port")
+assert_eq(cai.OPENAI_API_KEY_ENV, "OPENAI_API_KEY", "OpenAI env name")
+assert_eq(cai.OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY", "OpenRouter env name")
+assert_eq(cai.TEXT_VERBOSITY_LOW, "low", "text verbosity low")
+assert_eq(cai.RESPONSE_TRUNCATION_AUTO, "auto", "response truncation auto")
+assert_eq(cai.SERVICE_TIER_FLEX, "flex", "service tier flex")
+assert_eq(cai.HOSTED_TOOL_WEB_SEARCH, "web_search", "hosted web search")
+assert_eq(cai.TOOL_CHOICE_AUTO, "auto", "tool choice auto")
+assert_eq(cai.TOOL_CHOICE_NONE, "none", "tool choice none")
+assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
+assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
+assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
+assert(type(cai.MODEL_GPT_5_NANO) == "string")
+assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
+
+do
+  local registry = debug.getregistry()
+  local client_methods = assert(registry["cai.client"].__index,
+    "Lua client metatable")
+  local agent_methods = assert(registry["cai.agent"].__index,
+    "Lua agent metatable")
+  local session_methods = assert(registry["cai.session"].__index,
+    "Lua session metatable")
+  local response_methods = assert(registry["cai.response"].__index,
+    "Lua response metatable")
+  local output_methods = assert(registry["cai.output"].__index,
+    "Lua output metatable")
+  assert(type(client_methods.set_usage_limits) == "function",
+    "Lua client set_usage_limits method missing")
+  assert(type(client_methods.usage) == "function",
+    "Lua client usage method missing")
+  assert(type(agent_methods.set_session_usage_limits) == "function",
+    "Lua agent set_session_usage_limits method missing")
+  assert(type(agent_methods.usage) == "function",
+    "Lua agent usage method missing")
+  assert(type(session_methods.set_usage_limits) == "function",
+    "Lua session set_usage_limits method missing")
+  assert(type(session_methods.usage) == "function",
+    "Lua session usage method missing")
+  assert(type(session_methods.close_with_usage) == "function",
+    "Lua session close_with_usage method missing")
+  for _, name in ipairs({
+    "conversation_id",
+    "created_at",
+    "error_code",
+    "error_message",
+    "incomplete_reason",
+    "input_tokens",
+    "input_cached_tokens",
+    "output_tokens",
+    "output_reasoning_tokens",
+    "total_tokens",
+  }) do
+    assert(type(response_methods[name]) == "function",
+      "Lua response method missing: " .. name)
+  end
+  assert(type(output_methods.write_raw_json) == "function",
+    "Lua output write_raw_json method missing")
+end
+assert_eq(cai.MODEL_GPT_4O, "gpt-4o", "model constant")
+assert(type(cai.MODEL_CAP_RESPONSES) == "number")
+assert(type(cai.MODEL_META_PROVIDER_OPENROUTER) == "number")
+assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE) == "string")
+assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE) == "string")
+assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
+  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
+  "OpenRouter default model")
+assert_eq(cai.MODEL_GPT_5_4_PRO, "gpt-5.4-pro", "GPT-5.4 pro constant")
+assert_eq(cai.MODEL_GPT_5_3_CODEX, "gpt-5.3-codex",
+  "GPT-5.3-Codex constant")
+assert_eq(cai.MODEL_CHAT_LATEST, "chat-latest", "Chat latest constant")
+local model = cai.model_info(cai.MODEL_GPT_5_NANO)
+assert(type(model) == "table")
+assert(model.context_window_tokens > 0)
+assert(model.auto_compact_token_limit > 0)
+local latest_model = cai.model_info(cai.MODEL_GPT_5_5)
+assert(type(latest_model) == "table")
+assert_eq(latest_model.input_usd_per_million, 5.0, "gpt-5.5 input price")
+assert_eq(latest_model.cached_input_usd_per_million, 0.5,
+  "gpt-5.5 cached input price")
+assert_eq(latest_model.output_usd_per_million, 30.0, "gpt-5.5 output price")
+assert_eq(latest_model.long_context_threshold_tokens, 272000,
+  "gpt-5.5 long context threshold")
+assert_eq(latest_model.long_input_usd_per_million, 10.0,
+  "gpt-5.5 long input price")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_NANO), true,
+  "priced model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5), true,
+  "latest model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5_PRO), true,
+  "latest pro model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_4_NANO), true,
+  "priced GPT-5.4 nano can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_PRO), true,
+  "GPT-5 pro can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_CODEX_MINI_LATEST), false,
+  "incomplete model cannot enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_4_TURBO), false,
+  "supported model without price metadata cannot enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd("future-model"), false,
+  "unknown model cannot enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(
+  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE), true,
+  "verified free OpenRouter model can enforce spend")
+
+local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
+assert_not_ok(dummy_client:set_usage_limits({ max_total_tokens = -1 }),
+  "negative Lua client usage limit must fail")
+do
+  local accounting = assert_ok(dummy_client:usage())
+  assert_eq(accounting.usage.total_tokens, 0, "Lua client usage total")
+  assert_eq(accounting.limit_exceeded, false, "Lua client limit flag")
+end
+assert_not_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  max_output_tokens = -1,
+}), "negative Lua agent max output tokens must fail")
+assert_not_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  max_tool_calls = -1,
+}), "negative Lua agent max tool calls must fail")
+assert_not_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_4_TURBO,
+  session_usage_limits = { max_spend_usd = 1.0 },
+}), "Lua agent spend cap with missing pricing must fail")
+local dotenv_path = "/tmp/cai-lua-dotenv-test.env"
+do
+  local fp = assert(io.open(dotenv_path, "w"))
+  fp:write("OPENAI_API_KEY=lua-dotenv-key\n")
+  fp:close()
+end
+assert_eq(assert_ok(cai.load_dotenv_api_key(dotenv_path)), "lua-dotenv-key",
+  "Lua dotenv helper")
+local dotenv_value, dotenv_err = cai.load_dotenv_api_key("", nil)
+assert_not_ok(dotenv_value, dotenv_err, "empty Lua dotenv path")
+local dummy_agent = assert_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+  session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
+  history_memory_limit = 128,
+  session_usage_limits = { max_total_tokens = 100 },
+}))
+assert_ok(dummy_agent:set_session_usage_limits({ max_total_tokens = 120 }))
+assert_not_ok(dummy_agent:set_session_usage_limits({ max_total_tokens = -1 }),
+  "negative Lua agent session usage limit must fail")
+do
+  local accounting = assert_ok(dummy_agent:usage())
+  assert_eq(accounting.usage.total_tokens, 0, "Lua agent usage total")
+end
+assert_ok(dummy_agent:add_simple_hosted_tool(cai.HOSTED_TOOL_WEB_SEARCH))
+assert_ok(dummy_agent:add_hosted_mcp_tool({
+  server_label = "dice",
+  server_url = "https://example.test/mcp",
+  allowed_tool_names = { "roll" },
+}))
+assert_not_ok(dummy_agent:add_hosted_mcp_tool({
+  server_url = "https://example.test/mcp",
+}), "Lua hosted MCP server_label is required")
+assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
+  "agent hosted tool JSON must be an object")
+assert_not_ok(dummy_agent:add_user_text_spooled({ read = "not callable" }),
+  "agent spooled reader with non-callable read must fail")
+local dummy_session = assert_ok(dummy_agent:new_session())
+assert_ok(dummy_session:set_usage_limits({
+  max_input_tokens = 10,
+  max_input_cached_tokens = 10,
+  max_output_tokens = 10,
+  max_output_reasoning_tokens = 10,
+  max_total_tokens = 100,
+  max_spend_usd = 1.0,
+}))
+assert_not_ok(dummy_session:set_usage_limits({ max_spend_usd = -1 }),
+  "negative Lua session spend limit must fail")
+local unpriced_agent = assert_ok(dummy_client:new_agent({
+  model = cai.MODEL_GPT_4_TURBO,
+  instructions = "offline lua unpriced spend test",
+}))
+local unpriced_session = assert_ok(unpriced_agent:new_session())
+assert_not_ok(unpriced_agent:set_session_usage_limits({ max_spend_usd = 1.0 }),
+  "Lua agent spend cap setter with missing pricing must fail")
+assert_not_ok(unpriced_session:set_usage_limits({ max_spend_usd = 1.0 }),
+  "Lua session spend cap setter with missing pricing must fail")
+unpriced_session:close()
+unpriced_agent:close()
+do
+  local accounting = assert_ok(dummy_session:usage())
+  assert_eq(accounting.usage.total_tokens, 0, "Lua session usage total")
+  assert_eq(accounting.limit_exceeded, false, "Lua session limit flag")
+end
+assert_ok(dummy_session:set_previous_response_id("resp_lua_test"))
+assert_ok(dummy_session:set_conversation_id("conv_lua_test"))
+assert_not_ok(dummy_session:set_conversation_id(""),
+  "empty Lua session conversation id must fail")
+assert_ok(dummy_session:add_user_text("hello"))
+assert_ok(dummy_session:add_user_text_spooled(spool_text("spooled hello", 3)))
+assert_ok(dummy_session:add_user_file_data_spooled(
+  "notes.txt", spool_text("spooled file data", 4)))
+local source_part = 0
+assert_ok(dummy_session:add_user_text_source(function()
+  source_part = source_part + 1
+  return ({ "streamed ", "hello", nil })[source_part]
+end))
+assert_not_ok(dummy_session:add_user_text_source(function()
+  error("source exploded")
+end), "Lua source callback failure must fail")
+assert_not_ok(dummy_session:add_user_text_source(function()
+  return {}
+end), "Lua source callback non-string result must fail")
+assert_not_ok(dummy_session:add_user_text_source(function()
+  return ""
+end), "Lua source callback unbounded empty chunks must fail")
+assert_not_ok(dummy_session:add_user_text_spooled({ read = "not callable" }),
+  "spooled reader with non-callable read must fail")
+assert_not_ok(dummy_session:add_user_text_spooled(bad_spool_rewind_false()),
+  "spooled reader with failing rewind must fail")
+assert_not_ok(dummy_session:add_user_text_spooled(bad_spool_read_error()),
+  "spooled reader with throwing read must fail")
+assert_not_ok(dummy_session:add_user_text_spooled(bad_spool_empty_forever()),
+  "spooled reader with unbounded empty chunks must fail")
+local ids = dummy_session:ids()
+assert_eq(ids.conversation_id, "conv_lua_test", "session conversation id")
+local state_chunks = {}
+assert_ok(dummy_session:export_state(function(chunk)
+  state_chunks[#state_chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(state_chunks):match("conv_lua_test"))
+dummy_session:close()
+dummy_agent:close()
+dummy_client:close()
+
+do
+  local default_path = assert_ok(cai.chatgpt_auth_default_path(), nil,
+    "Lua ChatGPT default auth path")
+  assert(default_path:match("/cai/auth%.json$"),
+    "Lua ChatGPT default auth path suffix")
+
+  local auth_path = os.tmpname()
+  local future_token = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.lua"
+  local fp = assert(io.open(auth_path, "w"))
+  fp:write('{"auth_mode":"chatgpt","tokens":{"id_token":"' .. future_token ..
+    '","access_token":"' .. future_token ..
+    '","refresh_token":"refresh-lua","account_id":"acct_lua"},' ..
+    '"last_refresh":"2026-01-01T00:00:00Z"}')
+  fp:close()
+  local standalone_auth = assert_ok(cai.chatgpt_auth({
+    auth_json_path = auth_path,
+    issuer = "http://127.0.0.1:1",
+    refresh_window_seconds = 300,
+    http_timeout_ms = 250,
+  }), nil, "Lua standalone ChatGPT auth open")
+  assert_eq(assert_ok(standalone_auth:access_token(), nil,
+    "Lua standalone ChatGPT access token"), future_token,
+    "Lua standalone ChatGPT token")
+  standalone_auth:close()
+  assert_throws(function()
+    standalone_auth:access_token()
+  end, "Lua standalone ChatGPT closed auth")
+  local auth_client = assert_ok(cai.open({
+    chatgpt_auth_json = auth_path,
+    base_url = "http://127.0.0.1:1/v1",
+    http_2_disabled = 1,
+    timeout_ms = 1,
+    chatgpt_auth_http_timeout_ms = 250,
+  }), nil, "Lua ChatGPT auth client open")
+  auth_client:close()
+  os.remove(auth_path)
+  local missing_client, missing_err = cai.open({
+    chatgpt_auth_json = auth_path,
+  })
+  assert_not_ok(missing_client, missing_err, "Lua ChatGPT auth missing file")
+end
+
+do
+  local auth_path = os.tmpname()
+  os.remove(auth_path)
+  local login, authorize_url_or_err = cai.chatgpt_login({
+    auth_json_path = auth_path,
+    redirect_uri = "http://localhost:1455/auth/callback",
+    issuer = "https://auth.example.test/",
+    state = "state-fixed",
+    code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789",
+    originator = "cai-lua-test",
+    http_timeout_ms = 250,
+  })
+  local authorize_url = authorize_url_or_err
+  assert_ok(login, authorize_url_or_err, "Lua ChatGPT login start")
+  assert(authorize_url:match("^https://auth%.example%.test/oauth/authorize%?"),
+    "Lua ChatGPT authorize URL base")
+  assert(authorize_url:find("client_id=" .. cai.CHATGPT_AUTH_DEFAULT_CLIENT_ID,
+    1, true), "Lua ChatGPT authorize URL client id")
+  assert(authorize_url:find("redirect_uri=http%%3A%%2F%%2Flocalhost%%3A1455%%2Fauth%%2Fcallback"),
+    "Lua ChatGPT authorize URL redirect")
+  assert(authorize_url:find("code_challenge_method=S256", 1, true),
+    "Lua ChatGPT authorize URL PKCE")
+  assert(authorize_url:find("state=state-fixed", 1, true),
+    "Lua ChatGPT authorize URL state")
+  assert_eq(login:authorize_url(), authorize_url, "Lua ChatGPT authorize method")
+  assert_eq(login:completed(), false, "Lua ChatGPT login starts incomplete")
+
+  local bad_state = assert_ok(login:handle_callback({
+    method = "GET",
+    target = "/auth/callback?code=mock-code&state=wrong",
+  }), nil, "Lua ChatGPT login state mismatch response")
+  assert_eq(bad_state.status, 400, "Lua ChatGPT state mismatch status")
+  assert_eq(bad_state.completed, true, "Lua ChatGPT state mismatch terminal")
+  assert_eq(login:completed(), false, "Lua ChatGPT state mismatch not success")
+
+  local bad_method = assert_ok(login:handle_callback("POST",
+    "/auth/callback?code=mock-code&state=state-fixed"), nil,
+    "Lua ChatGPT login method response")
+  assert_eq(bad_method.status, 405, "Lua ChatGPT method status")
+  assert_eq(bad_method.completed, false, "Lua ChatGPT method not terminal")
+
+  local bad_path = assert_ok(login:handle_callback("GET",
+    "/other?code=mock-code&state=state-fixed"), nil,
+    "Lua ChatGPT login path response")
+  assert_eq(bad_path.status, 404, "Lua ChatGPT path status")
+  assert_eq(bad_path.completed, false, "Lua ChatGPT path not terminal")
+
+  login:close()
+  assert_throws(function()
+    login:completed()
+  end, "closed Lua ChatGPT login handle must fail")
+end
+
+do
+  local chained_agent = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }):new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua chained parent lifetime test",
+    session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
+  }))
+  collectgarbage("collect")
+  collectgarbage("collect")
+  assert_ok(chained_agent:add_user_text("agent parent must still be alive"))
+  chained_agent:close()
+
+  local chained_session = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }):new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua chained session lifetime test",
+    session_continuity = cai.CONTINUITY_CLIENT_HISTORY,
+  }):new_session())
+  collectgarbage("collect")
+  collectgarbage("collect")
+  assert_ok(chained_session:add_user_text("session parent must still be alive"))
+  chained_session:close()
+end
+local dummy_openrouter = assert_ok(cai.open({
+  openrouter = true,
+  api_key = "test-key",
+  timeout_ms = 1,
+}))
+dummy_openrouter:close()
+
+local params = assert_ok(cai.response_params())
+assert_ok(params:set_model(cai.MODEL_GPT_5_NANO))
+assert_ok(params:set_instructions("Lua low-level params test"))
+assert_ok(params:set_prompt_cache_key("cai:lua:test"))
+assert_ok(params:set_background(true))
+assert_ok(params:set_store(false))
+assert_ok(params:set_service_tier(cai.SERVICE_TIER_FLEX))
+assert_ok(params:set_truncation(cai.RESPONSE_TRUNCATION_AUTO))
+assert_ok(params:set_metadata_json('{"tenant":"lua"}'))
+assert_ok(params:set_include_json('["reasoning.encrypted_content"]'))
+assert_ok(params:set_prompt_json('{"id":"pmpt_lua","variables":{"topic":"cai"}}'))
+assert_ok(params:set_tool_choice(cai.TOOL_CHOICE_AUTO))
+assert_ok(params:set_tool_choice_json('{"type":"web_search"}'))
+assert_not_ok(params:set_tool_choice_json('['),
+  "invalid Lua raw tool choice JSON must fail")
+assert_ok(params:set_tool_choice(cai.TOOL_CHOICE_AUTO))
+assert_ok(params:set_max_output_tokens(128))
+assert_ok(params:set_max_tool_calls(3))
+assert_not_ok(params:set_max_tool_calls(-1),
+  "negative Lua max tool calls must fail")
+assert_not_ok(params:set_conversation_id(""),
+  "empty Lua params conversation id must fail")
+assert_not_ok(params:set_previous_response_id(""),
+  "empty Lua params previous response id must fail")
+assert_ok(params:set_parallel_tool_calls(true))
+assert_ok(params:set_compact_threshold(320000))
+assert_ok(params:set_reasoning("minimal", "auto"))
+assert_ok(params:set_text_format_json_object())
+assert_ok(params:set_text_format_json_schema("lua_test", "Lua schema test", '{"type":"object","properties":{"ok":{"type":"boolean"}},"additionalProperties":false}', true))
+assert_ok(params:set_text_verbosity(cai.TEXT_VERBOSITY_LOW))
+assert_ok(params:add_text("user", "hello"))
+assert_ok(params:add_text_spooled("user", spool_text("params spooled text", 5)))
+assert_ok(params:add_image_url("user", "https://example.com/image.png", "low"))
+assert_ok(params:add_image_file_id("user", "file_lua_image", "low"))
+assert_ok(params:add_file_id("user", "file_lua_doc"))
+assert_ok(params:add_file_data_spooled(
+  "user", "params.txt", spool_text("params file data", 6)))
+assert_ok(params:add_file_url("user", "https://example.com/file.txt"))
+assert_ok(params:add_function_tool("noop", "No-op test tool", '{"type":"object","properties":{},"additionalProperties":false}', true))
+assert_ok(params:add_simple_hosted_tool(cai.HOSTED_TOOL_WEB_SEARCH))
+assert_ok(params:add_hosted_tool_json('{"type":"code_interpreter","container":{"type":"auto"}}'))
+assert_ok(params:add_hosted_mcp_tool({
+  server_label = "dice",
+  server_url = "https://example.test/mcp",
+  server_description = "Lua dice tools",
+  allowed_tool_names = { "roll", "status" },
+  require_approval_json = '"never"',
+}))
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  allowed_tools_json = "[",
+}), "invalid Lua hosted MCP policy JSON must fail")
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+}), "Lua hosted MCP endpoint is required")
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  connector_id = "conn_lua",
+}), "Lua hosted MCP endpoints are mutually exclusive")
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  allowed_tool_names = { "ask" },
+  allowed_tools_json = '["ask"]',
+}), "Lua hosted MCP allowed tool policies are mutually exclusive")
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  allowed_tools_json = '"ask"',
+}), "Lua hosted MCP allowed_tools must be array or object")
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  headers_json = '[]',
+}), "Lua hosted MCP headers must be object")
+assert_not_ok(params:add_hosted_mcp_tool({
+  server_label = "bad",
+  server_url = "https://example.test/mcp",
+  require_approval_json = 'true',
+}), "Lua hosted MCP require_approval must be string or object")
+assert_ok(params:add_function_call_output("call_test", '{"ok":true}'))
+assert_ok(params:add_function_call_output_text("call_text", "plain tool result"))
+assert_ok(params:add_function_call_output_image_url("call_image", "https://example.com/out.png", "low"))
+assert_ok(params:add_function_call_output_file_id("call_file", "file_lua_result"))
+assert_ok(params:add_function_call_output_file_data_spooled(
+  "call_file_data", "result.txt", spool_text("function result file", 7)))
+assert_not_ok(params:add_text_spooled("user", bad_spool_read_error()),
+  "response params spooled read error must fail")
+params:close()
+
+local conversation = assert_ok(cai.conversation_from_id("conv_lua_test"))
+assert_eq(conversation:id(), "conv_lua_test", "conversation id")
+conversation:close()
+
+local conv_params = assert_ok(cai.conversation_items_params())
+assert_ok(conv_params:add_text("user", "hello"))
+assert_ok(conv_params:add_text_spooled("user", spool_text("conv spooled text", 2)))
+local part = 0
+assert_ok(conv_params:add_text_source("user", function()
+  part = part + 1
+  return ({ "large ", "text", nil })[part]
+end))
+assert_ok(conv_params:add_image_url("user", "https://example.com/i.png", "low"))
+assert_ok(conv_params:add_image_file_id("user", "file_lua_conv_image", "low"))
+assert_ok(conv_params:add_file_id("user", "file_lua_conv_doc"))
+assert_ok(conv_params:add_file_data_spooled(
+  "user", "conv.txt", spool_text("conv file data", 3)))
+assert_ok(conv_params:add_file_url("user", "https://example.com/f.txt"))
+assert_not_ok(conv_params:add_text_spooled("user", bad_spool_rewind_false()),
+  "conversation params spooled rewind error must fail")
+conv_params:close()
+
+local schema = assert_ok(cai.tool_schema())
+assert_ok(schema:set_strict(true))
+assert_ok(schema:string("city", "City name", true))
+assert_ok(schema:integer("days", "Forecast days", false))
+assert_ok(schema:string_enum("unit", "Temperature unit", { "c", "f" }, false))
+assert_ok(schema:describe("city", "City to check"))
+assert_ok(schema:raw_property("extra", "Raw schema", '{"type":"object"}', false))
+assert(schema:strict())
+local schema_json = schema:json()
+assert(schema_json:match('"city"'))
+assert(schema_json:match('"required"'))
+schema:close()
+
+local registry = assert_ok(cai.tool_registry())
+local weather_schema = [[
+{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}
+]]
+assert_ok(registry:register_raw_tool("lua_weather", "Lua weather test tool", weather_schema, function(args_json)
+  assert(args_json:match("Gothenburg"))
+  return '{"ok":true,"summary":"dry enough"}'
+end, true))
+
+assert_ok(registry:register_raw_spooled_tool("lua_spooled_weather", "Lua spooled weather test tool", weather_schema, function(args)
+  local arguments = args:read_all()
+  local out = { '{"ok":', 'true,"summary":"spooled ', 'dry enough"}', nil }
+  local i = 0
+  assert(arguments:match("Gothenburg"))
+  assert(args:size() > 0)
+  return function()
+    i = i + 1
+    return out[i]
+  end
+end, true))
+assert_ok(registry:register_raw_spooled_tool("lua_throwing_tool", "Lua throwing callback test tool", weather_schema, function()
+  error("tool exploded")
+end, true))
+
+local retained_spooled_args = nil
+assert_ok(registry:register_raw_spooled_tool("lua_retained_spooled_weather", "Lua retained spooled argument test tool", weather_schema, function(args)
+  retained_spooled_args = args
+  return '{"ok":true}'
+end, true))
+
+local raw_chunks = {}
+assert_ok(registry:run("lua_weather", '{"city":"Gothenburg"}', function(chunk)
+  raw_chunks[#raw_chunks + 1] = chunk
+  return true
+end))
+local raw_json = table.concat(raw_chunks)
+assert(raw_json:match('"ok":true'))
+assert(raw_json:match('"summary":"dry enough"'))
+
+local spooled_chunks = {}
+assert_ok(registry:run("lua_spooled_weather", '{"city":"Gothenburg"}', function(chunk)
+  spooled_chunks[#spooled_chunks + 1] = chunk
+  return true
+end))
+local spooled_json = table.concat(spooled_chunks)
+assert(spooled_json:match('"ok":true'))
+assert(spooled_json:match('"summary":"spooled dry enough"'))
+chunks = {}
+assert_ok(registry:run("lua_retained_spooled_weather", '{"city":"Gothenburg"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(retained_spooled_args ~= nil, "retained spooled callback arguments missing")
+assert(retained_spooled_args:read_all():match("Gothenburg"),
+  "retained spooled callback arguments must remain readable after callback")
+assert_not_ok(registry:run("lua_spooled_weather", '{"city":"Gothenburg"}', function()
+  return false
+end), "registry run must propagate sink cancellation")
+assert_not_ok(registry:run("lua_throwing_tool", '{"city":"Gothenburg"}', function()
+  return true
+end), "raw spooled tool must propagate callback failure")
+assert_not_ok(registry:run("lua_spooled_weather", '{"city":', function()
+  return true
+end), "registry run must reject invalid arguments JSON")
+
+local exec_root = "/tmp/cai-lua-exec-test"
+os.execute("rm -rf " .. exec_root)
+assert(os.execute("mkdir -p " .. exec_root .. "/sub"))
+assert_ok(registry:register_exec_tool({
+  root_path = exec_root,
+  default_workdir = exec_root,
+  timeout_ms = 1000,
+  max_timeout_ms = 1000,
+  output_memory_limit = 8,
+  output_max_bytes = 4096,
+  allow_pty = true,
+}))
+local chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"printf lua-out; printf lua-err >&2","tty":false}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local exec_json = table.concat(chunks)
+assert(exec_json:match('"stdout":"lua%-out"'))
+assert(exec_json:match('"stderr":"lua%-err'))
+assert(exec_json:match('"exit_code":0'))
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"cat","stdin":"lua-stdin-alpha\\nlua-stdin-beta\\n"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("lua%-stdin%-alpha"), "exec tool must pass stdin data")
+assert(table.concat(chunks):match("lua%-stdin%-beta"), "exec tool must pass multiline stdin data")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"sh -s","stdin":"printf lua-script-ok:%s\\\\n \\"$PWD\\"\\n"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("lua%-script%-ok:"), "exec tool must run stdin scripts")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"sub","tty":null}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("/sub"))
+assert_not_ok(registry:run("exec_command", '{"cmd":"pwd","workdir":"/tmp"}', function()
+  return true
+end), "exec tool must reject workdir outside root")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"cat /etc/passwd"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local host_passwd_attempt = table.concat(chunks)
+assert(not host_passwd_attempt:match("root:x:"), "exec tool must not expose host /etc/passwd")
+local leak = io.open("/var/tmp/cai-lua-host-leak", "w")
+if leak then
+  leak:write("host")
+  leak:close()
+end
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"if test -e /var/tmp/cai-lua-host-leak; then printf leak; else printf isolated; fi; printf ok >/var/tmp/sandbox-created"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match("isolated"), "exec tool must isolate /var/tmp")
+os.remove("/var/tmp/cai-lua-host-leak")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"printf env:${CAI_LUA_EXEC_SHOULD_NOT_LEAK-unset}:$HOME:$TMPDIR:$LANG"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local env_output = table.concat(chunks)
+assert(env_output:match("env:unset:"), "exec tool must clear host environment")
+assert(env_output:match(":/tmp:"), "exec tool must set sandbox TMPDIR")
+chunks = {}
+assert_ok(registry:run("exec_command", '{"cmd":"if test -t 0; then printf in-tty; else printf in-notty; fi; read x && printf got:$x || printf read-eof","stdin":"pty-input\\n","tty":true}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local tty_output = table.concat(chunks)
+assert(tty_output:match("in%-notty"), "exec PTY mode must not expose stdin as tty")
+assert(tty_output:match("got:pty%-input"), "exec PTY mode must receive configured stdin")
+
+local read_root = "/tmp/cai-lua-read-test"
+os.execute("rm -rf " .. read_root)
+assert(os.execute("mkdir -p " .. read_root .. "/sub"))
+assert(os.execute("mkdir -p " .. read_root .. "/sub/nested"))
+local read_file = assert(io.open(read_root .. "/sub/alpha.txt", "w"))
+read_file:write("one\ntwo\nthree\n")
+read_file:close()
+local deep_file = assert(io.open(read_root .. "/sub/nested/deep.txt", "w"))
+deep_file:write("deep\n")
+deep_file:close()
+local hidden_file = assert(io.open(read_root .. "/sub/.hidden", "w"))
+hidden_file:write("hidden\n")
+hidden_file:close()
+local utf8_file = assert(io.open(read_root .. "/sub/utf8.txt", "wb"))
+utf8_file:write("a", string.char(0xc3), string.char(0xa9), "\n")
+utf8_file:close()
+local binary_file = assert(io.open(read_root .. "/sub/binary.bin", "wb"))
+binary_file:write("text", string.char(0), "x")
+binary_file:close()
+local control_file = assert(io.open(read_root .. "/sub/control.txt", "wb"))
+control_file:write("text", string.char(0x1b), "x")
+control_file:close()
+local invalid_utf8_file = assert(io.open(read_root .. "/sub/invalid-utf8.txt", "wb"))
+invalid_utf8_file:write("bad", string.char(0xc3), "(")
+invalid_utf8_file:close()
+assert_ok(registry:register_read_tool({
+  root_path = read_root,
+  default_workdir = read_root .. "/sub",
+  content_memory_limit = 8,
+  content_max_bytes = 64,
+}))
+assert_ok(registry:register_list_files_tool({
+  root_path = read_root,
+  default_workdir = read_root .. "/sub",
+  content_memory_limit = 8,
+  content_max_bytes = 64,
+}))
+chunks = {}
+assert_ok(registry:run("read_file", '{"path":"alpha.txt","start_line":2,"end_line":2}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local read_json = table.concat(chunks)
+assert(read_json:match('"content":"two\\n"'), "read_file must return selected line content")
+assert(read_json:match('"truncated":false'), "read_file must report non-truncated reads")
+chunks = {}
+assert_ok(registry:run("read_file", '{"path":"alpha.txt","max_bytes":4}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match('"truncated":true'), "read_file must report max byte truncation")
+chunks = {}
+assert_ok(registry:run("read_file", '{"path":"utf8.txt","max_bytes":2}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local utf8_json = table.concat(chunks)
+assert(utf8_json:match('"content":"a"'), "read_file must not split UTF-8 characters")
+assert(utf8_json:match('"truncated":true'), "read_file must report UTF-8 boundary truncation")
+assert_not_ok(registry:run("read_file", '{"path":"/etc/passwd"}', function()
+  return true
+end), "read_file must reject absolute escapes")
+assert_not_ok(registry:run("read_file", '{"path":"../missing/../../etc/passwd"}', function()
+  return true
+end), "read_file must reject relative escapes")
+assert_not_ok(registry:run("read_file", '{"path":"binary.bin"}', function()
+  return true
+end), "read_file must reject binary content")
+assert_not_ok(registry:run("read_file", '{"path":"control.txt"}', function()
+  return true
+end), "read_file must reject control characters")
+assert_not_ok(registry:run("read_file", '{"path":"invalid-utf8.txt"}', function()
+  return true
+end), "read_file must reject invalid UTF-8 content")
+chunks = {}
+assert_ok(registry:run("list_files", '{"path":"."}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local list_json = table.concat(chunks)
+assert(list_json:match('"path":"sub/alpha%.txt"'), "list_files must list files")
+assert(list_json:match('"text_candidate":true'), "list_files must report text candidates")
+assert(list_json:match('"path":"sub/binary%.bin"'), "list_files must list binary files")
+assert(list_json:match('"binary_candidate":true'), "list_files must report binary candidates")
+assert(not list_json:match("%.hidden"), "list_files must hide dotfiles by default")
+chunks = {}
+assert_ok(registry:run("list_files", '{"path":".","recursive":true,"include_hidden":true}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local recursive_list_json = table.concat(chunks)
+assert(recursive_list_json:match('"path":"sub/nested/deep%.txt"'), "list_files must recurse")
+assert(recursive_list_json:match('"path":"sub/%.hidden"'), "list_files must include hidden when requested")
+chunks = {}
+assert_ok(registry:run("list_files", '{"path":".","recursive":true,"max_entries":1}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+assert(table.concat(chunks):match('"truncated":true'), "list_files must report truncation")
+assert_not_ok(registry:run("list_files", '{"path":"/etc"}', function()
+  return true
+end), "list_files must reject absolute escapes")
+
+os.remove("/tmp/cai-lua-test-todo.json")
+os.remove("/tmp/cai-lua-test-todo.lock")
+assert_ok(registry:register_todo_tool({
+  store_path = "/tmp/cai-lua-test-todo.json",
+  lock_path = "/tmp/cai-lua-test-todo.lock",
+  default_board = "lua",
+}))
+
+chunks = {}
+assert_ok(registry:run("todo_kanban", '{"operation":"help"}', function(chunk)
+  chunks[#chunks + 1] = chunk
+  return true
+end))
+local help_json = table.concat(chunks)
+assert(help_json:match("todo_kanban"))
+assert(help_json:match("operation"))
+
+chunks = {}
+assert_ok(registry:run(
+  "todo_kanban",
+  '{"operation":"list_boards","board_id":null,"board_name":null,"item_id":null,"title":null,"description":null,"status":null,"wip_limit":null}',
+  function(chunk)
+    chunks[#chunks + 1] = chunk
+    return true
+  end
+))
+local list_json = table.concat(chunks)
+assert(list_json:match('"ok":true'))
+assert(list_json:match("boards listed"))
+assert(list_json:match('"boards"%s*:'))
+assert(list_json:match('"name":"lua"'))
+assert(list_json:match('"board_count":1'))
+assert(not list_json:match('"items"%s*:'))
+
+chunks = {}
+assert_ok(registry:run(
+  "todo_kanban",
+  '{"operation":"add_item","title":"lua default task"}',
+  function(chunk)
+    chunks[#chunks + 1] = chunk
+    return true
+  end
+))
+local default_add_json = table.concat(chunks)
+assert(default_add_json:match('"ok":true'))
+assert(default_add_json:match('"board_name":"lua"'))
+assert(default_add_json:match('"item_id"'))
+
+chunks = {}
+assert_ok(registry:run(
+  "todo_kanban",
+  '{"operation":"set_wip_limit","board_id":null,"board_name":null,"item_id":null,"title":null,"description":null,"status":null,"wip_limit":null}',
+  function(chunk)
+    chunks[#chunks + 1] = chunk
+    return true
+  end
+))
+local invalid_wip_json = table.concat(chunks)
+assert(invalid_wip_json:match('"ok":false'))
+assert(invalid_wip_json:match("invalid_request"))
+assert(invalid_wip_json:match("wip_limit is required"))
+
+local mcp = assert_ok(cai.mcp_handler({
+  name = "cai-lua-test",
+  version = "0.0.0",
+  tools = registry,
+  require_protocol_version = 1,
+  tool_output_max_bytes = cai.MCP_TOOL_OUTPUT_UNLIMITED,
+}))
+
+assert_throws(function()
+  mcp:handle_http({
+    method = "POST",
+    headers = {
+      ["content-type"] = "application/json",
+      ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    },
+    body = "{}",
+  })
+end, "mcp handler without streaming writer must throw")
+
+local body_parts = {
+  '{"jsonrpc":"2.0","id":"1","method":"tools/list","params":',
+  '{}',
+  '}',
+}
+local body_index = 0
+local response_chunks = {}
+local response = assert_ok(mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = function()
+    body_index = body_index + 1
+    return body_parts[body_index]
+  end,
+  write = function(chunk)
+    response_chunks[#response_chunks + 1] = chunk
+    return true
+  end,
+}))
+
+assert_eq(response.status, 200, "mcp status")
+assert(type(response.headers) == "table")
+local response_json = table.concat(response_chunks)
+assert(response_json:match("todo_kanban"))
+assert(response_json:match('"jsonrpc"'))
+assert(body_index > 1, "request body should be consumed in chunks")
+
+mcp:close()
+
+local sessions = {}
+local session_events = { creates = 0, loads = 0, saves = 0, destroys = 0 }
+local stateful_mcp = assert_ok(cai.mcp_handler({
+  name = "cai-lua-stateful-test",
+  tools = registry,
+  session = {
+    create = function(state)
+      session_events.creates = session_events.creates + 1
+      assert(state.client_name == "lua-client")
+      sessions["lua-session-1"] = state
+      return "lua-session-1"
+    end,
+    load = function(id)
+      session_events.loads = session_events.loads + 1
+      return sessions[id]
+    end,
+    save = function(id, state)
+      session_events.saves = session_events.saves + 1
+      sessions[id] = state
+      return true
+    end,
+    destroy = function(id)
+      session_events.destroys = session_events.destroys + 1
+      sessions[id] = nil
+      return true
+    end,
+  },
+}))
+local stateful_chunks = {}
+local init_response = assert_ok(stateful_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = '{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"' ..
+      cai.MCP_PROTOCOL_VERSION ..
+      '","clientInfo":{"name":"lua-client","version":"1.0"}}}',
+  write = function(chunk)
+    stateful_chunks[#stateful_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(init_response.status, 200, "stateful mcp initialize status")
+assert_eq(init_response.headers["mcp-session-id"], "lua-session-1",
+  "stateful mcp session header")
+assert_eq(session_events.creates, 1, "stateful mcp create count")
+
+stateful_chunks = {}
+local ping_response = assert_ok(stateful_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = init_response.headers["mcp-session-id"],
+  },
+  body = '{"jsonrpc":"2.0","id":"ping","method":"ping"}',
+  write = function(chunk)
+    stateful_chunks[#stateful_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(ping_response.status, 200, "stateful mcp ping status")
+assert_eq(session_events.loads, 1, "stateful mcp load count")
+assert_eq(session_events.saves, 1, "stateful mcp save count")
+assert(table.concat(stateful_chunks):match('"id":"ping"'))
+
+stateful_chunks = {}
+local missing_response = assert_ok(stateful_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = '{"jsonrpc":"2.0","id":"missing","method":"ping"}',
+  write = function(chunk)
+    stateful_chunks[#stateful_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(missing_response.status, 400, "stateful mcp missing session status")
+
+local delete_response = assert_ok(stateful_mcp:handle_http({
+  method = "DELETE",
+  headers = {
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = init_response.headers["mcp-session-id"],
+  },
+  body = "{}",
+  write = function()
+    return true
+  end,
+}))
+assert_eq(delete_response.status, 202, "stateful mcp delete status")
+assert_eq(session_events.destroys, 1, "stateful mcp destroy count")
+stateful_mcp:close()
+
+registry:close()
+os.remove("/tmp/cai-lua-test-todo.json")
+os.remove("/tmp/cai-lua-test-todo.lock")
+
+print("cai lua tests passed")

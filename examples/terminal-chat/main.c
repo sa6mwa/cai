@@ -1,0 +1,691 @@
+#include <cai/auth.h>
+#include <cai/cai.h>
+#include <cai/tools/exec.h>
+#include <cai/tools/read.h>
+#include <cai/tools/searxng.h>
+#include <cai/tools/todo.h>
+
+#include "../common.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define CAI_ANSI_RESET "\033[0m"
+#define CAI_ANSI_GRAY "\033[90m"
+#define CAI_ANSI_GREEN "\033[32m"
+#define CAI_ANSI_BRIGHT_CYAN "\033[96m"
+#define CAI_ANSI_MAGENTA "\033[35m"
+#define CAI_ANSI_BOLD_WHITE "\033[1;37m"
+
+#define CAI_USAGE_LABEL                                                        \
+  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "usage" CAI_ANSI_GRAY                 \
+                "]" CAI_ANSI_RESET
+#define CAI_RESPONSE_PREFIX                                                    \
+  CAI_ANSI_GRAY "[" CAI_ANSI_GREEN "response" CAI_ANSI_GRAY "]" CAI_ANSI_RESET \
+                " "
+#define CAI_RESPONSE_SUFFIX CAI_ANSI_RESET "\n"
+#define CAI_TOOL_LABEL                                                         \
+  CAI_ANSI_GRAY "[" CAI_ANSI_BRIGHT_CYAN "tool" CAI_ANSI_GRAY "]" CAI_ANSI_RESET
+#define CAI_REASONING_PREFIX                                                   \
+  CAI_ANSI_GRAY "[" CAI_ANSI_MAGENTA "reasoning" CAI_ANSI_GRAY                 \
+                "] " CAI_ANSI_GRAY
+#define CAI_REASONING_SUFFIX CAI_ANSI_RESET "\n\n"
+#define CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS 1000000LL
+
+static int print_error(const char *operation, int rc, const cai_error *error) {
+  fprintf(stderr, "%s failed: %s\n", operation,
+          error->message != NULL ? error->message : cai_status_string(rc));
+  if (error->detail != NULL) {
+    fprintf(stderr, "detail: %s\n", error->detail);
+  }
+  return 1;
+}
+
+static void trim_newline(char *line) {
+  size_t length;
+
+  length = strlen(line);
+  while (length > 0U &&
+         (line[length - 1U] == '\n' || line[length - 1U] == '\r')) {
+    line[length - 1U] = '\0';
+    length--;
+  }
+}
+
+static char *join_strings(const char *const *parts) {
+  size_t total;
+  size_t offset;
+  size_t i;
+  char *joined;
+
+  if (parts == NULL) {
+    return NULL;
+  }
+  total = 0U;
+  for (i = 0U; parts[i] != NULL; i++) {
+    total += strlen(parts[i]);
+  }
+  joined = (char *)malloc(total + 1U);
+  if (joined == NULL) {
+    return NULL;
+  }
+  offset = 0U;
+  for (i = 0U; parts[i] != NULL; i++) {
+    size_t len;
+
+    len = strlen(parts[i]);
+    memcpy(joined + offset, parts[i], len);
+    offset += len;
+  }
+  joined[offset] = '\0';
+  return joined;
+}
+
+static void print_usage(const cai_token_usage *usage, double context_percent,
+                        int has_context_percent, double total_spent_usd) {
+  if (has_context_percent) {
+    fprintf(stderr,
+            CAI_USAGE_LABEL
+            " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " cached=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " output=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " reasoning=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " total=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+            " context=" CAI_ANSI_BOLD_WHITE "%.2f%%" CAI_ANSI_RESET
+            " estimated_cost=" CAI_ANSI_BOLD_WHITE "$%.8f" CAI_ANSI_RESET "\n",
+            usage->input_tokens, usage->input_cached_tokens,
+            usage->output_tokens, usage->output_reasoning_tokens,
+            usage->total_tokens, context_percent, total_spent_usd);
+    return;
+  }
+  fprintf(stderr,
+          CAI_USAGE_LABEL
+          " input=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " cached=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " output=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " reasoning=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " total=" CAI_ANSI_BOLD_WHITE "%lld" CAI_ANSI_RESET
+          " context=" CAI_ANSI_BOLD_WHITE "n/a" CAI_ANSI_RESET
+          " estimated_cost=" CAI_ANSI_BOLD_WHITE "$%.8f" CAI_ANSI_RESET "\n",
+          usage->input_tokens, usage->input_cached_tokens, usage->output_tokens,
+          usage->output_reasoning_tokens, usage->total_tokens, total_spent_usd);
+}
+
+static const char *searxng_base_url(void) {
+  const char *base_url;
+
+  base_url = getenv("CAI_SEARXNG_BASE_URL");
+  if (base_url == NULL || base_url[0] == '\0') {
+    return CAI_SEARXNG_DEFAULT_BASE_URL;
+  }
+  return base_url;
+}
+
+static void print_help(const char *program) {
+  fprintf(stderr,
+          "usage: %s [--chatgpt-auth] [--chatgpt-auth-json <path>] "
+          "[--model <model>] [--exec-tool-dir <path>] "
+          "[--read-tool-dir <path>] [usage-limit flags]\n\n"
+          "  --chatgpt-auth       Use ChatGPT subscription auth from cai's "
+          "default auth.json path.\n",
+          program != NULL ? program : "cai_example_terminal_chat");
+  fprintf(stderr,
+          "  --chatgpt-auth-json <path>\n"
+          "                          Use ChatGPT subscription auth from a "
+          "specific Codex-style auth.json file.\n"
+          "  --model <model>         Override the model. Defaults to "
+          "gpt-5-nano with API keys and gpt-5.4-mini with ChatGPT auth.\n"
+          "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
+          "  --read-tool-dir <path>  Register list_files/read_file rooted to "
+          "<path>.\n"
+          "                          list_files reports text/binary hints; "
+          "read_file is UTF-8 text-only.\n");
+  fprintf(stderr,
+          "  --max-input-tokens <n>  Maximum cumulative input tokens; 0 "
+          "disables.\n"
+          "  --max-cached-input-tokens <n>\n"
+          "                          Maximum cumulative cached input tokens; 0 "
+          "disables.\n"
+          "  --max-output-tokens <n> Maximum cumulative output tokens. "
+          "Default: %lld.\n",
+          CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS);
+  fprintf(stderr,
+          "  --max-reasoning-output-tokens <n>\n"
+          "                          Maximum cumulative reasoning output "
+          "tokens; 0 disables.\n"
+          "  --max-total-tokens <n>  Maximum cumulative total tokens; 0 "
+          "disables.\n"
+          "  --max-spend-usd <n>     Maximum estimated cumulative USD spend; 0 "
+          "disables.\n");
+}
+
+static int parse_ll_arg(const char *name, const char *value, long long *out) {
+  long long parsed;
+  const char *cursor;
+
+  if (value == NULL || value[0] == '\0') {
+    fprintf(stderr, "%s requires a non-negative integer\n", name);
+    return 0;
+  }
+  parsed = 0LL;
+  cursor = value;
+  while (*cursor != '\0') {
+    int digit;
+
+    if (*cursor < '0' || *cursor > '9') {
+      fprintf(stderr, "%s requires a non-negative integer\n", name);
+      return 0;
+    }
+    digit = *cursor - '0';
+    if (parsed > (9223372036854775807LL - (long long)digit) / 10LL) {
+      fprintf(stderr, "%s is too large\n", name);
+      return 0;
+    }
+    parsed = parsed * 10LL + (long long)digit;
+    cursor++;
+  }
+  *out = parsed;
+  return 1;
+}
+
+static int parse_double_arg(const char *name, const char *value, double *out) {
+  char *endptr;
+  double parsed;
+
+  if (value == NULL || value[0] == '\0') {
+    fprintf(stderr, "%s requires a non-negative number\n", name);
+    return 0;
+  }
+  parsed = strtod(value, &endptr);
+  if (*endptr != '\0' || parsed < 0.0) {
+    fprintf(stderr, "%s requires a non-negative number\n", name);
+    return 0;
+  }
+  *out = parsed;
+  return 1;
+}
+
+static int parse_args(int argc, char **argv, const char **exec_tool_dir,
+                      const char **read_tool_dir,
+                      const char **chatgpt_auth_json, const char **model,
+                      int *chatgpt_auth, cai_usage_limits *usage_limits) {
+  int i;
+
+  *exec_tool_dir = NULL;
+  *read_tool_dir = NULL;
+  *chatgpt_auth_json = NULL;
+  *model = getenv("CAI_TERMINAL_CHAT_MODEL");
+  if (*model == NULL || (*model)[0] == '\0') {
+    *model = getenv("CAI_EXAMPLE_MODEL");
+  }
+  *chatgpt_auth = 0;
+  cai_usage_limits_init(usage_limits);
+  usage_limits->max_output_tokens = CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS;
+  for (i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--chatgpt-auth") == 0) {
+      *chatgpt_auth = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--chatgpt-auth-json") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--chatgpt-auth-json requires a path\n");
+        return 0;
+      }
+      *chatgpt_auth_json = argv[++i];
+      *chatgpt_auth = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--model") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--model requires a model id\n");
+        return 0;
+      }
+      *model = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--exec-tool-dir") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--exec-tool-dir requires a path\n");
+        return 0;
+      }
+      *exec_tool_dir = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--read-tool-dir") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--read-tool-dir requires a path\n");
+        return 0;
+      }
+      *read_tool_dir = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--max-input-tokens") == 0) {
+      if (i + 1 >= argc || !parse_ll_arg("--max-input-tokens", argv[i + 1],
+                                         &usage_limits->max_input_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-cached-input-tokens") == 0) {
+      if (i + 1 >= argc ||
+          !parse_ll_arg("--max-cached-input-tokens", argv[i + 1],
+                        &usage_limits->max_input_cached_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-output-tokens") == 0) {
+      if (i + 1 >= argc || !parse_ll_arg("--max-output-tokens", argv[i + 1],
+                                         &usage_limits->max_output_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-reasoning-output-tokens") == 0) {
+      if (i + 1 >= argc ||
+          !parse_ll_arg("--max-reasoning-output-tokens", argv[i + 1],
+                        &usage_limits->max_output_reasoning_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-total-tokens") == 0) {
+      if (i + 1 >= argc || !parse_ll_arg("--max-total-tokens", argv[i + 1],
+                                         &usage_limits->max_total_tokens)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--max-spend-usd") == 0) {
+      if (i + 1 >= argc || !parse_double_arg("--max-spend-usd", argv[i + 1],
+                                             &usage_limits->max_spend_usd)) {
+        return 0;
+      }
+      i++;
+      continue;
+    }
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      print_help(argv[0]);
+      return -1;
+    }
+    fprintf(stderr, "unknown argument: %s\n", argv[i]);
+    print_help(argv[0]);
+    return 0;
+  }
+  return 1;
+}
+
+typedef struct terminal_tool_trace {
+  FILE *fp;
+  cai_sink *sink;
+} terminal_tool_trace;
+
+static int print_tool_event(void *context, const cai_tool_event *event,
+                            cai_error *error) {
+  terminal_tool_trace *trace;
+
+  trace = (terminal_tool_trace *)context;
+  if (trace == NULL || trace->fp == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_START) {
+    int rc;
+
+    fprintf(trace->fp, CAI_TOOL_LABEL " %s input=",
+            event->name != NULL ? event->name : "(unknown)");
+    fflush(trace->fp);
+    if (trace->sink != NULL) {
+      rc = event->write_arguments(event, trace->sink, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    } else {
+      fputs(event->arguments_json != NULL ? event->arguments_json : "{}",
+            trace->fp);
+    }
+    fputc('\n', trace->fp);
+    fflush(trace->fp);
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+    fprintf(trace->fp, CAI_TOOL_LABEL " %s output=",
+            event->name != NULL ? event->name : "(unknown)");
+    fflush(trace->fp);
+    if (trace->sink != NULL) {
+      int rc;
+
+      rc = event->write_output(event, trace->sink, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    }
+    fputc('\n', trace->fp);
+    fflush(trace->fp);
+    return CAI_OK;
+  }
+  if (event->type == CAI_TOOL_EVENT_ERROR) {
+    fprintf(trace->fp, CAI_TOOL_LABEL " %s failed",
+            event->name != NULL ? event->name : "(unknown)");
+    if (event->tool_error != NULL && event->tool_error->message != NULL) {
+      fprintf(trace->fp, ": %s", event->tool_error->message);
+    }
+    fputc('\n', trace->fp);
+    fflush(trace->fp);
+  }
+  return CAI_OK;
+}
+
+int main(int argc, char **argv) {
+  cai_agent_config agent_config;
+  cai_client_config client_config;
+  cai_run_options run_options;
+  cai_exec_tool_config exec_config;
+  cai_read_tool_config read_config;
+  cai_searxng_tool_config searxng_config;
+  cai_todo_tool_config todo_config;
+  cai_chatgpt_auth_config chatgpt_auth_config;
+  cai_stream_sinks stream_sinks;
+  cai_chatgpt_auth *chatgpt_auth;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *stdout_sink;
+  terminal_tool_trace tool_trace;
+  cai_error error;
+  cai_token_usage usage;
+  cai_usage_limits usage_limits;
+  double context_percent;
+  double total_spent_usd;
+  char *dotenv_api_key;
+  char *chatgpt_auth_path_display;
+  char *developer_instructions;
+  const char *exec_tool_dir;
+  const char *read_tool_dir;
+  const char *chatgpt_auth_json;
+  const char *model;
+  int chatgpt_auth_enabled;
+  int has_context_percent;
+  char line[4096];
+  int exit_code;
+  int rc;
+  static const char *const terminal_tool_instructions[] = {
+      "You are a concise terminal chat assistant. Tools: searxng_search, ",
+      "todo_kanban, list_files, read_file, and optionally exec_command. Cite ",
+      "search URLs. todo_kanban has a default board; omit board_id, ",
+      "board_key, and board_name for ordinary use. Use list_files before ",
+      "read_file when discovering paths. Prefer read_file for file contents. ",
+      "Use exec_command only when explicitly asked; set workdir when needed. ",
+      "For scripts, put source in exec_command stdin and set command to only ",
+      "python3 -, sh -s, bash -s, or lua -; do not use heredocs.",
+      NULL};
+
+  developer_instructions = NULL;
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_chatgpt_auth_config_init(&chatgpt_auth_config);
+  memset(&exec_config, 0, sizeof(exec_config));
+  memset(&read_config, 0, sizeof(read_config));
+  memset(&searxng_config, 0, sizeof(searxng_config));
+  memset(&todo_config, 0, sizeof(todo_config));
+  rc =
+      parse_args(argc, argv, &exec_tool_dir, &read_tool_dir, &chatgpt_auth_json,
+                 &model, &chatgpt_auth_enabled, &usage_limits);
+  if (rc < 0) {
+    return 0;
+  }
+  if (rc == 0) {
+    return 2;
+  }
+  if (model == NULL || model[0] == '\0') {
+    model =
+        chatgpt_auth_enabled ? CAI_MODEL_GPT_5_4_MINI : CAI_MODEL_GPT_5_NANO;
+  }
+  agent_config.model = model;
+  agent_config.session_usage_limits = usage_limits;
+  agent_config.reasoning_effort = chatgpt_auth_enabled
+                                      ? CAI_REASONING_EFFORT_MEDIUM
+                                      : CAI_REASONING_EFFORT_LOW;
+  if (exec_tool_dir != NULL || read_tool_dir != NULL) {
+    developer_instructions = join_strings(terminal_tool_instructions);
+    if (developer_instructions == NULL) {
+      fprintf(stderr, "failed to allocate terminal chat instructions\n");
+      return 1;
+    }
+    agent_config.developer_instructions = developer_instructions;
+  } else {
+    agent_config.developer_instructions =
+        "You are a concise terminal chat assistant. Answer plainly. You have "
+        "access to searxng_search for web search and todo_kanban for managing "
+        "a local kanban board. Use search when the user asks for current, "
+        "external, or source-backed information, and cite the URL from the "
+        "tool "
+        "result when you use it. Use todo_kanban when the user asks you to "
+        "remember, plan, list, move, limit, or archive work. todo_kanban has a "
+        "default board; omit board_id, board_key, and board_name for ordinary "
+        "single-board usage.";
+  }
+  agent_config.prompt_cache_key = "cai:example:terminal-chat:v1";
+  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  agent_config.disable_parallel_tool_calls = 1;
+  run_options.max_tool_rounds = 10;
+  searxng_config.base_url = searxng_base_url();
+  searxng_config.engine = getenv("CAI_SEARXNG_ENGINE");
+  todo_config.store_path = getenv("CAI_TODO_STORE");
+  todo_config.lock_path = getenv("CAI_TODO_LOCK");
+  todo_config.default_board = getenv("CAI_TODO_BOARD");
+  if (todo_config.default_board == NULL ||
+      todo_config.default_board[0] == '\0') {
+    todo_config.default_board = "default";
+  }
+  if (exec_tool_dir != NULL) {
+    exec_config.root_path = exec_tool_dir;
+    exec_config.default_workdir = exec_tool_dir;
+    exec_config.output_memory_limit = 128U * 1024U;
+    exec_config.output_max_bytes = 3U * 1024U * 1024U;
+    exec_config.allow_pty = 1;
+  }
+  if (read_tool_dir != NULL) {
+    read_config.root_path = read_tool_dir;
+    read_config.default_workdir = read_tool_dir;
+    read_config.content_memory_limit = 128U * 1024U;
+    read_config.content_max_bytes = 1024U * 1024U;
+  }
+  client = NULL;
+  chatgpt_auth = NULL;
+  agent = NULL;
+  session = NULL;
+  stdout_sink = NULL;
+  tool_trace.fp = stdout;
+  tool_trace.sink = NULL;
+  dotenv_api_key = NULL;
+  chatgpt_auth_path_display = NULL;
+  exit_code = 1;
+  total_spent_usd = 0.0;
+
+  if (exec_tool_dir == NULL) {
+    fprintf(stderr,
+            "hint: pass --exec-tool-dir <path> to enable exec_command rooted "
+            "to that path\n");
+  } else {
+    fprintf(stderr, "exec_command enabled with root: %s\n", exec_tool_dir);
+  }
+  if (read_tool_dir == NULL) {
+    fprintf(stderr,
+            "hint: pass --read-tool-dir <path> to enable read_file rooted "
+            "to that path\n");
+  } else {
+    fprintf(stderr, "read_file enabled with root: %s\n", read_tool_dir);
+  }
+
+  if (chatgpt_auth_enabled) {
+    chatgpt_auth_config.auth_json_path = chatgpt_auth_json;
+    rc = cai_chatgpt_auth_open(&chatgpt_auth_config, &chatgpt_auth, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_chatgpt_auth_open", rc, &error);
+      goto done;
+    }
+    client_config.chatgpt_auth = chatgpt_auth;
+    if (chatgpt_auth_json != NULL) {
+      fprintf(stderr, "ChatGPT subscription auth enabled: %s\n",
+              chatgpt_auth_json);
+    } else if (cai_chatgpt_auth_default_path(&chatgpt_auth_path_display,
+                                             &error) == CAI_OK) {
+      fprintf(stderr, "ChatGPT subscription auth enabled: %s\n",
+              chatgpt_auth_path_display);
+    } else {
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      fprintf(stderr, "ChatGPT subscription auth enabled with default path\n");
+    }
+  } else {
+    rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key,
+                                         &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_load_dotenv_api_key", rc, &error);
+      goto done;
+    }
+  }
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_client_open", rc, &error);
+    goto done;
+  }
+  rc = client->new_agent(client, &agent_config, &agent, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_client_new_agent", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_register_searxng_tool(agent, &searxng_config, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_agent_register_searxng_tool", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_register_todo_tool(agent, &todo_config, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_agent_register_todo_tool", rc, &error);
+    goto done;
+  }
+  if (exec_tool_dir != NULL) {
+    rc = cai_agent_register_exec_tool(agent, &exec_config, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_agent_register_exec_tool", rc, &error);
+      goto done;
+    }
+  }
+  if (read_tool_dir != NULL) {
+    rc = cai_agent_register_list_files_tool(agent, &read_config, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_agent_register_list_files_tool", rc, &error);
+      goto done;
+    }
+    rc = cai_agent_register_read_tool(agent, &read_config, &error);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_agent_register_read_tool", rc, &error);
+      goto done;
+    }
+  }
+  rc = agent->new_session(agent, &session, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_agent_new_session", rc, &error);
+    goto done;
+  }
+  rc = cai_sink_stdout(&stdout_sink, &error);
+  if (rc != CAI_OK) {
+    exit_code = print_error("cai_sink_stdout", rc, &error);
+    goto done;
+  }
+  tool_trace.sink = stdout_sink;
+  run_options.tool_event = print_tool_event;
+  run_options.tool_event_context = &tool_trace;
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.reasoning_summary = stdout_sink;
+  stream_sinks.output_text = stdout_sink;
+  stream_sinks.reasoning_summary_prefix.text = CAI_REASONING_PREFIX;
+  stream_sinks.reasoning_summary_suffix.text = CAI_REASONING_SUFFIX;
+  stream_sinks.output_text_prefix.text = CAI_RESPONSE_PREFIX;
+  stream_sinks.output_text_suffix.text = CAI_RESPONSE_SUFFIX;
+
+  for (;;) {
+    fputs("> ", stdout);
+    fflush(stdout);
+    if (fgets(line, sizeof(line), stdin) == NULL) {
+      if (ferror(stdin)) {
+        fprintf(stderr, "stdin read failed\n");
+        exit_code = 1;
+        break;
+      }
+      if (isatty(STDIN_FILENO)) {
+        fputc('\n', stdout);
+      }
+      exit_code = 0;
+      break;
+    }
+    trim_newline(line);
+    if (line[0] == '\0') {
+      continue;
+    }
+    if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0 ||
+        strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
+      exit_code = 0;
+      break;
+    }
+    rc = session->add_user_text(session, line, &error);
+    if (rc == CAI_OK) {
+      rc = session->stream_auto(session, &run_options, &stream_sinks, &error);
+    }
+    fputc('\n', stdout);
+    fflush(stdout);
+    if (rc != CAI_OK) {
+      exit_code = print_error("cai_session_stream_auto", rc, &error);
+      break;
+    }
+    if (session->last_usage(session, &usage, &error) == CAI_OK) {
+      total_spent_usd += cai_model_estimate_usage_usd(
+          agent_config.model, usage.input_tokens, usage.input_cached_tokens,
+          usage.output_tokens);
+      context_percent = 0.0;
+      has_context_percent =
+          session->context_percent(session, &context_percent, &error) == CAI_OK;
+      if (!has_context_percent) {
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+      }
+      print_usage(&usage, context_percent, has_context_percent,
+                  total_spent_usd);
+    } else {
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+  }
+
+done:
+  if (stdout_sink != NULL) {
+    stdout_sink->close(stdout_sink);
+  }
+  if (session != NULL) {
+    session->close(session);
+  }
+  if (agent != NULL) {
+    agent->close(agent);
+  }
+  if (client != NULL) {
+    client->close(client);
+  }
+  if (chatgpt_auth != NULL) {
+    chatgpt_auth->close(chatgpt_auth);
+  }
+  cai_string_destroy(chatgpt_auth_path_display);
+  cai_string_destroy(dotenv_api_key);
+  free(developer_instructions);
+  cai_error_cleanup(&error);
+  return exit_code;
+}

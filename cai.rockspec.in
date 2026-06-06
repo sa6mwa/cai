@@ -1,0 +1,30 @@
+package = "cai"
+version = "@VERSION@-1"
+source = {
+  url = "@SOURCE_URL@",
+@SOURCE_TAG_LINE@
+@SOURCE_DIR_LINE@
+}
+description = {
+  summary = "Lua binding for the cai OpenAI Responses SDK",
+  detailed = [[
+Lua 5.5 binding for cai. It wraps the public C SDK facade: clients, agents,
+sessions, response/output handles, tool registries, tool presets, and the
+transport-neutral MCP Streamable HTTP handler.
+]],
+  homepage = "https://github.com/sa6mwa/cai",
+  license = "MIT",
+}
+dependencies = {
+  "lua >= 5.5, < 5.6",
+  "lonejson >= 0.31.0",
+}
+build = {
+  type = "command",
+  build_command = "sh scripts/build_lua_rock.sh \"$(CC)\" \"$(CFLAGS)\" \"$(LIBFLAG)\" \"$(OBJ_EXTENSION)\" \"$(LIB_EXTENSION)\" \"$(LUA_INCDIR)\"",
+  install = {
+    lib = {
+      ["cai"] = ".luarocks-build/cai.@LIB_EXTENSION@",
+    },
+  },
+}

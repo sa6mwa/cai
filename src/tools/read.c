@@ -1,0 +1,1463 @@
+#include "../cai_internal.h"
+
+#include <cai/tools/read.h>
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/param.h>
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
+
+extern char *realpath(const char *path, char *resolved_path);
+
+#define CAI_READ_DEFAULT_CONTENT_MEMORY_LIMIT (128U * 1024U)
+#define CAI_READ_DEFAULT_CONTENT_MAX_BYTES (1024U * 1024U)
+#define CAI_LIST_FILES_DEFAULT_MAX_ENTRIES 200LL
+#define CAI_LIST_FILES_TEXT_SCAN_BYTES 4096U
+
+typedef struct cai_read_context {
+  char *root_path;
+  char *default_workdir;
+  size_t content_memory_limit;
+  size_t content_max_bytes;
+  char *content_spool_dir;
+  lonejson *runtime;
+} cai_read_context;
+
+typedef struct cai_read_args {
+  char *path;
+  long long start_line;
+  int has_start_line;
+  long long end_line;
+  int has_end_line;
+  long long max_bytes;
+  int has_max_bytes;
+} cai_read_args;
+
+typedef struct cai_read_result {
+  char *path;
+  char *resolved_path;
+  long long start_line;
+  long long end_line;
+  long long byte_count;
+  long long file_size;
+  int truncated;
+  lonejson_spooled content;
+} cai_read_result;
+
+typedef struct cai_read_text_validator {
+  unsigned int expected;
+  unsigned int codepoint;
+  unsigned int min_codepoint;
+} cai_read_text_validator;
+
+typedef struct cai_list_files_args {
+  char *path;
+  int recursive;
+  int has_recursive;
+  int include_hidden;
+  int has_include_hidden;
+  long long max_entries;
+  int has_max_entries;
+} cai_list_files_args;
+
+typedef struct cai_list_files_entry {
+  char *path;
+  char *resolved_path;
+  char *name;
+  char *type;
+  long long size;
+  int has_size;
+  int text_candidate;
+  int has_text_candidate;
+  int binary_candidate;
+  int has_binary_candidate;
+} cai_list_files_entry;
+
+typedef struct cai_list_files_result {
+  char *path;
+  char *resolved_path;
+  long long entry_count;
+  int truncated;
+  lonejson_object_array entries;
+} cai_list_files_result;
+
+static const lonejson_field cai_read_arg_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_read_args, path, "path"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, start_line,
+                                        has_start_line, "start_line"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, end_line, has_end_line,
+                                        "end_line"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_read_args, max_bytes, has_max_bytes,
+                                        "max_bytes")};
+LONEJSON_MAP_DEFINE(cai_read_args_map, cai_read_args, cai_read_arg_fields);
+
+static const lonejson_field cai_read_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_read_result, path, "path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_read_result, resolved_path,
+                                    "resolved_path"),
+    LONEJSON_FIELD_I64_REQ(cai_read_result, start_line, "start_line"),
+    LONEJSON_FIELD_I64_REQ(cai_read_result, end_line, "end_line"),
+    LONEJSON_FIELD_I64_REQ(cai_read_result, byte_count, "byte_count"),
+    LONEJSON_FIELD_I64_REQ(cai_read_result, file_size, "file_size"),
+    LONEJSON_FIELD_BOOL_REQ(cai_read_result, truncated, "truncated"),
+    LONEJSON_FIELD_STRING_STREAM_REQ(cai_read_result, content, "content")};
+LONEJSON_MAP_DEFINE(cai_read_result_map, cai_read_result,
+                    cai_read_result_fields);
+
+static const lonejson_field cai_list_files_arg_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_list_files_args, path, "path"),
+    LONEJSON_FIELD_BOOL_PRESENT_NULLABLE(cai_list_files_args, recursive,
+                                         has_recursive, "recursive"),
+    LONEJSON_FIELD_BOOL_PRESENT_NULLABLE(cai_list_files_args, include_hidden,
+                                         has_include_hidden, "include_hidden"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_list_files_args, max_entries,
+                                        has_max_entries, "max_entries")};
+LONEJSON_MAP_DEFINE(cai_list_files_args_map, cai_list_files_args,
+                    cai_list_files_arg_fields);
+
+static const lonejson_field cai_list_files_entry_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, path, "path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, resolved_path,
+                                    "resolved_path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_entry, type, "type"),
+    LONEJSON_FIELD_I64_PRESENT(cai_list_files_entry, size, has_size, "size"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_list_files_entry, text_candidate,
+                                has_text_candidate, "text_candidate"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_list_files_entry, binary_candidate,
+                                has_binary_candidate, "binary_candidate")};
+LONEJSON_MAP_DEFINE(cai_list_files_entry_map, cai_list_files_entry,
+                    cai_list_files_entry_fields);
+
+static const lonejson_field cai_list_files_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_result, path, "path"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_list_files_result, resolved_path,
+                                    "resolved_path"),
+    LONEJSON_FIELD_I64_REQ(cai_list_files_result, entry_count, "entry_count"),
+    LONEJSON_FIELD_BOOL_REQ(cai_list_files_result, truncated, "truncated"),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_list_files_result, entries, "entries", cai_list_files_entry,
+        &cai_list_files_entry_map, LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_list_files_result_map, cai_list_files_result,
+                    cai_list_files_result_fields);
+
+static const char cai_read_schema_json[] =
+    "{"
+    "\"type\":\"object\","
+    "\"properties\":{"
+    "\"path\":{\"type\":\"string\"},"
+    "\"start_line\":{\"type\":[\"integer\",\"null\"]},"
+    "\"end_line\":{\"type\":[\"integer\",\"null\"]},"
+    "\"max_bytes\":{\"type\":[\"integer\",\"null\"]}"
+    "},"
+    "\"required\":[\"path\"],"
+    "\"additionalProperties\":false"
+    "}";
+
+static const char cai_read_default_description[] =
+    "Reads a UTF-8 text file from the configured sandbox root. Use start_line "
+    "and end_line for large files. Use list_files first when discovering "
+    "paths and avoid read_file when list_files reports binary_candidate=true. "
+    "NUL bytes, invalid UTF-8, and control characters other than tab/newline/"
+    "carriage return/form feed are rejected. Paths must stay inside the "
+    "configured root; symlink and absolute-path escapes are rejected; files "
+    "with multiple hard links are rejected.";
+
+static const char cai_list_files_schema_json[] =
+    "{"
+    "\"type\":\"object\","
+    "\"properties\":{"
+    "\"path\":{\"type\":[\"string\",\"null\"]},"
+    "\"recursive\":{\"type\":[\"boolean\",\"null\"]},"
+    "\"include_hidden\":{\"type\":[\"boolean\",\"null\"]},"
+    "\"max_entries\":{\"type\":[\"integer\",\"null\"]}"
+    "},"
+    "\"required\":[],"
+    "\"additionalProperties\":false"
+    "}";
+
+static const char cai_list_files_default_description[] =
+    "Lists files and directories from the configured sandbox root. Use this "
+    "before read_file when you need to discover paths. Paths must stay inside "
+    "the configured root; symlink and absolute-path escapes are rejected. "
+    "Recursive listing is bounded by max_entries. Regular files include "
+    "text_candidate and binary_candidate hints from a bounded prefix scan; "
+    "avoid read_file for entries with binary_candidate=true.";
+
+static const char *cai_read_default_string(const char *value,
+                                           const char *fallback) {
+  return value != NULL && value[0] != '\0' ? value : fallback;
+}
+
+static int cai_read_strdup_field(char **out, const char *value,
+                                 const char *message, cai_error *error) {
+  *out = cai_strdup(NULL, value);
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, message);
+  }
+  return CAI_OK;
+}
+
+static int cai_read_strdup_optional(char **out, const char *value,
+                                    const char *message, cai_error *error) {
+  if (value == NULL || value[0] == '\0') {
+    *out = NULL;
+    return CAI_OK;
+  }
+  return cai_read_strdup_field(out, value, message, error);
+}
+
+static void cai_read_context_cleanup(void *context) {
+  cai_read_context *ctx;
+
+  ctx = (cai_read_context *)context;
+  if (ctx == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, ctx->root_path);
+  cai_free_mem(NULL, ctx->default_workdir);
+  cai_lonejson_runtime_close(&ctx->runtime);
+  cai_free_mem(NULL, ctx->content_spool_dir);
+  cai_free_mem(NULL, ctx);
+}
+
+static int cai_read_realpath_dup(const char *path, char **out,
+                                 cai_error *error) {
+  char resolved[PATH_MAX];
+
+  if (path == NULL || path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "path is required");
+  }
+  if (realpath(path, resolved) == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to resolve path", strerror(errno));
+  }
+  return cai_read_strdup_field(out, resolved, "failed to allocate path", error);
+}
+
+static int cai_read_path_is_under_root(const char *root, const char *path) {
+  size_t root_len;
+
+  if (root == NULL || path == NULL) {
+    return 0;
+  }
+  root_len = strlen(root);
+  if (root_len == 1U && root[0] == '/') {
+    return path[0] == '/' ? 1 : 0;
+  }
+  if (strncmp(root, path, root_len) != 0) {
+    return 0;
+  }
+  return path[root_len] == '\0' || path[root_len] == '/' ? 1 : 0;
+}
+
+static int cai_read_join(char *out, size_t out_size, const char *base,
+                         const char *path, cai_error *error) {
+  int n;
+
+  if (base == NULL || path == NULL || path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "path is required");
+  }
+  n = snprintf(out, out_size, "%s/%s", base, path);
+  if (n < 0 || (size_t)n >= out_size) {
+    return cai_set_error(error, CAI_ERR_INVALID, "path is too long");
+  }
+  return CAI_OK;
+}
+
+static int cai_read_fd_realpath(int fd, char **resolved_path,
+                                cai_error *error) {
+  char path[PATH_MAX];
+#if defined(__linux__)
+  char link_path[64];
+  ssize_t nread;
+
+  snprintf(link_path, sizeof(link_path), "/proc/self/fd/%d", fd);
+  nread = readlink(link_path, path, sizeof(path) - 1U);
+  if (nread < 0 || (size_t)nread >= sizeof(path)) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to resolve opened file",
+                                nread < 0 ? strerror(errno) : "path too long");
+  }
+  path[nread] = '\0';
+#elif defined(__APPLE__)
+  if (fcntl(fd, F_GETPATH, path) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to resolve opened file",
+                                strerror(errno));
+  }
+#else
+  (void)fd;
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "opened file path verification is not supported");
+#endif
+  return cai_read_strdup_field(resolved_path, path,
+                               "failed to allocate opened path", error);
+}
+
+static int cai_read_fd_verification_supported(void) {
+#if defined(__linux__) || defined(__APPLE__)
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+static int cai_read_open_file_under_root(const cai_read_context *ctx,
+                                         const char *request_path, int *out_fd,
+                                         char **out_resolved_path,
+                                         long long *out_file_size,
+                                         cai_error *error) {
+  char candidate[PATH_MAX];
+  const char *open_path;
+  char *resolved;
+  struct stat st;
+  int open_flags;
+  int fd;
+  int rc;
+
+  if (out_fd == NULL || out_resolved_path == NULL || out_file_size == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read file open outputs are required");
+  }
+  *out_fd = -1;
+  *out_resolved_path = NULL;
+  *out_file_size = 0LL;
+  if (request_path == NULL || request_path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "read path is required");
+  }
+  if (request_path[0] == '/') {
+    open_path = request_path;
+  } else {
+    rc = cai_read_join(candidate, sizeof(candidate), ctx->default_workdir,
+                       request_path, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    open_path = candidate;
+  }
+  resolved = NULL;
+  rc = cai_read_realpath_dup(open_path, &resolved, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path escapes configured root");
+  }
+  if (stat(resolved, &st) != 0) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
+                                strerror(errno));
+  }
+  if (!S_ISREG(st.st_mode)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path must be a regular file");
+  }
+  open_flags = O_RDONLY;
+#ifdef O_NONBLOCK
+  open_flags |= O_NONBLOCK;
+#endif
+  fd = open(resolved, open_flags);
+  if (fd < 0) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
+                                strerror(errno));
+  }
+  if (fstat(fd, &st) != 0) {
+    cai_free_mem(NULL, resolved);
+    close(fd);
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to stat file",
+                                strerror(errno));
+  }
+  if (!S_ISREG(st.st_mode)) {
+    cai_free_mem(NULL, resolved);
+    close(fd);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read path must be a regular file");
+  }
+  if (st.st_nlink > 1) {
+    cai_free_mem(NULL, resolved);
+    close(fd);
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "read path must not have multiple hard links under configured root");
+  }
+  {
+    char *opened_resolved;
+
+    opened_resolved = NULL;
+    rc = cai_read_fd_realpath(fd, &opened_resolved, error);
+    if (rc != CAI_OK) {
+      cai_free_mem(NULL, resolved);
+      close(fd);
+      return rc;
+    }
+    if (!cai_read_path_is_under_root(ctx->root_path, opened_resolved)) {
+      cai_free_mem(NULL, resolved);
+      cai_free_mem(NULL, opened_resolved);
+      close(fd);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read path escapes configured root");
+    }
+    cai_free_mem(NULL, resolved);
+    resolved = opened_resolved;
+  }
+  *out_fd = fd;
+  *out_resolved_path = resolved;
+  *out_file_size = (long long)st.st_size;
+  return CAI_OK;
+}
+
+static int cai_read_resolve_dir(const cai_read_context *ctx,
+                                const char *request_path, char **resolved_path,
+                                cai_error *error) {
+  char candidate[PATH_MAX];
+  char *resolved;
+  struct stat st;
+  int rc;
+
+  resolved = NULL;
+  if (request_path == NULL || request_path[0] == '\0') {
+    rc = cai_read_strdup_field(&resolved, ctx->default_workdir,
+                               "failed to allocate list path", error);
+  } else if (request_path[0] == '/') {
+    rc = cai_read_realpath_dup(request_path, &resolved, error);
+  } else {
+    rc = cai_read_join(candidate, sizeof(candidate), ctx->default_workdir,
+                       request_path, error);
+    if (rc == CAI_OK) {
+      rc = cai_read_realpath_dup(candidate, &resolved, error);
+    }
+  }
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!cai_read_path_is_under_root(ctx->root_path, resolved)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list path escapes configured root");
+  }
+  if (stat(resolved, &st) != 0) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to stat directory", strerror(errno));
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    cai_free_mem(NULL, resolved);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list path must be a directory");
+  }
+  *resolved_path = resolved;
+  return CAI_OK;
+}
+
+static int cai_read_context_new(const cai_read_tool_config *config,
+                                cai_read_context **out, cai_error *error) {
+  cai_read_context *ctx;
+  char *root;
+  char *workdir;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read context output pointer is required");
+  }
+  *out = NULL;
+  if (config == NULL || config->root_path == NULL ||
+      config->root_path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read tool root_path is required");
+  }
+  ctx = (cai_read_context *)cai_alloc(NULL, sizeof(*ctx));
+  if (ctx == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate read tool context");
+  }
+  memset(ctx, 0, sizeof(*ctx));
+  root = NULL;
+  workdir = NULL;
+  rc = cai_read_realpath_dup(config->root_path, &root, error);
+  if (rc == CAI_OK) {
+    if (config->default_workdir != NULL && config->default_workdir[0] != '\0') {
+      rc = cai_read_realpath_dup(config->default_workdir, &workdir, error);
+    } else {
+      rc = cai_read_strdup_field(
+          &workdir, root, "failed to allocate read default workdir", error);
+    }
+  }
+  if (rc == CAI_OK && !cai_read_path_is_under_root(root, workdir)) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "read tool default_workdir escapes configured root");
+  }
+  if (rc == CAI_OK) {
+    lonejson_config runtime_config;
+
+    ctx->root_path = root;
+    ctx->default_workdir = workdir;
+    root = NULL;
+    workdir = NULL;
+    ctx->content_memory_limit = config->content_memory_limit != 0U
+                                    ? config->content_memory_limit
+                                    : CAI_READ_DEFAULT_CONTENT_MEMORY_LIMIT;
+    ctx->content_max_bytes = config->content_max_bytes != 0U
+                                 ? config->content_max_bytes
+                                 : CAI_READ_DEFAULT_CONTENT_MAX_BYTES;
+    rc = cai_read_strdup_optional(
+        &ctx->content_spool_dir, config->content_spool_dir,
+        "failed to allocate read spool directory", error);
+    if (rc == CAI_OK) {
+      runtime_config = lonejson_default_config();
+      runtime_config.spool_default.memory_limit = ctx->content_memory_limit;
+      runtime_config.spool_blob.memory_limit = ctx->content_memory_limit;
+      runtime_config.spool_large_text.memory_limit = ctx->content_memory_limit;
+      runtime_config.spool_default.max_bytes = ctx->content_max_bytes;
+      runtime_config.spool_blob.max_bytes = ctx->content_max_bytes;
+      runtime_config.spool_large_text.max_bytes = ctx->content_max_bytes;
+      runtime_config.spool_default.temp_dir = ctx->content_spool_dir;
+      runtime_config.spool_blob.temp_dir = ctx->content_spool_dir;
+      runtime_config.spool_large_text.temp_dir = ctx->content_spool_dir;
+      rc = cai_lonejson_runtime_open(&runtime_config, &ctx->runtime, error);
+    }
+  }
+  cai_free_mem(NULL, root);
+  cai_free_mem(NULL, workdir);
+  if (rc != CAI_OK) {
+    cai_read_context_cleanup(ctx);
+    return rc;
+  }
+  *out = ctx;
+  return CAI_OK;
+}
+
+static int cai_read_append(lonejson_spooled *spool, const char *data,
+                           size_t len, cai_error *error) {
+  lonejson_error json_error;
+
+  if (len == 0U) {
+    return CAI_OK;
+  }
+  lonejson_error_init(&json_error);
+  if (spool->append(spool, data, len, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to spool read content",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static void cai_read_text_validator_init(cai_read_text_validator *validator) {
+  memset(validator, 0, sizeof(*validator));
+}
+
+static int cai_read_text_validator_finish(cai_read_text_validator *validator,
+                                          cai_error *error) {
+  if (validator->expected != 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read_file only supports complete UTF-8 text");
+  }
+  return CAI_OK;
+}
+
+static int cai_read_codepoint_allowed(unsigned int codepoint) {
+  if (codepoint == 0x09U || codepoint == 0x0AU || codepoint == 0x0DU ||
+      codepoint == 0x0CU) {
+    return 1;
+  }
+  if (codepoint < 0x20U || (codepoint >= 0x7FU && codepoint <= 0x9FU)) {
+    return 0;
+  }
+  return 1;
+}
+
+static int cai_read_reject_control(cai_error *error) {
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "read_file only supports text files without control "
+                       "characters");
+}
+
+static int cai_read_validate_text_chunk(cai_read_text_validator *validator,
+                                        const char *data, size_t len,
+                                        cai_error *error) {
+  size_t i;
+
+  for (i = 0U; i < len; i++) {
+    unsigned char b;
+
+    b = (unsigned char)data[i];
+    if (b == 0U) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read_file only supports text files; NUL byte "
+                           "found");
+    }
+    if (validator->expected == 0U) {
+      if (b < 0x80U) {
+        if (!cai_read_codepoint_allowed((unsigned int)b)) {
+          return cai_read_reject_control(error);
+        }
+        continue;
+      }
+      if (b >= 0xC2U && b <= 0xDFU) {
+        validator->expected = 1U;
+        validator->codepoint = (unsigned int)(b & 0x1FU);
+        validator->min_codepoint = 0x80U;
+        continue;
+      }
+      if (b >= 0xE0U && b <= 0xEFU) {
+        validator->expected = 2U;
+        validator->codepoint = (unsigned int)(b & 0x0FU);
+        validator->min_codepoint = 0x800U;
+        continue;
+      }
+      if (b >= 0xF0U && b <= 0xF4U) {
+        validator->expected = 3U;
+        validator->codepoint = (unsigned int)(b & 0x07U);
+        validator->min_codepoint = 0x10000U;
+        continue;
+      }
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read_file only supports UTF-8 text files");
+    }
+    if ((b & 0xC0U) != 0x80U) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "read_file only supports UTF-8 text files");
+    }
+    validator->codepoint =
+        (validator->codepoint << 6U) | (unsigned int)(b & 0x3FU);
+    validator->expected--;
+    if (validator->expected == 0U) {
+      if (validator->codepoint < validator->min_codepoint ||
+          (validator->codepoint >= 0xD800U &&
+           validator->codepoint <= 0xDFFFU) ||
+          validator->codepoint > 0x10FFFFU) {
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "read_file only supports UTF-8 text files");
+      }
+      if (!cai_read_codepoint_allowed(validator->codepoint)) {
+        return cai_read_reject_control(error);
+      }
+      validator->codepoint = 0U;
+      validator->min_codepoint = 0U;
+    }
+  }
+  return CAI_OK;
+}
+
+static size_t
+cai_read_text_complete_prefix(const cai_read_text_validator *validator,
+                              const char *data, size_t len) {
+  cai_read_text_validator probe;
+  size_t i;
+  size_t prefix;
+
+  probe = *validator;
+  prefix = 0U;
+  for (i = 0U; i < len; i++) {
+    unsigned char b;
+
+    b = (unsigned char)data[i];
+    if (b == 0U) {
+      break;
+    }
+    if (probe.expected == 0U) {
+      if (b < 0x80U) {
+        if (!cai_read_codepoint_allowed((unsigned int)b)) {
+          break;
+        }
+        prefix = i + 1U;
+        continue;
+      }
+      if (b >= 0xC2U && b <= 0xDFU) {
+        probe.expected = 1U;
+        probe.codepoint = (unsigned int)(b & 0x1FU);
+        probe.min_codepoint = 0x80U;
+        continue;
+      }
+      if (b >= 0xE0U && b <= 0xEFU) {
+        probe.expected = 2U;
+        probe.codepoint = (unsigned int)(b & 0x0FU);
+        probe.min_codepoint = 0x800U;
+        continue;
+      }
+      if (b >= 0xF0U && b <= 0xF4U) {
+        probe.expected = 3U;
+        probe.codepoint = (unsigned int)(b & 0x07U);
+        probe.min_codepoint = 0x10000U;
+        continue;
+      }
+      break;
+    }
+    if ((b & 0xC0U) != 0x80U) {
+      break;
+    }
+    probe.codepoint = (probe.codepoint << 6U) | (unsigned int)(b & 0x3FU);
+    probe.expected--;
+    if (probe.expected == 0U) {
+      if (probe.codepoint < probe.min_codepoint ||
+          (probe.codepoint >= 0xD800U && probe.codepoint <= 0xDFFFU) ||
+          probe.codepoint > 0x10FFFFU) {
+        break;
+      }
+      if (!cai_read_codepoint_allowed(probe.codepoint)) {
+        break;
+      }
+      probe.codepoint = 0U;
+      probe.min_codepoint = 0U;
+      prefix = i + 1U;
+    }
+  }
+  return prefix;
+}
+
+static int cai_read_append_text(lonejson_spooled *spool,
+                                cai_read_text_validator *validator,
+                                const char *data, size_t len,
+                                cai_error *error) {
+  int rc;
+
+  rc = cai_read_validate_text_chunk(validator, data, len, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_read_append(spool, data, len, error);
+}
+
+static size_t
+cai_read_apply_output_limit(const cai_read_text_validator *validator,
+                            const char *data, size_t len, long long written,
+                            long long max_bytes, int *truncated, int *stop) {
+  long long remaining;
+  size_t complete;
+
+  if (len == 0U || *stop) {
+    return len;
+  }
+  if (written >= max_bytes) {
+    *truncated = 1;
+    *stop = 1;
+    return 0U;
+  }
+  remaining = max_bytes - written;
+  if ((unsigned long long)len > (unsigned long long)remaining) {
+    complete =
+        cai_read_text_complete_prefix(validator, data, (size_t)remaining);
+    *truncated = 1;
+    *stop = 1;
+    return complete;
+  }
+  if ((unsigned long long)len == (unsigned long long)remaining) {
+    complete = cai_read_text_complete_prefix(validator, data, len);
+    if (complete < len) {
+      *truncated = 1;
+      *stop = 1;
+      return complete;
+    }
+  }
+  return len;
+}
+
+static int cai_read_is_line_break(const char *buffer, size_t nread, size_t i,
+                                  size_t *len) {
+  if (buffer[i] == '\n') {
+    *len = 1U;
+    return 1;
+  }
+  if (buffer[i] == '\r') {
+    *len = i + 1U < nread && buffer[i + 1U] == '\n' ? 2U : 1U;
+    return 1;
+  }
+  *len = 0U;
+  return 0;
+}
+
+static int cai_list_array_grow(lonejson_object_array *array, size_t elem_size,
+                               cai_error *error) {
+  size_t new_capacity;
+  void *new_items;
+
+  if (array->count < array->capacity) {
+    return CAI_OK;
+  }
+  new_capacity = array->capacity == 0U ? 16U : array->capacity * 2U;
+  new_items = cai_realloc_mem(NULL, array->items, new_capacity * elem_size);
+  if (new_items == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to grow list_files entries");
+  }
+  array->items = new_items;
+  array->capacity = new_capacity;
+  array->elem_size = elem_size;
+  return CAI_OK;
+}
+
+static const char *cai_list_type_from_mode(mode_t mode) {
+  if (S_ISREG(mode)) {
+    return "file";
+  }
+  if (S_ISDIR(mode)) {
+    return "directory";
+  }
+  if (S_ISLNK(mode)) {
+    return "symlink";
+  }
+  return "other";
+}
+
+static const char *cai_list_relative_path(const cai_read_context *ctx,
+                                          const char *resolved_path) {
+  size_t root_len;
+
+  root_len = strlen(ctx->root_path);
+  if (strncmp(ctx->root_path, resolved_path, root_len) != 0) {
+    return resolved_path;
+  }
+  if (resolved_path[root_len] == '\0') {
+    return ".";
+  }
+  if (resolved_path[root_len] == '/') {
+    return resolved_path + root_len + 1U;
+  }
+  return resolved_path;
+}
+
+static void cai_list_classify_regular_file(cai_list_files_entry *entry,
+                                           const char *resolved_path) {
+  cai_read_text_validator validator;
+  FILE *fp;
+  char buffer[CAI_LIST_FILES_TEXT_SCAN_BYTES];
+  size_t nread;
+  cai_error ignored;
+  int text;
+
+  entry->has_text_candidate = 1;
+  entry->has_binary_candidate = 1;
+  entry->text_candidate = 0;
+  entry->binary_candidate = 1;
+
+  fp = fopen(resolved_path, "rb");
+  if (fp == NULL) {
+    return;
+  }
+
+  cai_error_init(&ignored);
+  cai_read_text_validator_init(&validator);
+  nread = fread(buffer, 1U, sizeof(buffer), fp);
+  text = 0;
+  if (ferror(fp) == 0) {
+    text = cai_read_validate_text_chunk(&validator, buffer, nread, &ignored) ==
+           CAI_OK;
+    if (text && feof(fp)) {
+      text = cai_read_text_validator_finish(&validator, &ignored) == CAI_OK;
+    }
+  }
+  cai_error_cleanup(&ignored);
+  fclose(fp);
+
+  entry->text_candidate = text ? 1 : 0;
+  entry->binary_candidate = text ? 0 : 1;
+}
+
+static int cai_list_add_entry(const cai_read_context *ctx,
+                              cai_list_files_result *out, const char *name,
+                              const char *resolved_path, const struct stat *st,
+                              long long max_entries, cai_error *error) {
+  cai_list_files_entry *entry;
+  int rc;
+
+  if (out->entries.count >= (size_t)max_entries) {
+    out->truncated = 1;
+    return CAI_OK;
+  }
+  rc = cai_list_array_grow(&out->entries, sizeof(*entry), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  entry = (cai_list_files_entry *)out->entries.items + out->entries.count;
+  memset(entry, 0, sizeof(*entry));
+  rc = cai_read_strdup_field(&entry->path,
+                             cai_list_relative_path(ctx, resolved_path),
+                             "failed to allocate list entry path", error);
+  if (rc == CAI_OK) {
+    rc = cai_read_strdup_field(&entry->resolved_path, resolved_path,
+                               "failed to allocate list resolved path", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_strdup_field(&entry->name, name,
+                               "failed to allocate list entry name", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_strdup_field(&entry->type,
+                               cai_list_type_from_mode(st->st_mode),
+                               "failed to allocate list entry type", error);
+  }
+  if (rc == CAI_OK && S_ISREG(st->st_mode)) {
+    entry->size = (long long)st->st_size;
+    entry->has_size = 1;
+    cai_list_classify_regular_file(entry, resolved_path);
+  }
+  if (rc == CAI_OK) {
+    out->entries.count++;
+    out->entry_count = (long long)out->entries.count;
+  }
+  return rc;
+}
+
+static int cai_list_scan_dir(const cai_read_context *ctx,
+                             cai_list_files_result *out,
+                             const char *resolved_dir, int recursive,
+                             int include_hidden, long long max_entries,
+                             cai_error *error) {
+  DIR *dir;
+  struct dirent *entry;
+  char child_path[PATH_MAX];
+  char real_child[PATH_MAX];
+  struct stat st;
+  int rc;
+  int n;
+
+  dir = opendir(resolved_dir);
+  if (dir == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to open directory", strerror(errno));
+  }
+  rc = CAI_OK;
+  while (rc == CAI_OK && (entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    if (!include_hidden && entry->d_name[0] == '.') {
+      continue;
+    }
+    if (out->entries.count >= (size_t)max_entries) {
+      out->truncated = 1;
+      break;
+    }
+    n = snprintf(child_path, sizeof(child_path), "%s/%s", resolved_dir,
+                 entry->d_name);
+    if (n < 0 || (size_t)n >= sizeof(child_path)) {
+      rc = cai_set_error(error, CAI_ERR_INVALID, "list entry path is too long");
+      break;
+    }
+    if (lstat(child_path, &st) != 0) {
+      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to stat list entry", strerror(errno));
+      break;
+    }
+    if (realpath(child_path, real_child) == NULL) {
+      if (S_ISLNK(st.st_mode)) {
+        continue;
+      }
+      rc =
+          cai_set_error_detail(error, CAI_ERR_INVALID,
+                               "failed to resolve list entry", strerror(errno));
+      break;
+    }
+    if (!cai_read_path_is_under_root(ctx->root_path, real_child)) {
+      continue;
+    }
+    if (S_ISLNK(st.st_mode)) {
+      rc = cai_list_add_entry(ctx, out, entry->d_name, child_path, &st,
+                              max_entries, error);
+      continue;
+    }
+    rc = cai_list_add_entry(ctx, out, entry->d_name, real_child, &st,
+                            max_entries, error);
+    if (rc == CAI_OK && recursive && S_ISDIR(st.st_mode) &&
+        out->entries.count < (size_t)max_entries) {
+      rc = cai_list_scan_dir(ctx, out, real_child, recursive, include_hidden,
+                             max_entries, error);
+    }
+  }
+  closedir(dir);
+  return rc;
+}
+
+static int cai_read_stream_file(const cai_read_context *ctx,
+                                const cai_read_args *args, int fd,
+                                long long opened_file_size,
+                                lonejson_spooled *content,
+                                long long *byte_count, long long *end_line_out,
+                                int *truncated, long long *file_size,
+                                cai_error *error) {
+  FILE *fp;
+  lonejson *runtime;
+  char buffer[4096];
+  long long start_line;
+  long long end_line;
+  long long max_bytes;
+  long long current_line;
+  long long last_line;
+  long long written;
+  cai_read_text_validator file_validator;
+  cai_read_text_validator output_validator;
+  size_t nread;
+  size_t i;
+  size_t start;
+  size_t line_break_len;
+  int include;
+  int stop;
+  int saw_any;
+  int at_limit;
+  int pending_cr;
+  int pending_cr_include;
+  long long pending_cr_line;
+  int rc;
+
+  fp = NULL;
+  fp = fdopen(fd, "rb");
+  if (fp == NULL) {
+    close(fd);
+    return cai_set_error_detail(error, CAI_ERR_INVALID, "failed to open file",
+                                strerror(errno));
+  }
+  fd = -1;
+  start_line = args->has_start_line ? args->start_line : 1LL;
+  if (start_line < 1LL) {
+    fclose(fp);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "start_line must be greater than zero");
+  }
+  end_line = args->has_end_line ? args->end_line : 0LL;
+  if (end_line != 0LL && end_line < start_line) {
+    fclose(fp);
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "end_line must be greater than or equal to start_line");
+  }
+  max_bytes = ctx->content_max_bytes;
+  if (args->has_max_bytes && args->max_bytes > 0LL) {
+    max_bytes = args->max_bytes;
+    if ((unsigned long long)max_bytes >
+        (unsigned long long)ctx->content_max_bytes) {
+      max_bytes = (long long)ctx->content_max_bytes;
+    }
+  }
+  if (max_bytes <= 0LL) {
+    fclose(fp);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read content byte limit is invalid");
+  }
+  *file_size = opened_file_size;
+  runtime = ctx->runtime != NULL ? ctx->runtime : CAI_LJ;
+  runtime->spooled_init(runtime, content);
+  current_line = 1LL;
+  last_line = start_line;
+  written = 0LL;
+  stop = 0;
+  saw_any = 0;
+  at_limit = 0;
+  pending_cr = 0;
+  pending_cr_include = 0;
+  pending_cr_line = 0LL;
+  rc = CAI_OK;
+  cai_read_text_validator_init(&file_validator);
+  cai_read_text_validator_init(&output_validator);
+  while (!stop && (nread = fread(buffer, 1U, sizeof(buffer), fp)) > 0U) {
+    rc = cai_read_validate_text_chunk(&file_validator, buffer, nread, error);
+    if (rc != CAI_OK) {
+      break;
+    }
+    start = 0U;
+    if (pending_cr) {
+      const char *line_break;
+      size_t line_break_size;
+
+      line_break = "\r";
+      line_break_size = 1U;
+      if (buffer[0] == '\n') {
+        line_break = "\r\n";
+        line_break_size = 2U;
+        start = 1U;
+      }
+      if (pending_cr_include) {
+        size_t len;
+
+        len = line_break_size;
+        if (at_limit) {
+          *truncated = 1;
+          stop = 1;
+        } else {
+          len =
+              cai_read_apply_output_limit(&output_validator, line_break, len,
+                                          written, max_bytes, truncated, &stop);
+          rc = cai_read_append_text(content, &output_validator, line_break, len,
+                                    error);
+          if (rc != CAI_OK) {
+            stop = 1;
+          } else {
+            written += (long long)len;
+            saw_any = 1;
+            last_line = pending_cr_line;
+            if (written >= max_bytes) {
+              at_limit = 1;
+            }
+          }
+        }
+      }
+      pending_cr = 0;
+      pending_cr_include = 0;
+      pending_cr_line = 0LL;
+      if (!stop) {
+        current_line++;
+        if (end_line != 0LL && current_line > end_line) {
+          stop = 1;
+        }
+      }
+    }
+    for (i = start; i < nread && !stop; i++) {
+      include = current_line >= start_line &&
+                (end_line == 0LL || current_line <= end_line);
+      if (cai_read_is_line_break(buffer, nread, i, &line_break_len)) {
+        if (buffer[i] == '\r' && i + 1U == nread) {
+          if (include) {
+            size_t len;
+
+            len = i - start;
+            if (at_limit) {
+              *truncated = 1;
+              stop = 1;
+              break;
+            }
+            len = cai_read_apply_output_limit(&output_validator, buffer + start,
+                                              len, written, max_bytes,
+                                              truncated, &stop);
+            rc = cai_read_append_text(content, &output_validator,
+                                      buffer + start, len, error);
+            if (rc != CAI_OK) {
+              stop = 1;
+              break;
+            }
+            written += (long long)len;
+            saw_any = 1;
+            last_line = current_line;
+            if (written >= max_bytes) {
+              at_limit = 1;
+            }
+          }
+          pending_cr = 1;
+          pending_cr_include = include;
+          pending_cr_line = current_line;
+          start = nread;
+          break;
+        }
+        if (include) {
+          size_t len;
+          len = i + line_break_len - start;
+          if (at_limit) {
+            *truncated = 1;
+            stop = 1;
+            break;
+          }
+          len = cai_read_apply_output_limit(&output_validator, buffer + start,
+                                            len, written, max_bytes, truncated,
+                                            &stop);
+          rc = cai_read_append_text(content, &output_validator, buffer + start,
+                                    len, error);
+          if (rc != CAI_OK) {
+            stop = 1;
+            break;
+          }
+          written += (long long)len;
+          saw_any = 1;
+          last_line = current_line;
+          if (written >= max_bytes) {
+            at_limit = 1;
+          }
+        }
+        if (line_break_len > 1U) {
+          i += line_break_len - 1U;
+        }
+        current_line++;
+        start = i + 1U;
+        if (end_line != 0LL && current_line > end_line) {
+          stop = 1;
+        }
+      }
+    }
+    if (rc == CAI_OK && !stop && start < nread) {
+      include = current_line >= start_line &&
+                (end_line == 0LL || current_line <= end_line);
+      if (include) {
+        size_t len;
+        len = nread - start;
+        if (at_limit) {
+          *truncated = 1;
+          stop = 1;
+          break;
+        }
+        len =
+            cai_read_apply_output_limit(&output_validator, buffer + start, len,
+                                        written, max_bytes, truncated, &stop);
+        rc = cai_read_append_text(content, &output_validator, buffer + start,
+                                  len, error);
+        if (rc != CAI_OK) {
+          stop = 1;
+        } else {
+          written += (long long)len;
+          saw_any = 1;
+          last_line = current_line;
+          if (written >= max_bytes) {
+            at_limit = 1;
+          }
+        }
+      }
+    }
+  }
+  if (rc == CAI_OK && pending_cr && !stop) {
+    if (pending_cr_include) {
+      size_t len;
+
+      len = 1U;
+      if (at_limit) {
+        *truncated = 1;
+      } else {
+        len = cai_read_apply_output_limit(&output_validator, "\r", len, written,
+                                          max_bytes, truncated, &stop);
+        rc = cai_read_append_text(content, &output_validator, "\r", len, error);
+        if (rc == CAI_OK) {
+          written += (long long)len;
+          saw_any = 1;
+          last_line = pending_cr_line;
+          if (written >= max_bytes) {
+            at_limit = 1;
+          }
+        }
+      }
+    }
+    pending_cr = 0;
+  }
+  if (rc == CAI_OK && ferror(fp)) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed while reading file", strerror(errno));
+  }
+  if (rc == CAI_OK && !*truncated) {
+    rc = cai_read_text_validator_finish(&file_validator, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_read_text_validator_finish(&output_validator, error);
+  }
+  fclose(fp);
+  if (rc != CAI_OK) {
+    content->cleanup(content);
+    return rc;
+  }
+  *byte_count = written;
+  *end_line_out = saw_any ? last_line : start_line;
+  return CAI_OK;
+}
+
+static int cai_read_callback(void *context, const void *params, void *result,
+                             cai_error *error) {
+  const cai_read_context *ctx;
+  const cai_read_args *args;
+  cai_read_result *out;
+  char *resolved_path;
+  lonejson_spooled content;
+  long long byte_count;
+  long long end_line;
+  long long file_size;
+  int truncated;
+  int has_content;
+  int fd;
+  int rc;
+
+  ctx = (const cai_read_context *)context;
+  args = (const cai_read_args *)params;
+  out = (cai_read_result *)result;
+  if (ctx == NULL || args == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read tool callback received invalid state");
+  }
+  resolved_path = NULL;
+  fd = -1;
+  truncated = 0;
+  byte_count = 0LL;
+  end_line = 0LL;
+  file_size = 0LL;
+  has_content = 0;
+  rc = cai_read_open_file_under_root(ctx, args->path, &fd, &resolved_path,
+                                     &file_size, error);
+  if (rc == CAI_OK) {
+    rc = cai_read_stream_file(ctx, args, fd, file_size, &content, &byte_count,
+                              &end_line, &truncated, &file_size, error);
+    fd = -1;
+    if (rc == CAI_OK) {
+      has_content = 1;
+    }
+  }
+  if (rc == CAI_OK) {
+    out->path = cai_strdup(NULL, args->path);
+    out->resolved_path = cai_strdup(NULL, resolved_path);
+    if (out->path == NULL || out->resolved_path == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate read result metadata");
+    }
+  }
+  if (rc == CAI_OK) {
+    out->start_line = args->has_start_line ? args->start_line : 1LL;
+    out->end_line = end_line;
+    out->byte_count = byte_count;
+    out->file_size = file_size;
+    out->truncated = truncated;
+    rc = cai_tool_result_set_spooled(&cai_read_result_map, out, "content",
+                                     &content, error);
+    if (rc == CAI_OK) {
+      has_content = 0;
+    }
+  }
+  if (has_content) {
+    content.cleanup(&content);
+  }
+  if (fd >= 0) {
+    close(fd);
+  }
+  cai_free_mem(NULL, resolved_path);
+  return rc;
+}
+
+static int cai_list_files_callback(void *context, const void *params,
+                                   void *result, cai_error *error) {
+  const cai_read_context *ctx;
+  const cai_list_files_args *args;
+  cai_list_files_result *out;
+  char *resolved_path;
+  long long max_entries;
+  int recursive;
+  int include_hidden;
+  int rc;
+
+  ctx = (const cai_read_context *)context;
+  args = (const cai_list_files_args *)params;
+  out = (cai_list_files_result *)result;
+  if (ctx == NULL || args == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "list_files callback received invalid state");
+  }
+  resolved_path = NULL;
+  max_entries = CAI_LIST_FILES_DEFAULT_MAX_ENTRIES;
+  if (args->has_max_entries && args->max_entries > 0LL) {
+    max_entries = args->max_entries;
+    if (max_entries > CAI_LIST_FILES_DEFAULT_MAX_ENTRIES) {
+      max_entries = CAI_LIST_FILES_DEFAULT_MAX_ENTRIES;
+    }
+  }
+  recursive = args->has_recursive && args->recursive ? 1 : 0;
+  include_hidden = args->has_include_hidden && args->include_hidden ? 1 : 0;
+  rc = cai_read_resolve_dir(ctx, args->path, &resolved_path, error);
+  if (rc == CAI_OK) {
+    out->path = cai_strdup(NULL, args->path != NULL ? args->path : ".");
+    out->resolved_path = cai_strdup(NULL, resolved_path);
+    if (out->path == NULL || out->resolved_path == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate list_files result metadata");
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_list_scan_dir(ctx, out, resolved_path, recursive, include_hidden,
+                           max_entries, error);
+  }
+  cai_free_mem(NULL, resolved_path);
+  return rc;
+}
+
+int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
+                                         const cai_read_tool_config *config,
+                                         cai_error *error) {
+  cai_read_context *ctx;
+  const char *name;
+  const char *description;
+  int rc;
+
+  ctx = NULL;
+  if (!cai_read_fd_verification_supported()) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "read_file requires opened file path verification on this platform");
+  }
+  rc = cai_read_context_new(config, &ctx, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  name = cai_read_default_string(config != NULL ? config->name : NULL,
+                                 CAI_READ_DEFAULT_TOOL_NAME);
+  description =
+      cai_read_default_string(config != NULL ? config->description : NULL,
+                              cai_read_default_description);
+  rc = cai_tool_registry_register_lonejson_schema_owned(
+      registry, name, description, cai_read_schema_json, 0, &cai_read_args_map,
+      &cai_read_result_map, cai_read_callback, ctx, cai_read_context_cleanup,
+      error);
+  if (rc != CAI_OK) {
+    cai_read_context_cleanup(ctx);
+  }
+  return rc;
+}
+
+int cai_tool_registry_register_list_files_tool(
+    cai_tool_registry *registry, const cai_read_tool_config *config,
+    cai_error *error) {
+  cai_read_context *ctx;
+  const char *name;
+  const char *description;
+  int rc;
+
+  ctx = NULL;
+  rc = cai_read_context_new(config, &ctx, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  name = cai_read_default_string(config != NULL ? config->name : NULL,
+                                 CAI_LIST_FILES_DEFAULT_TOOL_NAME);
+  description =
+      cai_read_default_string(config != NULL ? config->description : NULL,
+                              cai_list_files_default_description);
+  rc = cai_tool_registry_register_lonejson_schema_owned(
+      registry, name, description, cai_list_files_schema_json, 0,
+      &cai_list_files_args_map, &cai_list_files_result_map,
+      cai_list_files_callback, ctx, cai_read_context_cleanup, error);
+  if (rc != CAI_OK) {
+    cai_read_context_cleanup(ctx);
+  }
+  return rc;
+}
+
+int cai_agent_register_read_tool(cai_agent *agent,
+                                 const cai_read_tool_config *config,
+                                 cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL || agent->impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  return cai_tool_registry_register_read_tool(impl->tools, config, error);
+}
+
+int cai_agent_register_list_files_tool(cai_agent *agent,
+                                       const cai_read_tool_config *config,
+                                       cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL || agent->impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  return cai_tool_registry_register_list_files_tool(impl->tools, config, error);
+}

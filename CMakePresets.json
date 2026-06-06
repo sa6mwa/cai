@@ -1,0 +1,317 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CAI_BUILD_STATIC": "ON",
+        "CAI_BUILD_SHARED": "ON",
+        "CAI_BUILD_TESTS": "ON",
+        "CAI_BUILD_INTEGRATION_TESTS": "OFF",
+        "CAI_BUILD_LUA": "OFF",
+        "CAI_ENABLE_COVERAGE": "OFF",
+        "CAI_INSTALL": "ON",
+        "CAI_DEPENDENCY_MODE": "cpkt"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "debug-lua",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_LUA": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CAI_BUILD_LUA": "OFF",
+        "CAI_DIST_DIR": "${sourceDir}/dist",
+        "CAI_TARGET_ID": "x86_64-linux-gnu"
+      }
+    },
+    {
+      "name": "x86_64-linux-gnu-release",
+      "inherits": "release"
+    },
+    {
+      "name": "x86_64-linux-musl-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
+        "CAI_TARGET_ID": "x86_64-linux-musl"
+      }
+    },
+    {
+      "name": "aarch64-linux-gnu-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "aarch64-linux-gnu-gcc",
+        "CAI_TARGET_ID": "aarch64-linux-gnu"
+      }
+    },
+    {
+      "name": "aarch64-linux-musl-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/aarch64-linux-musl/bin/aarch64-linux-musl-gcc",
+        "CAI_TARGET_ID": "aarch64-linux-musl"
+      }
+    },
+    {
+      "name": "armhf-linux-gnu-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "arm-linux-gnueabihf-gcc",
+        "CAI_TARGET_ID": "armhf-linux-gnu"
+      }
+    },
+    {
+      "name": "armhf-linux-musl-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/arm-linux-musleabihf/bin/arm-linux-musleabihf-gcc",
+        "CAI_TARGET_ID": "armhf-linux-musl"
+      }
+    },
+    {
+      "name": "arm64-apple-darwin-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/arm64-apple-darwin.cmake",
+        "CAI_TARGET_ID": "arm64-apple-darwin"
+      }
+    },
+    {
+      "name": "asan",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=thread -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "msan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "fuzz",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_FUZZERS": "ON",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "coverage",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_ENABLE_COVERAGE": "ON"
+      }
+    },
+    {
+      "name": "integration",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_INTEGRATION_TESTS": "ON",
+        "CAI_BUILD_LUA": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "debug-lua",
+      "configurePreset": "debug-lua"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "x86_64-linux-gnu-release",
+      "configurePreset": "x86_64-linux-gnu-release"
+    },
+    {
+      "name": "x86_64-linux-musl-release",
+      "configurePreset": "x86_64-linux-musl-release"
+    },
+    {
+      "name": "aarch64-linux-gnu-release",
+      "configurePreset": "aarch64-linux-gnu-release"
+    },
+    {
+      "name": "aarch64-linux-musl-release",
+      "configurePreset": "aarch64-linux-musl-release"
+    },
+    {
+      "name": "armhf-linux-gnu-release",
+      "configurePreset": "armhf-linux-gnu-release"
+    },
+    {
+      "name": "armhf-linux-musl-release",
+      "configurePreset": "armhf-linux-musl-release"
+    },
+    {
+      "name": "arm64-apple-darwin-release",
+      "configurePreset": "arm64-apple-darwin-release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    },
+    {
+      "name": "msan",
+      "configurePreset": "msan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "integration",
+      "configurePreset": "integration"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-lua",
+      "configurePreset": "debug-lua",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "filter": {
+        "exclude": {
+          "label": "packaging"
+        }
+      },
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "msan",
+      "configurePreset": "msan",
+      "filter": {
+        "include": {
+          "label": "msan-smoke"
+        }
+      },
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "integration",
+      "configurePreset": "integration",
+      "filter": {
+        "include": {
+          "label": "integration"
+        }
+      },
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

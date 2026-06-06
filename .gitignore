@@ -1,0 +1,6 @@
+/.env*
+/stash/
+/build/
+/dist/
+/.cache/
+/Testing/
