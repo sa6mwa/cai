@@ -3029,11 +3029,47 @@ static unsigned int openrouter_request_delay_sec(void) {
   return (unsigned int)parsed;
 }
 
+static int parse_nonnegative_ll_decimal(const char *text, long long *out) {
+  const char *cursor;
+  long long parsed;
+  int saw_digit;
+
+  if (text == NULL || out == NULL) {
+    return 0;
+  }
+  cursor = text;
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
+         *cursor == '\n') {
+    cursor++;
+  }
+  parsed = 0LL;
+  saw_digit = 0;
+  while (*cursor >= '0' && *cursor <= '9') {
+    int digit;
+
+    digit = *cursor - '0';
+    if (parsed > (9223372036854775807LL - (long long)digit) / 10LL) {
+      return 0;
+    }
+    parsed = parsed * 10LL + (long long)digit;
+    saw_digit = 1;
+    cursor++;
+  }
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
+         *cursor == '\n') {
+    cursor++;
+  }
+  if (!saw_digit || *cursor != '\0') {
+    return 0;
+  }
+  *out = parsed;
+  return 1;
+}
+
 static int integration_openrouter_throttle(void) {
   static const char lock_path[] = "/tmp/cai-openrouter-rate-limit.lock";
   unsigned int delay_sec;
   char buffer[64];
-  char *endptr;
   time_t now;
   time_t last_request;
   time_t target_time;
@@ -3063,10 +3099,12 @@ static int integration_openrouter_throttle(void) {
   }
   last_request = 0;
   if (nread > 0) {
-    errno = 0;
-    last_request = (time_t)strtoll(buffer, &endptr, 10);
-    if (errno != 0 || endptr == buffer) {
+    long long parsed_last_request;
+
+    if (!parse_nonnegative_ll_decimal(buffer, &parsed_last_request)) {
       last_request = 0;
+    } else {
+      last_request = (time_t)parsed_last_request;
     }
   }
   now = time(NULL);
