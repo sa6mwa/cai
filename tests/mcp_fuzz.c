@@ -182,7 +182,7 @@ static int cai_fuzz_mcp_request(cai_mcp_handler *handler, const char *method,
   response.body = sink;
   response.set_header = cai_fuzz_mcp_header_set;
   response.header_context = &response_headers;
-  (void)cai_mcp_handler_handle_http(handler, &request, &response, &error);
+  (void)handler->handle_http(handler, &request, &response, &error);
   cai_sink_close(sink);
   cai_source_close(source);
   cai_error_cleanup(&error);
@@ -304,7 +304,7 @@ int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) {
     free(payload_hex);
   }
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
   return 0;

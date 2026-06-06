@@ -420,7 +420,7 @@ static int handle_connection(int fd, cai_mcp_handler *handler) {
   response.body = sink;
   response.set_header = response_header_set;
   response.header_context = &response_state;
-  rc = cai_mcp_handler_handle_http(handler, &request, &response, &error);
+  rc = handler->handle_http(handler, &request, &response, &error);
   if (rc == CAI_OK && !response_state.headers_sent) {
     rc = send_response_headers(&response_state, &error);
   }
@@ -542,7 +542,7 @@ int main(int argc, char **argv) {
   listener = create_listener(port, &actual_port);
   if (listener < 0) {
     perror("listen");
-    cai_mcp_handler_destroy(handler);
+    handler->destroy(handler);
     cai_tool_registry_destroy(registry);
     cai_error_cleanup(&error);
     return 1;
@@ -568,7 +568,9 @@ int main(int argc, char **argv) {
     close(client);
   }
   close(listener);
-  cai_mcp_handler_destroy(handler);
+  if (handler != NULL) {
+    handler->destroy(handler);
+  }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
   return 0;

@@ -622,7 +622,7 @@ static int handle_connection(int fd, cai_mcp_handler *handler,
   response.body = sink;
   response.set_header = response_header_set;
   response.header_context = &response_state;
-  rc = cai_mcp_handler_handle_http(handler, &request, &response, &error);
+  rc = handler->handle_http(handler, &request, &response, &error);
   if (rc == CAI_OK && !response_state.headers_sent) {
     rc = send_response_headers(&response_state, &error);
   }
@@ -790,7 +790,7 @@ int main(int argc, char **argv) {
   if (listener < 0) {
     pslog_errorf(loggers.server, "listen failed", "port=%d errno=%m",
                  (int)port);
-    cai_mcp_handler_destroy(handler);
+    handler->destroy(handler);
     cai_tool_registry_destroy(registry);
     cai_client_close(client_handle);
     cai_error_cleanup(&error);
@@ -823,7 +823,9 @@ int main(int argc, char **argv) {
   pslog_infof(loggers.server, "mcp example server stopping", "requests=%d",
               (int)handled);
   close(listener);
-  cai_mcp_handler_destroy(handler);
+  if (handler != NULL) {
+    handler->destroy(handler);
+  }
   cai_tool_registry_destroy(registry);
   cai_client_close(client_handle);
   cai_error_cleanup(&error);

@@ -126,6 +126,16 @@ typedef struct cai_mcp_http_response {
   void *header_context;
 } cai_mcp_http_response;
 
+/** MCP route handler instance with receiver methods for request handling. */
+struct cai_mcp_handler {
+  /** Handle one MCP Streamable HTTP request. */
+  int (*handle_http)(cai_mcp_handler *handler,
+                     const cai_mcp_http_request *request,
+                     cai_mcp_http_response *response, cai_error *error);
+  /** Destroy this MCP handler and release associated resources. */
+  void (*destroy)(cai_mcp_handler *handler);
+};
+
 /** Initialize an MCP handler config with default values. */
 void cai_mcp_handler_config_init(cai_mcp_handler_config *config);
 /** Create a new MCP handler from a validated config. */

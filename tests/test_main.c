@@ -3202,7 +3202,7 @@ static int test_mcp_handle(cai_mcp_handler *handler,
   response.body = sink;
   response.set_header = test_mcp_header_set;
   response.header_context = headers_out;
-  rc = cai_mcp_handler_handle_http(handler, &request, &response, error);
+  rc = handler->handle_http(handler, &request, &response, error);
   if (status_out != NULL) {
     *status_out = response.status;
   }
@@ -3267,7 +3267,7 @@ static int test_mcp_handle_stream(
   response.body = sink;
   response.set_header = test_mcp_header_set;
   response.header_context = headers_out;
-  rc = cai_mcp_handler_handle_http(handler, &request, &response, error);
+  rc = handler->handle_http(handler, &request, &response, error);
   if (status_out != NULL) {
     *status_out = response.status;
   }
@@ -3372,6 +3372,12 @@ static void test_mcp_handler(test_state *state) {
   config.tool_output_max_bytes = CAI_MCP_TOOL_OUTPUT_UNLIMITED;
   expect_int(state, "mcp_handler_new",
              cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  if (handler->handle_http == NULL) {
+    test_fail(state, "mcp_handler_handle_http_method", "method missing");
+  }
+  if (handler->destroy == NULL) {
+    test_fail(state, "mcp_handler_destroy_method", "method missing");
+  }
   expect_int(
       state, "mcp_initialize",
       test_mcp_handle(handler, headers, sizeof(headers) / sizeof(headers[0]),
@@ -3468,7 +3474,7 @@ static void test_mcp_handler(test_state *state) {
               "chunked MCP tool response was incomplete");
   }
   expect_valid_json(state, "mcp_chunked_tool_json", sink_state.buffer);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.tool_output_max_bytes = 0U;
   expect_int(state, "mcp_default_limit_handler_new",
@@ -3489,7 +3495,7 @@ static void test_mcp_handler(test_state *state) {
               "default MCP tool output cap did not fail closed");
   }
   expect_valid_json(state, "mcp_default_tool_output_limit_json", writer.buffer);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.tool_output_max_bytes = CAI_MCP_TOOL_OUTPUT_UNLIMITED;
   expect_int(state, "mcp_stream_handler_new",
@@ -3615,7 +3621,7 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_reject_origin_status", status, 403L);
   expect_valid_json(state, "mcp_reject_origin_json", writer.buffer);
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.allowed_origins = NULL;
   config.allowed_origin_count = 0U;
@@ -3640,7 +3646,7 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_default_no_origin_status", status, 200L);
   expect_valid_json(state, "mcp_default_no_origin_json", writer.buffer);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.disable_origin_validation = 1;
   expect_int(state, "mcp_disabled_origin_handler_new",
@@ -3655,7 +3661,7 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_disabled_origin_allows_status", status, 200L);
   expect_valid_json(state, "mcp_disabled_origin_allows_json", writer.buffer);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.disable_origin_validation = 0;
   config.allowed_origins = allowed_origins;
@@ -3674,7 +3680,7 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_reject_missing_version_status", status, 400L);
   expect_valid_json(state, "mcp_reject_missing_version_json", writer.buffer);
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.require_protocol_version = 0;
   config.tool_output_max_bytes = 16U;
@@ -3695,7 +3701,7 @@ static void test_mcp_handler(test_state *state) {
   }
   expect_valid_json(state, "mcp_tool_output_limit_json", writer.buffer);
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.tool_output_max_bytes = 1024U;
   config.request_max_bytes = 32U;
@@ -3711,7 +3717,7 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_request_limit_status", status, 400L);
   expect_valid_json(state, "mcp_request_limit_json", writer.buffer);
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   config.request_max_bytes = 1024U * 1024U;
   expect_int(state, "mcp_final_handler_new",
@@ -3842,7 +3848,7 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_source_failure_status", status, 400L);
   expect_valid_json(state, "mcp_source_failure_json", sink_state.buffer);
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   memset(&session_store, 0, sizeof(session_store));
   memset(&session_callbacks, 0, sizeof(session_callbacks));
@@ -3980,7 +3986,7 @@ static void test_mcp_handler(test_state *state) {
   expect_int(state, "mcp_stateful_destroy_status", status, 202L);
   expect_int(state, "mcp_stateful_destroy_count", session_store.destroys, 1L);
   expect_int(state, "mcp_stateful_destroyed_exists", session_store.exists, 0L);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   expect_int(state, "mcp_stateful_cleanup_count", session_store.cleanups, 1L);
   memset(&session_store, 0, sizeof(session_store));
@@ -4000,7 +4006,7 @@ static void test_mcp_handler(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_stateful_fail_create_status", status, 500L);
   expect_valid_json(state, "mcp_stateful_fail_create_json", writer.buffer);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   memset(&session_store, 0, sizeof(session_store));
   expect_int(state, "mcp_stateful_fail_save_handler_new",
@@ -4029,7 +4035,7 @@ static void test_mcp_handler(test_state *state) {
     test_fail(state, "mcp_stateful_fail_save_ping_body",
               "stateful save failure did not surface before response body");
   }
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
   memset(&session_store, 0, sizeof(session_store));
   expect_int(state, "mcp_stateful_stream_handler_new",
@@ -4086,7 +4092,7 @@ static void test_mcp_handler(test_state *state) {
   }
   free(large_tool_body);
   large_tool_body = NULL;
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   handler = NULL;
 
   config.enable_sessions = 0;
@@ -4105,7 +4111,7 @@ static void test_mcp_handler(test_state *state) {
                  &error),
              CAI_ERR_TRANSPORT);
 
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   cai_tool_registry_destroy(registry);
   free(large_tool_body);
   cai_error_cleanup(&error);
@@ -14829,7 +14835,7 @@ static void test_todo_tool(test_state *state) {
                                    sink, &error),
              CAI_ERR_PROTOCOL);
   cai_error_cleanup(&error);
-  cai_mcp_handler_destroy(handler);
+  handler->destroy(handler);
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
   unlink(store_path);
