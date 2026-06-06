@@ -162,17 +162,29 @@ static void print_help(const char *program) {
 }
 
 static int parse_ll_arg(const char *name, const char *value, long long *out) {
-  char *endptr;
   long long parsed;
+  const char *cursor;
 
   if (value == NULL || value[0] == '\0') {
     fprintf(stderr, "%s requires a non-negative integer\n", name);
     return 0;
   }
-  parsed = strtoll(value, &endptr, 10);
-  if (*endptr != '\0' || parsed < 0LL) {
-    fprintf(stderr, "%s requires a non-negative integer\n", name);
-    return 0;
+  parsed = 0LL;
+  cursor = value;
+  while (*cursor != '\0') {
+    int digit;
+
+    if (*cursor < '0' || *cursor > '9') {
+      fprintf(stderr, "%s requires a non-negative integer\n", name);
+      return 0;
+    }
+    digit = *cursor - '0';
+    if (parsed > (9223372036854775807LL - (long long)digit) / 10LL) {
+      fprintf(stderr, "%s is too large\n", name);
+      return 0;
+    }
+    parsed = parsed * 10LL + (long long)digit;
+    cursor++;
   }
   *out = parsed;
   return 1;

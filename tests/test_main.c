@@ -6148,7 +6148,7 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_list_error_tool_1\",\"status\":\"completed\","
       "\"output\":[{\"id\":\"fc_list_error_1\",\"type\":\"function_call\","
       "\"call_id\":\"call_list_error_1\",\"name\":\"list_files\","
-      "\"arguments\":\"{\\\"path\\\":\\\"/home/mike/lab\\\","
+      "\"arguments\":\"{\\\"path\\\":\\\"/tmp\\\","
       "\\\"recursive\\\":true}\"}]}";
   static const char list_error_tool_done_body[] =
       "{\"id\":\"resp_list_error_tool_2\",\"status\":\"completed\","
@@ -6352,7 +6352,7 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_stream_list_error_1\",\"type\":\"function_call\","
       "\"call_id\":\"call_stream_list_error_1\",\"name\":\"list_files\","
-      "\"arguments\":\"{\\\"path\\\":\\\"/home/mike/lab\\\","
+      "\"arguments\":\"{\\\"path\\\":\\\"/tmp\\\","
       "\\\"recursive\\\":true}\"}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_list_error_tool_1\",\"usage\":{\"input_tokens\":9,"
@@ -6694,9 +6694,6 @@ static const char *mock_response_for_request(const char *request) {
                           "\"resp_stream_large_tool_1\"") != NULL) {
         return stream_large_tool_done_body;
       }
-      if (strstr(request, "stream list error tool turn") != NULL) {
-        return stream_list_error_tool_body;
-      }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_list_error_1\"") != NULL &&
           strstr(request, "\\\"ok\\\":false") != NULL &&
@@ -6704,6 +6701,9 @@ static const char *mock_response_for_request(const char *request) {
           strstr(request, "\"previous_response_id\":"
                           "\"resp_stream_list_error_tool_1\"") != NULL) {
         return stream_list_error_tool_done_body;
+      }
+      if (strstr(request, "stream list error tool turn") != NULL) {
+        return stream_list_error_tool_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_reason_1\"") != NULL &&
@@ -6795,10 +6795,6 @@ static const char *mock_response_for_request(const char *request) {
             NULL) {
       return large_tool_done_body;
     }
-    if (strstr(request, "list error tool turn") != NULL &&
-        strstr(request, "\"name\":\"list_files\"") != NULL) {
-      return list_error_tool_call_body;
-    }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_list_error_1\"") != NULL &&
         strstr(request, "\\\"ok\\\":false") != NULL &&
@@ -6806,6 +6802,10 @@ static const char *mock_response_for_request(const char *request) {
         strstr(request,
                "\"previous_response_id\":\"resp_list_error_tool_1\"") != NULL) {
       return list_error_tool_done_body;
+    }
+    if (strstr(request, "list error tool turn") != NULL &&
+        strstr(request, "\"name\":\"list_files\"") != NULL) {
+      return list_error_tool_call_body;
     }
     if (strstr(request, "multi tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
