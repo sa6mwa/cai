@@ -8,6 +8,7 @@ CompileFlags:
     - -Wall
     - -Wextra
     - -Wpedantic
+    - -Wno-long-long
 Documentation:
   CommentFormat: Markdown
 ---
