@@ -460,6 +460,36 @@ struct cai_sink {
   cai_sink_callbacks callbacks;
 };
 
+/** High-level response output wrapper with receiver methods. */
+struct cai_output {
+  /** Return the wrapped low-level response. */
+  const cai_response *(*response)(const cai_output *output);
+  /** Return materialized output text, or NULL. */
+  const char *(*text)(const cai_output *output);
+  /** Return materialized refusal text, or NULL. */
+  const char *(*refusal)(const cai_output *output);
+  /** Return raw response JSON, or NULL. */
+  const char *(*raw_json)(const cai_output *output);
+  /** Write output text to a sink. */
+  int (*write_text)(const cai_output *output, cai_sink *sink, cai_error *error);
+  /** Write refusal text to a sink. */
+  int (*write_refusal)(const cai_output *output, cai_sink *sink,
+                       cai_error *error);
+  /** Write raw response JSON to a sink. */
+  int (*write_raw_json)(const cai_output *output, cai_sink *sink,
+                        cai_error *error);
+  /** Decode output text as JSON into a typed lonejson map. */
+  int (*write_json)(cai_output *output, const struct lonejson_map *map,
+                    void *out, cai_error *error);
+  /** Convert output text into a lockd/lonejson source. */
+  int (*as_lc_source)(cai_output *output, struct lc_source **out,
+                      cai_error *error);
+  /** Close and destroy the output wrapper. */
+  void (*close)(cai_output *output);
+  /** Private implementation pointer; do not access directly. */
+  void *impl;
+};
+
 /** Callback returning dynamic stream prefix/suffix text. */
 typedef const char *(*cai_stream_affix_fn)(void *context);
 /** Callback for incremental function-call argument deltas. */

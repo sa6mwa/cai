@@ -16,6 +16,19 @@ typedef struct cai_file_sink_context {
   int close_file;
 } cai_file_sink_context;
 
+typedef struct cai_output_impl {
+  cai_response *response;
+} cai_output_impl;
+
+static cai_output_impl *cai_output_impl_from_public(cai_output *output) {
+  return output != NULL ? (cai_output_impl *)output->impl : NULL;
+}
+
+static const cai_output_impl *
+cai_output_impl_from_const_public(const cai_output *output) {
+  return output != NULL ? (const cai_output_impl *)output->impl : NULL;
+}
+
 static size_t cai_spooled_source_read(void *context, void *buffer, size_t count,
                                       cai_error *error) {
   cai_spooled_source_context *source_context;
@@ -443,6 +456,7 @@ int cai_output_as_lc_source(cai_output *output, struct lc_source **out,
 int cai_output_from_response(cai_response *response, cai_output **out,
                              cai_error *error) {
   cai_output *output;
+  cai_output_impl *impl;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "output pointer is required");
@@ -455,49 +469,87 @@ int cai_output_from_response(cai_response *response, cai_output **out,
   if (output == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate output");
   }
-  output->response = response;
+  memset(output, 0, sizeof(*output));
+  impl = (cai_output_impl *)cai_alloc(NULL, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(NULL, output);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate output");
+  }
+  impl->response = response;
+  output->response = cai_output_response;
+  output->text = cai_output_text;
+  output->refusal = cai_output_refusal;
+  output->raw_json = cai_output_raw_json;
+  output->write_text = cai_output_write_text;
+  output->write_refusal = cai_output_write_refusal;
+  output->write_raw_json = cai_output_write_raw_json;
+  output->write_json = cai_output_write_json;
+  output->as_lc_source = cai_output_as_lc_source;
+  output->close = cai_output_destroy;
+  output->impl = impl;
   *out = output;
   return CAI_OK;
 }
 
 const cai_response *cai_output_response(const cai_output *output) {
-  return output != NULL ? output->response : NULL;
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  return impl != NULL ? impl->response : NULL;
 }
 
 const char *cai_output_text(const cai_output *output) {
-  return output != NULL ? cai_response_output_text(output->response) : NULL;
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  return impl != NULL ? cai_response_output_text(impl->response) : NULL;
 }
 
 const char *cai_output_refusal(const cai_output *output) {
-  return output != NULL ? cai_response_refusal(output->response) : NULL;
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  return impl != NULL ? cai_response_refusal(impl->response) : NULL;
 }
 
 const char *cai_output_raw_json(const cai_output *output) {
-  return output != NULL ? cai_response_raw_json(output->response) : NULL;
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  return impl != NULL ? cai_response_raw_json(impl->response) : NULL;
 }
 
 int cai_output_write_text(const cai_output *output, cai_sink *sink,
                           cai_error *error) {
-  if (output == NULL) {
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "output is required");
   }
-  return cai_response_write_output_text(output->response, sink, error);
+  return cai_response_write_output_text(impl->response, sink, error);
 }
 
 int cai_output_write_refusal(const cai_output *output, cai_sink *sink,
                              cai_error *error) {
-  if (output == NULL) {
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "output is required");
   }
-  return cai_response_write_refusal(output->response, sink, error);
+  return cai_response_write_refusal(impl->response, sink, error);
 }
 
 int cai_output_write_raw_json(const cai_output *output, cai_sink *sink,
                               cai_error *error) {
-  if (output == NULL) {
+  const cai_output_impl *impl;
+
+  impl = cai_output_impl_from_const_public(output);
+  if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "output is required");
   }
-  return cai_output_write_string(cai_response_raw_json(output->response), sink,
+  return cai_output_write_string(cai_response_raw_json(impl->response), sink,
                                  error);
 }
 
@@ -526,9 +578,15 @@ int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
 }
 
 void cai_output_destroy(cai_output *output) {
+  cai_output_impl *impl;
+
   if (output == NULL) {
     return;
   }
-  cai_response_destroy(output->response);
+  impl = cai_output_impl_from_public(output);
+  if (impl != NULL) {
+    cai_response_destroy(impl->response);
+    cai_free_mem(NULL, impl);
+  }
   cai_free_mem(NULL, output);
 }

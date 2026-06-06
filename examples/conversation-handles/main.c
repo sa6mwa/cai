@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
   }
   printf("conversation: %s\n", cai_conversation_id(conversation));
   printf("response: %s\n",
-         cai_output_text(output) != NULL ? cai_output_text(output) : "");
+         output->text(output) != NULL ? output->text(output) : "");
 
   rc = client->list_conversation_items_handle(client, conversation, NULL,
                                               &items, &error);
@@ -111,7 +111,9 @@ int main(int argc, char **argv) {
 
 done:
   cai_input_item_list_destroy(items);
-  cai_output_destroy(output);
+  if (output != NULL) {
+    output->close(output);
+  }
   if (session != NULL) {
     session->close(session);
   }

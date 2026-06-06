@@ -4066,7 +4066,7 @@ static int cai_lua_output_gc(lua_State *L) {
   cai_lua_output *self;
   self = (cai_lua_output *)luaL_checkudata(L, 1, CAI_LUA_OUTPUT);
   if (self->ptr != NULL) {
-    cai_output_destroy(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   return 0;
@@ -4078,7 +4078,7 @@ static int cai_lua_output_text(lua_State *L) {
   cai_lua_output *self;
   const char *value;
   self = cai_lua_check_output(L, 1);
-  value = cai_output_text(self->ptr);
+  value = self->ptr->text(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -4091,7 +4091,7 @@ static int cai_lua_output_refusal(lua_State *L) {
   cai_lua_output *self;
   const char *value;
   self = cai_lua_check_output(L, 1);
-  value = cai_output_refusal(self->ptr);
+  value = self->ptr->refusal(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -4104,7 +4104,7 @@ static int cai_lua_output_raw_json(lua_State *L) {
   cai_lua_output *self;
   const char *value;
   self = cai_lua_check_output(L, 1);
-  value = cai_output_raw_json(self->ptr);
+  value = self->ptr->raw_json(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -4125,7 +4125,7 @@ static int cai_lua_output_write_text(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_output_write_text(self->ptr, sink, &error);
+    rc = self->ptr->write_text(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -4148,7 +4148,7 @@ static int cai_lua_output_write_refusal(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_output_write_refusal(self->ptr, sink, &error);
+    rc = self->ptr->write_refusal(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -4171,7 +4171,7 @@ static int cai_lua_output_write_raw_json(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_output_write_raw_json(self->ptr, sink, &error);
+    rc = self->ptr->write_raw_json(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);

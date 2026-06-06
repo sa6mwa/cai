@@ -267,10 +267,6 @@ struct cai_response {
   size_t output_item_count;
 };
 
-struct cai_output {
-  cai_response *response;
-};
-
 typedef struct cai_input_item {
   char *id;
   char *type;

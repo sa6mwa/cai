@@ -5160,13 +5160,19 @@ static void test_response_json(test_state *state) {
   expect_int(state, "output_from_response",
              cai_output_from_response(response, &output, &error), CAI_OK);
   response = NULL;
-  expect_str(state, "output_text", cai_output_text(output), "hello world");
-  expect_str(state, "output_refusal", cai_output_refusal(output),
-             "cannot comply");
-  if (cai_output_response(output) == NULL) {
+  if (output == NULL || output->response == NULL || output->text == NULL ||
+      output->refusal == NULL || output->raw_json == NULL ||
+      output->write_text == NULL || output->write_refusal == NULL ||
+      output->write_raw_json == NULL || output->write_json == NULL ||
+      output->as_lc_source == NULL || output->close == NULL) {
+    test_fail(state, "output_methods", "output method facade not initialized");
+  }
+  expect_str(state, "output_text", output->text(output), "hello world");
+  expect_str(state, "output_refusal", output->refusal(output), "cannot comply");
+  if (output->response(output) == NULL) {
     test_fail(state, "output_response", "response not retained");
   }
-  if (strstr(cai_output_raw_json(output), "\"id\":\"resp_123\"") == NULL) {
+  if (strstr(output->raw_json(output), "\"id\":\"resp_123\"") == NULL) {
     test_fail(state, "output_raw_json", "raw JSON missing response id");
   }
   writer.length = 0U;
@@ -5176,16 +5182,16 @@ static void test_response_json(test_state *state) {
   expect_int(state, "output_sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
   expect_int(state, "output_write_text",
-             cai_output_write_text(output, sink, &error), CAI_OK);
+             output->write_text(output, sink, &error), CAI_OK);
   expect_str(state, "output_written_text", writer.buffer, "hello world");
   memset(&parsed, 0, sizeof(parsed));
   expect_int(state, "output_write_json_non_json",
-             cai_output_write_json(output, &parsed_output_map, &parsed, &error),
+             output->write_json(output, &parsed_output_map, &parsed, &error),
              CAI_ERR_PROTOCOL);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   cai_sink_close(sink);
-  cai_output_destroy(output);
+  output->close(output);
   output = NULL;
   expect_int(
       state, "structured_response_parse",
@@ -5196,11 +5202,11 @@ static void test_response_json(test_state *state) {
   response = NULL;
   memset(&parsed, 0, sizeof(parsed));
   expect_int(state, "output_write_json",
-             cai_output_write_json(output, &parsed_output_map, &parsed, &error),
+             output->write_json(output, &parsed_output_map, &parsed, &error),
              CAI_OK);
   expect_str(state, "output_write_json_value", parsed.answer, "structured");
   CAI_LJ->cleanup(CAI_LJ, &parsed_output_map, &parsed);
-  cai_output_destroy(output);
+  output->close(output);
   cai_response_destroy(response);
   cai_error_cleanup(&error);
 }
