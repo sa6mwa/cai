@@ -11004,6 +11004,13 @@ static void test_conversations(test_state *state) {
   conversation = NULL;
   expect_int(state, "conversation_items_params_new",
              cai_conversation_items_params_new(&item_params, &error), CAI_OK);
+  if (item_params->close == NULL || item_params->add_text == NULL ||
+      item_params->add_text_spooled == NULL ||
+      item_params->add_text_source == NULL ||
+      item_params->add_image_url == NULL ||
+      item_params->add_file_data_spooled == NULL) {
+    test_fail(state, "conversation_items_params_methods", "method missing");
+  }
   test_init_spooled_text(state, "conversation_items_invalid_text_append",
                          &invalid_conversation_text_data,
                          "still-owned-conversation-text");
@@ -11029,10 +11036,11 @@ static void test_conversations(test_state *state) {
                           "still-owned-conversation-file");
   cai_error_cleanup(&error);
   cai_error_init(&error);
-  expect_int(state, "conversation_items_add_text",
-             cai_conversation_items_params_add_text(
-                 item_params, "user", "conversation item", &error),
-             CAI_OK);
+  expect_int(
+      state, "conversation_items_add_text",
+
+      item_params->add_text(item_params, "user", "conversation item", &error),
+      CAI_OK);
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, &conversation_text_data);
   expect_int(state, "conversation_items_text_append",
@@ -11041,8 +11049,9 @@ static void test_conversations(test_state *state) {
                  strlen("conversation spooled text"), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "conversation_items_add_text_spooled",
-             cai_conversation_items_params_add_text_spooled(
-                 item_params, "user", &conversation_text_data, &error),
+
+             item_params->add_text_spooled(item_params, "user",
+                                           &conversation_text_data, &error),
              CAI_OK);
   source_state.text = "conversation source text";
   source_callbacks.read = test_read;
@@ -11053,18 +11062,18 @@ static void test_conversations(test_state *state) {
              cai_source_from_callbacks(&source_callbacks, &source, &error),
              CAI_OK);
   expect_int(state, "conversation_items_add_text_source",
-             cai_conversation_items_params_add_text_source(item_params, "user",
-                                                           source, &error),
+             item_params->add_text_source(item_params, "user", source, &error),
              CAI_OK);
   expect_int(state, "conversation_items_text_source_read",
              (long)source_state.offset, (long)strlen(source_state.text));
   cai_source_close(source);
   source = NULL;
-  expect_int(
-      state, "conversation_items_add_image",
-      cai_conversation_items_params_add_image_url(
-          item_params, "user", "https://example.test/conv.png", "low", &error),
-      CAI_OK);
+  expect_int(state, "conversation_items_add_image",
+
+             item_params->add_image_url(item_params, "user",
+                                        "https://example.test/conv.png", "low",
+                                        &error),
+             CAI_OK);
   lonejson_error_init(&json_error);
   CAI_LJ->spooled_init(CAI_LJ, &conversation_file_data);
   expect_int(state, "conversation_items_file_append",
@@ -11073,9 +11082,10 @@ static void test_conversations(test_state *state) {
                  strlen("conversation file text"), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "conversation_items_add_file",
-             cai_conversation_items_params_add_file_data_spooled(
-                 item_params, "user", "conv.txt", &conversation_file_data,
-                 "low", &error),
+
+             item_params->add_file_data_spooled(item_params, "user", "conv.txt",
+                                                &conversation_file_data, "low",
+                                                &error),
              CAI_OK);
   expect_int(state, "conversation_create_items",
              cai_client_create_conversation_items_handle(

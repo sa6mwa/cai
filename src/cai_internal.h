@@ -180,11 +180,6 @@ struct cai_function_tool {
   int is_raw;
 };
 
-struct cai_conversation_items_params {
-  cai_allocator allocator;
-  lonejson_object_array items;
-};
-
 typedef struct cai_buffer_builder {
   char *data;
   size_t length;

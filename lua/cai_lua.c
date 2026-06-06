@@ -5821,8 +5821,8 @@ static int cai_lua_conversation_params_add_text(lua_State *L) {
   int rc;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
-  rc = cai_conversation_items_params_add_text(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &error);
+  rc = self->ptr->add_text(self->ptr, luaL_optstring(L, 2, "user"),
+                           luaL_checkstring(L, 3), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5838,8 +5838,8 @@ static int cai_lua_conversation_params_add_text_spooled(lua_State *L) {
   rc = cai_lua_spool_from_stack(L, 3, &spool, &error);
   if (rc == CAI_OK) {
     have_spool = 1;
-    rc = cai_conversation_items_params_add_text_spooled(
-        self->ptr, luaL_optstring(L, 2, "user"), &spool, &error);
+    rc = self->ptr->add_text_spooled(self->ptr, luaL_optstring(L, 2, "user"),
+                                     &spool, &error);
   }
   if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
@@ -5858,8 +5858,8 @@ static int cai_lua_conversation_params_add_text_source(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_source(L, 3, &source_ctx, &source, &error);
   if (rc == CAI_OK) {
-    rc = cai_conversation_items_params_add_text_source(
-        self->ptr, luaL_optstring(L, 2, "user"), source, &error);
+    rc = self->ptr->add_text_source(self->ptr, luaL_optstring(L, 2, "user"),
+                                    source, &error);
   }
   if (source != NULL) {
     cai_source_close(source);
@@ -5882,7 +5882,7 @@ static int cai_lua_conversation_params_add_file_data_spooled(lua_State *L) {
   rc = cai_lua_spool_from_stack(L, 4, &spool, &error);
   if (rc == CAI_OK) {
     have_spool = 1;
-    rc = cai_conversation_items_params_add_file_data_spooled(
+    rc = self->ptr->add_file_data_spooled(
         self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &spool,
         luaL_optstring(L, 5, NULL), &error);
   }
@@ -5898,9 +5898,9 @@ static int cai_lua_conversation_params_add_image_url(lua_State *L) {
   int rc;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
-  rc = cai_conversation_items_params_add_image_url(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_image_url(self->ptr, luaL_optstring(L, 2, "user"),
+                                luaL_checkstring(L, 3),
+                                luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5910,9 +5910,9 @@ static int cai_lua_conversation_params_add_image_file_id(lua_State *L) {
   int rc;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
-  rc = cai_conversation_items_params_add_image_file_id(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_image_file_id(self->ptr, luaL_optstring(L, 2, "user"),
+                                    luaL_checkstring(L, 3),
+                                    luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5922,9 +5922,9 @@ static int cai_lua_conversation_params_add_file_id(lua_State *L) {
   int rc;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
-  rc = cai_conversation_items_params_add_file_id(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_file_id(self->ptr, luaL_optstring(L, 2, "user"),
+                              luaL_checkstring(L, 3),
+                              luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5934,9 +5934,9 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
   int rc;
   self = cai_lua_check_conversation_params(L, 1);
   cai_error_init(&error);
-  rc = cai_conversation_items_params_add_file_url(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_file_url(self->ptr, luaL_optstring(L, 2, "user"),
+                               luaL_checkstring(L, 3),
+                               luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 

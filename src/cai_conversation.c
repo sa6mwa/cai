@@ -642,6 +642,17 @@ int cai_conversation_items_params_new(cai_conversation_items_params **out,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate conversation items params");
   }
+  memset(params, 0, sizeof(*params));
+  params->close = cai_conversation_items_params_destroy;
+  params->add_text = cai_conversation_items_params_add_text;
+  params->add_text_spooled = cai_conversation_items_params_add_text_spooled;
+  params->add_text_source = cai_conversation_items_params_add_text_source;
+  params->add_image_url = cai_conversation_items_params_add_image_url;
+  params->add_image_file_id = cai_conversation_items_params_add_image_file_id;
+  params->add_file_id = cai_conversation_items_params_add_file_id;
+  params->add_file_url = cai_conversation_items_params_add_file_url;
+  params->add_file_data_spooled =
+      cai_conversation_items_params_add_file_data_spooled;
   params->allocator.malloc_fn = NULL;
   params->allocator.realloc_fn = NULL;
   params->allocator.free_fn = NULL;

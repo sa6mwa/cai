@@ -710,6 +710,47 @@ struct cai_conversation {
   char *object_value;
 };
 
+/** Conversation-items create parameter builder with receiver methods. */
+struct cai_conversation_items_params {
+  /** Destroy this conversation-items parameter builder. */
+  void (*close)(cai_conversation_items_params *params);
+  /** Add text to a conversation-items create request. */
+  int (*add_text)(cai_conversation_items_params *params, const char *role,
+                  const char *text, cai_error *error);
+  /** Add spooled text to a conversation-items create request. */
+  int (*add_text_spooled)(cai_conversation_items_params *params,
+                          const char *role, struct lonejson_spooled *text,
+                          cai_error *error);
+  /** Read a source into spooled text for a conversation-items create request.
+   */
+  int (*add_text_source)(cai_conversation_items_params *params,
+                         const char *role, cai_source *source,
+                         cai_error *error);
+  /** Add an image URL to a conversation-items create request. */
+  int (*add_image_url)(cai_conversation_items_params *params, const char *role,
+                       const char *url, const char *detail, cai_error *error);
+  /** Add an image file id to a conversation-items create request. */
+  int (*add_image_file_id)(cai_conversation_items_params *params,
+                           const char *role, const char *file_id,
+                           const char *detail, cai_error *error);
+  /** Add a file id to a conversation-items create request. */
+  int (*add_file_id)(cai_conversation_items_params *params, const char *role,
+                     const char *file_id, const char *detail, cai_error *error);
+  /** Add a file URL to a conversation-items create request. */
+  int (*add_file_url)(cai_conversation_items_params *params, const char *role,
+                      const char *file_url, const char *detail,
+                      cai_error *error);
+  /** Add spooled file data to a conversation-items create request. */
+  int (*add_file_data_spooled)(cai_conversation_items_params *params,
+                               const char *role, const char *filename,
+                               struct lonejson_spooled *file_data,
+                               const char *detail, cai_error *error);
+
+  /** Private request builder storage; do not access directly. */
+  cai_allocator allocator;
+  lonejson_object_array items;
+};
+
 /** Callback returning dynamic stream prefix/suffix text. */
 typedef const char *(*cai_stream_affix_fn)(void *context);
 /** Callback for incremental function-call argument deltas. */
