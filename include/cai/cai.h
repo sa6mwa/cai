@@ -1122,6 +1122,179 @@ struct cai_session {
   void *impl;
 };
 
+/** Low-level Responses create parameter builder with receiver methods. */
+struct cai_response_create_params {
+  /** Destroy this Responses create parameter builder. */
+  void (*close)(cai_response_create_params *params);
+  /** Set the model id for a Responses request. */
+  int (*set_model)(cai_response_create_params *params, const char *model,
+                   cai_error *error);
+  /** Set developer instructions for a Responses request. */
+  int (*set_instructions)(cai_response_create_params *params,
+                          const char *instructions, cai_error *error);
+  /** Set previous_response_id for server-side continuation. */
+  int (*set_previous_response_id)(cai_response_create_params *params,
+                                  const char *response_id, cai_error *error);
+  /** Set a conversation id for a Responses request. */
+  int (*set_conversation_id)(cai_response_create_params *params,
+                             const char *conversation_id, cai_error *error);
+  /** Set a prompt cache key for a Responses request. */
+  int (*set_prompt_cache_key)(cai_response_create_params *params,
+                              const char *prompt_cache_key, cai_error *error);
+  /** Enable or disable background response processing. */
+  int (*set_background)(cai_response_create_params *params, int enabled,
+                        cai_error *error);
+  /** Enable or disable server-side response storage. */
+  int (*set_store)(cai_response_create_params *params, int enabled,
+                   cai_error *error);
+  /** Set the Responses service tier. */
+  int (*set_service_tier)(cai_response_create_params *params,
+                          const char *service_tier, cai_error *error);
+  /** Set the Responses truncation mode. */
+  int (*set_truncation)(cai_response_create_params *params,
+                        const char *truncation, cai_error *error);
+  /** Set raw JSON metadata for a Responses request. */
+  int (*set_metadata_json)(cai_response_create_params *params,
+                           const char *metadata_json, cai_error *error);
+  /** Set raw JSON include array for a Responses request. */
+  int (*set_include_json)(cai_response_create_params *params,
+                          const char *include_json, cai_error *error);
+  /** Set raw JSON prompt object for a Responses request. */
+  int (*set_prompt_json)(cai_response_create_params *params,
+                         const char *prompt_json, cai_error *error);
+  /** Set a simple tool_choice value. */
+  int (*set_tool_choice)(cai_response_create_params *params,
+                         const char *tool_choice, cai_error *error);
+  /** Set raw JSON tool_choice value. */
+  int (*set_tool_choice_json)(cai_response_create_params *params,
+                              const char *tool_choice_json, cai_error *error);
+  /** Set max_output_tokens for a Responses request. */
+  int (*set_max_output_tokens)(cai_response_create_params *params,
+                               int max_output_tokens, cai_error *error);
+  /** Set max_tool_calls for a Responses request. */
+  int (*set_max_tool_calls)(cai_response_create_params *params,
+                            int max_tool_calls, cai_error *error);
+  /** Set reasoning effort and summary mode. */
+  int (*set_reasoning)(cai_response_create_params *params, const char *effort,
+                       const char *summary, cai_error *error);
+  /** Enable or disable parallel tool calls. */
+  int (*set_parallel_tool_calls)(cai_response_create_params *params,
+                                 int enabled, cai_error *error);
+  /** Set server-side context compaction threshold in tokens. */
+  int (*set_compact_threshold)(cai_response_create_params *params,
+                               long long compact_threshold_tokens,
+                               cai_error *error);
+  /** Request JSON object text format. */
+  int (*set_text_format_json_object)(cai_response_create_params *params,
+                                     cai_error *error);
+  /** Request JSON schema text format. */
+  int (*set_text_format_json_schema)(cai_response_create_params *params,
+                                     const char *name, const char *description,
+                                     const char *schema_json, int strict,
+                                     cai_error *error);
+  /** Set text verbosity for supported models. */
+  int (*set_text_verbosity)(cai_response_create_params *params,
+                            const char *verbosity, cai_error *error);
+  /** Add a text input item. */
+  int (*add_text)(cai_response_create_params *params, const char *role,
+                  const char *text, cai_error *error);
+  /** Add a spooled text input item. */
+  int (*add_text_spooled)(cai_response_create_params *params, const char *role,
+                          struct lonejson_spooled *text, cai_error *error);
+  /** Add an image URL input item. */
+  int (*add_image_url)(cai_response_create_params *params, const char *role,
+                       const char *url, const char *detail, cai_error *error);
+  /** Add an image file id input item. */
+  int (*add_image_file_id)(cai_response_create_params *params, const char *role,
+                           const char *file_id, const char *detail,
+                           cai_error *error);
+  /** Add a file id input item. */
+  int (*add_file_id)(cai_response_create_params *params, const char *role,
+                     const char *file_id, const char *detail, cai_error *error);
+  /** Add a file URL input item. */
+  int (*add_file_url)(cai_response_create_params *params, const char *role,
+                      const char *file_url, const char *detail,
+                      cai_error *error);
+  /** Add spooled file data as an input item. */
+  int (*add_file_data_spooled)(cai_response_create_params *params,
+                               const char *role, const char *filename,
+                               struct lonejson_spooled *file_data,
+                               const char *detail, cai_error *error);
+  /** Add a function tool definition to a Responses request. */
+  int (*add_function_tool)(cai_response_create_params *params, const char *name,
+                           const char *description, const char *parameters_json,
+                           int strict, cai_error *error);
+  /** Add a hosted tool described by raw JSON. */
+  int (*add_hosted_tool_json)(cai_response_create_params *params,
+                              const char *tool_json, cai_error *error);
+  /** Add a simple hosted tool by type string. */
+  int (*add_simple_hosted_tool)(cai_response_create_params *params,
+                                const char *type, cai_error *error);
+  /** Add a hosted MCP tool definition. */
+  int (*add_hosted_mcp_tool)(cai_response_create_params *params,
+                             const cai_hosted_mcp_tool_config *config,
+                             cai_error *error);
+  /** Add raw JSON function-call output. */
+  int (*add_function_call_output)(cai_response_create_params *params,
+                                  const char *call_id, const char *output,
+                                  cai_error *error);
+  /** Add text function-call output. */
+  int (*add_function_call_output_text)(cai_response_create_params *params,
+                                       const char *call_id, const char *text,
+                                       cai_error *error);
+  /** Add image URL function-call output. */
+  int (*add_function_call_output_image_url)(cai_response_create_params *params,
+                                            const char *call_id,
+                                            const char *url, const char *detail,
+                                            cai_error *error);
+  /** Add file id function-call output. */
+  int (*add_function_call_output_file_id)(cai_response_create_params *params,
+                                          const char *call_id,
+                                          const char *file_id,
+                                          const char *detail, cai_error *error);
+  /** Add spooled file data function-call output. */
+  int (*add_function_call_output_file_data_spooled)(
+      cai_response_create_params *params, const char *call_id,
+      const char *filename, struct lonejson_spooled *file_data,
+      const char *detail, cai_error *error);
+
+  /** Private request builder storage; do not access directly. */
+  cai_allocator allocator;
+  char *model;
+  char *conversation_id;
+  char *instructions;
+  char *previous_response_id;
+  char *prompt_cache_key;
+  char *service_tier;
+  char *truncation;
+  char *metadata_json;
+  char *include_json;
+  char *prompt_json;
+  char *tool_choice;
+  char *tool_choice_json;
+  char *reasoning_effort;
+  char *reasoning_summary;
+  char *text_format_type;
+  char *text_format_name;
+  char *text_format_description;
+  char *text_format_schema_json;
+  char *text_verbosity;
+  int text_format_strict;
+  int max_output_tokens;
+  int max_tool_calls;
+  int parallel_tool_calls;
+  int background;
+  int has_background;
+  int store;
+  int has_store;
+  long long compact_threshold_tokens;
+  char *raw_input_json;
+  struct lonejson_spooled raw_input_spooled;
+  int has_raw_input_spooled;
+  lonejson_object_array input;
+  lonejson_object_array tools;
+};
+
 /** Public method-table facade for function tool schema building. */
 struct cai_tool_schema {
   /** Enable or disable strict tool schema generation. */

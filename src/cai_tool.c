@@ -1528,7 +1528,7 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
     return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
   }
   for (i = 0U; i < impl->count; i++) {
-    rc = cai_response_create_params_add_function_tool(
+    rc = params->add_function_tool(
         params, impl->entries[i].name, impl->entries[i].description,
         impl->entries[i].schema_json, impl->entries[i].strict, error);
     if (rc != CAI_OK) {

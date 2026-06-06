@@ -152,12 +152,10 @@ static void cai_fuzz_run_request_serialize(const char *payload_hex) {
     cai_error_cleanup(&error);
     return;
   }
-  (void)cai_response_create_params_set_model(params, CAI_MODEL_GPT_5_NANO,
-                                             &error);
+  (void)params->set_model(params, CAI_MODEL_GPT_5_NANO, &error);
   cai_error_cleanup(&error);
   cai_error_init(&error);
-  (void)cai_response_create_params_set_instructions(params, payload_hex,
-                                                    &error);
+  (void)params->set_instructions(params, payload_hex, &error);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   CAI_LJ->spooled_init(CAI_LJ, &text_spool);
@@ -165,13 +163,12 @@ static void cai_fuzz_run_request_serialize(const char *payload_hex) {
   lonejson_error_init(&json_error);
   if (text_spool.append(&text_spool, payload_hex, strlen(payload_hex),
                         &json_error) == LONEJSON_STATUS_OK) {
-    (void)cai_response_create_params_add_text_spooled(params, "user",
-                                                      &text_spool, &error);
+    (void)params->add_text_spooled(params, "user", &text_spool, &error);
     has_text_spool = text_spool.cleanup != NULL;
     cai_error_cleanup(&error);
     cai_error_init(&error);
   }
-  (void)cai_response_create_params_add_function_tool(
+  (void)params->add_function_tool(
       params, "fuzz_tool", "Fuzz tool",
       "{\"type\":\"object\",\"properties\":{},\"required\":[],"
       "\"additionalProperties\":true}",

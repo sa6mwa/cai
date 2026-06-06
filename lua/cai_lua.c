@@ -5334,8 +5334,7 @@ static int cai_lua_params_set_model(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_model(self->ptr, luaL_checkstring(L, 2),
-                                            &error);
+  rc = self->ptr->set_model(self->ptr, luaL_checkstring(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5345,8 +5344,7 @@ static int cai_lua_params_set_instructions(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_instructions(
-      self->ptr, luaL_checkstring(L, 2), &error);
+  rc = self->ptr->set_instructions(self->ptr, luaL_checkstring(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5356,8 +5354,8 @@ static int cai_lua_params_set_previous_response_id(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_previous_response_id(
-      self->ptr, luaL_checkstring(L, 2), &error);
+  rc = self->ptr->set_previous_response_id(self->ptr, luaL_checkstring(L, 2),
+                                           &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5367,8 +5365,8 @@ static int cai_lua_params_set_conversation_id(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_conversation_id(
-      self->ptr, luaL_checkstring(L, 2), &error);
+  rc =
+      self->ptr->set_conversation_id(self->ptr, luaL_checkstring(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5378,8 +5376,8 @@ static int cai_lua_params_set_prompt_cache_key(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_prompt_cache_key(
-      self->ptr, luaL_checkstring(L, 2), &error);
+  rc = self->ptr->set_prompt_cache_key(self->ptr, luaL_checkstring(L, 2),
+                                       &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5389,8 +5387,8 @@ static int cai_lua_params_set_tool_choice(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_tool_choice(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc =
+      self->ptr->set_tool_choice(self->ptr, luaL_optstring(L, 2, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5400,8 +5398,8 @@ static int cai_lua_params_set_tool_choice_json(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_tool_choice_json(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc = self->ptr->set_tool_choice_json(self->ptr, luaL_optstring(L, 2, NULL),
+                                       &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5411,8 +5409,8 @@ static int cai_lua_params_set_max_output_tokens(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_max_output_tokens(
-      self->ptr, (int)luaL_checkinteger(L, 2), &error);
+  rc = self->ptr->set_max_output_tokens(self->ptr, (int)luaL_checkinteger(L, 2),
+                                        &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5422,8 +5420,8 @@ static int cai_lua_params_set_max_tool_calls(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_max_tool_calls(
-      self->ptr, (int)luaL_checkinteger(L, 2), &error);
+  rc = self->ptr->set_max_tool_calls(self->ptr, (int)luaL_checkinteger(L, 2),
+                                     &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5433,8 +5431,8 @@ static int cai_lua_params_set_parallel_tool_calls(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_parallel_tool_calls(
-      self->ptr, lua_toboolean(L, 2), &error);
+  rc = self->ptr->set_parallel_tool_calls(self->ptr, lua_toboolean(L, 2),
+                                          &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5444,7 +5442,7 @@ static int cai_lua_params_set_compact_threshold(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_compact_threshold(
+  rc = self->ptr->set_compact_threshold(
       self->ptr, (long long)luaL_checkinteger(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -5455,9 +5453,8 @@ static int cai_lua_params_set_reasoning(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_reasoning(
-      self->ptr, luaL_optstring(L, 2, NULL), luaL_optstring(L, 3, NULL),
-      &error);
+  rc = self->ptr->set_reasoning(self->ptr, luaL_optstring(L, 2, NULL),
+                                luaL_optstring(L, 3, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5467,8 +5464,7 @@ static int cai_lua_params_set_text_format_json_object(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc =
-      cai_response_create_params_set_text_format_json_object(self->ptr, &error);
+  rc = self->ptr->set_text_format_json_object(self->ptr, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5478,7 +5474,7 @@ static int cai_lua_params_set_text_format_json_schema(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_text_format_json_schema(
+  rc = self->ptr->set_text_format_json_schema(
       self->ptr, luaL_checkstring(L, 2), luaL_optstring(L, 3, NULL),
       luaL_checkstring(L, 4), lua_toboolean(L, 5), &error);
   return cai_lua_bool_result(L, rc, &error);
@@ -5490,8 +5486,8 @@ static int cai_lua_params_add_text(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_text(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &error);
+  rc = self->ptr->add_text(self->ptr, luaL_optstring(L, 2, "user"),
+                           luaL_checkstring(L, 3), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5507,8 +5503,8 @@ static int cai_lua_params_add_text_spooled(lua_State *L) {
   rc = cai_lua_spool_from_stack(L, 3, &spool, &error);
   if (rc == CAI_OK) {
     have_spool = 1;
-    rc = cai_response_create_params_add_text_spooled(
-        self->ptr, luaL_optstring(L, 2, "user"), &spool, &error);
+    rc = self->ptr->add_text_spooled(self->ptr, luaL_optstring(L, 2, "user"),
+                                     &spool, &error);
   }
   if (rc != CAI_OK && have_spool) {
     spool.cleanup(&spool);
@@ -5522,9 +5518,9 @@ static int cai_lua_params_add_image_url(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_image_url(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_image_url(self->ptr, luaL_optstring(L, 2, "user"),
+                                luaL_checkstring(L, 3),
+                                luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5534,9 +5530,9 @@ static int cai_lua_params_add_image_file_id(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_image_file_id(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_image_file_id(self->ptr, luaL_optstring(L, 2, "user"),
+                                    luaL_checkstring(L, 3),
+                                    luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5546,9 +5542,9 @@ static int cai_lua_params_add_file_id(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_file_id(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_file_id(self->ptr, luaL_optstring(L, 2, "user"),
+                              luaL_checkstring(L, 3),
+                              luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5564,7 +5560,7 @@ static int cai_lua_params_add_file_data_spooled(lua_State *L) {
   rc = cai_lua_spool_from_stack(L, 4, &spool, &error);
   if (rc == CAI_OK) {
     have_spool = 1;
-    rc = cai_response_create_params_add_file_data_spooled(
+    rc = self->ptr->add_file_data_spooled(
         self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3), &spool,
         luaL_optstring(L, 5, NULL), &error);
   }
@@ -5580,9 +5576,9 @@ static int cai_lua_params_add_file_url(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_file_url(
-      self->ptr, luaL_optstring(L, 2, "user"), luaL_checkstring(L, 3),
-      luaL_optstring(L, 4, NULL), &error);
+  rc = self->ptr->add_file_url(self->ptr, luaL_optstring(L, 2, "user"),
+                               luaL_checkstring(L, 3),
+                               luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5592,7 +5588,7 @@ static int cai_lua_params_add_function_tool(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_function_tool(
+  rc = self->ptr->add_function_tool(
       self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3),
       luaL_checkstring(L, 4), lua_toboolean(L, 5), &error);
   return cai_lua_bool_result(L, rc, &error);
@@ -5604,8 +5600,7 @@ static int cai_lua_params_set_background(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_background(self->ptr, lua_toboolean(L, 2),
-                                                 &error);
+  rc = self->ptr->set_background(self->ptr, lua_toboolean(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5615,8 +5610,7 @@ static int cai_lua_params_set_store(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_store(self->ptr, lua_toboolean(L, 2),
-                                            &error);
+  rc = self->ptr->set_store(self->ptr, lua_toboolean(L, 2), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5626,8 +5620,8 @@ static int cai_lua_params_set_service_tier(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_service_tier(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc = self->ptr->set_service_tier(self->ptr, luaL_optstring(L, 2, NULL),
+                                   &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5637,8 +5631,7 @@ static int cai_lua_params_set_truncation(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_truncation(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc = self->ptr->set_truncation(self->ptr, luaL_optstring(L, 2, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5648,8 +5641,8 @@ static int cai_lua_params_set_metadata_json(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_metadata_json(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc = self->ptr->set_metadata_json(self->ptr, luaL_optstring(L, 2, NULL),
+                                    &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5659,8 +5652,8 @@ static int cai_lua_params_set_include_json(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_include_json(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc = self->ptr->set_include_json(self->ptr, luaL_optstring(L, 2, NULL),
+                                   &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5670,8 +5663,8 @@ static int cai_lua_params_set_prompt_json(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_prompt_json(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc =
+      self->ptr->set_prompt_json(self->ptr, luaL_optstring(L, 2, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5681,8 +5674,8 @@ static int cai_lua_params_set_text_verbosity(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_set_text_verbosity(
-      self->ptr, luaL_optstring(L, 2, NULL), &error);
+  rc = self->ptr->set_text_verbosity(self->ptr, luaL_optstring(L, 2, NULL),
+                                     &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5692,8 +5685,8 @@ static int cai_lua_params_add_hosted_tool_json(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_hosted_tool_json(
-      self->ptr, luaL_checkstring(L, 2), &error);
+  rc = self->ptr->add_hosted_tool_json(self->ptr, luaL_checkstring(L, 2),
+                                       &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5703,8 +5696,8 @@ static int cai_lua_params_add_simple_hosted_tool(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_simple_hosted_tool(
-      self->ptr, luaL_checkstring(L, 2), &error);
+  rc = self->ptr->add_simple_hosted_tool(self->ptr, luaL_checkstring(L, 2),
+                                         &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5719,8 +5712,7 @@ static int cai_lua_params_add_hosted_mcp_tool(lua_State *L) {
   names = NULL;
   cai_lua_hosted_mcp_config(L, 2, &config, &names);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_hosted_mcp_tool(self->ptr, &config,
-                                                      &error);
+  rc = self->ptr->add_hosted_mcp_tool(self->ptr, &config, &error);
   free(names);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -5731,8 +5723,8 @@ static int cai_lua_params_add_function_call_output(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_function_call_output(
-      self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &error);
+  rc = self->ptr->add_function_call_output(self->ptr, luaL_checkstring(L, 2),
+                                           luaL_checkstring(L, 3), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -5742,7 +5734,7 @@ static int cai_lua_params_add_function_call_output_text(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_function_call_output_text(
+  rc = self->ptr->add_function_call_output_text(
       self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &error);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -5753,7 +5745,7 @@ static int cai_lua_params_add_function_call_output_image_url(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_function_call_output_image_url(
+  rc = self->ptr->add_function_call_output_image_url(
       self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3),
       luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
@@ -5765,7 +5757,7 @@ static int cai_lua_params_add_function_call_output_file_id(lua_State *L) {
   int rc;
   self = cai_lua_check_params(L, 1);
   cai_error_init(&error);
-  rc = cai_response_create_params_add_function_call_output_file_id(
+  rc = self->ptr->add_function_call_output_file_id(
       self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3),
       luaL_optstring(L, 4, NULL), &error);
   return cai_lua_bool_result(L, rc, &error);
@@ -5784,7 +5776,7 @@ cai_lua_params_add_function_call_output_file_data_spooled(lua_State *L) {
   rc = cai_lua_spool_from_stack(L, 4, &spool, &error);
   if (rc == CAI_OK) {
     have_spool = 1;
-    rc = cai_response_create_params_add_function_call_output_file_data_spooled(
+    rc = self->ptr->add_function_call_output_file_data_spooled(
         self->ptr, luaL_checkstring(L, 2), luaL_checkstring(L, 3), &spool,
         luaL_optstring(L, 5, NULL), &error);
   }

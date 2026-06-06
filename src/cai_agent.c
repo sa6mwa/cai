@@ -703,8 +703,7 @@ int cai_agent_add_hosted_tool_json(cai_agent *agent, const char *tool_json,
   params = NULL;
   rc = cai_response_create_params_new(&params, error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_hosted_tool_json(params, tool_json,
-                                                         error);
+    rc = params->add_hosted_tool_json(params, tool_json, error);
   }
   cai_response_create_params_destroy(params);
   if (rc != CAI_OK) {
@@ -738,7 +737,7 @@ int cai_agent_add_simple_hosted_tool(cai_agent *agent, const char *type,
   params = NULL;
   rc = cai_response_create_params_new(&params, error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_simple_hosted_tool(params, type, error);
+    rc = params->add_simple_hosted_tool(params, type, error);
   }
   if (rc == CAI_OK) {
     tools = (struct cai_function_tool *)params->tools.items;
@@ -761,7 +760,7 @@ int cai_agent_add_hosted_mcp_tool(cai_agent *agent,
   params = NULL;
   rc = cai_response_create_params_new(&params, error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_hosted_mcp_tool(params, config, error);
+    rc = params->add_hosted_mcp_tool(params, config, error);
   }
   if (rc == CAI_OK) {
     tools = (struct cai_function_tool *)params->tools.items;
@@ -2184,7 +2183,7 @@ static int cai_session_add_pending_inputs(cai_session *session,
   for (i = 0U; rc == CAI_OK && i < CAI_SESSION_IMPL(session)->input_count;
        i++) {
     if (CAI_SESSION_IMPL(session)->inputs[i].kind == CAI_SESSION_INPUT_IMAGE) {
-      rc = cai_response_create_params_add_image_url(
+      rc = params->add_image_url(
           params, CAI_SESSION_IMPL(session)->inputs[i].role,
           CAI_SESSION_IMPL(session)->inputs[i].image_url,
           CAI_SESSION_IMPL(session)->inputs[i].detail, error);
@@ -2195,7 +2194,7 @@ static int cai_session_add_pending_inputs(cai_session *session,
           session, &CAI_SESSION_IMPL(session)->inputs[i].file_data, &file_data,
           error);
       if (rc == CAI_OK) {
-        rc = cai_response_create_params_add_file_data_spooled(
+        rc = params->add_file_data_spooled(
             params, CAI_SESSION_IMPL(session)->inputs[i].role,
             CAI_SESSION_IMPL(session)->inputs[i].filename, &file_data,
             CAI_SESSION_IMPL(session)->inputs[i].detail, error);
@@ -2205,7 +2204,7 @@ static int cai_session_add_pending_inputs(cai_session *session,
       }
     } else if (CAI_SESSION_IMPL(session)->inputs[i].kind ==
                CAI_SESSION_INPUT_FUNCTION_CALL_OUTPUT) {
-      rc = cai_response_create_params_add_function_call_output(
+      rc = params->add_function_call_output(
           params, CAI_SESSION_IMPL(session)->inputs[i].call_id,
           CAI_SESSION_IMPL(session)->inputs[i].output, error);
     } else if (CAI_SESSION_IMPL(session)->inputs[i].has_text_spooled) {
@@ -2214,16 +2213,15 @@ static int cai_session_add_pending_inputs(cai_session *session,
           session, &CAI_SESSION_IMPL(session)->inputs[i].text_spooled, &text,
           error);
       if (rc == CAI_OK) {
-        rc = cai_response_create_params_add_text_spooled(
+        rc = params->add_text_spooled(
             params, CAI_SESSION_IMPL(session)->inputs[i].role, &text, error);
       }
       if (rc != CAI_OK) {
         text.cleanup(&text);
       }
     } else {
-      rc = cai_response_create_params_add_text(
-          params, CAI_SESSION_IMPL(session)->inputs[i].role,
-          CAI_SESSION_IMPL(session)->inputs[i].text, error);
+      rc = params->add_text(params, CAI_SESSION_IMPL(session)->inputs[i].role,
+                            CAI_SESSION_IMPL(session)->inputs[i].text, error);
     }
   }
   return rc;
@@ -2740,12 +2738,12 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     rc = cai_response_create_params_new(&params, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(
-        params, CAI_SESSION_AGENT_IMPL(session)->model, error);
+    rc = params->set_model(params, CAI_SESSION_AGENT_IMPL(session)->model,
+                           error);
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->developer_instructions != NULL) {
-    rc = cai_response_create_params_set_instructions(
+    rc = params->set_instructions(
         params, CAI_SESSION_AGENT_IMPL(session)->developer_instructions, error);
   }
   if (rc == CAI_OK) {
@@ -3157,46 +3155,46 @@ static int cai_session_init_response_params(cai_session *session,
   params = NULL;
   rc = cai_response_create_params_new(&params, error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(
-        params, CAI_SESSION_AGENT_IMPL(session)->model, error);
+    rc = params->set_model(params, CAI_SESSION_AGENT_IMPL(session)->model,
+                           error);
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->developer_instructions != NULL) {
-    rc = cai_response_create_params_set_instructions(
+    rc = params->set_instructions(
         params, CAI_SESSION_AGENT_IMPL(session)->developer_instructions, error);
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->prompt_cache_key != NULL) {
-    rc = cai_response_create_params_set_prompt_cache_key(
+    rc = params->set_prompt_cache_key(
         params, CAI_SESSION_AGENT_IMPL(session)->prompt_cache_key, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->tool_choice != NULL) {
-    rc = cai_response_create_params_set_tool_choice(
+    rc = params->set_tool_choice(
         params, CAI_SESSION_AGENT_IMPL(session)->tool_choice, error);
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->tool_choice_json != NULL) {
-    rc = cai_response_create_params_set_tool_choice_json(
+    rc = params->set_tool_choice_json(
         params, CAI_SESSION_AGENT_IMPL(session)->tool_choice_json, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->max_output_tokens > 0) {
-    rc = cai_response_create_params_set_max_output_tokens(
+    rc = params->set_max_output_tokens(
         params, CAI_SESSION_AGENT_IMPL(session)->max_output_tokens, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->max_tool_calls > 0) {
-    rc = cai_response_create_params_set_max_tool_calls(
+    rc = params->set_max_tool_calls(
         params, CAI_SESSION_AGENT_IMPL(session)->max_tool_calls, error);
   }
   if (rc == CAI_OK &&
       (CAI_SESSION_AGENT_IMPL(session)->reasoning_effort != NULL ||
        CAI_SESSION_AGENT_IMPL(session)->reasoning_summary != NULL)) {
-    rc = cai_response_create_params_set_reasoning(
+    rc = params->set_reasoning(
         params, CAI_SESSION_AGENT_IMPL(session)->reasoning_effort,
         CAI_SESSION_AGENT_IMPL(session)->reasoning_summary, error);
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json != NULL) {
-    rc = cai_response_create_params_set_text_format_json_schema(
+    rc = params->set_text_format_json_schema(
         params, CAI_SESSION_AGENT_IMPL(session)->text_format_name,
         CAI_SESSION_AGENT_IMPL(session)->text_format_description,
         CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json,
@@ -3204,17 +3202,17 @@ static int cai_session_init_response_params(cai_session *session,
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->parallel_tool_calls >= 0) {
-    rc = cai_response_create_params_set_parallel_tool_calls(
+    rc = params->set_parallel_tool_calls(
         params, CAI_SESSION_AGENT_IMPL(session)->parallel_tool_calls, error);
   }
   if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->auto_compact &&
       CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit > 0LL) {
-    rc = cai_response_create_params_set_compact_threshold(
+    rc = params->set_compact_threshold(
         params, CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit,
         error);
   }
   if (rc == CAI_OK && CAI_SESSION_IMPL(session)->conversation_id != NULL) {
-    rc = cai_response_create_params_set_conversation_id(
+    rc = params->set_conversation_id(
         params, CAI_SESSION_IMPL(session)->conversation_id, error);
   }
   if (rc == CAI_OK &&
@@ -3222,7 +3220,7 @@ static int cai_session_init_response_params(cai_session *session,
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       CAI_SESSION_IMPL(session)->conversation_id == NULL &&
       CAI_SESSION_IMPL(session)->previous_response_id != NULL) {
-    rc = cai_response_create_params_set_previous_response_id(
+    rc = params->set_previous_response_id(
         params, CAI_SESSION_IMPL(session)->previous_response_id, error);
   }
   if (rc == CAI_OK &&
@@ -3235,8 +3233,8 @@ static int cai_session_init_response_params(cai_session *session,
     for (i = 0U; rc == CAI_OK &&
                  i < CAI_SESSION_AGENT_IMPL(session)->hosted_tools.count;
          i++) {
-      rc = cai_response_create_params_add_hosted_tool_json(
-          params, hosted_tools[i].raw_json, error);
+      rc =
+          params->add_hosted_tool_json(params, hosted_tools[i].raw_json, error);
     }
   }
   if (rc == CAI_OK) {
@@ -3253,7 +3251,7 @@ static int cai_session_init_response_params(cai_session *session,
 
 static int cai_session_clear_tool_choice_for_tool_continuation(
     cai_response_create_params *params, cai_error *error) {
-  return cai_response_create_params_set_tool_choice(params, NULL, error);
+  return params->set_tool_choice(params, NULL, error);
 }
 
 static int cai_session_run_tool_round(cai_session *session,

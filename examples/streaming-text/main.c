@@ -56,12 +56,12 @@ int main(void) {
   }
   rc = cai_response_create_params_new(&params, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, example_model(), &error);
+    rc = params->set_model(params, example_model(), &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(
-        params, "user", "Write one short sentence about streaming in C.",
-        &error);
+    rc = params->add_text(params, "user",
+                          "Write one short sentence about streaming in C.",
+                          &error);
   }
   if (rc == CAI_OK) {
     rc = client->open_response_text_source(client, params, &source, &error);

@@ -730,11 +730,10 @@ static int run_basic_response(void) {
   }
   rc = cai_response_create_params_new(&params, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, model, &error);
+    rc = params->set_model(params, model, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(
-        params, "user", "Reply with exactly: pong", &error);
+    rc = params->add_text(params, "user", "Reply with exactly: pong", &error);
   }
   if (rc == CAI_OK) {
     rc = integration_provider_create_response(client, params, 0, &response,
@@ -786,29 +785,28 @@ static int run_hosted_web_search_regression(void) {
   }
   rc = cai_response_create_params_new(&params, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, model, &error);
+    rc = params->set_model(params, model, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_reasoning(
-        params, CAI_REASONING_EFFORT_LOW, NULL, &error);
+    rc = params->set_reasoning(params, CAI_REASONING_EFFORT_LOW, NULL, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_tool_choice_json(
-        params, "{\"type\":\"web_search\"}", &error);
+    rc = params->set_tool_choice_json(params, "{\"type\":\"web_search\"}",
+                                      &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_max_output_tokens(params, 512, &error);
+    rc = params->set_max_output_tokens(params, 512, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_max_tool_calls(params, 1, &error);
+    rc = params->set_max_tool_calls(params, 1, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_hosted_tool_json(
+    rc = params->add_hosted_tool_json(
         params, "{\"type\":\"web_search\",\"search_context_size\":\"low\"}",
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(
+    rc = params->add_text(
         params, "user",
         "Use web search and answer in one sentence: what is the latest "
         "OpenAI model family mentioned in OpenAI docs?",
@@ -1207,25 +1205,24 @@ static int run_openrouter_basic_response(void) {
   }
   rc = cai_response_create_params_new(&params, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, model, &error);
+    rc = params->set_model(params, model, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_instructions(
+    rc = params->set_instructions(
         params,
         "You are a strict API compatibility test. Reply with exactly the "
         "requested marker and no other text.",
         &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_max_output_tokens(params, 32, &error);
+    rc = params->set_max_output_tokens(params, 32, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_reasoning(
-        params, CAI_REASONING_EFFORT_NONE, NULL, &error);
+    rc = params->set_reasoning(params, CAI_REASONING_EFFORT_NONE, NULL, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(
-        params, "user", "Reply with exactly: openrouter-pong-314", &error);
+    rc = params->add_text(params, "user",
+                          "Reply with exactly: openrouter-pong-314", &error);
   }
   if (rc == CAI_OK) {
     rc = integration_provider_create_response(client, params, 1, &response,
@@ -1279,14 +1276,13 @@ static int run_openrouter_dotenv_response(void) {
     rc = cai_response_create_params_new(&params, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(
-        params, openrouter_integration_model(), &error);
+    rc = params->set_model(params, openrouter_integration_model(), &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_max_output_tokens(params, 96, &error);
+    rc = params->set_max_output_tokens(params, 96, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(
+    rc = params->add_text(
         params, "user",
         "Reply with exactly: openrouter dotenv compatibility ok", &error);
   }

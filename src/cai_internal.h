@@ -180,43 +180,6 @@ struct cai_function_tool {
   int is_raw;
 };
 
-struct cai_response_create_params {
-  cai_allocator allocator;
-  char *model;
-  char *conversation_id;
-  char *instructions;
-  char *previous_response_id;
-  char *prompt_cache_key;
-  char *service_tier;
-  char *truncation;
-  char *metadata_json;
-  char *include_json;
-  char *prompt_json;
-  char *tool_choice;
-  char *tool_choice_json;
-  char *reasoning_effort;
-  char *reasoning_summary;
-  char *text_format_type;
-  char *text_format_name;
-  char *text_format_description;
-  char *text_format_schema_json;
-  char *text_verbosity;
-  int text_format_strict;
-  int max_output_tokens;
-  int max_tool_calls;
-  int parallel_tool_calls;
-  int background;
-  int has_background;
-  int store;
-  int has_store;
-  long long compact_threshold_tokens;
-  char *raw_input_json;
-  lonejson_spooled raw_input_spooled;
-  int has_raw_input_spooled;
-  lonejson_object_array input;
-  lonejson_object_array tools;
-};
-
 struct cai_conversation_items_params {
   cai_allocator allocator;
   lonejson_object_array items;

@@ -55,19 +55,18 @@ int main(void) {
   }
   rc = cai_response_create_params_new(&params, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_model(params, example_model(), &error);
+    rc = params->set_model(params, example_model(), &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_max_output_tokens(params, 96, &error);
+    rc = params->set_max_output_tokens(params, 96, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_set_reasoning(
-        params, CAI_REASONING_EFFORT_NONE, NULL, &error);
+    rc = params->set_reasoning(params, CAI_REASONING_EFFORT_NONE, NULL, &error);
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_text(
-        params, "user", "In one sentence, say hello from cai via OpenRouter.",
-        &error);
+    rc = params->add_text(params, "user",
+                          "In one sentence, say hello from cai via OpenRouter.",
+                          &error);
   }
   if (rc == CAI_OK) {
     rc = client->create_response(client, params, &response, &error);

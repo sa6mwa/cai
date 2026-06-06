@@ -1262,6 +1262,62 @@ int cai_response_create_params_new(cai_response_create_params **out,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate response params");
   }
+  memset(params, 0, sizeof(*params));
+  params->close = cai_response_create_params_destroy;
+  params->set_model = cai_response_create_params_set_model;
+  params->set_instructions = cai_response_create_params_set_instructions;
+  params->set_previous_response_id =
+      cai_response_create_params_set_previous_response_id;
+  params->set_conversation_id = cai_response_create_params_set_conversation_id;
+  params->set_prompt_cache_key =
+      cai_response_create_params_set_prompt_cache_key;
+  params->set_background = cai_response_create_params_set_background;
+  params->set_store = cai_response_create_params_set_store;
+  params->set_service_tier = cai_response_create_params_set_service_tier;
+  params->set_truncation = cai_response_create_params_set_truncation;
+  params->set_metadata_json = cai_response_create_params_set_metadata_json;
+  params->set_include_json = cai_response_create_params_set_include_json;
+  params->set_prompt_json = cai_response_create_params_set_prompt_json;
+  params->set_tool_choice = cai_response_create_params_set_tool_choice;
+  params->set_tool_choice_json =
+      cai_response_create_params_set_tool_choice_json;
+  params->set_max_output_tokens =
+      cai_response_create_params_set_max_output_tokens;
+  params->set_max_tool_calls = cai_response_create_params_set_max_tool_calls;
+  params->set_reasoning = cai_response_create_params_set_reasoning;
+  params->set_parallel_tool_calls =
+      cai_response_create_params_set_parallel_tool_calls;
+  params->set_compact_threshold =
+      cai_response_create_params_set_compact_threshold;
+  params->set_text_format_json_object =
+      cai_response_create_params_set_text_format_json_object;
+  params->set_text_format_json_schema =
+      cai_response_create_params_set_text_format_json_schema;
+  params->set_text_verbosity = cai_response_create_params_set_text_verbosity;
+  params->add_text = cai_response_create_params_add_text;
+  params->add_text_spooled = cai_response_create_params_add_text_spooled;
+  params->add_image_url = cai_response_create_params_add_image_url;
+  params->add_image_file_id = cai_response_create_params_add_image_file_id;
+  params->add_file_id = cai_response_create_params_add_file_id;
+  params->add_file_url = cai_response_create_params_add_file_url;
+  params->add_file_data_spooled =
+      cai_response_create_params_add_file_data_spooled;
+  params->add_function_tool = cai_response_create_params_add_function_tool;
+  params->add_hosted_tool_json =
+      cai_response_create_params_add_hosted_tool_json;
+  params->add_simple_hosted_tool =
+      cai_response_create_params_add_simple_hosted_tool;
+  params->add_hosted_mcp_tool = cai_response_create_params_add_hosted_mcp_tool;
+  params->add_function_call_output =
+      cai_response_create_params_add_function_call_output;
+  params->add_function_call_output_text =
+      cai_response_create_params_add_function_call_output_text;
+  params->add_function_call_output_image_url =
+      cai_response_create_params_add_function_call_output_image_url;
+  params->add_function_call_output_file_id =
+      cai_response_create_params_add_function_call_output_file_id;
+  params->add_function_call_output_file_data_spooled =
+      cai_response_create_params_add_function_call_output_file_data_spooled;
   params->allocator.malloc_fn = NULL;
   params->allocator.realloc_fn = NULL;
   params->allocator.free_fn = NULL;
