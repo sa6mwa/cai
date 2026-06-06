@@ -36,6 +36,9 @@ shape, but may still change before the initial tag.
 
 The verification tiers are split intentionally:
 
+- Before committing any implementation slice, run `make format` and the
+  relevant tests. `make finalize-slice` is the default local pre-commit path
+  for ordinary C changes: it runs clang-format and the debug test suite.
 - `make prerelease` runs the standard local gate: clang-format, debug tests,
   TSan, MSan smoke, fuzz smoke, Lua tests, and deterministic local example
   smoke.
@@ -50,6 +53,9 @@ The verification tiers are split intentionally:
 - CMake/Ninja/Make based build.
 - Installed builds export CMake package targets under `lib/cmake/cai` and a
   relocatable `cai.pc` pkg-config file.
+- Public C headers use clangd-friendly documentation comments on exported
+  functions, structs, callbacks, macros, and method-table fields. New public
+  symbols should get concise `/** ... */` comments in the same change.
 - `make release` builds/tests the release matrix and writes binary SDK
   archives as `dist/cai-<version>-<target>.tar.gz`, a source archive as
   `dist/cai-<version>.tar.gz`, and `dist/cai-<version>-CHECKSUMS`.

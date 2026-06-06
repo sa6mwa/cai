@@ -94,6 +94,12 @@ Verification tiers:
   - long fuzz via `make fuzz-full`,
   - release matrix packaging and archive verification.
 
+Every committed implementation slice should be finalized with `make format`
+before the commit is created. For ordinary local C changes, `make
+finalize-slice` is the default shortcut: it runs `make format` and the debug
+CTest suite. Broader changes should add the relevant Lua, sanitizer, fuzz,
+integration, example, or release gates before committing.
+
 Recent hardening runs have covered:
 
 - `cai_tool_fuzz -runs=10000`, covering typed/raw tools plus hostile
@@ -124,6 +130,8 @@ Recent hardening runs have covered:
 Before tagging the first C SDK prerelease:
 
 - Keep README, examples, and installed docs aligned with the current API.
+- Keep public headers clangd-helpful: exported functions, structs, callbacks,
+  method-table fields, and macros need concise documentation comments.
 - Run the complete prerelease verification cycle on the release candidate tag
   or with `CAI_VERSION_OVERRIDE` set to the intended prerelease version.
 - Verify `make release` outputs:

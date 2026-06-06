@@ -40,7 +40,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
@@ -57,6 +57,7 @@ help:
 		'make fuzz-full    Run every fuzzer with the checked-in corpus and CAI_FUZZ_RUNS iterations.' \
 		'make example-smoke-local  Run deterministic local example smoke checks.' \
 		'make example-smoke-live   Run curated live non-interactive example smoke checks.' \
+		'make finalize-slice Run format and debug tests before committing a slice.' \
 		'make prerelease   Run the standard local prerelease verification tier.' \
 		'make prerelease-live  Run the live-provider prerelease verification tier.' \
 		'make prerelease-hardening Run the hardening tier: prerelease, live checks, long fuzz, and release matrix.' \
@@ -87,7 +88,9 @@ build-debug:
 build-release:
 	bash ./scripts/build_release_matrix.sh
 
-test: test-debug
+test:
+	@printf '%s\n' 'Reminder: run `make format` before committing each slice, or use `make finalize-slice`.'
+	$(MAKE) test-debug
 
 test-debug: build-debug
 	$(CTEST) --preset debug $(CTEST_FLAGS)
@@ -151,6 +154,10 @@ example-smoke-live:
 	$(CMAKE) --preset integration
 	$(CMAKE) --build --preset integration
 	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_examples_live_smoke$$'
+
+finalize-slice:
+	$(MAKE) format
+	$(MAKE) test-debug
 
 prerelease:
 	$(MAKE) format

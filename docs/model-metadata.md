@@ -98,11 +98,17 @@ make lua-rock
 eval "$(make -s lua-env)" && lua tests/lua/test_lua.lua
 ```
 
-Before committing a model/pricing update, run the local suite:
+Before committing a model/pricing update, run formatting and the local suite:
 
 ```sh
+make format
 ctest --preset debug --output-on-failure
 ```
+
+For ordinary implementation slices outside model metadata, `make
+finalize-slice` is the default local pre-commit shortcut. It runs `make format`
+and the debug CTest suite. Add Lua, sanitizer, fuzz, integration, example, or
+release gates when the slice touches those surfaces.
 
 For a release candidate, use the normal release gates instead of only the
 focused checks:
