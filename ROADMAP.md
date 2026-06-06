@@ -7,8 +7,9 @@ build documentation lives in [README.md](README.md).
 ## Current Prerelease Baseline
 
 cai is a C89/POSIX SDK-style client for OpenAI-compatible Responses workflows.
-The first prerelease target is the C SDK, Lua 5.5 facade, and examples, not
-WebSocket transports.
+The first prerelease target is the C SDK, Lua 5.5 facade, examples, and
+Responses WebSocket streaming for OpenAI/ChatGPT. Realtime WebSocket remains
+future work.
 
 Implemented:
 
@@ -16,6 +17,8 @@ Implemented:
   SDK.
 - OpenAI Conversations endpoints and conversation-handle sessions.
 - HTTP/SSE streaming with semantic event parsing.
+- Responses WebSocket streaming for OpenAI API-key and ChatGPT subscription
+  auth clients, sharing the same semantic Responses event parser as HTTP/SSE.
 - Agent/session facade with opaque handles, method-style function pointers,
   developer instructions, automatic server-side continuation, and default
   server-side compaction.
@@ -26,10 +29,10 @@ Implemented:
 - Tool registry with typed lonejson callbacks, raw JSON escape hatches,
   spooled raw arguments, source/spooled typed result fields, auto-run tool
   loops, and streamed tool-call argument capture.
-- Low-level non-WebSocket Responses request controls for background mode,
-  store, service tier, truncation, metadata, include, prompt-template JSON,
-  text verbosity, structured text output, reasoning, server-side compaction,
-  raw JSON `tool_choice`, `max_tool_calls`, `/responses/input_tokens`, and raw
+- Low-level Responses request controls for background mode, store, service
+  tier, truncation, metadata, include, prompt-template JSON, text verbosity,
+  structured text output, reasoning, server-side compaction, raw JSON
+  `tool_choice`, `max_tool_calls`, `/responses/input_tokens`, and raw
   OpenAI-hosted tool objects.
 - Agent facade support for OpenAI-hosted tools through validated raw tool JSON
   and simple `{ "type": ... }` hosted-tool helpers. Remote MCP hosted tools
@@ -110,6 +113,10 @@ Recent hardening runs have covered:
 - OpenAI 20-turn session e2e.
 - OpenAI state-restore e2e.
 - OpenAI hostile tool-output regression.
+- Responses WebSocket offline tests for handshake/header validation, normal
+  streaming, large frames, pre-stream transient retry, midstream disconnect
+  failure, multi-turn server-side continuation, stale keepalive reconnect,
+  response id propagation, and usage capture.
 - OpenRouter basic/session/tool/stream-tool/stream-history/tool-security and
   read/list preset e2e.
 - OpenRouter 20-turn client-history e2e with request pacing.
@@ -118,6 +125,8 @@ Recent hardening runs have covered:
 - Lua MCP todo/kanban facade e2e.
 - Lua OpenAI streamed-tool e2e.
 - Lua OpenAI streamed session-continuity e2e.
+- ChatGPT subscription-auth 11-turn e2e covering Responses WebSocket streaming,
+  streamed local tools, continuity, and token usage.
 - OpenAI hosted `web_search` e2e covering raw hosted-tool JSON, structured
   `tool_choice`, `max_tool_calls`, and `/responses/input_tokens`.
 - Lua OpenAI hosted `web_search` e2e covering the same hosted-tool and
@@ -143,26 +152,43 @@ Before tagging the first C SDK prerelease:
 - Verify release builds do not contain sanitizer artifacts, host paths, or
   non-relocatable runpaths.
 
-## Parked: Responses WebSocket
+## Supported: Responses WebSocket
 
-Status: documented by OpenAI, not implemented.
+Status: implemented for OpenAI API-key and ChatGPT subscription-auth streaming
+sessions.
 
 OpenAI documents Responses WebSocket mode as a persistent connection to
 `/v1/responses` for long-running, tool-call-heavy workflows. Each turn sends
 new input items plus `previous_response_id`, so it is still Responses
-state/continuation semantics, not Realtime.
+state/continuation semantics, not Realtime. cai implements that transport with
+libcurl WebSocket support, the documented OpenAI beta header, incremental
+`response.create` messages, semantic event parsing shared with HTTP/SSE,
+keepalive reuse, one transient pre-stream retry, stale-connection reconnect,
+and one transparent ChatGPT OAuth refresh retry on 401/403.
 
-Initial future scope:
+The current public DX remains the normal cai streaming API: OpenAI API-key and
+ChatGPT subscription-auth clients use Responses WebSocket for streaming, while
+OpenRouter, local mock servers, and other compatible providers use HTTP/SSE.
 
-- Choose a WebSocket transport compatible with the cai release matrix.
-- Share semantic Responses event parsing with the existing HTTP/SSE path.
-- Keep HTTP/SSE as the default transport and fallback.
-- Add a repo-local C mock WebSocket server before live API-backed tests.
-- Support text/reasoning deltas and function-call argument events first.
-- Preserve true streaming: WebSocket frame buffers and lonejson chunk buffers
-  are fine; full response/event materialization is not.
-- Keep the public DX explicit while the feature settles, for example a response
-  transport knob rather than silent transport switching.
+Covered locally:
+
+- C mock WebSocket server with handshake and OpenAI beta-header validation.
+- Normal text streaming, response id propagation, and usage capture.
+- Large WebSocket text frames.
+- Transient upgrade failure followed by retry.
+- Midstream disconnect after a partial text delta, which fails closed without a
+  completed response id or usage.
+- Multi-turn server-side continuation over a persistent connection.
+- Stale keepalive reconnect between turns.
+
+Remaining hardening that would improve release confidence further:
+
+- Add a live OpenAI WebSocket proxy/fault harness if we want real-provider
+  disconnect/reconnect injection. Current live tests exercise the real
+  WebSocket transport, but disconnect/reconnect failure injection is mock-only.
+- Add a dedicated live test label that forces and reports the WebSocket
+  transport explicitly, separate from the current streaming integration tests
+  that select it automatically for OpenAI/ChatGPT.
 
 Official OpenAI docs checked:
 

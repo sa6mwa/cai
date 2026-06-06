@@ -1,7 +1,8 @@
 # cai
 
 `cai` is a C89/POSIX SDK-style client for the OpenAI Responses API,
-Conversations, and HTTP/SSE streaming workflows.
+Conversations, HTTP/SSE streaming, and Responses WebSocket streaming
+workflows.
 
 The goal is a small, handle-oriented C API that fits systems such as Vectis:
 stream-first data flow, explicit ownership, predictable error handling, and
@@ -11,22 +12,22 @@ raw HTTP requests or hand-roll JSON.
 See [ROADMAP.md](ROADMAP.md) for current prerelease status, parked work, and
 future feature planning.
 
-OpenAI documents both Responses WebSocket mode and Realtime WebSocket, but cai
-does not implement either yet. Responses WebSocket is a transport option for
-long-running Responses workflows; Realtime WebSocket is a separate Realtime API
-surface for low-latency text/audio sessions. Both are parked in
-[ROADMAP.md](ROADMAP.md) until cai has an explicit WebSocket transport slice,
-a C mock WebSocket test server, and clear DX separate from the current HTTP/SSE
-Responses path.
+OpenAI documents both Responses WebSocket mode and Realtime WebSocket. cai
+supports Responses WebSocket streaming for OpenAI/ChatGPT Responses sessions:
+it uses the same semantic event parser as HTTP/SSE, sends incremental
+`response.create` messages with `previous_response_id`, and keeps the current
+HTTP/SSE path for providers that do not use the OpenAI WebSocket endpoint.
+Realtime WebSocket remains a separate, parked API surface for low-latency
+text/audio sessions; it is tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Scope
 
 The first prerelease target is the C SDK plus the Lua 5.5 facade: OpenAI
 Responses, Conversations, HTTP/SSE streaming, agent/session DX, local tool
-callbacks, MCP tool serving, examples, LuaRock packaging, and release
-packaging.
+callbacks, Responses WebSocket streaming for OpenAI/ChatGPT, MCP tool serving,
+examples, LuaRock packaging, and release packaging.
 
-WebSocket transports are not part of the first prerelease. They are tracked in
+Realtime WebSocket is not part of the first prerelease. It is tracked in
 [ROADMAP.md](ROADMAP.md).
 
 ## Status
@@ -136,12 +137,12 @@ The verification tiers are split intentionally:
 - Session continuity defaults to OpenAI-style server-side continuation.
   Client-side history replay is available for stateless compatible providers
   such as OpenRouter.
-- The low-level Responses params surface exposes current non-WebSocket
-  request controls used by modern Responses workflows: background mode, store,
-  service tier, truncation, metadata, include, prompt-template JSON, text
-  verbosity, reasoning, structured text format, server-side compaction,
-  local function tools, raw hosted tool objects, raw JSON `tool_choice`, and
-  `max_tool_calls`. `cai_client_count_response_input_tokens` wraps
+- The low-level Responses params surface exposes current request controls used
+  by modern Responses workflows: background mode, store, service tier,
+  truncation, metadata, include, prompt-template JSON, text verbosity,
+  reasoning, structured text format, server-side compaction, local function
+  tools, raw hosted tool objects, raw JSON `tool_choice`, and `max_tool_calls`.
+  `cai_client_count_response_input_tokens` wraps
   `/responses/input_tokens` and sends a counting-safe request clone, because
   the live endpoint accepts input-shaping fields such as tools and
   `tool_choice` but rejects generation/execution limits such as
@@ -643,12 +644,30 @@ Streaming callers that need function-call arguments can attach callbacks to
 `cai_stream_sinks.function_call_arguments_done`. Callers that need raw streamed
 output-item events for hosted tools, image/code outputs, and future item types
 can attach `cai_stream_sinks.output_item_done`; cai passes common metadata plus
-the raw item JSON as a `lonejson_spooled` value. Callers that need raw streamed assistant text
-deltas before any terminal/UI affixes can attach
+the raw item JSON as a `lonejson_spooled` value. Callers that need raw streamed
+assistant text deltas before any terminal/UI affixes can attach
 `cai_stream_sinks.output_text_delta`. `stream_text` remains text-only; the
 callback surface is for callers that want to observe streamed tool-call
 argument deltas and output items directly and decide their own orchestration
 policy.
+
+For OpenAI API-key clients and ChatGPT subscription-auth clients, the streaming
+path uses the Responses WebSocket transport when the base URL is OpenAI's API
+or the ChatGPT Codex backend. OpenRouter and local/mock HTTP providers continue
+to use HTTP/SSE streaming. The WebSocket implementation uses libcurl's
+connect-only WebSocket support, sends `response.create` messages, requests the
+OpenAI Responses WebSocket beta, reuses the connection while healthy, retries
+one transient upgrade or stale-connection failure before events are observed,
+and transparently refreshes ChatGPT OAuth bearer tokens once on 401/403.
+
+Offline WebSocket tests cover handshake/header validation, normal streaming,
+large frames, pre-stream transient retry, midstream disconnect failure,
+multi-turn server-side continuation, stale keepalive reconnect, usage capture,
+and response id propagation. Live integration tests exercise the same public
+streaming APIs against OpenAI and ChatGPT subscription auth, including
+multi-turn sessions and streaming tool calls, but live disconnect/reconnect
+fault injection is intentionally covered by the mock WebSocket server rather
+than by trying to break the real OpenAI service connection.
 
 The ASAN preset is part of the local quality gate:
 
@@ -941,6 +960,7 @@ ctest --test-dir build/debug -L integration --output-on-failure
 
 CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
@@ -952,6 +972,7 @@ CAI_INTEGRATION_OPENROUTER_READ_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_SEARXNG_STREAM_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_EXEC_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_READ_TOOL=1 build/integration/cai_integration_tests
@@ -1013,6 +1034,10 @@ against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the
 explicit `wikipedia` engine. Start it with `make searxng-up` before running
 the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
 
+`CAI_INTEGRATION_SEARXNG_STREAM_TOOL=1` runs the same local SearXNG tool through
+the streaming auto-run path against the real OpenAI API. On OpenAI API-key
+clients this uses the Responses WebSocket transport.
+
 `CAI_INTEGRATION_HOSTED_WEB_SEARCH=1` runs a real OpenAI-hosted `web_search`
 regression. It uses the generic hosted-tool JSON path, requires a hosted tool
 call, validates structured raw JSON `tool_choice`, verifies
@@ -1039,13 +1064,22 @@ the `exec_command` preset. The model must call the command tool against a
 temporary sandbox root, run `ls`, `uname`, `cat`, `grep`, and `tar`, and then
 attempt `cat /etc/passwd | head -n 1`. The test verifies tool events, final
 assistant markers, `sandbox="bwrap"`, successful normal command output, and
-that the host `/etc/passwd` escape is denied.
+that the host `/etc/passwd` escape is denied. On OpenAI API-key clients this
+uses the Responses WebSocket transport.
 
 `CAI_INTEGRATION_READ_TOOL=1` runs a real OpenAI streaming tool regression for
 the `list_files` and `read_file` presets. The model must inspect a sandboxed
 test tree, read bounded UTF-8 text, avoid binary reads when list hints identify
 a binary candidate, and observe a forced denial when explicitly asked to read a
-binary file.
+binary file. On OpenAI API-key clients this uses the Responses WebSocket
+transport.
+
+`CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1` runs an 11-turn ChatGPT
+subscription-auth session against the ChatGPT Codex backend using the default
+auth file from `cai_chatgpt_auth_default_path`. It alternates stream APIs,
+forces tool calls on selected turns, verifies first/current/previous turn
+recall, and exercises transparent token refresh behavior through the same
+Responses WebSocket transport used by ChatGPT-auth streaming sessions.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,
