@@ -4,17 +4,10 @@ CompileFlags:
     - -std=*
   Add:
     - -D_POSIX_C_SOURCE=200809L
-    - -Iinclude
-    - -Ibuild/debug/generated/include
-    - -Isrc
-    - -I.cache/deps/liblonejson-0.31.0-x86_64-linux-gnu/include
-    - -I.cache/deps/libpslog-0.4.1-x86_64-linux-gnu/include
-    - -I.cache/deps/c.pkt.systems-0.1.0-x86_64-linux-gnu/include
     - -std=c89
     - -Wall
     - -Wextra
     - -Wpedantic
-    - -Wno-long-long
 Documentation:
   CommentFormat: Markdown
 ---
