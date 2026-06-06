@@ -48,6 +48,20 @@ typedef struct cai_chatgpt_auth_config {
   cai_allocator allocator;
 } cai_chatgpt_auth_config;
 
+/** ChatGPT OAuth auth session with receiver methods for token access. */
+struct cai_chatgpt_auth {
+  /** Return the current access token, refreshing first when near expiry. */
+  int (*access_token)(cai_chatgpt_auth *auth, char **out, cai_error *error);
+  /** Force a refresh-token grant and persist returned token fields. */
+  int (*refresh)(cai_chatgpt_auth *auth, cai_error *error);
+  /** Close this auth session and clear sensitive token memory. */
+  void (*close)(cai_chatgpt_auth *auth);
+  /** Allocator used for this receiver shell. */
+  cai_allocator allocator;
+  /** Private implementation owned by cai. */
+  void *impl;
+};
+
 /** Server-agnostic request passed to the ChatGPT OAuth callback handler. */
 typedef struct cai_chatgpt_login_request {
   /** HTTP method, usually GET. */
@@ -100,9 +114,6 @@ typedef struct cai_chatgpt_login_config {
   cai_allocator allocator;
 } cai_chatgpt_login_config;
 
-/** Opaque interactive ChatGPT OAuth login flow state. */
-typedef struct cai_chatgpt_login cai_chatgpt_login;
-
 /** Optional browser opener configuration for ChatGPT OAuth login helpers. */
 typedef struct cai_chatgpt_login_browser_config {
   /**
@@ -112,6 +123,23 @@ typedef struct cai_chatgpt_login_browser_config {
    */
   const char *command;
 } cai_chatgpt_login_browser_config;
+
+/** Interactive ChatGPT OAuth login flow with receiver callback methods. */
+typedef struct cai_chatgpt_login {
+  /** Handle one HTTP callback request and persist auth.json on success. */
+  int (*handle_callback)(struct cai_chatgpt_login *login,
+                         const cai_chatgpt_login_request *request,
+                         cai_chatgpt_login_response *response,
+                         cai_error *error);
+  /** Return non-zero after the login callback has succeeded. */
+  int (*completed)(const struct cai_chatgpt_login *login);
+  /** Close this interactive login flow and clear sensitive state. */
+  void (*close)(struct cai_chatgpt_login *login);
+  /** Allocator used for this receiver shell. */
+  cai_allocator allocator;
+  /** Private implementation owned by cai. */
+  void *impl;
+} cai_chatgpt_login;
 
 /** Initialize ChatGPT auth config defaults. */
 void cai_chatgpt_auth_config_init(cai_chatgpt_auth_config *config);

@@ -51,7 +51,7 @@ typedef struct cai_auth_buffer {
   size_t capacity;
 } cai_auth_buffer;
 
-struct cai_chatgpt_auth {
+typedef struct cai_chatgpt_auth_impl {
   cai_allocator allocator;
   char *auth_json_path;
   char *issuer;
@@ -63,9 +63,9 @@ struct cai_chatgpt_auth {
   char *access_token;
   char *refresh_token;
   char *account_id;
-};
+} cai_chatgpt_auth_impl;
 
-struct cai_chatgpt_login {
+typedef struct cai_chatgpt_login_impl {
   cai_allocator allocator;
   char *auth_json_path;
   char *issuer;
@@ -80,7 +80,22 @@ struct cai_chatgpt_login {
   struct pslog_logger *logger;
   int logger_disabled;
   int completed;
-};
+} cai_chatgpt_login_impl;
+
+static cai_chatgpt_auth_impl *
+cai_chatgpt_auth_impl_from_public(cai_chatgpt_auth *auth) {
+  return auth != NULL ? (cai_chatgpt_auth_impl *)auth->impl : NULL;
+}
+
+static const cai_chatgpt_login_impl *
+cai_chatgpt_login_impl_from_const_public(const cai_chatgpt_login *login) {
+  return login != NULL ? (const cai_chatgpt_login_impl *)login->impl : NULL;
+}
+
+static cai_chatgpt_login_impl *
+cai_chatgpt_login_impl_from_public(cai_chatgpt_login *login) {
+  return login != NULL ? (cai_chatgpt_login_impl *)login->impl : NULL;
+}
 
 static const lonejson_field cai_auth_tokens_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_auth_tokens_doc, id_token,
@@ -776,7 +791,7 @@ void cai_chatgpt_auth_config_init(cai_chatgpt_auth_config *config) {
   memset(config, 0, sizeof(*config));
 }
 
-static int cai_chatgpt_auth_parse_file(cai_chatgpt_auth *auth,
+static int cai_chatgpt_auth_parse_file(cai_chatgpt_auth_impl *auth,
                                        cai_auth_file_doc *doc,
                                        cai_error *error) {
   char *json;
@@ -809,7 +824,7 @@ static int cai_chatgpt_auth_parse_file(cai_chatgpt_auth *auth,
   return CAI_OK;
 }
 
-static int cai_chatgpt_auth_apply_doc(cai_chatgpt_auth *auth,
+static int cai_chatgpt_auth_apply_doc(cai_chatgpt_auth_impl *auth,
                                       const cai_auth_file_doc *doc,
                                       cai_error *error) {
   int rc;
@@ -831,7 +846,8 @@ static int cai_chatgpt_auth_apply_doc(cai_chatgpt_auth *auth,
   return rc;
 }
 
-static int cai_chatgpt_auth_load(cai_chatgpt_auth *auth, cai_error *error) {
+static int cai_chatgpt_auth_load(cai_chatgpt_auth_impl *auth,
+                                 cai_error *error) {
   cai_auth_file_doc doc;
   int rc;
 
@@ -843,7 +859,7 @@ static int cai_chatgpt_auth_load(cai_chatgpt_auth *auth, cai_error *error) {
   return rc;
 }
 
-static int cai_chatgpt_auth_reload_changed(cai_chatgpt_auth *auth,
+static int cai_chatgpt_auth_reload_changed(cai_chatgpt_auth_impl *auth,
                                            int *out_changed, cai_error *error) {
   cai_auth_file_doc doc;
   int changed;
@@ -886,6 +902,7 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   cai_chatgpt_auth_config defaults;
   const cai_chatgpt_auth_config *effective;
   cai_chatgpt_auth *auth;
+  cai_chatgpt_auth_impl *impl;
   char *default_auth_json_path;
   const char *auth_json_path;
   int rc;
@@ -917,37 +934,50 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   }
   memset(auth, 0, sizeof(*auth));
   auth->allocator = effective->allocator;
-  auth->auth_json_path = cai_strdup(&auth->allocator, auth_json_path);
+  auth->access_token = cai_chatgpt_auth_access_token;
+  auth->refresh = cai_chatgpt_auth_refresh;
+  auth->close = cai_chatgpt_auth_close;
+  impl =
+      (cai_chatgpt_auth_impl *)cai_alloc(&effective->allocator, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(&effective->allocator, auth);
+    cai_free_mem(NULL, default_auth_json_path);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth");
+  }
+  memset(impl, 0, sizeof(*impl));
+  auth->impl = impl;
+  impl->allocator = effective->allocator;
+  impl->auth_json_path = cai_strdup(&impl->allocator, auth_json_path);
   cai_free_mem(NULL, default_auth_json_path);
-  auth->issuer =
-      cai_strdup(&auth->allocator, effective->issuer != NULL
+  impl->issuer =
+      cai_strdup(&impl->allocator, effective->issuer != NULL
                                        ? effective->issuer
                                        : CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
-  auth->client_id =
-      cai_strdup(&auth->allocator, effective->client_id != NULL
+  impl->client_id =
+      cai_strdup(&impl->allocator, effective->client_id != NULL
                                        ? effective->client_id
                                        : CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID);
-  auth->refresh_window_seconds =
+  impl->refresh_window_seconds =
       effective->refresh_window_seconds > 0
           ? effective->refresh_window_seconds
           : CAI_CHATGPT_AUTH_DEFAULT_REFRESH_WINDOW_SECONDS;
-  auth->logger = effective->logger;
-  auth->logger_disabled = effective->logger_disabled;
-  if (auth->auth_json_path == NULL || auth->issuer == NULL ||
-      auth->client_id == NULL) {
-    cai_chatgpt_auth_close(auth);
+  impl->logger = effective->logger;
+  impl->logger_disabled = effective->logger_disabled;
+  if (impl->auth_json_path == NULL || impl->issuer == NULL ||
+      impl->client_id == NULL) {
+    auth->close(auth);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth");
   }
-  rc = cai_chatgpt_auth_load(auth, error);
+  rc = cai_chatgpt_auth_load(impl, error);
   if (rc != CAI_OK) {
-    cai_chatgpt_auth_close(auth);
+    auth->close(auth);
     return rc;
   }
   *out = auth;
   return CAI_OK;
 }
 
-static int cai_chatgpt_auth_should_refresh(cai_chatgpt_auth *auth,
+static int cai_chatgpt_auth_should_refresh(cai_chatgpt_auth_impl *auth,
                                            cai_error *error) {
   long long exp;
   time_t now;
@@ -963,7 +993,7 @@ static int cai_chatgpt_auth_should_refresh(cai_chatgpt_auth *auth,
   return exp <= (long long)now + auth->refresh_window_seconds;
 }
 
-static int cai_auth_refresh_endpoint(cai_chatgpt_auth *auth, char **out,
+static int cai_auth_refresh_endpoint(cai_chatgpt_auth_impl *auth, char **out,
                                      cai_error *error) {
   static const char suffix[] = "/oauth/token";
   size_t issuer_len;
@@ -1273,14 +1303,15 @@ static int cai_auth_http_post(cai_allocator *allocator, const char *url,
   return CAI_OK;
 }
 
-static int cai_auth_http_post_json(cai_chatgpt_auth *auth, const char *url,
+static int cai_auth_http_post_json(cai_chatgpt_auth_impl *auth, const char *url,
                                    const char *request_json, char **out_json,
                                    long *out_status, cai_error *error) {
   return cai_auth_http_post(&auth->allocator, url, "application/json",
                             request_json, out_json, out_status, error);
 }
 
-static int cai_chatgpt_auth_save(cai_chatgpt_auth *auth, cai_error *error) {
+static int cai_chatgpt_auth_save(cai_chatgpt_auth_impl *auth,
+                                 cai_error *error) {
   cai_auth_file_doc doc;
   char refreshed_at[64];
   char *json;
@@ -1318,6 +1349,7 @@ static int cai_chatgpt_auth_save(cai_chatgpt_auth *auth, cai_error *error) {
 }
 
 int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
+  cai_chatgpt_auth_impl *impl;
   cai_auth_refresh_request_doc request;
   cai_auth_refresh_response_doc response;
   char *request_json;
@@ -1330,16 +1362,17 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
   char *grant_type;
   int reloaded;
 
-  if (auth == NULL || auth->refresh_token == NULL ||
-      auth->refresh_token[0] == '\0') {
+  impl = cai_chatgpt_auth_impl_from_public(auth);
+  if (impl == NULL || impl->refresh_token == NULL ||
+      impl->refresh_token[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "ChatGPT refresh token is required");
   }
-  rc = cai_chatgpt_auth_reload_changed(auth, &reloaded, error);
+  rc = cai_chatgpt_auth_reload_changed(impl, &reloaded, error);
   if (rc != CAI_OK) {
     return rc;
   }
-  if (reloaded && !cai_chatgpt_auth_should_refresh(auth, error)) {
+  if (reloaded && !cai_chatgpt_auth_should_refresh(impl, error)) {
     return CAI_OK;
   }
   grant_type = cai_strdup(NULL, "refresh_token");
@@ -1348,9 +1381,9 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
                          "failed to allocate refresh grant type");
   }
   memset(&request, 0, sizeof(request));
-  request.client_id = auth->client_id;
+  request.client_id = impl->client_id;
   request.grant_type = grant_type;
-  request.refresh_token = auth->refresh_token;
+  request.refresh_token = impl->refresh_token;
   request_json = NULL;
   response_json = NULL;
   url = NULL;
@@ -1358,15 +1391,15 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
                                &request_json, error);
   cai_free_mem(NULL, grant_type);
   if (rc == CAI_OK) {
-    rc = cai_auth_refresh_endpoint(auth, &url, error);
+    rc = cai_auth_refresh_endpoint(impl, &url, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_auth_http_post_json(auth, url, request_json, &response_json,
+    rc = cai_auth_http_post_json(impl, url, request_json, &response_json,
                                  &status, error);
   }
   cai_auth_secure_clear(request_json);
   cai_free_mem(NULL, request_json);
-  cai_free_mem(&auth->allocator, url);
+  cai_free_mem(&impl->allocator, url);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1398,27 +1431,27 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
                                 json_error.message);
   }
   if (response.id_token != NULL) {
-    rc = cai_auth_replace_secret(&auth->allocator, &auth->id_token,
+    rc = cai_auth_replace_secret(&impl->allocator, &impl->id_token,
                                  response.id_token, error);
   }
   if (rc == CAI_OK && response.access_token != NULL) {
-    rc = cai_auth_replace_secret(&auth->allocator, &auth->access_token,
+    rc = cai_auth_replace_secret(&impl->allocator, &impl->access_token,
                                  response.access_token, error);
   }
   if (rc == CAI_OK && response.refresh_token != NULL) {
-    rc = cai_auth_replace_secret(&auth->allocator, &auth->refresh_token,
+    rc = cai_auth_replace_secret(&impl->allocator, &impl->refresh_token,
                                  response.refresh_token, error);
   }
   if (rc == CAI_OK && response.account_id != NULL) {
-    rc = cai_auth_replace_secret(&auth->allocator, &auth->account_id,
+    rc = cai_auth_replace_secret(&impl->allocator, &impl->account_id,
                                  response.account_id, error);
   }
-  if (rc == CAI_OK && auth->access_token == NULL) {
+  if (rc == CAI_OK && impl->access_token == NULL) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "refresh response omitted access token");
   }
   if (rc == CAI_OK) {
-    rc = cai_chatgpt_auth_save(auth, error);
+    rc = cai_chatgpt_auth_save(impl, error);
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_auth_refresh_response_map, &response);
   return rc;
@@ -1426,6 +1459,7 @@ int cai_chatgpt_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
 
 int cai_chatgpt_auth_access_token(cai_chatgpt_auth *auth, char **out,
                                   cai_error *error) {
+  cai_chatgpt_auth_impl *impl;
   int rc;
 
   if (out == NULL) {
@@ -1433,16 +1467,17 @@ int cai_chatgpt_auth_access_token(cai_chatgpt_auth *auth, char **out,
                          "access token output pointer is required");
   }
   *out = NULL;
-  if (auth == NULL) {
+  impl = cai_chatgpt_auth_impl_from_public(auth);
+  if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "auth is required");
   }
-  if (cai_chatgpt_auth_should_refresh(auth, error)) {
-    rc = cai_chatgpt_auth_refresh(auth, error);
+  if (cai_chatgpt_auth_should_refresh(impl, error)) {
+    rc = auth->refresh(auth, error);
     if (rc != CAI_OK) {
       return rc;
     }
   }
-  *out = cai_strdup(NULL, auth->access_token);
+  *out = cai_strdup(NULL, impl->access_token);
   if (*out == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate access token");
@@ -1578,7 +1613,7 @@ int cai_chatgpt_login_open_browser(const char *authorize_url,
   return cai_chatgpt_login_open_browser_with_config(NULL, authorize_url, error);
 }
 
-static int cai_chatgpt_login_build_authorize_url(cai_chatgpt_login *login,
+static int cai_chatgpt_login_build_authorize_url(cai_chatgpt_login_impl *login,
                                                  char **out, cai_error *error) {
   cai_auth_buffer url;
   char *base;
@@ -1659,6 +1694,7 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   cai_chatgpt_login_config defaults;
   const cai_chatgpt_login_config *effective;
   cai_chatgpt_login *login;
+  cai_chatgpt_login_impl *impl;
   char *default_auth_json_path;
   const char *auth_json_path;
   char *generated_state;
@@ -1699,6 +1735,19 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   }
   memset(login, 0, sizeof(*login));
   login->allocator = effective->allocator;
+  login->handle_callback = cai_chatgpt_login_handle_callback;
+  login->completed = cai_chatgpt_login_completed;
+  login->close = cai_chatgpt_login_close;
+  impl =
+      (cai_chatgpt_login_impl *)cai_alloc(&effective->allocator, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(&effective->allocator, login);
+    cai_free_mem(NULL, default_auth_json_path);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
+  }
+  memset(impl, 0, sizeof(*impl));
+  login->impl = impl;
+  impl->allocator = effective->allocator;
   rc = CAI_OK;
   if (effective->state == NULL) {
     rc = cai_auth_random_b64(24U, &generated_state, error);
@@ -1707,43 +1756,42 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
     rc = cai_auth_random_b64(32U, &generated_verifier, error);
   }
   if (rc == CAI_OK) {
-    login->auth_json_path = cai_strdup(&login->allocator, auth_json_path);
-    login->issuer =
-        cai_strdup(&login->allocator, effective->issuer != NULL
-                                          ? effective->issuer
-                                          : CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
-    login->client_id =
-        cai_strdup(&login->allocator, effective->client_id != NULL
-                                          ? effective->client_id
-                                          : CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID);
-    login->redirect_uri =
-        cai_strdup(&login->allocator, effective->redirect_uri);
-    login->callback_path = cai_strdup(
-        &login->allocator, effective->callback_path != NULL
-                               ? effective->callback_path
-                               : CAI_CHATGPT_AUTH_DEFAULT_CALLBACK_PATH);
-    login->scopes =
-        cai_strdup(&login->allocator, effective->scopes != NULL
-                                          ? effective->scopes
-                                          : CAI_CHATGPT_AUTH_DEFAULT_SCOPES);
-    login->originator = cai_strdup(&login->allocator,
-                                   effective->originator != NULL
-                                       ? effective->originator
-                                       : CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR);
-    login->state = cai_strdup(&login->allocator, effective->state != NULL
-                                                     ? effective->state
-                                                     : generated_state);
-    login->code_verifier =
-        cai_strdup(&login->allocator, effective->code_verifier != NULL
-                                          ? effective->code_verifier
-                                          : generated_verifier);
-    login->logger = effective->logger;
-    login->logger_disabled = effective->logger_disabled;
-    if (login->auth_json_path == NULL || login->issuer == NULL ||
-        login->client_id == NULL || login->redirect_uri == NULL ||
-        login->callback_path == NULL || login->scopes == NULL ||
-        login->originator == NULL || login->state == NULL ||
-        login->code_verifier == NULL) {
+    impl->auth_json_path = cai_strdup(&impl->allocator, auth_json_path);
+    impl->issuer =
+        cai_strdup(&impl->allocator, effective->issuer != NULL
+                                         ? effective->issuer
+                                         : CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
+    impl->client_id =
+        cai_strdup(&impl->allocator, effective->client_id != NULL
+                                         ? effective->client_id
+                                         : CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID);
+    impl->redirect_uri = cai_strdup(&impl->allocator, effective->redirect_uri);
+    impl->callback_path = cai_strdup(
+        &impl->allocator, effective->callback_path != NULL
+                              ? effective->callback_path
+                              : CAI_CHATGPT_AUTH_DEFAULT_CALLBACK_PATH);
+    impl->scopes =
+        cai_strdup(&impl->allocator, effective->scopes != NULL
+                                         ? effective->scopes
+                                         : CAI_CHATGPT_AUTH_DEFAULT_SCOPES);
+    impl->originator =
+        cai_strdup(&impl->allocator, effective->originator != NULL
+                                         ? effective->originator
+                                         : CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR);
+    impl->state = cai_strdup(&impl->allocator, effective->state != NULL
+                                                   ? effective->state
+                                                   : generated_state);
+    impl->code_verifier =
+        cai_strdup(&impl->allocator, effective->code_verifier != NULL
+                                         ? effective->code_verifier
+                                         : generated_verifier);
+    impl->logger = effective->logger;
+    impl->logger_disabled = effective->logger_disabled;
+    if (impl->auth_json_path == NULL || impl->issuer == NULL ||
+        impl->client_id == NULL || impl->redirect_uri == NULL ||
+        impl->callback_path == NULL || impl->scopes == NULL ||
+        impl->originator == NULL || impl->state == NULL ||
+        impl->code_verifier == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
     }
   }
@@ -1752,16 +1800,16 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   cai_free_mem(NULL, generated_state);
   cai_free_mem(NULL, default_auth_json_path);
   if (rc == CAI_OK) {
-    rc = cai_chatgpt_login_build_authorize_url(login, &login->authorize_url,
+    rc = cai_chatgpt_login_build_authorize_url(impl, &impl->authorize_url,
                                                error);
   }
   if (rc != CAI_OK) {
-    cai_chatgpt_login_close(login);
+    login->close(login);
     return rc;
   }
-  *out_authorize_url = cai_strdup(NULL, login->authorize_url);
+  *out_authorize_url = cai_strdup(NULL, impl->authorize_url);
   if (*out_authorize_url == NULL) {
-    cai_chatgpt_login_close(login);
+    login->close(login);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate authorize URL");
   }
@@ -1769,7 +1817,7 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
   return CAI_OK;
 }
 
-static int cai_chatgpt_login_target_matches(cai_chatgpt_login *login,
+static int cai_chatgpt_login_target_matches(cai_chatgpt_login_impl *login,
                                             const char *target) {
   const char *query;
   size_t path_len;
@@ -1830,10 +1878,10 @@ static int cai_auth_append_form_param(cai_auth_buffer *buffer, const char *name,
   return rc;
 }
 
-static int cai_chatgpt_login_exchange_code(cai_chatgpt_login *login,
+static int cai_chatgpt_login_exchange_code(cai_chatgpt_login_impl *login,
                                            const char *code, cai_error *error) {
   cai_auth_refresh_response_doc response;
-  cai_chatgpt_auth auth_view;
+  cai_chatgpt_auth_impl auth_view;
   cai_auth_buffer form;
   char *url;
   char *response_json;
@@ -1920,6 +1968,7 @@ int cai_chatgpt_login_handle_callback(cai_chatgpt_login *login,
                                       const cai_chatgpt_login_request *request,
                                       cai_chatgpt_login_response *response,
                                       cai_error *error) {
+  cai_chatgpt_login_impl *impl;
   char *state;
   char *code;
   char *oauth_error;
@@ -1928,7 +1977,8 @@ int cai_chatgpt_login_handle_callback(cai_chatgpt_login *login,
   if (response != NULL) {
     memset(response, 0, sizeof(*response));
   }
-  if (login == NULL || request == NULL || response == NULL ||
+  impl = cai_chatgpt_login_impl_from_public(login);
+  if (impl == NULL || request == NULL || response == NULL ||
       request->method == NULL || request->target == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "login, request, and response are required");
@@ -1940,7 +1990,7 @@ int cai_chatgpt_login_handle_callback(cai_chatgpt_login *login,
         "<h1>Method Not Allowed</h1>",
         0, error);
   }
-  if (!cai_chatgpt_login_target_matches(login, request->target)) {
+  if (!cai_chatgpt_login_target_matches(impl, request->target)) {
     return cai_chatgpt_login_set_response(
         response, 404,
         "<!doctype html><title>Not Found</title><h1>Not Found</h1>", 0, error);
@@ -1961,7 +2011,7 @@ int cai_chatgpt_login_handle_callback(cai_chatgpt_login *login,
     rc = cai_auth_query_param(request->target, "state", &state, error);
   }
   if (rc == CAI_OK && oauth_error == NULL &&
-      (state == NULL || strcmp(state, login->state) != 0)) {
+      (state == NULL || strcmp(state, impl->state) != 0)) {
     rc = cai_chatgpt_login_set_response(
         response, 400,
         "<!doctype html><title>ChatGPT login failed</title>"
@@ -1980,9 +2030,9 @@ int cai_chatgpt_login_handle_callback(cai_chatgpt_login *login,
         1, error);
   }
   if (rc == CAI_OK && oauth_error == NULL && response->body == NULL) {
-    rc = cai_chatgpt_login_exchange_code(login, code, error);
+    rc = cai_chatgpt_login_exchange_code(impl, code, error);
     if (rc == CAI_OK) {
-      login->completed = 1;
+      impl->completed = 1;
       rc = cai_chatgpt_login_set_response(
           response, 200,
           "<!doctype html><title>ChatGPT login complete</title>"
@@ -2008,44 +2058,59 @@ void cai_chatgpt_login_response_cleanup(cai_chatgpt_login_response *response) {
 }
 
 int cai_chatgpt_login_completed(const cai_chatgpt_login *login) {
-  return login != NULL ? login->completed : 0;
+  const cai_chatgpt_login_impl *impl;
+
+  impl = cai_chatgpt_login_impl_from_const_public(login);
+  return impl != NULL ? impl->completed : 0;
 }
 
 void cai_chatgpt_login_close(cai_chatgpt_login *login) {
+  cai_chatgpt_login_impl *impl;
   cai_allocator allocator;
 
   if (login == NULL) {
     return;
   }
   allocator = login->allocator;
-  cai_free_mem(&allocator, login->auth_json_path);
-  cai_free_mem(&allocator, login->issuer);
-  cai_free_mem(&allocator, login->client_id);
-  cai_free_mem(&allocator, login->redirect_uri);
-  cai_free_mem(&allocator, login->callback_path);
-  cai_free_mem(&allocator, login->scopes);
-  cai_free_mem(&allocator, login->originator);
-  cai_free_mem(&allocator, login->state);
-  cai_auth_free_secret(&allocator, login->code_verifier);
-  cai_free_mem(&allocator, login->authorize_url);
+  impl = cai_chatgpt_login_impl_from_public(login);
+  if (impl != NULL) {
+    cai_free_mem(&impl->allocator, impl->auth_json_path);
+    cai_free_mem(&impl->allocator, impl->issuer);
+    cai_free_mem(&impl->allocator, impl->client_id);
+    cai_free_mem(&impl->allocator, impl->redirect_uri);
+    cai_free_mem(&impl->allocator, impl->callback_path);
+    cai_free_mem(&impl->allocator, impl->scopes);
+    cai_free_mem(&impl->allocator, impl->originator);
+    cai_free_mem(&impl->allocator, impl->state);
+    cai_auth_free_secret(&impl->allocator, impl->code_verifier);
+    cai_free_mem(&impl->allocator, impl->authorize_url);
+    memset(impl, 0, sizeof(*impl));
+    cai_free_mem(&allocator, impl);
+  }
   memset(login, 0, sizeof(*login));
   cai_free_mem(&allocator, login);
 }
 
 void cai_chatgpt_auth_close(cai_chatgpt_auth *auth) {
+  cai_chatgpt_auth_impl *impl;
   cai_allocator allocator;
 
   if (auth == NULL) {
     return;
   }
   allocator = auth->allocator;
-  cai_free_mem(&allocator, auth->auth_json_path);
-  cai_free_mem(&allocator, auth->issuer);
-  cai_free_mem(&allocator, auth->client_id);
-  cai_auth_free_secret(&allocator, auth->id_token);
-  cai_auth_free_secret(&allocator, auth->access_token);
-  cai_auth_free_secret(&allocator, auth->refresh_token);
-  cai_auth_free_secret(&allocator, auth->account_id);
+  impl = cai_chatgpt_auth_impl_from_public(auth);
+  if (impl != NULL) {
+    cai_free_mem(&impl->allocator, impl->auth_json_path);
+    cai_free_mem(&impl->allocator, impl->issuer);
+    cai_free_mem(&impl->allocator, impl->client_id);
+    cai_auth_free_secret(&impl->allocator, impl->id_token);
+    cai_auth_free_secret(&impl->allocator, impl->access_token);
+    cai_auth_free_secret(&impl->allocator, impl->refresh_token);
+    cai_auth_free_secret(&impl->allocator, impl->account_id);
+    memset(impl, 0, sizeof(*impl));
+    cai_free_mem(&allocator, impl);
+  }
   memset(auth, 0, sizeof(*auth));
   cai_free_mem(&allocator, auth);
 }

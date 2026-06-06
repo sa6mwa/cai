@@ -168,8 +168,8 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   }
 
   if (effective->chatgpt_auth != NULL) {
-    rc = cai_chatgpt_auth_access_token(effective->chatgpt_auth, &impl->api_key,
-                                       error);
+    rc = effective->chatgpt_auth->access_token(effective->chatgpt_auth,
+                                               &impl->api_key, error);
   } else {
     rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
                              effective->api_key_env != NULL
@@ -314,10 +314,10 @@ int cai_client_refresh_chatgpt_auth(cai_client *client, cai_error *error) {
     return CAI_OK;
   }
   access_token = NULL;
-  rc = cai_chatgpt_auth_refresh(impl->chatgpt_auth, error);
+  rc = impl->chatgpt_auth->refresh(impl->chatgpt_auth, error);
   if (rc == CAI_OK) {
-    rc =
-        cai_chatgpt_auth_access_token(impl->chatgpt_auth, &access_token, error);
+    rc = impl->chatgpt_auth->access_token(impl->chatgpt_auth, &access_token,
+                                          error);
   }
   if (rc != CAI_OK) {
     cai_free_mem(NULL, access_token);

@@ -1400,7 +1400,9 @@ static int cai_lua_open(lua_State *L) {
   }
   rc = cai_client_open(&config, &client, &error);
   if (rc != CAI_OK) {
-    cai_chatgpt_auth_close(chatgpt_auth);
+    if (chatgpt_auth != NULL) {
+      chatgpt_auth->close(chatgpt_auth);
+    }
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_client(L, client, chatgpt_auth);
@@ -1479,7 +1481,7 @@ static int cai_lua_chatgpt_auth_gc(lua_State *L) {
   cai_lua_chatgpt_auth *self;
   self = (cai_lua_chatgpt_auth *)luaL_checkudata(L, 1, CAI_LUA_CHATGPT_AUTH);
   if (self->ptr != NULL) {
-    cai_chatgpt_auth_close(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   return 0;
@@ -1498,7 +1500,7 @@ static int cai_lua_chatgpt_auth_access_token(lua_State *L) {
   self = cai_lua_check_chatgpt_auth(L, 1);
   token = NULL;
   cai_error_init(&error);
-  rc = cai_chatgpt_auth_access_token(self->ptr, &token, &error);
+  rc = self->ptr->access_token(self->ptr, &token, &error);
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
@@ -1515,7 +1517,7 @@ static int cai_lua_chatgpt_auth_refresh(lua_State *L) {
 
   self = cai_lua_check_chatgpt_auth(L, 1);
   cai_error_init(&error);
-  rc = cai_chatgpt_auth_refresh(self->ptr, &error);
+  rc = self->ptr->refresh(self->ptr, &error);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -1563,7 +1565,7 @@ static int cai_lua_chatgpt_login_gc(lua_State *L) {
   cai_lua_chatgpt_login *self;
   self = (cai_lua_chatgpt_login *)luaL_checkudata(L, 1, CAI_LUA_CHATGPT_LOGIN);
   if (self->ptr != NULL) {
-    cai_chatgpt_login_close(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   cai_string_destroy(self->authorize_url);
@@ -1585,7 +1587,7 @@ static int cai_lua_chatgpt_login_authorize_url(lua_State *L) {
 static int cai_lua_chatgpt_login_completed(lua_State *L) {
   cai_lua_chatgpt_login *self;
   self = cai_lua_check_chatgpt_login(L, 1);
-  lua_pushboolean(L, cai_chatgpt_login_completed(self->ptr) != 0);
+  lua_pushboolean(L, self->ptr->completed(self->ptr) != 0);
   return 1;
 }
 
@@ -1639,8 +1641,7 @@ static int cai_lua_chatgpt_login_handle_callback(lua_State *L) {
     request.target = luaL_checkstring(L, 3);
   }
   cai_error_init(&error);
-  rc =
-      cai_chatgpt_login_handle_callback(self->ptr, &request, &response, &error);
+  rc = self->ptr->handle_callback(self->ptr, &request, &response, &error);
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
@@ -1666,7 +1667,7 @@ static int cai_lua_client_gc(lua_State *L) {
     self->ptr = NULL;
   }
   if (self->chatgpt_auth != NULL) {
-    cai_chatgpt_auth_close(self->chatgpt_auth);
+    self->chatgpt_auth->close(self->chatgpt_auth);
     self->chatgpt_auth = NULL;
   }
   return 0;

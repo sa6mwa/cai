@@ -680,7 +680,9 @@ done:
   if (client != NULL) {
     client->close(client);
   }
-  cai_chatgpt_auth_close(chatgpt_auth);
+  if (chatgpt_auth != NULL) {
+    chatgpt_auth->close(chatgpt_auth);
+  }
   cai_string_destroy(chatgpt_auth_path_display);
   cai_string_destroy(dotenv_api_key);
   free(developer_instructions);

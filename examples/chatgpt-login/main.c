@@ -342,8 +342,7 @@ int main(int argc, char **argv) {
     }
     login_request.method = method;
     login_request.target = target;
-    rc = cai_chatgpt_login_handle_callback(login, &login_request,
-                                           &login_response, &error);
+    rc = login->handle_callback(login, &login_request, &login_response, &error);
     response_owned = rc == CAI_OK && login_response.body != NULL;
     if (rc != CAI_OK) {
       fprintf(stderr, "OAuth callback failed: %s\n",
@@ -358,7 +357,7 @@ int main(int argc, char **argv) {
     if (response_owned) {
       cai_chatgpt_login_response_cleanup(&login_response);
     }
-    if (cai_chatgpt_login_completed(login)) {
+    if (login->completed(login)) {
       if (auth_json != NULL && auth_json[0] != '\0') {
         fprintf(stderr, "ChatGPT auth saved to %s\n", auth_json);
       } else if (cai_chatgpt_auth_default_path(&auth_json_display, &error) ==
@@ -381,7 +380,9 @@ int main(int argc, char **argv) {
 done:
   cai_string_destroy(authorize_url);
   cai_string_destroy(auth_json_display);
-  cai_chatgpt_login_close(login);
+  if (login != NULL) {
+    login->close(login);
+  }
   cai_error_cleanup(&error);
   close(server_fd);
   return exit_code;

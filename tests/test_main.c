@@ -459,6 +459,18 @@ static void expect_str(test_state *state, const char *name, const char *actual,
   }
 }
 
+static void test_chatgpt_auth_close(cai_chatgpt_auth *auth) {
+  if (auth != NULL) {
+    auth->close(auth);
+  }
+}
+
+static void test_chatgpt_login_close(cai_chatgpt_login *login) {
+  if (login != NULL) {
+    login->close(login);
+  }
+}
+
 static void expect_substr(test_state *state, const char *name,
                           const char *actual, const char *expected) {
   if (actual == NULL || strstr(actual, expected) == NULL) {
@@ -8494,6 +8506,15 @@ static void test_chatgpt_auth_refresh_retry(test_state *state) {
   auth_config.issuer = server.base_url;
   expect_int(state, "chatgpt_auth_open",
              cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  if (auth == NULL || auth->access_token == NULL) {
+    test_fail(state, "chatgpt_auth_access_token_method", "method missing");
+  }
+  if (auth == NULL || auth->refresh == NULL) {
+    test_fail(state, "chatgpt_auth_refresh_method", "method missing");
+  }
+  if (auth == NULL || auth->close == NULL) {
+    test_fail(state, "chatgpt_auth_close_method", "method missing");
+  }
   cai_client_config_init(&client_config);
   client_config.base_url = server.base_url;
   client_config.chatgpt_auth = auth;
@@ -8538,7 +8559,7 @@ cleanup:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_mock", server.pid,
@@ -8607,8 +8628,7 @@ static void test_chatgpt_auth_invalid_refresh_retryable(test_state *state) {
   expect_int(state, "chatgpt_auth_invalid_refresh_open",
              cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
   expect_int(state, "chatgpt_auth_invalid_refresh_first",
-             cai_chatgpt_auth_access_token(auth, &token, &error),
-             CAI_ERR_INVALID);
+             auth->access_token(auth, &token, &error), CAI_ERR_INVALID);
   expect_int(state, "chatgpt_auth_invalid_refresh_first_status",
              error.http_status, 400L);
   expect_substr(state, "chatgpt_auth_invalid_refresh_first_message",
@@ -8618,8 +8638,7 @@ static void test_chatgpt_auth_invalid_refresh_retryable(test_state *state) {
   cai_string_destroy(token);
   token = NULL;
   expect_int(state, "chatgpt_auth_invalid_refresh_second",
-             cai_chatgpt_auth_access_token(auth, &token, &error),
-             CAI_ERR_INVALID);
+             auth->access_token(auth, &token, &error), CAI_ERR_INVALID);
   expect_int(state, "chatgpt_auth_invalid_refresh_second_status",
              error.http_status, 400L);
   expect_substr(state, "chatgpt_auth_invalid_refresh_second_message",
@@ -8627,7 +8646,7 @@ static void test_chatgpt_auth_invalid_refresh_retryable(test_state *state) {
 
 cleanup:
   cai_string_destroy(token);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_invalid_refresh_mock", server.pid,
@@ -8700,7 +8719,7 @@ static void test_chatgpt_auth_save_failure_preserves_file(test_state *state) {
   dir_locked = 1;
 #endif
   expect_int(state, "chatgpt_auth_save_failure_refresh",
-             cai_chatgpt_auth_refresh(auth, &error), CAI_ERR_TRANSPORT);
+             auth->refresh(auth, &error), CAI_ERR_TRANSPORT);
   stored = read_file_or_die(auth_path);
   expect_str(state, "chatgpt_auth_save_failure_preserved", stored, auth_json);
 
@@ -8709,7 +8728,7 @@ cleanup:
     (void)chmod(template_dir, 0700);
   }
   free(stored);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_save_failure_mock", server.pid,
@@ -8838,7 +8857,7 @@ cleanup:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_expired_mock", server.pid,
@@ -8953,7 +8972,7 @@ cleanup:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_reload_mock", server.pid,
@@ -9002,12 +9021,11 @@ static void test_chatgpt_auth_rejects_changed_file_account(test_state *state) {
            fresh_token);
   write_file_or_die(auth_path, auth_json);
   expect_int(state, "chatgpt_auth_account_reject",
-             cai_chatgpt_auth_access_token(auth, &token, &error),
-             CAI_ERR_INVALID);
+             auth->access_token(auth, &token, &error), CAI_ERR_INVALID);
   expect_substr(state, "chatgpt_auth_account_error", error.message,
                 "different ChatGPT account");
   cai_string_destroy(token);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   unlink(auth_path);
   rmdir(template_dir);
@@ -9140,7 +9158,7 @@ cleanup:
   cai_sink_close(sink);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_stream_mock", server.pid,
@@ -9261,12 +9279,12 @@ static void test_chatgpt_auth_open_default_path(test_state *state) {
   expect_int(state, "chatgpt_auth_default_open",
              cai_chatgpt_auth_open(&config, &auth, &error), CAI_OK);
   expect_int(state, "chatgpt_auth_default_access",
-             cai_chatgpt_auth_access_token(auth, &token, &error), CAI_OK);
+             auth->access_token(auth, &token, &error), CAI_OK);
   expect_str(state, "chatgpt_auth_default_token", token, future_token);
 
 cleanup:
   cai_string_destroy(token);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   test_env_restore(&xdg_env);
   test_env_restore(&home_env);
   cai_error_cleanup(&error);
@@ -9333,7 +9351,7 @@ test_chatgpt_auth_client_defaults_to_codex_backend(test_state *state) {
              CAI_CLIENT_IMPL(client)->base_url, "http://127.0.0.1:9999/v1");
 
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   unlink(auth_path);
   rmdir(template_dir);
@@ -9458,7 +9476,7 @@ cleanup:
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_auth_history_mock", server.pid,
@@ -9487,6 +9505,15 @@ static void test_chatgpt_login_authorize_url(test_state *state) {
   expect_int(state, "chatgpt_login_start",
              cai_chatgpt_login_start(&config, &login, &authorize_url, &error),
              CAI_OK);
+  if (login == NULL || login->handle_callback == NULL) {
+    test_fail(state, "chatgpt_login_handle_callback_method", "method missing");
+  }
+  if (login == NULL || login->completed == NULL) {
+    test_fail(state, "chatgpt_login_completed_method", "method missing");
+  }
+  if (login == NULL || login->close == NULL) {
+    test_fail(state, "chatgpt_login_close_method", "method missing");
+  }
   expect_substr(state, "chatgpt_login_authorize_base", authorize_url,
                 "https://auth.example.test/oauth/authorize?");
   expect_substr(state, "chatgpt_login_authorize_client", authorize_url,
@@ -9508,10 +9535,10 @@ static void test_chatgpt_login_authorize_url(test_state *state) {
                 "codex_cli_simplified_flow=true");
   expect_substr(state, "chatgpt_login_authorize_originator", authorize_url,
                 "originator=cai-test");
-  expect_int(state, "chatgpt_login_completed_initial",
-             cai_chatgpt_login_completed(login), 0L);
+  expect_int(state, "chatgpt_login_completed_initial", login->completed(login),
+             0L);
   cai_string_destroy(authorize_url);
-  cai_chatgpt_login_close(login);
+  test_chatgpt_login_close(login);
   cai_error_cleanup(&error);
 }
 
@@ -9640,37 +9667,34 @@ static void test_chatgpt_login_callback_validation(test_state *state) {
   memset(&response, 0, sizeof(response));
   request.method = "GET";
   request.target = "/auth/callback?code=mock-code&state=wrong";
-  expect_int(
-      state, "chatgpt_login_state_mismatch",
-      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
-      CAI_OK);
+  expect_int(state, "chatgpt_login_state_mismatch",
+             login->handle_callback(login, &request, &response, &error),
+             CAI_OK);
   expect_int(state, "chatgpt_login_state_status", response.status, 400L);
   expect_int(state, "chatgpt_login_state_completed", response.completed, 1L);
-  expect_int(state, "chatgpt_login_state_not_success",
-             cai_chatgpt_login_completed(login), 0L);
+  expect_int(state, "chatgpt_login_state_not_success", login->completed(login),
+             0L);
   cai_chatgpt_login_response_cleanup(&response);
 
   request.method = "POST";
   request.target = "/auth/callback?code=mock-code&state=state-fixed";
-  expect_int(
-      state, "chatgpt_login_method_reject",
-      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
-      CAI_OK);
+  expect_int(state, "chatgpt_login_method_reject",
+             login->handle_callback(login, &request, &response, &error),
+             CAI_OK);
   expect_int(state, "chatgpt_login_method_status", response.status, 405L);
   expect_int(state, "chatgpt_login_method_completed", response.completed, 0L);
   cai_chatgpt_login_response_cleanup(&response);
 
   request.method = "GET";
   request.target = "/other?code=mock-code&state=state-fixed";
-  expect_int(
-      state, "chatgpt_login_path_reject",
-      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
-      CAI_OK);
+  expect_int(state, "chatgpt_login_path_reject",
+             login->handle_callback(login, &request, &response, &error),
+             CAI_OK);
   expect_int(state, "chatgpt_login_path_status", response.status, 404L);
   expect_int(state, "chatgpt_login_path_completed", response.completed, 0L);
   cai_chatgpt_login_response_cleanup(&response);
   cai_string_destroy(authorize_url);
-  cai_chatgpt_login_close(login);
+  test_chatgpt_login_close(login);
   cai_error_cleanup(&error);
 }
 
@@ -9735,15 +9759,14 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
   memset(&response, 0, sizeof(response));
   request.method = "GET";
   request.target = "/auth/callback?code=mock-code&state=state-fixed";
-  expect_int(
-      state, "chatgpt_login_exchange_callback",
-      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
-      CAI_OK);
+  expect_int(state, "chatgpt_login_exchange_callback",
+             login->handle_callback(login, &request, &response, &error),
+             CAI_OK);
   expect_int(state, "chatgpt_login_exchange_status", response.status, 200L);
   expect_int(state, "chatgpt_login_exchange_completed_response",
              response.completed, 1L);
-  expect_int(state, "chatgpt_login_exchange_completed",
-             cai_chatgpt_login_completed(login), 1L);
+  expect_int(state, "chatgpt_login_exchange_completed", login->completed(login),
+             1L);
   expect_substr(state, "chatgpt_login_exchange_body", response.body,
                 "ChatGPT login complete");
   stored = read_file_or_die(auth_path);
@@ -9760,7 +9783,7 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
 cleanup:
   cai_chatgpt_login_response_cleanup(&response);
   cai_string_destroy(authorize_url);
-  cai_chatgpt_login_close(login);
+  test_chatgpt_login_close(login);
   free(stored);
   cai_error_cleanup(&error);
   if (server_opened) {
@@ -9845,13 +9868,12 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
   memset(&request, 0, sizeof(request));
   request.method = "GET";
   request.target = "/auth/callback?code=mock-code&state=state-fixed";
-  expect_int(
-      state, "chatgpt_login_default_callback",
-      cai_chatgpt_login_handle_callback(login, &request, &response, &error),
-      CAI_OK);
+  expect_int(state, "chatgpt_login_default_callback",
+             login->handle_callback(login, &request, &response, &error),
+             CAI_OK);
   expect_int(state, "chatgpt_login_default_status", response.status, 200L);
-  expect_int(state, "chatgpt_login_default_completed",
-             cai_chatgpt_login_completed(login), 1L);
+  expect_int(state, "chatgpt_login_default_completed", login->completed(login),
+             1L);
   stored = read_file_or_die(auth_path);
   expect_substr(state, "chatgpt_login_default_persisted", stored,
                 "\"account_id\":\"acct_default_login\"");
@@ -9871,7 +9893,7 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
 cleanup:
   cai_chatgpt_login_response_cleanup(&response);
   cai_string_destroy(authorize_url);
-  cai_chatgpt_login_close(login);
+  test_chatgpt_login_close(login);
   free(stored);
   test_env_restore(&xdg_env);
   test_env_restore(&home_env);

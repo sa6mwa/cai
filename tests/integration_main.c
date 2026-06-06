@@ -3806,7 +3806,9 @@ done:
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
-  cai_chatgpt_auth_close(auth);
+  if (auth != NULL) {
+    auth->close(auth);
+  }
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
