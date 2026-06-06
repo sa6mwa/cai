@@ -755,7 +755,7 @@ int main(int argc, char **argv) {
     rc = cai_tool_registry_register_todo_tool(registry, &todo_config, &error);
   }
   if (rc == CAI_OK && find_in_path("xclip", xclip_path, sizeof(xclip_path))) {
-    rc = cai_tool_registry_register_lonejson(
+    rc = registry->register_lonejson(
         registry, "copy_to_clipboard",
         "Copy text to the local X11 clipboard with xclip when available.",
         &clipboard_arg_map, &clipboard_result_map, clipboard_tool, xclip_path,
@@ -765,7 +765,9 @@ int main(int argc, char **argv) {
     pslog_errorf(loggers.server, "tool registry setup failed",
                  "status=%d error=%s", rc,
                  error.message != NULL ? error.message : cai_status_string(rc));
-    cai_tool_registry_destroy(registry);
+    if (registry != NULL) {
+      registry->destroy(registry);
+    }
     cai_client_close(client_handle);
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
@@ -780,7 +782,9 @@ int main(int argc, char **argv) {
     pslog_errorf(loggers.server, "MCP handler setup failed",
                  "status=%d error=%s", rc,
                  error.message != NULL ? error.message : cai_status_string(rc));
-    cai_tool_registry_destroy(registry);
+    if (registry != NULL) {
+      registry->destroy(registry);
+    }
     cai_client_close(client_handle);
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
@@ -791,7 +795,9 @@ int main(int argc, char **argv) {
     pslog_errorf(loggers.server, "listen failed", "port=%d errno=%m",
                  (int)port);
     handler->destroy(handler);
-    cai_tool_registry_destroy(registry);
+    if (registry != NULL) {
+      registry->destroy(registry);
+    }
     cai_client_close(client_handle);
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
@@ -826,7 +832,9 @@ int main(int argc, char **argv) {
   if (handler != NULL) {
     handler->destroy(handler);
   }
-  cai_tool_registry_destroy(registry);
+  if (registry != NULL) {
+    registry->destroy(registry);
+  }
   cai_client_close(client_handle);
   cai_error_cleanup(&error);
   logger_bundle_cleanup(&loggers);

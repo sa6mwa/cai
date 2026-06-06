@@ -4307,7 +4307,7 @@ static int cai_lua_registry_gc(lua_State *L) {
   cai_lua_registry *self;
   self = (cai_lua_registry *)luaL_checkudata(L, 1, CAI_LUA_REGISTRY);
   if (self->ptr != NULL) {
-    cai_tool_registry_destroy(self->ptr);
+    self->ptr->destroy(self->ptr);
     self->ptr = NULL;
   }
   cai_lua_unref_tools(L, self->tools);
@@ -4434,9 +4434,9 @@ static int cai_lua_registry_register_raw_tool(lua_State *L) {
   lua_pushvalue(L, 5);
   ctx->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
   cai_error_init(&error);
-  rc = cai_tool_registry_register_raw(self->ptr, name, description, schema_json,
-                                      strict, cai_lua_raw_tool_trampoline, ctx,
-                                      &error);
+  rc =
+      self->ptr->register_raw(self->ptr, name, description, schema_json, strict,
+                              cai_lua_raw_tool_trampoline, ctx, &error);
   if (rc != CAI_OK) {
     luaL_unref(L, LUA_REGISTRYINDEX, ctx->callback_ref);
     free(ctx);
@@ -4481,7 +4481,7 @@ static int cai_lua_registry_register_raw_spooled_tool(lua_State *L) {
   lua_pushvalue(L, 5);
   ctx->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
   cai_error_init(&error);
-  rc = cai_tool_registry_register_raw_spooled(
+  rc = self->ptr->register_raw_spooled(
       self->ptr, name, description, schema_json, strict,
       cai_lua_raw_spooled_tool_trampoline, ctx, &error);
   if (rc != CAI_OK) {
@@ -4511,8 +4511,8 @@ static int cai_lua_registry_run(lua_State *L) {
   sink = NULL;
   rc = cai_lua_make_sink(L, 4, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_tool_registry_run(self->ptr, luaL_checkstring(L, 2),
-                               luaL_checkstring(L, 3), sink, &error);
+    rc = self->ptr->run(self->ptr, luaL_checkstring(L, 2),
+                        luaL_checkstring(L, 3), sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);

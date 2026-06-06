@@ -1197,6 +1197,41 @@ int cai_tool_event_write_arguments(const cai_tool_event *event, cai_sink *sink,
 
 /** Create an empty local tool registry. */
 int cai_tool_registry_new(cai_tool_registry **out, cai_error *error);
+/** Local tool registry with receiver methods for registration and execution. */
+struct cai_tool_registry {
+  /** Destroy this local tool registry. */
+  void (*destroy)(cai_tool_registry *registry);
+  /** Register a typed lonejson-backed local tool. */
+  int (*register_lonejson)(cai_tool_registry *registry, const char *name,
+                           const char *description,
+                           const struct lonejson_map *params_map,
+                           const struct lonejson_map *result_map,
+                           cai_tool_fn callback, void *context,
+                           cai_error *error);
+  /** Register a raw JSON local tool. */
+  int (*register_raw)(cai_tool_registry *registry, const char *name,
+                      const char *description, const char *schema_json,
+                      int strict, cai_tool_raw_fn callback, void *context,
+                      cai_error *error);
+  /** Register a raw JSON spooled local tool. */
+  int (*register_raw_spooled)(cai_tool_registry *registry, const char *name,
+                              const char *description, const char *schema_json,
+                              int strict, cai_tool_raw_spooled_fn callback,
+                              void *context, cai_error *error);
+  /** Add all registered tools to a Responses parameter builder. */
+  int (*add_to_response_params)(const cai_tool_registry *registry,
+                                cai_response_create_params *params,
+                                cai_error *error);
+  /** Run a registered tool by name using raw JSON arguments. */
+  int (*run)(cai_tool_registry *registry, const char *name,
+             const char *arguments_json, cai_sink *output, cai_error *error);
+  /** Run a registered tool by name using spooled raw JSON arguments. */
+  int (*run_spooled)(cai_tool_registry *registry, const char *name,
+                     struct lonejson_spooled *arguments_json, cai_sink *output,
+                     cai_error *error);
+  /** Private implementation owned by cai. */
+  void *impl;
+};
 /** Destroy a local tool registry. */
 void cai_tool_registry_destroy(cai_tool_registry *registry);
 /** Register a typed lonejson-backed local tool. */

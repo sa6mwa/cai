@@ -588,7 +588,9 @@ void cai_agent_destroy(cai_agent *agent) {
     }
     cai_free_mem(allocator, impl->hosted_tools.items);
   }
-  cai_tool_registry_destroy(impl->tools);
+  if (impl->tools != NULL) {
+    impl->tools->destroy(impl->tools);
+  }
   cai_free_mem(allocator, impl);
   agent->impl = NULL;
   cai_free_mem(allocator, agent);
@@ -619,9 +621,9 @@ int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
   }
-  return cai_tool_registry_register_lonejson(impl->tools, name, description,
-                                             params_map, result_map, callback,
-                                             context, error);
+  return impl->tools->register_lonejson(impl->tools, name, description,
+                                        params_map, result_map, callback,
+                                        context, error);
 }
 
 int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
@@ -638,9 +640,8 @@ int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
   }
-  return cai_tool_registry_register_raw(impl->tools, name, description,
-                                        schema_json, strict, callback, context,
-                                        error);
+  return impl->tools->register_raw(impl->tools, name, description, schema_json,
+                                   strict, callback, context, error);
 }
 
 int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
@@ -657,9 +658,9 @@ int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
   }
-  return cai_tool_registry_register_raw_spooled(impl->tools, name, description,
-                                                schema_json, strict, callback,
-                                                context, error);
+  return impl->tools->register_raw_spooled(impl->tools, name, description,
+                                           schema_json, strict, callback,
+                                           context, error);
 }
 
 static int cai_agent_hosted_tools_grow(cai_agent_impl *impl, cai_error *error) {
@@ -3239,7 +3240,7 @@ static int cai_session_init_response_params(cai_session *session,
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_tool_registry_add_to_response_params(
+    rc = CAI_SESSION_AGENT_IMPL(session)->tools->add_to_response_params(
         CAI_SESSION_AGENT_IMPL(session)->tools, params, error);
   }
   if (rc != CAI_OK) {
@@ -3320,12 +3321,12 @@ static int cai_session_run_tool_round(cai_session *session,
       tool_invoked = 1;
       if (spooled_arguments != NULL) {
         arguments_cursor = *spooled_arguments;
-        rc = cai_tool_registry_run_spooled(
+        rc = CAI_SESSION_AGENT_IMPL(session)->tools->run_spooled(
             CAI_SESSION_AGENT_IMPL(session)->tools,
             cai_response_tool_call_name(response, i), &arguments_cursor, sink,
             error);
       } else {
-        rc = cai_tool_registry_run(
+        rc = CAI_SESSION_AGENT_IMPL(session)->tools->run(
             CAI_SESSION_AGENT_IMPL(session)->tools,
             cai_response_tool_call_name(response, i),
             cai_response_tool_call_arguments(response, i), sink, error);
@@ -3619,13 +3620,13 @@ static int cai_session_add_stream_tool_outputs(
     if (rc == CAI_OK) {
       tool_invoked = 1;
       if (calls->items[i].has_arguments_spooled) {
-        rc = cai_tool_registry_run_spooled(
+        rc = CAI_SESSION_AGENT_IMPL(session)->tools->run_spooled(
             CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
             &calls->items[i].arguments_spooled, sink, error);
       } else {
-        rc = cai_tool_registry_run(CAI_SESSION_AGENT_IMPL(session)->tools,
-                                   calls->items[i].name,
-                                   calls->items[i].arguments, sink, error);
+        rc = CAI_SESSION_AGENT_IMPL(session)->tools->run(
+            CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
+            calls->items[i].arguments, sink, error);
       }
     }
     cai_sink_close(sink);

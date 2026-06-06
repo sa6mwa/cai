@@ -25,11 +25,25 @@ typedef struct cai_tool_entry {
   void (*context_cleanup)(void *context);
 } cai_tool_entry;
 
-struct cai_tool_registry {
+typedef struct cai_tool_registry_impl {
   cai_tool_entry *entries;
   size_t count;
   size_t capacity;
-};
+} cai_tool_registry_impl;
+
+#define CAI_TOOL_REGISTRY_IMPL(registry)                                       \
+  ((cai_tool_registry_impl *)((registry)->impl))
+
+static cai_tool_registry_impl *
+cai_tool_registry_impl_from_public(cai_tool_registry *registry) {
+  return registry != NULL ? CAI_TOOL_REGISTRY_IMPL(registry) : NULL;
+}
+
+static const cai_tool_registry_impl *
+cai_tool_registry_impl_from_const_public(const cai_tool_registry *registry) {
+  return registry != NULL ? (const cai_tool_registry_impl *)registry->impl
+                          : NULL;
+}
 
 typedef struct cai_tool_schema_property {
   char *name;
@@ -1264,14 +1278,19 @@ int cai_tool_result_set_spooled(const lonejson_map *result_map, void *result,
 
 static cai_tool_entry *cai_tool_registry_find(cai_tool_registry *registry,
                                               const char *name) {
+  cai_tool_registry_impl *impl;
   size_t i;
 
   if (registry == NULL || name == NULL) {
     return NULL;
   }
-  for (i = 0U; i < registry->count; i++) {
-    if (strcmp(registry->entries[i].name, name) == 0) {
-      return &registry->entries[i];
+  impl = cai_tool_registry_impl_from_public(registry);
+  if (impl == NULL) {
+    return NULL;
+  }
+  for (i = 0U; i < impl->count; i++) {
+    if (strcmp(impl->entries[i].name, name) == 0) {
+      return &impl->entries[i];
     }
   }
   return NULL;
@@ -1279,20 +1298,25 @@ static cai_tool_entry *cai_tool_registry_find(cai_tool_registry *registry,
 
 static int cai_tool_registry_grow(cai_tool_registry *registry,
                                   cai_error *error) {
+  cai_tool_registry_impl *impl;
   size_t new_capacity;
   void *grown;
 
-  if (registry->count < registry->capacity) {
+  impl = cai_tool_registry_impl_from_public(registry);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool registry is required");
+  }
+  if (impl->count < impl->capacity) {
     return CAI_OK;
   }
-  new_capacity = registry->capacity == 0U ? 4U : registry->capacity * 2U;
-  grown = cai_realloc_mem(NULL, registry->entries,
-                          new_capacity * sizeof(registry->entries[0]));
+  new_capacity = impl->capacity == 0U ? 4U : impl->capacity * 2U;
+  grown = cai_realloc_mem(NULL, impl->entries,
+                          new_capacity * sizeof(impl->entries[0]));
   if (grown == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow tool registry");
   }
-  registry->entries = (cai_tool_entry *)grown;
-  registry->capacity = new_capacity;
+  impl->entries = (cai_tool_entry *)grown;
+  impl->capacity = new_capacity;
   return CAI_OK;
 }
 
@@ -1303,12 +1327,17 @@ static int cai_tool_registry_register_common(
     cai_tool_fn lonejson_callback, cai_tool_raw_fn raw_callback,
     cai_tool_raw_spooled_fn raw_spooled_callback, void *context,
     void (*context_cleanup)(void *context), cai_error *error) {
+  cai_tool_registry_impl *impl;
   cai_tool_entry *entry;
   int rc;
 
   if (registry == NULL || name == NULL || name[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "tool registry and name are required");
+  }
+  impl = cai_tool_registry_impl_from_public(registry);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
   }
   if (schema_json == NULL || schema_json[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -1335,7 +1364,7 @@ static int cai_tool_registry_register_common(
   if (rc != CAI_OK) {
     return rc;
   }
-  entry = &registry->entries[registry->count];
+  entry = &impl->entries[impl->count];
   memset(entry, 0, sizeof(*entry));
   entry->name = cai_strdup(NULL, name);
   entry->description = cai_strdup(NULL, description);
@@ -1356,12 +1385,13 @@ static int cai_tool_registry_register_common(
   }
   entry->context = context;
   entry->context_cleanup = context_cleanup;
-  registry->count++;
+  impl->count++;
   return CAI_OK;
 }
 
 int cai_tool_registry_new(cai_tool_registry **out, cai_error *error) {
   cai_tool_registry *registry;
+  cai_tool_registry_impl *impl;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -1373,23 +1403,41 @@ int cai_tool_registry_new(cai_tool_registry **out, cai_error *error) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate tool registry");
   }
-  registry->entries = NULL;
-  registry->count = 0U;
-  registry->capacity = 0U;
+  memset(registry, 0, sizeof(*registry));
+  impl = (cai_tool_registry_impl *)cai_alloc(NULL, sizeof(*impl));
+  if (impl == NULL) {
+    cai_free_mem(NULL, registry);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate tool registry");
+  }
+  memset(impl, 0, sizeof(*impl));
+  registry->destroy = cai_tool_registry_destroy;
+  registry->register_lonejson = cai_tool_registry_register_lonejson;
+  registry->register_raw = cai_tool_registry_register_raw;
+  registry->register_raw_spooled = cai_tool_registry_register_raw_spooled;
+  registry->add_to_response_params = cai_tool_registry_add_to_response_params;
+  registry->run = cai_tool_registry_run;
+  registry->run_spooled = cai_tool_registry_run_spooled;
+  registry->impl = impl;
   *out = registry;
   return CAI_OK;
 }
 
 void cai_tool_registry_destroy(cai_tool_registry *registry) {
+  cai_tool_registry_impl *impl;
   size_t i;
 
   if (registry == NULL) {
     return;
   }
-  for (i = 0U; i < registry->count; i++) {
-    cai_tool_entry_cleanup(&registry->entries[i]);
+  impl = cai_tool_registry_impl_from_public(registry);
+  if (impl != NULL) {
+    for (i = 0U; i < impl->count; i++) {
+      cai_tool_entry_cleanup(&impl->entries[i]);
+    }
+    cai_free_mem(NULL, impl->entries);
+    cai_free_mem(NULL, impl);
   }
-  cai_free_mem(NULL, registry->entries);
   cai_free_mem(NULL, registry);
 }
 
@@ -1467,6 +1515,7 @@ int cai_tool_registry_register_raw_spooled(cai_tool_registry *registry,
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,
                                              cai_error *error) {
+  const cai_tool_registry_impl *impl;
   size_t i;
   int rc;
 
@@ -1474,10 +1523,14 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "tool registry and response params are required");
   }
-  for (i = 0U; i < registry->count; i++) {
+  impl = cai_tool_registry_impl_from_const_public(registry);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
+  }
+  for (i = 0U; i < impl->count; i++) {
     rc = cai_response_create_params_add_function_tool(
-        params, registry->entries[i].name, registry->entries[i].description,
-        registry->entries[i].schema_json, registry->entries[i].strict, error);
+        params, impl->entries[i].name, impl->entries[i].description,
+        impl->entries[i].schema_json, impl->entries[i].strict, error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -1486,31 +1539,43 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
 }
 
 size_t cai_tool_registry_count(const cai_tool_registry *registry) {
-  return registry != NULL ? registry->count : 0U;
+  const cai_tool_registry_impl *impl;
+
+  impl = cai_tool_registry_impl_from_const_public(registry);
+  return impl != NULL ? impl->count : 0U;
 }
 
 const char *cai_tool_registry_name_at(const cai_tool_registry *registry,
                                       size_t index) {
-  if (registry == NULL || index >= registry->count) {
+  const cai_tool_registry_impl *impl;
+
+  impl = cai_tool_registry_impl_from_const_public(registry);
+  if (impl == NULL || index >= impl->count) {
     return NULL;
   }
-  return registry->entries[index].name;
+  return impl->entries[index].name;
 }
 
 const char *cai_tool_registry_description_at(const cai_tool_registry *registry,
                                              size_t index) {
-  if (registry == NULL || index >= registry->count) {
+  const cai_tool_registry_impl *impl;
+
+  impl = cai_tool_registry_impl_from_const_public(registry);
+  if (impl == NULL || index >= impl->count) {
     return NULL;
   }
-  return registry->entries[index].description;
+  return impl->entries[index].description;
 }
 
 const char *cai_tool_registry_schema_at(const cai_tool_registry *registry,
                                         size_t index) {
-  if (registry == NULL || index >= registry->count) {
+  const cai_tool_registry_impl *impl;
+
+  impl = cai_tool_registry_impl_from_const_public(registry);
+  if (impl == NULL || index >= impl->count) {
     return NULL;
   }
-  return registry->entries[index].schema_json;
+  return impl->entries[index].schema_json;
 }
 
 int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
