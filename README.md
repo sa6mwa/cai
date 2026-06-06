@@ -83,11 +83,12 @@ The verification tiers are split intentionally:
   Tarball URLs and SHA-256 values are pinned in CMake; sibling checkout
   artifacts are not dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
-  libcurl, OpenSSL crypto, `lonejson.h` plus `liblonejson`, and `pslog.h`.
-  The discovered `liblonejson` must match cai's required ABI generation
-  (`liblonejson.so.16` on Linux, `liblonejson.16.dylib` on Darwin). `auto`
-  chooses host only when all required host pieces are discoverable and the
-  lonejson ABI matches, otherwise it falls back to `cpkt`.
+  libcurl 7.86.0 or newer, OpenSSL crypto, `lonejson.h` plus `liblonejson`,
+  and `pslog.h`. The libcurl minimum is required for Responses WebSocket
+  support. The discovered `liblonejson` must match cai's required ABI
+  generation (`liblonejson.so.16` on Linux, `liblonejson.16.dylib` on Darwin).
+  `auto` chooses host only when all required host pieces are discoverable and
+  the lonejson ABI matches, otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
   `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
@@ -294,10 +295,10 @@ must also expose cai's expected ABI generation. Shared-only consumers that only
 use `<cai/cai.h>` can configure without lonejson development headers; consumers
 that include lonejson-backed cai headers or use static linking still need the
 lonejson development package. The pkg-config file exposes lonejson as a public
-requirement and libcurl as a private link requirement. `pslog.h`/`libpslog` is
-only needed by source builds, logging integrations that construct pslog
-loggers directly, and the MCP server examples. cai release archives do not
-compile in single-header dependency variants.
+requirement and libcurl 7.86.0 or newer as a private link requirement.
+`pslog.h`/`libpslog` is only needed by source builds, logging integrations
+that construct pslog loggers directly, and the MCP server examples. cai
+release archives do not compile in single-header dependency variants.
 
 ## Logging
 
