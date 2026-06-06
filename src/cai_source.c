@@ -2,14 +2,6 @@
 
 #include <string.h>
 
-struct cai_source {
-  cai_source_callbacks callbacks;
-};
-
-struct cai_sink {
-  cai_sink_callbacks callbacks;
-};
-
 typedef struct cai_spooled_source_context {
   lonejson_spooled spool;
 } cai_spooled_source_context;
@@ -187,6 +179,10 @@ int cai_source_from_callbacks(const cai_source_callbacks *callbacks,
   if (source == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate source");
   }
+  source->read = cai_source_read;
+  source->reset = cai_source_reset;
+  source->copy_to_sink = cai_source_copy_to_sink;
+  source->close = cai_source_close;
   source->callbacks = *callbacks;
   *out = source;
   return CAI_OK;
@@ -356,6 +352,8 @@ int cai_sink_from_callbacks(const cai_sink_callbacks *callbacks, cai_sink **out,
   if (sink == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate sink");
   }
+  sink->write = cai_sink_write;
+  sink->close = cai_sink_close;
   sink->callbacks = *callbacks;
   *out = sink;
   return CAI_OK;

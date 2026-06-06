@@ -71,7 +71,7 @@ int main(void) {
     goto done;
   }
 
-  while ((got = cai_source_read(source, buffer, sizeof(buffer), &error)) > 0U) {
+  while ((got = source->read(source, buffer, sizeof(buffer), &error)) > 0U) {
     fwrite(buffer, 1U, got, stdout);
     fflush(stdout);
   }
@@ -79,7 +79,9 @@ int main(void) {
   exit_code = 0;
 
 done:
-  cai_source_close(source);
+  if (source != NULL) {
+    source->close(source);
+  }
   cai_response_create_params_destroy(params);
   if (client != NULL) {
     client->close(client);

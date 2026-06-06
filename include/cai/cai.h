@@ -434,6 +434,32 @@ typedef struct cai_sink_callbacks {
   void *context;
 } cai_sink_callbacks;
 
+/** Streaming byte input handle with receiver methods for pull-based reads. */
+struct cai_source {
+  /** Read bytes from the source. */
+  size_t (*read)(cai_source *source, void *buffer, size_t count,
+                 cai_error *error);
+  /** Reset the source to the beginning when supported. */
+  int (*reset)(cai_source *source, cai_error *error);
+  /** Stream all bytes from this source into a sink. */
+  int (*copy_to_sink)(cai_source *source, cai_sink *sink, cai_error *error);
+  /** Close and destroy this source. */
+  void (*close)(cai_source *source);
+  /** Callback implementation backing this source. */
+  cai_source_callbacks callbacks;
+};
+
+/** Streaming byte output handle with receiver methods for push-based writes. */
+struct cai_sink {
+  /** Write bytes to the sink. */
+  int (*write)(cai_sink *sink, const void *bytes, size_t count,
+               cai_error *error);
+  /** Close and destroy this sink. */
+  void (*close)(cai_sink *sink);
+  /** Callback implementation backing this sink. */
+  cai_sink_callbacks callbacks;
+};
+
 /** Callback returning dynamic stream prefix/suffix text. */
 typedef const char *(*cai_stream_affix_fn)(void *context);
 /** Callback for incremental function-call argument deltas. */

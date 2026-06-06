@@ -226,7 +226,9 @@ int main(void) {
   }
 
 done:
-  cai_sink_close(stdout_sink);
+  if (stdout_sink != NULL) {
+    stdout_sink->close(stdout_sink);
+  }
   if (session != NULL) {
     session->close(session);
   }

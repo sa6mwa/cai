@@ -628,8 +628,12 @@ static int handle_connection(int fd, cai_mcp_handler *handler,
   }
 
 done:
-  cai_sink_close(sink);
-  cai_source_close(source);
+  if (sink != NULL) {
+    sink->close(sink);
+  }
+  if (source != NULL) {
+    source->close(source);
+  }
   if (rc != CAI_OK) {
     pslog_errorf(log, "mcp request failed", "status=%d error=%s", rc,
                  error.message != NULL ? error.message : cai_status_string(rc));

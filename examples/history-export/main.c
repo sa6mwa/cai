@@ -91,7 +91,7 @@ int main(void) {
     exit_code = print_error("cai_sink_stdout", rc, &error);
     goto done;
   }
-  rc = cai_source_copy_to_sink(history, stdout_sink, &error);
+  rc = history->copy_to_sink(history, stdout_sink, &error);
   if (rc != CAI_OK) {
     exit_code = print_error("cai_source_copy_to_sink", rc, &error);
     goto done;
@@ -100,8 +100,12 @@ int main(void) {
   exit_code = 0;
 
 done:
-  cai_sink_close(stdout_sink);
-  cai_source_close(history);
+  if (stdout_sink != NULL) {
+    stdout_sink->close(stdout_sink);
+  }
+  if (history != NULL) {
+    history->close(history);
+  }
   cai_response_destroy(response);
   if (session != NULL) {
     session->close(session);

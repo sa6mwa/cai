@@ -2087,16 +2087,28 @@ static void test_source_sink(test_state *state) {
   expect_int(state, "source_create",
              cai_source_from_callbacks(&source_callbacks, &source, &error),
              CAI_OK);
+  if (source->read == NULL) {
+    test_fail(state, "source_read_method", "method missing");
+  }
+  if (source->reset == NULL) {
+    test_fail(state, "source_reset_method", "method missing");
+  }
+  if (source->copy_to_sink == NULL) {
+    test_fail(state, "source_copy_method", "method missing");
+  }
+  if (source->close == NULL) {
+    test_fail(state, "source_close_method", "method missing");
+  }
   expect_int(state, "source_read_1",
-             (long)cai_source_read(source, buffer, 3U, &error), 3L);
+             (long)source->read(source, buffer, 3U, &error), 3L);
   buffer[3] = '\0';
   expect_str(state, "source_read_1_value", buffer, "abc");
-  expect_int(state, "source_reset", cai_source_reset(source, &error), CAI_OK);
+  expect_int(state, "source_reset", source->reset(source, &error), CAI_OK);
   expect_int(state, "source_read_2",
-             (long)cai_source_read(source, buffer, 6U, &error), 6L);
+             (long)source->read(source, buffer, 6U, &error), 6L);
   buffer[6] = '\0';
   expect_str(state, "source_read_2_value", buffer, "abcdef");
-  cai_source_close(source);
+  source->close(source);
   expect_int(state, "source_closed", reader.closed, 1L);
 
   writer.length = 0U;
@@ -2108,10 +2120,15 @@ static void test_source_sink(test_state *state) {
   sink = NULL;
   expect_int(state, "sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
-  expect_int(state, "sink_write", cai_sink_write(sink, "xyz", 3U, &error),
-             CAI_OK);
+  if (sink->write == NULL) {
+    test_fail(state, "sink_write_method", "method missing");
+  }
+  if (sink->close == NULL) {
+    test_fail(state, "sink_close_method", "method missing");
+  }
+  expect_int(state, "sink_write", sink->write(sink, "xyz", 3U, &error), CAI_OK);
   expect_str(state, "sink_write_value", writer.buffer, "xyz");
-  cai_sink_close(sink);
+  sink->close(sink);
   sink = NULL;
   expect_int(state, "sink_closed", writer.closed, 1L);
 
@@ -2132,7 +2149,8 @@ static void test_source_sink(test_state *state) {
                cai_set_error(&error, CAI_ERR_INVALID, "stale earlier failure"),
                CAI_ERR_INVALID);
     expect_int(state, "source_copy_to_file",
-               cai_source_copy_to_sink(copy_source, file_sink, &error), CAI_OK);
+               copy_source->copy_to_sink(copy_source, file_sink, &error),
+               CAI_OK);
     cai_error_cleanup(&error);
     fflush(fp);
     rewind(fp);
@@ -2140,10 +2158,11 @@ static void test_source_sink(test_state *state) {
                cai_source_file(fp, 0, &file_source, &error), CAI_OK);
     memset(copy_buffer, 0, sizeof(copy_buffer));
     expect_int(state, "source_file_read",
-               (long)cai_source_read(file_source, copy_buffer, 4U, &error), 4L);
+               (long)file_source->read(file_source, copy_buffer, 4U, &error),
+               4L);
     expect_str(state, "source_file_read_value", copy_buffer, "copy");
     expect_int(state, "source_file_reset",
-               cai_source_reset(file_source, &error), CAI_OK);
+               file_source->reset(file_source, &error), CAI_OK);
     memset(copy_buffer, 0, sizeof(copy_buffer));
     if (fread(copy_buffer, 1U, sizeof(copy_buffer) - 1U, fp) == 0U) {
       test_fail(state, "source_copy_file_read", "no file output");
