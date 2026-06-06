@@ -76,7 +76,9 @@ done:
   if (response != NULL) {
     response->close(response);
   }
-  cai_response_create_params_destroy(params);
+  if (params != NULL) {
+    params->close(params);
+  }
   if (client != NULL) {
     client->close(client);
   }

@@ -342,7 +342,7 @@ static int print_tool_event(void *context, const cai_tool_event *event,
             event->name != NULL ? event->name : "(unknown)");
     fflush(trace->fp);
     if (trace->sink != NULL) {
-      rc = cai_tool_event_write_arguments(event, trace->sink, error);
+      rc = event->write_arguments(event, trace->sink, error);
       if (rc != CAI_OK) {
         return rc;
       }
@@ -361,7 +361,7 @@ static int print_tool_event(void *context, const cai_tool_event *event,
     if (trace->sink != NULL) {
       int rc;
 
-      rc = cai_tool_event_write_output(event, trace->sink, error);
+      rc = event->write_output(event, trace->sink, error);
       if (rc != CAI_OK) {
         return rc;
       }

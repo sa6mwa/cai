@@ -353,6 +353,13 @@ typedef struct cai_hosted_mcp_tool_config {
 
 /** Observable tool execution event for auto-run sessions and agents. */
 typedef struct cai_tool_event {
+  /** Write output JSON to a sink for output events. */
+  int (*write_output)(const struct cai_tool_event *event, cai_sink *sink,
+                      cai_error *error);
+  /** Write argument JSON to a sink for start events. */
+  int (*write_arguments)(const struct cai_tool_event *event, cai_sink *sink,
+                         cai_error *error);
+
   /** CAI_TOOL_EVENT_* event type. */
   int type;
   /** Tool name. */

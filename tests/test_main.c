@@ -237,6 +237,7 @@ typedef struct tool_event_state {
   int starts;
   int outputs;
   int errors;
+  int missing_methods;
   char name[32];
   char arguments[64];
   size_t arguments_spooled_size;
@@ -1871,6 +1872,10 @@ static int test_tool_event(void *context, const cai_tool_event *event,
   if (state == NULL || event == NULL) {
     return CAI_OK;
   }
+  if (event->write_output == NULL || event->write_arguments == NULL) {
+    state->missing_methods = 1;
+    return CAI_ERR_INVALID;
+  }
   if (event->type == CAI_TOOL_EVENT_START) {
     state->starts++;
     snprintf(state->name, sizeof(state->name), "%s",
@@ -1884,7 +1889,7 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     sink = NULL;
     rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK) {
-      rc = cai_tool_event_write_arguments(event, sink, error);
+      rc = event->write_arguments(event, sink, error);
       cai_sink_close(sink);
     }
     if (rc != CAI_OK) {
@@ -1910,7 +1915,7 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     sink = NULL;
     rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK) {
-      rc = cai_tool_event_write_output(event, sink, error);
+      rc = event->write_output(event, sink, error);
     }
     cai_sink_close(sink);
     snprintf(state->output, sizeof(state->output), "%.*s",
@@ -11876,6 +11881,8 @@ static void test_agent_tool_auto_run(test_state *state) {
   expect_str(state, "agent_auto_seen", raw_state.seen, "{\"x\":1}");
   expect_int(state, "agent_auto_tool_event_starts", event_state.starts, 1L);
   expect_int(state, "agent_auto_tool_event_outputs", event_state.outputs, 1L);
+  expect_int(state, "agent_auto_tool_event_methods",
+             event_state.missing_methods, 0L);
   expect_str(state, "agent_auto_tool_event_name", event_state.name, "raw_echo");
   expect_str(state, "agent_auto_tool_event_arguments", event_state.arguments,
              "{\"x\":1}");

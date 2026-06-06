@@ -82,7 +82,9 @@ done:
   if (source != NULL) {
     source->close(source);
   }
-  cai_response_create_params_destroy(params);
+  if (params != NULL) {
+    params->close(params);
+  }
   if (client != NULL) {
     client->close(client);
   }

@@ -221,7 +221,7 @@ static int cai_lua_tool_event_write_output_lua(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 1, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_tool_event_write_output(event, sink, &error);
+    rc = event->write_output(event, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);

@@ -768,7 +768,7 @@ int main(int argc, char **argv) {
     if (registry != NULL) {
       registry->destroy(registry);
     }
-    cai_client_close(client_handle);
+    client_handle->close(client_handle);
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
     return 1;
@@ -785,7 +785,7 @@ int main(int argc, char **argv) {
     if (registry != NULL) {
       registry->destroy(registry);
     }
-    cai_client_close(client_handle);
+    client_handle->close(client_handle);
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
     return 1;
@@ -798,7 +798,7 @@ int main(int argc, char **argv) {
     if (registry != NULL) {
       registry->destroy(registry);
     }
-    cai_client_close(client_handle);
+    client_handle->close(client_handle);
     cai_error_cleanup(&error);
     logger_bundle_cleanup(&loggers);
     return 1;
@@ -835,7 +835,7 @@ int main(int argc, char **argv) {
   if (registry != NULL) {
     registry->destroy(registry);
   }
-  cai_client_close(client_handle);
+  client_handle->close(client_handle);
   cai_error_cleanup(&error);
   logger_bundle_cleanup(&loggers);
   return 0;

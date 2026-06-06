@@ -3293,6 +3293,8 @@ static int cai_session_run_tool_round(cai_session *session,
     int tool_invoked;
 
     memset(&event, 0, sizeof(event));
+    event.write_output = cai_tool_event_write_output;
+    event.write_arguments = cai_tool_event_write_arguments;
     memset(&capture, 0, sizeof(capture));
     capture_output_owned = 1;
     tool_failed = 0;
@@ -3593,6 +3595,8 @@ static int cai_session_add_stream_tool_outputs(
     int tool_invoked;
 
     memset(&event, 0, sizeof(event));
+    event.write_output = cai_tool_event_write_output;
+    event.write_arguments = cai_tool_event_write_arguments;
     memset(&capture, 0, sizeof(capture));
     capture_output_owned = 1;
     tool_failed = 0;

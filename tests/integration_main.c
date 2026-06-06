@@ -492,7 +492,7 @@ static int integration_exec_tool_event(void *context,
   sink = NULL;
   rc = cai_sink_from_callbacks(&callbacks, &sink, error);
   if (rc == CAI_OK) {
-    rc = cai_tool_event_write_output(event, sink, error);
+    rc = event->write_output(event, sink, error);
   }
   cai_sink_close(sink);
   return rc;
