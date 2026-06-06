@@ -3719,7 +3719,7 @@ static int cai_lua_response_gc(lua_State *L) {
   cai_lua_response *self;
   self = (cai_lua_response *)luaL_checkudata(L, 1, CAI_LUA_RESPONSE);
   if (self->ptr != NULL) {
-    cai_response_destroy(self->ptr);
+    self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
   return 0;
@@ -3733,7 +3733,7 @@ static int cai_lua_response_output_text(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_output_text(self->ptr);
+  value = self->ptr->output_text(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3746,7 +3746,7 @@ static int cai_lua_response_raw_json(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_raw_json(self->ptr);
+  value = self->ptr->raw_json(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3764,7 +3764,7 @@ static int cai_lua_response_output_items_json(lua_State *L) {
   self = cai_lua_check_response(L, 1);
   value = NULL;
   cai_error_init(&error);
-  rc = cai_response_output_items_json(self->ptr, &value, &error);
+  rc = self->ptr->output_items_json(self->ptr, &value, &error);
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
@@ -3787,7 +3787,7 @@ static int cai_lua_response_write_output_items_json(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_write_output_items_json(self->ptr, sink, &error);
+    rc = self->ptr->write_output_items_json(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -3802,7 +3802,7 @@ static int cai_lua_response_id(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_id(self->ptr);
+  value = self->ptr->id(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3814,14 +3814,14 @@ static int cai_lua_response_id(lua_State *L) {
 static int cai_lua_response_status(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushstring(L, cai_response_status(self->ptr));
+  lua_pushstring(L, self->ptr->status(self->ptr));
   return 1;
 }
 
 static int cai_lua_response_model(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushstring(L, cai_response_model(self->ptr));
+  lua_pushstring(L, self->ptr->model(self->ptr));
   return 1;
 }
 
@@ -3829,7 +3829,7 @@ static int cai_lua_response_conversation_id(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_conversation_id(self->ptr);
+  value = self->ptr->conversation_id(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3841,7 +3841,7 @@ static int cai_lua_response_conversation_id(lua_State *L) {
 static int cai_lua_response_created_at(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushinteger(L, (lua_Integer)cai_response_created_at(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->created_at(self->ptr));
   return 1;
 }
 
@@ -3849,7 +3849,7 @@ static int cai_lua_response_error_code(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_error_code(self->ptr);
+  value = self->ptr->error_code(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3862,7 +3862,7 @@ static int cai_lua_response_error_message(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_error_message(self->ptr);
+  value = self->ptr->error_message(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3875,7 +3875,7 @@ static int cai_lua_response_incomplete_reason(lua_State *L) {
   cai_lua_response *self;
   const char *value;
   self = cai_lua_check_response(L, 1);
-  value = cai_response_incomplete_reason(self->ptr);
+  value = self->ptr->incomplete_reason(self->ptr);
   if (value == NULL) {
     lua_pushnil(L);
   } else {
@@ -3887,21 +3887,21 @@ static int cai_lua_response_incomplete_reason(lua_State *L) {
 static int cai_lua_response_input_tokens(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushinteger(L, (lua_Integer)cai_response_input_tokens(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->input_tokens(self->ptr));
   return 1;
 }
 
 static int cai_lua_response_input_cached_tokens(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushinteger(L, (lua_Integer)cai_response_input_cached_tokens(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->input_cached_tokens(self->ptr));
   return 1;
 }
 
 static int cai_lua_response_output_tokens(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushinteger(L, (lua_Integer)cai_response_output_tokens(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->output_tokens(self->ptr));
   return 1;
 }
 
@@ -3909,21 +3909,21 @@ static int cai_lua_response_output_reasoning_tokens(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
   lua_pushinteger(L,
-                  (lua_Integer)cai_response_output_reasoning_tokens(self->ptr));
+                  (lua_Integer)self->ptr->output_reasoning_tokens(self->ptr));
   return 1;
 }
 
 static int cai_lua_response_total_tokens(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushinteger(L, (lua_Integer)cai_response_total_tokens(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->total_tokens(self->ptr));
   return 1;
 }
 
 static int cai_lua_response_refusal(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
-  lua_pushstring(L, cai_response_refusal(self->ptr));
+  lua_pushstring(L, self->ptr->refusal(self->ptr));
   return 1;
 }
 
@@ -3939,7 +3939,7 @@ static int cai_lua_response_write_output_text(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_write_output_text(self->ptr, sink, &error);
+    rc = self->ptr->write_output_text(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -3962,7 +3962,7 @@ static int cai_lua_response_write_refusal(lua_State *L) {
   cai_error_init(&error);
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_response_write_refusal(self->ptr, sink, &error);
+    rc = self->ptr->write_refusal(self->ptr, sink, &error);
   }
   if (sink != NULL) {
     cai_sink_close(sink);
@@ -3978,15 +3978,15 @@ static int cai_lua_response_tool_calls(lua_State *L) {
   size_t i;
   size_t count;
   self = cai_lua_check_response(L, 1);
-  count = cai_response_tool_call_count(self->ptr);
+  count = self->ptr->tool_call_count(self->ptr);
   lua_newtable(L);
   for (i = 0u; i < count; i++) {
     lua_newtable(L);
-    lua_pushstring(L, cai_response_tool_call_id(self->ptr, i));
+    lua_pushstring(L, self->ptr->tool_call_id(self->ptr, i));
     lua_setfield(L, -2, "id");
-    lua_pushstring(L, cai_response_tool_call_name(self->ptr, i));
+    lua_pushstring(L, self->ptr->tool_call_name(self->ptr, i));
     lua_setfield(L, -2, "name");
-    lua_pushstring(L, cai_response_tool_call_arguments(self->ptr, i));
+    lua_pushstring(L, self->ptr->tool_call_arguments(self->ptr, i));
     lua_setfield(L, -2, "arguments");
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
@@ -3998,21 +3998,21 @@ static int cai_lua_response_output_items(lua_State *L) {
   size_t i;
   size_t count;
   self = cai_lua_check_response(L, 1);
-  count = cai_response_output_item_count(self->ptr);
+  count = self->ptr->output_item_count(self->ptr);
   lua_newtable(L);
   for (i = 0u; i < count; i++) {
     lua_newtable(L);
-    lua_pushstring(L, cai_response_output_item_id(self->ptr, i));
+    lua_pushstring(L, self->ptr->output_item_id(self->ptr, i));
     lua_setfield(L, -2, "id");
-    lua_pushstring(L, cai_response_output_item_type(self->ptr, i));
+    lua_pushstring(L, self->ptr->output_item_type(self->ptr, i));
     lua_setfield(L, -2, "type");
-    lua_pushstring(L, cai_response_output_item_status(self->ptr, i));
+    lua_pushstring(L, self->ptr->output_item_status(self->ptr, i));
     lua_setfield(L, -2, "status");
-    lua_pushstring(L, cai_response_output_item_role(self->ptr, i));
+    lua_pushstring(L, self->ptr->output_item_role(self->ptr, i));
     lua_setfield(L, -2, "role");
-    lua_pushstring(L, cai_response_output_item_call_id(self->ptr, i));
+    lua_pushstring(L, self->ptr->output_item_call_id(self->ptr, i));
     lua_setfield(L, -2, "call_id");
-    lua_pushstring(L, cai_response_output_item_name(self->ptr, i));
+    lua_pushstring(L, self->ptr->output_item_name(self->ptr, i));
     lua_setfield(L, -2, "name");
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
@@ -4026,7 +4026,7 @@ static int cai_lua_response_usage(lua_State *L) {
   int rc;
   self = cai_lua_check_response(L, 1);
   cai_error_init(&error);
-  rc = cai_response_usage(self->ptr, &usage, &error);
+  rc = self->ptr->usage(self->ptr, &usage, &error);
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
@@ -4039,25 +4039,25 @@ static int cai_lua_response_summary(lua_State *L) {
   cai_lua_response *self;
   self = cai_lua_check_response(L, 1);
   lua_newtable(L);
-  lua_pushstring(L, cai_response_id(self->ptr));
+  lua_pushstring(L, self->ptr->id(self->ptr));
   lua_setfield(L, -2, "id");
-  lua_pushstring(L, cai_response_status(self->ptr));
+  lua_pushstring(L, self->ptr->status(self->ptr));
   lua_setfield(L, -2, "status");
-  lua_pushstring(L, cai_response_model(self->ptr));
+  lua_pushstring(L, self->ptr->model(self->ptr));
   lua_setfield(L, -2, "model");
-  lua_pushstring(L, cai_response_conversation_id(self->ptr));
+  lua_pushstring(L, self->ptr->conversation_id(self->ptr));
   lua_setfield(L, -2, "conversation_id");
-  lua_pushinteger(L, (lua_Integer)cai_response_created_at(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->created_at(self->ptr));
   lua_setfield(L, -2, "created_at");
-  lua_pushstring(L, cai_response_error_code(self->ptr));
+  lua_pushstring(L, self->ptr->error_code(self->ptr));
   lua_setfield(L, -2, "error_code");
-  lua_pushstring(L, cai_response_error_message(self->ptr));
+  lua_pushstring(L, self->ptr->error_message(self->ptr));
   lua_setfield(L, -2, "error_message");
-  lua_pushstring(L, cai_response_incomplete_reason(self->ptr));
+  lua_pushstring(L, self->ptr->incomplete_reason(self->ptr));
   lua_setfield(L, -2, "incomplete_reason");
-  lua_pushinteger(L, (lua_Integer)cai_response_tool_call_count(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->tool_call_count(self->ptr));
   lua_setfield(L, -2, "tool_call_count");
-  lua_pushinteger(L, (lua_Integer)cai_response_output_item_count(self->ptr));
+  lua_pushinteger(L, (lua_Integer)self->ptr->output_item_count(self->ptr));
   lua_setfield(L, -2, "output_item_count");
   return 1;
 }

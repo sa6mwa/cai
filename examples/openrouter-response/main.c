@@ -75,14 +75,16 @@ int main(void) {
   if (rc != CAI_OK) {
     exit_code = print_error("cai_client_create_response", rc, &error);
   } else {
-    printf("%s\n", cai_response_output_text(response) != NULL
-                       ? cai_response_output_text(response)
+    printf("%s\n", response->output_text(response) != NULL
+                       ? response->output_text(response)
                        : "");
     exit_code = 0;
   }
 
 done:
-  cai_response_destroy(response);
+  if (response != NULL) {
+    response->close(response);
+  }
   cai_response_create_params_destroy(params);
   if (client != NULL) {
     client->close(client);

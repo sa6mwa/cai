@@ -1366,7 +1366,8 @@ int cai_response_create_params_set_model(cai_response_create_params *params,
   if (params == NULL || model == NULL || model[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "model is required");
   }
-  return cai_replace_string(&params->allocator, &params->model, model, error);
+  return cai_replace_string(&params->allocator, &params->model, model,
+                            error);
 }
 
 int cai_response_create_params_set_instructions(
@@ -3653,7 +3654,8 @@ static int cai_response_request_state_prepare(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model and at least one input message are required");
   }
-  if (params->previous_response_id != NULL && params->conversation_id != NULL) {
+  if (params->previous_response_id != NULL &&
+      params->conversation_id != NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "previous response id and conversation id are "
                          "mutually exclusive");
@@ -4118,20 +4120,20 @@ static int cai_response_copy_tool_calls(cai_response *response,
   size_t index;
   size_t i;
 
-  response->tool_call_count = cai_response_count_tool_calls(doc);
+  response->tool_call_count_value = cai_response_count_tool_calls(doc);
   response->tool_calls = NULL;
-  if (response->tool_call_count == 0U) {
+  if (response->tool_call_count_value == 0U) {
     return CAI_OK;
   }
   response->tool_calls = (cai_response_tool_call *)cai_alloc(
       &response->allocator,
-      response->tool_call_count * sizeof(response->tool_calls[0]));
+      response->tool_call_count_value * sizeof(response->tool_calls[0]));
   if (response->tool_calls == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate response tool calls");
   }
   memset(response->tool_calls, 0,
-         response->tool_call_count * sizeof(response->tool_calls[0]));
+         response->tool_call_count_value * sizeof(response->tool_calls[0]));
   outputs = (cai_response_output_doc *)doc->output.items;
   index = 0U;
   for (i = 0U; i < doc->output.count; i++) {
@@ -4185,20 +4187,20 @@ static int cai_response_copy_output_items(cai_response *response,
   cai_response_output_doc *outputs;
   size_t i;
 
-  response->output_item_count = doc->output.count;
+  response->output_item_count_value = doc->output.count;
   response->output_items = NULL;
-  if (response->output_item_count == 0U) {
+  if (response->output_item_count_value == 0U) {
     return CAI_OK;
   }
   response->output_items = (cai_response_output_item *)cai_alloc(
       &response->allocator,
-      response->output_item_count * sizeof(response->output_items[0]));
+      response->output_item_count_value * sizeof(response->output_items[0]));
   if (response->output_items == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate response output items");
   }
   memset(response->output_items, 0,
-         response->output_item_count * sizeof(response->output_items[0]));
+         response->output_item_count_value * sizeof(response->output_items[0]));
   outputs = (cai_response_output_doc *)doc->output.items;
   for (i = 0U; i < doc->output.count; i++) {
     response->output_items[i].id =
@@ -4280,53 +4282,90 @@ int cai_response_parse_json_with_allocator(const cai_allocator *allocator,
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate response");
   }
   memset(response, 0, sizeof(*response));
+  response->id = cai_response_id;
+  response->status = cai_response_status;
+  response->model = cai_response_model;
+  response->conversation_id = cai_response_conversation_id;
+  response->created_at = cai_response_created_at;
+  response->output_text = cai_response_output_text;
+  response->refusal = cai_response_refusal;
+  response->write_output_text = cai_response_write_output_text;
+  response->write_refusal = cai_response_write_refusal;
+  response->raw_json = cai_response_raw_json;
+  response->output_items_json = cai_response_output_items_json;
+  response->write_output_items_json = cai_response_write_output_items_json;
+  response->error_code = cai_response_error_code;
+  response->error_message = cai_response_error_message;
+  response->incomplete_reason = cai_response_incomplete_reason;
+  response->input_tokens = cai_response_input_tokens;
+  response->input_cached_tokens = cai_response_input_cached_tokens;
+  response->output_tokens = cai_response_output_tokens;
+  response->output_reasoning_tokens = cai_response_output_reasoning_tokens;
+  response->total_tokens = cai_response_total_tokens;
+  response->usage = cai_response_usage;
+  response->tool_call_count = cai_response_tool_call_count;
+  response->tool_call_id = cai_response_tool_call_id;
+  response->tool_call_name = cai_response_tool_call_name;
+  response->tool_call_arguments = cai_response_tool_call_arguments;
+  response->tool_call_arguments_spooled =
+      cai_response_tool_call_arguments_spooled;
+  response->output_item_count = cai_response_output_item_count;
+  response->output_item_id = cai_response_output_item_id;
+  response->output_item_type = cai_response_output_item_type;
+  response->output_item_status = cai_response_output_item_status;
+  response->output_item_role = cai_response_output_item_role;
+  response->output_item_call_id = cai_response_output_item_call_id;
+  response->output_item_name = cai_response_output_item_name;
+  response->close = cai_response_destroy;
   if (allocator != NULL) {
     response->allocator = *allocator;
   }
-  response->raw_json = NULL;
-  response->id = cai_strdup(&response->allocator, doc.id);
-  response->status = cai_strdup(&response->allocator,
-                                doc.status != NULL ? doc.status : "completed");
-  response->model = cai_strdup(&response->allocator, doc.model);
-  response->conversation_id =
+  response->raw_json_value = NULL;
+  response->id_value = cai_strdup(&response->allocator, doc.id);
+  response->status_value = cai_strdup(
+      &response->allocator, doc.status != NULL ? doc.status : "completed");
+  response->model_value = cai_strdup(&response->allocator, doc.model);
+  response->conversation_id_value =
       cai_strdup(&response->allocator, doc.conversation.id);
-  response->output_text =
+  response->output_text_value =
       cai_response_collect_text(&response->allocator, &doc, error);
-  response->refusal = cai_response_collect_refusal(&response->allocator, &doc,
-                                                   &refusal_present, error);
-  response->raw_json = cai_strdup(&response->allocator, json);
-  response->error_code = cai_strdup(&response->allocator, doc.error.code);
-  response->error_message = cai_strdup(&response->allocator, doc.error.message);
-  response->incomplete_reason =
+  response->refusal_value = cai_response_collect_refusal(
+      &response->allocator, &doc, &refusal_present, error);
+  response->raw_json_value = cai_strdup(&response->allocator, json);
+  response->error_code_value = cai_strdup(&response->allocator, doc.error.code);
+  response->error_message_value =
+      cai_strdup(&response->allocator, doc.error.message);
+  response->incomplete_reason_value =
       cai_strdup(&response->allocator, doc.incomplete_details.reason);
-  response->output_items_json = output_items_json;
+  response->output_items_json_value = output_items_json;
   response->has_output_items_json = 1;
   have_output_items_json = 0;
-  response->created_at = doc.created_at;
-  response->input_tokens = doc.usage.input_tokens;
-  response->input_cached_tokens =
+  response->created_at_value = doc.created_at;
+  response->input_tokens_value = doc.usage.input_tokens;
+  response->input_cached_tokens_value =
       doc.usage.input_cached_tokens != 0LL
           ? doc.usage.input_cached_tokens
           : doc.usage.input_tokens_details.cached_tokens;
-  response->output_tokens = doc.usage.output_tokens;
-  response->output_reasoning_tokens =
+  response->output_tokens_value = doc.usage.output_tokens;
+  response->output_reasoning_tokens_value =
       doc.usage.output_reasoning_tokens != 0LL
           ? doc.usage.output_reasoning_tokens
           : doc.usage.output_tokens_details.reasoning_tokens;
-  response->total_tokens = doc.usage.total_tokens;
+  response->total_tokens_value = doc.usage.total_tokens;
   response->tool_calls = NULL;
-  response->tool_call_count = 0U;
+  response->tool_call_count_value = 0U;
   response->output_items = NULL;
-  response->output_item_count = 0U;
-  if (response->id == NULL || response->status == NULL ||
-      (doc.model != NULL && response->model == NULL) ||
-      (doc.conversation.id != NULL && response->conversation_id == NULL) ||
-      response->output_text == NULL || response->raw_json == NULL ||
-      (refusal_present && response->refusal == NULL) ||
-      (doc.error.code != NULL && response->error_code == NULL) ||
-      (doc.error.message != NULL && response->error_message == NULL) ||
+  response->output_item_count_value = 0U;
+  if (response->id_value == NULL || response->status_value == NULL ||
+      (doc.model != NULL && response->model_value == NULL) ||
+      (doc.conversation.id != NULL &&
+       response->conversation_id_value == NULL) ||
+      response->output_text_value == NULL || response->raw_json_value == NULL ||
+      (refusal_present && response->refusal_value == NULL) ||
+      (doc.error.code != NULL && response->error_code_value == NULL) ||
+      (doc.error.message != NULL && response->error_message_value == NULL) ||
       (doc.incomplete_details.reason != NULL &&
-       response->incomplete_reason == NULL)) {
+       response->incomplete_reason_value == NULL)) {
     cai_response_destroy(response);
     CAI_LJ->cleanup(CAI_LJ, &cai_response_map, &doc);
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -4356,31 +4395,31 @@ int cai_response_parse_json(const char *json, cai_response **out,
 }
 
 const char *cai_response_id(const cai_response *response) {
-  return response != NULL ? response->id : NULL;
+  return response != NULL ? response->id_value : NULL;
 }
 
 const char *cai_response_status(const cai_response *response) {
-  return response != NULL ? response->status : NULL;
+  return response != NULL ? response->status_value : NULL;
 }
 
 const char *cai_response_model(const cai_response *response) {
-  return response != NULL ? response->model : NULL;
+  return response != NULL ? response->model_value : NULL;
 }
 
 const char *cai_response_conversation_id(const cai_response *response) {
-  return response != NULL ? response->conversation_id : NULL;
+  return response != NULL ? response->conversation_id_value : NULL;
 }
 
 long long cai_response_created_at(const cai_response *response) {
-  return response != NULL ? response->created_at : 0LL;
+  return response != NULL ? response->created_at_value : 0LL;
 }
 
 const char *cai_response_output_text(const cai_response *response) {
-  return response != NULL ? response->output_text : NULL;
+  return response != NULL ? response->output_text_value : NULL;
 }
 
 const char *cai_response_refusal(const cai_response *response) {
-  return response != NULL ? response->refusal : NULL;
+  return response != NULL ? response->refusal_value : NULL;
 }
 
 int cai_response_write_output_text(const cai_response *response, cai_sink *sink,
@@ -4391,14 +4430,14 @@ int cai_response_write_output_text(const cai_response *response, cai_sink *sink,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response and sink are required");
   }
-  if (response->output_text == NULL) {
+  if (response->output_text_value == NULL) {
     return CAI_OK;
   }
-  length = strlen(response->output_text);
+  length = strlen(response->output_text_value);
   if (length == 0U) {
     return CAI_OK;
   }
-  return cai_sink_write(sink, response->output_text, length, error);
+  return cai_sink_write(sink, response->output_text_value, length, error);
 }
 
 int cai_response_write_refusal(const cai_response *response, cai_sink *sink,
@@ -4409,18 +4448,18 @@ int cai_response_write_refusal(const cai_response *response, cai_sink *sink,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response and sink are required");
   }
-  if (response->refusal == NULL) {
+  if (response->refusal_value == NULL) {
     return CAI_OK;
   }
-  length = strlen(response->refusal);
+  length = strlen(response->refusal_value);
   if (length == 0U) {
     return CAI_OK;
   }
-  return cai_sink_write(sink, response->refusal, length, error);
+  return cai_sink_write(sink, response->refusal_value, length, error);
 }
 
 const char *cai_response_raw_json(const cai_response *response) {
-  return response != NULL ? response->raw_json : NULL;
+  return response != NULL ? response->raw_json_value : NULL;
 }
 
 int cai_response_output_items_json(const cai_response *response,
@@ -4449,8 +4488,8 @@ int cai_response_output_items_json(const cai_response *response,
   status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_response_buffer_sink,
                                     &sink_context, &json_error);
   if (status == LONEJSON_STATUS_OK) {
-    status = writer.json_value_spooled(&writer, &response->output_items_json,
-                                       &json_error);
+    status = writer.json_value_spooled(
+        &writer, &response->output_items_json_value, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = writer.finish(&writer, &json_error);
@@ -4481,7 +4520,7 @@ int cai_response_write_output_items_json(const cai_response *response,
   if (!response->has_output_items_json) {
     return CAI_OK;
   }
-  cursor = response->output_items_json;
+  cursor = response->output_items_json_value;
   lonejson_error_init(&json_error);
   if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -4517,8 +4556,8 @@ int cai_response_output_items_spool(const cai_response *response,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "array JSON spool output pointer is required");
   }
-  if (cai_response_spooled_clone(&response->output_items_json, out, error) !=
-      CAI_OK) {
+  if (cai_response_spooled_clone(&response->output_items_json_value, out,
+                                 error) != CAI_OK) {
     return error != NULL ? error->code : CAI_ERR_TRANSPORT;
   }
   if (out_len != NULL) {
@@ -4528,35 +4567,35 @@ int cai_response_output_items_spool(const cai_response *response,
 }
 
 const char *cai_response_error_code(const cai_response *response) {
-  return response != NULL ? response->error_code : NULL;
+  return response != NULL ? response->error_code_value : NULL;
 }
 
 const char *cai_response_error_message(const cai_response *response) {
-  return response != NULL ? response->error_message : NULL;
+  return response != NULL ? response->error_message_value : NULL;
 }
 
 const char *cai_response_incomplete_reason(const cai_response *response) {
-  return response != NULL ? response->incomplete_reason : NULL;
+  return response != NULL ? response->incomplete_reason_value : NULL;
 }
 
 long long cai_response_input_tokens(const cai_response *response) {
-  return response != NULL ? response->input_tokens : 0LL;
+  return response != NULL ? response->input_tokens_value : 0LL;
 }
 
 long long cai_response_input_cached_tokens(const cai_response *response) {
-  return response != NULL ? response->input_cached_tokens : 0LL;
+  return response != NULL ? response->input_cached_tokens_value : 0LL;
 }
 
 long long cai_response_output_tokens(const cai_response *response) {
-  return response != NULL ? response->output_tokens : 0LL;
+  return response != NULL ? response->output_tokens_value : 0LL;
 }
 
 long long cai_response_output_reasoning_tokens(const cai_response *response) {
-  return response != NULL ? response->output_reasoning_tokens : 0LL;
+  return response != NULL ? response->output_reasoning_tokens_value : 0LL;
 }
 
 long long cai_response_total_tokens(const cai_response *response) {
-  return response != NULL ? response->total_tokens : 0LL;
+  return response != NULL ? response->total_tokens_value : 0LL;
 }
 
 int cai_response_usage(const cai_response *response, cai_token_usage *out,
@@ -4565,21 +4604,21 @@ int cai_response_usage(const cai_response *response, cai_token_usage *out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response and usage output are required");
   }
-  out->input_tokens = response->input_tokens;
-  out->input_cached_tokens = response->input_cached_tokens;
-  out->output_tokens = response->output_tokens;
-  out->output_reasoning_tokens = response->output_reasoning_tokens;
-  out->total_tokens = response->total_tokens;
+  out->input_tokens = response->input_tokens_value;
+  out->input_cached_tokens = response->input_cached_tokens_value;
+  out->output_tokens = response->output_tokens_value;
+  out->output_reasoning_tokens = response->output_reasoning_tokens_value;
+  out->total_tokens = response->total_tokens_value;
   return CAI_OK;
 }
 
 size_t cai_response_tool_call_count(const cai_response *response) {
-  return response != NULL ? response->tool_call_count : 0U;
+  return response != NULL ? response->tool_call_count_value : 0U;
 }
 
 const char *cai_response_tool_call_id(const cai_response *response,
                                       size_t index) {
-  if (response == NULL || index >= response->tool_call_count) {
+  if (response == NULL || index >= response->tool_call_count_value) {
     return NULL;
   }
   return response->tool_calls[index].call_id != NULL
@@ -4589,7 +4628,7 @@ const char *cai_response_tool_call_id(const cai_response *response,
 
 const char *cai_response_tool_call_name(const cai_response *response,
                                         size_t index) {
-  if (response == NULL || index >= response->tool_call_count) {
+  if (response == NULL || index >= response->tool_call_count_value) {
     return NULL;
   }
   return response->tool_calls[index].name;
@@ -4597,7 +4636,7 @@ const char *cai_response_tool_call_name(const cai_response *response,
 
 const char *cai_response_tool_call_arguments(const cai_response *response,
                                              size_t index) {
-  if (response == NULL || index >= response->tool_call_count) {
+  if (response == NULL || index >= response->tool_call_count_value) {
     return NULL;
   }
   return response->tool_calls[index].arguments;
@@ -4606,7 +4645,7 @@ const char *cai_response_tool_call_arguments(const cai_response *response,
 const struct lonejson_spooled *
 cai_response_tool_call_arguments_spooled(const cai_response *response,
                                          size_t index) {
-  if (response == NULL || index >= response->tool_call_count ||
+  if (response == NULL || index >= response->tool_call_count_value ||
       !response->tool_calls[index].has_arguments_spooled) {
     return NULL;
   }
@@ -4614,12 +4653,12 @@ cai_response_tool_call_arguments_spooled(const cai_response *response,
 }
 
 size_t cai_response_output_item_count(const cai_response *response) {
-  return response != NULL ? response->output_item_count : 0U;
+  return response != NULL ? response->output_item_count_value : 0U;
 }
 
 const char *cai_response_output_item_id(const cai_response *response,
                                         size_t index) {
-  if (response == NULL || index >= response->output_item_count) {
+  if (response == NULL || index >= response->output_item_count_value) {
     return NULL;
   }
   return response->output_items[index].id;
@@ -4627,7 +4666,7 @@ const char *cai_response_output_item_id(const cai_response *response,
 
 const char *cai_response_output_item_type(const cai_response *response,
                                           size_t index) {
-  if (response == NULL || index >= response->output_item_count) {
+  if (response == NULL || index >= response->output_item_count_value) {
     return NULL;
   }
   return response->output_items[index].type;
@@ -4635,7 +4674,7 @@ const char *cai_response_output_item_type(const cai_response *response,
 
 const char *cai_response_output_item_status(const cai_response *response,
                                             size_t index) {
-  if (response == NULL || index >= response->output_item_count) {
+  if (response == NULL || index >= response->output_item_count_value) {
     return NULL;
   }
   return response->output_items[index].status;
@@ -4643,7 +4682,7 @@ const char *cai_response_output_item_status(const cai_response *response,
 
 const char *cai_response_output_item_role(const cai_response *response,
                                           size_t index) {
-  if (response == NULL || index >= response->output_item_count) {
+  if (response == NULL || index >= response->output_item_count_value) {
     return NULL;
   }
   return response->output_items[index].role;
@@ -4651,7 +4690,7 @@ const char *cai_response_output_item_role(const cai_response *response,
 
 const char *cai_response_output_item_call_id(const cai_response *response,
                                              size_t index) {
-  if (response == NULL || index >= response->output_item_count) {
+  if (response == NULL || index >= response->output_item_count_value) {
     return NULL;
   }
   return response->output_items[index].call_id;
@@ -4659,7 +4698,7 @@ const char *cai_response_output_item_call_id(const cai_response *response,
 
 const char *cai_response_output_item_name(const cai_response *response,
                                           size_t index) {
-  if (response == NULL || index >= response->output_item_count) {
+  if (response == NULL || index >= response->output_item_count_value) {
     return NULL;
   }
   return response->output_items[index].name;
@@ -4673,7 +4712,7 @@ void cai_response_destroy(cai_response *response) {
     return;
   }
   allocator = response->allocator;
-  for (i = 0U; i < response->tool_call_count; i++) {
+  for (i = 0U; i < response->tool_call_count_value; i++) {
     cai_free_mem(&allocator, response->tool_calls[i].id);
     cai_free_mem(&allocator, response->tool_calls[i].call_id);
     cai_free_mem(&allocator, response->tool_calls[i].name);
@@ -4684,7 +4723,7 @@ void cai_response_destroy(cai_response *response) {
     }
   }
   cai_free_mem(&allocator, response->tool_calls);
-  for (i = 0U; i < response->output_item_count; i++) {
+  for (i = 0U; i < response->output_item_count_value; i++) {
     cai_free_mem(&allocator, response->output_items[i].id);
     cai_free_mem(&allocator, response->output_items[i].type);
     cai_free_mem(&allocator, response->output_items[i].status);
@@ -4693,18 +4732,19 @@ void cai_response_destroy(cai_response *response) {
     cai_free_mem(&allocator, response->output_items[i].name);
   }
   cai_free_mem(&allocator, response->output_items);
-  cai_free_mem(&allocator, response->id);
-  cai_free_mem(&allocator, response->status);
-  cai_free_mem(&allocator, response->model);
-  cai_free_mem(&allocator, response->conversation_id);
-  cai_free_mem(&allocator, response->output_text);
-  cai_free_mem(&allocator, response->refusal);
-  cai_free_mem(&allocator, response->raw_json);
+  cai_free_mem(&allocator, response->id_value);
+  cai_free_mem(&allocator, response->status_value);
+  cai_free_mem(&allocator, response->model_value);
+  cai_free_mem(&allocator, response->conversation_id_value);
+  cai_free_mem(&allocator, response->output_text_value);
+  cai_free_mem(&allocator, response->refusal_value);
+  cai_free_mem(&allocator, response->raw_json_value);
   if (response->has_output_items_json) {
-    response->output_items_json.cleanup(&response->output_items_json);
+    response->output_items_json_value.cleanup(
+        &response->output_items_json_value);
   }
-  cai_free_mem(&allocator, response->error_code);
-  cai_free_mem(&allocator, response->error_message);
-  cai_free_mem(&allocator, response->incomplete_reason);
+  cai_free_mem(&allocator, response->error_code_value);
+  cai_free_mem(&allocator, response->error_message_value);
+  cai_free_mem(&allocator, response->incomplete_reason_value);
   cai_free_mem(&allocator, response);
 }

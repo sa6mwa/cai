@@ -27,7 +27,7 @@ static int print_error(const char *operation, int rc, const cai_error *error) {
 static void print_response(const char *label, const cai_response *response) {
   const char *text;
 
-  text = cai_response_output_text(response);
+  text = response->output_text(response);
   printf("%s: %s\n", label, text != NULL ? text : "");
 }
 
@@ -91,7 +91,9 @@ int main(int argc, char **argv) {
     goto done;
   }
   print_response("first", response);
-  cai_response_destroy(response);
+  if (response != NULL) {
+    response->close(response);
+  }
   response = NULL;
 
   rc = session->save_state_path(session, path, &error);
@@ -122,7 +124,9 @@ int main(int argc, char **argv) {
   exit_code = 0;
 
 done:
-  cai_response_destroy(response);
+  if (response != NULL) {
+    response->close(response);
+  }
   if (restored != NULL) {
     restored->close(restored);
   }

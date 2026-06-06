@@ -5050,6 +5050,32 @@ static void test_response_json(test_state *state) {
   response = NULL;
   expect_int(state, "response_parse",
              cai_response_parse_json(response_json, &response, &error), CAI_OK);
+  if (response == NULL || response->id == NULL || response->status == NULL ||
+      response->model == NULL || response->conversation_id == NULL ||
+      response->created_at == NULL || response->output_text == NULL ||
+      response->refusal == NULL || response->write_output_text == NULL ||
+      response->write_refusal == NULL || response->raw_json == NULL ||
+      response->output_items_json == NULL ||
+      response->write_output_items_json == NULL ||
+      response->error_code == NULL || response->error_message == NULL ||
+      response->incomplete_reason == NULL || response->input_tokens == NULL ||
+      response->input_cached_tokens == NULL ||
+      response->output_tokens == NULL ||
+      response->output_reasoning_tokens == NULL ||
+      response->total_tokens == NULL || response->usage == NULL ||
+      response->tool_call_count == NULL || response->tool_call_id == NULL ||
+      response->tool_call_name == NULL ||
+      response->tool_call_arguments == NULL ||
+      response->tool_call_arguments_spooled == NULL ||
+      response->output_item_count == NULL || response->output_item_id == NULL ||
+      response->output_item_type == NULL ||
+      response->output_item_status == NULL ||
+      response->output_item_role == NULL ||
+      response->output_item_call_id == NULL ||
+      response->output_item_name == NULL || response->close == NULL) {
+    test_fail(state, "response_methods",
+              "response method facade not initialized");
+  }
   expect_str(state, "response_id", cai_response_id(response), "resp_123");
   expect_str(state, "response_status", cai_response_status(response),
              "completed");

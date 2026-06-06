@@ -7,6 +7,7 @@
 
 #include <cai/models.h>
 #include <cai/version.h>
+#include <lonejson.h>
 #include <stddef.h>
 #include <stdio.h>
 
@@ -458,6 +459,148 @@ struct cai_sink {
   void (*close)(cai_sink *sink);
   /** Callback implementation backing this sink. */
   cai_sink_callbacks callbacks;
+};
+
+/** Private function/tool call storage for cai_response. */
+typedef struct cai_response_tool_call {
+  char *id;
+  char *call_id;
+  char *name;
+  char *arguments;
+  int output_index;
+  struct lonejson_spooled arguments_spooled;
+  int has_arguments_spooled;
+} cai_response_tool_call;
+
+/** Private output item storage for cai_response. */
+typedef struct cai_response_output_item {
+  char *id;
+  char *type;
+  char *status;
+  char *role;
+  char *call_id;
+  char *name;
+} cai_response_output_item;
+
+/** Low-level Responses API response handle with receiver methods. */
+struct cai_response {
+  /** Return the response id, or NULL. */
+  const char *(*id)(const cai_response *response);
+  /** Return the response status, or NULL. */
+  const char *(*status)(const cai_response *response);
+  /** Return the response model id, or NULL. */
+  const char *(*model)(const cai_response *response);
+  /** Return the response conversation id, or NULL. */
+  const char *(*conversation_id)(const cai_response *response);
+  /** Return response creation time as a Unix timestamp, or zero. */
+  long long (*created_at)(const cai_response *response);
+  /** Return materialized output text, or NULL. */
+  const char *(*output_text)(const cai_response *response);
+  /** Return materialized refusal text, or NULL. */
+  const char *(*refusal)(const cai_response *response);
+  /** Write response output text to a sink. */
+  int (*write_output_text)(const cai_response *response, cai_sink *sink,
+                           cai_error *error);
+  /** Write response refusal text to a sink. */
+  int (*write_refusal)(const cai_response *response, cai_sink *sink,
+                       cai_error *error);
+  /** Return raw response JSON, or NULL. */
+  const char *(*raw_json)(const cai_response *response);
+  /** Materialize response output items JSON into a cai-owned string. */
+  int (*output_items_json)(const cai_response *response, char **out_json,
+                           cai_error *error);
+  /** Stream response output items JSON to a sink. */
+  int (*write_output_items_json)(const cai_response *response, cai_sink *sink,
+                                 cai_error *error);
+  /** Return response error code, or NULL. */
+  const char *(*error_code)(const cai_response *response);
+  /** Return response error message, or NULL. */
+  const char *(*error_message)(const cai_response *response);
+  /** Return incomplete_details reason, or NULL. */
+  const char *(*incomplete_reason)(const cai_response *response);
+  /** Return input token count. */
+  long long (*input_tokens)(const cai_response *response);
+  /** Return cached input token count. */
+  long long (*input_cached_tokens)(const cai_response *response);
+  /** Return output token count. */
+  long long (*output_tokens)(const cai_response *response);
+  /** Return reasoning output token count. */
+  long long (*output_reasoning_tokens)(const cai_response *response);
+  /** Return total token count. */
+  long long (*total_tokens)(const cai_response *response);
+  /** Copy response usage into a cai_token_usage struct. */
+  int (*usage)(const cai_response *response, cai_token_usage *out,
+               cai_error *error);
+  /** Return number of function/tool calls in the response. */
+  size_t (*tool_call_count)(const cai_response *response);
+  /** Return tool call id by index, or NULL. */
+  const char *(*tool_call_id)(const cai_response *response, size_t index);
+  /** Return tool call name by index, or NULL. */
+  const char *(*tool_call_name)(const cai_response *response, size_t index);
+  /** Return tool call arguments JSON by index, or NULL. */
+  const char *(*tool_call_arguments)(const cai_response *response,
+                                     size_t index);
+  /** Return spooled tool call arguments JSON by index, or NULL. */
+  const struct lonejson_spooled *(*tool_call_arguments_spooled)(
+      const cai_response *response, size_t index);
+  /** Return output item count. */
+  size_t (*output_item_count)(const cai_response *response);
+  /** Return output item id by index, or NULL. */
+  const char *(*output_item_id)(const cai_response *response, size_t index);
+  /** Return output item type by index, or NULL. */
+  const char *(*output_item_type)(const cai_response *response, size_t index);
+  /** Return output item status by index, or NULL. */
+  const char *(*output_item_status)(const cai_response *response, size_t index);
+  /** Return output item role by index, or NULL. */
+  const char *(*output_item_role)(const cai_response *response, size_t index);
+  /** Return output item call id by index, or NULL. */
+  const char *(*output_item_call_id)(const cai_response *response,
+                                     size_t index);
+  /** Return output item name by index, or NULL. */
+  const char *(*output_item_name)(const cai_response *response, size_t index);
+  /** Close and destroy the response. */
+  void (*close)(cai_response *response);
+
+  /** Private allocator copied from creation context; do not access directly. */
+  cai_allocator allocator;
+  /** Private parsed response id storage; use response->id(response). */
+  char *id_value;
+  /** Private parsed response status storage. */
+  char *status_value;
+  /** Private parsed model storage. */
+  char *model_value;
+  /** Private parsed conversation id storage. */
+  char *conversation_id_value;
+  /** Private materialized output text storage. */
+  char *output_text_value;
+  /** Private materialized refusal text storage. */
+  char *refusal_value;
+  /** Private raw response JSON storage. */
+  char *raw_json_value;
+  /** Private response error code storage. */
+  char *error_code_value;
+  /** Private response error message storage. */
+  char *error_message_value;
+  /** Private incomplete reason storage. */
+  char *incomplete_reason_value;
+  /** Private spooled output items JSON. */
+  struct lonejson_spooled output_items_json_value;
+  /** Non-zero when output_items_json_value is initialized. */
+  int has_output_items_json;
+  /** Private created_at value. */
+  long long created_at_value;
+  /** Private usage counters. */
+  long long input_tokens_value;
+  long long input_cached_tokens_value;
+  long long output_tokens_value;
+  long long output_reasoning_tokens_value;
+  long long total_tokens_value;
+  /** Private parsed tool calls. */
+  cai_response_tool_call *tool_calls;
+  size_t tool_call_count_value;
+  /** Private parsed output items. */
+  cai_response_output_item *output_items;
+  size_t output_item_count_value;
 };
 
 /** High-level response output wrapper with receiver methods. */

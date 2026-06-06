@@ -106,7 +106,9 @@ done:
   if (history != NULL) {
     history->close(history);
   }
-  cai_response_destroy(response);
+  if (response != NULL) {
+    response->close(response);
+  }
   if (session != NULL) {
     session->close(session);
   }

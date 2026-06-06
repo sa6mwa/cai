@@ -222,51 +222,6 @@ struct cai_conversation_items_params {
   lonejson_object_array items;
 };
 
-typedef struct cai_response_tool_call {
-  char *id;
-  char *call_id;
-  char *name;
-  char *arguments;
-  int output_index;
-  lonejson_spooled arguments_spooled;
-  int has_arguments_spooled;
-} cai_response_tool_call;
-
-typedef struct cai_response_output_item {
-  char *id;
-  char *type;
-  char *status;
-  char *role;
-  char *call_id;
-  char *name;
-} cai_response_output_item;
-
-struct cai_response {
-  cai_allocator allocator;
-  char *id;
-  char *status;
-  char *model;
-  char *conversation_id;
-  char *output_text;
-  char *refusal;
-  char *raw_json;
-  char *error_code;
-  char *error_message;
-  char *incomplete_reason;
-  lonejson_spooled output_items_json;
-  int has_output_items_json;
-  long long created_at;
-  long long input_tokens;
-  long long input_cached_tokens;
-  long long output_tokens;
-  long long output_reasoning_tokens;
-  long long total_tokens;
-  cai_response_tool_call *tool_calls;
-  size_t tool_call_count;
-  cai_response_output_item *output_items;
-  size_t output_item_count;
-};
-
 typedef struct cai_input_item {
   char *id;
   char *type;
