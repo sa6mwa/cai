@@ -698,6 +698,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_default_path
     chatgpt_auth_open_default_path
     chatgpt_auth_client_defaults_to_codex_backend
+    chatgpt_auth_client_custom_allocator_owns_token
     chatgpt_auth_agent_keeps_server_continuity
     chatgpt_login_authorize_url
     chatgpt_login_browser_helper

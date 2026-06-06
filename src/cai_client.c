@@ -168,8 +168,20 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   }
 
   if (effective->chatgpt_auth != NULL) {
+    char *access_token;
+
+    access_token = NULL;
     rc = effective->chatgpt_auth->access_token(effective->chatgpt_auth,
-                                               &impl->api_key, error);
+                                               &access_token, error);
+    if (rc == CAI_OK) {
+      impl->api_key = cai_strdup(&impl->allocator, access_token);
+      if (impl->api_key == NULL) {
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate ChatGPT access token");
+      }
+    }
+    cai_client_clear_secret(access_token);
+    cai_free_mem(NULL, access_token);
   } else {
     rc = cai_resolve_api_key(&impl->allocator, effective->api_key,
                              effective->api_key_env != NULL

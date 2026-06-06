@@ -66,6 +66,13 @@ typedef struct alloc_count_state {
   size_t frees;
 } alloc_count_state;
 
+typedef struct tracking_alloc_state {
+  void *ptrs[64];
+  size_t allocs;
+  size_t frees;
+  size_t foreign_frees;
+} tracking_alloc_state;
+
 typedef struct fail_alloc_state {
   size_t allocs;
   size_t frees;
@@ -1186,6 +1193,95 @@ static void test_allocator_free(void *context, void *ptr) {
   if (state != NULL && ptr != NULL) {
     state->frees++;
   }
+  free(ptr);
+}
+
+static int tracking_allocator_find(const tracking_alloc_state *state,
+                                   const void *ptr) {
+  size_t i;
+
+  if (state == NULL || ptr == NULL) {
+    return -1;
+  }
+  for (i = 0U; i < sizeof(state->ptrs) / sizeof(state->ptrs[0]); i++) {
+    if (state->ptrs[i] == ptr) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
+
+static int tracking_allocator_insert(tracking_alloc_state *state, void *ptr) {
+  size_t i;
+
+  if (state == NULL || ptr == NULL) {
+    return 0;
+  }
+  for (i = 0U; i < sizeof(state->ptrs) / sizeof(state->ptrs[0]); i++) {
+    if (state->ptrs[i] == NULL) {
+      state->ptrs[i] = ptr;
+      return 0;
+    }
+  }
+  return -1;
+}
+
+static void *tracking_allocator_malloc(void *context, size_t size) {
+  tracking_alloc_state *state;
+  void *ptr;
+
+  state = (tracking_alloc_state *)context;
+  ptr = malloc(size);
+  if (ptr != NULL && state != NULL) {
+    if (tracking_allocator_insert(state, ptr) != 0) {
+      free(ptr);
+      return NULL;
+    }
+    state->allocs++;
+  }
+  return ptr;
+}
+
+static void *tracking_allocator_realloc(void *context, void *ptr, size_t size) {
+  tracking_alloc_state *state;
+  void *new_ptr;
+  int index;
+
+  state = (tracking_alloc_state *)context;
+  if (ptr == NULL) {
+    return tracking_allocator_malloc(context, size);
+  }
+  index = tracking_allocator_find(state, ptr);
+  if (index < 0) {
+    if (state != NULL) {
+      state->foreign_frees++;
+    }
+    return NULL;
+  }
+  new_ptr = realloc(ptr, size);
+  if (new_ptr != NULL && state != NULL) {
+    state->ptrs[index] = new_ptr;
+  }
+  return new_ptr;
+}
+
+static void tracking_allocator_free(void *context, void *ptr) {
+  tracking_alloc_state *state;
+  int index;
+
+  state = (tracking_alloc_state *)context;
+  if (ptr == NULL) {
+    return;
+  }
+  index = tracking_allocator_find(state, ptr);
+  if (index < 0) {
+    if (state != NULL) {
+      state->foreign_frees++;
+    }
+    return;
+  }
+  state->ptrs[index] = NULL;
+  state->frees++;
   free(ptr);
 }
 
@@ -9531,6 +9627,65 @@ test_chatgpt_auth_client_defaults_to_codex_backend(test_state *state) {
              CAI_CLIENT_IMPL(client)->base_url, "http://127.0.0.1:9999/v1");
 
   cai_client_close(client);
+  test_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
+static void
+test_chatgpt_auth_client_custom_allocator_owns_token(test_state *state) {
+  static const char token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.custom";
+  char template_dir[] = "/tmp/cai-auth-client-alloc-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[1024];
+  tracking_alloc_state alloc_state;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_client_config client_config;
+  cai_client *client;
+  cai_error error;
+
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  auth = NULL;
+  client = NULL;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_client_allocator_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"%s\","
+           "\"access_token\":\"%s\",\"refresh_token\":\"refresh-custom\","
+           "\"account_id\":\"acct_custom\"}}",
+           token, token);
+  write_file_or_die(auth_path, auth_json);
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  expect_int(state, "chatgpt_auth_client_allocator_auth_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  cai_client_config_init(&client_config);
+  client_config.chatgpt_auth = auth;
+  client_config.allocator.malloc_fn = tracking_allocator_malloc;
+  client_config.allocator.realloc_fn = tracking_allocator_realloc;
+  client_config.allocator.free_fn = tracking_allocator_free;
+  client_config.allocator.context = &alloc_state;
+  expect_int(state, "chatgpt_auth_client_allocator_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_str(state, "chatgpt_auth_client_allocator_token",
+               CAI_CLIENT_IMPL(client)->api_key, token);
+  }
+  cai_client_close(client);
+  client = NULL;
+  expect_int(state, "chatgpt_auth_client_allocator_foreign_free",
+             (long)alloc_state.foreign_frees, 0L);
+  expect_int(state, "chatgpt_auth_client_allocator_balance",
+             (long)alloc_state.allocs, (long)alloc_state.frees);
+
   test_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   unlink(auth_path);
@@ -19907,6 +20062,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
     {"chatgpt_auth_client_defaults_to_codex_backend",
      test_chatgpt_auth_client_defaults_to_codex_backend},
+    {"chatgpt_auth_client_custom_allocator_owns_token",
+     test_chatgpt_auth_client_custom_allocator_owns_token},
     {"chatgpt_auth_agent_keeps_server_continuity",
      test_chatgpt_auth_agent_keeps_server_continuity},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
