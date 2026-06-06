@@ -1386,6 +1386,8 @@ static int cai_lua_open(lua_State *L) {
     auth_config.refresh_window_seconds =
         cai_lua_opt_ll_field(L, 1, "chatgpt_auth_refresh_window_seconds",
                              auth_config.refresh_window_seconds);
+    auth_config.http_timeout_ms = cai_lua_opt_long_field(
+        L, 1, "chatgpt_auth_http_timeout_ms", auth_config.http_timeout_ms);
   }
   if (chatgpt_auth_json != NULL && chatgpt_auth_json[0] != '\0') {
     chatgpt_auth_enabled = 1;
@@ -1464,6 +1466,8 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
     config.client_id = cai_lua_opt_string_field(L, 1, "client_id", NULL);
     config.refresh_window_seconds = cai_lua_opt_ll_field(
         L, 1, "refresh_window_seconds", config.refresh_window_seconds);
+    config.http_timeout_ms =
+        cai_lua_opt_long_field(L, 1, "http_timeout_ms", config.http_timeout_ms);
   }
   rc = cai_chatgpt_auth_open(&config, &auth, &error);
   if (rc != CAI_OK) {
@@ -1546,6 +1550,8 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
     config.state = cai_lua_opt_string_field(L, 1, "state", NULL);
     config.code_verifier =
         cai_lua_opt_string_field(L, 1, "code_verifier", NULL);
+    config.http_timeout_ms =
+        cai_lua_opt_long_field(L, 1, "http_timeout_ms", config.http_timeout_ms);
   }
   rc = cai_chatgpt_login_start(&config, &login, &authorize_url, &error);
   if (rc != CAI_OK) {

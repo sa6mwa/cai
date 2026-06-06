@@ -7352,6 +7352,108 @@ http_mock_server_open_script(test_state *state, const char *name,
   return 0;
 }
 
+static void mock_stall_oauth_child(int pipe_fd, const char *request_prefix) {
+  char request[4096];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  struct timespec delay;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0) {
+    _exit(4);
+  }
+  if (mock_set_socket_deadline(server_fd) != 0) {
+    _exit(12);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0) {
+    _exit(7);
+  }
+  if (mock_set_socket_deadline(client_fd) != 0) {
+    close(client_fd);
+    _exit(12);
+  }
+  if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+    close(client_fd);
+    _exit(8);
+  }
+  if (request_prefix != NULL &&
+      strncmp(request, request_prefix, strlen(request_prefix)) != 0) {
+    close(client_fd);
+    _exit(9);
+  }
+  delay.tv_sec = 1;
+  delay.tv_nsec = 0;
+  while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int http_mock_server_open_stall(test_state *state, const char *name,
+                                       const char *request_prefix,
+                                       http_mock_server *server) {
+  int pipe_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    server->pid = -1;
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    mock_stall_oauth_child(pipe_fds[1], request_prefix);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, server->pid, &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  return 0;
+}
+
 typedef struct http_mock_client {
   pid_t pid;
   int child_status;
@@ -8681,6 +8783,68 @@ cleanup:
   rmdir(template_dir);
 }
 
+static void test_chatgpt_auth_refresh_http_timeout(test_state *state) {
+  static const char access_token[] =
+      "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old";
+  char template_dir[] = "/tmp/cai-auth-timeout-XXXXXX";
+  char auth_path[PATH_MAX];
+  char auth_json[1024];
+  http_mock_server server;
+  cai_chatgpt_auth_config auth_config;
+  cai_chatgpt_auth *auth;
+  cai_error error;
+  double started;
+  double elapsed;
+
+  auth = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_auth_timeout_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  snprintf(auth_json, sizeof(auth_json),
+           "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"%s\","
+           "\"refresh_token\":\"refresh-timeout\"}}",
+           access_token);
+  write_file_or_die(auth_path, auth_json);
+  if (http_mock_server_open_stall(state, "chatgpt_auth_timeout_mock",
+                                  "POST /v1/oauth/token HTTP/", &server) != 0) {
+    goto cleanup;
+  }
+  cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.auth_json_path = auth_path;
+  auth_config.issuer = server.base_url;
+  auth_config.http_timeout_ms = 100L;
+  expect_int(state, "chatgpt_auth_timeout_open",
+             cai_chatgpt_auth_open(&auth_config, &auth, &error), CAI_OK);
+  if (auth != NULL) {
+    started = test_now_seconds();
+    expect_int(state, "chatgpt_auth_timeout_refresh",
+               auth->refresh(auth, &error), CAI_ERR_TRANSPORT);
+    elapsed = test_now_seconds() - started;
+    if (elapsed > 0.8) {
+      test_fail(state, "chatgpt_auth_timeout_deadline",
+                "OAuth refresh exceeded configured HTTP timeout");
+    }
+    expect_substr(state, "chatgpt_auth_timeout_error", error.message,
+                  "auth HTTP request failed");
+  }
+
+cleanup:
+  test_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server.pid > 0) {
+    expect_child_exit(state, "chatgpt_auth_timeout_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
 static void test_chatgpt_auth_save_failure_preserves_file(test_state *state) {
   static const char expired_token[] =
       "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.expired";
@@ -9804,6 +9968,77 @@ cleanup:
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_login_exchange_mock", server.pid,
+                      &server.child_status);
+  }
+  unlink(auth_path);
+  rmdir(template_dir);
+}
+
+static void test_chatgpt_login_exchange_http_timeout(test_state *state) {
+  char template_dir[] = "/tmp/cai-login-timeout-XXXXXX";
+  char auth_path[PATH_MAX];
+  http_mock_server server;
+  cai_chatgpt_login_config config;
+  cai_chatgpt_login_request request;
+  cai_chatgpt_login_response response;
+  cai_chatgpt_login *login;
+  cai_error error;
+  char *authorize_url;
+  double started;
+  double elapsed;
+
+  login = NULL;
+  authorize_url = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&response, 0, sizeof(response));
+  cai_error_init(&error);
+  if (mkdtemp(template_dir) == NULL) {
+    test_fail(state, "chatgpt_login_timeout_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
+  if (http_mock_server_open_stall(state, "chatgpt_login_timeout_mock",
+                                  "POST /v1/oauth/token HTTP/", &server) != 0) {
+    goto cleanup;
+  }
+  cai_chatgpt_login_config_init(&config);
+  config.auth_json_path = auth_path;
+  config.redirect_uri = "http://127.0.0.1:1455/auth/callback";
+  config.issuer = server.base_url;
+  config.state = "state-fixed";
+  config.code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
+  config.http_timeout_ms = 100L;
+  expect_int(state, "chatgpt_login_timeout_start",
+             cai_chatgpt_login_start(&config, &login, &authorize_url, &error),
+             CAI_OK);
+  if (login != NULL) {
+    memset(&request, 0, sizeof(request));
+    request.method = "GET";
+    request.target = "/auth/callback?code=mock-code&state=state-fixed";
+    started = test_now_seconds();
+    expect_int(state, "chatgpt_login_timeout_callback",
+               login->handle_callback(login, &request, &response, &error),
+               CAI_ERR_TRANSPORT);
+    elapsed = test_now_seconds() - started;
+    if (elapsed > 0.8) {
+      test_fail(state, "chatgpt_login_timeout_deadline",
+                "OAuth code exchange exceeded configured HTTP timeout");
+    }
+    expect_substr(state, "chatgpt_login_timeout_error", error.message,
+                  "auth HTTP request failed");
+    expect_int(state, "chatgpt_login_timeout_not_completed",
+               login->completed(login), 0L);
+  }
+
+cleanup:
+  cai_chatgpt_login_response_cleanup(&response);
+  cai_string_destroy(authorize_url);
+  test_chatgpt_login_close(login);
+  cai_error_cleanup(&error);
+  if (server.pid > 0) {
+    expect_child_exit(state, "chatgpt_login_timeout_mock", server.pid,
                       &server.child_status);
   }
   unlink(auth_path);
@@ -12948,6 +13183,7 @@ static void test_exec_tool(test_state *state) {
   char marker_path[PATH_MAX];
   char custom_shell_path[PATH_MAX];
   char fake_bwrap_path[PATH_MAX];
+  char leaky_bwrap_path[PATH_MAX];
   char deep_dirs[40][PATH_MAX];
   const char *saved_path;
   char *saved_path_copy;
@@ -13036,6 +13272,22 @@ static void test_exec_tool(test_state *state) {
   fputs("#!/bin/sh\nprintf fake-bwrap\nexit 0\n", alpha_file);
   fclose(alpha_file);
   chmod(fake_bwrap_path, 0700);
+  snprintf(leaky_bwrap_path, sizeof(leaky_bwrap_path), "%s/leaky-bwrap",
+           dir_template);
+  alpha_file = fopen(leaky_bwrap_path, "wb");
+  if (alpha_file == NULL) {
+    test_fail(state, "exec_leaky_bwrap_fixture", "fopen failed");
+    unlink(fake_bwrap_path);
+    unlink(custom_shell_path);
+    unlink(marker_path);
+    rmdir(child_tests_dir);
+    rmdir(child_dir);
+    rmdir(dir_template);
+    return;
+  }
+  fputs("#!/bin/sh\n(sleep 2) &\nexit 0\n", alpha_file);
+  fclose(alpha_file);
+  chmod(leaky_bwrap_path, 0700);
   saved_path = getenv("PATH");
   saved_path_copy = saved_path != NULL ? cai_strdup(NULL, saved_path) : NULL;
   cai_error_init(&error);
@@ -13443,6 +13695,30 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  {
+    double started;
+    double elapsed;
+
+    config.bwrap_path = leaky_bwrap_path;
+    started = test_now_seconds();
+    if (run_exec_tool_case(state, "exec_timeout_inherited_pipe", &config,
+                           "{\"cmd\":\"printf ignored\"}", CAI_OK, &writer,
+                           &error) == CAI_OK) {
+      elapsed = test_now_seconds() - started;
+      expect_substr(state, "exec_timeout_inherited_pipe_flag", writer.buffer,
+                    "\"timed_out\":true");
+      if (elapsed > 1.0) {
+        test_fail(state, "exec_timeout_inherited_pipe_deadline",
+                  "background child kept inherited pipes open past timeout");
+      }
+      expect_valid_json(state, "exec_timeout_inherited_pipe_json",
+                        writer.buffer);
+    }
+    config.bwrap_path = NULL;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   config.timeout_ms = 1000L;
   config.max_timeout_ms = 1000L;
   config.output_max_bytes = 4U;
@@ -13590,6 +13866,7 @@ static void test_exec_tool(test_state *state) {
   }
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
+  unlink(leaky_bwrap_path);
   unlink(fake_bwrap_path);
   unlink(custom_shell_path);
   unlink(alpha_path);
@@ -19614,6 +19891,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_refresh_retry", test_chatgpt_auth_refresh_retry},
     {"chatgpt_auth_invalid_refresh_retryable",
      test_chatgpt_auth_invalid_refresh_retryable},
+    {"chatgpt_auth_refresh_http_timeout",
+     test_chatgpt_auth_refresh_http_timeout},
     {"chatgpt_auth_save_failure_preserves_file",
      test_chatgpt_auth_save_failure_preserves_file},
     {"chatgpt_auth_expired_refreshes_before_request",
@@ -19635,6 +19914,8 @@ static const test_entry test_entries[] = {
     {"chatgpt_login_callback_validation",
      test_chatgpt_login_callback_validation},
     {"chatgpt_login_callback_exchange", test_chatgpt_login_callback_exchange},
+    {"chatgpt_login_exchange_http_timeout",
+     test_chatgpt_login_exchange_http_timeout},
     {"chatgpt_login_default_path_write", test_chatgpt_login_default_path_write},
     {"http_retrieve_response", test_http_retrieve_response},
     {"http_cancel_response", test_http_cancel_response},

@@ -26,6 +26,8 @@ extern "C" {
   "api.connectors.invoke"
 /** Default originator sent in ChatGPT OAuth and backend requests. */
 #define CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR "cai"
+/** Default timeout for ChatGPT OAuth token HTTP requests. */
+#define CAI_CHATGPT_AUTH_DEFAULT_HTTP_TIMEOUT_MS 30000L
 
 /** Codex-compatible ChatGPT auth session configuration. */
 typedef struct cai_chatgpt_auth_config {
@@ -40,6 +42,8 @@ typedef struct cai_chatgpt_auth_config {
   const char *client_id;
   /** Seconds before access-token expiry to refresh; zero uses default. */
   long long refresh_window_seconds;
+  /** Overall OAuth token HTTP timeout in milliseconds; zero uses default. */
+  long http_timeout_ms;
   /** Optional pslog logger. */
   struct pslog_logger *logger;
   /** Non-zero disables auth logging even when logger is set. */
@@ -106,6 +110,8 @@ typedef struct cai_chatgpt_login_config {
   const char *state;
   /** Optional caller-supplied PKCE verifier. NULL generates one. */
   const char *code_verifier;
+  /** Overall OAuth token HTTP timeout in milliseconds; zero uses default. */
+  long http_timeout_ms;
   /** Optional pslog logger. */
   struct pslog_logger *logger;
   /** Non-zero disables auth logging even when logger is set. */

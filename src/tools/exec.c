@@ -1511,7 +1511,8 @@ static int cai_exec_drain(cai_exec_capture *capture, int out_fd, int err_fd,
     struct timeval tv;
 
     now_ms = cai_exec_now_ms();
-    if (!process_done && timeout_ms > 0L && now_ms - start_ms >= timeout_ms) {
+    if (!result->timed_out && timeout_ms > 0L &&
+        now_ms - start_ms >= timeout_ms) {
       result->timed_out = 1;
       kill(-pid, SIGKILL);
       kill(pid, SIGKILL);

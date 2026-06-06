@@ -359,6 +359,7 @@ do
     auth_json_path = auth_path,
     issuer = "http://127.0.0.1:1",
     refresh_window_seconds = 300,
+    http_timeout_ms = 250,
   }), nil, "Lua standalone ChatGPT auth open")
   assert_eq(assert_ok(standalone_auth:access_token(), nil,
     "Lua standalone ChatGPT access token"), future_token,
@@ -372,6 +373,7 @@ do
     base_url = "http://127.0.0.1:1/v1",
     http_2_disabled = 1,
     timeout_ms = 1,
+    chatgpt_auth_http_timeout_ms = 250,
   }), nil, "Lua ChatGPT auth client open")
   auth_client:close()
   os.remove(auth_path)
@@ -391,6 +393,7 @@ do
     state = "state-fixed",
     code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789",
     originator = "cai-lua-test",
+    http_timeout_ms = 250,
   })
   local authorize_url = authorize_url_or_err
   assert_ok(login, authorize_url_or_err, "Lua ChatGPT login start")

@@ -689,6 +689,7 @@ if(CAI_BUILD_TESTS)
     http_create_response
     chatgpt_auth_refresh_retry
     chatgpt_auth_invalid_refresh_retryable
+    chatgpt_auth_refresh_http_timeout
     chatgpt_auth_save_failure_preserves_file
     chatgpt_auth_expired_refreshes_before_request
     chatgpt_auth_reloads_changed_file_before_refresh
@@ -702,6 +703,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_login_browser_helper
     chatgpt_login_callback_validation
     chatgpt_login_callback_exchange
+    chatgpt_login_exchange_http_timeout
     chatgpt_login_default_path_write
     http_retrieve_response
     http_cancel_response
