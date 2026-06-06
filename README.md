@@ -1,39 +1,64 @@
 # cai
 
-`cai` is a C89/POSIX SDK-style client for the OpenAI Responses API,
-Conversations, HTTP/SSE streaming, and Responses WebSocket streaming
-workflows.
+`cai` is a C89/POSIX SDK for building OpenAI Responses API agents in C and
+Lua. It gives applications a handle-oriented client, agents, sessions,
+streaming, tool execution, ChatGPT subscription auth, MCP serving, model/cost
+accounting, and release-packaged C/Lua integration without making embedders
+hand-roll HTTP, WebSocket, JSON, or tool orchestration.
 
-The goal is a small, handle-oriented C API that fits systems such as Vectis:
-stream-first data flow, explicit ownership, predictable error handling, and
-good ergonomics for agentic workflows without forcing application code to build
-raw HTTP requests or hand-roll JSON.
+The design target is systems software and embedded application runtimes such
+as Vectis: stream-first data flow, explicit ownership, zero-defaultable config
+structs, predictable error handling, allocator hooks, and clean integration
+points for existing event loops, HTTP servers, loggers, and dependency stacks.
 
-See [ROADMAP.md](ROADMAP.md) for current prerelease status, parked work, and
-future feature planning.
+## Features
 
-OpenAI documents both Responses WebSocket mode and Realtime WebSocket. cai
-supports Responses WebSocket streaming for OpenAI/ChatGPT Responses sessions:
-it uses the same semantic event parser as HTTP/SSE, sends incremental
-`response.create` messages with `previous_response_id`, and keeps the current
-HTTP/SSE path for providers that do not use the OpenAI WebSocket endpoint.
-Realtime WebSocket remains a separate, parked API surface for low-latency
-text/audio sessions; it is tracked in [ROADMAP.md](ROADMAP.md).
+- OpenAI Responses API client with response creation, streaming, input-token
+  counting, hosted-tool passthrough, raw JSON request controls, structured text
+  formats, reasoning controls, metadata, truncation, service tier, prompt
+  templates, and server-side continuation.
+- Conversations API helpers and higher-level agent/session facades for
+  multi-turn workflows, including client-side history replay for stateless
+  providers such as OpenRouter.
+- True streaming over HTTP/SSE and Responses WebSocket. OpenAI API-key and
+  ChatGPT subscription-auth streaming use Responses WebSocket when appropriate;
+  OpenRouter and local/mock providers use HTTP/SSE.
+- Local tool callbacks with streamed tool-call argument handling, tool output
+  reporting, retryable tool errors, and configurable tool-round limits.
+- Built-in tool presets for SearXNG search, reverse geocoding, todo/kanban,
+  sandboxed command execution, file reading, and file listing.
+- Streamable HTTP MCP handler for serving cai tools through an embedding-owned
+  HTTP server, plus a test/example MCP server.
+- ChatGPT subscription authentication with Codex-compatible `auth.json`,
+  browser OAuth login helper, token persistence, and transparent one-shot
+  refresh retry on 401/403.
+- Usage accounting with per-client and per-session limits for input tokens,
+  output tokens, total tokens, requests, and estimated USD spend.
+- Lua 5.5 binding and LuaRock packaging covering the same main client,
+  session, streaming, tool, MCP, and ChatGPT auth workflows as the C API.
+- Release archives with installed headers, static/shared `libcai`, CMake
+  package metadata, pkg-config metadata, docs, source tarball, checksums,
+  sanitizer-free release builds, and relative runpaths.
+- Hardening gates for local unit tests, live integration tests, Lua tests,
+  deterministic examples, fuzzing, ASan/UBSan, TSan, MSan smoke, and release
+  artifact validation.
 
-## Scope
+## Release Scope
 
-The first prerelease target is the C SDK plus the Lua 5.5 facade: OpenAI
-Responses, Conversations, HTTP/SSE streaming, agent/session DX, local tool
-callbacks, Responses WebSocket streaming for OpenAI/ChatGPT, MCP tool serving,
+The first release is focused on the C SDK and Lua 5.5 facade for Responses API
+agents: Responses, Conversations, HTTP/SSE streaming, Responses WebSocket,
+ChatGPT subscription auth, agent/session DX, local tools, MCP tool serving,
 examples, LuaRock packaging, and release packaging.
 
-Realtime WebSocket is not part of the first prerelease. It is tracked in
-[ROADMAP.md](ROADMAP.md).
+Realtime WebSocket is intentionally not part of the first release. OpenAI's
+Realtime WebSocket API is a separate low-latency text/audio surface from
+Responses WebSocket, and it is tracked separately in [ROADMAP.md](ROADMAP.md).
 
-## Status
+## Release Readiness
 
-This project is in prerelease hardening. The C API is close to first-release
-shape, but may still change before the initial tag.
+cai is in first-release hardening. The public C and Lua API surfaces are meant
+to be close to initial release shape, but may still change before the first
+published tag when verification or DX finds a better interface.
 
 The verification tiers are split intentionally:
 
