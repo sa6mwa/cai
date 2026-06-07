@@ -939,7 +939,7 @@ static void test_model_capabilities(test_state *state) {
   expect_int(state, "agent_config_compact_percent_default",
              (long)agent_config.compact_threshold_percent, 0L);
   expect_int(state, "agent_config_continuity_default",
-             agent_config.session_continuity, CAI_SESSION_CONTINUITY_SERVER);
+             agent_config.session_continuity, CAI_SESSION_CONTINUITY_AUTO);
   expect_int(state, "agent_config_local_history_default",
              agent_config.enable_local_history, 0L);
 }
@@ -4365,6 +4365,17 @@ static void test_client_open(test_state *state) {
                1L);
     cai_agent_config_init(&agent_config);
     agent_config.model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
+    expect_int(state, "openrouter_auto_continuity_agent",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    expect_int(state, "openrouter_auto_continuity",
+               CAI_AGENT_IMPL(agent)->session_continuity,
+               CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
+    expect_int(state, "openrouter_auto_continuity_warn_count",
+               g_test_warnf_count, 0L);
+    cai_agent_destroy(agent);
+    agent = NULL;
+    agent_config.session_continuity = CAI_SESSION_CONTINUITY_SERVER;
     expect_int(state, "openrouter_server_continuity_warn_agent",
                cai_client_new_agent(client, &agent_config, &agent, &error),
                CAI_OK);
@@ -10020,7 +10031,7 @@ test_chatgpt_auth_client_custom_allocator_owns_token(test_state *state) {
   rmdir(template_dir);
 }
 
-static void test_chatgpt_auth_agent_keeps_server_continuity(test_state *state) {
+static void test_chatgpt_auth_agent_uses_client_history(test_state *state) {
   const char *future_token = "eyJhbGciOiJub25lIn0."
                              "eyJleHAiOjQxMDI0NDQ4MDB9.future";
   static const char first_body[] =
@@ -10042,10 +10053,10 @@ static void test_chatgpt_auth_agent_keeps_server_continuity(test_state *state) {
       "Authorization: Bearer "
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.future",
       "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR,
-      "\"previous_response_id\":\"resp_chatgpt_history_1\"",
+      "chatgpt client history first",
+      "chatgpt first ok",
       "chatgpt client history second"};
-  static const char *second_forbidden[] = {"chatgpt client history first",
-                                           "chatgpt first ok"};
+  static const char *second_forbidden[] = {"previous_response_id"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", first_required,
        sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
@@ -10116,7 +10127,7 @@ static void test_chatgpt_auth_agent_keeps_server_continuity(test_state *state) {
              CAI_OK);
   expect_int(state, "chatgpt_auth_history_continuity",
              CAI_AGENT_IMPL(agent)->session_continuity,
-             CAI_SESSION_CONTINUITY_SERVER);
+             CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   expect_int(state, "chatgpt_auth_history_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "chatgpt_auth_history_first",
@@ -20618,8 +20629,8 @@ static const test_entry test_entries[] = {
      test_chatgpt_auth_client_defaults_to_codex_backend},
     {"chatgpt_auth_client_custom_allocator_owns_token",
      test_chatgpt_auth_client_custom_allocator_owns_token},
-    {"chatgpt_auth_agent_keeps_server_continuity",
-     test_chatgpt_auth_agent_keeps_server_continuity},
+    {"chatgpt_auth_agent_uses_client_history",
+     test_chatgpt_auth_agent_uses_client_history},
     {"chatgpt_login_authorize_url", test_chatgpt_login_authorize_url},
     {"chatgpt_login_browser_helper", test_chatgpt_login_browser_helper},
     {"chatgpt_login_callback_validation",

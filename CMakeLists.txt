@@ -33,7 +33,7 @@ set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
 set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
     "Dependency mode: cpkt, host, or auto.")
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
-set(CAI_C_PKT_SYSTEMS_VERSION "0.1.0" CACHE STRING
+set(CAI_C_PKT_SYSTEMS_VERSION "0.2.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.31.0")
@@ -110,19 +110,19 @@ endif()
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "4e6c4ca07c0647a05923b4a56ef12d440a1d1b53465224e30d990fc18777aa4e")
+    set(_sha256 "69e699d18374987ba16dfd82640ba1c263b71f0e1daeef8af2a2018a6f1e39ef")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "d44f70558b961125c96d356d27ce83fc7d50c9cc650a335c2016c8d3778d98aa")
+    set(_sha256 "dcb1923af1d7529531f31637476f083070ccf1051ec217012d77a155ff4132d4")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "c20969872de3087f984e8bca3e01fa98e495a3581940e426d07ebed014cf8190")
+    set(_sha256 "54e9ef336a0b092d0e68a84d2026a499c051df3c3e61b7a7dab1f0103d1e082b")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "8ff3cc3c457dc66918470beaea01744bc38c342a87c20c6b072761c56c858e19")
+    set(_sha256 "61f7cb43ca78f33a21b5719f84f864ac5ce5cf7d8268eef52a7a01da08582a38")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "26787953d690b0f01a11538e8692f68f9c746b8e97a9baf47ac15241d9a947fc")
+    set(_sha256 "33bfe771f2f2b36562c9e18094f79168d8d687dc7a55393584930ca434547d7d")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "f0172a6ff928111cfaeb503b01b48b3cdd2c05a04d54047630180ee79f65af31")
+    set(_sha256 "7edc2f61e01370da6af96c496ae5bfbec72e43761247dd2c310ac7627923c591")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "dba4424de9566c2418162f62e5e90c45b40266c6e750b5096d4a251bf96d8e9a")
+    set(_sha256 "204fcaa8d6d53b6affcdcb49668d60b0e41d2aa7ff5f4dc2c8fce0d24caa0022")
   else()
     message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
   endif()
@@ -175,24 +175,48 @@ endfunction()
 
 set(CAI_RESOLVED_DEPENDENCY_MODE "${CAI_DEPENDENCY_MODE}")
 if(CAI_DEPENDENCY_MODE STREQUAL "auto")
+  find_path(_cai_auto_curl_include curl/curl.h)
+  find_library(_cai_auto_curl_library NAMES curl)
   find_path(_cai_auto_lonejson_include lonejson.h)
   find_path(_cai_auto_pslog_include pslog.h)
   find_library(_cai_auto_lonejson_library NAMES lonejson)
   find_library(_cai_auto_pslog_library NAMES pslog)
-  find_package(CURL ${CAI_MINIMUM_CURL_VERSION} QUIET)
+  set(_cai_auto_curl_ok FALSE)
+  set(_cai_auto_curl_version_header
+      "${_cai_auto_curl_include}/curl/curlver.h")
+  if(_cai_auto_curl_include AND _cai_auto_curl_library AND
+     EXISTS "${_cai_auto_curl_version_header}")
+    file(STRINGS "${_cai_auto_curl_version_header}" _cai_auto_curl_version_line
+         REGEX "^#define LIBCURL_VERSION \"[^\"]+\"")
+    if(_cai_auto_curl_version_line MATCHES
+       "^#define LIBCURL_VERSION \"([^\"]+)\"")
+      set(_cai_auto_curl_version "${CMAKE_MATCH_1}")
+      if(_cai_auto_curl_version VERSION_GREATER_EQUAL
+         CAI_MINIMUM_CURL_VERSION)
+        set(_cai_auto_curl_ok TRUE)
+      endif()
+    endif()
+  endif()
   set(_cai_auto_lonejson_abi_ok FALSE)
   if(_cai_auto_lonejson_library)
     cai_probe_lonejson_library_abi(
       "${_cai_auto_lonejson_library}" "${CAI_LONEJSON_ABI_VERSION}"
       _cai_auto_lonejson_abi_ok _cai_auto_lonejson_abi_reason)
   endif()
-  if(CURL_FOUND AND _cai_auto_lonejson_include AND _cai_auto_pslog_include AND
-     _cai_auto_lonejson_library AND _cai_auto_pslog_library AND
+  if(_cai_auto_curl_ok AND _cai_auto_lonejson_include AND
+     _cai_auto_pslog_include AND _cai_auto_lonejson_library AND
+     _cai_auto_pslog_library AND
      _cai_auto_lonejson_abi_ok)
     set(CAI_RESOLVED_DEPENDENCY_MODE "host")
   else()
     set(CAI_RESOLVED_DEPENDENCY_MODE "cpkt")
   endif()
+  unset(_cai_auto_curl_include CACHE)
+  unset(_cai_auto_curl_library CACHE)
+  unset(_cai_auto_curl_ok)
+  unset(_cai_auto_curl_version)
+  unset(_cai_auto_curl_version_header)
+  unset(_cai_auto_curl_version_line)
   unset(_cai_auto_lonejson_include CACHE)
   unset(_cai_auto_pslog_include CACHE)
   unset(_cai_auto_lonejson_library CACHE)
@@ -367,18 +391,14 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       CACHE PATH "lonejson package directory" FORCE)
   set(pslog_DIR "${CAI_PSLOG_PREFIX}/lib/cmake/pslog"
       CACHE PATH "pslog package directory" FORCE)
+  set(CURL_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/cmake/CURL"
+      CACHE PATH "curl package directory" FORCE)
+  set(OpenSSL_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/cmake/OpenSSL"
+      CACHE PATH "OpenSSL package directory" FORCE)
   find_package(lonejson CONFIG REQUIRED)
   find_package(pslog CONFIG REQUIRED)
   cai_set_lonejson_from_target()
   cai_set_pslog_from_target()
-  if(CAI_TARGET_ID STREQUAL "arm64-apple-darwin")
-    set(_cai_cpkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.dylib")
-  else()
-    set(_cai_cpkt_curl_library "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/libcurl.so")
-  endif()
-  set(CURL_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include" CACHE PATH "curl include directory" FORCE)
-  set(CURL_LIBRARY "${_cai_cpkt_curl_library}" CACHE FILEPATH "curl library" FORCE)
-  set(CURL_LIBRARY_RELEASE "${_cai_cpkt_curl_library}" CACHE FILEPATH "curl release library" FORCE)
   list(APPEND CMAKE_INSTALL_RPATH "${CAI_INSTALL_RPATH_TOKEN}")
   get_filename_component(_cai_lonejson_library_dir
     "${CAI_LONEJSON_LIBRARY}" DIRECTORY)
@@ -392,13 +412,21 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
 endif()
 
 find_package(CURL ${CAI_MINIMUM_CURL_VERSION} REQUIRED)
-if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND TARGET CURL::libcurl)
-  set_target_properties(CURL::libcurl PROPERTIES
-    IMPORTED_LOCATION "${_cai_cpkt_curl_library}"
-    INTERFACE_INCLUDE_DIRECTORIES "${CAI_C_PKT_SYSTEMS_PREFIX}/include")
-endif()
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(Threads REQUIRED)
+
+set(CAI_CURL_STATIC_LINK CURL::libcurl)
+set(CAI_OPENSSL_CRYPTO_STATIC_LINK OpenSSL::Crypto)
+set(CAI_CURL_SHARED_LINK CURL::libcurl)
+set(CAI_OPENSSL_CRYPTO_SHARED_LINK OpenSSL::Crypto)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+  if(TARGET cpkt::curl_shared)
+    set(CAI_CURL_SHARED_LINK cpkt::curl_shared)
+  endif()
+  if(TARGET cpkt::openssl_crypto_shared)
+    set(CAI_OPENSSL_CRYPTO_SHARED_LINK cpkt::openssl_crypto_shared)
+  endif()
+endif()
 
 if(CAI_BUILD_LUA)
   find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua REQUIRED)
@@ -577,21 +605,20 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
     target_include_directories(${_cai_target} PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CAI_PSLOG_INCLUDE_DIR}")
-    target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS}
-      "${CURL_INCLUDE_DIR}")
+    target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS})
     target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()
 if(TARGET cai_shared)
-  target_link_libraries(cai_shared PRIVATE CURL::libcurl Threads::Threads
-    OpenSSL::Crypto ${CAI_LONEJSON_LINK})
+  target_link_libraries(cai_shared PRIVATE ${CAI_CURL_SHARED_LINK}
+    Threads::Threads ${CAI_OPENSSL_CRYPTO_SHARED_LINK} ${CAI_LONEJSON_LINK})
 endif()
 if(TARGET cai_static)
   target_link_libraries(cai_static INTERFACE
-    $<BUILD_INTERFACE:CURL::libcurl>
+    $<BUILD_INTERFACE:${CAI_CURL_STATIC_LINK}>
     $<BUILD_INTERFACE:Threads::Threads>
-    $<BUILD_INTERFACE:OpenSSL::Crypto>
+    $<BUILD_INTERFACE:${CAI_OPENSSL_CRYPTO_STATIC_LINK}>
     $<BUILD_INTERFACE:${CAI_LONEJSON_LINK}>
     $<INSTALL_INTERFACE:CURL::libcurl>
     $<INSTALL_INTERFACE:Threads::Threads>
@@ -608,8 +635,19 @@ else()
   message(FATAL_ERROR "At least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED must be enabled.")
 endif()
 
+function(cai_link_internal_consumer target)
+  target_link_libraries(${target} PRIVATE ${_cai_internal_link_target})
+endfunction()
+
+function(cai_link_direct_curl_user target)
+  if(_cai_internal_link_target STREQUAL "cai_static")
+    target_link_libraries(${target} PRIVATE ${CAI_CURL_STATIC_LINK})
+  else()
+    target_link_libraries(${target} PRIVATE ${CAI_CURL_SHARED_LINK})
+  endif()
+endfunction()
+
 if(CAI_BUILD_EXAMPLES)
-  set(_cai_example_link_target "${_cai_internal_link_target}")
   set(_cai_examples
     basic_response:basic-response
     chatgpt_login:chatgpt-login
@@ -638,12 +676,9 @@ if(CAI_BUILD_EXAMPLES)
       target_include_directories(cai_example_${_cai_example} PRIVATE
         "${CAI_PSLOG_INCLUDE_DIR}")
     endif()
-    target_link_libraries(cai_example_${_cai_example} PRIVATE
-      ${_cai_example_link_target})
-    if(_cai_example_link_target STREQUAL "cai_static" OR
-        _cai_example_link_target STREQUAL "cai_shared")
-      target_link_libraries(cai_example_${_cai_example} PRIVATE CURL::libcurl
-        Threads::Threads ${CAI_LONEJSON_LINK})
+    cai_link_internal_consumer(cai_example_${_cai_example})
+    if(_cai_example STREQUAL "smhi_weather")
+      cai_link_direct_curl_user(cai_example_${_cai_example})
     endif()
     if(_cai_example STREQUAL "mcp_server")
       if(CAI_PSLOG_LINK)
@@ -660,6 +695,10 @@ if(CAI_BUILD_EXAMPLES)
 endif()
 
 if(CAI_BUILD_LUA)
+  set(_cai_lua_link_target "${_cai_internal_link_target}")
+  if(TARGET cai_shared)
+    set(_cai_lua_link_target cai_shared)
+  endif()
   add_library(cai_lua MODULE lua/cai_lua.c)
   set_target_properties(cai_lua PROPERTIES
     OUTPUT_NAME cai
@@ -672,8 +711,8 @@ if(CAI_BUILD_LUA)
     "${CAI_LONEJSON_INCLUDE_DIR}"
     "${CAI_PSLOG_INCLUDE_DIR}"
     "${CAI_LUA_INCLUDE_DIR}")
-  target_link_libraries(cai_lua PRIVATE ${_cai_internal_link_target} CURL::libcurl
-    Threads::Threads ${CAI_LONEJSON_LINK})
+  target_link_libraries(cai_lua PRIVATE ${_cai_lua_link_target}
+    ${CAI_LONEJSON_LINK})
   if(APPLE)
     target_link_options(cai_lua PRIVATE "-undefined" "dynamic_lookup")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -682,6 +721,7 @@ if(CAI_BUILD_LUA)
     target_link_libraries(cai_lua PRIVATE "${CAI_LUA_LIBRARY}")
   endif()
   cai_configure_c_target(cai_lua)
+  unset(_cai_lua_link_target)
 endif()
 
 if(CAI_BUILD_TESTS)
@@ -695,8 +735,7 @@ if(CAI_BUILD_TESTS)
     ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_compile_definitions(cai_tests PRIVATE CAI_TESTING)
-  target_link_libraries(cai_tests PRIVATE ${_cai_internal_link_target} CURL::libcurl
-    Threads::Threads OpenSSL::Crypto ${CAI_LONEJSON_LINK})
+  cai_link_internal_consumer(cai_tests)
   cai_configure_c_target(cai_tests)
   set(CAI_UNIT_TEST_GROUPS
     model_capabilities
@@ -730,7 +769,7 @@ if(CAI_BUILD_TESTS)
     chatgpt_auth_open_default_path
     chatgpt_auth_client_defaults_to_codex_backend
     chatgpt_auth_client_custom_allocator_owns_token
-    chatgpt_auth_agent_keeps_server_continuity
+    chatgpt_auth_agent_uses_client_history
     chatgpt_login_authorize_url
     chatgpt_login_browser_helper
     chatgpt_login_callback_validation
@@ -874,8 +913,7 @@ if(CAI_BUILD_TESTS)
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
     "${CAI_LONEJSON_INCLUDE_DIR}")
-  target_link_libraries(cai_mcp_http_server PRIVATE ${_cai_internal_link_target} CURL::libcurl
-    Threads::Threads ${CAI_LONEJSON_LINK})
+  cai_link_internal_consumer(cai_mcp_http_server)
   cai_configure_c_target(cai_mcp_http_server)
 
   add_executable(cai_mcp_http_smoke tests/mcp_http_smoke.c)
@@ -976,6 +1014,22 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_cmake_presets_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
+       CMAKE_GENERATOR MATCHES "Ninja")
+      add_test(NAME cai_cpkt_link_targets_test
+        COMMAND "${CMAKE_COMMAND}"
+          "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+          "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+          "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
+          "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
+          "-DCAI_BUILD_LUA=${CAI_BUILD_LUA}"
+          "-DCAI_BUILD_EXAMPLES=${CAI_BUILD_EXAMPLES}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpkt_link_targets_test.cmake")
+      set_tests_properties(cai_cpkt_link_targets_test PROPERTIES
+        LABELS "packaging;local"
+        TIMEOUT 3)
+    endif()
     add_test(NAME cai_c_integration_config_without_lua
       COMMAND "${CMAKE_COMMAND}"
         -S "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -1041,8 +1095,7 @@ if(CAI_BUILD_TESTS)
       "${CAI_LONEJSON_INCLUDE_DIR}"
       "${CAI_PSLOG_INCLUDE_DIR}"
       ${CURL_INCLUDE_DIRS})
-    target_link_libraries(cai_integration_tests PRIVATE ${_cai_internal_link_target} CURL::libcurl
-      Threads::Threads ${CAI_LONEJSON_LINK})
+    cai_link_internal_consumer(cai_integration_tests)
     cai_configure_c_target(cai_integration_tests)
     add_test(NAME cai_integration_tests COMMAND cai_integration_tests)
     set_tests_properties(cai_integration_tests PROPERTIES
@@ -1094,10 +1147,12 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_integration_chatgpt_subscription_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1"
+        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_subscription_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_state_restore
       COMMAND "${CMAKE_COMMAND}" -E env
@@ -1294,8 +1349,7 @@ if(CAI_BUILD_FUZZERS)
       "${CAI_PSLOG_INCLUDE_DIR}"
       ${CURL_INCLUDE_DIRS}
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(${target} PRIVATE cai_static CURL::libcurl
-      Threads::Threads ${CAI_LONEJSON_LINK})
+    target_link_libraries(${target} PRIVATE cai_static)
     cai_configure_c_target(${target})
     target_compile_options(${target} PRIVATE -fsanitize=address,undefined)
     target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)

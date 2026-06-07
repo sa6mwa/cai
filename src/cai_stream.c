@@ -2778,6 +2778,7 @@ int cai_client_stream_response_websocket_test(
 static int cai_client_should_use_responses_websocket(cai_client *client) {
   const cai_client_impl *impl;
 #ifdef CAI_TESTING
+  const char *disable_websocket;
   const char *force_websocket;
 #endif
 
@@ -2789,6 +2790,10 @@ static int cai_client_should_use_responses_websocket(cai_client *client) {
     return 0;
   }
 #ifdef CAI_TESTING
+  disable_websocket = getenv("CAI_TEST_DISABLE_RESPONSES_WEBSOCKET");
+  if (disable_websocket != NULL && strcmp(disable_websocket, "1") == 0) {
+    return 0;
+  }
   force_websocket = getenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
   if (force_websocket != NULL && strcmp(force_websocket, "1") == 0) {
     return 1;

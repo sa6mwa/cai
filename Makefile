@@ -14,7 +14,7 @@ CAI_SEARXNG_TEST_QUERY ?= OpenAI
 CAI_FUZZ_RUNS ?= 10000
 RELEASE_VERSION ?= $(shell ./scripts/detect_release_version.sh "$(CURDIR)")
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
-CAI_C_PKT_SYSTEMS_VERSION ?= 0.1.0
+CAI_C_PKT_SYSTEMS_VERSION ?= 0.2.0
 CAI_LONEJSON_VERSION ?= 0.31.0
 CAI_PSLOG_VERSION ?= 0.4.1
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
@@ -40,12 +40,13 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release integration-build test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
 
 help:
 	@printf '%s\n' \
 		'make build        Configure and build the debug preset.' \
 		'make build-release Configure and build the release preset.' \
+		'make integration-build  Configure and build the integration preset without running live tests.' \
 		'make test         Build and run the debug unit tests.' \
 		'make test-release Build and run the release unit tests.' \
 		'make test-integration  Run opt-in OpenAI API integration tests.' \
@@ -88,6 +89,10 @@ build-debug:
 build-release:
 	bash ./scripts/build_release_matrix.sh
 
+integration-build:
+	$(CMAKE) --preset integration
+	$(CMAKE) --build --preset integration
+
 test:
 	@printf '%s\n' 'Reminder: run `make format` before committing each slice, or use `make finalize-slice`.'
 	$(MAKE) test-debug
@@ -103,8 +108,7 @@ test-integration:
 		printf '%s\n' 'Refusing to run integration tests without CAI_ENABLE_INTEGRATION_TESTS=1'; \
 		exit 2; \
 	fi
-	$(CMAKE) --preset integration
-	$(CMAKE) --build --preset integration
+	$(MAKE) integration-build
 	$(CTEST) --preset integration $(CTEST_FLAGS)
 
 asan:
@@ -151,8 +155,7 @@ example-smoke-live:
 		printf '%s\n' 'Refusing to run live example smoke without CAI_ENABLE_INTEGRATION_TESTS=1'; \
 		exit 2; \
 	fi
-	$(CMAKE) --preset integration
-	$(CMAKE) --build --preset integration
+	$(MAKE) integration-build
 	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_examples_live_smoke$$'
 
 finalize-slice:
@@ -162,6 +165,7 @@ finalize-slice:
 prerelease:
 	$(MAKE) format
 	$(MAKE) test-debug
+	$(MAKE) integration-build
 	$(MAKE) tsan
 	$(MAKE) msan
 	$(MAKE) fuzz-smoke

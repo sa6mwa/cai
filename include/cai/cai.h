@@ -202,8 +202,8 @@ typedef struct cai_client_config {
 
 /**
  * Use previous_response_id/server-side state for session continuity on
- * providers that support it. OpenAI and ChatGPT subscription streaming use
- * the Responses WebSocket transport when available.
+ * providers that support it. OpenAI streaming uses the Responses WebSocket
+ * transport when available.
  */
 #define CAI_SESSION_CONTINUITY_SERVER 0
 /** Use local client history when creating follow-up requests. */
@@ -241,7 +241,7 @@ typedef struct cai_agent_config {
   int max_tool_calls;
   /** Non-zero disables parallel tool calls. */
   int disable_parallel_tool_calls;
-  /** CAI_SESSION_CONTINUITY_* mode. */
+  /** CAI_SESSION_CONTINUITY_* mode; cai_agent_config_init defaults to AUTO. */
   int session_continuity;
   /** Non-zero disables default server-side auto-compaction. */
   int disable_auto_compaction;

@@ -122,6 +122,24 @@ if(NOT auto_configure_result EQUAL 0)
     "without a linkable libpslog:\n${auto_configure_error}\n"
     "${auto_configure_output}")
 endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}"
+          "-DCAI_BINARY_DIR=${auto_dir}"
+          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+          "-DCAI_TARGET_ID=x86_64-linux-gnu"
+          -DCAI_BUILD_SHARED=ON
+          -DCAI_BUILD_STATIC=OFF
+          -DCAI_BUILD_LUA=OFF
+          -DCAI_BUILD_EXAMPLES=ON
+          -P "${CAI_SOURCE_DIR}/tests/cpkt_link_targets_test.cmake"
+  RESULT_VARIABLE auto_link_targets_result
+  OUTPUT_VARIABLE auto_link_targets_output
+  ERROR_VARIABLE auto_link_targets_error)
+if(NOT auto_link_targets_result EQUAL 0)
+  message(FATAL_ERROR
+    "auto dependency mode fallback should use cpkt curl targets:\n"
+    "${auto_link_targets_error}\n${auto_link_targets_output}")
+endif()
 
 set(abi_dir "${CAI_BINARY_DIR}/host-dependency-mode-wrong-lonejson-abi")
 set(fake_abi_prefix "${abi_dir}/fake-host")

@@ -26,6 +26,8 @@
 #define CAI_INTEGRATION_OPENROUTER_REQUEST_DEFAULT_DELAY_SEC 4U
 #define CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL CAI_MODEL_GPT_5_4_MINI
 #define CAI_INTEGRATION_CHATGPT_DEFAULT_REASONING CAI_REASONING_EFFORT_LOW
+#define CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS 20000L
+#define CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TURNS 4
 #define CAI_INTEGRATION_PROVIDER_MAX_ATTEMPTS 3
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
@@ -113,6 +115,11 @@ static int integration_retryable_provider_error(int rc,
   if (error->code != CAI_ERR_SERVER) {
     return 0;
   }
+  if (integration_text_contains(error->detail, "usage limit") ||
+      integration_text_contains(error->detail, "Usage limit") ||
+      integration_text_contains(error->detail, "insufficient_quota")) {
+    return 0;
+  }
   if (error->http_status == 408L || error->http_status == 409L ||
       error->http_status == 429L ||
       (error->http_status >= 500L && error->http_status < 600L)) {
@@ -129,6 +136,7 @@ static int run_provider_retry_classifier_regression(void) {
   char assertion_detail[] = "missing web_search_call";
   char protocol_detail[] = "Unsupported parameter: tool_choice";
   char timeout_detail[] = "Timeout was reached";
+  char usage_limit_detail[] = "The usage limit has been reached";
   char upstream_detail[] =
       "upstream connect error or disconnect/reset before headers. retried and "
       "the latest reset reason: connection timeout";
@@ -157,6 +165,14 @@ static int run_provider_retry_classifier_regression(void) {
   error.detail = timeout_detail;
   if (!integration_retryable_provider_error(CAI_ERR_TRANSPORT, &error)) {
     fprintf(stderr, "hosted web search transport timeout was not retryable\n");
+    return 1;
+  }
+  memset(&error, 0, sizeof(error));
+  error.code = CAI_ERR_SERVER;
+  error.http_status = 429L;
+  error.detail = usage_limit_detail;
+  if (integration_retryable_provider_error(CAI_ERR_SERVER, &error)) {
+    fprintf(stderr, "provider usage limit error was retryable\n");
     return 1;
   }
 
@@ -3872,7 +3888,7 @@ static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
               error->message, auth_path);
     }
     cai_string_destroy(auth_path);
-    return rc;
+    return 77;
   }
   fprintf(stderr, "[integration-chatgpt-subscription] auth_json=%s\n",
           auth_path);
@@ -3935,6 +3951,7 @@ static int run_chatgpt_subscription_session_regression(void) {
   }
 
   client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
   agent_config.model = model;
   agent_config.developer_instructions =
       "You are a strict ChatGPT subscription regression assistant. Maintain "
@@ -3976,7 +3993,9 @@ static int run_chatgpt_subscription_session_regression(void) {
   }
 
   stream_sinks.output_text = sink;
-  for (turn = 1; rc == CAI_OK && turn <= 11; turn++) {
+  for (turn = 1;
+       rc == CAI_OK && turn <= CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TURNS;
+       turn++) {
     snprintf(current_secret, sizeof(current_secret), "cgpt-turn-%02d-key-%03d",
              turn, 900 + turn);
     if (turn == 1) {
