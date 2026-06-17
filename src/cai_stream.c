@@ -2664,10 +2664,8 @@ retry_request:
     if (impl->timeout_ms > 0L) {
       curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
     }
-    if (impl->insecure_skip_verify) {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    }
+    cai_configure_curl_tls(curl, impl->insecure_skip_verify,
+                           impl->ca_bundle_path, impl->ca_path);
     cai_log_http_request_start(
         impl, "WS", "responses", 1,
         (size_t)cai_response_request_upload_size(upload));
@@ -2789,6 +2787,9 @@ static int cai_client_should_use_responses_websocket(cai_client *client) {
   if (impl == NULL || impl->base_url == NULL) {
     return 0;
   }
+  if (impl->responses_websocket_fallback_active) {
+    return 0;
+  }
 #ifdef CAI_TESTING
   disable_websocket = getenv("CAI_TEST_DISABLE_RESPONSES_WEBSOCKET");
   if (disable_websocket != NULL && strcmp(disable_websocket, "1") == 0) {
@@ -2814,6 +2815,7 @@ static int cai_client_stream_response_params_with_id(
     cai_client *client, const cai_response_create_params *params,
     const cai_stream_sinks *sinks, char **out_response_id,
     cai_token_usage *out_usage, cai_error *error) {
+  cai_client_impl *impl;
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -2844,9 +2846,26 @@ static int cai_client_stream_response_params_with_id(
   if (out_usage != NULL) {
     memset(out_usage, 0, sizeof(*out_usage));
   }
+  impl = CAI_CLIENT_IMPL(client);
   if (cai_client_should_use_responses_websocket(client)) {
-    return cai_client_stream_response_websocket_with_id(
+    rc = cai_client_stream_response_websocket_with_id(
         client, params, sinks, out_response_id, out_usage, error);
+    if (rc == CAI_OK || impl->responses_websocket_fallback_disabled ||
+        rc != CAI_ERR_TRANSPORT) {
+      return rc;
+    }
+    impl->responses_websocket_fallback_active = 1;
+    if (error != NULL) {
+      cai_error_cleanup(error);
+      cai_error_init(error);
+    }
+    if (out_response_id != NULL) {
+      cai_free_mem(NULL, *out_response_id);
+      *out_response_id = NULL;
+    }
+    if (out_usage != NULL) {
+      memset(out_usage, 0, sizeof(*out_usage));
+    }
   }
 retry_request:
   url = NULL;
@@ -2970,10 +2989,9 @@ retry_request:
       curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
                        (long)CURL_HTTP_VERSION_2TLS);
     }
-    if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    }
+    cai_configure_curl_tls(curl, CAI_CLIENT_IMPL(client)->insecure_skip_verify,
+                           CAI_CLIENT_IMPL(client)->ca_bundle_path,
+                           CAI_CLIENT_IMPL(client)->ca_path);
     cai_log_http_request_start(
         CAI_CLIENT_IMPL(client), "POST", "responses", 1,
         (size_t)cai_response_request_upload_size(upload));

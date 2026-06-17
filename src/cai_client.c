@@ -103,6 +103,8 @@ static void cai_client_destroy_fields(cai_client_impl *impl) {
   cai_free_mem(&impl->allocator, impl->base_url);
   cai_free_mem(&impl->allocator, impl->organization_id);
   cai_free_mem(&impl->allocator, impl->project_id);
+  cai_free_mem(&impl->allocator, impl->ca_bundle_path);
+  cai_free_mem(&impl->allocator, impl->ca_path);
 }
 
 int cai_client_open(const cai_client_config *config, cai_client **out,
@@ -155,6 +157,11 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
                                                 : CAI_DEFAULT_HTTP_TIMEOUT_MS;
   impl->http_2_disabled = effective->http_2_disabled;
   impl->insecure_skip_verify = effective->insecure_skip_verify;
+  impl->ca_bundle_path = NULL;
+  impl->ca_path = NULL;
+  impl->responses_websocket_fallback_disabled =
+      effective->responses_websocket_fallback_disabled;
+  impl->responses_websocket_fallback_active = 0;
   impl->json_response_limit_bytes = effective->json_response_limit_bytes;
   impl->logger = effective->logger_disabled ? NULL : effective->logger;
   impl->logger_disabled = effective->logger_disabled;
@@ -221,6 +228,22 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     cai_free_mem(&impl->allocator, impl);
     cai_free_mem(&effective->allocator, client);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate project id");
+  }
+  impl->ca_bundle_path =
+      cai_strdup(&impl->allocator, effective->ca_bundle_path);
+  if (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) {
+    cai_client_destroy_fields(impl);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate CA bundle path");
+  }
+  impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
+  if (effective->ca_path != NULL && impl->ca_path == NULL) {
+    cai_client_destroy_fields(impl);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate CA path");
   }
   client->new_agent = cai_client_new_agent;
   client->create_response = cai_client_create_response;

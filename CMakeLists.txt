@@ -35,6 +35,7 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.2.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
+set(CAI_ABI_VERSION "1" CACHE STRING "Shared library ABI/SOVERSION.")
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.32.0")
 set(CAI_LONEJSON_ABI_VERSION "16")
@@ -591,7 +592,7 @@ if(CAI_BUILD_SHARED)
   set_target_properties(cai_shared PROPERTIES
     OUTPUT_NAME cai
     VERSION ${PROJECT_VERSION}
-    SOVERSION ${PROJECT_VERSION_MAJOR})
+    SOVERSION ${CAI_ABI_VERSION})
 endif()
 
 foreach(_cai_target IN ITEMS cai_static cai_shared)
@@ -820,6 +821,8 @@ if(CAI_BUILD_TESTS)
     stream_responses_websocket_large_frame
     stream_responses_websocket_transient_retry
     stream_responses_websocket_midstream_drop
+    stream_responses_websocket_https_fallback
+    stream_responses_websocket_https_fallback_disabled
     stream_responses_websocket_fragmented_event
     session_stream_responses_websocket_multi_turn
     session_stream_responses_websocket_stale_reconnect

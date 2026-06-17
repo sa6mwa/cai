@@ -58,6 +58,9 @@ typedef struct cai_chatgpt_auth_impl {
   char *client_id;
   long long refresh_window_seconds;
   long http_timeout_ms;
+  int insecure_skip_verify;
+  char *ca_bundle_path;
+  char *ca_path;
   struct pslog_logger *logger;
   int logger_disabled;
   char *id_token;
@@ -79,6 +82,9 @@ typedef struct cai_chatgpt_login_impl {
   char *code_verifier;
   char *authorize_url;
   long http_timeout_ms;
+  int insecure_skip_verify;
+  char *ca_bundle_path;
+  char *ca_path;
   struct pslog_logger *logger;
   int logger_disabled;
   int completed;
@@ -981,10 +987,16 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   impl->http_timeout_ms = effective->http_timeout_ms > 0
                               ? effective->http_timeout_ms
                               : CAI_CHATGPT_AUTH_DEFAULT_HTTP_TIMEOUT_MS;
+  impl->insecure_skip_verify = effective->insecure_skip_verify;
+  impl->ca_bundle_path =
+      cai_strdup(&impl->allocator, effective->ca_bundle_path);
+  impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
   impl->logger = effective->logger;
   impl->logger_disabled = effective->logger_disabled;
   if (impl->auth_json_path == NULL || impl->issuer == NULL ||
-      impl->client_id == NULL) {
+      impl->client_id == NULL ||
+      (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) ||
+      (effective->ca_path != NULL && impl->ca_path == NULL)) {
     auth->close(auth);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth");
   }
@@ -1263,8 +1275,10 @@ static int cai_auth_query_param(const char *target, const char *name,
 
 static int cai_auth_http_post(cai_allocator *allocator, const char *url,
                               const char *content_type, const char *body_text,
-                              long timeout_ms, char **out_json,
-                              long *out_status, cai_error *error) {
+                              long timeout_ms, int insecure_skip_verify,
+                              const char *ca_bundle_path, const char *ca_path,
+                              char **out_json, long *out_status,
+                              cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -1309,6 +1323,7 @@ static int cai_auth_http_post(cai_allocator *allocator, const char *url,
   }
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, timeout_ms);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+  cai_configure_curl_tls(curl, insecure_skip_verify, ca_bundle_path, ca_path);
   curl_rc = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, out_status);
   curl_easy_cleanup(curl);
@@ -1332,8 +1347,9 @@ static int cai_auth_http_post_json(cai_chatgpt_auth_impl *auth, const char *url,
                                    const char *request_json, char **out_json,
                                    long *out_status, cai_error *error) {
   return cai_auth_http_post(&auth->allocator, url, "application/json",
-                            request_json, auth->http_timeout_ms, out_json,
-                            out_status, error);
+                            request_json, auth->http_timeout_ms,
+                            auth->insecure_skip_verify, auth->ca_bundle_path,
+                            auth->ca_path, out_json, out_status, error);
 }
 
 static int cai_chatgpt_auth_save(cai_chatgpt_auth_impl *auth,
@@ -1819,13 +1835,19 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
     impl->http_timeout_ms = effective->http_timeout_ms > 0
                                 ? effective->http_timeout_ms
                                 : CAI_CHATGPT_AUTH_DEFAULT_HTTP_TIMEOUT_MS;
+    impl->insecure_skip_verify = effective->insecure_skip_verify;
+    impl->ca_bundle_path =
+        cai_strdup(&impl->allocator, effective->ca_bundle_path);
+    impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
     impl->logger = effective->logger;
     impl->logger_disabled = effective->logger_disabled;
     if (impl->auth_json_path == NULL || impl->issuer == NULL ||
         impl->client_id == NULL || impl->redirect_uri == NULL ||
         impl->callback_path == NULL || impl->scopes == NULL ||
         impl->originator == NULL || impl->state == NULL ||
-        impl->code_verifier == NULL) {
+        impl->code_verifier == NULL ||
+        (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) ||
+        (effective->ca_path != NULL && impl->ca_path == NULL)) {
       rc = cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
     }
   }
@@ -1953,7 +1975,8 @@ static int cai_chatgpt_login_exchange_code(cai_chatgpt_login_impl *login,
   if (rc == CAI_OK) {
     rc = cai_auth_http_post(
         &login->allocator, url, "application/x-www-form-urlencoded", form.data,
-        login->http_timeout_ms, &response_json, &status, error);
+        login->http_timeout_ms, login->insecure_skip_verify,
+        login->ca_bundle_path, login->ca_path, &response_json, &status, error);
   }
   cai_auth_secure_clear(form.data);
   cai_free_mem(NULL, form.data);
@@ -2118,6 +2141,8 @@ void cai_chatgpt_login_close(cai_chatgpt_login *login) {
     cai_free_mem(&impl->allocator, impl->state);
     cai_auth_free_secret(&impl->allocator, impl->code_verifier);
     cai_free_mem(&impl->allocator, impl->authorize_url);
+    cai_free_mem(&impl->allocator, impl->ca_bundle_path);
+    cai_free_mem(&impl->allocator, impl->ca_path);
     memset(impl, 0, sizeof(*impl));
     cai_free_mem(&allocator, impl);
   }
@@ -2138,6 +2163,8 @@ void cai_chatgpt_auth_close(cai_chatgpt_auth *auth) {
     cai_free_mem(&impl->allocator, impl->auth_json_path);
     cai_free_mem(&impl->allocator, impl->issuer);
     cai_free_mem(&impl->allocator, impl->client_id);
+    cai_free_mem(&impl->allocator, impl->ca_bundle_path);
+    cai_free_mem(&impl->allocator, impl->ca_path);
     cai_auth_free_secret(&impl->allocator, impl->id_token);
     cai_auth_free_secret(&impl->allocator, impl->access_token);
     cai_auth_free_secret(&impl->allocator, impl->refresh_token);

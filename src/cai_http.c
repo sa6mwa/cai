@@ -41,6 +41,23 @@ typedef enum cai_http_response_mode {
   CAI_HTTP_RESPONSE_IGNORE = 1
 } cai_http_response_mode;
 
+void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
+                            const char *ca_bundle_path, const char *ca_path) {
+  if (curl == NULL) {
+    return;
+  }
+  if (ca_bundle_path != NULL && ca_bundle_path[0] != '\0') {
+    curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle_path);
+  }
+  if (ca_path != NULL && ca_path[0] != '\0') {
+    curl_easy_setopt(curl, CURLOPT_CAPATH, ca_path);
+  }
+  if (insecure_skip_verify) {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+  }
+}
+
 static const lonejson_field cai_api_error_body_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_api_error_body, message, "message"),
     LONEJSON_FIELD_STRING_ALLOC(cai_api_error_body, type, "type"),
@@ -634,10 +651,9 @@ retry_request:
   } else {
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_2TLS);
   }
-  if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-  }
+  cai_configure_curl_tls(curl, CAI_CLIENT_IMPL(client)->insecure_skip_verify,
+                         CAI_CLIENT_IMPL(client)->ca_bundle_path,
+                         CAI_CLIENT_IMPL(client)->ca_path);
 
   cai_log_http_request_start(CAI_CLIENT_IMPL(client), method, path, 0,
                              request_json != NULL ? request_json_len : 0U);
@@ -853,10 +869,9 @@ retry_request:
       curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
                        (long)CURL_HTTP_VERSION_2TLS);
     }
-    if (CAI_CLIENT_IMPL(client)->insecure_skip_verify) {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    }
+    cai_configure_curl_tls(curl, CAI_CLIENT_IMPL(client)->insecure_skip_verify,
+                           CAI_CLIENT_IMPL(client)->ca_bundle_path,
+                           CAI_CLIENT_IMPL(client)->ca_path);
     cai_log_http_request_start(
         CAI_CLIENT_IMPL(client), "POST", path, stream,
         (size_t)cai_response_request_upload_size(upload));

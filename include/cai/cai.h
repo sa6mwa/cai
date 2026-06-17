@@ -186,6 +186,12 @@ typedef struct cai_client_config {
   int http_2_disabled;
   /** Non-zero disables TLS certificate verification. */
   int insecure_skip_verify;
+  /** Optional PEM CA bundle path for TLS verification. */
+  const char *ca_bundle_path;
+  /** Optional CA certificate directory path for TLS verification. */
+  const char *ca_path;
+  /** Non-zero disables fallback from Responses WebSocket to HTTPS streaming. */
+  int responses_websocket_fallback_disabled;
   /** Maximum non-streamed JSON response bytes; zero uses default. */
   size_t json_response_limit_bytes;
   /** Optional pslog logger. */

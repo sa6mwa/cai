@@ -27,6 +27,10 @@ typedef struct cai_client_impl {
   long timeout_ms;
   int http_2_disabled;
   int insecure_skip_verify;
+  char *ca_bundle_path;
+  char *ca_path;
+  int responses_websocket_fallback_disabled;
+  int responses_websocket_fallback_active;
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;
   int logger_disabled;
@@ -338,6 +342,8 @@ const char *cai_tool_registry_schema_at(const cai_tool_registry *registry,
                                         size_t index);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
+void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
+                            const char *ca_bundle_path, const char *ca_path);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
 

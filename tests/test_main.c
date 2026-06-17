@@ -4248,6 +4248,8 @@ static void test_client_open(test_state *state) {
   cai_error_init(&error);
   cai_client_config_init(&config);
   if (config.api_key_env != NULL || config.base_url != NULL ||
+      config.ca_bundle_path != NULL || config.ca_path != NULL ||
+      config.responses_websocket_fallback_disabled != 0 ||
       config.json_response_limit_bytes != 0U) {
     test_fail(state, "client_config_zero_defaults",
               "client config init should leave defaulted fields zero");
@@ -4278,6 +4280,8 @@ static void test_client_open(test_state *state) {
   logger = &fake_logger;
   config.api_key = "test-key";
   config.base_url = "http://example.test/v1";
+  config.ca_bundle_path = "/tmp/cai-test-ca.pem";
+  config.ca_path = "/tmp/cai-test-ca-dir";
   config.logger = logger;
   g_test_infof_count = 0;
   client = NULL;
@@ -4292,6 +4296,15 @@ static void test_client_open(test_state *state) {
                "test-key");
     expect_str(state, "client_base_url", CAI_CLIENT_IMPL(client)->base_url,
                "http://example.test/v1");
+    expect_str(state, "client_ca_bundle_path",
+               CAI_CLIENT_IMPL(client)->ca_bundle_path, "/tmp/cai-test-ca.pem");
+    expect_str(state, "client_ca_path", CAI_CLIENT_IMPL(client)->ca_path,
+               "/tmp/cai-test-ca-dir");
+    if (CAI_CLIENT_IMPL(client)->ca_bundle_path == config.ca_bundle_path ||
+        CAI_CLIENT_IMPL(client)->ca_path == config.ca_path) {
+      test_fail(state, "client_ca_paths_owned",
+                "client should own configured CA path strings");
+    }
     expect_int(state, "client_default_timeout",
                CAI_CLIENT_IMPL(client)->timeout_ms,
                CAI_DEFAULT_HTTP_TIMEOUT_MS);
@@ -8188,6 +8201,106 @@ static void mock_websocket_drop_after_delta_child(int pipe_fd) {
     _exit(5);
   }
   close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int mock_websocket_fallback_write_sse(int client_fd,
+                                             const char *response_id,
+                                             const char *delta,
+                                             long total_tokens) {
+  char body[1024];
+  char header[256];
+  int body_len;
+  int header_len;
+
+  body_len = snprintf(
+      body, sizeof(body),
+      "event: response.output_text.delta\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"%s\"}\n\n"
+      "event: response.completed\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"%s\","
+      "\"usage\":{\"input_tokens\":2,\"input_tokens_details\":{"
+      "\"cached_tokens\":1},\"output_tokens\":3,\"output_tokens_details\":{"
+      "\"reasoning_tokens\":1},\"total_tokens\":%ld}}}\n\n",
+      delta, response_id, total_tokens);
+  if (body_len <= 0 || (size_t)body_len >= sizeof(body)) {
+    return -1;
+  }
+  header_len = snprintf(header, sizeof(header),
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/event-stream\r\n"
+                        "Content-Length: %d\r\n"
+                        "Connection: close\r\n\r\n",
+                        body_len);
+  if (header_len <= 0 || (size_t)header_len >= sizeof(header)) {
+    return -1;
+  }
+  return mock_write_all(client_fd, header, (size_t)header_len) == 0 &&
+                 mock_write_all(client_fd, body, (size_t)body_len) == 0
+             ? 0
+             : -1;
+}
+
+static void mock_websocket_fallback_to_http_child(int pipe_fd) {
+  static const char ws_delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"partial ws\"}";
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+  int turn;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(3U);
+  server_fd = -1;
+  client_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(4);
+  }
+  if (mock_websocket_write_text(client_fd, ws_delta) != 0) {
+    _exit(5);
+  }
+  close(client_fd);
+  client_fd = -1;
+
+  for (turn = 0; turn < 2; turn++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+      _exit(6);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+        strstr(request, "POST /v1/responses HTTP/") == NULL ||
+        strstr(request, "Accept: text/event-stream") == NULL ||
+        strstr(request, "\"stream\":true") == NULL ||
+        strstr(request, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+        strstr(request, "\"text\":\"ws user turn\"") == NULL) {
+      _exit(7);
+    }
+    if (turn == 0) {
+      if (mock_websocket_fallback_write_sse(client_fd, "resp_http_fallback",
+                                            "http fallback", 7L) != 0) {
+        _exit(8);
+      }
+    } else if (mock_websocket_fallback_write_sse(client_fd, "resp_http_sticky",
+                                                 "http sticky", 11L) != 0) {
+      _exit(9);
+    }
+    close(client_fd);
+    client_fd = -1;
+  }
   close(server_fd);
   alarm(0U);
   _exit(0);
@@ -17298,6 +17411,190 @@ cleanup:
   }
 }
 
+static void test_stream_responses_websocket_https_fallback(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(state, "stream_ws_http_fallback_mock",
+                                       mock_websocket_fallback_to_http_child,
+                                       &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_http_fallback_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_http_fallback_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_http_fallback_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_http_fallback_output", writer.buffer,
+             "partial wshttp fallback");
+  expect_str(state, "stream_ws_http_fallback_response_id", response_id,
+             "resp_http_fallback");
+  expect_int(state, "stream_ws_http_fallback_usage", usage.total_tokens, 7LL);
+
+  cai_string_destroy(response_id);
+  response_id = NULL;
+  expect_int(state, "stream_ws_http_fallback_sticky_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_http_fallback_sticky_output", writer.buffer,
+             "partial wshttp fallbackhttp sticky");
+  expect_str(state, "stream_ws_http_fallback_sticky_response_id", response_id,
+             "resp_http_sticky");
+  expect_int(state, "stream_ws_http_fallback_sticky_usage", usage.total_tokens,
+             11LL);
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_http_fallback_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
+static void
+test_stream_responses_websocket_https_fallback_disabled(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_http_fallback_disabled_mock",
+          mock_websocket_drop_after_delta_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  config.responses_websocket_fallback_disabled = 1;
+  expect_int(state, "stream_ws_http_fallback_disabled_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_http_fallback_disabled_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_http_fallback_disabled_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "stream_ws_http_fallback_disabled_output", writer.buffer,
+             "partial ws");
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_http_fallback_disabled_no_response_id",
+              "dropped stream returned a response id");
+  }
+  expect_int(state, "stream_ws_http_fallback_disabled_usage",
+             usage.total_tokens, 0LL);
+  expect_substr(state, "stream_ws_http_fallback_disabled_error", error.message,
+                "websocket closed before response.completed");
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_http_fallback_disabled_mock",
+                      server.pid, &server.child_status);
+  }
+}
+
 static void
 test_stream_responses_websocket_fragmented_event(test_state *state) {
   websocket_mock_server server;
@@ -20693,6 +20990,10 @@ static const test_entry test_entries[] = {
      test_stream_responses_websocket_transient_retry},
     {"stream_responses_websocket_midstream_drop",
      test_stream_responses_websocket_midstream_drop},
+    {"stream_responses_websocket_https_fallback",
+     test_stream_responses_websocket_https_fallback},
+    {"stream_responses_websocket_https_fallback_disabled",
+     test_stream_responses_websocket_https_fallback_disabled},
     {"stream_responses_websocket_fragmented_event",
      test_stream_responses_websocket_fragmented_event},
     {"session_stream_responses_websocket_multi_turn",
