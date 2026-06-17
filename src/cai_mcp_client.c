@@ -355,6 +355,11 @@ static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res) {
          strstr(res->content_type, "application/json") != NULL;
 }
 
+static int cai_mcp_response_is_sse(const cai_mcp_http_response_capture *res) {
+  return res != NULL && res->content_type != NULL &&
+         strstr(res->content_type, "text/event-stream") != NULL;
+}
+
 static int cai_mcp_response_ok(const cai_mcp_http_response_capture *res,
                                cai_error *error) {
   if (res == NULL) {
@@ -478,6 +483,205 @@ static int cai_mcp_write_cstr(lonejson_spooled *spool, const char *text,
                                 json_error.message);
   }
   return CAI_OK;
+}
+
+static int cai_mcp_spool_copy(const lonejson_spooled *src,
+                              lonejson_spooled *dst, cai_error *error) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  unsigned char buffer[4096];
+  lonejson_read_result chunk;
+
+  CAI_LJ->spooled_init(CAI_LJ, dst);
+  cursor = *src;
+  lonejson_error_init(&json_error);
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    dst->cleanup(dst);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  for (;;) {
+    chunk = cursor.read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      dst->cleanup(dst);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read MCP response body");
+    }
+    if (chunk.bytes_read != 0U &&
+        dst->append(dst, buffer, chunk.bytes_read, &json_error) !=
+            LONEJSON_STATUS_OK) {
+      dst->cleanup(dst);
+      return cai_mcp_set_json_error(error, "failed to copy MCP response",
+                                    &json_error);
+    }
+    if (chunk.eof) {
+      break;
+    }
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_sse_line_is_blank(const char *line, size_t len) {
+  size_t i;
+
+  for (i = 0U; i < len; i++) {
+    if (line[i] != '\r' && line[i] != ' ' && line[i] != '\t') {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static void cai_mcp_sse_set_event(char *event, size_t event_size,
+                                  const char *value, size_t len) {
+  while (len > 0U && (*value == ' ' || *value == '\t')) {
+    value++;
+    len--;
+  }
+  while (len > 0U && (value[len - 1U] == '\r' || value[len - 1U] == ' ' ||
+                      value[len - 1U] == '\t')) {
+    len--;
+  }
+  if (event_size == 0U) {
+    return;
+  }
+  if (len >= event_size) {
+    len = event_size - 1U;
+  }
+  memcpy(event, value, len);
+  event[len] = '\0';
+}
+
+static int cai_mcp_sse_data_event_done(const char *event,
+                                       const lonejson_spooled *data) {
+  return data->size_fn(data) != 0U &&
+         (event[0] == '\0' || strcmp(event, "message") == 0);
+}
+
+static int cai_mcp_sse_handle_line(lonejson_spooled *data, char *event,
+                                   size_t event_size, const char *line,
+                                   size_t len, int *done, cai_error *error) {
+  lonejson_error json_error;
+  const char *value;
+
+  if (cai_mcp_sse_line_is_blank(line, len)) {
+    if (cai_mcp_sse_data_event_done(event, data)) {
+      *done = 1;
+    } else {
+      data->reset(data);
+      event[0] = '\0';
+    }
+    return CAI_OK;
+  }
+  if (len >= 5U && memcmp(line, "data:", 5U) == 0) {
+    value = line + 5U;
+    len -= 5U;
+    if (len > 0U && *value == ' ') {
+      value++;
+      len--;
+    }
+    while (len > 0U && value[len - 1U] == '\r') {
+      len--;
+    }
+    if (len == 0U) {
+      return CAI_OK;
+    }
+    if (data->size_fn(data) != 0U) {
+      lonejson_error_init(&json_error);
+      if (data->append(data, "\n", 1U, &json_error) != LONEJSON_STATUS_OK) {
+        return cai_mcp_set_json_error(error, "failed to parse MCP SSE data",
+                                      &json_error);
+      }
+    }
+    lonejson_error_init(&json_error);
+    if (data->append(data, value, len, &json_error) != LONEJSON_STATUS_OK) {
+      return cai_mcp_set_json_error(error, "failed to parse MCP SSE data",
+                                    &json_error);
+    }
+  } else if (len >= 6U && memcmp(line, "event:", 6U) == 0) {
+    cai_mcp_sse_set_event(event, event_size, line + 6U, len - 6U);
+  }
+  return CAI_OK;
+}
+
+static int
+cai_mcp_sse_response_json_body(const cai_mcp_http_response_capture *response,
+                               lonejson_spooled *out, cai_error *error) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result chunk;
+  cai_buffer_builder line;
+  unsigned char buffer[4096];
+  char event[64];
+  size_t i;
+  int done;
+  int rc;
+
+  CAI_LJ->spooled_init(CAI_LJ, out);
+  cursor = response->body;
+  memset(&line, 0, sizeof(line));
+  event[0] = '\0';
+  done = 0;
+  rc = CAI_OK;
+  lonejson_error_init(&json_error);
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    out->cleanup(out);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP SSE response",
+                                  &json_error);
+  }
+  while (!done) {
+    chunk = cursor.read(&cursor, buffer, sizeof(buffer));
+    if (chunk.error_code != 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read MCP SSE response");
+      break;
+    }
+    for (i = 0U; i < chunk.bytes_read && !done; i++) {
+      if (buffer[i] == '\n') {
+        rc = cai_mcp_sse_handle_line(out, event, sizeof(event), line.data,
+                                     line.length, &done, error);
+        line.length = 0U;
+        if (line.data != NULL) {
+          line.data[0] = '\0';
+        }
+      } else {
+        rc = cai_buffer_append(&line, (const char *)&buffer[i], 1U, error);
+      }
+      if (rc != CAI_OK) {
+        break;
+      }
+    }
+    if (rc != CAI_OK || chunk.eof) {
+      break;
+    }
+  }
+  if (rc == CAI_OK && !done && line.length != 0U) {
+    rc = cai_mcp_sse_handle_line(out, event, sizeof(event), line.data,
+                                 line.length, &done, error);
+  }
+  cai_free_mem(NULL, line.data);
+  if (rc == CAI_OK && !done && !cai_mcp_sse_data_event_done(event, out)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP SSE response did not include JSON-RPC message");
+  }
+  if (rc != CAI_OK) {
+    out->cleanup(out);
+  }
+  return rc;
+}
+
+static int
+cai_mcp_response_json_body(const cai_mcp_http_response_capture *response,
+                           const char *operation, lonejson_spooled *out,
+                           cai_error *error) {
+  if (cai_mcp_response_is_json(response)) {
+    return cai_mcp_spool_copy(&response->body, out, error);
+  }
+  if (cai_mcp_response_is_sse(response)) {
+    return cai_mcp_sse_response_json_body(response, out, error);
+  }
+  return cai_set_error_detail(error, CAI_ERR_PROTOCOL, operation,
+                              "MCP response was neither JSON nor SSE");
 }
 
 static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
@@ -660,18 +864,22 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
                                   cai_error *error) {
   cai_mcp_initialize_response_doc doc;
+  lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int rc;
 
-  if (!cai_mcp_response_is_json(response)) {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP initialize response was not JSON");
+  rc = cai_mcp_response_json_body(response, "MCP initialize response",
+                                  &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   memset(&doc, 0, sizeof(doc));
-  reader.cursor = response->body;
+  reader.cursor = json_body;
   lonejson_error_init(&json_error);
   if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to rewind MCP response",
                                   &json_error);
   }
@@ -679,21 +887,25 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
                                 cai_mcp_spooled_read, &reader, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to parse MCP initialize",
                                   &json_error);
   }
   if (doc.error_doc.message != NULL) {
-    int rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
+    rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
+    json_body.cleanup(&json_body);
     return rc;
   }
   if (doc.result.protocol_version == NULL ||
       strcmp(doc.result.protocol_version, impl->protocol_version) != 0) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
+    json_body.cleanup(&json_body);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP server negotiated unsupported protocol version");
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
+  json_body.cleanup(&json_body);
   return CAI_OK;
 }
 
@@ -766,6 +978,7 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
                                   cai_error *error) {
   cai_mcp_tools_list_response_doc doc;
+  lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
@@ -773,14 +986,16 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
   size_t i;
   int rc;
 
-  if (!cai_mcp_response_is_json(response)) {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP tools/list response was not JSON");
+  rc = cai_mcp_response_json_body(response, "MCP tools/list response",
+                                  &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   memset(&doc, 0, sizeof(doc));
-  reader.cursor = response->body;
+  reader.cursor = json_body;
   lonejson_error_init(&json_error);
   if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to rewind MCP response",
                                   &json_error);
   }
@@ -788,12 +1003,14 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                 cai_mcp_spooled_read, &reader, &json_error);
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to parse MCP tools/list",
                                   &json_error);
   }
   if (doc.error_doc.message != NULL) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+    json_body.cleanup(&json_body);
     return rc;
   }
   rc = cai_mcp_client_reserve_tools(impl, doc.result.tools.count, error);
@@ -828,6 +1045,7 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
   if (rc != CAI_OK) {
     cai_mcp_client_clear_tools(impl);
   }
+  json_body.cleanup(&json_body);
   return rc;
 }
 
@@ -835,13 +1053,16 @@ static int
 cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
                             cai_sink *output, cai_error *error) {
   cai_mcp_jsonrpc_sink_response_doc doc;
+  lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int rc;
 
-  if (!cai_mcp_response_is_json(response)) {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP tools/call response was not JSON");
+  rc = cai_mcp_response_json_body(response, "MCP tools/call response",
+                                  &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   memset(&doc, 0, sizeof(doc));
   lonejson_error_init(&json_error);
@@ -851,13 +1072,15 @@ cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
                                          &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to prepare MCP result sink",
                                   &json_error);
   }
-  reader.cursor = response->body;
+  reader.cursor = json_body;
   if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to rewind MCP response",
                                   &json_error);
   }
@@ -867,17 +1090,20 @@ cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to parse MCP tools/call",
                                   &json_error);
   }
   if (doc.error_doc.message != NULL) {
-    int rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
+    rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
     return rc;
   }
   CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE, &cai_mcp_jsonrpc_sink_response_map,
                            &doc);
+  json_body.cleanup(&json_body);
   return CAI_OK;
 }
 

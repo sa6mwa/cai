@@ -366,6 +366,7 @@ mcp-everything-logs: compose-check
 	$(COMPOSE) -f "$(COMPOSE_FILE)" logs -f mcp-everything
 
 mcp-everything-test:
+	$(CMAKE) --build build/debug --target cai_mcp_client_smoke
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
@@ -397,7 +398,8 @@ mcp-everything-test:
 		-H "mcp-session-id: $$session_id" \
 		-d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"cai-mcp-ok"}}}' "$$url"; \
 	grep -q 'cai-mcp-ok' "$$tmpdir/call.json"; \
-	printf 'MCP Everything smoke test passed at %s\n' "$$url"
+	printf 'MCP Everything protocol smoke test passed at %s\n' "$$url"; \
+	build/debug/cai_mcp_client_smoke "$$url"
 
 format:
 	$(CMAKE) --preset debug

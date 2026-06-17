@@ -8034,18 +8034,24 @@ static void http_mock_client_close(test_state *state, const char *name,
 
 static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   static const char initialize_body[] =
+      "event: message\n"
+      "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
       "\",\"capabilities\":{\"tools\":{\"listChanged\":false}},"
-      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}\n\n";
   static const char tools_list_body[] =
+      "event: message\n"
+      "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
       "\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\","
       "\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":["
-      "\"message\"]}}]}}";
+      "\"message\"]}}]}}\n\n";
   static const char call_body[] =
+      "event: message\n"
+      "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"hello from mcp\"}],\"isError\":false}}";
+      "\"text\",\"text\":\"hello from mcp\"}],\"isError\":false}}\n\n";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
       "Accept: application/json, text/event-stream",
@@ -8071,17 +8077,17 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
-       "application/json", "req-init\r\nMCP-Session-Id: session-123",
+       "text/event-stream", "req-init\r\nMCP-Session-Id: session-123",
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
        200, "OK", "application/json", NULL, "{}"},
       {"POST /v1/mcp HTTP/", list_required,
        sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
-       "application/json", NULL, tools_list_body},
+       "text/event-stream", NULL, tools_list_body},
       {"POST /v1/mcp HTTP/", call_required,
        sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
-       "application/json", NULL, call_body}};
+       "text/event-stream", NULL, call_body}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
