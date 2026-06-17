@@ -122,6 +122,11 @@ int main(int argc, char **argv) {
     cai_mcp_client_destroy(client);
     return smoke_error("MCP server did not advertise echo tool", NULL);
   }
+  rc = cai_mcp_client_ping(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("failed to ping MCP server", &error);
+  }
   rc = cai_mcp_client_refresh_resources(client, &error);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);

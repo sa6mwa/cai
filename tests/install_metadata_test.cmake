@@ -295,6 +295,7 @@ int main(void) {
   int (*mcp_client_open)(const cai_mcp_streamable_http_client_config *,
                          cai_mcp_client **, cai_error *);
   int (*mcp_client_initialize)(cai_mcp_client *, cai_error *);
+  int (*mcp_client_ping)(cai_mcp_client *, cai_error *);
   int (*mcp_client_refresh_tools)(cai_mcp_client *, cai_error *);
   size_t (*mcp_client_tool_count)(const cai_mcp_client *);
   const cai_mcp_client_tool *(*mcp_client_tool_at)(const cai_mcp_client *,
@@ -348,6 +349,7 @@ int main(void) {
   mcp_client_config_init = cai_mcp_streamable_http_client_config_init;
   mcp_client_open = cai_mcp_streamable_http_client_open;
   mcp_client_initialize = cai_mcp_client_initialize;
+  mcp_client_ping = cai_mcp_client_ping;
   mcp_client_refresh_tools = cai_mcp_client_refresh_tools;
   mcp_client_tool_count = cai_mcp_client_tool_count;
   mcp_client_tool_at = cai_mcp_client_tool_at;
@@ -378,6 +380,7 @@ int main(void) {
       mcp_config_init == 0 || mcp_new == 0 || mcp_handle == 0 ||
       mcp_destroy == 0 || mcp_client_config_init == 0 ||
       mcp_client_open == 0 || mcp_client_initialize == 0 ||
+      mcp_client_ping == 0 ||
       mcp_client_refresh_tools == 0 || mcp_client_tool_count == 0 ||
       mcp_client_tool_at == 0 || mcp_client_call_tool == 0 ||
       mcp_client_refresh_resources == 0 || mcp_client_resource_count == 0 ||

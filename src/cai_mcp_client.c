@@ -499,6 +499,16 @@ static lonejson_status cai_mcp_cai_sink_bridge(void *user, const void *data,
   return LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
+static lonejson_status cai_mcp_discard_sink(void *user, const void *data,
+                                            size_t len,
+                                            lonejson_error *json_error) {
+  (void)user;
+  (void)data;
+  (void)len;
+  (void)json_error;
+  return LONEJSON_STATUS_OK;
+}
+
 static lonejson_status cai_mcp_buffer_sink(void *user, const void *data,
                                            size_t len,
                                            lonejson_error *json_error) {
@@ -1014,6 +1024,25 @@ static int cai_mcp_initialized_notification(lonejson_spooled *spool,
   rc = cai_mcp_write_cstr(
       spool, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
       error);
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
+static int cai_mcp_ping_request(cai_mcp_streamable_http_client_impl *impl,
+                                lonejson_spooled *spool, size_t *out_len,
+                                cai_error *error) {
+  int rc;
+
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, "ping", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}", error);
+  }
   if (out_len != NULL) {
     *out_len = spool->size_fn(spool);
   }
@@ -1963,6 +1992,69 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
   return CAI_OK;
 }
 
+static int cai_mcp_parse_empty_result_response(
+    const cai_mcp_http_response_capture *response, const char *response_name,
+    const char *parse_name, cai_error *error) {
+  cai_mcp_jsonrpc_sink_response_doc doc;
+  lonejson_spooled json_body;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  rc = cai_mcp_response_json_body(response, response_name, &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  CAI_LJ_PRESERVE->json_value_init(CAI_LJ_PRESERVE, &doc.result);
+  if (doc.result.methods->set_parse_sink(&doc.result, cai_mcp_discard_sink,
+                                         NULL,
+                                         &json_error) != LONEJSON_STATUS_OK) {
+    CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
+                             &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to prepare MCP result sink",
+                                  &json_error);
+  }
+  reader.cursor = json_body;
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
+                             &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  status = CAI_LJ_PRESERVE->parse_reader(
+      CAI_LJ_PRESERVE, &cai_mcp_jsonrpc_sink_response_map, &doc,
+      cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
+                             &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, parse_name, &json_error);
+  }
+  if (doc.error_doc.message != NULL) {
+    rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
+    CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
+                             &cai_mcp_jsonrpc_sink_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE, &cai_mcp_jsonrpc_sink_response_map,
+                           &doc);
+  json_body.cleanup(&json_body);
+  return CAI_OK;
+}
+
+static int
+cai_mcp_parse_ping_response(const cai_mcp_http_response_capture *response,
+                            cai_error *error) {
+  return cai_mcp_parse_empty_result_response(response, "MCP ping response",
+                                             "failed to parse MCP ping", error);
+}
+
 static int
 cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
                             cai_sink *output, cai_error *error) {
@@ -2066,6 +2158,35 @@ static int cai_mcp_post_request_with_session_recovery(
     return rc;
   }
   return cai_mcp_post(impl, request, request_len, 1, response, error);
+}
+
+static int cai_mcp_streamable_ping(cai_mcp_client *client, cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_ping_request(impl, &request, &request_len, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_ping_response(&response, error);
+  }
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
 }
 
 static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
@@ -2546,6 +2667,7 @@ int cai_mcp_streamable_http_client_open(
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to copy MCP config");
   }
   impl->public_client.initialize = cai_mcp_streamable_initialize;
+  impl->public_client.ping = cai_mcp_streamable_ping;
   impl->public_client.refresh_tools = cai_mcp_streamable_refresh_tools;
   impl->public_client.tool_count = cai_mcp_streamable_tool_count;
   impl->public_client.tool_at = cai_mcp_streamable_tool_at;
@@ -2577,6 +2699,14 @@ int cai_mcp_client_initialize(cai_mcp_client *client, cai_error *error) {
                          "MCP client initialize receiver is required");
   }
   return client->initialize(client, error);
+}
+
+int cai_mcp_client_ping(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->ping == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client ping receiver is required");
+  }
+  return client->ping(client, error);
 }
 
 int cai_mcp_client_refresh_tools(cai_mcp_client *client, cai_error *error) {

@@ -221,6 +221,8 @@ struct cai_mcp_handler {
 struct cai_mcp_client {
   /** Initialize the MCP session if needed. */
   int (*initialize)(cai_mcp_client *client, cai_error *error);
+  /** Send an MCP ping request to verify the remote server is responsive. */
+  int (*ping)(cai_mcp_client *client, cai_error *error);
   /** Refresh the cached remote tools/list metadata. */
   int (*refresh_tools)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached tools. */
@@ -304,6 +306,8 @@ int cai_mcp_streamable_http_client_open(
     cai_error *error);
 /** Initialize an MCP client through its receiver interface. */
 int cai_mcp_client_initialize(cai_mcp_client *client, cai_error *error);
+/** Send an MCP ping request through the client receiver interface. */
+int cai_mcp_client_ping(cai_mcp_client *client, cai_error *error);
 /** Refresh cached remote tools/list metadata. */
 int cai_mcp_client_refresh_tools(cai_mcp_client *client, cai_error *error);
 /** Return the number of cached MCP tools. */

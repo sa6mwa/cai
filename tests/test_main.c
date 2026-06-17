@@ -140,6 +140,7 @@ typedef struct test_mcp_client_impl {
   size_t resource_template_count;
   size_t prompt_count;
   int initialize_count;
+  int ping_count;
   int refresh_count;
   int refresh_resources_count;
   int refresh_resource_templates_count;
@@ -1798,6 +1799,18 @@ static int test_mcp_client_call_tool(cai_mcp_client *client, const char *name,
   return cai_sink_write(output, result, strlen(result), error);
 }
 
+static int test_mcp_client_ping(cai_mcp_client *client, cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->ping_count++;
+  return CAI_OK;
+}
+
 static int test_mcp_client_read_resource(cai_mcp_client *client,
                                          const char *uri, cai_sink *output,
                                          cai_error *error) {
@@ -1903,6 +1916,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->prompts[0].arguments_json = "[{\"name\":\"topic\",\"required\":true}]";
   impl->prompt_count = 1U;
   impl->public_client.initialize = test_mcp_client_initialize;
+  impl->public_client.ping = test_mcp_client_ping;
   impl->public_client.refresh_tools = test_mcp_client_refresh_tools;
   impl->public_client.tool_count = test_mcp_client_tool_count;
   impl->public_client.tool_at = test_mcp_client_tool_at;
@@ -3778,7 +3792,7 @@ static void test_mcp_client_config(test_state *state) {
   expect_int(state, "mcp_client_open_ok",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
-  if (client == NULL || client->initialize == NULL ||
+  if (client == NULL || client->initialize == NULL || client->ping == NULL ||
       client->refresh_tools == NULL || client->tool_count == NULL ||
       client->tool_at == NULL || client->call_tool == NULL ||
       client->refresh_resources == NULL || client->resource_count == NULL ||
@@ -3815,6 +3829,9 @@ static void test_mcp_client_receiver_surface(test_state *state) {
              cai_mcp_client_initialize(&fake.public_client, &error), CAI_OK);
   expect_int(state, "mcp_client_receiver_initialize_count",
              fake.initialize_count, 1L);
+  expect_int(state, "mcp_client_receiver_ping",
+             cai_mcp_client_ping(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_ping_count", fake.ping_count, 1L);
   expect_int(state, "mcp_client_receiver_refresh_tools",
              cai_mcp_client_refresh_tools(&fake.public_client, &error), CAI_OK);
   expect_int(state, "mcp_client_receiver_tool_count",
@@ -3919,6 +3936,10 @@ static void test_mcp_client_receiver_surface(test_state *state) {
 
   expect_int(state, "mcp_client_receiver_null_initialize",
              cai_mcp_client_initialize(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_ping",
+             cai_mcp_client_ping(NULL, &error), CAI_ERR_INVALID);
   cai_error_cleanup(&error);
 }
 
@@ -8449,6 +8470,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{\"completion\":{\"values\":"
       "[\"engineering\"],\"total\":1,\"hasMore\":false}}}\n\n";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{}}";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
       "Accept: application/json, text/event-stream",
@@ -8519,6 +8542,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"ref\":{\"type\":\"ref/prompt\",\"name\":\"completable-prompt\"}",
       "\"argument\":{\"name\":\"name\",\"value\":\"eng\"}",
       "\"context\":{\"arguments\":{\"department\":\"engineering\"}}"};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION, "\"method\":\"ping\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -8569,7 +8595,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        200, "OK", "text/event-stream", NULL, prompt_get_body},
       {"POST /v1/mcp HTTP/", complete_required,
        sizeof(complete_required) / sizeof(complete_required[0]), NULL, 0U, 200,
-       "OK", "text/event-stream", NULL, complete_body}};
+       "OK", "text/event-stream", NULL, complete_body},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -8776,10 +8805,76 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
              "{\"completion\":{\"values\":[\"engineering\"],\"total\":1,"
              "\"hasMore\":false}}");
   args.cleanup(&args);
+  if (cai_mcp_client_ping(client, &error) != CAI_OK) {
+    test_fail(state, "mcp_streamable_ping",
+              error.detail != NULL
+                  ? error.detail
+                  : (error.message != NULL ? error.message : "ping failed"));
+  }
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_ping_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,"
+      "\"message\":\"pong unavailable\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: ping-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: ping-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: ping-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_error_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_ping_error_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_ping_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_ping_error_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_str(state, "mcp_streamable_ping_error_message", error.message,
+             "pong unavailable");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_ping_error_mock", server.pid,
                     &server.child_status);
 }
 
@@ -22096,6 +22191,7 @@ static const test_entry test_entries[] = {
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
+    {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
     {"mcp_streamable_http_session_recovery",
      test_mcp_streamable_http_session_recovery},
     {"mcp_streamable_http_server_error_no_recovery",
