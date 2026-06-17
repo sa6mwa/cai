@@ -149,6 +149,15 @@ typedef struct cai_mcp_client_prompt {
   const char *arguments_json;
 } cai_mcp_client_prompt;
 
+/** Callback for server-to-client MCP notifications observed by a client.
+ *
+ * `params_json` is NULL when the notification has no params. When non-NULL, it
+ * is valid only for the duration of the callback and is owned by cai.
+ */
+typedef int (*cai_mcp_client_notification_fn)(
+    void *context, const char *method, struct lonejson_spooled *params_json,
+    cai_error *error);
+
 /** Configuration for cai's built-in Streamable HTTP MCP client. */
 typedef struct cai_mcp_streamable_http_client_config {
   /** MCP endpoint URL, e.g. http://127.0.0.1:3001/mcp. */
@@ -167,6 +176,12 @@ typedef struct cai_mcp_streamable_http_client_config {
   const char *ca_bundle_path;
   /** Optional CA certificate directory path for TLS verification. */
   const char *ca_path;
+  /** Optional callback for server notifications on response streams. */
+  cai_mcp_client_notification_fn notification;
+  /** Context passed to notification. */
+  void *notification_context;
+  /** Optional cleanup for notification_context. */
+  void (*notification_context_cleanup)(void *context);
   /** Optional custom allocator callbacks. */
   cai_allocator allocator;
 } cai_mcp_streamable_http_client_config;

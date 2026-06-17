@@ -8519,6 +8519,43 @@ static void http_mock_client_close(test_state *state, const char *name,
   }
 }
 
+typedef struct test_mcp_notification_state {
+  int count;
+  int fail;
+  char method[128];
+  char params[512];
+} test_mcp_notification_state;
+
+static int test_mcp_notification_callback(void *context, const char *method,
+                                          lonejson_spooled *params_json,
+                                          cai_error *error) {
+  test_mcp_notification_state *state;
+  char *params;
+
+  state = (test_mcp_notification_state *)context;
+  if (state == NULL || method == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "notification callback context is required");
+  }
+  state->count++;
+  snprintf(state->method, sizeof(state->method), "%s", method);
+  state->params[0] = '\0';
+  if (params_json != NULL) {
+    params = test_spooled_to_cstr(params_json);
+    if (params == NULL) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read notification params");
+    }
+    snprintf(state->params, sizeof(state->params), "%s", params);
+    free(params);
+  }
+  if (state->fail) {
+    return cai_set_error(error, CAI_ERR_CANCELLED,
+                         "notification callback failed");
+  }
+  return CAI_OK;
+}
+
 static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   static const char initialize_body[] =
       "event: message\n"
@@ -8539,6 +8576,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"status\",\"title\":\"Status\",\"inputSchema\":{\"type\":\"object\","
       "\"additionalProperties\":false}}]}}";
   static const char call_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{"
+      "\"progressToken\":\"call-4\",\"progress\":0.5,\"total\":1}}\n\n"
       "event: message\n"
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
@@ -8768,6 +8809,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
+  test_mcp_notification_state notifications;
   lonejson_spooled args;
   lonejson_error json_error;
   cai_error error;
@@ -8778,6 +8820,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   sink = NULL;
   memset(&server, 0, sizeof(server));
   memset(&writer, 0, sizeof(writer));
+  memset(&notifications, 0, sizeof(notifications));
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
   cai_error_init(&error);
   if (http_mock_server_open_script(state, "mcp_streamable_http_mock", script,
@@ -8791,6 +8834,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   config.url = url;
   config.client_name = "cai-test-client";
   config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
   expect_int(state, "mcp_streamable_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
@@ -8847,6 +8892,12 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   expect_str(state, "mcp_streamable_call_output", writer.buffer,
              "{\"content\":[{\"type\":\"text\",\"text\":\"hello from mcp\"}],"
              "\"isError\":false}");
+  expect_int(state, "mcp_streamable_notification_count", notifications.count,
+             1L);
+  expect_str(state, "mcp_streamable_notification_method", notifications.method,
+             "notifications/progress");
+  expect_substr(state, "mcp_streamable_notification_params",
+                notifications.params, "\"progressToken\":\"call-4\"");
   memset(&writer, 0, sizeof(writer));
   expect_int(state, "mcp_streamable_refresh_resources",
              cai_mcp_client_refresh_resources(client, &error), CAI_OK);
@@ -9299,6 +9350,145 @@ test_mcp_streamable_http_terminate_session_error(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_terminate_error_mock", server.pid,
                     &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_notification_callback_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{"
+      "\"level\":\"warning\",\"logger\":\"mock\",\"data\":\"heads up\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-error-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: notification-error-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  notifications.fail = 1;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_notification_callback_error_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_notification_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_notification_error_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_CANCELLED);
+  expect_int(state, "mcp_streamable_notification_error_count",
+             notifications.count, 1L);
+  expect_str(state, "mcp_streamable_notification_error_method",
+             notifications.method, "notifications/message");
+  expect_substr(state, "mcp_streamable_notification_error_params",
+                notifications.params, "\"level\":\"warning\"");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_notification_callback_error_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_server_request_unsupported(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-1\",\"method\":\"roots/list\"}"
+      "\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: server-request-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_server_request_unsupported_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_request_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_request_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_server_request_message", error.message,
+             "MCP server-to-client requests are not supported yet");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_request_unsupported_mock",
+                    server.pid, &server.child_status);
 }
 
 static void test_mcp_streamable_http_session_recovery(test_state *state) {
@@ -22623,6 +22813,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_terminate_session_405},
     {"mcp_streamable_http_terminate_session_error",
      test_mcp_streamable_http_terminate_session_error},
+    {"mcp_streamable_http_notification_callback_error",
+     test_mcp_streamable_http_notification_callback_error},
+    {"mcp_streamable_http_server_request_unsupported",
+     test_mcp_streamable_http_server_request_unsupported},
     {"mcp_streamable_http_session_recovery",
      test_mcp_streamable_http_session_recovery},
     {"mcp_streamable_http_server_error_no_recovery",
