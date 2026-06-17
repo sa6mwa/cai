@@ -152,6 +152,7 @@ typedef struct test_mcp_client_impl {
   int get_prompt_count;
   int complete_count;
   int set_log_level_count;
+  int terminate_session_count;
   int destroy_count;
   char last_name[64];
   char last_uri[128];
@@ -1929,6 +1930,19 @@ static int test_mcp_client_set_log_level(cai_mcp_client *client,
   return CAI_OK;
 }
 
+static int test_mcp_client_terminate_session(cai_mcp_client *client,
+                                             cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->terminate_session_count++;
+  return CAI_OK;
+}
+
 static void test_mcp_client_destroy(cai_mcp_client *client) {
   test_mcp_client_impl *impl;
 
@@ -1991,6 +2005,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.get_prompt = test_mcp_client_get_prompt;
   impl->public_client.complete = test_mcp_client_complete;
   impl->public_client.set_log_level = test_mcp_client_set_log_level;
+  impl->public_client.terminate_session = test_mcp_client_terminate_session;
   impl->public_client.destroy = test_mcp_client_destroy;
   impl->public_client.impl = impl;
 }
@@ -3859,7 +3874,8 @@ static void test_mcp_client_config(test_state *state) {
       client->resource_template_at == NULL || client->refresh_prompts == NULL ||
       client->prompt_count == NULL || client->prompt_at == NULL ||
       client->get_prompt == NULL || client->complete == NULL ||
-      client->set_log_level == NULL || client->destroy == NULL) {
+      client->set_log_level == NULL || client->terminate_session == NULL ||
+      client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
   cai_mcp_client_destroy(client);
@@ -4014,6 +4030,11 @@ static void test_mcp_client_receiver_surface(test_state *state) {
              fake.set_log_level_count, 1L);
   expect_str(state, "mcp_client_receiver_set_log_level_value",
              fake.last_log_level, "warning");
+  expect_int(state, "mcp_client_receiver_terminate_session",
+             cai_mcp_client_terminate_session(&fake.public_client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_terminate_session_count",
+             fake.terminate_session_count, 1L);
 
   expect_int(state, "mcp_client_receiver_null_initialize",
              cai_mcp_client_initialize(NULL, &error), CAI_ERR_INVALID);
@@ -4036,6 +4057,10 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   expect_int(state, "mcp_client_receiver_null_set_log_level",
              cai_mcp_client_set_log_level(NULL, "info", &error),
              CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_terminate_session",
+             cai_mcp_client_terminate_session(NULL, &error), CAI_ERR_INVALID);
   cai_error_cleanup(&error);
 }
 
@@ -8574,6 +8599,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{}}";
   static const char logging_set_level_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":13,\"result\":{}}";
+  static const char terminate_body[] = "{}";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
       "Accept: application/json, text/event-stream",
@@ -8659,6 +8685,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"logging/setLevel\"", "\"level\":\"info\""};
+  static const char *terminate_required[] = {
+      "DELETE /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -8725,7 +8754,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       {"POST /v1/mcp HTTP/", logging_set_level_required,
        sizeof(logging_set_level_required) /
            sizeof(logging_set_level_required[0]),
-       NULL, 0U, 200, "OK", "application/json", NULL, logging_set_level_body}};
+       NULL, 0U, 200, "OK", "application/json", NULL, logging_set_level_body},
+      {"DELETE /v1/mcp HTTP/", terminate_required,
+       sizeof(terminate_required) / sizeof(terminate_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, terminate_body}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -8948,6 +8980,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   }
   expect_int(state, "mcp_streamable_set_log_level",
              cai_mcp_client_set_log_level(client, "info", &error), CAI_OK);
+  expect_int(state, "mcp_streamable_terminate_session",
+             cai_mcp_client_terminate_session(client, &error), CAI_OK);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
@@ -9146,6 +9180,124 @@ static void test_mcp_streamable_http_logging_error(test_state *state) {
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_logging_error_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_terminate_session_405(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: terminate-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *delete_required[] = {
+      "DELETE /v1/mcp HTTP/", "MCP-Session-Id: terminate-session",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: terminate-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"DELETE /v1/mcp HTTP/", delete_required,
+       sizeof(delete_required) / sizeof(delete_required[0]), NULL, 0U, 405,
+       "Method Not Allowed", "application/json", NULL, "{}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_terminate_405_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_terminate_405_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_terminate_405_init",
+             cai_mcp_client_initialize(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_terminate_405_call",
+             cai_mcp_client_terminate_session(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_terminate_405_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_terminate_session_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: terminate-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *delete_required[] = {
+      "DELETE /v1/mcp HTTP/", "MCP-Session-Id: terminate-error-session",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: terminate-error-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"DELETE /v1/mcp HTTP/", delete_required,
+       sizeof(delete_required) / sizeof(delete_required[0]), NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL,
+       "{\"error\":\"nope\"}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_terminate_error_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_terminate_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_terminate_error_init",
+             cai_mcp_client_initialize(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_terminate_error_call",
+             cai_mcp_client_terminate_session(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_terminate_error_status", error.http_status,
+             500L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_terminate_error_mock", server.pid,
                     &server.child_status);
 }
 
@@ -22467,6 +22619,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_logging_error",
      test_mcp_streamable_http_logging_error},
+    {"mcp_streamable_http_terminate_session_405",
+     test_mcp_streamable_http_terminate_session_405},
+    {"mcp_streamable_http_terminate_session_error",
+     test_mcp_streamable_http_terminate_session_error},
     {"mcp_streamable_http_session_recovery",
      test_mcp_streamable_http_session_recovery},
     {"mcp_streamable_http_server_error_no_recovery",

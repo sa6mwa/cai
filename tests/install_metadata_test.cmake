@@ -329,6 +329,7 @@ int main(void) {
                              struct lonejson_spooled *, cai_sink *,
                              cai_error *);
   int (*mcp_client_set_log_level)(cai_mcp_client *, const char *, cai_error *);
+  int (*mcp_client_terminate_session)(cai_mcp_client *, cai_error *);
   int (*mcp_client_register)(cai_mcp_client *, cai_tool_registry *,
                              const cai_mcp_tool_registration_config *,
                              cai_error *);
@@ -375,6 +376,7 @@ int main(void) {
   mcp_client_get_prompt = cai_mcp_client_get_prompt;
   mcp_client_complete = cai_mcp_client_complete;
   mcp_client_set_log_level = cai_mcp_client_set_log_level;
+  mcp_client_terminate_session = cai_mcp_client_terminate_session;
   mcp_client_register = cai_mcp_client_register_tools;
   mcp_client_destroy = cai_mcp_client_destroy;
   (void)sizeof(session_callbacks);
@@ -401,7 +403,8 @@ int main(void) {
       mcp_client_refresh_prompts == 0 || mcp_client_prompt_count == 0 ||
       mcp_client_prompt_at == 0 || mcp_client_get_prompt == 0 ||
       mcp_client_complete == 0 || mcp_client_set_log_level == 0 ||
-      mcp_client_register == 0 || mcp_client_destroy == 0) {
+      mcp_client_terminate_session == 0 || mcp_client_register == 0 ||
+      mcp_client_destroy == 0) {
     return 1;
   }
   (void)registry;

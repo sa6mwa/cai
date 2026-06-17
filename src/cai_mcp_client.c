@@ -179,6 +179,9 @@ typedef struct cai_mcp_registry_tool_context {
   char *remote_name;
 } cai_mcp_registry_tool_context;
 
+static void
+cai_mcp_streamable_reset_session(cai_mcp_streamable_http_client_impl *impl);
+
 static const lonejson_field cai_mcp_jsonrpc_error_fields[] = {
     LONEJSON_FIELD_I64(cai_mcp_jsonrpc_error_doc, code, "code"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_jsonrpc_error_doc, message, "message")};
@@ -573,6 +576,28 @@ static int cai_mcp_response_ok(const cai_mcp_http_response_capture *res,
   return CAI_OK;
 }
 
+static int
+cai_mcp_append_session_headers(cai_mcp_streamable_http_client_impl *impl,
+                               struct curl_slist **headers, cai_error *error) {
+  char protocol_header[128];
+  char session_header[192];
+  int rc;
+
+  rc = CAI_OK;
+  if (impl != NULL && impl->initialized && impl->session_id != NULL) {
+    snprintf(session_header, sizeof(session_header), "MCP-Session-Id: %s",
+             impl->session_id);
+    rc = cai_append_header(headers, session_header, error);
+  }
+  if (rc == CAI_OK && impl != NULL && impl->initialized &&
+      impl->protocol_version != NULL) {
+    snprintf(protocol_header, sizeof(protocol_header),
+             "MCP-Protocol-Version: %s", impl->protocol_version);
+    rc = cai_append_header(headers, protocol_header, error);
+  }
+  return rc;
+}
+
 static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
                         const lonejson_spooled *request, size_t request_len,
                         int is_request, cai_mcp_http_response_capture *response,
@@ -580,8 +605,6 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
-  char protocol_header[128];
-  char session_header[192];
   cai_mcp_spooled_upload upload;
   int rc;
 
@@ -600,15 +623,8 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
     rc = cai_append_header(
         &headers, "Accept: application/json, text/event-stream", error);
   }
-  if (rc == CAI_OK && impl->initialized && impl->session_id != NULL) {
-    snprintf(session_header, sizeof(session_header), "MCP-Session-Id: %s",
-             impl->session_id);
-    rc = cai_append_header(&headers, session_header, error);
-  }
-  if (rc == CAI_OK && impl->initialized && impl->protocol_version != NULL) {
-    snprintf(protocol_header, sizeof(protocol_header),
-             "MCP-Protocol-Version: %s", impl->protocol_version);
-    rc = cai_append_header(&headers, protocol_header, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_session_headers(impl, &headers, error);
   }
   if (rc != CAI_OK) {
     curl_easy_cleanup(curl);
@@ -643,14 +659,87 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   curl_slist_free_all(headers);
   if (curl_rc != CURLE_OK) {
     response->body.cleanup(&response->body);
+    memset(&response->body, 0, sizeof(response->body));
     cai_free_mem(NULL, response->content_type);
+    response->content_type = NULL;
     cai_free_mem(NULL, response->session_id);
+    response->session_id = NULL;
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "MCP HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
   (void)is_request;
   return cai_mcp_response_ok(response, error);
+}
+
+static int cai_mcp_delete_session(cai_mcp_streamable_http_client_impl *impl,
+                                  cai_mcp_http_response_capture *response,
+                                  cai_error *error) {
+  CURL *curl;
+  CURLcode curl_rc;
+  struct curl_slist *headers;
+  int rc;
+
+  if (impl == NULL || response == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  if (!impl->initialized || impl->session_id == NULL) {
+    return CAI_OK;
+  }
+  headers = NULL;
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize MCP HTTP request");
+  }
+  rc = cai_append_header(&headers, "Accept: application/json", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_session_headers(impl, &headers, error);
+  }
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return rc;
+  }
+
+  response->content_type = NULL;
+  response->session_id = NULL;
+  response->status = 0L;
+  CAI_LJ->spooled_init(CAI_LJ, &response->body);
+
+  curl_easy_setopt(curl, CURLOPT_URL, impl->url);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_mcp_response_write);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
+  curl_easy_setopt(curl, CURLOPT_HEADERDATA, response);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
+  cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
+                         impl->ca_path);
+  curl_rc = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+  if (curl_rc != CURLE_OK) {
+    response->body.cleanup(&response->body);
+    memset(&response->body, 0, sizeof(response->body));
+    cai_free_mem(NULL, response->content_type);
+    response->content_type = NULL;
+    cai_free_mem(NULL, response->session_id);
+    response->session_id = NULL;
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "MCP HTTP request failed",
+                                curl_easy_strerror(curl_rc));
+  }
+  if ((response->status >= 200L && response->status < 300L) ||
+      response->status == 404L || response->status == 405L) {
+    cai_mcp_streamable_reset_session(impl);
+    return CAI_OK;
+  }
+  return cai_set_error_http(error, CAI_ERR_SERVER, response->status,
+                            "MCP server returned HTTP error", NULL, NULL, NULL);
 }
 
 static void
@@ -2761,6 +2850,22 @@ static int cai_mcp_streamable_set_log_level(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_terminate_session(cai_mcp_client *client,
+                                                cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_delete_session(impl, &response, error);
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
 static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_allocator allocator;
@@ -2872,6 +2977,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.get_prompt = cai_mcp_streamable_get_prompt;
   impl->public_client.complete = cai_mcp_streamable_complete;
   impl->public_client.set_log_level = cai_mcp_streamable_set_log_level;
+  impl->public_client.terminate_session = cai_mcp_streamable_terminate_session;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   impl->public_client.impl = impl;
   *out = &impl->public_client;
@@ -3050,6 +3156,14 @@ int cai_mcp_client_set_log_level(cai_mcp_client *client, const char *level,
                          "MCP client set_log_level receiver is required");
   }
   return client->set_log_level(client, level, error);
+}
+
+int cai_mcp_client_terminate_session(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->terminate_session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client terminate_session receiver is required");
+  }
+  return client->terminate_session(client, error);
 }
 
 static int cai_mcp_registered_tool_callback(void *context,

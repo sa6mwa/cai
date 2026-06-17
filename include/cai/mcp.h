@@ -283,6 +283,8 @@ struct cai_mcp_client {
   /** Set the minimum server log level for MCP logging notifications. */
   int (*set_log_level)(cai_mcp_client *client, const char *level,
                        cai_error *error);
+  /** Explicitly terminate the remote MCP session when supported. */
+  int (*terminate_session)(cai_mcp_client *client, cai_error *error);
   /** Destroy this MCP client and release associated resources. */
   void (*destroy)(cai_mcp_client *client);
   /** Private implementation pointer; custom clients may use this freely. */
@@ -372,6 +374,8 @@ int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
 /** Set the minimum server log level for MCP logging notifications. */
 int cai_mcp_client_set_log_level(cai_mcp_client *client, const char *level,
                                  cai_error *error);
+/** Explicitly terminate the remote MCP session when supported. */
+int cai_mcp_client_terminate_session(cai_mcp_client *client, cai_error *error);
 /** Register all cached/discovered MCP client tools into a local tool registry.
  *
  * The registry callbacks keep a non-owning pointer to `client`; callers must

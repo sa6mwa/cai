@@ -298,6 +298,12 @@ int main(int argc, char **argv) {
     free(writer.data);
     return smoke_error("completion output was unexpected", NULL);
   }
+  rc = cai_mcp_client_terminate_session(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to terminate MCP session", &error);
+  }
   cai_mcp_client_destroy(client);
   printf("MCP client smoke passed at %s\n", argv[1]);
   free(writer.data);
