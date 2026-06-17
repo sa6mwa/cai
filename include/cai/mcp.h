@@ -245,6 +245,12 @@ struct cai_mcp_client {
   /** Read one remote resource by URI and stream result JSON. */
   int (*read_resource)(cai_mcp_client *client, const char *uri,
                        cai_sink *output, cai_error *error);
+  /** Subscribe to update notifications for one remote resource URI. */
+  int (*subscribe_resource)(cai_mcp_client *client, const char *uri,
+                            cai_error *error);
+  /** Unsubscribe from update notifications for one remote resource URI. */
+  int (*unsubscribe_resource)(cai_mcp_client *client, const char *uri,
+                              cai_error *error);
   /** Refresh the cached remote resources/templates/list metadata. */
   int (*refresh_resource_templates)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached resource templates. */
@@ -329,6 +335,12 @@ cai_mcp_client_resource_at(const cai_mcp_client *client, size_t index);
 /** Read one remote MCP resource and stream result JSON to `output`. */
 int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
                                  cai_sink *output, cai_error *error);
+/** Subscribe to update notifications for one remote MCP resource URI. */
+int cai_mcp_client_subscribe_resource(cai_mcp_client *client, const char *uri,
+                                      cai_error *error);
+/** Unsubscribe from update notifications for one remote MCP resource URI. */
+int cai_mcp_client_unsubscribe_resource(cai_mcp_client *client, const char *uri,
+                                        cai_error *error);
 /** Refresh cached remote resources/templates/list metadata. */
 int cai_mcp_client_refresh_resource_templates(cai_mcp_client *client,
                                               cai_error *error);

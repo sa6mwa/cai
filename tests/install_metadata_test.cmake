@@ -309,6 +309,10 @@ int main(void) {
       const cai_mcp_client *, size_t);
   int (*mcp_client_read_resource)(cai_mcp_client *, const char *, cai_sink *,
                                   cai_error *);
+  int (*mcp_client_subscribe_resource)(cai_mcp_client *, const char *,
+                                       cai_error *);
+  int (*mcp_client_unsubscribe_resource)(cai_mcp_client *, const char *,
+                                         cai_error *);
   int (*mcp_client_refresh_resource_templates)(cai_mcp_client *, cai_error *);
   size_t (*mcp_client_resource_template_count)(const cai_mcp_client *);
   const cai_mcp_client_resource_template *(*mcp_client_resource_template_at)(
@@ -358,6 +362,8 @@ int main(void) {
   mcp_client_resource_count = cai_mcp_client_resource_count;
   mcp_client_resource_at = cai_mcp_client_resource_at;
   mcp_client_read_resource = cai_mcp_client_read_resource;
+  mcp_client_subscribe_resource = cai_mcp_client_subscribe_resource;
+  mcp_client_unsubscribe_resource = cai_mcp_client_unsubscribe_resource;
   mcp_client_refresh_resource_templates =
       cai_mcp_client_refresh_resource_templates;
   mcp_client_resource_template_count = cai_mcp_client_resource_template_count;
@@ -385,6 +391,8 @@ int main(void) {
       mcp_client_tool_at == 0 || mcp_client_call_tool == 0 ||
       mcp_client_refresh_resources == 0 || mcp_client_resource_count == 0 ||
       mcp_client_resource_at == 0 || mcp_client_read_resource == 0 ||
+      mcp_client_subscribe_resource == 0 ||
+      mcp_client_unsubscribe_resource == 0 ||
       mcp_client_refresh_resource_templates == 0 ||
       mcp_client_resource_template_count == 0 ||
       mcp_client_resource_template_at == 0 ||

@@ -147,6 +147,8 @@ typedef struct test_mcp_client_impl {
   int refresh_prompts_count;
   int call_count;
   int read_resource_count;
+  int subscribe_resource_count;
+  int unsubscribe_resource_count;
   int get_prompt_count;
   int complete_count;
   int destroy_count;
@@ -1829,6 +1831,38 @@ static int test_mcp_client_read_resource(cai_mcp_client *client,
   return cai_sink_write(output, result, strlen(result), error);
 }
 
+static int test_mcp_client_subscribe_resource(cai_mcp_client *client,
+                                              const char *uri,
+                                              cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->subscribe_resource_count++;
+  snprintf(impl->last_uri, sizeof(impl->last_uri), "%s",
+           uri != NULL ? uri : "");
+  return CAI_OK;
+}
+
+static int test_mcp_client_unsubscribe_resource(cai_mcp_client *client,
+                                                const char *uri,
+                                                cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->unsubscribe_resource_count++;
+  snprintf(impl->last_uri, sizeof(impl->last_uri), "%s",
+           uri != NULL ? uri : "");
+  return CAI_OK;
+}
+
 static int test_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
                                       lonejson_spooled *arguments_json,
                                       cai_sink *output, cai_error *error) {
@@ -1925,6 +1959,9 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.resource_count = test_mcp_client_resource_count;
   impl->public_client.resource_at = test_mcp_client_resource_at;
   impl->public_client.read_resource = test_mcp_client_read_resource;
+  impl->public_client.subscribe_resource = test_mcp_client_subscribe_resource;
+  impl->public_client.unsubscribe_resource =
+      test_mcp_client_unsubscribe_resource;
   impl->public_client.refresh_resource_templates =
       test_mcp_client_refresh_resource_templates;
   impl->public_client.resource_template_count =
@@ -3797,6 +3834,8 @@ static void test_mcp_client_config(test_state *state) {
       client->tool_at == NULL || client->call_tool == NULL ||
       client->refresh_resources == NULL || client->resource_count == NULL ||
       client->resource_at == NULL || client->read_resource == NULL ||
+      client->subscribe_resource == NULL ||
+      client->unsubscribe_resource == NULL ||
       client->refresh_resource_templates == NULL ||
       client->resource_template_count == NULL ||
       client->resource_template_at == NULL || client->refresh_prompts == NULL ||
@@ -3900,6 +3939,22 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   expect_substr(state, "mcp_client_receiver_read_resource_output",
                 writer.buffer, "\"contents\"");
   cai_sink_close(sink);
+  expect_int(state, "mcp_client_receiver_subscribe_resource",
+             cai_mcp_client_subscribe_resource(&fake.public_client,
+                                               "resource://ok", &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_subscribe_resource_count",
+             fake.subscribe_resource_count, 1L);
+  expect_str(state, "mcp_client_receiver_subscribe_resource_uri", fake.last_uri,
+             "resource://ok");
+  expect_int(state, "mcp_client_receiver_unsubscribe_resource",
+             cai_mcp_client_unsubscribe_resource(&fake.public_client,
+                                                 "resource://ok", &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_unsubscribe_resource_count",
+             fake.unsubscribe_resource_count, 1L);
+  expect_str(state, "mcp_client_receiver_unsubscribe_resource_uri",
+             fake.last_uri, "resource://ok");
 
   memset(&writer, 0, sizeof(writer));
   sink_callbacks.context = &writer;
@@ -3940,6 +3995,16 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   cai_error_init(&error);
   expect_int(state, "mcp_client_receiver_null_ping",
              cai_mcp_client_ping(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_subscribe_resource",
+             cai_mcp_client_subscribe_resource(NULL, "resource://ok", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_unsubscribe_resource",
+             cai_mcp_client_unsubscribe_resource(NULL, "resource://ok", &error),
+             CAI_ERR_INVALID);
   cai_error_cleanup(&error);
 }
 
@@ -8449,6 +8514,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"contents\":[{\"uri\":"
       "\"resource://beta\",\"mimeType\":\"application/json\",\"text\":"
       "\"{\\\"beta\\\":true}\"}]}}\n\n";
+  static const char resource_subscribe_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{}}";
+  static const char resource_unsubscribe_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{}}";
   static const char prompts_list_body[] =
       "event: message\n"
       "data: "
@@ -8510,6 +8579,14 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"resources/read\"", "\"uri\":\"resource://beta\""};
+  static const char *resource_subscribe_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/subscribe\"", "\"uri\":\"resource://beta\""};
+  static const char *resource_unsubscribe_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/unsubscribe\"", "\"uri\":\"resource://beta\""};
   static const char *resource_templates_list_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
@@ -8583,6 +8660,15 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       {"POST /v1/mcp HTTP/", resource_read_required,
        sizeof(resource_read_required) / sizeof(resource_read_required[0]), NULL,
        0U, 200, "OK", "text/event-stream", NULL, resource_read_body},
+      {"POST /v1/mcp HTTP/", resource_subscribe_required,
+       sizeof(resource_subscribe_required) /
+           sizeof(resource_subscribe_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, resource_subscribe_body},
+      {"POST /v1/mcp HTTP/", resource_unsubscribe_required,
+       sizeof(resource_unsubscribe_required) /
+           sizeof(resource_unsubscribe_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resource_unsubscribe_body},
       {"POST /v1/mcp HTTP/", prompts_list_required,
        sizeof(prompts_list_required) / sizeof(prompts_list_required[0]), NULL,
        0U, 200, "OK", "text/event-stream", NULL, prompts_list_body},
@@ -8749,6 +8835,14 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   expect_str(state, "mcp_streamable_read_resource_output", writer.buffer,
              "{\"contents\":[{\"uri\":\"resource://beta\",\"mimeType\":"
              "\"application/json\",\"text\":\"{\\\"beta\\\":true}\"}]}");
+  expect_int(
+      state, "mcp_streamable_subscribe_resource",
+      cai_mcp_client_subscribe_resource(client, "resource://beta", &error),
+      CAI_OK);
+  expect_int(
+      state, "mcp_streamable_unsubscribe_resource",
+      cai_mcp_client_unsubscribe_resource(client, "resource://beta", &error),
+      CAI_OK);
   memset(&writer, 0, sizeof(writer));
   expect_int(state, "mcp_streamable_refresh_prompts",
              cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
@@ -8876,6 +8970,74 @@ static void test_mcp_streamable_http_ping_error(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_ping_error_mock", server.pid,
                     &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_resource_subscription_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char subscribe_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32002,"
+      "\"message\":\"resource not found\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: subscription-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *subscribe_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: subscription-session", "\"id\":2",
+      "\"method\":\"resources/subscribe\"", "\"uri\":\"resource://missing\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: subscription-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", subscribe_required,
+       sizeof(subscribe_required) / sizeof(subscribe_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, subscribe_error_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_resource_subscription_error_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_resource_subscription_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(
+      state, "mcp_streamable_resource_subscription_error_call",
+      cai_mcp_client_subscribe_resource(client, "resource://missing", &error),
+      CAI_ERR_SERVER);
+  expect_str(state, "mcp_streamable_resource_subscription_error_message",
+             error.message, "resource not found");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_streamable_resource_subscription_empty_uri",
+             cai_mcp_client_unsubscribe_resource(client, "", &error),
+             CAI_ERR_INVALID);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_resource_subscription_error_mock",
+                    server.pid, &server.child_status);
 }
 
 static void test_mcp_streamable_http_session_recovery(test_state *state) {
@@ -22192,6 +22354,8 @@ static const test_entry test_entries[] = {
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
     {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
+    {"mcp_streamable_http_resource_subscription_error",
+     test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_session_recovery",
      test_mcp_streamable_http_session_recovery},
     {"mcp_streamable_http_server_error_no_recovery",

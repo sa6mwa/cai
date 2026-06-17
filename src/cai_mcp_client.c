@@ -1083,6 +1083,37 @@ cai_mcp_resource_read_request(cai_mcp_streamable_http_client_impl *impl,
   return rc;
 }
 
+static int
+cai_mcp_resource_subscription_request(cai_mcp_streamable_http_client_impl *impl,
+                                      const char *method, const char *uri,
+                                      lonejson_spooled *spool, size_t *out_len,
+                                      cai_error *error) {
+  int rc;
+
+  if (uri == NULL || uri[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP resource URI is required");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, method, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{\"uri\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, uri, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
+  }
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
 static int cai_mcp_prompt_get_request(cai_mcp_streamable_http_client_impl *impl,
                                       const char *name,
                                       lonejson_spooled *arguments_json,
@@ -2071,6 +2102,20 @@ static int cai_mcp_parse_resource_read_response(
                                        output, error);
 }
 
+static int cai_mcp_parse_resource_subscribe_response(
+    const cai_mcp_http_response_capture *response, cai_error *error) {
+  return cai_mcp_parse_empty_result_response(
+      response, "MCP resources/subscribe response",
+      "failed to parse MCP resources/subscribe", error);
+}
+
+static int cai_mcp_parse_resource_unsubscribe_response(
+    const cai_mcp_http_response_capture *response, cai_error *error) {
+  return cai_mcp_parse_empty_result_response(
+      response, "MCP resources/unsubscribe response",
+      "failed to parse MCP resources/unsubscribe", error);
+}
+
 static int
 cai_mcp_parse_prompt_get_response(const cai_mcp_http_response_capture *response,
                                   cai_sink *output, cai_error *error) {
@@ -2381,6 +2426,55 @@ static int cai_mcp_streamable_read_resource(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_resource_subscription(
+    cai_mcp_client *client, const char *uri, const char *method,
+    int (*parse_response)(const cai_mcp_http_response_capture *, cai_error *),
+    cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_resource_subscription_request(impl, method, uri, &request,
+                                             &request_len, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    rc = parse_response(&response, error);
+  }
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
+static int cai_mcp_streamable_subscribe_resource(cai_mcp_client *client,
+                                                 const char *uri,
+                                                 cai_error *error) {
+  return cai_mcp_streamable_resource_subscription(
+      client, uri, "resources/subscribe",
+      cai_mcp_parse_resource_subscribe_response, error);
+}
+
+static int cai_mcp_streamable_unsubscribe_resource(cai_mcp_client *client,
+                                                   const char *uri,
+                                                   cai_error *error) {
+  return cai_mcp_streamable_resource_subscription(
+      client, uri, "resources/unsubscribe",
+      cai_mcp_parse_resource_unsubscribe_response, error);
+}
+
 static int cai_mcp_streamable_refresh_resource_templates(cai_mcp_client *client,
                                                          cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -2676,6 +2770,10 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.resource_count = cai_mcp_streamable_resource_count;
   impl->public_client.resource_at = cai_mcp_streamable_resource_at;
   impl->public_client.read_resource = cai_mcp_streamable_read_resource;
+  impl->public_client.subscribe_resource =
+      cai_mcp_streamable_subscribe_resource;
+  impl->public_client.unsubscribe_resource =
+      cai_mcp_streamable_unsubscribe_resource;
   impl->public_client.refresh_resource_templates =
       cai_mcp_streamable_refresh_resource_templates;
   impl->public_client.resource_template_count =
@@ -2768,6 +2866,25 @@ int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
                          "MCP client read_resource receiver is required");
   }
   return client->read_resource(client, uri, output, error);
+}
+
+int cai_mcp_client_subscribe_resource(cai_mcp_client *client, const char *uri,
+                                      cai_error *error) {
+  if (client == NULL || client->subscribe_resource == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client subscribe_resource receiver is required");
+  }
+  return client->subscribe_resource(client, uri, error);
+}
+
+int cai_mcp_client_unsubscribe_resource(cai_mcp_client *client, const char *uri,
+                                        cai_error *error) {
+  if (client == NULL || client->unsubscribe_resource == NULL) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP client unsubscribe_resource receiver is required");
+  }
+  return client->unsubscribe_resource(client, uri, error);
 }
 
 int cai_mcp_client_refresh_resource_templates(cai_mcp_client *client,
