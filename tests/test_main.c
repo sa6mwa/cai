@@ -132,12 +132,17 @@ typedef struct mcp_session_test_store {
 typedef struct test_mcp_client_impl {
   cai_mcp_client public_client;
   cai_mcp_client_tool tools[2];
+  cai_mcp_client_resource resources[1];
   size_t tool_count;
+  size_t resource_count;
   int initialize_count;
   int refresh_count;
+  int refresh_resources_count;
   int call_count;
+  int read_resource_count;
   int destroy_count;
   char last_name[64];
+  char last_uri[128];
   char last_arguments[256];
 } test_mcp_client_impl;
 
@@ -1635,6 +1640,37 @@ test_mcp_client_tool_at(const cai_mcp_client *client, size_t index) {
   return &impl->tools[index];
 }
 
+static int test_mcp_client_refresh_resources(cai_mcp_client *client,
+                                             cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_resources_count++;
+  return CAI_OK;
+}
+
+static size_t test_mcp_client_resource_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->resource_count : 0U;
+}
+
+static const cai_mcp_client_resource *
+test_mcp_client_resource_at(const cai_mcp_client *client, size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->resource_count) {
+    return NULL;
+  }
+  return &impl->resources[index];
+}
+
 static void test_mcp_read_spooled_json(lonejson_spooled *spool, char *buffer,
                                        size_t capacity) {
   lonejson_spooled cursor;
@@ -1686,6 +1722,24 @@ static int test_mcp_client_call_tool(cai_mcp_client *client, const char *name,
   return cai_sink_write(output, result, strlen(result), error);
 }
 
+static int test_mcp_client_read_resource(cai_mcp_client *client,
+                                         const char *uri, cai_sink *output,
+                                         cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->read_resource_count++;
+  snprintf(impl->last_uri, sizeof(impl->last_uri), "%s",
+           uri != NULL ? uri : "");
+  result = "{\"contents\":[{\"uri\":\"resource://ok\",\"mimeType\":"
+           "\"text/plain\",\"text\":\"ok\"}]}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
 static void test_mcp_client_destroy(cai_mcp_client *client) {
   test_mcp_client_impl *impl;
 
@@ -1706,11 +1760,21 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->tools[1].description = "Return status";
   impl->tools[1].input_schema_json = "{\"type\":\"object\",\"properties\":{}}";
   impl->tool_count = 2U;
+  impl->resources[0].uri = "resource://ok";
+  impl->resources[0].name = "ok";
+  impl->resources[0].title = "OK Resource";
+  impl->resources[0].description = "Fake resource";
+  impl->resources[0].mime_type = "text/plain";
+  impl->resource_count = 1U;
   impl->public_client.initialize = test_mcp_client_initialize;
   impl->public_client.refresh_tools = test_mcp_client_refresh_tools;
   impl->public_client.tool_count = test_mcp_client_tool_count;
   impl->public_client.tool_at = test_mcp_client_tool_at;
   impl->public_client.call_tool = test_mcp_client_call_tool;
+  impl->public_client.refresh_resources = test_mcp_client_refresh_resources;
+  impl->public_client.resource_count = test_mcp_client_resource_count;
+  impl->public_client.resource_at = test_mcp_client_resource_at;
+  impl->public_client.read_resource = test_mcp_client_read_resource;
   impl->public_client.destroy = test_mcp_client_destroy;
   impl->public_client.impl = impl;
 }
@@ -3570,6 +3634,8 @@ static void test_mcp_client_config(test_state *state) {
   if (client == NULL || client->initialize == NULL ||
       client->refresh_tools == NULL || client->tool_count == NULL ||
       client->tool_at == NULL || client->call_tool == NULL ||
+      client->refresh_resources == NULL || client->resource_count == NULL ||
+      client->resource_at == NULL || client->read_resource == NULL ||
       client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
@@ -8046,12 +8112,32 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
       "\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\","
       "\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":["
-      "\"message\"]}}]}}\n\n";
+      "\"message\"]}}],\"nextCursor\":\"tools-page-2\"}}\n\n";
+  static const char tools_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
+      "\"status\",\"title\":\"Status\",\"inputSchema\":{\"type\":\"object\","
+      "\"additionalProperties\":false}}]}}";
   static const char call_body[] =
       "event: message\n"
       "data: "
-      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":"
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
       "\"text\",\"text\":\"hello from mcp\"}],\"isError\":false}}\n\n";
+  static const char resources_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://alpha\",\"name\":\"alpha\",\"description\":\"Alpha doc\","
+      "\"mimeType\":\"text/plain\"}],\"nextCursor\":\"resources-page-2\"}}\n\n";
+  static const char resources_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://beta\",\"name\":\"beta\",\"title\":\"Beta Resource\","
+      "\"mimeType\":\"application/json\"}]}}";
+  static const char resource_read_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://beta\",\"mimeType\":\"application/json\",\"text\":"
+      "\"{\\\"beta\\\":true}\"}]}}\n\n";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
       "Accept: application/json, text/event-stream",
@@ -8067,6 +8153,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"tools/list\""};
+  static const char *list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"tools/list\"", "\"cursor\":\"tools-page-2\""};
   static const char *call_required[] = {
       "POST /v1/mcp HTTP/",
       "MCP-Session-Id: session-123",
@@ -8074,6 +8164,18 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"method\":\"tools/call\"",
       "\"name\":\"echo\"",
       "\"arguments\":{\"message\":\"hello\"}"};
+  static const char *resources_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/list\""};
+  static const char *resources_list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/list\"", "\"cursor\":\"resources-page-2\""};
+  static const char *resource_read_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/read\"", "\"uri\":\"resource://beta\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -8085,13 +8187,28 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       {"POST /v1/mcp HTTP/", list_required,
        sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, tools_list_body},
+      {"POST /v1/mcp HTTP/", list_page_2_required,
+       sizeof(list_page_2_required) / sizeof(list_page_2_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tools_list_page_2_body},
       {"POST /v1/mcp HTTP/", call_required,
        sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, call_body}};
+       "text/event-stream", NULL, call_body},
+      {"POST /v1/mcp HTTP/", resources_list_required,
+       sizeof(resources_list_required) / sizeof(resources_list_required[0]),
+       NULL, 0U, 200, "OK", "text/event-stream", NULL, resources_list_body},
+      {"POST /v1/mcp HTTP/", resources_list_page_2_required,
+       sizeof(resources_list_page_2_required) /
+           sizeof(resources_list_page_2_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resources_list_page_2_body},
+      {"POST /v1/mcp HTTP/", resource_read_required,
+       sizeof(resource_read_required) / sizeof(resource_read_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, resource_read_body}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
   const cai_mcp_client_tool *tool;
+  const cai_mcp_client_resource *resource;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
@@ -8137,7 +8254,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     return;
   }
   expect_int(state, "mcp_streamable_tool_count",
-             (long)client->tool_count(client), 1L);
+             (long)client->tool_count(client), 2L);
   tool = client->tool_at(client, 0U);
   if (tool == NULL) {
     test_fail(state, "mcp_streamable_tool", "tool missing");
@@ -8147,6 +8264,14 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                "Echo text");
     expect_substr(state, "mcp_streamable_tool_schema", tool->input_schema_json,
                   "\"message\"");
+  }
+  tool = client->tool_at(client, 1U);
+  if (tool == NULL) {
+    test_fail(state, "mcp_streamable_tool_page_2", "second tool missing");
+  } else {
+    expect_str(state, "mcp_streamable_tool_page_2_name", tool->name, "status");
+    expect_str(state, "mcp_streamable_tool_page_2_description",
+               tool->description, "Status");
   }
 
   sink_callbacks.write = test_write;
@@ -8165,6 +8290,38 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   expect_str(state, "mcp_streamable_call_output", writer.buffer,
              "{\"content\":[{\"type\":\"text\",\"text\":\"hello from mcp\"}],"
              "\"isError\":false}");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_refresh_resources",
+             client->refresh_resources(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_resource_count",
+             (long)client->resource_count(client), 2L);
+  resource = client->resource_at(client, 0U);
+  if (resource == NULL) {
+    test_fail(state, "mcp_streamable_resource", "resource missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_uri", resource->uri,
+               "resource://alpha");
+    expect_str(state, "mcp_streamable_resource_description",
+               resource->description, "Alpha doc");
+    expect_str(state, "mcp_streamable_resource_mime", resource->mime_type,
+               "text/plain");
+  }
+  resource = client->resource_at(client, 1U);
+  if (resource == NULL) {
+    test_fail(state, "mcp_streamable_resource_page_2",
+              "second resource missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_page_2_uri", resource->uri,
+               "resource://beta");
+    expect_str(state, "mcp_streamable_resource_page_2_title", resource->title,
+               "Beta Resource");
+  }
+  expect_int(state, "mcp_streamable_read_resource",
+             client->read_resource(client, "resource://beta", sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_read_resource_output", writer.buffer,
+             "{\"contents\":[{\"uri\":\"resource://beta\",\"mimeType\":"
+             "\"application/json\",\"text\":\"{\\\"beta\\\":true}\"}]}");
   args.cleanup(&args);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);

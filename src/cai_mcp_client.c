@@ -15,6 +15,15 @@ typedef struct cai_mcp_client_tool_impl {
   char *input_schema_json;
 } cai_mcp_client_tool_impl;
 
+typedef struct cai_mcp_client_resource_impl {
+  cai_mcp_client_resource public_resource;
+  char *uri;
+  char *name;
+  char *title;
+  char *description;
+  char *mime_type;
+} cai_mcp_client_resource_impl;
+
 typedef struct cai_mcp_streamable_http_client_impl {
   cai_mcp_client public_client;
   cai_allocator allocator;
@@ -32,6 +41,9 @@ typedef struct cai_mcp_streamable_http_client_impl {
   cai_mcp_client_tool_impl *tools;
   size_t tool_count;
   size_t tool_capacity;
+  cai_mcp_client_resource_impl *resources;
+  size_t resource_count;
+  size_t resource_capacity;
 } cai_mcp_streamable_http_client_impl;
 
 typedef struct cai_mcp_http_response_capture {
@@ -76,6 +88,24 @@ typedef struct cai_mcp_tools_list_response_doc {
   cai_mcp_tools_list_result_doc result;
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_tools_list_response_doc;
+
+typedef struct cai_mcp_list_resource_doc {
+  char *uri;
+  char *name;
+  char *title;
+  char *description;
+  char *mime_type;
+} cai_mcp_list_resource_doc;
+
+typedef struct cai_mcp_resources_list_result_doc {
+  lonejson_object_array resources;
+  char *next_cursor;
+} cai_mcp_resources_list_result_doc;
+
+typedef struct cai_mcp_resources_list_response_doc {
+  cai_mcp_resources_list_result_doc result;
+  cai_mcp_jsonrpc_error_doc error_doc;
+} cai_mcp_resources_list_response_doc;
 
 typedef struct cai_mcp_initialize_result_doc {
   char *protocol_version;
@@ -138,6 +168,37 @@ static const lonejson_field cai_mcp_tools_list_response_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_tools_list_response_map,
                     cai_mcp_tools_list_response_doc,
                     cai_mcp_tools_list_response_fields);
+
+static const lonejson_field cai_mcp_list_resource_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_resource_doc, uri, "uri"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_resource_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_doc, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_doc, description,
+                                "description"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_doc, mime_type,
+                                "mimeType")};
+LONEJSON_MAP_DEFINE(cai_mcp_list_resource_map, cai_mcp_list_resource_doc,
+                    cai_mcp_list_resource_fields);
+
+static const lonejson_field cai_mcp_resources_list_result_fields[] = {
+    LONEJSON_FIELD_OBJECT_ARRAY(cai_mcp_resources_list_result_doc, resources,
+                                "resources", cai_mcp_list_resource_doc,
+                                &cai_mcp_list_resource_map,
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_resources_list_result_doc, next_cursor,
+                                "nextCursor")};
+LONEJSON_MAP_DEFINE(cai_mcp_resources_list_result_map,
+                    cai_mcp_resources_list_result_doc,
+                    cai_mcp_resources_list_result_fields);
+
+static const lonejson_field cai_mcp_resources_list_response_fields[] = {
+    LONEJSON_FIELD_OBJECT(cai_mcp_resources_list_response_doc, result, "result",
+                          &cai_mcp_resources_list_result_map),
+    LONEJSON_FIELD_OBJECT(cai_mcp_resources_list_response_doc, error_doc,
+                          "error", &cai_mcp_jsonrpc_error_map)};
+LONEJSON_MAP_DEFINE(cai_mcp_resources_list_response_map,
+                    cai_mcp_resources_list_response_doc,
+                    cai_mcp_resources_list_response_fields);
 
 static const lonejson_field cai_mcp_initialize_result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_result_doc, protocol_version,
@@ -770,15 +831,25 @@ static int cai_mcp_initialize_request(cai_mcp_streamable_http_client_impl *impl,
   return rc;
 }
 
-static int cai_mcp_simple_request(cai_mcp_streamable_http_client_impl *impl,
-                                  const char *method, lonejson_spooled *spool,
-                                  size_t *out_len, cai_error *error) {
+static int cai_mcp_list_request(cai_mcp_streamable_http_client_impl *impl,
+                                const char *method, const char *cursor,
+                                lonejson_spooled *spool, size_t *out_len,
+                                cai_error *error) {
   int rc;
 
   CAI_LJ->spooled_init(CAI_LJ, spool);
   rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, method, error);
   if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(spool, ",\"params\":{}}", error);
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{", error);
+  }
+  if (rc == CAI_OK && cursor != NULL && cursor[0] != '\0') {
+    rc = cai_mcp_write_cstr(spool, "\"cursor\":", error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_json_string(spool, cursor, error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
   }
   if (out_len != NULL) {
     *out_len = spool->size_fn(spool);
@@ -797,6 +868,37 @@ static int cai_mcp_initialized_notification(lonejson_spooled *spool,
   rc = cai_mcp_write_cstr(
       spool, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
       error);
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
+static int
+cai_mcp_resource_read_request(cai_mcp_streamable_http_client_impl *impl,
+                              const char *uri, lonejson_spooled *spool,
+                              size_t *out_len, cai_error *error) {
+  int rc;
+
+  if (uri == NULL || uri[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP resource URI is required");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, "resources/read",
+                             error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{\"uri\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, uri, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
+  }
   if (out_len != NULL) {
     *out_len = spool->size_fn(spool);
   }
@@ -920,6 +1022,19 @@ static void cai_mcp_client_tool_impl_cleanup(const cai_allocator *allocator,
 }
 
 static void
+cai_mcp_client_resource_impl_cleanup(const cai_allocator *allocator,
+                                     cai_mcp_client_resource_impl *resource) {
+  if (resource != NULL) {
+    cai_free_mem(allocator, resource->uri);
+    cai_free_mem(allocator, resource->name);
+    cai_free_mem(allocator, resource->title);
+    cai_free_mem(allocator, resource->description);
+    cai_free_mem(allocator, resource->mime_type);
+    memset(resource, 0, sizeof(*resource));
+  }
+}
+
+static void
 cai_mcp_client_clear_tools(cai_mcp_streamable_http_client_impl *impl) {
   size_t i;
 
@@ -930,6 +1045,19 @@ cai_mcp_client_clear_tools(cai_mcp_streamable_http_client_impl *impl) {
     cai_mcp_client_tool_impl_cleanup(&impl->allocator, &impl->tools[i]);
   }
   impl->tool_count = 0U;
+}
+
+static void
+cai_mcp_client_clear_resources(cai_mcp_streamable_http_client_impl *impl) {
+  size_t i;
+
+  if (impl == NULL) {
+    return;
+  }
+  for (i = 0U; i < impl->resource_count; i++) {
+    cai_mcp_client_resource_impl_cleanup(&impl->allocator, &impl->resources[i]);
+  }
+  impl->resource_count = 0U;
 }
 
 static int
@@ -950,6 +1078,27 @@ cai_mcp_client_reserve_tools(cai_mcp_streamable_http_client_impl *impl,
          (count - impl->tool_capacity) * sizeof(*tools));
   impl->tools = tools;
   impl->tool_capacity = count;
+  return CAI_OK;
+}
+
+static int
+cai_mcp_client_reserve_resources(cai_mcp_streamable_http_client_impl *impl,
+                                 size_t count, cai_error *error) {
+  cai_mcp_client_resource_impl *resources;
+
+  if (count <= impl->resource_capacity) {
+    return CAI_OK;
+  }
+  resources = (cai_mcp_client_resource_impl *)cai_realloc_mem(
+      &impl->allocator, impl->resources, count * sizeof(*resources));
+  if (resources == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP resource cache");
+  }
+  memset(resources + impl->resource_capacity, 0,
+         (count - impl->resource_capacity) * sizeof(*resources));
+  impl->resources = resources;
+  impl->resource_capacity = count;
   return CAI_OK;
 }
 
@@ -976,16 +1125,20 @@ static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
-                                  cai_error *error) {
+                                  char **next_cursor, cai_error *error) {
   cai_mcp_tools_list_response_doc doc;
   lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
   cai_mcp_list_tool_doc *src_tools;
+  size_t base_count;
   size_t i;
   int rc;
 
+  if (next_cursor != NULL) {
+    *next_cursor = NULL;
+  }
   rc = cai_mcp_response_json_body(response, "MCP tools/list response",
                                   &json_body, error);
   if (rc != CAI_OK) {
@@ -1013,12 +1166,13 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
     json_body.cleanup(&json_body);
     return rc;
   }
-  rc = cai_mcp_client_reserve_tools(impl, doc.result.tools.count, error);
+  base_count = impl->tool_count;
+  rc = cai_mcp_client_reserve_tools(impl, base_count + doc.result.tools.count,
+                                    error);
   if (rc == CAI_OK) {
-    cai_mcp_client_clear_tools(impl);
     src_tools = (cai_mcp_list_tool_doc *)doc.result.tools.items;
     for (i = 0U; i < doc.result.tools.count; i++) {
-      cai_mcp_client_tool_impl *dst = &impl->tools[i];
+      cai_mcp_client_tool_impl *dst = &impl->tools[base_count + i];
       dst->name = cai_strdup(&impl->allocator, src_tools[i].name);
       dst->description = cai_strdup(
           &impl->allocator,
@@ -1033,6 +1187,7 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                  ? error->code
                  : cai_set_error(error, CAI_ERR_NOMEM,
                                  "failed to copy MCP tool metadata");
+        cai_mcp_client_tool_impl_cleanup(&impl->allocator, dst);
         break;
       }
       dst->public_tool.name = dst->name;
@@ -1041,17 +1196,130 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       impl->tool_count++;
     }
   }
+  if (rc == CAI_OK && next_cursor != NULL && doc.result.next_cursor != NULL) {
+    *next_cursor = cai_strdup(&impl->allocator, doc.result.next_cursor);
+    if (*next_cursor == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP tools/list cursor");
+    }
+  }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
   if (rc != CAI_OK) {
     cai_mcp_client_clear_tools(impl);
+    if (next_cursor != NULL) {
+      cai_free_mem(&impl->allocator, *next_cursor);
+      *next_cursor = NULL;
+    }
+  }
+  json_body.cleanup(&json_body);
+  return rc;
+}
+
+static int cai_mcp_parse_resources_list_response(
+    cai_mcp_streamable_http_client_impl *impl,
+    const cai_mcp_http_response_capture *response, char **next_cursor,
+    cai_error *error) {
+  cai_mcp_resources_list_response_doc doc;
+  lonejson_spooled json_body;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  cai_mcp_list_resource_doc *src_resources;
+  size_t base_count;
+  size_t i;
+  int rc;
+
+  if (next_cursor != NULL) {
+    *next_cursor = NULL;
+  }
+  rc = cai_mcp_response_json_body(response, "MCP resources/list response",
+                                  &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = json_body;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  status =
+      CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_resources_list_response_map, &doc,
+                           cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to parse MCP resources/list",
+                                  &json_error);
+  }
+  if (doc.error_doc.message != NULL) {
+    rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  base_count = impl->resource_count;
+  rc = cai_mcp_client_reserve_resources(
+      impl, base_count + doc.result.resources.count, error);
+  if (rc == CAI_OK) {
+    src_resources = (cai_mcp_list_resource_doc *)doc.result.resources.items;
+    for (i = 0U; i < doc.result.resources.count; i++) {
+      cai_mcp_client_resource_impl *dst = &impl->resources[base_count + i];
+      dst->uri = cai_strdup(&impl->allocator, src_resources[i].uri);
+      dst->name = cai_strdup(&impl->allocator, src_resources[i].name);
+      dst->title = cai_strdup(&impl->allocator,
+                              src_resources[i].title != NULL
+                                  ? src_resources[i].title
+                                  : (src_resources[i].description != NULL
+                                         ? src_resources[i].description
+                                         : ""));
+      dst->description =
+          cai_strdup(&impl->allocator, src_resources[i].description != NULL
+                                           ? src_resources[i].description
+                                           : "");
+      dst->mime_type = cai_strdup(
+          &impl->allocator,
+          src_resources[i].mime_type != NULL ? src_resources[i].mime_type : "");
+      if (dst->uri == NULL || dst->name == NULL || dst->title == NULL ||
+          dst->description == NULL || dst->mime_type == NULL) {
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP resource metadata");
+        cai_mcp_client_resource_impl_cleanup(&impl->allocator, dst);
+        break;
+      }
+      dst->public_resource.uri = dst->uri;
+      dst->public_resource.name = dst->name;
+      dst->public_resource.title = dst->title;
+      dst->public_resource.description = dst->description;
+      dst->public_resource.mime_type = dst->mime_type;
+      impl->resource_count++;
+    }
+  }
+  if (rc == CAI_OK && next_cursor != NULL && doc.result.next_cursor != NULL) {
+    *next_cursor = cai_strdup(&impl->allocator, doc.result.next_cursor);
+    if (*next_cursor == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP resources/list cursor");
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
+  if (rc != CAI_OK) {
+    cai_mcp_client_clear_resources(impl);
+    if (next_cursor != NULL) {
+      cai_free_mem(&impl->allocator, *next_cursor);
+      *next_cursor = NULL;
+    }
   }
   json_body.cleanup(&json_body);
   return rc;
 }
 
 static int
-cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
-                            cai_sink *output, cai_error *error) {
+cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
+                              const char *response_name, const char *parse_name,
+                              cai_sink *output, cai_error *error) {
   cai_mcp_jsonrpc_sink_response_doc doc;
   lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
@@ -1059,8 +1327,7 @@ cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
   lonejson_status status;
   int rc;
 
-  rc = cai_mcp_response_json_body(response, "MCP tools/call response",
-                                  &json_body, error);
+  rc = cai_mcp_response_json_body(response, response_name, &json_body, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1091,8 +1358,7 @@ cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
     json_body.cleanup(&json_body);
-    return cai_mcp_set_json_error(error, "failed to parse MCP tools/call",
-                                  &json_error);
+    return cai_mcp_set_json_error(error, parse_name, &json_error);
   }
   if (doc.error_doc.message != NULL) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
@@ -1105,6 +1371,22 @@ cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
                            &doc);
   json_body.cleanup(&json_body);
   return CAI_OK;
+}
+
+static int
+cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
+                            cai_sink *output, cai_error *error) {
+  return cai_mcp_parse_result_response(response, "MCP tools/call response",
+                                       "failed to parse MCP tools/call", output,
+                                       error);
+}
+
+static int cai_mcp_parse_resource_read_response(
+    const cai_mcp_http_response_capture *response, cai_sink *output,
+    cai_error *error) {
+  return cai_mcp_parse_result_response(response, "MCP resources/read response",
+                                       "failed to parse MCP resources/read",
+                                       output, error);
 }
 
 static int cai_mcp_streamable_initialize(cai_mcp_client *client,
@@ -1161,6 +1443,8 @@ static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
+  char *cursor;
+  char *next_cursor;
   size_t request_len;
   int rc;
 
@@ -1172,17 +1456,29 @@ static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
   if (rc != CAI_OK) {
     return rc;
   }
-  memset(&response, 0, sizeof(response));
-  rc =
-      cai_mcp_simple_request(impl, "tools/list", &request, &request_len, error);
-  if (rc == CAI_OK) {
-    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+  cursor = NULL;
+  cai_mcp_client_clear_tools(impl);
+  do {
+    next_cursor = NULL;
+    memset(&response, 0, sizeof(response));
+    rc = cai_mcp_list_request(impl, "tools/list", cursor, &request,
+                              &request_len, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+    }
+    cai_mcp_spooled_cleanup_if_initialized(&request);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_parse_tools_list_response(impl, &response, &next_cursor,
+                                             error);
+    }
+    cai_mcp_http_response_capture_cleanup(&response);
+    cai_free_mem(&impl->allocator, cursor);
+    cursor = next_cursor;
+  } while (rc == CAI_OK && cursor != NULL && cursor[0] != '\0');
+  cai_free_mem(&impl->allocator, cursor);
+  if (rc != CAI_OK) {
+    cai_mcp_client_clear_tools(impl);
   }
-  cai_mcp_spooled_cleanup_if_initialized(&request);
-  if (rc == CAI_OK) {
-    rc = cai_mcp_parse_tools_list_response(impl, &response, error);
-  }
-  cai_mcp_http_response_capture_cleanup(&response);
   return rc;
 }
 
@@ -1237,6 +1533,99 @@ static int cai_mcp_streamable_call_tool(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_refresh_resources(cai_mcp_client *client,
+                                                cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  char *cursor;
+  char *next_cursor;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = client->initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  cursor = NULL;
+  cai_mcp_client_clear_resources(impl);
+  do {
+    next_cursor = NULL;
+    memset(&response, 0, sizeof(response));
+    rc = cai_mcp_list_request(impl, "resources/list", cursor, &request,
+                              &request_len, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+    }
+    cai_mcp_spooled_cleanup_if_initialized(&request);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_parse_resources_list_response(impl, &response, &next_cursor,
+                                                 error);
+    }
+    cai_mcp_http_response_capture_cleanup(&response);
+    cai_free_mem(&impl->allocator, cursor);
+    cursor = next_cursor;
+  } while (rc == CAI_OK && cursor != NULL && cursor[0] != '\0');
+  cai_free_mem(&impl->allocator, cursor);
+  if (rc != CAI_OK) {
+    cai_mcp_client_clear_resources(impl);
+  }
+  return rc;
+}
+
+static size_t cai_mcp_streamable_resource_count(const cai_mcp_client *client) {
+  const cai_mcp_streamable_http_client_impl *impl;
+
+  impl = cai_mcp_streamable_const_impl(client);
+  return impl != NULL ? impl->resource_count : 0U;
+}
+
+static const cai_mcp_client_resource *
+cai_mcp_streamable_resource_at(const cai_mcp_client *client, size_t index) {
+  const cai_mcp_streamable_http_client_impl *impl;
+
+  impl = cai_mcp_streamable_const_impl(client);
+  if (impl == NULL || index >= impl->resource_count) {
+    return NULL;
+  }
+  return &impl->resources[index].public_resource;
+}
+
+static int cai_mcp_streamable_read_resource(cai_mcp_client *client,
+                                            const char *uri, cai_sink *output,
+                                            cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL || output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client and output sink are required");
+  }
+  rc = client->initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_resource_read_request(impl, uri, &request, &request_len, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_resource_read_response(&response, output, error);
+  }
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
 static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_allocator allocator;
@@ -1247,7 +1636,9 @@ static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   }
   allocator = impl->allocator;
   cai_mcp_client_clear_tools(impl);
+  cai_mcp_client_clear_resources(impl);
   cai_free_mem(&allocator, impl->tools);
+  cai_free_mem(&allocator, impl->resources);
   cai_free_mem(&allocator, impl->url);
   cai_free_mem(&allocator, impl->client_name);
   cai_free_mem(&allocator, impl->client_version);
@@ -1321,6 +1712,10 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.tool_count = cai_mcp_streamable_tool_count;
   impl->public_client.tool_at = cai_mcp_streamable_tool_at;
   impl->public_client.call_tool = cai_mcp_streamable_call_tool;
+  impl->public_client.refresh_resources = cai_mcp_streamable_refresh_resources;
+  impl->public_client.resource_count = cai_mcp_streamable_resource_count;
+  impl->public_client.resource_at = cai_mcp_streamable_resource_at;
+  impl->public_client.read_resource = cai_mcp_streamable_read_resource;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   impl->public_client.impl = impl;
   *out = &impl->public_client;

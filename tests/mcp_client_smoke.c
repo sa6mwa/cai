@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
   const cai_mcp_client_tool *tool;
+  const cai_mcp_client_resource *resource;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   smoke_writer writer;
@@ -70,6 +71,7 @@ int main(int argc, char **argv) {
   const char *args_json;
   size_t i;
   int found_echo;
+  int found_resource;
   int rc;
 
   if (argc != 2) {
@@ -80,6 +82,7 @@ int main(int argc, char **argv) {
   client = NULL;
   sink = NULL;
   found_echo = 0;
+  found_resource = 0;
   memset(&writer, 0, sizeof(writer));
   memset(&callbacks, 0, sizeof(callbacks));
   cai_error_init(&error);
@@ -113,6 +116,31 @@ int main(int argc, char **argv) {
     cai_mcp_client_destroy(client);
     return smoke_error("MCP server did not advertise echo tool", NULL);
   }
+  rc = client->refresh_resources(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("failed to refresh MCP resources", &error);
+  }
+  for (i = 0U; i < client->resource_count(client); i++) {
+    resource = client->resource_at(client, i);
+    if (resource != NULL && resource->uri != NULL &&
+        strcmp(resource->uri,
+               "demo://resource/static/document/architecture.md") == 0) {
+      found_resource = 1;
+      if (resource->mime_type == NULL ||
+          strcmp(resource->mime_type, "text/markdown") != 0) {
+        cai_mcp_client_destroy(client);
+        return smoke_error("architecture resource MIME type was unexpected",
+                           NULL);
+      }
+      break;
+    }
+  }
+  if (!found_resource) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("MCP server did not advertise architecture resource",
+                       NULL);
+  }
 
   callbacks.write = smoke_write;
   callbacks.close = smoke_close;
@@ -135,16 +163,36 @@ int main(int argc, char **argv) {
   }
   rc = client->call_tool(client, "echo", &args, sink, &error);
   args.cleanup(&args);
-  cai_sink_close(sink);
-  cai_mcp_client_destroy(client);
   if (rc != CAI_OK) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("failed to call echo tool", &error);
   }
   if (writer.data == NULL ||
       strstr(writer.data, "cai-mcp-client-smoke-ok") == NULL) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("echo tool output did not include smoke marker", NULL);
+  }
+  writer.length = 0U;
+  writer.data[0] = '\0';
+  rc = client->read_resource(client,
+                             "demo://resource/static/document/architecture.md",
+                             sink, &error);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  if (rc != CAI_OK) {
+    free(writer.data);
+    return smoke_error("failed to read architecture resource", &error);
+  }
+  if (writer.data == NULL ||
+      strstr(writer.data, "demo://resource/static/document/architecture.md") ==
+          NULL ||
+      strstr(writer.data, "\"contents\"") == NULL) {
+    free(writer.data);
+    return smoke_error("architecture resource output was unexpected", NULL);
   }
   printf("MCP client smoke passed at %s\n", argv[1]);
   free(writer.data);
