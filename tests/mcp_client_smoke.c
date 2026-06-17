@@ -98,13 +98,13 @@ int main(int argc, char **argv) {
   if (rc != CAI_OK) {
     return smoke_error("failed to open MCP client", &error);
   }
-  rc = client->refresh_tools(client, &error);
+  rc = cai_mcp_client_refresh_tools(client, &error);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);
     return smoke_error("failed to refresh MCP tools", &error);
   }
-  for (i = 0U; i < client->tool_count(client); i++) {
-    tool = client->tool_at(client, i);
+  for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
+    tool = cai_mcp_client_tool_at(client, i);
     if (tool != NULL && tool->name != NULL && strcmp(tool->name, "echo") == 0) {
       found_echo = 1;
       if (tool->input_schema_json == NULL ||
@@ -119,13 +119,13 @@ int main(int argc, char **argv) {
     cai_mcp_client_destroy(client);
     return smoke_error("MCP server did not advertise echo tool", NULL);
   }
-  rc = client->refresh_resources(client, &error);
+  rc = cai_mcp_client_refresh_resources(client, &error);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);
     return smoke_error("failed to refresh MCP resources", &error);
   }
-  for (i = 0U; i < client->resource_count(client); i++) {
-    resource = client->resource_at(client, i);
+  for (i = 0U; i < cai_mcp_client_resource_count(client); i++) {
+    resource = cai_mcp_client_resource_at(client, i);
     if (resource != NULL && resource->uri != NULL &&
         strcmp(resource->uri,
                "demo://resource/static/document/architecture.md") == 0) {
@@ -144,13 +144,13 @@ int main(int argc, char **argv) {
     return smoke_error("MCP server did not advertise architecture resource",
                        NULL);
   }
-  rc = client->refresh_prompts(client, &error);
+  rc = cai_mcp_client_refresh_prompts(client, &error);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);
     return smoke_error("failed to refresh MCP prompts", &error);
   }
-  for (i = 0U; i < client->prompt_count(client); i++) {
-    prompt = client->prompt_at(client, i);
+  for (i = 0U; i < cai_mcp_client_prompt_count(client); i++) {
+    prompt = cai_mcp_client_prompt_at(client, i);
     if (prompt != NULL && prompt->name != NULL &&
         strcmp(prompt->name, "args-prompt") == 0) {
       found_prompt = 1;
@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "failed to build tool arguments: %s\n", json_error.message);
     return 1;
   }
-  rc = client->call_tool(client, "echo", &args, sink, &error);
+  rc = cai_mcp_client_call_tool(client, "echo", &args, sink, &error);
   args.cleanup(&args);
   if (rc != CAI_OK) {
     cai_sink_close(sink);
@@ -203,7 +203,7 @@ int main(int argc, char **argv) {
   }
   writer.length = 0U;
   writer.data[0] = '\0';
-  rc = client->read_resource(
+  rc = cai_mcp_client_read_resource(
       client, "demo://resource/static/document/architecture.md", sink, &error);
   if (rc != CAI_OK) {
     cai_sink_close(sink);
@@ -234,7 +234,7 @@ int main(int argc, char **argv) {
             json_error.message);
     return 1;
   }
-  rc = client->get_prompt(client, "args-prompt", &args, sink, &error);
+  rc = cai_mcp_client_get_prompt(client, "args-prompt", &args, sink, &error);
   args.cleanup(&args);
   cai_sink_close(sink);
   if (rc != CAI_OK) {
@@ -257,8 +257,8 @@ int main(int argc, char **argv) {
     free(writer.data);
     return smoke_error("failed to recreate output sink", &error);
   }
-  rc = client->complete(client, "ref/prompt", "completable-prompt",
-                        "department", "", NULL, sink, &error);
+  rc = cai_mcp_client_complete(client, "ref/prompt", "completable-prompt",
+                               "department", "", NULL, sink, &error);
   cai_sink_close(sink);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);

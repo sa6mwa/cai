@@ -279,6 +279,46 @@ void cai_mcp_streamable_http_client_config_init(
 int cai_mcp_streamable_http_client_open(
     const cai_mcp_streamable_http_client_config *config, cai_mcp_client **out,
     cai_error *error);
+/** Initialize an MCP client through its receiver interface. */
+int cai_mcp_client_initialize(cai_mcp_client *client, cai_error *error);
+/** Refresh cached remote tools/list metadata. */
+int cai_mcp_client_refresh_tools(cai_mcp_client *client, cai_error *error);
+/** Return the number of cached MCP tools. */
+size_t cai_mcp_client_tool_count(const cai_mcp_client *client);
+/** Return cached MCP tool metadata by index, or NULL when out of range. */
+const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
+                                                  size_t index);
+/** Call one remote MCP tool and stream result JSON to `output`. */
+int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
+                             struct lonejson_spooled *arguments_json,
+                             cai_sink *output, cai_error *error);
+/** Refresh cached remote resources/list metadata. */
+int cai_mcp_client_refresh_resources(cai_mcp_client *client, cai_error *error);
+/** Return the number of cached MCP resources. */
+size_t cai_mcp_client_resource_count(const cai_mcp_client *client);
+/** Return cached MCP resource metadata by index, or NULL when out of range. */
+const cai_mcp_client_resource *
+cai_mcp_client_resource_at(const cai_mcp_client *client, size_t index);
+/** Read one remote MCP resource and stream result JSON to `output`. */
+int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
+                                 cai_sink *output, cai_error *error);
+/** Refresh cached remote prompts/list metadata. */
+int cai_mcp_client_refresh_prompts(cai_mcp_client *client, cai_error *error);
+/** Return the number of cached MCP prompts. */
+size_t cai_mcp_client_prompt_count(const cai_mcp_client *client);
+/** Return cached MCP prompt metadata by index, or NULL when out of range. */
+const cai_mcp_client_prompt *
+cai_mcp_client_prompt_at(const cai_mcp_client *client, size_t index);
+/** Get one remote MCP prompt and stream result JSON to `output`. */
+int cai_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
+                              struct lonejson_spooled *arguments_json,
+                              cai_sink *output, cai_error *error);
+/** Complete one MCP prompt/resource argument and stream result JSON. */
+int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
+                            const char *ref_value, const char *argument_name,
+                            const char *argument_value,
+                            struct lonejson_spooled *context_arguments_json,
+                            cai_sink *output, cai_error *error);
 /** Register all cached/discovered MCP client tools into a local tool registry.
  *
  * The registry callbacks keep a non-owning pointer to `client`; callers must

@@ -3744,6 +3744,122 @@ static void test_mcp_client_config(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_mcp_client_receiver_surface(test_state *state) {
+  test_mcp_client_impl fake;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  const char *args_json;
+
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  test_mcp_fake_client_init(&fake);
+
+  expect_int(state, "mcp_client_receiver_initialize",
+             cai_mcp_client_initialize(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_initialize_count",
+             fake.initialize_count, 1L);
+  expect_int(state, "mcp_client_receiver_refresh_tools",
+             cai_mcp_client_refresh_tools(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_tool_count",
+             (long)cai_mcp_client_tool_count(&fake.public_client), 2L);
+  if (cai_mcp_client_tool_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_tool_at", "tool missing");
+  }
+  expect_int(state, "mcp_client_receiver_refresh_resources",
+             cai_mcp_client_refresh_resources(&fake.public_client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_resource_count",
+             (long)cai_mcp_client_resource_count(&fake.public_client), 1L);
+  if (cai_mcp_client_resource_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_resource_at", "resource missing");
+  }
+  expect_int(state, "mcp_client_receiver_refresh_prompts",
+             cai_mcp_client_refresh_prompts(&fake.public_client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_prompt_count",
+             (long)cai_mcp_client_prompt_count(&fake.public_client), 1L);
+  if (cai_mcp_client_prompt_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_prompt_at", "prompt missing");
+  }
+
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_client_receiver_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"message\":\"hello\"}";
+  expect_int(state, "mcp_client_receiver_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_client_receiver_call_tool",
+             cai_mcp_client_call_tool(&fake.public_client, "echo", &args, sink,
+                                      &error),
+             CAI_OK);
+  expect_str(state, "mcp_client_receiver_call_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_2",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_read_resource",
+             cai_mcp_client_read_resource(&fake.public_client, "resource://ok",
+                                          sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_client_receiver_read_resource_output",
+                writer.buffer, "\"contents\"");
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_3",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_client_receiver_prompt_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_client_receiver_get_prompt",
+             cai_mcp_client_get_prompt(&fake.public_client, "explain", &args,
+                                       sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_client_receiver_get_prompt_output", writer.buffer,
+                "\"messages\"");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_4",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_complete",
+             cai_mcp_client_complete(&fake.public_client, "ref/prompt",
+                                     "completable-prompt", "department", "",
+                                     NULL, sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_client_receiver_complete_output", writer.buffer,
+                "\"completion\"");
+  cai_sink_close(sink);
+
+  expect_int(state, "mcp_client_receiver_null_initialize",
+             cai_mcp_client_initialize(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+}
+
 static void test_mcp_client_registry_adapter(test_state *state) {
   test_mcp_client_impl fake;
   cai_mcp_tool_registration_config config;
@@ -8403,7 +8519,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                       &server.child_status);
     return;
   }
-  if (client->refresh_tools(client, &error) != CAI_OK) {
+  if (cai_mcp_client_refresh_tools(client, &error) != CAI_OK) {
     test_fail(state, "mcp_streamable_refresh",
               error.message != NULL ? error.message : "refresh failed");
     cai_mcp_client_destroy(client);
@@ -8413,8 +8529,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     return;
   }
   expect_int(state, "mcp_streamable_tool_count",
-             (long)client->tool_count(client), 2L);
-  tool = client->tool_at(client, 0U);
+             (long)cai_mcp_client_tool_count(client), 2L);
+  tool = cai_mcp_client_tool_at(client, 0U);
   if (tool == NULL) {
     test_fail(state, "mcp_streamable_tool", "tool missing");
   } else {
@@ -8424,7 +8540,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     expect_substr(state, "mcp_streamable_tool_schema", tool->input_schema_json,
                   "\"message\"");
   }
-  tool = client->tool_at(client, 1U);
+  tool = cai_mcp_client_tool_at(client, 1U);
   if (tool == NULL) {
     test_fail(state, "mcp_streamable_tool_page_2", "second tool missing");
   } else {
@@ -8445,16 +8561,17 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
              args.append(&args, args_json, strlen(args_json), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "mcp_streamable_call",
-             client->call_tool(client, "echo", &args, sink, &error), CAI_OK);
+             cai_mcp_client_call_tool(client, "echo", &args, sink, &error),
+             CAI_OK);
   expect_str(state, "mcp_streamable_call_output", writer.buffer,
              "{\"content\":[{\"type\":\"text\",\"text\":\"hello from mcp\"}],"
              "\"isError\":false}");
   memset(&writer, 0, sizeof(writer));
   expect_int(state, "mcp_streamable_refresh_resources",
-             client->refresh_resources(client, &error), CAI_OK);
+             cai_mcp_client_refresh_resources(client, &error), CAI_OK);
   expect_int(state, "mcp_streamable_resource_count",
-             (long)client->resource_count(client), 2L);
-  resource = client->resource_at(client, 0U);
+             (long)cai_mcp_client_resource_count(client), 2L);
+  resource = cai_mcp_client_resource_at(client, 0U);
   if (resource == NULL) {
     test_fail(state, "mcp_streamable_resource", "resource missing");
   } else {
@@ -8465,7 +8582,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     expect_str(state, "mcp_streamable_resource_mime", resource->mime_type,
                "text/plain");
   }
-  resource = client->resource_at(client, 1U);
+  resource = cai_mcp_client_resource_at(client, 1U);
   if (resource == NULL) {
     test_fail(state, "mcp_streamable_resource_page_2",
               "second resource missing");
@@ -8475,18 +8592,19 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     expect_str(state, "mcp_streamable_resource_page_2_title", resource->title,
                "Beta Resource");
   }
-  expect_int(state, "mcp_streamable_read_resource",
-             client->read_resource(client, "resource://beta", sink, &error),
-             CAI_OK);
+  expect_int(
+      state, "mcp_streamable_read_resource",
+      cai_mcp_client_read_resource(client, "resource://beta", sink, &error),
+      CAI_OK);
   expect_str(state, "mcp_streamable_read_resource_output", writer.buffer,
              "{\"contents\":[{\"uri\":\"resource://beta\",\"mimeType\":"
              "\"application/json\",\"text\":\"{\\\"beta\\\":true}\"}]}");
   memset(&writer, 0, sizeof(writer));
   expect_int(state, "mcp_streamable_refresh_prompts",
-             client->refresh_prompts(client, &error), CAI_OK);
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
   expect_int(state, "mcp_streamable_prompt_count",
-             (long)client->prompt_count(client), 2L);
-  prompt = client->prompt_at(client, 0U);
+             (long)cai_mcp_client_prompt_count(client), 2L);
+  prompt = cai_mcp_client_prompt_at(client, 0U);
   if (prompt == NULL) {
     test_fail(state, "mcp_streamable_prompt", "prompt missing");
   } else {
@@ -8496,7 +8614,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     expect_substr(state, "mcp_streamable_prompt_arguments",
                   prompt->arguments_json, "\"topic\"");
   }
-  prompt = client->prompt_at(client, 1U);
+  prompt = cai_mcp_client_prompt_at(client, 1U);
   if (prompt == NULL) {
     test_fail(state, "mcp_streamable_prompt_page_2", "second prompt missing");
   } else {
@@ -8515,7 +8633,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
              args.append(&args, args_json, strlen(args_json), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "mcp_streamable_get_prompt",
-             client->get_prompt(client, "explain", &args, sink, &error),
+             cai_mcp_client_get_prompt(client, "explain", &args, sink, &error),
              CAI_OK);
   expect_str(state, "mcp_streamable_get_prompt_output", writer.buffer,
              "{\"description\":\"Explain a topic\",\"messages\":[{\"role\":"
@@ -8530,8 +8648,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
              args.append(&args, args_json, strlen(args_json), &json_error),
              LONEJSON_STATUS_OK);
   expect_int(state, "mcp_streamable_complete",
-             client->complete(client, "ref/prompt", "completable-prompt",
-                              "name", "eng", &args, sink, &error),
+             cai_mcp_client_complete(client, "ref/prompt", "completable-prompt",
+                                     "name", "eng", &args, sink, &error),
              CAI_OK);
   expect_str(state, "mcp_streamable_complete_output", writer.buffer,
              "{\"completion\":{\"values\":[\"engineering\"],\"total\":1,"
@@ -21694,6 +21812,7 @@ static const test_entry test_entries[] = {
     {"lonejson_selected_array_rewrite", test_lonejson_selected_array_rewrite},
     {"tool_registry", test_tool_registry},
     {"mcp_client_config", test_mcp_client_config},
+    {"mcp_client_receiver_surface", test_mcp_client_receiver_surface},
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},

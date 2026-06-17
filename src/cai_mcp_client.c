@@ -1817,7 +1817,7 @@ static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1880,7 +1880,7 @@ static int cai_mcp_streamable_call_tool(cai_mcp_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client and output sink are required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1912,7 +1912,7 @@ static int cai_mcp_streamable_refresh_resources(cai_mcp_client *client,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1974,7 +1974,7 @@ static int cai_mcp_streamable_read_resource(cai_mcp_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client and output sink are required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -2005,7 +2005,7 @@ static int cai_mcp_streamable_refresh_prompts(cai_mcp_client *client,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -2068,7 +2068,7 @@ static int cai_mcp_streamable_get_prompt(cai_mcp_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client and output sink are required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -2104,7 +2104,7 @@ static int cai_mcp_streamable_complete(cai_mcp_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client and output sink are required");
   }
-  rc = client->initialize(client, error);
+  rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -2226,6 +2226,120 @@ int cai_mcp_streamable_http_client_open(
   return CAI_OK;
 }
 
+int cai_mcp_client_initialize(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->initialize == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client initialize receiver is required");
+  }
+  return client->initialize(client, error);
+}
+
+int cai_mcp_client_refresh_tools(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->refresh_tools == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client refresh_tools receiver is required");
+  }
+  return client->refresh_tools(client, error);
+}
+
+size_t cai_mcp_client_tool_count(const cai_mcp_client *client) {
+  return client != NULL && client->tool_count != NULL
+             ? client->tool_count(client)
+             : 0U;
+}
+
+const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
+                                                  size_t index) {
+  return client != NULL && client->tool_at != NULL
+             ? client->tool_at(client, index)
+             : NULL;
+}
+
+int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
+                             lonejson_spooled *arguments_json, cai_sink *output,
+                             cai_error *error) {
+  if (client == NULL || client->call_tool == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client call_tool receiver is required");
+  }
+  return client->call_tool(client, name, arguments_json, output, error);
+}
+
+int cai_mcp_client_refresh_resources(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->refresh_resources == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client refresh_resources receiver is required");
+  }
+  return client->refresh_resources(client, error);
+}
+
+size_t cai_mcp_client_resource_count(const cai_mcp_client *client) {
+  return client != NULL && client->resource_count != NULL
+             ? client->resource_count(client)
+             : 0U;
+}
+
+const cai_mcp_client_resource *
+cai_mcp_client_resource_at(const cai_mcp_client *client, size_t index) {
+  return client != NULL && client->resource_at != NULL
+             ? client->resource_at(client, index)
+             : NULL;
+}
+
+int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
+                                 cai_sink *output, cai_error *error) {
+  if (client == NULL || client->read_resource == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client read_resource receiver is required");
+  }
+  return client->read_resource(client, uri, output, error);
+}
+
+int cai_mcp_client_refresh_prompts(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->refresh_prompts == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client refresh_prompts receiver is required");
+  }
+  return client->refresh_prompts(client, error);
+}
+
+size_t cai_mcp_client_prompt_count(const cai_mcp_client *client) {
+  return client != NULL && client->prompt_count != NULL
+             ? client->prompt_count(client)
+             : 0U;
+}
+
+const cai_mcp_client_prompt *
+cai_mcp_client_prompt_at(const cai_mcp_client *client, size_t index) {
+  return client != NULL && client->prompt_at != NULL
+             ? client->prompt_at(client, index)
+             : NULL;
+}
+
+int cai_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
+                              lonejson_spooled *arguments_json,
+                              cai_sink *output, cai_error *error) {
+  if (client == NULL || client->get_prompt == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client get_prompt receiver is required");
+  }
+  return client->get_prompt(client, name, arguments_json, output, error);
+}
+
+int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
+                            const char *ref_value, const char *argument_name,
+                            const char *argument_value,
+                            lonejson_spooled *context_arguments_json,
+                            cai_sink *output, cai_error *error) {
+  if (client == NULL || client->complete == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client complete receiver is required");
+  }
+  return client->complete(client, ref_type, ref_value, argument_name,
+                          argument_value, context_arguments_json, output,
+                          error);
+}
+
 static int cai_mcp_registered_tool_callback(void *context,
                                             lonejson_spooled *arguments_json,
                                             cai_sink *output,
@@ -2238,9 +2352,9 @@ static int cai_mcp_registered_tool_callback(void *context,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP registered tool context is invalid");
   }
-  return tool_context->client->call_tool(tool_context->client,
-                                         tool_context->remote_name,
-                                         arguments_json, output, error);
+  return cai_mcp_client_call_tool(tool_context->client,
+                                  tool_context->remote_name, arguments_json,
+                                  output, error);
 }
 
 static void cai_mcp_registered_tool_context_cleanup(void *context) {
@@ -2270,12 +2384,12 @@ int cai_mcp_client_register_tools(
   }
   memset(&defaults, 0, sizeof(defaults));
   effective = config != NULL ? config : &defaults;
-  rc = client->refresh_tools(client, error);
+  rc = cai_mcp_client_refresh_tools(client, error);
   if (rc != CAI_OK) {
     return rc;
   }
-  for (i = 0U; i < client->tool_count(client); i++) {
-    tool = client->tool_at(client, i);
+  for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
+    tool = cai_mcp_client_tool_at(client, i);
     if (tool == NULL || tool->name == NULL || tool->input_schema_json == NULL) {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP tool metadata is incomplete");
