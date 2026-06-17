@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
   cai_mcp_client *client;
   const cai_mcp_client_tool *tool;
   const cai_mcp_client_resource *resource;
+  const cai_mcp_client_prompt *prompt;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   smoke_writer writer;
@@ -72,6 +73,7 @@ int main(int argc, char **argv) {
   size_t i;
   int found_echo;
   int found_resource;
+  int found_prompt;
   int rc;
 
   if (argc != 2) {
@@ -83,6 +85,7 @@ int main(int argc, char **argv) {
   sink = NULL;
   found_echo = 0;
   found_resource = 0;
+  found_prompt = 0;
   memset(&writer, 0, sizeof(writer));
   memset(&callbacks, 0, sizeof(callbacks));
   cai_error_init(&error);
@@ -141,6 +144,28 @@ int main(int argc, char **argv) {
     return smoke_error("MCP server did not advertise architecture resource",
                        NULL);
   }
+  rc = client->refresh_prompts(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("failed to refresh MCP prompts", &error);
+  }
+  for (i = 0U; i < client->prompt_count(client); i++) {
+    prompt = client->prompt_at(client, i);
+    if (prompt != NULL && prompt->name != NULL &&
+        strcmp(prompt->name, "args-prompt") == 0) {
+      found_prompt = 1;
+      if (prompt->arguments_json == NULL ||
+          strstr(prompt->arguments_json, "\"city\"") == NULL) {
+        cai_mcp_client_destroy(client);
+        return smoke_error("args-prompt metadata did not include city", NULL);
+      }
+      break;
+    }
+  }
+  if (!found_prompt) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("MCP server did not advertise args-prompt", NULL);
+  }
 
   callbacks.write = smoke_write;
   callbacks.close = smoke_close;
@@ -178,12 +203,11 @@ int main(int argc, char **argv) {
   }
   writer.length = 0U;
   writer.data[0] = '\0';
-  rc = client->read_resource(client,
-                             "demo://resource/static/document/architecture.md",
-                             sink, &error);
-  cai_sink_close(sink);
-  cai_mcp_client_destroy(client);
+  rc = client->read_resource(
+      client, "demo://resource/static/document/architecture.md", sink, &error);
   if (rc != CAI_OK) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("failed to read architecture resource", &error);
   }
@@ -191,8 +215,37 @@ int main(int argc, char **argv) {
       strstr(writer.data, "demo://resource/static/document/architecture.md") ==
           NULL ||
       strstr(writer.data, "\"contents\"") == NULL) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("architecture resource output was unexpected", NULL);
+  }
+  writer.length = 0U;
+  writer.data[0] = '\0';
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"city\":\"Gothenburg\",\"state\":\"Vastra Gotaland\"}";
+  if (args.append(&args, args_json, strlen(args_json), &json_error) !=
+      LONEJSON_STATUS_OK) {
+    args.cleanup(&args);
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    fprintf(stderr, "failed to build prompt arguments: %s\n",
+            json_error.message);
+    return 1;
+  }
+  rc = client->get_prompt(client, "args-prompt", &args, sink, &error);
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  if (rc != CAI_OK) {
+    free(writer.data);
+    return smoke_error("failed to get args-prompt", &error);
+  }
+  if (writer.data == NULL || strstr(writer.data, "Gothenburg") == NULL ||
+      strstr(writer.data, "Vastra Gotaland") == NULL) {
+    free(writer.data);
+    return smoke_error("args-prompt output was unexpected", NULL);
   }
   printf("MCP client smoke passed at %s\n", argv[1]);
   free(writer.data);

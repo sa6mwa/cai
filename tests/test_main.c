@@ -133,13 +133,17 @@ typedef struct test_mcp_client_impl {
   cai_mcp_client public_client;
   cai_mcp_client_tool tools[2];
   cai_mcp_client_resource resources[1];
+  cai_mcp_client_prompt prompts[1];
   size_t tool_count;
   size_t resource_count;
+  size_t prompt_count;
   int initialize_count;
   int refresh_count;
   int refresh_resources_count;
+  int refresh_prompts_count;
   int call_count;
   int read_resource_count;
+  int get_prompt_count;
   int destroy_count;
   char last_name[64];
   char last_uri[128];
@@ -1671,6 +1675,37 @@ test_mcp_client_resource_at(const cai_mcp_client *client, size_t index) {
   return &impl->resources[index];
 }
 
+static int test_mcp_client_refresh_prompts(cai_mcp_client *client,
+                                           cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_prompts_count++;
+  return CAI_OK;
+}
+
+static size_t test_mcp_client_prompt_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->prompt_count : 0U;
+}
+
+static const cai_mcp_client_prompt *
+test_mcp_client_prompt_at(const cai_mcp_client *client, size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->prompt_count) {
+    return NULL;
+  }
+  return &impl->prompts[index];
+}
+
 static void test_mcp_read_spooled_json(lonejson_spooled *spool, char *buffer,
                                        size_t capacity) {
   lonejson_spooled cursor;
@@ -1740,6 +1775,26 @@ static int test_mcp_client_read_resource(cai_mcp_client *client,
   return cai_sink_write(output, result, strlen(result), error);
 }
 
+static int test_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
+                                      lonejson_spooled *arguments_json,
+                                      cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->get_prompt_count++;
+  snprintf(impl->last_name, sizeof(impl->last_name), "%s",
+           name != NULL ? name : "");
+  test_mcp_read_spooled_json(arguments_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"description\":\"ok prompt\",\"messages\":[{\"role\":\"user\","
+           "\"content\":{\"type\":\"text\",\"text\":\"ok\"}}]}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
 static void test_mcp_client_destroy(cai_mcp_client *client) {
   test_mcp_client_impl *impl;
 
@@ -1766,6 +1821,11 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->resources[0].description = "Fake resource";
   impl->resources[0].mime_type = "text/plain";
   impl->resource_count = 1U;
+  impl->prompts[0].name = "explain";
+  impl->prompts[0].title = "Explain";
+  impl->prompts[0].description = "Explain input";
+  impl->prompts[0].arguments_json = "[{\"name\":\"topic\",\"required\":true}]";
+  impl->prompt_count = 1U;
   impl->public_client.initialize = test_mcp_client_initialize;
   impl->public_client.refresh_tools = test_mcp_client_refresh_tools;
   impl->public_client.tool_count = test_mcp_client_tool_count;
@@ -1775,6 +1835,10 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.resource_count = test_mcp_client_resource_count;
   impl->public_client.resource_at = test_mcp_client_resource_at;
   impl->public_client.read_resource = test_mcp_client_read_resource;
+  impl->public_client.refresh_prompts = test_mcp_client_refresh_prompts;
+  impl->public_client.prompt_count = test_mcp_client_prompt_count;
+  impl->public_client.prompt_at = test_mcp_client_prompt_at;
+  impl->public_client.get_prompt = test_mcp_client_get_prompt;
   impl->public_client.destroy = test_mcp_client_destroy;
   impl->public_client.impl = impl;
 }
@@ -3636,6 +3700,8 @@ static void test_mcp_client_config(test_state *state) {
       client->tool_at == NULL || client->call_tool == NULL ||
       client->refresh_resources == NULL || client->resource_count == NULL ||
       client->resource_at == NULL || client->read_resource == NULL ||
+      client->refresh_prompts == NULL || client->prompt_count == NULL ||
+      client->prompt_at == NULL || client->get_prompt == NULL ||
       client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
@@ -8138,6 +8204,22 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"contents\":[{\"uri\":"
       "\"resource://beta\",\"mimeType\":\"application/json\",\"text\":"
       "\"{\\\"beta\\\":true}\"}]}}\n\n";
+  static const char prompts_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"prompts\":[{\"name\":"
+      "\"explain\",\"description\":\"Explain a topic\",\"arguments\":[{"
+      "\"name\":\"topic\",\"required\":true}]}],\"nextCursor\":"
+      "\"prompts-page-2\"}}\n\n";
+  static const char prompts_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"title\":\"Summarize\",\"arguments\":[]}]}}";
+  static const char prompt_get_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"description\":"
+      "\"Explain a topic\",\"messages\":[{\"role\":\"user\",\"content\":{"
+      "\"type\":\"text\",\"text\":\"Explain MCP\"}}]}}\n\n";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
       "Accept: application/json, text/event-stream",
@@ -8176,6 +8258,21 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"resources/read\"", "\"uri\":\"resource://beta\""};
+  static const char *prompts_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"prompts/list\""};
+  static const char *prompts_list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"prompts/list\"", "\"cursor\":\"prompts-page-2\""};
+  static const char *prompt_get_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"prompts/get\"",
+      "\"name\":\"explain\"",
+      "\"arguments\":{\"topic\":\"MCP\"}"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -8203,12 +8300,23 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        resources_list_page_2_body},
       {"POST /v1/mcp HTTP/", resource_read_required,
        sizeof(resource_read_required) / sizeof(resource_read_required[0]), NULL,
-       0U, 200, "OK", "text/event-stream", NULL, resource_read_body}};
+       0U, 200, "OK", "text/event-stream", NULL, resource_read_body},
+      {"POST /v1/mcp HTTP/", prompts_list_required,
+       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, prompts_list_body},
+      {"POST /v1/mcp HTTP/", prompts_list_page_2_required,
+       sizeof(prompts_list_page_2_required) /
+           sizeof(prompts_list_page_2_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, prompts_list_page_2_body},
+      {"POST /v1/mcp HTTP/", prompt_get_required,
+       sizeof(prompt_get_required) / sizeof(prompt_get_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, prompt_get_body}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
   const cai_mcp_client_tool *tool;
   const cai_mcp_client_resource *resource;
+  const cai_mcp_client_prompt *prompt;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
@@ -8322,6 +8430,46 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   expect_str(state, "mcp_streamable_read_resource_output", writer.buffer,
              "{\"contents\":[{\"uri\":\"resource://beta\",\"mimeType\":"
              "\"application/json\",\"text\":\"{\\\"beta\\\":true}\"}]}");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_refresh_prompts",
+             client->refresh_prompts(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_prompt_count",
+             (long)client->prompt_count(client), 2L);
+  prompt = client->prompt_at(client, 0U);
+  if (prompt == NULL) {
+    test_fail(state, "mcp_streamable_prompt", "prompt missing");
+  } else {
+    expect_str(state, "mcp_streamable_prompt_name", prompt->name, "explain");
+    expect_str(state, "mcp_streamable_prompt_description", prompt->description,
+               "Explain a topic");
+    expect_substr(state, "mcp_streamable_prompt_arguments",
+                  prompt->arguments_json, "\"topic\"");
+  }
+  prompt = client->prompt_at(client, 1U);
+  if (prompt == NULL) {
+    test_fail(state, "mcp_streamable_prompt_page_2", "second prompt missing");
+  } else {
+    expect_str(state, "mcp_streamable_prompt_page_2_name", prompt->name,
+               "summarize");
+    expect_str(state, "mcp_streamable_prompt_page_2_title", prompt->title,
+               "Summarize");
+    expect_str(state, "mcp_streamable_prompt_page_2_arguments",
+               prompt->arguments_json, "[]");
+  }
+  args.cleanup(&args);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"topic\":\"MCP\"}";
+  expect_int(state, "mcp_streamable_prompt_args",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_get_prompt",
+             client->get_prompt(client, "explain", &args, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_get_prompt_output", writer.buffer,
+             "{\"description\":\"Explain a topic\",\"messages\":[{\"role\":"
+             "\"user\",\"content\":{\"type\":\"text\",\"text\":\"Explain "
+             "MCP\"}}]}");
   args.cleanup(&args);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);

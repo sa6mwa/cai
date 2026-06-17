@@ -121,6 +121,18 @@ typedef struct cai_mcp_client_resource {
   const char *mime_type;
 } cai_mcp_client_resource;
 
+/** One remote MCP prompt descriptor discovered from prompts/list. */
+typedef struct cai_mcp_client_prompt {
+  /** Prompt name advertised by the MCP server. */
+  const char *name;
+  /** Prompt title, description fallback, or empty string when absent. */
+  const char *title;
+  /** Prompt description, or an empty string when absent. */
+  const char *description;
+  /** Prompt arguments array JSON, or "[]" when absent. */
+  const char *arguments_json;
+} cai_mcp_client_prompt;
+
 /** Configuration for cai's built-in Streamable HTTP MCP client. */
 typedef struct cai_mcp_streamable_http_client_config {
   /** MCP endpoint URL, e.g. http://127.0.0.1:3001/mcp. */
@@ -215,6 +227,17 @@ struct cai_mcp_client {
   /** Read one remote resource by URI and stream result JSON. */
   int (*read_resource)(cai_mcp_client *client, const char *uri,
                        cai_sink *output, cai_error *error);
+  /** Refresh the cached remote prompts/list metadata. */
+  int (*refresh_prompts)(cai_mcp_client *client, cai_error *error);
+  /** Return the number of cached prompts. */
+  size_t (*prompt_count)(const cai_mcp_client *client);
+  /** Return cached prompt metadata by index, or NULL when out of range. */
+  const cai_mcp_client_prompt *(*prompt_at)(const cai_mcp_client *client,
+                                            size_t index);
+  /** Get one remote prompt by name and optional spooled JSON arguments. */
+  int (*get_prompt)(cai_mcp_client *client, const char *name,
+                    struct lonejson_spooled *arguments_json, cai_sink *output,
+                    cai_error *error);
   /** Destroy this MCP client and release associated resources. */
   void (*destroy)(cai_mcp_client *client);
   /** Private implementation pointer; custom clients may use this freely. */
