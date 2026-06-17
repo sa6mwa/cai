@@ -24,9 +24,6 @@ extern "C" {
 
 /** Opaque MCP route handler instance. */
 typedef struct cai_mcp_handler cai_mcp_handler;
-/** Opaque MCP client instance. */
-typedef struct cai_mcp_client cai_mcp_client;
-
 /** Callback used by the MCP handler to read request headers. */
 typedef const char *(*cai_mcp_header_get_fn)(void *context, const char *name);
 /** Callback used by the MCP handler to set response headers. */
@@ -133,12 +130,12 @@ typedef struct cai_mcp_streamable_http_client_config {
 } cai_mcp_streamable_http_client_config;
 
 /** Options for registering remote MCP tools as local cai function tools. */
-typedef struct cai_mcp_tool_registration_config {
+struct cai_mcp_tool_registration_config {
   /** Optional prefix prepended to each registered local tool name. */
   const char *name_prefix;
   /** Non-zero marks generated local function schemas strict. */
   int strict;
-} cai_mcp_tool_registration_config;
+};
 
 /** HTTP request view passed from an embedding route to cai MCP. */
 typedef struct cai_mcp_http_request {

@@ -4655,6 +4655,7 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
   agent->register_raw_spooled_tool = cai_agent_register_raw_spooled_tool;
+  agent->register_mcp_client_tools = cai_agent_register_mcp_client_tools;
   agent->add_hosted_tool_json = cai_agent_add_hosted_tool_json;
   agent->add_simple_hosted_tool = cai_agent_add_simple_hosted_tool;
   agent->add_hosted_mcp_tool = cai_agent_add_hosted_mcp_tool;

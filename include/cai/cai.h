@@ -38,6 +38,11 @@ typedef struct cai_conversation cai_conversation;
 typedef struct cai_source cai_source;
 /** Streaming byte output handle. */
 typedef struct cai_sink cai_sink;
+/** Transport-independent MCP client interface. */
+typedef struct cai_mcp_client cai_mcp_client;
+/** Options for registering remote MCP tools as local cai function tools. */
+typedef struct cai_mcp_tool_registration_config
+    cai_mcp_tool_registration_config;
 /** High-level response output wrapper. */
 typedef struct cai_output cai_output;
 /** Low-level Responses create parameter builder. */
@@ -981,6 +986,10 @@ struct cai_agent {
                                    const char *schema_json, int strict,
                                    cai_tool_raw_spooled_fn callback,
                                    void *context, cai_error *error);
+  /** Register all discovered tools from an MCP client. */
+  int (*register_mcp_client_tools)(
+      cai_agent *agent, cai_mcp_client *client,
+      const cai_mcp_tool_registration_config *config, cai_error *error);
   /** Add a provider-hosted tool described by raw JSON. */
   int (*add_hosted_tool_json)(cai_agent *agent, const char *tool_json,
                               cai_error *error);
@@ -1452,6 +1461,10 @@ int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
                                         const char *schema_json, int strict,
                                         cai_tool_raw_spooled_fn callback,
                                         void *context, cai_error *error);
+/** Register all discovered tools from an MCP client on an agent. */
+int cai_agent_register_mcp_client_tools(
+    cai_agent *agent, cai_mcp_client *client,
+    const cai_mcp_tool_registration_config *config, cai_error *error);
 /** Add a provider-hosted tool described by raw JSON to an agent. */
 int cai_agent_add_hosted_tool_json(cai_agent *agent, const char *tool_json,
                                    cai_error *error);

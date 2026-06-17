@@ -1200,6 +1200,22 @@ int cai_mcp_client_register_tools(
   return CAI_OK;
 }
 
+int cai_agent_register_mcp_client_tools(
+    cai_agent *agent, cai_mcp_client *client,
+    const cai_mcp_tool_registration_config *config, cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL || client == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent and MCP client are required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return cai_mcp_client_register_tools(client, impl->tools, config, error);
+}
+
 void cai_mcp_client_destroy(cai_mcp_client *client) {
   if (client != NULL && client->destroy != NULL) {
     client->destroy(client);

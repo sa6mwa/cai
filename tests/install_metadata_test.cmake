@@ -277,6 +277,9 @@ int main(void) {
   int (*register_raw_spooled)(cai_tool_registry *, const char *, const char *,
                               const char *, int, cai_tool_raw_spooled_fn,
                               void *, cai_error *);
+  int (*agent_register_mcp)(cai_agent *, cai_mcp_client *,
+                            const cai_mcp_tool_registration_config *,
+                            cai_error *);
   int (*set_tool_choice_json)(cai_response_create_params *, const char *,
                               cai_error *);
   int (*set_max_tool_calls)(cai_response_create_params *, int, cai_error *);
@@ -288,6 +291,13 @@ int main(void) {
   int (*mcp_handle)(cai_mcp_handler *, const cai_mcp_http_request *,
                     cai_mcp_http_response *, cai_error *);
   void (*mcp_destroy)(cai_mcp_handler *);
+  void (*mcp_client_config_init)(cai_mcp_streamable_http_client_config *);
+  int (*mcp_client_open)(const cai_mcp_streamable_http_client_config *,
+                         cai_mcp_client **, cai_error *);
+  int (*mcp_client_register)(cai_mcp_client *, cai_tool_registry *,
+                             const cai_mcp_tool_registration_config *,
+                             cai_error *);
+  void (*mcp_client_destroy)(cai_mcp_client *);
   cai_mcp_session_callbacks session_callbacks;
   cai_mcp_session_state session_state;
   (void)sizeof(error);
@@ -298,6 +308,7 @@ int main(void) {
   register_searxng = cai_tool_registry_register_searxng_tool;
   register_todo = cai_tool_registry_register_todo_tool;
   register_raw_spooled = cai_tool_registry_register_raw_spooled;
+  agent_register_mcp = cai_agent_register_mcp_client_tools;
   set_tool_choice_json = cai_response_create_params_set_tool_choice_json;
   set_max_tool_calls = cai_response_create_params_set_max_tool_calls;
   count_input_tokens = cai_client_count_response_input_tokens;
@@ -305,6 +316,10 @@ int main(void) {
   mcp_new = cai_mcp_handler_new;
   mcp_handle = cai_mcp_handler_handle_http;
   mcp_destroy = cai_mcp_handler_destroy;
+  mcp_client_config_init = cai_mcp_streamable_http_client_config_init;
+  mcp_client_open = cai_mcp_streamable_http_client_open;
+  mcp_client_register = cai_mcp_client_register_tools;
+  mcp_client_destroy = cai_mcp_client_destroy;
   (void)sizeof(session_callbacks);
   (void)sizeof(session_state);
   if (register_exec == 0 || register_read == 0 ||
@@ -312,8 +327,11 @@ int main(void) {
       register_searxng == 0 || register_todo == 0 ||
       register_raw_spooled == 0 || set_tool_choice_json == 0 ||
       set_max_tool_calls == 0 || count_input_tokens == 0 ||
+      agent_register_mcp == 0 ||
       mcp_config_init == 0 || mcp_new == 0 || mcp_handle == 0 ||
-      mcp_destroy == 0) {
+      mcp_destroy == 0 || mcp_client_config_init == 0 ||
+      mcp_client_open == 0 || mcp_client_register == 0 ||
+      mcp_client_destroy == 0) {
     return 1;
   }
   (void)registry;

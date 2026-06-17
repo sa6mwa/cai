@@ -3581,6 +3581,10 @@ static void test_mcp_client_registry_adapter(test_state *state) {
   test_mcp_client_impl fake;
   cai_mcp_tool_registration_config config;
   cai_tool_registry *registry;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
@@ -3590,6 +3594,8 @@ static void test_mcp_client_registry_adapter(test_state *state) {
   const char *args_json;
 
   registry = NULL;
+  client = NULL;
+  agent = NULL;
   sink = NULL;
   memset(&writer, 0, sizeof(writer));
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
@@ -3635,7 +3641,55 @@ static void test_mcp_client_registry_adapter(test_state *state) {
              "\"isError\":false}");
   args.cleanup(&args);
   cai_sink_close(sink);
+  sink = NULL;
   cai_tool_registry_destroy(registry);
+  registry = NULL;
+
+  memset(&writer, 0, sizeof(writer));
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  if (cai_client_open(&client_config, &client, &error) != CAI_OK) {
+    test_fail(state, "mcp_client_agent_open",
+              error.message != NULL ? error.message : "client open failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (cai_client_new_agent(client, &agent_config, &agent, &error) != CAI_OK) {
+    test_fail(state, "mcp_client_agent_new",
+              error.message != NULL ? error.message : "agent new failed");
+    client->close(client);
+    cai_error_cleanup(&error);
+    return;
+  }
+  config.name_prefix = "agent__";
+  expect_int(state, "mcp_client_agent_register",
+             cai_agent_register_mcp_client_tools(agent, &fake.public_client,
+                                                 &config, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_agent_refresh_count", fake.refresh_count, 2L);
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_client_agent_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_client_agent_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_client_agent_run",
+             cai_tool_registry_run_spooled(CAI_AGENT_IMPL(agent)->tools,
+                                           "agent__echo", &args, sink, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_agent_call_count", fake.call_count, 2L);
+  expect_str(state, "mcp_client_agent_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  agent->close(agent);
+  client->close(client);
   cai_error_cleanup(&error);
 }
 
@@ -12556,6 +12610,7 @@ static void test_agent_session(test_state *state) {
       client->close == NULL || agent->register_tool == NULL ||
       agent->register_raw_tool == NULL ||
       agent->register_raw_spooled_tool == NULL ||
+      agent->register_mcp_client_tools == NULL ||
       agent->add_hosted_tool_json == NULL ||
       agent->add_simple_hosted_tool == NULL ||
       agent->add_hosted_mcp_tool == NULL || agent->add_user_text == NULL ||
