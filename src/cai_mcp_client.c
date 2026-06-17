@@ -186,6 +186,12 @@ typedef struct cai_mcp_initialize_response_doc {
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_initialize_response_doc;
 
+typedef struct cai_mcp_sampling_params_doc {
+  lonejson_json_value tools;
+  lonejson_json_value tool_choice;
+  lonejson_json_value include_context;
+} cai_mcp_sampling_params_doc;
+
 typedef struct cai_mcp_registry_tool_context {
   cai_mcp_client *client;
   char *remote_name;
@@ -196,6 +202,8 @@ cai_mcp_streamable_reset_session(cai_mcp_streamable_http_client_impl *impl);
 static void cai_mcp_spooled_cleanup_if_initialized(lonejson_spooled *spool);
 static int cai_mcp_set_json_error(cai_error *error, const char *message,
                                   const lonejson_error *json_error);
+static int cai_mcp_write_json_string(lonejson_spooled *spool,
+                                     const char *text, cai_error *error);
 static int
 cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_mcp_http_response_capture *response,
@@ -239,6 +247,28 @@ static const lonejson_field cai_mcp_jsonrpc_message_fields[] = {
                           &cai_mcp_jsonrpc_error_map)};
 LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_message_map, cai_mcp_jsonrpc_message_doc,
                     cai_mcp_jsonrpc_message_fields);
+
+static const lonejson_field cai_mcp_sampling_params_fields[] = {
+    {"tools", LONEJSON__KEY_LEN("tools"), LONEJSON__KEY_FIRST("tools"),
+     LONEJSON__KEY_LAST("tools"), offsetof(cai_mcp_sampling_params_doc, tools),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"toolChoice", LONEJSON__KEY_LEN("toolChoice"),
+     LONEJSON__KEY_FIRST("toolChoice"), LONEJSON__KEY_LAST("toolChoice"),
+     offsetof(cai_mcp_sampling_params_doc, tool_choice),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"includeContext", LONEJSON__KEY_LEN("includeContext"),
+     LONEJSON__KEY_FIRST("includeContext"),
+     LONEJSON__KEY_LAST("includeContext"),
+     offsetof(cai_mcp_sampling_params_doc, include_context),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
+                    cai_mcp_sampling_params_fields);
 
 static const lonejson_field cai_mcp_list_tool_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_tool_doc, name, "name"),
@@ -993,6 +1023,115 @@ static int cai_mcp_build_roots_result(cai_mcp_streamable_http_client_impl *impl,
   return rc;
 }
 
+static int cai_mcp_sampling_request_uses_tools(lonejson_spooled *params_json,
+                                               int *uses_tools,
+                                               cai_error *error) {
+  cai_mcp_sampling_params_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (uses_tools == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP sampling tool output pointer is required");
+  }
+  *uses_tools = 0;
+  if (params_json == NULL) {
+    return CAI_OK;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = *params_json;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to rewind MCP sampling params",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_sampling_params_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_params_map, &doc);
+    return cai_mcp_set_json_error(error, "failed to parse MCP sampling params",
+                                  &json_error);
+  }
+  *uses_tools = doc.tools.kind != LONEJSON_JSON_VALUE_NULL ||
+                doc.tool_choice.kind != LONEJSON_JSON_VALUE_NULL;
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_params_map, &doc);
+  return CAI_OK;
+}
+
+static int
+cai_mcp_build_sampling_result(cai_mcp_streamable_http_client_impl *impl,
+                              const cai_mcp_jsonrpc_message_doc *doc,
+                              lonejson_spooled *result, cai_error *error) {
+  cai_sink_callbacks callbacks;
+  lonejson_spooled params_json;
+  cai_sink *sink;
+  int uses_tools;
+  int rc;
+
+  if (impl == NULL || impl->receiver.create_message == NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling/createMessage receiver is not "
+                         "configured");
+  }
+  memset(&params_json, 0, sizeof(params_json));
+  rc = cai_mcp_json_value_to_spooled(&doc->params, &params_json, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_sampling_request_uses_tools(&params_json, &uses_tools, error);
+  }
+  if (rc == CAI_OK && uses_tools && !impl->receiver.sampling_tools) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling tools were not advertised");
+  }
+  if (rc == CAI_OK) {
+    CAI_LJ->spooled_init(CAI_LJ, result);
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.write = cai_mcp_spooled_sink_write;
+    callbacks.context = result;
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+    if (rc == CAI_OK) {
+      rc = impl->receiver.create_message(impl->receiver.context, &params_json,
+                                         sink, error);
+      cai_sink_close(sink);
+    }
+    if (rc != CAI_OK) {
+      result->cleanup(result);
+      memset(result, 0, sizeof(*result));
+    }
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&params_json);
+  return rc;
+}
+
+static int cai_mcp_write_jsonrpc_error(lonejson_spooled *response,
+                                       const lonejson_json_value *id, int code,
+                                       const char *message, cai_error *error) {
+  int rc;
+
+  rc = cai_mcp_write_cstr(response, "{\"jsonrpc\":\"2.0\",\"id\":", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_value(
+        response, id, "failed to write MCP server request id", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(response, ",\"error\":{\"code\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = code == -32601 ? cai_mcp_write_cstr(response, "-32601", error)
+                        : cai_mcp_write_cstr(response, "-32602", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(response, ",\"message\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(response, message, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(response, "}}", error);
+  }
+  return rc;
+}
+
 static int
 cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
                                 const cai_mcp_jsonrpc_message_doc *doc,
@@ -1010,13 +1149,36 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP server request is required");
   }
-  if (strcmp(doc->method, "roots/list") != 0) {
-    return cai_set_error(
-        error, CAI_ERR_PROTOCOL,
-        "MCP server-to-client request method is not supported");
-  }
-  rc = cai_mcp_build_roots_result(impl, &result, error);
   CAI_LJ->spooled_init(CAI_LJ, response);
+  if (strcmp(doc->method, "roots/list") == 0) {
+    rc = cai_mcp_build_roots_result(impl, &result, error);
+  } else if (strcmp(doc->method, "sampling/createMessage") == 0) {
+    rc = cai_mcp_build_sampling_result(impl, doc, &result, error);
+  } else {
+    rc = cai_mcp_write_jsonrpc_error(
+        response, &doc->id, -32601,
+        "MCP server-to-client request method is not supported", error);
+    if (out_len != NULL) {
+      *out_len = response->size_fn(response);
+    }
+    return rc;
+  }
+  if (rc == CAI_ERR_PROTOCOL && response->size_fn(response) == 0U) {
+    char message[256];
+
+    snprintf(message, sizeof(message), "%s",
+             error != NULL && error->message != NULL
+                 ? error->message
+                 : "MCP server request failed");
+    cai_mcp_clear_error(error);
+    rc =
+        cai_mcp_write_jsonrpc_error(response, &doc->id, -32602, message, error);
+    if (out_len != NULL) {
+      *out_len = response->size_fn(response);
+    }
+    cai_mcp_spooled_cleanup_if_initialized(&result);
+    return rc;
+  }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(response, "{\"jsonrpc\":\"2.0\",\"id\":", error);
   }
@@ -1468,9 +1630,11 @@ static int cai_mcp_request_begin(cai_mcp_streamable_http_client_impl *impl,
 static int cai_mcp_initialize_request(cai_mcp_streamable_http_client_impl *impl,
                                       lonejson_spooled *spool, size_t *out_len,
                                       cai_error *error) {
+  int has_capability;
   int rc;
 
   CAI_LJ->spooled_init(CAI_LJ, spool);
+  has_capability = 0;
   rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, "initialize", error);
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, ",\"params\":{\"protocolVersion\":", error);
@@ -1486,6 +1650,31 @@ static int cai_mcp_initialize_request(cai_mcp_streamable_http_client_impl *impl,
     if (rc == CAI_OK) {
       rc = cai_mcp_write_cstr(
           spool, impl->receiver.roots_list_changed ? "true}" : "false}", error);
+    }
+    has_capability = 1;
+  }
+  if (rc == CAI_OK && impl->receiver.create_message != NULL) {
+    if (has_capability) {
+      rc = cai_mcp_write_cstr(spool, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "\"sampling\":{", error);
+    }
+    has_capability = 0;
+    if (rc == CAI_OK && impl->receiver.sampling_tools) {
+      rc = cai_mcp_write_cstr(spool, "\"tools\":{}", error);
+      has_capability = 1;
+    }
+    if (rc == CAI_OK && impl->receiver.sampling_context) {
+      if (has_capability) {
+        rc = cai_mcp_write_cstr(spool, ",", error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_write_cstr(spool, "\"context\":{}", error);
+      }
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "}", error);
     }
   }
   if (rc == CAI_OK) {

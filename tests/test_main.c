@@ -8532,6 +8532,13 @@ typedef struct test_mcp_roots_state {
   const char *result_json;
 } test_mcp_roots_state;
 
+typedef struct test_mcp_sampling_state {
+  int count;
+  int fail;
+  char params[512];
+  const char *result_json;
+} test_mcp_sampling_state;
+
 static int test_mcp_notification_callback(void *context, const char *method,
                                           lonejson_spooled *params_json,
                                           cai_error *error) {
@@ -8577,6 +8584,36 @@ static int test_mcp_roots_list_callback(void *context, cai_sink *result_json,
     return cai_set_error(error, CAI_ERR_CANCELLED, "roots callback failed");
   }
   json = state->result_json != NULL ? state->result_json : "{\"roots\":[]}";
+  return cai_sink_write(result_json, json, strlen(json), error);
+}
+
+static int test_mcp_sampling_callback(void *context,
+                                      lonejson_spooled *params_json,
+                                      cai_sink *result_json, cai_error *error) {
+  test_mcp_sampling_state *state;
+  const char *json;
+  char *params;
+
+  state = (test_mcp_sampling_state *)context;
+  if (state == NULL || params_json == NULL || result_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "sampling callback context is required");
+  }
+  state->count++;
+  params = test_spooled_to_cstr(params_json);
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read sampling params");
+  }
+  snprintf(state->params, sizeof(state->params), "%s", params);
+  free(params);
+  if (state->fail) {
+    return cai_set_error(error, CAI_ERR_CANCELLED, "sampling callback failed");
+  }
+  json = state->result_json != NULL
+             ? state->result_json
+             : "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+               "\"content\":{\"type\":\"text\",\"text\":\"sample ok\"}}";
   return cai_sink_write(result_json, json, strlen(json), error);
 }
 
@@ -9671,6 +9708,163 @@ test_mcp_streamable_http_roots_list_invalid_result(test_state *state) {
                     server.pid, &server.child_status);
 }
 
+static void test_mcp_streamable_http_sampling_request(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"sample-1\","
+      "\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[{"
+      "\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"Say hi\"}}],"
+      "\"maxTokens\":16}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\"",
+                                        "\"capabilities\":{\"sampling\":{}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: sampling-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *sampling_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-session",
+      "\"id\":\"sample-1\"",
+      "\"result\":{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"text\",\"text\":\"sample ok\"}}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sampling-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", sampling_response_required,
+       sizeof(sampling_response_required) /
+           sizeof(sampling_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_sampling_state sampling;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&sampling, 0, sizeof(sampling));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_sampling_request_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &sampling;
+  config.receiver.create_message = test_mcp_sampling_callback;
+  expect_int(state, "mcp_streamable_sampling_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sampling_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_sampling_count", sampling.count, 1L);
+  expect_substr(state, "mcp_streamable_sampling_params", sampling.params,
+                "\"maxTokens\":16");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sampling_request_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sampling_tools_not_advertised(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"sample-tools-1\","
+      "\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],"
+      "\"maxTokens\":16,\"tools\":[{\"name\":\"echo\",\"inputSchema\":{"
+      "\"type\":\"object\"}}]}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\"",
+                                        "\"capabilities\":{\"sampling\":{}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-tools-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-tools-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const char *sampling_error_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-tools-session",
+      "\"id\":\"sample-tools-1\"", "\"error\":{\"code\":-32602",
+      "\"message\":\"MCP sampling tools were not advertised\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sampling-tools-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", sampling_error_required,
+       sizeof(sampling_error_required) / sizeof(sampling_error_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_sampling_state sampling;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&sampling, 0, sizeof(sampling));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_sampling_tools_not_advertised_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &sampling;
+  config.receiver.create_message = test_mcp_sampling_callback;
+  expect_int(state, "mcp_streamable_sampling_tools_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sampling_tools_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_sampling_tools_count", sampling.count, 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sampling_tools_not_advertised_mock",
+                    server.pid, &server.child_status);
+}
+
 static void
 test_mcp_streamable_http_server_request_unsupported(test_state *state) {
   static const char initialize_body[] =
@@ -9680,8 +9874,8 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
       "\"version\":\"1\"}}}";
   static const char ping_body[] =
       "event: message\n"
-      "data: {\"jsonrpc\":\"2.0\",\"id\":\"sample-1\","
-      "\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[]}}\n\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"unknown-1\","
+      "\"method\":\"unknown/clientRequest\",\"params\":{}}\n\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
@@ -9692,6 +9886,10 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
   static const char *ping_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
       "\"id\":2", "\"method\":\"ping\""};
+  static const char *unsupported_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
+      "\"id\":\"unknown-1\"", "\"error\":{\"code\":-32601",
+      "\"message\":\"MCP server-to-client request method is not supported\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -9702,7 +9900,11 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
        200, "OK", "application/json", NULL, "{}"},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", unsupported_response_required,
+       sizeof(unsupported_response_required) /
+           sizeof(unsupported_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -9726,9 +9928,7 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
   expect_int(state, "mcp_streamable_server_request_call",
-             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
-  expect_str(state, "mcp_streamable_server_request_message", error.message,
-             "MCP server-to-client request method is not supported");
+             cai_mcp_client_ping(client, &error), CAI_OK);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_server_request_unsupported_mock",
@@ -23065,6 +23265,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_roots_list_callback_error},
     {"mcp_streamable_http_roots_list_invalid_result",
      test_mcp_streamable_http_roots_list_invalid_result},
+    {"mcp_streamable_http_sampling_request",
+     test_mcp_streamable_http_sampling_request},
+    {"mcp_streamable_http_sampling_tools_not_advertised",
+     test_mcp_streamable_http_sampling_tools_not_advertised},
     {"mcp_streamable_http_server_request_unsupported",
      test_mcp_streamable_http_server_request_unsupported},
     {"mcp_streamable_http_session_recovery",
