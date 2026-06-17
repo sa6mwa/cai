@@ -153,6 +153,7 @@ typedef struct test_mcp_client_impl {
   int complete_count;
   int set_log_level_count;
   int terminate_session_count;
+  int drain_events_count;
   int destroy_count;
   char last_name[64];
   char last_uri[128];
@@ -1943,6 +1944,19 @@ static int test_mcp_client_terminate_session(cai_mcp_client *client,
   return CAI_OK;
 }
 
+static int test_mcp_client_drain_events(cai_mcp_client *client,
+                                        cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->drain_events_count++;
+  return CAI_OK;
+}
+
 static void test_mcp_client_destroy(cai_mcp_client *client) {
   test_mcp_client_impl *impl;
 
@@ -2006,6 +2020,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.complete = test_mcp_client_complete;
   impl->public_client.set_log_level = test_mcp_client_set_log_level;
   impl->public_client.terminate_session = test_mcp_client_terminate_session;
+  impl->public_client.drain_events = test_mcp_client_drain_events;
   impl->public_client.destroy = test_mcp_client_destroy;
   impl->public_client.impl = impl;
 }
@@ -3875,7 +3890,7 @@ static void test_mcp_client_config(test_state *state) {
       client->prompt_count == NULL || client->prompt_at == NULL ||
       client->get_prompt == NULL || client->complete == NULL ||
       client->set_log_level == NULL || client->terminate_session == NULL ||
-      client->destroy == NULL) {
+      client->drain_events == NULL || client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
   cai_mcp_client_destroy(client);
@@ -4035,6 +4050,10 @@ static void test_mcp_client_receiver_surface(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_client_receiver_terminate_session_count",
              fake.terminate_session_count, 1L);
+  expect_int(state, "mcp_client_receiver_drain_events",
+             cai_mcp_client_drain_events(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_drain_events_count",
+             fake.drain_events_count, 1L);
 
   expect_int(state, "mcp_client_receiver_null_initialize",
              cai_mcp_client_initialize(NULL, &error), CAI_ERR_INVALID);
@@ -4061,6 +4080,10 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   cai_error_init(&error);
   expect_int(state, "mcp_client_receiver_null_terminate_session",
              cai_mcp_client_terminate_session(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_drain_events",
+             cai_mcp_client_drain_events(NULL, &error), CAI_ERR_INVALID);
   cai_error_cleanup(&error);
 }
 
@@ -8252,6 +8275,173 @@ http_mock_server_open_script(test_state *state, const char *name,
   return 0;
 }
 
+static void mock_mcp_get_sse_child(int pipe_fd) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char get_headers[] =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n";
+  static const char roots_event[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-get-1\","
+      "\"method\":\"roots/list\"}\n\n";
+  static const char notification_event[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"params\":{\"level\":\"info\",\"data\":\"hello get\"}}\n\n";
+  char request[16384];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int get_fd;
+  int port;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 2) != 0) {
+    _exit(4);
+  }
+  if (mock_set_socket_deadline(server_fd) != 0) {
+    _exit(12);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0 ||
+      mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "POST /v1/mcp HTTP/") == NULL ||
+      strstr(request, "\"method\":\"initialize\"") == NULL ||
+      strstr(request, "\"capabilities\":{\"roots\":{\"listChanged\":true}}") ==
+          NULL ||
+      mock_write_status_response(client_fd, 200, "OK", "application/json",
+                                 "req-init\r\nMCP-Session-Id: get-sse-session",
+                                 initialize_body) != 0) {
+    if (client_fd >= 0) {
+      close(client_fd);
+    }
+    _exit(7);
+  }
+  close(client_fd);
+
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0 ||
+      mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "POST /v1/mcp HTTP/") == NULL ||
+      strstr(request, "MCP-Session-Id: get-sse-session") == NULL ||
+      strstr(request, "\"method\":\"notifications/initialized\"") == NULL ||
+      mock_write_status_response(client_fd, 200, "OK", "application/json", NULL,
+                                 "{}") != 0) {
+    if (client_fd >= 0) {
+      close(client_fd);
+    }
+    _exit(8);
+  }
+  close(client_fd);
+
+  get_fd = mock_accept_with_deadline(server_fd);
+  if (get_fd < 0 || mock_set_socket_deadline(get_fd) != 0 ||
+      mock_read_request(get_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "GET /v1/mcp HTTP/") == NULL ||
+      strstr(request, "Accept: text/event-stream") == NULL ||
+      strstr(request, "MCP-Session-Id: get-sse-session") == NULL ||
+      mock_write_all(get_fd, get_headers, sizeof(get_headers) - 1U) != 0 ||
+      mock_write_all(get_fd, roots_event, sizeof(roots_event) - 1U) != 0) {
+    if (get_fd >= 0) {
+      close(get_fd);
+    }
+    _exit(9);
+  }
+
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0 ||
+      mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "POST /v1/mcp HTTP/") == NULL ||
+      strstr(request, "MCP-Session-Id: get-sse-session") == NULL ||
+      strstr(request, "\"id\":\"roots-get-1\"") == NULL ||
+      strstr(request, "\"result\":{\"roots\":[{\"uri\":\"file:///tmp/cai-get\","
+                      "\"name\":\"cai-get\"}]}") == NULL ||
+      mock_write_status_response(client_fd, 202, "Accepted", "application/json",
+                                 NULL, "") != 0) {
+    if (client_fd >= 0) {
+      close(client_fd);
+    }
+    close(get_fd);
+    _exit(10);
+  }
+  close(client_fd);
+
+  if (mock_write_all(get_fd, notification_event,
+                     sizeof(notification_event) - 1U) != 0) {
+    close(get_fd);
+    _exit(11);
+  }
+  close(get_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int http_mock_server_open_mcp_get_sse(test_state *state,
+                                             const char *name,
+                                             http_mock_server *server) {
+  int pipe_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    test_fail(state, name, "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    server->pid = -1;
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    mock_mcp_get_sse_child(pipe_fds[1]);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, server->pid, &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  return 0;
+}
+
 static void mock_stall_oauth_child(int pipe_fd, const char *request_prefix) {
   char request[4096];
   struct sockaddr_in addr;
@@ -8546,6 +8736,11 @@ typedef struct test_mcp_elicitation_state {
   const char *result_json;
 } test_mcp_elicitation_state;
 
+typedef struct test_mcp_receiver_state {
+  test_mcp_roots_state roots;
+  test_mcp_notification_state notifications;
+} test_mcp_receiver_state;
+
 static int test_mcp_notification_callback(void *context, const char *method,
                                           lonejson_spooled *params_json,
                                           cai_error *error) {
@@ -8592,6 +8787,34 @@ static int test_mcp_roots_list_callback(void *context, cai_sink *result_json,
   }
   json = state->result_json != NULL ? state->result_json : "{\"roots\":[]}";
   return cai_sink_write(result_json, json, strlen(json), error);
+}
+
+static int test_mcp_receiver_roots_list_callback(void *context,
+                                                 cai_sink *result_json,
+                                                 cai_error *error) {
+  test_mcp_receiver_state *state;
+
+  state = (test_mcp_receiver_state *)context;
+  if (state == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "receiver callback context is required");
+  }
+  return test_mcp_roots_list_callback(&state->roots, result_json, error);
+}
+
+static int
+test_mcp_receiver_notification_callback(void *context, const char *method,
+                                        lonejson_spooled *params_json,
+                                        cai_error *error) {
+  test_mcp_receiver_state *state;
+
+  state = (test_mcp_receiver_state *)context;
+  if (state == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "receiver callback context is required");
+  }
+  return test_mcp_notification_callback(&state->notifications, method,
+                                        params_json, error);
 }
 
 static int test_mcp_sampling_callback(void *context,
@@ -10128,6 +10351,108 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_server_request_unsupported_mock",
                     server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_drain_events_get_sse(test_state *state) {
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_receiver_state receiver;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&receiver, 0, sizeof(receiver));
+  receiver.roots.result_json =
+      "{\"roots\":[{\"uri\":\"file:///tmp/cai-get\",\"name\":\"cai-get\"}]}";
+  cai_error_init(&error);
+  if (http_mock_server_open_mcp_get_sse(
+          state, "mcp_streamable_drain_events_get_sse_mock", &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &receiver;
+  config.receiver.notification = test_mcp_receiver_notification_callback;
+  config.receiver.list_roots = test_mcp_receiver_roots_list_callback;
+  config.receiver.roots_list_changed = 1;
+  expect_int(state, "mcp_streamable_drain_events_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_drain_events_call",
+             cai_mcp_client_drain_events(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_drain_events_roots_count",
+             receiver.roots.count, 1L);
+  expect_int(state, "mcp_streamable_drain_events_notification_count",
+             receiver.notifications.count, 1L);
+  expect_str(state, "mcp_streamable_drain_events_notification_method",
+             receiver.notifications.method, "notifications/message");
+  expect_substr(state, "mcp_streamable_drain_events_notification_params",
+                receiver.notifications.params, "\"data\":\"hello get\"");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_drain_events_get_sse_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_drain_events_405(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: drain-405-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *get_required[] = {"GET /v1/mcp HTTP/",
+                                       "Accept: text/event-stream",
+                                       "MCP-Session-Id: drain-405-session"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: drain-405-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"GET /v1/mcp HTTP/", get_required,
+       sizeof(get_required) / sizeof(get_required[0]), NULL, 0U, 405,
+       "Method Not Allowed", "application/json", NULL,
+       "{\"error\":\"event stream unsupported\"}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_drain_events_405_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_drain_events_405_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_drain_events_405_call",
+             cai_mcp_client_drain_events(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_drain_events_405_mock", server.pid,
+                    &server.child_status);
 }
 
 static void test_mcp_streamable_http_session_recovery(test_state *state) {
@@ -23470,6 +23795,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_elicitation_invalid_result},
     {"mcp_streamable_http_server_request_unsupported",
      test_mcp_streamable_http_server_request_unsupported},
+    {"mcp_streamable_http_drain_events_get_sse",
+     test_mcp_streamable_http_drain_events_get_sse},
+    {"mcp_streamable_http_drain_events_405",
+     test_mcp_streamable_http_drain_events_405},
     {"mcp_streamable_http_session_recovery",
      test_mcp_streamable_http_session_recovery},
     {"mcp_streamable_http_server_error_no_recovery",

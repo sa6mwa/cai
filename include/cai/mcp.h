@@ -360,6 +360,12 @@ struct cai_mcp_client {
                        cai_error *error);
   /** Explicitly terminate the remote MCP session when supported. */
   int (*terminate_session)(cai_mcp_client *client, cai_error *error);
+  /** Drain server-initiated MCP events until the transport stream closes.
+   *
+   * Transport implementations that do not support a standalone server event
+   * stream may treat this as a successful no-op.
+   */
+  int (*drain_events)(cai_mcp_client *client, cai_error *error);
   /** Destroy this MCP client and release associated resources. */
   void (*destroy)(cai_mcp_client *client);
   /** Private implementation pointer; custom clients may use this freely. */
@@ -451,6 +457,8 @@ int cai_mcp_client_set_log_level(cai_mcp_client *client, const char *level,
                                  cai_error *error);
 /** Explicitly terminate the remote MCP session when supported. */
 int cai_mcp_client_terminate_session(cai_mcp_client *client, cai_error *error);
+/** Drain server-initiated MCP events until the transport stream closes. */
+int cai_mcp_client_drain_events(cai_mcp_client *client, cai_error *error);
 /** Register all cached/discovered MCP client tools into a local tool registry.
  *
  * The registry callbacks keep a non-owning pointer to `client`; callers must

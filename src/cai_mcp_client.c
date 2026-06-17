@@ -80,6 +80,17 @@ typedef struct cai_mcp_http_response_capture {
   long status;
 } cai_mcp_http_response_capture;
 
+typedef struct cai_mcp_sse_stream_state {
+  cai_mcp_streamable_http_client_impl *impl;
+  lonejson_spooled event_data;
+  cai_buffer_builder line;
+  char event[64];
+  cai_error *error;
+  int event_ready;
+  int failed;
+  int rc;
+} cai_mcp_sse_stream_state;
+
 typedef struct cai_mcp_spooled_upload {
   lonejson_spooled cursor;
   int rewound;
@@ -1424,6 +1435,30 @@ static int cai_mcp_process_sse_message(
 }
 
 static int
+cai_mcp_process_sse_server_message(cai_mcp_streamable_http_client_impl *impl,
+                                   lonejson_spooled *data, cai_error *error) {
+  cai_mcp_jsonrpc_message_doc doc;
+  int rc;
+
+  if (data == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP SSE message is required");
+  }
+  rc = cai_mcp_parse_sse_message(data, &doc, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (doc.method != NULL) {
+    if (doc.id.kind != LONEJSON_JSON_VALUE_NULL) {
+      rc = cai_mcp_handle_server_request(impl, &doc, error);
+    } else {
+      rc = cai_mcp_dispatch_notification(impl, &doc, error);
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, &doc);
+  return rc;
+}
+
+static int
 cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_mcp_http_response_capture *response,
                                cai_error *error) {
@@ -1521,6 +1556,165 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
   cai_free_mem(NULL, response->content_type);
   response->content_type = content_type;
   return CAI_OK;
+}
+
+static int cai_mcp_sse_stream_process_ready(cai_mcp_sse_stream_state *state) {
+  int rc;
+
+  if (state == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  rc = cai_mcp_process_sse_server_message(state->impl, &state->event_data,
+                                          state->error);
+  state->event_data.reset(&state->event_data);
+  state->event[0] = '\0';
+  state->event_ready = 0;
+  return rc;
+}
+
+static size_t cai_mcp_sse_stream_write(char *ptr, size_t size, size_t nmemb,
+                                       void *userdata) {
+  cai_mcp_sse_stream_state *state;
+  size_t total;
+  size_t i;
+  int rc;
+
+  state = (cai_mcp_sse_stream_state *)userdata;
+  total = size * nmemb;
+  if (state == NULL || ptr == NULL) {
+    return 0U;
+  }
+  rc = CAI_OK;
+  for (i = 0U; i < total; i++) {
+    if (ptr[i] == '\n') {
+      rc = cai_mcp_sse_handle_line(&state->event_data, state->event,
+                                   sizeof(state->event), state->line.data,
+                                   state->line.length, &state->event_ready,
+                                   state->error);
+      state->line.length = 0U;
+      if (state->line.data != NULL) {
+        state->line.data[0] = '\0';
+      }
+      if (rc == CAI_OK && state->event_ready) {
+        rc = cai_mcp_sse_stream_process_ready(state);
+      }
+    } else {
+      rc = cai_buffer_append(&state->line, &ptr[i], 1U, state->error);
+    }
+    if (rc != CAI_OK) {
+      state->failed = 1;
+      state->rc = rc;
+      return 0U;
+    }
+  }
+  return total;
+}
+
+static int cai_mcp_sse_stream_finish(cai_mcp_sse_stream_state *state) {
+  int rc;
+
+  if (state == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  rc = CAI_OK;
+  if (state->line.length != 0U) {
+    rc = cai_mcp_sse_handle_line(&state->event_data, state->event,
+                                 sizeof(state->event), state->line.data,
+                                 state->line.length, &state->event_ready,
+                                 state->error);
+    state->line.length = 0U;
+    if (state->line.data != NULL) {
+      state->line.data[0] = '\0';
+    }
+  }
+  if (rc == CAI_OK && !state->event_ready &&
+      cai_mcp_sse_data_event_done(state->event, &state->event_data)) {
+    state->event_ready = 1;
+  }
+  if (rc == CAI_OK && state->event_ready) {
+    rc = cai_mcp_sse_stream_process_ready(state);
+  }
+  return rc;
+}
+
+static int cai_mcp_get_events(cai_mcp_streamable_http_client_impl *impl,
+                              cai_error *error) {
+  CURL *curl;
+  CURLcode curl_rc;
+  struct curl_slist *headers;
+  cai_mcp_http_response_capture response;
+  cai_mcp_sse_stream_state stream;
+  int rc;
+
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  headers = NULL;
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize MCP HTTP request");
+  }
+  memset(&response, 0, sizeof(response));
+  CAI_LJ->spooled_init(CAI_LJ, &response.body);
+  memset(&stream, 0, sizeof(stream));
+  stream.impl = impl;
+  stream.error = error;
+  stream.rc = CAI_OK;
+  CAI_LJ->spooled_init(CAI_LJ, &stream.event_data);
+
+  rc = cai_append_header(&headers, "Accept: text/event-stream", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_session_headers(impl, &headers, error);
+  }
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    stream.event_data.cleanup(&stream.event_data);
+    cai_free_mem(NULL, stream.line.data);
+    cai_mcp_http_response_capture_cleanup(&response);
+    return rc;
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, impl->url);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_mcp_sse_stream_write);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream);
+  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
+  curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
+  cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
+                         impl->ca_path);
+  curl_rc = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+  if (curl_rc != CURLE_OK) {
+    if (stream.failed && stream.rc != CAI_OK) {
+      rc = stream.rc;
+    } else {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "MCP HTTP event stream failed",
+                                curl_easy_strerror(curl_rc));
+    }
+  } else if (response.status == 405L) {
+    rc = CAI_OK;
+  } else {
+    rc = cai_mcp_response_ok(&response, error);
+    if (rc == CAI_OK && !cai_mcp_response_is_sse(&response)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP event stream response was not SSE");
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_sse_stream_finish(&stream);
+    }
+  }
+  stream.event_data.cleanup(&stream.event_data);
+  cai_free_mem(NULL, stream.line.data);
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
 }
 
 static int
@@ -3555,6 +3749,22 @@ static int cai_mcp_streamable_terminate_session(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_drain_events(cai_mcp_client *client,
+                                           cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_mcp_get_events(impl, error);
+}
+
 static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_allocator allocator;
@@ -3686,6 +3896,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.complete = cai_mcp_streamable_complete;
   impl->public_client.set_log_level = cai_mcp_streamable_set_log_level;
   impl->public_client.terminate_session = cai_mcp_streamable_terminate_session;
+  impl->public_client.drain_events = cai_mcp_streamable_drain_events;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   impl->public_client.impl = impl;
   *out = &impl->public_client;
@@ -3872,6 +4083,14 @@ int cai_mcp_client_terminate_session(cai_mcp_client *client, cai_error *error) {
                          "MCP client terminate_session receiver is required");
   }
   return client->terminate_session(client, error);
+}
+
+int cai_mcp_client_drain_events(cai_mcp_client *client, cai_error *error) {
+  if (client == NULL || client->drain_events == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client drain_events receiver is required");
+  }
+  return client->drain_events(client, error);
 }
 
 static int cai_mcp_registered_tool_callback(void *context,
