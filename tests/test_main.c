@@ -129,6 +129,18 @@ typedef struct mcp_session_test_store {
   int empty_create_id;
 } mcp_session_test_store;
 
+typedef struct test_mcp_client_impl {
+  cai_mcp_client public_client;
+  cai_mcp_client_tool tools[2];
+  size_t tool_count;
+  int initialize_count;
+  int refresh_count;
+  int call_count;
+  int destroy_count;
+  char last_name[64];
+  char last_arguments[256];
+} test_mcp_client_impl;
+
 typedef struct sse_json_capture {
   write_state json;
   size_t event_count;
@@ -1572,6 +1584,135 @@ static void test_mcp_sink_close(void *context) {
 
   state = (mcp_sink_state *)context;
   state->closed = 1;
+}
+
+static test_mcp_client_impl *
+test_mcp_client_impl_from_public(const cai_mcp_client *client) {
+  return client != NULL ? (test_mcp_client_impl *)client->impl : NULL;
+}
+
+static int test_mcp_client_initialize(cai_mcp_client *client,
+                                      cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->initialize_count++;
+  return CAI_OK;
+}
+
+static int test_mcp_client_refresh_tools(cai_mcp_client *client,
+                                         cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_count++;
+  return CAI_OK;
+}
+
+static size_t test_mcp_client_tool_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->tool_count : 0U;
+}
+
+static const cai_mcp_client_tool *
+test_mcp_client_tool_at(const cai_mcp_client *client, size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->tool_count) {
+    return NULL;
+  }
+  return &impl->tools[index];
+}
+
+static void test_mcp_read_spooled_json(lonejson_spooled *spool, char *buffer,
+                                       size_t capacity) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result result;
+  size_t used;
+
+  if (buffer == NULL || capacity == 0U) {
+    return;
+  }
+  buffer[0] = '\0';
+  if (spool == NULL) {
+    return;
+  }
+  cursor = *spool;
+  lonejson_error_init(&json_error);
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return;
+  }
+  used = 0U;
+  while (used + 1U < capacity) {
+    result = cursor.read(&cursor, (unsigned char *)buffer + used,
+                         capacity - used - 1U);
+    used += result.bytes_read;
+    if (result.eof || result.error_code != 0) {
+      break;
+    }
+  }
+  buffer[used] = '\0';
+}
+
+static int test_mcp_client_call_tool(cai_mcp_client *client, const char *name,
+                                     lonejson_spooled *arguments_json,
+                                     cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->call_count++;
+  snprintf(impl->last_name, sizeof(impl->last_name), "%s",
+           name != NULL ? name : "");
+  test_mcp_read_spooled_json(arguments_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+           "\"isError\":false}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
+static void test_mcp_client_destroy(cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl != NULL) {
+    impl->destroy_count++;
+  }
+}
+
+static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
+  memset(impl, 0, sizeof(*impl));
+  impl->tools[0].name = "echo";
+  impl->tools[0].description = "Echo through MCP";
+  impl->tools[0].input_schema_json =
+      "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}},"
+      "\"required\":[\"message\"]}";
+  impl->tools[1].name = "status";
+  impl->tools[1].description = "Return status";
+  impl->tools[1].input_schema_json = "{\"type\":\"object\",\"properties\":{}}";
+  impl->tool_count = 2U;
+  impl->public_client.initialize = test_mcp_client_initialize;
+  impl->public_client.refresh_tools = test_mcp_client_refresh_tools;
+  impl->public_client.tool_count = test_mcp_client_tool_count;
+  impl->public_client.tool_at = test_mcp_client_tool_at;
+  impl->public_client.call_tool = test_mcp_client_call_tool;
+  impl->public_client.destroy = test_mcp_client_destroy;
+  impl->public_client.impl = impl;
 }
 
 static void expect_valid_json(test_state *state, const char *name,
@@ -3398,6 +3539,104 @@ static int test_mcp_handle_stream(
     *sink_state_out = sink_state;
   }
   return rc;
+}
+
+static void test_mcp_client_config(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  expect_int(state, "mcp_client_config_zero_url", config.url == NULL, 1L);
+  expect_int(state, "mcp_client_config_zero_timeout", config.timeout_ms, 0L);
+  expect_int(state, "mcp_client_open_no_out",
+             cai_mcp_streamable_http_client_open(&config, NULL, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_open_no_url",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_open_no_url_null_out", client == NULL, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.timeout_ms = 1234L;
+  expect_int(state, "mcp_client_open_ok",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  if (client == NULL || client->initialize == NULL ||
+      client->refresh_tools == NULL || client->tool_count == NULL ||
+      client->tool_at == NULL || client->call_tool == NULL ||
+      client->destroy == NULL) {
+    test_fail(state, "mcp_client_open_methods", "client method missing");
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_client_registry_adapter(test_state *state) {
+  test_mcp_client_impl fake;
+  cai_mcp_tool_registration_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  const char *args_json;
+
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(&config, 0, sizeof(config));
+  cai_error_init(&error);
+  test_mcp_fake_client_init(&fake);
+  expect_int(state, "mcp_client_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  config.name_prefix = "mcp__";
+  config.strict = 1;
+  expect_int(state, "mcp_client_register_tools",
+             cai_mcp_client_register_tools(&fake.public_client, registry,
+                                           &config, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_refresh_count", fake.refresh_count, 1L);
+  expect_int(state, "mcp_client_registered_count",
+             (long)cai_tool_registry_count(registry), 2L);
+  expect_str(state, "mcp_client_registered_name",
+             cai_tool_registry_name_at(registry, 0), "mcp__echo");
+  expect_substr(state, "mcp_client_registered_schema",
+                cai_tool_registry_schema_at(registry, 0), "\"message\"");
+
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_client_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"message\":\"hello\"}";
+  expect_int(state, "mcp_client_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(
+      state, "mcp_client_registered_run",
+      cai_tool_registry_run_spooled(registry, "mcp__echo", &args, sink, &error),
+      CAI_OK);
+  expect_int(state, "mcp_client_call_count", fake.call_count, 1L);
+  expect_str(state, "mcp_client_call_name", fake.last_name, "echo");
+  expect_str(state, "mcp_client_call_args", fake.last_arguments, args_json);
+  expect_str(state, "mcp_client_call_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
 }
 
 static void test_mcp_handler(test_state *state) {
@@ -20887,6 +21126,8 @@ static const test_entry test_entries[] = {
      test_lonejson_nested_mapped_array_stream},
     {"lonejson_selected_array_rewrite", test_lonejson_selected_array_rewrite},
     {"tool_registry", test_tool_registry},
+    {"mcp_client_config", test_mcp_client_config},
+    {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_handler", test_mcp_handler},
     {"client_open", test_client_open},
     {"mike_mind_prompt_contract", test_mike_mind_prompt_contract},

@@ -564,6 +564,7 @@ set(CAI_SOURCES
   src/cai_lj.c
   src/cai_log.c
   src/cai_mcp.c
+  src/cai_mcp_client.c
   src/cai_models.c
   src/cai_response.c
   src/cai_source.c
