@@ -41,7 +41,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release integration-build test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test format clean
+.PHONY: help build build-debug build-release integration-build test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test format clean
 
 help:
 	@printf '%s\n' \
@@ -81,6 +81,7 @@ help:
 		'make mcp-everything-up Start local MCP Everything reference server.' \
 		'make mcp-everything-wait Wait for local MCP Everything to initialize.' \
 		'make mcp-everything-test Run a local MCP Everything protocol smoke test.' \
+		'make mcp-everything-live-test Run the live model MCP client tool integration test.' \
 		'make mcp-everything-down Stop local MCP Everything compose service.' \
 		'make format       Run clang-format over repo C sources.' \
 		'make clean        Remove generated build outputs.'
@@ -400,6 +401,10 @@ mcp-everything-test:
 	grep -q 'cai-mcp-ok' "$$tmpdir/call.json"; \
 	printf 'MCP Everything protocol smoke test passed at %s\n' "$$url"; \
 	build/debug/cai_mcp_client_smoke "$$url"
+
+mcp-everything-live-test:
+	$(MAKE) integration-build
+	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_integration_mcp_client_tool$$'
 
 format:
 	$(CMAKE) --preset debug

@@ -1195,6 +1195,14 @@ if(CAI_BUILD_TESTS)
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_mcp_client_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_MCP_CLIENT_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_mcp_client_tool PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_responses_websocket_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1"

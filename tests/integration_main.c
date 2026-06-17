@@ -1,5 +1,6 @@
 #include <cai/auth.h>
 #include <cai/cai.h>
+#include <cai/mcp.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
@@ -29,6 +30,7 @@
 #define CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS 20000L
 #define CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TURNS 4
 #define CAI_INTEGRATION_PROVIDER_MAX_ATTEMPTS 3
+#define CAI_INTEGRATION_MCP_EVERYTHING_DEFAULT_URL "http://127.0.0.1:3001/mcp"
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -2271,6 +2273,130 @@ done:
   cai_output_destroy(output);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static const char *integration_mcp_everything_url(void) {
+  const char *url;
+
+  url = getenv("CAI_MCP_EVERYTHING_BASE_URL");
+  if (url == NULL || url[0] == '\0') {
+    url = CAI_INTEGRATION_MCP_EVERYTHING_DEFAULT_URL;
+  }
+  return url;
+}
+
+static int run_mcp_client_tool_live_regression(void) {
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client_config client_config;
+  cai_mcp_streamable_http_client_config mcp_config;
+  cai_mcp_tool_registration_config registration_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_mcp_client *mcp_client;
+  cai_output *output;
+  cai_error error;
+  integration_tool_event_state event_state;
+  const char *answer;
+  const char *url;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  client_config.timeout_ms = 60000L;
+  cai_agent_config_init(&agent_config);
+  cai_run_options_init(&run_options);
+  cai_mcp_streamable_http_client_config_init(&mcp_config);
+  memset(&registration_config, 0, sizeof(registration_config));
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  mcp_client = NULL;
+  output = NULL;
+  answer = NULL;
+  memset(&event_state, 0, sizeof(event_state));
+
+  url = integration_mcp_everything_url();
+  mcp_config.url = url;
+  mcp_config.client_name = "cai-integration-mcp-client";
+  mcp_config.timeout_ms = 30000L;
+  registration_config.name_prefix = "mcp__";
+
+  agent_config.model = integration_model();
+  fprintf(stderr, "[integration-mcp-client-tool] model=%s mcp=%s\n",
+          agent_config.model, url);
+  agent_config.developer_instructions =
+      "You are a strict MCP client integration assistant. The next turn must "
+      "call the mcp__echo tool exactly once using message "
+      "cai-mcp-live-echo-ok. After the tool result, answer with only "
+      "MCP_CLIENT_TOOL_OK cai-mcp-live-echo-ok and nothing else.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_MINIMAL;
+  agent_config.max_output_tokens = 96;
+  agent_config.tool_choice_json =
+      "{\"type\":\"function\",\"name\":\"mcp__echo\"}";
+  agent_config.max_tool_calls = 1;
+  agent_config.disable_parallel_tool_calls = 1;
+  run_options.max_tool_rounds = 2;
+  run_options.tool_event = integration_tool_event;
+  run_options.tool_event_context = &event_state;
+
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_streamable_http_client_open(&mcp_config, &mcp_client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_mcp_client_tools(agent, mcp_client,
+                                             &registration_config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(
+        session,
+        "Run the MCP echo check now. You must call the forced tool with "
+        "message cai-mcp-live-echo-ok before answering.",
+        &error);
+  }
+  if (rc == CAI_OK) {
+    rc = integration_provider_run_auto_output(session, &run_options, 0, &output,
+                                              &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("MCP client tool live regression", rc, &error);
+    goto done;
+  }
+
+  answer = cai_output_text(output);
+  if (event_state.starts != 1 || event_state.outputs != 1 ||
+      strstr(event_state.start_arguments, "cai-mcp-live-echo-ok") == NULL ||
+      strstr(event_state.output.buffer, "cai-mcp-live-echo-ok") == NULL ||
+      answer == NULL || strstr(answer, "MCP_CLIENT_TOOL_OK") == NULL ||
+      strstr(answer, "cai-mcp-live-echo-ok") == NULL) {
+    fprintf(stderr,
+            "MCP client tool regression failed check; starts=%d outputs=%d\n"
+            "tool arguments:\n%s\n"
+            "tool output:\n%s\n"
+            "answer:\n%s\n",
+            event_state.starts, event_state.outputs,
+            event_state.start_arguments, event_state.output.buffer,
+            answer != NULL ? answer : "(null)");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+
+done:
+  cai_output_destroy(output);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_mcp_client_destroy(mcp_client);
   cai_client_close(client);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
@@ -4534,6 +4660,7 @@ int main(void) {
   const char *openrouter_read_tool;
   const char *openrouter_tool_security;
   const char *hosted_web_search;
+  const char *mcp_client_tool;
   const char *provider_retry_classifier;
   const char *responses_websocket;
   const char *usage_limits;
@@ -4632,6 +4759,13 @@ int main(void) {
       return 1;
     }
     return run_hosted_web_search_regression();
+  }
+  mcp_client_tool = getenv("CAI_INTEGRATION_MCP_CLIENT_TOOL");
+  if (integration_flag_enabled(mcp_client_tool)) {
+    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
+      return 1;
+    }
+    return run_mcp_client_tool_live_regression();
   }
   responses_websocket = getenv("CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E");
   if (integration_flag_enabled(responses_websocket)) {
