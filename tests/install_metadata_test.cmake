@@ -308,6 +308,10 @@ int main(void) {
       const cai_mcp_client *, size_t);
   int (*mcp_client_read_resource)(cai_mcp_client *, const char *, cai_sink *,
                                   cai_error *);
+  int (*mcp_client_refresh_resource_templates)(cai_mcp_client *, cai_error *);
+  size_t (*mcp_client_resource_template_count)(const cai_mcp_client *);
+  const cai_mcp_client_resource_template *(*mcp_client_resource_template_at)(
+      const cai_mcp_client *, size_t);
   int (*mcp_client_refresh_prompts)(cai_mcp_client *, cai_error *);
   size_t (*mcp_client_prompt_count)(const cai_mcp_client *);
   const cai_mcp_client_prompt *(*mcp_client_prompt_at)(const cai_mcp_client *,
@@ -352,6 +356,10 @@ int main(void) {
   mcp_client_resource_count = cai_mcp_client_resource_count;
   mcp_client_resource_at = cai_mcp_client_resource_at;
   mcp_client_read_resource = cai_mcp_client_read_resource;
+  mcp_client_refresh_resource_templates =
+      cai_mcp_client_refresh_resource_templates;
+  mcp_client_resource_template_count = cai_mcp_client_resource_template_count;
+  mcp_client_resource_template_at = cai_mcp_client_resource_template_at;
   mcp_client_refresh_prompts = cai_mcp_client_refresh_prompts;
   mcp_client_prompt_count = cai_mcp_client_prompt_count;
   mcp_client_prompt_at = cai_mcp_client_prompt_at;
@@ -374,6 +382,9 @@ int main(void) {
       mcp_client_tool_at == 0 || mcp_client_call_tool == 0 ||
       mcp_client_refresh_resources == 0 || mcp_client_resource_count == 0 ||
       mcp_client_resource_at == 0 || mcp_client_read_resource == 0 ||
+      mcp_client_refresh_resource_templates == 0 ||
+      mcp_client_resource_template_count == 0 ||
+      mcp_client_resource_template_at == 0 ||
       mcp_client_refresh_prompts == 0 || mcp_client_prompt_count == 0 ||
       mcp_client_prompt_at == 0 || mcp_client_get_prompt == 0 ||
       mcp_client_complete == 0 || mcp_client_register == 0 ||

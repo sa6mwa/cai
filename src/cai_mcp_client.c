@@ -24,6 +24,15 @@ typedef struct cai_mcp_client_resource_impl {
   char *mime_type;
 } cai_mcp_client_resource_impl;
 
+typedef struct cai_mcp_client_resource_template_impl {
+  cai_mcp_client_resource_template public_resource_template;
+  char *uri_template;
+  char *name;
+  char *title;
+  char *description;
+  char *mime_type;
+} cai_mcp_client_resource_template_impl;
+
 typedef struct cai_mcp_client_prompt_impl {
   cai_mcp_client_prompt public_prompt;
   char *name;
@@ -52,6 +61,9 @@ typedef struct cai_mcp_streamable_http_client_impl {
   cai_mcp_client_resource_impl *resources;
   size_t resource_count;
   size_t resource_capacity;
+  cai_mcp_client_resource_template_impl *resource_templates;
+  size_t resource_template_count;
+  size_t resource_template_capacity;
   cai_mcp_client_prompt_impl *prompts;
   size_t prompt_count;
   size_t prompt_capacity;
@@ -117,6 +129,24 @@ typedef struct cai_mcp_resources_list_response_doc {
   cai_mcp_resources_list_result_doc result;
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_resources_list_response_doc;
+
+typedef struct cai_mcp_list_resource_template_doc {
+  char *uri_template;
+  char *name;
+  char *title;
+  char *description;
+  char *mime_type;
+} cai_mcp_list_resource_template_doc;
+
+typedef struct cai_mcp_resource_templates_list_result_doc {
+  lonejson_object_array resource_templates;
+  char *next_cursor;
+} cai_mcp_resource_templates_list_result_doc;
+
+typedef struct cai_mcp_resource_templates_list_response_doc {
+  cai_mcp_resource_templates_list_result_doc result;
+  cai_mcp_jsonrpc_error_doc error_doc;
+} cai_mcp_resource_templates_list_response_doc;
 
 typedef struct cai_mcp_list_prompt_doc {
   char *name;
@@ -227,6 +257,42 @@ static const lonejson_field cai_mcp_resources_list_response_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_resources_list_response_map,
                     cai_mcp_resources_list_response_doc,
                     cai_mcp_resources_list_response_fields);
+
+static const lonejson_field cai_mcp_list_resource_template_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_resource_template_doc,
+                                    uri_template, "uriTemplate"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_resource_template_doc, name,
+                                    "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_template_doc, title,
+                                "title"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_template_doc, description,
+                                "description"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_template_doc, mime_type,
+                                "mimeType")};
+LONEJSON_MAP_DEFINE(cai_mcp_list_resource_template_map,
+                    cai_mcp_list_resource_template_doc,
+                    cai_mcp_list_resource_template_fields);
+
+static const lonejson_field cai_mcp_resource_templates_list_result_fields[] = {
+    LONEJSON_FIELD_OBJECT_ARRAY(
+        cai_mcp_resource_templates_list_result_doc, resource_templates,
+        "resourceTemplates", cai_mcp_list_resource_template_doc,
+        &cai_mcp_list_resource_template_map, LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_resource_templates_list_result_doc,
+                                next_cursor, "nextCursor")};
+LONEJSON_MAP_DEFINE(cai_mcp_resource_templates_list_result_map,
+                    cai_mcp_resource_templates_list_result_doc,
+                    cai_mcp_resource_templates_list_result_fields);
+
+static const lonejson_field cai_mcp_resource_templates_list_response_fields[] =
+    {LONEJSON_FIELD_OBJECT(cai_mcp_resource_templates_list_response_doc, result,
+                           "result",
+                           &cai_mcp_resource_templates_list_result_map),
+     LONEJSON_FIELD_OBJECT(cai_mcp_resource_templates_list_response_doc,
+                           error_doc, "error", &cai_mcp_jsonrpc_error_map)};
+LONEJSON_MAP_DEFINE(cai_mcp_resource_templates_list_response_map,
+                    cai_mcp_resource_templates_list_response_doc,
+                    cai_mcp_resource_templates_list_response_fields);
 
 static const lonejson_field cai_mcp_list_prompt_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_prompt_doc, name, "name"),
@@ -1254,6 +1320,19 @@ cai_mcp_client_resource_impl_cleanup(const cai_allocator *allocator,
   }
 }
 
+static void cai_mcp_client_resource_template_impl_cleanup(
+    const cai_allocator *allocator,
+    cai_mcp_client_resource_template_impl *resource_template) {
+  if (resource_template != NULL) {
+    cai_free_mem(allocator, resource_template->uri_template);
+    cai_free_mem(allocator, resource_template->name);
+    cai_free_mem(allocator, resource_template->title);
+    cai_free_mem(allocator, resource_template->description);
+    cai_free_mem(allocator, resource_template->mime_type);
+    memset(resource_template, 0, sizeof(*resource_template));
+  }
+}
+
 static void
 cai_mcp_client_prompt_impl_cleanup(const cai_allocator *allocator,
                                    cai_mcp_client_prompt_impl *prompt) {
@@ -1290,6 +1369,20 @@ cai_mcp_client_clear_resources(cai_mcp_streamable_http_client_impl *impl) {
     cai_mcp_client_resource_impl_cleanup(&impl->allocator, &impl->resources[i]);
   }
   impl->resource_count = 0U;
+}
+
+static void cai_mcp_client_clear_resource_templates(
+    cai_mcp_streamable_http_client_impl *impl) {
+  size_t i;
+
+  if (impl == NULL) {
+    return;
+  }
+  for (i = 0U; i < impl->resource_template_count; i++) {
+    cai_mcp_client_resource_template_impl_cleanup(&impl->allocator,
+                                                  &impl->resource_templates[i]);
+  }
+  impl->resource_template_count = 0U;
 }
 
 static void
@@ -1344,6 +1437,28 @@ cai_mcp_client_reserve_resources(cai_mcp_streamable_http_client_impl *impl,
          (count - impl->resource_capacity) * sizeof(*resources));
   impl->resources = resources;
   impl->resource_capacity = count;
+  return CAI_OK;
+}
+
+static int cai_mcp_client_reserve_resource_templates(
+    cai_mcp_streamable_http_client_impl *impl, size_t count, cai_error *error) {
+  cai_mcp_client_resource_template_impl *resource_templates;
+
+  if (count <= impl->resource_template_capacity) {
+    return CAI_OK;
+  }
+  resource_templates = (cai_mcp_client_resource_template_impl *)cai_realloc_mem(
+      &impl->allocator, impl->resource_templates,
+      count * sizeof(*resource_templates));
+  if (resource_templates == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP resource template cache");
+  }
+  memset(resource_templates + impl->resource_template_capacity, 0,
+         (count - impl->resource_template_capacity) *
+             sizeof(*resource_templates));
+  impl->resource_templates = resource_templates;
+  impl->resource_template_capacity = count;
   return CAI_OK;
 }
 
@@ -1573,6 +1688,114 @@ static int cai_mcp_parse_resources_list_response(
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
   if (rc != CAI_OK) {
     cai_mcp_client_clear_resources(impl);
+    if (next_cursor != NULL) {
+      cai_free_mem(&impl->allocator, *next_cursor);
+      *next_cursor = NULL;
+    }
+  }
+  json_body.cleanup(&json_body);
+  return rc;
+}
+
+static int cai_mcp_parse_resource_templates_list_response(
+    cai_mcp_streamable_http_client_impl *impl,
+    const cai_mcp_http_response_capture *response, char **next_cursor,
+    cai_error *error) {
+  cai_mcp_resource_templates_list_response_doc doc;
+  lonejson_spooled json_body;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  cai_mcp_list_resource_template_doc *src_resource_templates;
+  size_t base_count;
+  size_t i;
+  int rc;
+
+  if (next_cursor != NULL) {
+    *next_cursor = NULL;
+  }
+  rc = cai_mcp_response_json_body(
+      response, "MCP resources/templates/list response", &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = json_body;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(
+      CAI_LJ, &cai_mcp_resource_templates_list_response_map, &doc,
+      cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
+                    &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP resources/templates/list", &json_error);
+  }
+  if (doc.error_doc.message != NULL) {
+    rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
+                    &doc);
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  base_count = impl->resource_template_count;
+  rc = cai_mcp_client_reserve_resource_templates(
+      impl, base_count + doc.result.resource_templates.count, error);
+  if (rc == CAI_OK) {
+    src_resource_templates = (cai_mcp_list_resource_template_doc *)
+                                 doc.result.resource_templates.items;
+    for (i = 0U; i < doc.result.resource_templates.count; i++) {
+      cai_mcp_client_resource_template_impl *dst =
+          &impl->resource_templates[base_count + i];
+      dst->uri_template =
+          cai_strdup(&impl->allocator, src_resource_templates[i].uri_template);
+      dst->name = cai_strdup(&impl->allocator, src_resource_templates[i].name);
+      dst->title = cai_strdup(
+          &impl->allocator, src_resource_templates[i].title != NULL
+                                ? src_resource_templates[i].title
+                                : (src_resource_templates[i].description != NULL
+                                       ? src_resource_templates[i].description
+                                       : ""));
+      dst->description = cai_strdup(
+          &impl->allocator, src_resource_templates[i].description != NULL
+                                ? src_resource_templates[i].description
+                                : "");
+      dst->mime_type = cai_strdup(&impl->allocator,
+                                  src_resource_templates[i].mime_type != NULL
+                                      ? src_resource_templates[i].mime_type
+                                      : "");
+      if (dst->uri_template == NULL || dst->name == NULL ||
+          dst->title == NULL || dst->description == NULL ||
+          dst->mime_type == NULL) {
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP resource template metadata");
+        cai_mcp_client_resource_template_impl_cleanup(&impl->allocator, dst);
+        break;
+      }
+      dst->public_resource_template.uri_template = dst->uri_template;
+      dst->public_resource_template.name = dst->name;
+      dst->public_resource_template.title = dst->title;
+      dst->public_resource_template.description = dst->description;
+      dst->public_resource_template.mime_type = dst->mime_type;
+      impl->resource_template_count++;
+    }
+  }
+  if (rc == CAI_OK && next_cursor != NULL && doc.result.next_cursor != NULL) {
+    *next_cursor = cai_strdup(&impl->allocator, doc.result.next_cursor);
+    if (*next_cursor == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP resources/templates/list cursor");
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map, &doc);
+  if (rc != CAI_OK) {
+    cai_mcp_client_clear_resource_templates(impl);
     if (next_cursor != NULL) {
       cai_free_mem(&impl->allocator, *next_cursor);
       *next_cursor = NULL;
@@ -2037,6 +2260,71 @@ static int cai_mcp_streamable_read_resource(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_refresh_resource_templates(cai_mcp_client *client,
+                                                         cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  char *cursor;
+  char *next_cursor;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  cursor = NULL;
+  cai_mcp_client_clear_resource_templates(impl);
+  do {
+    next_cursor = NULL;
+    memset(&response, 0, sizeof(response));
+    rc = cai_mcp_list_request(impl, "resources/templates/list", cursor,
+                              &request, &request_len, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_post_request_with_session_recovery(
+          impl, &request, request_len, &response, error);
+    }
+    cai_mcp_spooled_cleanup_if_initialized(&request);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_parse_resource_templates_list_response(impl, &response,
+                                                          &next_cursor, error);
+    }
+    cai_mcp_http_response_capture_cleanup(&response);
+    cai_free_mem(&impl->allocator, cursor);
+    cursor = next_cursor;
+  } while (rc == CAI_OK && cursor != NULL && cursor[0] != '\0');
+  cai_free_mem(&impl->allocator, cursor);
+  if (rc != CAI_OK) {
+    cai_mcp_client_clear_resource_templates(impl);
+  }
+  return rc;
+}
+
+static size_t
+cai_mcp_streamable_resource_template_count(const cai_mcp_client *client) {
+  const cai_mcp_streamable_http_client_impl *impl;
+
+  impl = cai_mcp_streamable_const_impl(client);
+  return impl != NULL ? impl->resource_template_count : 0U;
+}
+
+static const cai_mcp_client_resource_template *
+cai_mcp_streamable_resource_template_at(const cai_mcp_client *client,
+                                        size_t index) {
+  const cai_mcp_streamable_http_client_impl *impl;
+
+  impl = cai_mcp_streamable_const_impl(client);
+  if (impl == NULL || index >= impl->resource_template_count) {
+    return NULL;
+  }
+  return &impl->resource_templates[index].public_resource_template;
+}
+
 static int cai_mcp_streamable_refresh_prompts(cai_mcp_client *client,
                                               cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -2183,9 +2471,11 @@ static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   allocator = impl->allocator;
   cai_mcp_client_clear_tools(impl);
   cai_mcp_client_clear_resources(impl);
+  cai_mcp_client_clear_resource_templates(impl);
   cai_mcp_client_clear_prompts(impl);
   cai_free_mem(&allocator, impl->tools);
   cai_free_mem(&allocator, impl->resources);
+  cai_free_mem(&allocator, impl->resource_templates);
   cai_free_mem(&allocator, impl->prompts);
   cai_free_mem(&allocator, impl->url);
   cai_free_mem(&allocator, impl->client_name);
@@ -2264,6 +2554,12 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.resource_count = cai_mcp_streamable_resource_count;
   impl->public_client.resource_at = cai_mcp_streamable_resource_at;
   impl->public_client.read_resource = cai_mcp_streamable_read_resource;
+  impl->public_client.refresh_resource_templates =
+      cai_mcp_streamable_refresh_resource_templates;
+  impl->public_client.resource_template_count =
+      cai_mcp_streamable_resource_template_count;
+  impl->public_client.resource_template_at =
+      cai_mcp_streamable_resource_template_at;
   impl->public_client.refresh_prompts = cai_mcp_streamable_refresh_prompts;
   impl->public_client.prompt_count = cai_mcp_streamable_prompt_count;
   impl->public_client.prompt_at = cai_mcp_streamable_prompt_at;
@@ -2342,6 +2638,30 @@ int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
                          "MCP client read_resource receiver is required");
   }
   return client->read_resource(client, uri, output, error);
+}
+
+int cai_mcp_client_refresh_resource_templates(cai_mcp_client *client,
+                                              cai_error *error) {
+  if (client == NULL || client->refresh_resource_templates == NULL) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP client refresh_resource_templates receiver is required");
+  }
+  return client->refresh_resource_templates(client, error);
+}
+
+size_t cai_mcp_client_resource_template_count(const cai_mcp_client *client) {
+  return client != NULL && client->resource_template_count != NULL
+             ? client->resource_template_count(client)
+             : 0U;
+}
+
+const cai_mcp_client_resource_template *
+cai_mcp_client_resource_template_at(const cai_mcp_client *client,
+                                    size_t index) {
+  return client != NULL && client->resource_template_at != NULL
+             ? client->resource_template_at(client, index)
+             : NULL;
 }
 
 int cai_mcp_client_refresh_prompts(cai_mcp_client *client, cai_error *error) {

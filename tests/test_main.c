@@ -133,13 +133,16 @@ typedef struct test_mcp_client_impl {
   cai_mcp_client public_client;
   cai_mcp_client_tool tools[2];
   cai_mcp_client_resource resources[1];
+  cai_mcp_client_resource_template resource_templates[1];
   cai_mcp_client_prompt prompts[1];
   size_t tool_count;
   size_t resource_count;
+  size_t resource_template_count;
   size_t prompt_count;
   int initialize_count;
   int refresh_count;
   int refresh_resources_count;
+  int refresh_resource_templates_count;
   int refresh_prompts_count;
   int call_count;
   int read_resource_count;
@@ -1680,6 +1683,39 @@ test_mcp_client_resource_at(const cai_mcp_client *client, size_t index) {
   return &impl->resources[index];
 }
 
+static int test_mcp_client_refresh_resource_templates(cai_mcp_client *client,
+                                                      cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_resource_templates_count++;
+  return CAI_OK;
+}
+
+static size_t
+test_mcp_client_resource_template_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->resource_template_count : 0U;
+}
+
+static const cai_mcp_client_resource_template *
+test_mcp_client_resource_template_at(const cai_mcp_client *client,
+                                     size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->resource_template_count) {
+    return NULL;
+  }
+  return &impl->resource_templates[index];
+}
+
 static int test_mcp_client_refresh_prompts(cai_mcp_client *client,
                                            cai_error *error) {
   test_mcp_client_impl *impl;
@@ -1855,6 +1891,12 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->resources[0].description = "Fake resource";
   impl->resources[0].mime_type = "text/plain";
   impl->resource_count = 1U;
+  impl->resource_templates[0].uri_template = "resource://doc/{name}";
+  impl->resource_templates[0].name = "doc";
+  impl->resource_templates[0].title = "Doc Template";
+  impl->resource_templates[0].description = "Fake template";
+  impl->resource_templates[0].mime_type = "text/markdown";
+  impl->resource_template_count = 1U;
   impl->prompts[0].name = "explain";
   impl->prompts[0].title = "Explain";
   impl->prompts[0].description = "Explain input";
@@ -1869,6 +1911,12 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.resource_count = test_mcp_client_resource_count;
   impl->public_client.resource_at = test_mcp_client_resource_at;
   impl->public_client.read_resource = test_mcp_client_read_resource;
+  impl->public_client.refresh_resource_templates =
+      test_mcp_client_refresh_resource_templates;
+  impl->public_client.resource_template_count =
+      test_mcp_client_resource_template_count;
+  impl->public_client.resource_template_at =
+      test_mcp_client_resource_template_at;
   impl->public_client.refresh_prompts = test_mcp_client_refresh_prompts;
   impl->public_client.prompt_count = test_mcp_client_prompt_count;
   impl->public_client.prompt_at = test_mcp_client_prompt_at;
@@ -3735,9 +3783,12 @@ static void test_mcp_client_config(test_state *state) {
       client->tool_at == NULL || client->call_tool == NULL ||
       client->refresh_resources == NULL || client->resource_count == NULL ||
       client->resource_at == NULL || client->read_resource == NULL ||
-      client->refresh_prompts == NULL || client->prompt_count == NULL ||
-      client->prompt_at == NULL || client->get_prompt == NULL ||
-      client->complete == NULL || client->destroy == NULL) {
+      client->refresh_resource_templates == NULL ||
+      client->resource_template_count == NULL ||
+      client->resource_template_at == NULL || client->refresh_prompts == NULL ||
+      client->prompt_count == NULL || client->prompt_at == NULL ||
+      client->get_prompt == NULL || client->complete == NULL ||
+      client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
   cai_mcp_client_destroy(client);
@@ -3778,6 +3829,17 @@ static void test_mcp_client_receiver_surface(test_state *state) {
              (long)cai_mcp_client_resource_count(&fake.public_client), 1L);
   if (cai_mcp_client_resource_at(&fake.public_client, 0U) == NULL) {
     test_fail(state, "mcp_client_receiver_resource_at", "resource missing");
+  }
+  expect_int(
+      state, "mcp_client_receiver_refresh_resource_templates",
+      cai_mcp_client_refresh_resource_templates(&fake.public_client, &error),
+      CAI_OK);
+  expect_int(state, "mcp_client_receiver_resource_template_count",
+             (long)cai_mcp_client_resource_template_count(&fake.public_client),
+             1L);
+  if (cai_mcp_client_resource_template_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_resource_template_at",
+              "resource template missing");
   }
   expect_int(state, "mcp_client_receiver_refresh_prompts",
              cai_mcp_client_refresh_prompts(&fake.public_client, &error),
@@ -8349,6 +8411,17 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"resources\":[{\"uri\":"
       "\"resource://beta\",\"name\":\"beta\",\"title\":\"Beta Resource\","
       "\"mimeType\":\"application/json\"}]}}";
+  static const char resource_templates_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://docs/{name}\",\"name\":\"doc\","
+      "\"description\":\"Doc template\",\"mimeType\":\"text/markdown\"}],"
+      "\"nextCursor\":\"resource-templates-page-2\"}}\n\n";
+  static const char resource_templates_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://metrics/{id}\",\"name\":\"metric\","
+      "\"title\":\"Metric Template\",\"mimeType\":\"application/json\"}]}}";
   static const char resource_read_body[] =
       "event: message\n"
       "data: "
@@ -8414,6 +8487,15 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"resources/read\"", "\"uri\":\"resource://beta\""};
+  static const char *resource_templates_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/templates/list\""};
+  static const char *resource_templates_list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"resources/templates/list\"",
+      "\"cursor\":\"resource-templates-page-2\""};
   static const char *prompts_list_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
@@ -8462,6 +8544,16 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
            sizeof(resources_list_page_2_required[0]),
        NULL, 0U, 200, "OK", "application/json", NULL,
        resources_list_page_2_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_required,
+       sizeof(resource_templates_list_required) /
+           sizeof(resource_templates_list_required[0]),
+       NULL, 0U, 200, "OK", "text/event-stream", NULL,
+       resource_templates_list_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_page_2_required,
+       sizeof(resource_templates_list_page_2_required) /
+           sizeof(resource_templates_list_page_2_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resource_templates_list_page_2_body},
       {"POST /v1/mcp HTTP/", resource_read_required,
        sizeof(resource_read_required) / sizeof(resource_read_required[0]), NULL,
        0U, 200, "OK", "text/event-stream", NULL, resource_read_body},
@@ -8483,6 +8575,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   cai_mcp_client *client;
   const cai_mcp_client_tool *tool;
   const cai_mcp_client_resource *resource;
+  const cai_mcp_client_resource_template *resource_template;
   const cai_mcp_client_prompt *prompt;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -8591,6 +8684,34 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                "resource://beta");
     expect_str(state, "mcp_streamable_resource_page_2_title", resource->title,
                "Beta Resource");
+  }
+  expect_int(state, "mcp_streamable_refresh_resource_templates",
+             cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_resource_template_count",
+             (long)cai_mcp_client_resource_template_count(client), 2L);
+  resource_template = cai_mcp_client_resource_template_at(client, 0U);
+  if (resource_template == NULL) {
+    test_fail(state, "mcp_streamable_resource_template",
+              "resource template missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_template_uri",
+               resource_template->uri_template, "resource://docs/{name}");
+    expect_str(state, "mcp_streamable_resource_template_description",
+               resource_template->description, "Doc template");
+    expect_str(state, "mcp_streamable_resource_template_title",
+               resource_template->title, "Doc template");
+    expect_str(state, "mcp_streamable_resource_template_mime",
+               resource_template->mime_type, "text/markdown");
+  }
+  resource_template = cai_mcp_client_resource_template_at(client, 1U);
+  if (resource_template == NULL) {
+    test_fail(state, "mcp_streamable_resource_template_page_2",
+              "second resource template missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_template_page_2_uri",
+               resource_template->uri_template, "resource://metrics/{id}");
+    expect_str(state, "mcp_streamable_resource_template_page_2_title",
+               resource_template->title, "Metric Template");
   }
   expect_int(
       state, "mcp_streamable_read_resource",

@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
   cai_mcp_client *client;
   const cai_mcp_client_tool *tool;
   const cai_mcp_client_resource *resource;
+  const cai_mcp_client_resource_template *resource_template;
   const cai_mcp_client_prompt *prompt;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
@@ -73,6 +74,7 @@ int main(int argc, char **argv) {
   size_t i;
   int found_echo;
   int found_resource;
+  int found_resource_template;
   int found_prompt;
   int rc;
 
@@ -85,6 +87,7 @@ int main(int argc, char **argv) {
   sink = NULL;
   found_echo = 0;
   found_resource = 0;
+  found_resource_template = 0;
   found_prompt = 0;
   memset(&writer, 0, sizeof(writer));
   memset(&callbacks, 0, sizeof(callbacks));
@@ -142,6 +145,25 @@ int main(int argc, char **argv) {
   if (!found_resource) {
     cai_mcp_client_destroy(client);
     return smoke_error("MCP server did not advertise architecture resource",
+                       NULL);
+  }
+  rc = cai_mcp_client_refresh_resource_templates(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("failed to refresh MCP resource templates", &error);
+  }
+  for (i = 0U; i < cai_mcp_client_resource_template_count(client); i++) {
+    resource_template = cai_mcp_client_resource_template_at(client, i);
+    if (resource_template != NULL && resource_template->uri_template != NULL &&
+        strchr(resource_template->uri_template, '{') != NULL &&
+        resource_template->name != NULL && resource_template->name[0] != '\0') {
+      found_resource_template = 1;
+      break;
+    }
+  }
+  if (!found_resource_template) {
+    cai_mcp_client_destroy(client);
+    return smoke_error("MCP server did not advertise a resource template",
                        NULL);
   }
   rc = cai_mcp_client_refresh_prompts(client, &error);

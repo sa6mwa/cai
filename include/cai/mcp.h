@@ -121,6 +121,22 @@ typedef struct cai_mcp_client_resource {
   const char *mime_type;
 } cai_mcp_client_resource;
 
+/** One remote MCP resource template descriptor discovered from
+ * resources/templates/list.
+ */
+typedef struct cai_mcp_client_resource_template {
+  /** URI template advertised by the MCP server. */
+  const char *uri_template;
+  /** Resource template name advertised by the MCP server. */
+  const char *name;
+  /** Resource template title, description fallback, or empty string. */
+  const char *title;
+  /** Resource template description, or an empty string when absent. */
+  const char *description;
+  /** Resource MIME type, or an empty string when absent. */
+  const char *mime_type;
+} cai_mcp_client_resource_template;
+
 /** One remote MCP prompt descriptor discovered from prompts/list. */
 typedef struct cai_mcp_client_prompt {
   /** Prompt name advertised by the MCP server. */
@@ -227,6 +243,13 @@ struct cai_mcp_client {
   /** Read one remote resource by URI and stream result JSON. */
   int (*read_resource)(cai_mcp_client *client, const char *uri,
                        cai_sink *output, cai_error *error);
+  /** Refresh the cached remote resources/templates/list metadata. */
+  int (*refresh_resource_templates)(cai_mcp_client *client, cai_error *error);
+  /** Return the number of cached resource templates. */
+  size_t (*resource_template_count)(const cai_mcp_client *client);
+  /** Return cached resource template metadata by index, or NULL. */
+  const cai_mcp_client_resource_template *(*resource_template_at)(
+      const cai_mcp_client *client, size_t index);
   /** Refresh the cached remote prompts/list metadata. */
   int (*refresh_prompts)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached prompts. */
@@ -302,6 +325,14 @@ cai_mcp_client_resource_at(const cai_mcp_client *client, size_t index);
 /** Read one remote MCP resource and stream result JSON to `output`. */
 int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
                                  cai_sink *output, cai_error *error);
+/** Refresh cached remote resources/templates/list metadata. */
+int cai_mcp_client_refresh_resource_templates(cai_mcp_client *client,
+                                              cai_error *error);
+/** Return the number of cached MCP resource templates. */
+size_t cai_mcp_client_resource_template_count(const cai_mcp_client *client);
+/** Return cached MCP resource template metadata by index, or NULL. */
+const cai_mcp_client_resource_template *
+cai_mcp_client_resource_template_at(const cai_mcp_client *client, size_t index);
 /** Refresh cached remote prompts/list metadata. */
 int cai_mcp_client_refresh_prompts(cai_mcp_client *client, cai_error *error);
 /** Return the number of cached MCP prompts. */
