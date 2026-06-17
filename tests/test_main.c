@@ -8526,6 +8526,12 @@ typedef struct test_mcp_notification_state {
   char params[512];
 } test_mcp_notification_state;
 
+typedef struct test_mcp_roots_state {
+  int count;
+  int fail;
+  const char *result_json;
+} test_mcp_roots_state;
+
 static int test_mcp_notification_callback(void *context, const char *method,
                                           lonejson_spooled *params_json,
                                           cai_error *error) {
@@ -8554,6 +8560,24 @@ static int test_mcp_notification_callback(void *context, const char *method,
                          "notification callback failed");
   }
   return CAI_OK;
+}
+
+static int test_mcp_roots_list_callback(void *context, cai_sink *result_json,
+                                        cai_error *error) {
+  test_mcp_roots_state *state;
+  const char *json;
+
+  state = (test_mcp_roots_state *)context;
+  if (state == NULL || result_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "roots callback context is required");
+  }
+  state->count++;
+  if (state->fail) {
+    return cai_set_error(error, CAI_ERR_CANCELLED, "roots callback failed");
+  }
+  json = state->result_json != NULL ? state->result_json : "{\"roots\":[]}";
+  return cai_sink_write(result_json, json, strlen(json), error);
 }
 
 static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
@@ -9427,8 +9451,7 @@ test_mcp_streamable_http_notification_callback_error(test_state *state) {
                     server.pid, &server.child_status);
 }
 
-static void
-test_mcp_streamable_http_server_request_unsupported(test_state *state) {
+static void test_mcp_streamable_http_roots_list_request(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
@@ -9438,6 +9461,227 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-1\",\"method\":\"roots/list\"}"
       "\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"roots\":{\"listChanged\":true}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: roots-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *roots_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-session",
+      "\"id\":\"roots-1\"",
+      "\"result\":{\"roots\":[{\"uri\":\"file:///tmp/cai-root\","
+      "\"name\":\"cai-root\"}]}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: roots-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", roots_response_required,
+       sizeof(roots_response_required) / sizeof(roots_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_roots_state roots;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&roots, 0, sizeof(roots));
+  roots.result_json =
+      "{\"roots\":[{\"uri\":\"file:///tmp/cai-root\",\"name\":\"cai-root\"}]}";
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_roots_list_request_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &roots;
+  config.receiver.list_roots = test_mcp_roots_list_callback;
+  config.receiver.roots_list_changed = 1;
+  expect_int(state, "mcp_streamable_roots_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_roots_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_roots_count", roots.count, 1L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_roots_list_request_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_roots_list_callback_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-1\",\"method\":\"roots/list\"}"
+      "\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"roots\":{\"listChanged\":false}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: roots-error-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: roots-error-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_roots_state roots;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&roots, 0, sizeof(roots));
+  roots.fail = 1;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_roots_list_callback_error_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &roots;
+  config.receiver.list_roots = test_mcp_roots_list_callback;
+  expect_int(state, "mcp_streamable_roots_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_roots_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_CANCELLED);
+  expect_int(state, "mcp_streamable_roots_error_count", roots.count, 1L);
+  expect_str(state, "mcp_streamable_roots_error_message", error.message,
+             "roots callback failed");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_roots_list_callback_error_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_roots_list_invalid_result(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-1\",\"method\":\"roots/list\"}"
+      "\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"roots\":{\"listChanged\":false}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: roots-invalid-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: roots-invalid-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_roots_state roots;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&roots, 0, sizeof(roots));
+  roots.result_json = "{\"roots\":[";
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_roots_list_invalid_result_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &roots;
+  config.receiver.list_roots = test_mcp_roots_list_callback;
+  expect_int(state, "mcp_streamable_roots_invalid_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_roots_invalid_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_int(state, "mcp_streamable_roots_invalid_count", roots.count, 1L);
+  expect_str(state, "mcp_streamable_roots_invalid_message", error.message,
+             "failed to write MCP roots result");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_roots_list_invalid_result_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_server_request_unsupported(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"sample-1\","
+      "\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[]}}\n\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
@@ -9484,7 +9728,7 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
   expect_int(state, "mcp_streamable_server_request_call",
              cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
   expect_str(state, "mcp_streamable_server_request_message", error.message,
-             "MCP server-to-client requests are not supported yet");
+             "MCP server-to-client request method is not supported");
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_server_request_unsupported_mock",
@@ -22815,6 +23059,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_terminate_session_error},
     {"mcp_streamable_http_notification_callback_error",
      test_mcp_streamable_http_notification_callback_error},
+    {"mcp_streamable_http_roots_list_request",
+     test_mcp_streamable_http_roots_list_request},
+    {"mcp_streamable_http_roots_list_callback_error",
+     test_mcp_streamable_http_roots_list_callback_error},
+    {"mcp_streamable_http_roots_list_invalid_result",
+     test_mcp_streamable_http_roots_list_invalid_result},
     {"mcp_streamable_http_server_request_unsupported",
      test_mcp_streamable_http_server_request_unsupported},
     {"mcp_streamable_http_session_recovery",

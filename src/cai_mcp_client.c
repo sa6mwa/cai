@@ -52,6 +52,7 @@ typedef struct cai_mcp_streamable_http_client_impl {
   int insecure_skip_verify;
   char *ca_bundle_path;
   char *ca_path;
+  cai_mcp_client_receiver receiver;
   cai_mcp_client_notification_fn notification;
   void *notification_context;
   void (*notification_context_cleanup)(void *context);
@@ -193,6 +194,8 @@ typedef struct cai_mcp_registry_tool_context {
 static void
 cai_mcp_streamable_reset_session(cai_mcp_streamable_http_client_impl *impl);
 static void cai_mcp_spooled_cleanup_if_initialized(lonejson_spooled *spool);
+static int cai_mcp_set_json_error(cai_error *error, const char *message,
+                                  const lonejson_error *json_error);
 static int
 cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_mcp_http_response_capture *response,
@@ -520,6 +523,23 @@ static lonejson_status cai_mcp_spool_sink(void *user, const void *data,
 
   spool = (lonejson_spooled *)user;
   return spool->append(spool, data, len, json_error);
+}
+
+static int cai_mcp_spooled_sink_write(void *context, const void *bytes,
+                                      size_t count, cai_error *error) {
+  lonejson_spooled *spool;
+  lonejson_error json_error;
+
+  spool = (lonejson_spooled *)context;
+  if (spool == NULL || bytes == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP sink write is required");
+  }
+  lonejson_error_init(&json_error);
+  if (spool->append(spool, bytes, count, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to write MCP receiver result",
+                                  &json_error);
+  }
+  return CAI_OK;
 }
 
 static lonejson_status cai_mcp_cai_sink_bridge(void *user, const void *data,
@@ -899,12 +919,21 @@ static int
 cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
                               const cai_mcp_jsonrpc_message_doc *doc,
                               cai_error *error) {
+  cai_mcp_client_notification_fn notification;
+  void *context;
   lonejson_spooled params;
   lonejson_spooled *params_ptr;
   int rc;
 
-  if (impl == NULL || impl->notification == NULL || doc == NULL ||
-      doc->method == NULL) {
+  if (impl == NULL || doc == NULL || doc->method == NULL) {
+    return CAI_OK;
+  }
+  notification = impl->receiver.notification != NULL
+                     ? impl->receiver.notification
+                     : impl->notification;
+  context = impl->receiver.notification != NULL ? impl->receiver.context
+                                                : impl->notification_context;
+  if (notification == NULL) {
     return CAI_OK;
   }
   params_ptr = NULL;
@@ -916,9 +945,137 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
     }
     params_ptr = &params;
   }
-  rc = impl->notification(impl->notification_context, doc->method, params_ptr,
-                          error);
+  rc = notification(context, doc->method, params_ptr, error);
   cai_mcp_spooled_cleanup_if_initialized(&params);
+  return rc;
+}
+
+static int cai_mcp_write_json_value(lonejson_spooled *spool,
+                                    const lonejson_json_value *value,
+                                    const char *operation, cai_error *error) {
+  lonejson_error json_error;
+
+  if (spool == NULL || value == NULL || value->methods == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP JSON value is required");
+  }
+  lonejson_error_init(&json_error);
+  if (value->methods->write_to_sink(value, cai_mcp_spool_sink, spool,
+                                    &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, operation, &json_error);
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_build_roots_result(cai_mcp_streamable_http_client_impl *impl,
+                                      lonejson_spooled *result,
+                                      cai_error *error) {
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  if (impl == NULL || impl->receiver.list_roots == NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP roots/list receiver is not configured");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, result);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = cai_mcp_spooled_sink_write;
+  callbacks.context = result;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  if (rc == CAI_OK) {
+    rc = impl->receiver.list_roots(impl->receiver.context, sink, error);
+    cai_sink_close(sink);
+  }
+  if (rc != CAI_OK) {
+    result->cleanup(result);
+    memset(result, 0, sizeof(*result));
+  }
+  return rc;
+}
+
+static int
+cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
+                                const cai_mcp_jsonrpc_message_doc *doc,
+                                lonejson_spooled *response, size_t *out_len,
+                                cai_error *error) {
+  lonejson_spooled result;
+  lonejson_error json_error;
+  lonejson_writer writer;
+  lonejson_status status;
+  int rc;
+
+  memset(&result, 0, sizeof(result));
+  if (doc == NULL || doc->method == NULL ||
+      doc->id.kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP server request is required");
+  }
+  if (strcmp(doc->method, "roots/list") != 0) {
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP server-to-client request method is not supported");
+  }
+  rc = cai_mcp_build_roots_result(impl, &result, error);
+  CAI_LJ->spooled_init(CAI_LJ, response);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(response, "{\"jsonrpc\":\"2.0\",\"id\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_value(
+        response, &doc->id, "failed to write MCP server request id", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(response, ",\"result\":", error);
+  }
+  if (rc == CAI_OK) {
+    lonejson_error_init(&json_error);
+    memset(&writer, 0, sizeof(writer));
+    status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_spool_sink,
+                                      response, &json_error);
+    if (status == LONEJSON_STATUS_OK) {
+      status = writer.json_value_spooled(&writer, &result, &json_error);
+    }
+    if (writer.cleanup != NULL) {
+      writer.cleanup(&writer);
+    }
+    if (status != LONEJSON_STATUS_OK) {
+      rc = cai_mcp_set_json_error(error, "failed to write MCP roots result",
+                                  &json_error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(response, "}", error);
+  }
+  if (out_len != NULL) {
+    *out_len = response->size_fn(response);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&result);
+  if (rc != CAI_OK) {
+    response->cleanup(response);
+    memset(response, 0, sizeof(*response));
+  }
+  return rc;
+}
+
+static int
+cai_mcp_handle_server_request(cai_mcp_streamable_http_client_impl *impl,
+                              const cai_mcp_jsonrpc_message_doc *doc,
+                              cai_error *error) {
+  cai_mcp_http_response_capture ack;
+  lonejson_spooled response;
+  size_t response_len;
+  int rc;
+
+  memset(&ack, 0, sizeof(ack));
+  memset(&response, 0, sizeof(response));
+  response_len = 0U;
+  rc = cai_mcp_server_request_response(impl, doc, &response, &response_len,
+                                       error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post(impl, &response, response_len, 0, &ack, error);
+    cai_mcp_http_response_capture_cleanup(&ack);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&response);
   return rc;
 }
 
@@ -1044,10 +1201,9 @@ static int cai_mcp_process_sse_message(
   }
   if (doc.method != NULL) {
     if (doc.id.kind != LONEJSON_JSON_VALUE_NULL) {
+      rc = cai_mcp_handle_server_request(impl, &doc, error);
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, &doc);
-      return cai_set_error(
-          error, CAI_ERR_PROTOCOL,
-          "MCP server-to-client requests are not supported yet");
+      return rc;
     }
     rc = cai_mcp_dispatch_notification(impl, &doc, error);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, &doc);
@@ -1323,8 +1479,17 @@ static int cai_mcp_initialize_request(cai_mcp_streamable_http_client_impl *impl,
     rc = cai_mcp_write_json_string(spool, impl->protocol_version, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(
-        spool, ",\"capabilities\":{},\"clientInfo\":{\"name\":", error);
+    rc = cai_mcp_write_cstr(spool, ",\"capabilities\":{", error);
+  }
+  if (rc == CAI_OK && impl->receiver.list_roots != NULL) {
+    rc = cai_mcp_write_cstr(spool, "\"roots\":{\"listChanged\":", error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(
+          spool, impl->receiver.roots_list_changed ? "true}" : "false}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "},\"clientInfo\":{\"name\":", error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_json_string(spool, impl->client_name, error);
@@ -3144,7 +3309,15 @@ static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_free_mem(&allocator, impl->protocol_version);
   cai_free_mem(&allocator, impl->ca_bundle_path);
   cai_free_mem(&allocator, impl->ca_path);
-  if (impl->notification_context_cleanup != NULL) {
+  if (impl->receiver.cleanup != NULL) {
+    impl->receiver.cleanup(impl->receiver.context);
+  }
+  if (impl->notification_context_cleanup != NULL &&
+      impl->receiver.cleanup != NULL &&
+      impl->notification_context != impl->receiver.context) {
+    impl->notification_context_cleanup(impl->notification_context);
+  } else if (impl->notification_context_cleanup != NULL &&
+             impl->receiver.cleanup == NULL) {
     impl->notification_context_cleanup(impl->notification_context);
   }
   cai_free_mem(&allocator, impl->session_id);
@@ -3202,6 +3375,11 @@ int cai_mcp_streamable_http_client_open(
   impl->ca_bundle_path =
       cai_strdup(&impl->allocator, effective->ca_bundle_path);
   impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
+  impl->receiver = effective->receiver;
+  if (impl->receiver.notification == NULL && effective->notification != NULL) {
+    impl->receiver.notification = effective->notification;
+    impl->receiver.context = effective->notification_context;
+  }
   impl->notification = effective->notification;
   impl->notification_context = effective->notification_context;
   impl->notification_context_cleanup = effective->notification_context_cleanup;

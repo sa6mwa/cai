@@ -158,6 +158,31 @@ typedef int (*cai_mcp_client_notification_fn)(
     void *context, const char *method, struct lonejson_spooled *params_json,
     cai_error *error);
 
+/** Callback for server-to-client MCP roots/list requests.
+ *
+ * Implementations write a complete MCP ListRootsResult JSON object to
+ * `result_json`, for example
+ * `{"roots":[{"uri":"file:///repo","name":"repo"}]}`. cai wraps that result in
+ * the transport-specific JSON-RPC response.
+ */
+typedef int (*cai_mcp_client_list_roots_fn)(void *context,
+                                            cai_sink *result_json,
+                                            cai_error *error);
+
+/** Receiver callbacks for server-to-client MCP messages. */
+typedef struct cai_mcp_client_receiver {
+  /** Shared receiver context passed to all callbacks. */
+  void *context;
+  /** Optional cleanup for context. */
+  void (*cleanup)(void *context);
+  /** Optional callback for server notifications on response streams. */
+  cai_mcp_client_notification_fn notification;
+  /** Optional callback for roots/list requests. */
+  cai_mcp_client_list_roots_fn list_roots;
+  /** Non-zero advertises roots.listChanged during initialization. */
+  int roots_list_changed;
+} cai_mcp_client_receiver;
+
 /** Configuration for cai's built-in Streamable HTTP MCP client. */
 typedef struct cai_mcp_streamable_http_client_config {
   /** MCP endpoint URL, e.g. http://127.0.0.1:3001/mcp. */
@@ -176,6 +201,8 @@ typedef struct cai_mcp_streamable_http_client_config {
   const char *ca_bundle_path;
   /** Optional CA certificate directory path for TLS verification. */
   const char *ca_path;
+  /** Optional receiver callbacks for server-to-client MCP messages. */
+  cai_mcp_client_receiver receiver;
   /** Optional callback for server notifications on response streams. */
   cai_mcp_client_notification_fn notification;
   /** Context passed to notification. */
