@@ -280,6 +280,9 @@ struct cai_mcp_client {
                   const char *argument_value,
                   struct lonejson_spooled *context_arguments_json,
                   cai_sink *output, cai_error *error);
+  /** Set the minimum server log level for MCP logging notifications. */
+  int (*set_log_level)(cai_mcp_client *client, const char *level,
+                       cai_error *error);
   /** Destroy this MCP client and release associated resources. */
   void (*destroy)(cai_mcp_client *client);
   /** Private implementation pointer; custom clients may use this freely. */
@@ -366,6 +369,9 @@ int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
                             const char *argument_value,
                             struct lonejson_spooled *context_arguments_json,
                             cai_sink *output, cai_error *error);
+/** Set the minimum server log level for MCP logging notifications. */
+int cai_mcp_client_set_log_level(cai_mcp_client *client, const char *level,
+                                 cai_error *error);
 /** Register all cached/discovered MCP client tools into a local tool registry.
  *
  * The registry callbacks keep a non-owning pointer to `client`; callers must

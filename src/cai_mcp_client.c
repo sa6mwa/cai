@@ -928,6 +928,22 @@ static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
   return CAI_OK;
 }
 
+static int cai_mcp_log_level_valid(const char *level) {
+  static const char *levels[] = {"debug", "info",     "notice", "warning",
+                                 "error", "critical", "alert",  "emergency"};
+  size_t i;
+
+  if (level == NULL || level[0] == '\0') {
+    return 0;
+  }
+  for (i = 0U; i < sizeof(levels) / sizeof(levels[0]); i++) {
+    if (strcmp(level, levels[i]) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int cai_mcp_request_begin(cai_mcp_streamable_http_client_impl *impl,
                                  lonejson_spooled *spool, long long id,
                                  const char *method, cai_error *error) {
@@ -1241,6 +1257,37 @@ static int cai_mcp_completion_request(
     if (rc == CAI_OK) {
       rc = cai_mcp_write_cstr(spool, "}", error);
     }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
+  }
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
+static int
+cai_mcp_logging_set_level_request(cai_mcp_streamable_http_client_impl *impl,
+                                  const char *level, lonejson_spooled *spool,
+                                  size_t *out_len, cai_error *error) {
+  int rc;
+
+  if (!cai_mcp_log_level_valid(level)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP log level must be a standard syslog severity");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, "logging/setLevel",
+                             error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{\"level\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, level, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, "}}", error);
@@ -2132,6 +2179,13 @@ cai_mcp_parse_completion_response(const cai_mcp_http_response_capture *response,
       "failed to parse MCP completion/complete", output, error);
 }
 
+static int cai_mcp_parse_logging_set_level_response(
+    const cai_mcp_http_response_capture *response, cai_error *error) {
+  return cai_mcp_parse_empty_result_response(
+      response, "MCP logging/setLevel response",
+      "failed to parse MCP logging/setLevel", error);
+}
+
 static int cai_mcp_streamable_initialize(cai_mcp_client *client,
                                          cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -2675,6 +2729,38 @@ static int cai_mcp_streamable_complete(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_set_log_level(cai_mcp_client *client,
+                                            const char *level,
+                                            cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_logging_set_level_request(impl, level, &request, &request_len,
+                                         error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_logging_set_level_response(&response, error);
+  }
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
 static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_allocator allocator;
@@ -2785,6 +2871,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.prompt_at = cai_mcp_streamable_prompt_at;
   impl->public_client.get_prompt = cai_mcp_streamable_get_prompt;
   impl->public_client.complete = cai_mcp_streamable_complete;
+  impl->public_client.set_log_level = cai_mcp_streamable_set_log_level;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   impl->public_client.impl = impl;
   *out = &impl->public_client;
@@ -2954,6 +3041,15 @@ int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
   return client->complete(client, ref_type, ref_value, argument_name,
                           argument_value, context_arguments_json, output,
                           error);
+}
+
+int cai_mcp_client_set_log_level(cai_mcp_client *client, const char *level,
+                                 cai_error *error) {
+  if (client == NULL || client->set_log_level == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client set_log_level receiver is required");
+  }
+  return client->set_log_level(client, level, error);
 }
 
 static int cai_mcp_registered_tool_callback(void *context,
