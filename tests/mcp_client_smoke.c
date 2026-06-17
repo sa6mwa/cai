@@ -237,16 +237,41 @@ int main(int argc, char **argv) {
   rc = client->get_prompt(client, "args-prompt", &args, sink, &error);
   args.cleanup(&args);
   cai_sink_close(sink);
-  cai_mcp_client_destroy(client);
   if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("failed to get args-prompt", &error);
   }
   if (writer.data == NULL || strstr(writer.data, "Gothenburg") == NULL ||
       strstr(writer.data, "Vastra Gotaland") == NULL) {
+    cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("args-prompt output was unexpected", NULL);
   }
+  writer.length = 0U;
+  writer.data[0] = '\0';
+  callbacks.context = &writer;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to recreate output sink", &error);
+  }
+  rc = client->complete(client, "ref/prompt", "completable-prompt",
+                        "department", "", NULL, sink, &error);
+  cai_sink_close(sink);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to complete prompt argument", &error);
+  }
+  if (writer.data == NULL || strstr(writer.data, "Engineering") == NULL ||
+      strstr(writer.data, "\"completion\"") == NULL) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("completion output was unexpected", NULL);
+  }
+  cai_mcp_client_destroy(client);
   printf("MCP client smoke passed at %s\n", argv[1]);
   free(writer.data);
   cai_error_cleanup(&error);

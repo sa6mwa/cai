@@ -144,9 +144,14 @@ typedef struct test_mcp_client_impl {
   int call_count;
   int read_resource_count;
   int get_prompt_count;
+  int complete_count;
   int destroy_count;
   char last_name[64];
   char last_uri[128];
+  char last_ref_type[32];
+  char last_ref_value[128];
+  char last_argument_name[64];
+  char last_argument_value[128];
   char last_arguments[256];
 } test_mcp_client_impl;
 
@@ -1795,6 +1800,35 @@ static int test_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
   return cai_sink_write(output, result, strlen(result), error);
 }
 
+static int test_mcp_client_complete(cai_mcp_client *client,
+                                    const char *ref_type, const char *ref_value,
+                                    const char *argument_name,
+                                    const char *argument_value,
+                                    lonejson_spooled *context_arguments_json,
+                                    cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->complete_count++;
+  snprintf(impl->last_ref_type, sizeof(impl->last_ref_type), "%s",
+           ref_type != NULL ? ref_type : "");
+  snprintf(impl->last_ref_value, sizeof(impl->last_ref_value), "%s",
+           ref_value != NULL ? ref_value : "");
+  snprintf(impl->last_argument_name, sizeof(impl->last_argument_name), "%s",
+           argument_name != NULL ? argument_name : "");
+  snprintf(impl->last_argument_value, sizeof(impl->last_argument_value), "%s",
+           argument_value != NULL ? argument_value : "");
+  test_mcp_read_spooled_json(context_arguments_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"completion\":{\"values\":[\"engineering\"],\"total\":1,"
+           "\"hasMore\":false}}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
 static void test_mcp_client_destroy(cai_mcp_client *client) {
   test_mcp_client_impl *impl;
 
@@ -1839,6 +1873,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.prompt_count = test_mcp_client_prompt_count;
   impl->public_client.prompt_at = test_mcp_client_prompt_at;
   impl->public_client.get_prompt = test_mcp_client_get_prompt;
+  impl->public_client.complete = test_mcp_client_complete;
   impl->public_client.destroy = test_mcp_client_destroy;
   impl->public_client.impl = impl;
 }
@@ -3702,7 +3737,7 @@ static void test_mcp_client_config(test_state *state) {
       client->resource_at == NULL || client->read_resource == NULL ||
       client->refresh_prompts == NULL || client->prompt_count == NULL ||
       client->prompt_at == NULL || client->get_prompt == NULL ||
-      client->destroy == NULL) {
+      client->complete == NULL || client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
   cai_mcp_client_destroy(client);
@@ -8220,6 +8255,11 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"description\":"
       "\"Explain a topic\",\"messages\":[{\"role\":\"user\",\"content\":{"
       "\"type\":\"text\",\"text\":\"Explain MCP\"}}]}}\n\n";
+  static const char complete_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{\"completion\":{\"values\":"
+      "[\"engineering\"],\"total\":1,\"hasMore\":false}}}\n\n";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
       "Accept: application/json, text/event-stream",
@@ -8273,6 +8313,14 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"method\":\"prompts/get\"",
       "\"name\":\"explain\"",
       "\"arguments\":{\"topic\":\"MCP\"}"};
+  static const char *complete_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"completion/complete\"",
+      "\"ref\":{\"type\":\"ref/prompt\",\"name\":\"completable-prompt\"}",
+      "\"argument\":{\"name\":\"name\",\"value\":\"eng\"}",
+      "\"context\":{\"arguments\":{\"department\":\"engineering\"}}"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -8310,7 +8358,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        NULL, 0U, 200, "OK", "application/json", NULL, prompts_list_page_2_body},
       {"POST /v1/mcp HTTP/", prompt_get_required,
        sizeof(prompt_get_required) / sizeof(prompt_get_required[0]), NULL, 0U,
-       200, "OK", "text/event-stream", NULL, prompt_get_body}};
+       200, "OK", "text/event-stream", NULL, prompt_get_body},
+      {"POST /v1/mcp HTTP/", complete_required,
+       sizeof(complete_required) / sizeof(complete_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, complete_body}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -8470,6 +8521,21 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
              "{\"description\":\"Explain a topic\",\"messages\":[{\"role\":"
              "\"user\",\"content\":{\"type\":\"text\",\"text\":\"Explain "
              "MCP\"}}]}");
+  args.cleanup(&args);
+  memset(&writer, 0, sizeof(writer));
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"department\":\"engineering\"}";
+  expect_int(state, "mcp_streamable_complete_context",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_complete",
+             client->complete(client, "ref/prompt", "completable-prompt",
+                              "name", "eng", &args, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_complete_output", writer.buffer,
+             "{\"completion\":{\"values\":[\"engineering\"],\"total\":1,"
+             "\"hasMore\":false}}");
   args.cleanup(&args);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);

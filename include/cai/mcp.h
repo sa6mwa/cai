@@ -238,6 +238,17 @@ struct cai_mcp_client {
   int (*get_prompt)(cai_mcp_client *client, const char *name,
                     struct lonejson_spooled *arguments_json, cai_sink *output,
                     cai_error *error);
+  /** Complete one prompt or resource argument and stream result JSON.
+   *
+   * `ref_type` is usually "ref/prompt" with `ref_value` as a prompt name, or
+   * "ref/resource" with `ref_value` as a resource/template URI.
+   * `context_arguments_json`, when non-NULL, must be a JSON object.
+   */
+  int (*complete)(cai_mcp_client *client, const char *ref_type,
+                  const char *ref_value, const char *argument_name,
+                  const char *argument_value,
+                  struct lonejson_spooled *context_arguments_json,
+                  cai_sink *output, cai_error *error);
   /** Destroy this MCP client and release associated resources. */
   void (*destroy)(cai_mcp_client *client);
   /** Private implementation pointer; custom clients may use this freely. */

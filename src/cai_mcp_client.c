@@ -1024,6 +1024,92 @@ static int cai_mcp_prompt_get_request(cai_mcp_streamable_http_client_impl *impl,
   return rc;
 }
 
+static int cai_mcp_completion_request(
+    cai_mcp_streamable_http_client_impl *impl, const char *ref_type,
+    const char *ref_value, const char *argument_name,
+    const char *argument_value, lonejson_spooled *context_arguments_json,
+    lonejson_spooled *spool, size_t *out_len, cai_error *error) {
+  lonejson_error json_error;
+  lonejson_writer writer;
+  lonejson_status status;
+  int rc;
+
+  if (ref_type == NULL || ref_type[0] == '\0' || ref_value == NULL ||
+      ref_value[0] == '\0' || argument_name == NULL ||
+      argument_name[0] == '\0') {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP completion reference and argument name are required");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  rc = cai_mcp_request_begin(impl, spool, ++impl->next_id,
+                             "completion/complete", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{\"ref\":{\"type\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, ref_type, error);
+  }
+  if (rc == CAI_OK) {
+    rc = strcmp(ref_type, "ref/resource") == 0
+             ? cai_mcp_write_cstr(spool, ",\"uri\":", error)
+             : cai_mcp_write_cstr(spool, ",\"name\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, ref_value, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "},\"argument\":{\"name\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, argument_name, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, ",\"value\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(
+        spool, argument_value != NULL ? argument_value : "", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}", error);
+  }
+  if (rc == CAI_OK && context_arguments_json != NULL) {
+    rc = cai_mcp_write_cstr(spool, ",\"context\":{\"arguments\":", error);
+    if (rc == CAI_OK) {
+      lonejson_error_init(&json_error);
+      status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_spool_sink,
+                                        spool, &json_error);
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.json_value_spooled(&writer, context_arguments_json,
+                                           &json_error);
+      }
+      if (writer.cleanup != NULL) {
+        writer.cleanup(&writer);
+      }
+      if (status != LONEJSON_STATUS_OK) {
+        rc = cai_set_error_detail(
+            error, CAI_ERR_PROTOCOL,
+            "failed to write MCP completion context arguments",
+            json_error.message);
+      }
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
+  }
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
 static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
                                 const char *name,
                                 lonejson_spooled *arguments_json,
@@ -1660,6 +1746,14 @@ cai_mcp_parse_prompt_get_response(const cai_mcp_http_response_capture *response,
                                        output, error);
 }
 
+static int
+cai_mcp_parse_completion_response(const cai_mcp_http_response_capture *response,
+                                  cai_sink *output, cai_error *error) {
+  return cai_mcp_parse_result_response(
+      response, "MCP completion/complete response",
+      "failed to parse MCP completion/complete", output, error);
+}
+
 static int cai_mcp_streamable_initialize(cai_mcp_client *client,
                                          cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -1992,6 +2086,43 @@ static int cai_mcp_streamable_get_prompt(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_complete(cai_mcp_client *client,
+                                       const char *ref_type,
+                                       const char *ref_value,
+                                       const char *argument_name,
+                                       const char *argument_value,
+                                       lonejson_spooled *context_arguments_json,
+                                       cai_sink *output, cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL || output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client and output sink are required");
+  }
+  rc = client->initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_completion_request(impl, ref_type, ref_value, argument_name,
+                                  argument_value, context_arguments_json,
+                                  &request, &request_len, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_completion_response(&response, output, error);
+  }
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
 static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_allocator allocator;
@@ -2088,6 +2219,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.prompt_count = cai_mcp_streamable_prompt_count;
   impl->public_client.prompt_at = cai_mcp_streamable_prompt_at;
   impl->public_client.get_prompt = cai_mcp_streamable_get_prompt;
+  impl->public_client.complete = cai_mcp_streamable_complete;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   impl->public_client.impl = impl;
   *out = &impl->public_client;
