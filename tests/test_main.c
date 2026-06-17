@@ -8662,6 +8662,165 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                     &server.child_status);
 }
 
+static void test_mcp_streamable_http_session_recovery(test_state *state) {
+  static const char initialize_old_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char initialize_new_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char tools_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"recovered\",\"description\":\"Recovered tool\",\"inputSchema\":{"
+      "\"type\":\"object\",\"additionalProperties\":false}}]}}";
+  static const char *init_old_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                            "\"method\":\"initialize\""};
+  static const char *init_forbidden[] = {"MCP-Session-Id:"};
+  static const char *initialized_old_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: old-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *stale_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: old-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *init_new_required[] = {"POST /v1/mcp HTTP/", "\"id\":3",
+                                            "\"method\":\"initialize\""};
+  static const char *initialized_new_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: new-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *retry_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: new-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *retry_list_forbidden[] = {"MCP-Session-Id: old-session"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_old_required,
+       sizeof(init_old_required) / sizeof(init_old_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json", "req-init-old\r\nMCP-Session-Id: old-session",
+       initialize_old_body},
+      {"POST /v1/mcp HTTP/", initialized_old_required,
+       sizeof(initialized_old_required) / sizeof(initialized_old_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", stale_list_required,
+       sizeof(stale_list_required) / sizeof(stale_list_required[0]), NULL, 0U,
+       404, "Not Found", "application/json", NULL, "{\"error\":\"stale\"}"},
+      {"POST /v1/mcp HTTP/", init_new_required,
+       sizeof(init_new_required) / sizeof(init_new_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json", "req-init-new\r\nMCP-Session-Id: new-session",
+       initialize_new_body},
+      {"POST /v1/mcp HTTP/", initialized_new_required,
+       sizeof(initialized_new_required) / sizeof(initialized_new_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", retry_list_required,
+       sizeof(retry_list_required) / sizeof(retry_list_required[0]),
+       retry_list_forbidden,
+       sizeof(retry_list_forbidden) / sizeof(retry_list_forbidden[0]), 200,
+       "OK", "application/json", NULL, tools_list_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  const cai_mcp_client_tool *tool;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_session_recovery_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_session_recovery_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_session_recovery_refresh",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_session_recovery_tool_count",
+             (long)cai_mcp_client_tool_count(client), 1L);
+  tool = cai_mcp_client_tool_at(client, 0U);
+  if (tool == NULL) {
+    test_fail(state, "mcp_streamable_session_recovery_tool", "tool missing");
+  } else {
+    expect_str(state, "mcp_streamable_session_recovery_tool_name", tool->name,
+               "recovered");
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_session_recovery_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_server_error_no_recovery(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: stable-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: stable-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: stable-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", list_required,
+       sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL,
+       "{\"error\":\"server down\"}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_500_no_recovery_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_500_no_recovery_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_500_no_recovery_refresh",
+             cai_mcp_client_refresh_tools(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_500_no_recovery_status", error.http_status,
+             500L);
+  expect_int(state, "mcp_streamable_500_no_recovery_tool_count",
+             (long)cai_mcp_client_tool_count(client), 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_500_no_recovery_mock", server.pid,
+                    &server.child_status);
+}
+
 typedef struct websocket_mock_server {
   pid_t pid;
   int child_status;
@@ -21816,6 +21975,10 @@ static const test_entry test_entries[] = {
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
+    {"mcp_streamable_http_session_recovery",
+     test_mcp_streamable_http_session_recovery},
+    {"mcp_streamable_http_server_error_no_recovery",
+     test_mcp_streamable_http_server_error_no_recovery},
     {"mcp_handler", test_mcp_handler},
     {"client_open", test_client_open},
     {"mike_mind_prompt_contract", test_mike_mind_prompt_contract},

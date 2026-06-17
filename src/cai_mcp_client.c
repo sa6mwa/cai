@@ -580,10 +580,28 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
 static void
 cai_mcp_http_response_capture_cleanup(cai_mcp_http_response_capture *response) {
   if (response != NULL) {
-    response->body.cleanup(&response->body);
+    if (response->body.cleanup != NULL) {
+      response->body.cleanup(&response->body);
+    }
     cai_free_mem(NULL, response->content_type);
     cai_free_mem(NULL, response->session_id);
     memset(response, 0, sizeof(*response));
+  }
+}
+
+static void
+cai_mcp_streamable_reset_session(cai_mcp_streamable_http_client_impl *impl) {
+  if (impl != NULL) {
+    cai_free_mem(&impl->allocator, impl->session_id);
+    impl->session_id = NULL;
+    impl->initialized = 0;
+  }
+}
+
+static void cai_mcp_clear_error(cai_error *error) {
+  if (error != NULL) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
   }
 }
 
@@ -1803,6 +1821,30 @@ static int cai_mcp_streamable_initialize(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_post_request_with_session_recovery(
+    cai_mcp_streamable_http_client_impl *impl, const lonejson_spooled *request,
+    size_t request_len, cai_mcp_http_response_capture *response,
+    cai_error *error) {
+  int had_session;
+  int rc;
+
+  had_session = impl != NULL && impl->initialized && impl->session_id != NULL;
+  rc = cai_mcp_post(impl, request, request_len, 1, response, error);
+  if (rc == CAI_OK || !had_session || response == NULL ||
+      response->status != 404L) {
+    return rc;
+  }
+
+  cai_mcp_http_response_capture_cleanup(response);
+  cai_mcp_clear_error(error);
+  cai_mcp_streamable_reset_session(impl);
+  rc = cai_mcp_streamable_initialize(&impl->public_client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_mcp_post(impl, request, request_len, 1, response, error);
+}
+
 static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
                                             cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -1829,7 +1871,8 @@ static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
     rc = cai_mcp_list_request(impl, "tools/list", cursor, &request,
                               &request_len, error);
     if (rc == CAI_OK) {
-      rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+      rc = cai_mcp_post_request_with_session_recovery(
+          impl, &request, request_len, &response, error);
     }
     cai_mcp_spooled_cleanup_if_initialized(&request);
     if (rc == CAI_OK) {
@@ -1888,7 +1931,8 @@ static int cai_mcp_streamable_call_tool(cai_mcp_client *client,
   rc = cai_mcp_call_request(impl, name, arguments_json, &request, &request_len,
                             error);
   if (rc == CAI_OK) {
-    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
   }
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
@@ -1924,7 +1968,8 @@ static int cai_mcp_streamable_refresh_resources(cai_mcp_client *client,
     rc = cai_mcp_list_request(impl, "resources/list", cursor, &request,
                               &request_len, error);
     if (rc == CAI_OK) {
-      rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+      rc = cai_mcp_post_request_with_session_recovery(
+          impl, &request, request_len, &response, error);
     }
     cai_mcp_spooled_cleanup_if_initialized(&request);
     if (rc == CAI_OK) {
@@ -1981,7 +2026,8 @@ static int cai_mcp_streamable_read_resource(cai_mcp_client *client,
   memset(&response, 0, sizeof(response));
   rc = cai_mcp_resource_read_request(impl, uri, &request, &request_len, error);
   if (rc == CAI_OK) {
-    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
   }
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
@@ -2017,7 +2063,8 @@ static int cai_mcp_streamable_refresh_prompts(cai_mcp_client *client,
     rc = cai_mcp_list_request(impl, "prompts/list", cursor, &request,
                               &request_len, error);
     if (rc == CAI_OK) {
-      rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+      rc = cai_mcp_post_request_with_session_recovery(
+          impl, &request, request_len, &response, error);
     }
     cai_mcp_spooled_cleanup_if_initialized(&request);
     if (rc == CAI_OK) {
@@ -2076,7 +2123,8 @@ static int cai_mcp_streamable_get_prompt(cai_mcp_client *client,
   rc = cai_mcp_prompt_get_request(impl, name, arguments_json, &request,
                                   &request_len, error);
   if (rc == CAI_OK) {
-    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
   }
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
@@ -2113,7 +2161,8 @@ static int cai_mcp_streamable_complete(cai_mcp_client *client,
                                   argument_value, context_arguments_json,
                                   &request, &request_len, error);
   if (rc == CAI_OK) {
-    rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
   }
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
