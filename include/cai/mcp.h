@@ -179,6 +179,17 @@ typedef int (*cai_mcp_client_create_message_fn)(
     void *context, struct lonejson_spooled *params_json, cai_sink *result_json,
     cai_error *error);
 
+/** Callback for server-to-client MCP elicitation/create requests.
+ *
+ * `params_json` contains the ElicitRequestParams. Implementations write a
+ * complete MCP ElicitResult JSON object to `result_json`; cai wraps that result
+ * in the transport-specific JSON-RPC response.
+ */
+typedef int (*cai_mcp_client_elicit_fn)(void *context,
+                                        struct lonejson_spooled *params_json,
+                                        cai_sink *result_json,
+                                        cai_error *error);
+
 /** Receiver callbacks for server-to-client MCP messages. */
 typedef struct cai_mcp_client_receiver {
   /** Shared receiver context passed to all callbacks. */
@@ -191,12 +202,18 @@ typedef struct cai_mcp_client_receiver {
   cai_mcp_client_list_roots_fn list_roots;
   /** Optional callback for sampling/createMessage requests. */
   cai_mcp_client_create_message_fn create_message;
+  /** Optional callback for elicitation/create requests. */
+  cai_mcp_client_elicit_fn elicit;
   /** Non-zero advertises roots.listChanged during initialization. */
   int roots_list_changed;
   /** Non-zero advertises sampling.tools during initialization. */
   int sampling_tools;
   /** Non-zero advertises sampling.context during initialization. */
   int sampling_context;
+  /** Non-zero advertises elicitation.form during initialization. */
+  int elicitation_form;
+  /** Non-zero advertises elicitation.url during initialization. */
+  int elicitation_url;
 } cai_mcp_client_receiver;
 
 /** Configuration for cai's built-in Streamable HTTP MCP client. */
