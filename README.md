@@ -839,6 +839,25 @@ Future cai web-search tool tests should keep this rule: use explicit engines,
 and prefer documented API-backed engines such as SearXNG's `braveapi`,
 Mojeek, or Marginalia when credentials are configured.
 
+## Local MCP Everything
+
+cai includes a local MCP Everything reference server compose service for
+developing and testing MCP client behavior against a broad, spec-oriented
+server. The image is built locally from the pinned
+`@modelcontextprotocol/server-everything` npm package and runs the Streamable
+HTTP transport.
+
+```sh
+make mcp-everything-up
+make mcp-everything-wait
+make mcp-everything-test
+make mcp-everything-down
+```
+
+The service listens on `http://127.0.0.1:3001/mcp` by default. Override the
+host port with `CAI_MCP_EVERYTHING_PORT` and query a different running instance
+with `CAI_MCP_EVERYTHING_BASE_URL`.
+
 Agents or registries can register the opt-in SearXNG search preset by including
 `<cai/tools/searxng.h>` and calling `cai_agent_register_searxng_tool` or
 `cai_tool_registry_register_searxng_tool`. The

@@ -11,6 +11,7 @@ COMPOSE := $(shell if command -v nerdctl >/dev/null 2>&1; then printf 'nerdctl c
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
+CAI_MCP_EVERYTHING_BASE_URL ?= http://127.0.0.1:3001/mcp
 CAI_FUZZ_RUNS ?= 10000
 RELEASE_VERSION ?= $(shell ./scripts/detect_release_version.sh "$(CURDIR)")
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
@@ -40,7 +41,7 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release integration-build test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test format clean
+.PHONY: help build build-debug build-release integration-build test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test format clean
 
 help:
 	@printf '%s\n' \
@@ -77,6 +78,10 @@ help:
 		'make searxng-wait Wait for the local SearXNG endpoint to answer.' \
 		'make searxng-test Query local SearXNG JSON search endpoint.' \
 		'make searxng-down Stop local SearXNG compose service.' \
+		'make mcp-everything-up Start local MCP Everything reference server.' \
+		'make mcp-everything-wait Wait for local MCP Everything to initialize.' \
+		'make mcp-everything-test Run a local MCP Everything protocol smoke test.' \
+		'make mcp-everything-down Stop local MCP Everything compose service.' \
 		'make format       Run clang-format over repo C sources.' \
 		'make clean        Remove generated build outputs.'
 
@@ -330,6 +335,69 @@ searxng-test:
 		--data-urlencode "safesearch=0" \
 		--data-urlencode "language=en" | head -c "$${CAI_SEARXNG_TEST_BYTES:-2000}"; \
 	printf '\n'
+
+mcp-everything-up: compose-check
+	$(COMPOSE) -f "$(COMPOSE_FILE)" up -d --build mcp-everything
+
+mcp-everything-wait:
+	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cai-compose-wait","version":"0.0.0"}}}'; \
+	for attempt in {1..30}; do \
+		if curl -fsS -D "$$tmpdir/headers" -o "$$tmpdir/body" \
+			-H 'content-type: application/json' \
+			-H 'accept: application/json, text/event-stream' \
+			-d "$$init" "$$url" >/dev/null 2>&1 && \
+			grep -q '"serverInfo"' "$$tmpdir/body"; then \
+			printf 'MCP Everything is ready at %s\n' "$$url"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	printf 'Timed out waiting for MCP Everything at %s\n' "$$url" >&2; \
+	exit 1
+
+mcp-everything-down: compose-check
+	$(COMPOSE) -f "$(COMPOSE_FILE)" stop mcp-everything
+	$(COMPOSE) -f "$(COMPOSE_FILE)" rm -f mcp-everything
+
+mcp-everything-logs: compose-check
+	$(COMPOSE) -f "$(COMPOSE_FILE)" logs -f mcp-everything
+
+mcp-everything-test:
+	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cai-compose-smoke","version":"0.0.0"}}}'; \
+	curl -fsS -D "$$tmpdir/init.headers" -o "$$tmpdir/init.json" \
+		-H 'content-type: application/json' \
+		-H 'accept: application/json, text/event-stream' \
+		-d "$$init" "$$url"; \
+	grep -q '"serverInfo"' "$$tmpdir/init.json"; \
+	session_id="$$(tr -d '\r' <"$$tmpdir/init.headers" | sed -n 's/^[Mm][Cc][Pp]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]-[Ii][Dd]:[[:space:]]*\(.*\)/\1/p' | head -n 1)"; \
+	if [[ -z "$$session_id" ]]; then \
+		printf '%s\n' 'MCP initialize response did not include Mcp-Session-Id' >&2; \
+		exit 1; \
+	fi; \
+	curl -fsS -o "$$tmpdir/initialized.out" \
+		-H 'content-type: application/json' \
+		-H 'accept: application/json, text/event-stream' \
+		-H "mcp-session-id: $$session_id" \
+		-d '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$$url"; \
+	curl -fsS -o "$$tmpdir/tools.json" \
+		-H 'content-type: application/json' \
+		-H 'accept: application/json, text/event-stream' \
+		-H "mcp-session-id: $$session_id" \
+		-d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' "$$url"; \
+	grep -Eq '"name"[[:space:]]*:[[:space:]]*"echo"' "$$tmpdir/tools.json"; \
+	curl -fsS -o "$$tmpdir/call.json" \
+		-H 'content-type: application/json' \
+		-H 'accept: application/json, text/event-stream' \
+		-H "mcp-session-id: $$session_id" \
+		-d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"cai-mcp-ok"}}}' "$$url"; \
+	grep -q 'cai-mcp-ok' "$$tmpdir/call.json"; \
+	printf 'MCP Everything smoke test passed at %s\n' "$$url"
 
 format:
 	$(CMAKE) --preset debug
