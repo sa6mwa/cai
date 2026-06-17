@@ -7978,6 +7978,141 @@ static void http_mock_client_close(test_state *state, const char *name,
   }
 }
 
+static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{\"listChanged\":false}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char tools_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
+      "\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\","
+      "\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":["
+      "\"message\"]}}]}}";
+  static const char call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"hello from mcp\"}],\"isError\":false}}";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/",
+      "Accept: application/json, text/event-stream",
+      "Content-Type: application/json",
+      "\"method\":\"initialize\"",
+      "\"protocolVersion\":\"" CAI_MCP_PROTOCOL_VERSION "\"",
+      "\"name\":\"cai-test-client\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"notifications/initialized\""};
+  static const char *list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"tools/list\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
+      "\"method\":\"tools/call\"",
+      "\"name\":\"echo\"",
+      "\"arguments\":{\"message\":\"hello\"}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: session-123",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", list_required,
+       sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, tools_list_body},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  const cai_mcp_client_tool *tool;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  const char *args_json;
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_http_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.client_name = "cai-test-client";
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  if (client == NULL) {
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                      &server.child_status);
+    return;
+  }
+  if (client->refresh_tools(client, &error) != CAI_OK) {
+    test_fail(state, "mcp_streamable_refresh",
+              error.message != NULL ? error.message : "refresh failed");
+    cai_mcp_client_destroy(client);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                      &server.child_status);
+    return;
+  }
+  expect_int(state, "mcp_streamable_tool_count",
+             (long)client->tool_count(client), 1L);
+  tool = client->tool_at(client, 0U);
+  if (tool == NULL) {
+    test_fail(state, "mcp_streamable_tool", "tool missing");
+  } else {
+    expect_str(state, "mcp_streamable_tool_name", tool->name, "echo");
+    expect_str(state, "mcp_streamable_tool_description", tool->description,
+               "Echo text");
+    expect_substr(state, "mcp_streamable_tool_schema", tool->input_schema_json,
+                  "\"message\"");
+  }
+
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"message\":\"hello\"}";
+  expect_int(state, "mcp_streamable_args",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_call",
+             client->call_tool(client, "echo", &args, sink, &error), CAI_OK);
+  expect_str(state, "mcp_streamable_call_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"hello from mcp\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                    &server.child_status);
+}
+
 typedef struct websocket_mock_server {
   pid_t pid;
   int child_status;
@@ -21128,6 +21263,8 @@ static const test_entry test_entries[] = {
     {"tool_registry", test_tool_registry},
     {"mcp_client_config", test_mcp_client_config},
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
+    {"mcp_streamable_http_client_roundtrip",
+     test_mcp_streamable_http_client_roundtrip},
     {"mcp_handler", test_mcp_handler},
     {"client_open", test_client_open},
     {"mike_mind_prompt_contract", test_mike_mind_prompt_contract},
