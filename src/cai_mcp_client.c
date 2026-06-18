@@ -423,6 +423,11 @@ typedef struct cai_mcp_elicitation_params_doc {
   char *elicitation_id;
 } cai_mcp_elicitation_params_doc;
 
+typedef struct cai_mcp_elicitation_schema_doc {
+  char *type;
+  lonejson_json_value properties;
+} cai_mcp_elicitation_schema_doc;
+
 typedef struct cai_mcp_root_doc {
   char *uri;
   char *name;
@@ -665,6 +670,19 @@ static const lonejson_field cai_mcp_elicitation_params_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_elicitation_params_map,
                     cai_mcp_elicitation_params_doc,
                     cai_mcp_elicitation_params_fields);
+
+static const lonejson_field cai_mcp_elicitation_schema_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_elicitation_schema_doc, type,
+                                    "type"),
+    {"properties", LONEJSON__KEY_LEN("properties"),
+     LONEJSON__KEY_FIRST("properties"), LONEJSON__KEY_LAST("properties"),
+     offsetof(cai_mcp_elicitation_schema_doc, properties),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_elicitation_schema_map,
+                    cai_mcp_elicitation_schema_doc,
+                    cai_mcp_elicitation_schema_fields);
 
 static const lonejson_field cai_mcp_root_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_root_doc, uri, "uri"),
@@ -2512,6 +2530,58 @@ static int cai_mcp_elicitation_form_is_supported(
          (!impl->receiver.elicitation_url || impl->receiver.elicitation_form);
 }
 
+static int cai_mcp_validate_elicitation_requested_schema(
+    const lonejson_json_value *schema, cai_error *error) {
+  cai_mcp_elicitation_schema_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_spooled schema_json;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (schema == NULL || schema->kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation form requestedSchema is required");
+  }
+  if (!cai_mcp_json_value_root_is(schema, '{', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation requestedSchema must be an object");
+  }
+  memset(&schema_json, 0, sizeof(schema_json));
+  rc = cai_mcp_json_value_to_spooled(schema, &schema_json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = schema_json;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_elicitation_schema_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_schema_map, &doc);
+    schema_json.cleanup(&schema_json);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP elicitation requestedSchema", &json_error);
+  }
+  if (strcmp(doc.type, "object") != 0) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP elicitation requestedSchema type must be object");
+  } else if (doc.properties.kind == LONEJSON_JSON_VALUE_NULL) {
+    rc = cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation requestedSchema properties are required");
+  } else if (!cai_mcp_json_value_root_is(&doc.properties, '{', error)) {
+    rc = cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation requestedSchema properties must be an object");
+  } else {
+    rc = CAI_OK;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_schema_map, &doc);
+  schema_json.cleanup(&schema_json);
+  return rc;
+}
+
 static int cai_mcp_validate_elicitation_params(
     const cai_mcp_streamable_http_client_impl *impl,
     lonejson_spooled *params_json, cai_error *error) {
@@ -2547,12 +2617,9 @@ static int cai_mcp_validate_elicitation_params(
     if (!cai_mcp_elicitation_form_is_supported(impl)) {
       rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP elicitation form was not advertised");
-    } else if (doc.requested_schema.kind == LONEJSON_JSON_VALUE_NULL) {
-      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP elicitation form requestedSchema is required");
-    } else if (!cai_mcp_json_value_root_is(&doc.requested_schema, '{', error)) {
-      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP elicitation requestedSchema must be an object");
+    } else {
+      rc = cai_mcp_validate_elicitation_requested_schema(
+          &doc.requested_schema, error);
     }
   } else if (strcmp(mode, "url") == 0) {
     if (!impl->receiver.elicitation_url) {
