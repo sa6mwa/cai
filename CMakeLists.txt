@@ -836,6 +836,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_completion_invalid_ref_type
     mcp_streamable_http_resource_subscription_error
     mcp_streamable_http_list_changed_invalidates_cache
+    mcp_streamable_http_tools_list_changed_array_params
+    mcp_streamable_http_resources_list_changed_array_params
+    mcp_streamable_http_prompts_list_changed_array_params
     mcp_streamable_http_roots_list_changed_notification
     mcp_streamable_http_send_request_params
     mcp_streamable_http_send_notification_params

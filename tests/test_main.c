@@ -13049,6 +13049,111 @@ test_mcp_streamable_http_list_changed_invalidates_cache(test_state *state) {
                     &server.child_status);
 }
 
+static void test_mcp_streamable_http_list_changed_array_params_case(
+    test_state *state, const char *test_name, const char *method) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{\"listChanged\":true},"
+      "\"resources\":{\"listChanged\":true},"
+      "\"prompts\":{\"listChanged\":true}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-array-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-array-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char ping_body[512];
+  char mock_name[160];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  cai_error_init(&error);
+  snprintf(ping_body, sizeof(ping_body),
+           "event: message\n"
+           "data: {\"jsonrpc\":\"2.0\",\"method\":\"%s\","
+           "\"params\":[]}\n\n"
+           "event: message\n"
+           "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n",
+           method);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: list-changed-array-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].body = ping_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, test_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  expect_str(state, test_name, error.message,
+             "MCP list changed params must be an object");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tools_list_changed_array_params(test_state *state) {
+  test_mcp_streamable_http_list_changed_array_params_case(
+      state, "mcp_streamable_tools_list_changed_array_params",
+      "notifications/tools/list_changed");
+}
+
+static void
+test_mcp_streamable_http_resources_list_changed_array_params(test_state *state) {
+  test_mcp_streamable_http_list_changed_array_params_case(
+      state, "mcp_streamable_resources_list_changed_array_params",
+      "notifications/resources/list_changed");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_changed_array_params(test_state *state) {
+  test_mcp_streamable_http_list_changed_array_params_case(
+      state, "mcp_streamable_prompts_list_changed_array_params",
+      "notifications/prompts/list_changed");
+}
+
 static void
 test_mcp_streamable_http_roots_list_changed_notification(test_state *state) {
   static const char initialize_body[] =
@@ -30229,6 +30334,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_list_changed_invalidates_cache",
      test_mcp_streamable_http_list_changed_invalidates_cache},
+    {"mcp_streamable_http_tools_list_changed_array_params",
+     test_mcp_streamable_http_tools_list_changed_array_params},
+    {"mcp_streamable_http_resources_list_changed_array_params",
+     test_mcp_streamable_http_resources_list_changed_array_params},
+    {"mcp_streamable_http_prompts_list_changed_array_params",
+     test_mcp_streamable_http_prompts_list_changed_array_params},
     {"mcp_streamable_http_roots_list_changed_notification",
      test_mcp_streamable_http_roots_list_changed_notification},
     {"mcp_streamable_http_send_request_params",

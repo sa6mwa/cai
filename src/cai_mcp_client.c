@@ -2201,6 +2201,19 @@ static int cai_mcp_validate_task_status_notification_params(
   return rc;
 }
 
+static int
+cai_mcp_validate_optional_notification_params(const lonejson_json_value *params,
+                                              const char *message,
+                                              cai_error *error) {
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+  }
+  return CAI_OK;
+}
+
 static int cai_mcp_notification_should_dispatch(
     const cai_mcp_streamable_http_client_impl *impl,
     const cai_mcp_jsonrpc_message_doc *doc) {
@@ -2249,6 +2262,15 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
   }
   if (strcmp(doc->method, "notifications/tasks/status") == 0) {
     rc = cai_mcp_validate_task_status_notification_params(&doc->params, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  if (strcmp(doc->method, "notifications/tools/list_changed") == 0 ||
+      strcmp(doc->method, "notifications/resources/list_changed") == 0 ||
+      strcmp(doc->method, "notifications/prompts/list_changed") == 0) {
+    rc = cai_mcp_validate_optional_notification_params(
+        &doc->params, "MCP list changed params must be an object", error);
     if (rc != CAI_OK) {
       return rc;
     }
