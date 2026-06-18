@@ -6542,6 +6542,101 @@ static int cai_mcp_streamable_send_notification(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_task_request(cai_mcp_streamable_http_client_impl *impl,
+                                const char *method, const char *task_id,
+                                const char *cursor, lonejson_spooled *spool,
+                                size_t *out_len, cai_error *error) {
+  int has_param;
+  int rc;
+
+  if (method == NULL || method[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP task request method is required");
+  }
+  if (strcmp(method, "tasks/list") != 0 &&
+      (task_id == NULL || task_id[0] == '\0')) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP task id is required");
+  }
+  if (task_id != NULL && task_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP task id is required");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  has_param = 0;
+  rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, method, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{", error);
+  }
+  if (rc == CAI_OK && task_id != NULL) {
+    rc = cai_mcp_write_cstr(spool, "\"taskId\":", error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_json_string(spool, task_id, error);
+    }
+    has_param = 1;
+  }
+  if (rc == CAI_OK && cursor != NULL && cursor[0] != '\0') {
+    if (has_param) {
+      rc = cai_mcp_write_cstr(spool, ",", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "\"cursor\":", error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_json_string(spool, cursor, error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_progress_meta(impl, spool, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
+  }
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
+static int cai_mcp_streamable_task_request(cai_mcp_client *client,
+                                           const char *method,
+                                           const char *task_id,
+                                           const char *cursor, cai_sink *output,
+                                           cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled request;
+  size_t request_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL || output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client and output sink are required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  memset(&request, 0, sizeof(request));
+  rc = cai_mcp_task_request(impl, method, task_id, cursor, &request,
+                            &request_len, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post_request_with_session_recovery(impl, &request, request_len,
+                                                    &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_result_response(&response, "MCP task response",
+                                       "failed to parse MCP task response",
+                                       output, error);
+  }
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
 static int cai_mcp_streamable_drain_events(cai_mcp_client *client,
                                            cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -6906,6 +7001,13 @@ int cai_mcp_client_notify_roots_list_changed(cai_mcp_client *client,
       client, "notifications/roots/list_changed", NULL, error);
 }
 
+static int cai_mcp_client_is_streamable_builtin(cai_mcp_client *client) {
+  return client != NULL && client->impl != NULL &&
+         client->initialize == cai_mcp_streamable_initialize &&
+         client->send_request == cai_mcp_streamable_send_request &&
+         client->destroy == cai_mcp_streamable_destroy;
+}
+
 static int cai_mcp_task_id_params(const char *task_id, lonejson_spooled *params,
                                   cai_error *error) {
   int rc;
@@ -6954,6 +7056,10 @@ int cai_mcp_client_list_tasks(cai_mcp_client *client, const char *cursor,
   lonejson_spooled params;
   int rc;
 
+  if (cai_mcp_client_is_streamable_builtin(client)) {
+    return cai_mcp_streamable_task_request(client, "tasks/list", NULL, cursor,
+                                           output, error);
+  }
   rc = cai_mcp_task_list_params(cursor, &params, error);
   if (rc == CAI_OK) {
     rc = cai_mcp_client_send_request(client, "tasks/list", &params, output,
@@ -6968,6 +7074,10 @@ int cai_mcp_client_get_task(cai_mcp_client *client, const char *task_id,
   lonejson_spooled params;
   int rc;
 
+  if (cai_mcp_client_is_streamable_builtin(client)) {
+    return cai_mcp_streamable_task_request(client, "tasks/get", task_id, NULL,
+                                           output, error);
+  }
   rc = cai_mcp_task_id_params(task_id, &params, error);
   if (rc == CAI_OK) {
     rc = cai_mcp_client_send_request(client, "tasks/get", &params, output,
@@ -6982,6 +7092,10 @@ int cai_mcp_client_get_task_result(cai_mcp_client *client, const char *task_id,
   lonejson_spooled params;
   int rc;
 
+  if (cai_mcp_client_is_streamable_builtin(client)) {
+    return cai_mcp_streamable_task_request(client, "tasks/result", task_id,
+                                           NULL, output, error);
+  }
   rc = cai_mcp_task_id_params(task_id, &params, error);
   if (rc == CAI_OK) {
     rc = cai_mcp_client_send_request(client, "tasks/result", &params, output,
@@ -6996,6 +7110,10 @@ int cai_mcp_client_cancel_task(cai_mcp_client *client, const char *task_id,
   lonejson_spooled params;
   int rc;
 
+  if (cai_mcp_client_is_streamable_builtin(client)) {
+    return cai_mcp_streamable_task_request(client, "tasks/cancel", task_id,
+                                           NULL, output, error);
+  }
   rc = cai_mcp_task_id_params(task_id, &params, error);
   if (rc == CAI_OK) {
     rc = cai_mcp_client_send_request(client, "tasks/cancel", &params, output,

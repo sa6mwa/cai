@@ -12449,8 +12449,14 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
       "\"status\":\"completed\",\"createdAt\":\"2025-11-25T10:30:00Z\","
       "\"lastUpdatedAt\":\"2025-11-25T10:31:00Z\"}}";
   static const char tasks_result_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{"
+      "\"progressToken\":4,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"task result ok\"}],\"isError\":false}}";
+      "\"text\",\"text\":\"task result ok\"}],\"isError\":false}}\n\n";
   static const char tasks_cancel_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"taskId\":\"task-1\","
       "\"status\":\"cancelled\"}}";
@@ -12461,16 +12467,20 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
       "\"method\":\"notifications/initialized\""};
   static const char *tasks_list_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
-      "\"method\":\"tasks/list\"", "\"params\":{\"cursor\":\"tasks-page-1\"}"};
+      "\"method\":\"tasks/list\"", "\"cursor\":\"tasks-page-1\"",
+      "\"_meta\":{\"progressToken\":2}"};
   static const char *tasks_get_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
-      "\"method\":\"tasks/get\"", "\"params\":{\"taskId\":\"task-1\"}"};
+      "\"method\":\"tasks/get\"", "\"taskId\":\"task-1\"",
+      "\"_meta\":{\"progressToken\":3}"};
   static const char *tasks_result_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
-      "\"method\":\"tasks/result\"", "\"params\":{\"taskId\":\"task-1\"}"};
+      "\"method\":\"tasks/result\"", "\"taskId\":\"task-1\"",
+      "\"_meta\":{\"progressToken\":4}"};
   static const char *tasks_cancel_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
-      "\"method\":\"tasks/cancel\"", "\"params\":{\"taskId\":\"task-1\"}"};
+      "\"method\":\"tasks/cancel\"", "\"taskId\":\"task-1\"",
+      "\"_meta\":{\"progressToken\":5}"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12487,7 +12497,7 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
        200, "OK", "application/json", NULL, tasks_get_body},
       {"POST /v1/mcp HTTP/", tasks_result_required,
        sizeof(tasks_result_required) / sizeof(tasks_result_required[0]), NULL,
-       0U, 200, "OK", "application/json", NULL, tasks_result_body},
+       0U, 200, "OK", "text/event-stream", NULL, tasks_result_body},
       {"POST /v1/mcp HTTP/", tasks_cancel_required,
        sizeof(tasks_cancel_required) / sizeof(tasks_cancel_required[0]), NULL,
        0U, 200, "OK", "application/json", NULL, tasks_cancel_body}};
@@ -12497,6 +12507,7 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
+  test_mcp_notification_state notifications;
   cai_error error;
   char url[192];
 
@@ -12504,6 +12515,7 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
   sink = NULL;
   memset(&server, 0, sizeof(server));
   memset(&writer, 0, sizeof(writer));
+  memset(&notifications, 0, sizeof(notifications));
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
   cai_error_init(&error);
   if (http_mock_server_open_script(state, "mcp_streamable_tasks_mock", script,
@@ -12516,6 +12528,8 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = url;
   config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
   expect_int(state, "mcp_streamable_tasks_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
@@ -12540,6 +12554,12 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
              CAI_OK);
   expect_substr(state, "mcp_streamable_tasks_result_output", writer.buffer,
                 "task result ok");
+  expect_int(state, "mcp_streamable_tasks_result_notify_count",
+             notifications.count, 1L);
+  expect_str(state, "mcp_streamable_tasks_result_notify_method",
+             notifications.method, "notifications/progress");
+  expect_substr(state, "mcp_streamable_tasks_result_notify_params",
+                notifications.params, "\"progressToken\":4");
   memset(&writer, 0, sizeof(writer));
   expect_int(state, "mcp_streamable_tasks_cancel",
              cai_mcp_client_cancel_task(client, "task-1", sink, &error),
