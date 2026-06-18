@@ -479,6 +479,8 @@ cai_mcp_sampling_content_value_validate(const lonejson_json_value *content,
                                         cai_error *error);
 static int cai_mcp_validate_elicitation_result(lonejson_spooled *json,
                                                cai_error *error);
+static int cai_mcp_validate_elicitation_schema_properties(
+    const lonejson_json_value *properties, cai_error *error);
 static int cai_mcp_validate_sampling_params(
     const cai_mcp_streamable_http_client_impl *impl,
     lonejson_spooled *params_json, int *uses_tools, cai_error *error);
@@ -2575,7 +2577,7 @@ static int cai_mcp_validate_elicitation_requested_schema(
         error, CAI_ERR_PROTOCOL,
         "MCP elicitation requestedSchema properties must be an object");
   } else {
-    rc = CAI_OK;
+    rc = cai_mcp_validate_elicitation_schema_properties(&doc.properties, error);
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_schema_map, &doc);
   schema_json.cleanup(&schema_json);
@@ -5299,6 +5301,194 @@ cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
     if (ch != ',') {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "failed to parse MCP JSON-RPC response");
+    }
+  }
+}
+
+static int cai_mcp_elicitation_property_type_is_valid(const char *type) {
+  return type != NULL &&
+         (strcmp(type, "string") == 0 || strcmp(type, "number") == 0 ||
+          strcmp(type, "integer") == 0 || strcmp(type, "boolean") == 0 ||
+          strcmp(type, "array") == 0);
+}
+
+static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
+                                                        cai_error *error) {
+  char key[32];
+  char type[16];
+  int has_type;
+  int ch;
+  int rc;
+
+  rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation requestedSchema property must be an object");
+  }
+  rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+  if (rc <= 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema");
+  }
+  has_type = 0;
+  if (ch == '}') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation requestedSchema property type is "
+                         "required");
+  }
+  cai_mcp_json_scan_unget(scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    rc = cai_mcp_json_scan_string(scan, key, sizeof(key), error);
+    if (rc <= 0) {
+      return rc == 0
+                 ? cai_set_error(
+                       error, CAI_ERR_PROTOCOL,
+                       "failed to parse MCP elicitation requestedSchema")
+                 : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    if (strcmp(key, "type") == 0) {
+      rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+      if (rc <= 0 || ch != '"') {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "MCP elicitation requestedSchema property type "
+                             "must be a string");
+      }
+      rc = cai_mcp_json_scan_string(scan, type, sizeof(type), error);
+      if (rc <= 0) {
+        return rc == 0
+                   ? cai_set_error(
+                         error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema")
+                   : rc;
+      }
+      if (!cai_mcp_elicitation_property_type_is_valid(type)) {
+        return cai_set_error(
+            error, CAI_ERR_PROTOCOL,
+            "MCP elicitation requestedSchema property type must be primitive");
+      }
+      has_type = 1;
+    } else {
+      rc = cai_mcp_json_scan_skip_value(scan, error);
+      if (rc <= 0) {
+        return rc == 0
+                   ? cai_set_error(
+                         error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema")
+                   : rc;
+      }
+    }
+    rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+    if (rc <= 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    if (ch == '}') {
+      if (!has_type) {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "MCP elicitation requestedSchema property type is "
+                             "required");
+      }
+      return CAI_OK;
+    }
+    if (ch != ',') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+  }
+}
+
+static int cai_mcp_validate_elicitation_schema_properties(
+    const lonejson_json_value *properties, cai_error *error) {
+  lonejson_spooled properties_json;
+  cai_mcp_json_scan scan;
+  int ch;
+  int rc;
+
+  if (properties == NULL || properties->kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation requestedSchema properties are required");
+  }
+  memset(&properties_json, 0, sizeof(properties_json));
+  rc = cai_mcp_json_value_to_spooled(properties, &properties_json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_json_scan_init(&scan, &properties_json, error);
+  if (rc != CAI_OK) {
+    properties_json.cleanup(&properties_json);
+    return rc;
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    properties_json.cleanup(&properties_json);
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation requestedSchema properties must be an object");
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0) {
+    properties_json.cleanup(&properties_json);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema");
+  }
+  if (ch == '}') {
+    properties_json.cleanup(&properties_json);
+    return CAI_OK;
+  }
+  cai_mcp_json_scan_unget(&scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      properties_json.cleanup(&properties_json);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    rc = cai_mcp_json_scan_skip_string(&scan, error);
+    if (rc <= 0) {
+      properties_json.cleanup(&properties_json);
+      return rc == 0
+                 ? cai_set_error(
+                       error, CAI_ERR_PROTOCOL,
+                       "failed to parse MCP elicitation requestedSchema")
+                 : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      properties_json.cleanup(&properties_json);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    rc = cai_mcp_validate_elicitation_schema_property(&scan, error);
+    if (rc != CAI_OK) {
+      properties_json.cleanup(&properties_json);
+      return rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      properties_json.cleanup(&properties_json);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    if (ch == '}') {
+      properties_json.cleanup(&properties_json);
+      return CAI_OK;
+    }
+    if (ch != ',') {
+      properties_json.cleanup(&properties_json);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
     }
   }
 }
