@@ -798,11 +798,13 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_roots_list_invalid_result
     mcp_streamable_http_roots_list_invalid_shape
     mcp_streamable_http_sampling_request
+    mcp_streamable_http_sampling_invalid_result
     mcp_streamable_http_task_request_capabilities
     mcp_streamable_http_task_request_flags_require_callbacks
     mcp_streamable_http_sampling_tools_not_advertised
     mcp_streamable_http_elicitation_request
     mcp_streamable_http_elicitation_invalid_result
+    mcp_streamable_http_elicitation_invalid_action
     mcp_streamable_http_server_request_unsupported
     mcp_streamable_http_drain_events_get_sse
     mcp_streamable_http_drain_events_rejects_response

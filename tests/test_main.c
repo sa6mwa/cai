@@ -11902,6 +11902,81 @@ static void test_mcp_streamable_http_sampling_request(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"sample-1\","
+      "\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[{"
+      "\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"Say hi\"}}],"
+      "\"maxTokens\":16}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\"",
+                                        "\"capabilities\":{\"sampling\":{}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: sampling-invalid-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_sampling_state sampling;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&sampling, 0, sizeof(sampling));
+  sampling.result_json =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\"}";
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_sampling_invalid_result_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &sampling;
+  config.receiver.create_message = test_mcp_sampling_callback;
+  expect_int(state, "mcp_streamable_sampling_invalid_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sampling_invalid_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_int(state, "mcp_streamable_sampling_invalid_count", sampling.count,
+             1L);
+  expect_str(state, "mcp_streamable_sampling_invalid_message", error.message,
+             "failed to parse MCP sampling result");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sampling_invalid_result_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_task_request_capabilities(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -12262,10 +12337,86 @@ test_mcp_streamable_http_elicitation_invalid_result(test_state *state) {
   expect_int(state, "mcp_streamable_elicitation_invalid_count",
              elicitation.count, 1L);
   expect_str(state, "mcp_streamable_elicitation_invalid_message", error.message,
-             "failed to write MCP elicitation result");
+             "failed to parse MCP elicitation result");
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_elicitation_invalid_result_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_elicitation_invalid_action(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"elicit-1\","
+      "\"method\":\"elicitation/create\",\"params\":{\"message\":\"Need "
+      "data\"}}"
+      "\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"elicitation\":{}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: elicitation-action-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: elicitation-action-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: elicitation-action-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_elicitation_state elicitation;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&elicitation, 0, sizeof(elicitation));
+  elicitation.result_json = "{\"action\":\"maybe\"}";
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_elicitation_invalid_action_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &elicitation;
+  config.receiver.elicit = test_mcp_elicitation_callback;
+  expect_int(state, "mcp_streamable_elicitation_action_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_elicitation_action_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_int(state, "mcp_streamable_elicitation_action_count",
+             elicitation.count, 1L);
+  expect_str(state, "mcp_streamable_elicitation_action_message", error.message,
+             "MCP elicitation result action must be accept, decline, or "
+             "cancel");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_elicitation_invalid_action_mock",
                     server.pid, &server.child_status);
 }
 
@@ -25911,6 +26062,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_roots_list_invalid_shape},
     {"mcp_streamable_http_sampling_request",
      test_mcp_streamable_http_sampling_request},
+    {"mcp_streamable_http_sampling_invalid_result",
+     test_mcp_streamable_http_sampling_invalid_result},
     {"mcp_streamable_http_task_request_capabilities",
      test_mcp_streamable_http_task_request_capabilities},
     {"mcp_streamable_http_task_request_flags_require_callbacks",
@@ -25921,6 +26074,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_elicitation_request},
     {"mcp_streamable_http_elicitation_invalid_result",
      test_mcp_streamable_http_elicitation_invalid_result},
+    {"mcp_streamable_http_elicitation_invalid_action",
+     test_mcp_streamable_http_elicitation_invalid_action},
     {"mcp_streamable_http_server_request_unsupported",
      test_mcp_streamable_http_server_request_unsupported},
     {"mcp_streamable_http_drain_events_get_sse",

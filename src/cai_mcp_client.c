@@ -258,6 +258,18 @@ typedef struct cai_mcp_roots_list_result_doc {
   lonejson_object_array roots;
 } cai_mcp_roots_list_result_doc;
 
+typedef struct cai_mcp_sampling_result_doc {
+  char *role;
+  lonejson_json_value content;
+  char *model;
+  char *stop_reason;
+} cai_mcp_sampling_result_doc;
+
+typedef struct cai_mcp_elicitation_result_doc {
+  char *action;
+  lonejson_json_value content;
+} cai_mcp_elicitation_result_doc;
+
 typedef struct cai_mcp_registry_tool_context {
   cai_mcp_client *client;
   char *remote_name;
@@ -274,6 +286,10 @@ static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
 static int cai_mcp_validate_roots_result(lonejson_spooled *json,
                                          cai_error *error);
+static int cai_mcp_validate_sampling_result(lonejson_spooled *json,
+                                            cai_error *error);
+static int cai_mcp_validate_elicitation_result(lonejson_spooled *json,
+                                               cai_error *error);
 static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
@@ -377,6 +393,35 @@ static const lonejson_field cai_mcp_roots_list_result_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_roots_list_result_map,
                     cai_mcp_roots_list_result_doc,
                     cai_mcp_roots_list_result_fields);
+
+static const lonejson_field cai_mcp_sampling_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_sampling_result_doc, role, "role"),
+    {"content", LONEJSON__KEY_LEN("content"), LONEJSON__KEY_FIRST("content"),
+     LONEJSON__KEY_LAST("content"),
+     offsetof(cai_mcp_sampling_result_doc, content),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_sampling_result_doc, model,
+                                    "model"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_result_doc, stop_reason,
+                                "stopReason")};
+LONEJSON_MAP_DEFINE(cai_mcp_sampling_result_map, cai_mcp_sampling_result_doc,
+                    cai_mcp_sampling_result_fields);
+
+static const lonejson_field cai_mcp_elicitation_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_elicitation_result_doc, action,
+                                    "action"),
+    {"content", LONEJSON__KEY_LEN("content"), LONEJSON__KEY_FIRST("content"),
+     LONEJSON__KEY_LAST("content"),
+     offsetof(cai_mcp_elicitation_result_doc, content),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_elicitation_result_map,
+                    cai_mcp_elicitation_result_doc,
+                    cai_mcp_elicitation_result_fields);
 
 static const lonejson_field cai_mcp_list_tool_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_tool_doc, name, "name"),
@@ -1451,6 +1496,11 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
   }
   if (rc == CAI_OK && strcmp(doc->method, "roots/list") == 0) {
     rc = cai_mcp_validate_roots_result(&result, error);
+  } else if (rc == CAI_OK &&
+             strcmp(doc->method, "sampling/createMessage") == 0) {
+    rc = cai_mcp_validate_sampling_result(&result, error);
+  } else if (rc == CAI_OK && strcmp(doc->method, "elicitation/create") == 0) {
+    rc = cai_mcp_validate_elicitation_result(&result, error);
   }
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
@@ -3184,6 +3234,94 @@ static int cai_mcp_validate_roots_result(lonejson_spooled *json,
                                   &json_error);
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_roots_list_result_map, &doc);
+  return CAI_OK;
+}
+
+static int cai_mcp_validate_sampling_result(lonejson_spooled *json,
+                                            cai_error *error) {
+  cai_mcp_sampling_result_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP sampling result is required");
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to rewind MCP sampling result",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_sampling_result_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_result_map, &doc);
+    return cai_mcp_set_json_error(error, "failed to parse MCP sampling result",
+                                  &json_error);
+  }
+  if (strcmp(doc.role, "assistant") != 0) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_result_map, &doc);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling result role must be assistant");
+  }
+  if (!cai_mcp_json_value_root_is(&doc.content, '{', error) &&
+      !cai_mcp_json_value_root_is(&doc.content, '[', error)) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_result_map, &doc);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling result content must be an object or "
+                         "array");
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_result_map, &doc);
+  return CAI_OK;
+}
+
+static int cai_mcp_elicitation_action_is_valid(const char *action) {
+  return action != NULL &&
+         (strcmp(action, "accept") == 0 || strcmp(action, "decline") == 0 ||
+          strcmp(action, "cancel") == 0);
+}
+
+static int cai_mcp_validate_elicitation_result(lonejson_spooled *json,
+                                               cai_error *error) {
+  cai_mcp_elicitation_result_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP elicitation result is required");
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(
+        error, "failed to rewind MCP elicitation result", &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_elicitation_result_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_result_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP elicitation result", &json_error);
+  }
+  if (!cai_mcp_elicitation_action_is_valid(doc.action)) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_result_map, &doc);
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation result action must be accept, decline, or cancel");
+  }
+  if (doc.content.kind != LONEJSON_JSON_VALUE_NULL &&
+      !cai_mcp_json_value_root_is(&doc.content, '{', error)) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_result_map, &doc);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation result content must be an object");
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_result_map, &doc);
   return CAI_OK;
 }
 
