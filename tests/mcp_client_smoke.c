@@ -230,6 +230,37 @@ int main(int argc, char **argv) {
   }
   writer.length = 0U;
   writer.data[0] = '\0';
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"topic\":\"cai mcp task smoke\"}";
+  if (args.append(&args, args_json, strlen(args_json), &json_error) !=
+      LONEJSON_STATUS_OK) {
+    args.cleanup(&args);
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    fprintf(stderr, "failed to build task tool arguments: %s\n",
+            json_error.message);
+    return 1;
+  }
+  rc = cai_mcp_client_call_tool_task(client, "simulate-research-query", &args,
+                                     60000LL, sink, &error);
+  args.cleanup(&args);
+  if (rc != CAI_OK) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to call task-augmented tool", &error);
+  }
+  if (writer.data == NULL || strstr(writer.data, "\"task\"") == NULL ||
+      strstr(writer.data, "\"taskId\"") == NULL) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("task-augmented tool output was unexpected", NULL);
+  }
+  writer.length = 0U;
+  writer.data[0] = '\0';
   rc = cai_mcp_client_read_resource(
       client, "demo://resource/static/document/architecture.md", sink, &error);
   if (rc != CAI_OK) {

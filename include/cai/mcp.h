@@ -338,6 +338,15 @@ struct cai_mcp_client {
   int (*call_tool)(cai_mcp_client *client, const char *name,
                    struct lonejson_spooled *arguments_json, cai_sink *output,
                    cai_error *error);
+  /** Call one remote tool using task-augmented execution and stream result
+   * JSON.
+   *
+   * `ttl_ms` is the requested task retention duration in milliseconds; a
+   * negative value omits the optional TTL.
+   */
+  int (*call_tool_task)(cai_mcp_client *client, const char *name,
+                        struct lonejson_spooled *arguments_json,
+                        long long ttl_ms, cai_sink *output, cai_error *error);
   /** Refresh the cached remote resources/list metadata. */
   int (*refresh_resources)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached resources. */
@@ -451,6 +460,11 @@ const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
 int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
                              cai_sink *output, cai_error *error);
+/** Call one remote MCP tool as a task and stream CreateTaskResult JSON. */
+int cai_mcp_client_call_tool_task(cai_mcp_client *client, const char *name,
+                                  struct lonejson_spooled *arguments_json,
+                                  long long ttl_ms, cai_sink *output,
+                                  cai_error *error);
 /** Refresh cached remote resources/list metadata. */
 int cai_mcp_client_refresh_resources(cai_mcp_client *client, cai_error *error);
 /** Return the number of cached MCP resources. */
