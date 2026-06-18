@@ -766,6 +766,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_response_invalid_id_type
     mcp_streamable_http_response_null_id
     mcp_streamable_http_sse_request_invalid_id_type
+    mcp_streamable_http_sse_request_null_id
     mcp_streamable_http_response_jsonrpc_invalid
     mcp_streamable_http_sse_jsonrpc_invalid
     mcp_streamable_http_sse_method_with_result

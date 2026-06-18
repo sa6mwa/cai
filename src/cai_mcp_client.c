@@ -143,6 +143,7 @@ typedef struct cai_mcp_jsonrpc_sink_response_doc {
 
 typedef struct cai_mcp_jsonrpc_message_doc {
   char *jsonrpc;
+  int has_id;
   lonejson_json_value id;
   char *method;
   lonejson_json_value params;
@@ -386,6 +387,9 @@ static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
                                                cai_error *error);
+static int cai_mcp_jsonrpc_top_level_member_presence(
+    const lonejson_spooled *json, const char *member, int *present,
+    const char *message, cai_error *error);
 static int cai_mcp_jsonrpc_response_result_root_is_object(
     const lonejson_spooled *json, int *is_object, cai_error *error);
 static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
@@ -2144,6 +2148,7 @@ static int cai_mcp_parse_sse_message(lonejson_spooled *data,
   lonejson_error json_error;
   lonejson_status status;
   int has_error;
+  int has_id;
   int has_result;
   int rc;
 
@@ -2166,7 +2171,14 @@ static int cai_mcp_parse_sse_message(lonejson_spooled *data,
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP JSON-RPC version must be 2.0");
   }
-  if (doc->id.kind != LONEJSON_JSON_VALUE_NULL) {
+  rc = cai_mcp_jsonrpc_top_level_member_presence(
+      data, "id", &has_id, "failed to parse MCP SSE JSON-RPC", error);
+  if (rc != CAI_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+    return rc;
+  }
+  doc->has_id = has_id;
+  if (doc->has_id) {
     rc = cai_mcp_validate_jsonrpc_id_value(&doc->id, error);
     if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
@@ -2362,7 +2374,7 @@ static int cai_mcp_process_sse_message(
     return rc;
   }
   if (doc.method != NULL) {
-    if (doc.id.kind != LONEJSON_JSON_VALUE_NULL) {
+    if (doc.has_id) {
       rc = cai_mcp_handle_server_request(impl, &doc, error);
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, &doc);
       return rc;
@@ -2397,7 +2409,7 @@ cai_mcp_process_sse_server_message(cai_mcp_streamable_http_client_impl *impl,
     return rc;
   }
   if (doc.method != NULL) {
-    if (doc.id.kind != LONEJSON_JSON_VALUE_NULL) {
+    if (doc.has_id) {
       rc = cai_mcp_handle_server_request(impl, &doc, error);
     } else {
       rc = cai_mcp_dispatch_notification(impl, &doc, error);
@@ -4360,6 +4372,68 @@ cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
     if (ch != ',') {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "failed to parse MCP JSON-RPC response");
+    }
+  }
+}
+
+static int cai_mcp_jsonrpc_top_level_member_presence(
+    const lonejson_spooled *json, const char *member, int *present,
+    const char *message, cai_error *error) {
+  cai_mcp_json_scan scan;
+  char key[32];
+  int ch;
+  int rc;
+
+  if (present == NULL || member == NULL || message == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP JSON-RPC member scan is required");
+  }
+  *present = 0;
+  rc = cai_mcp_json_scan_init(&scan, json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+  }
+  if (ch == '}') {
+    return CAI_OK;
+  }
+  cai_mcp_json_scan_unget(&scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+    }
+    rc = cai_mcp_json_scan_string(&scan, key, sizeof(key), error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL, message) : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+    }
+    if (strcmp(key, member) == 0) {
+      *present = 1;
+    }
+    rc = cai_mcp_json_scan_skip_value(&scan, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL, message) : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+    }
+    if (ch == '}') {
+      return CAI_OK;
+    }
+    if (ch != ',') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, message);
     }
   }
 }
