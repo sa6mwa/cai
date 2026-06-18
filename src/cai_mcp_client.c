@@ -341,6 +341,8 @@ static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
                                         cai_error *error);
 static int cai_mcp_json_value_root_is(const lonejson_json_value *value,
                                       char root, cai_error *error);
+static int cai_mcp_spooled_root_is(const lonejson_spooled *json, int root,
+                                   const char *message, cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
 static int cai_mcp_validate_roots_result(lonejson_spooled *json,
@@ -2825,6 +2827,13 @@ static int cai_mcp_prompt_get_request(cai_mcp_streamable_http_client_impl *impl,
   if (name == NULL || name[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "MCP prompt name is required");
   }
+  if (arguments_json != NULL) {
+    rc = cai_mcp_spooled_root_is(
+        arguments_json, '{', "MCP prompt arguments must be an object", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
   CAI_LJ->spooled_init(CAI_LJ, spool);
   rc =
       cai_mcp_request_begin(impl, spool, ++impl->next_id, "prompts/get", error);
@@ -2882,6 +2891,14 @@ static int cai_mcp_completion_request(
     return cai_set_error(
         error, CAI_ERR_INVALID,
         "MCP completion reference and argument name are required");
+  }
+  if (context_arguments_json != NULL) {
+    rc = cai_mcp_spooled_root_is(
+        context_arguments_json, '{',
+        "MCP completion context arguments must be an object", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   }
   CAI_LJ->spooled_init(CAI_LJ, spool);
   rc = cai_mcp_request_begin(impl, spool, ++impl->next_id,
@@ -2996,6 +3013,11 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
   if (name == NULL || name[0] == '\0' || arguments_json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP tool name and arguments are required");
+  }
+  rc = cai_mcp_spooled_root_is(arguments_json, '{',
+                               "MCP tool arguments must be an object", error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   CAI_LJ->spooled_init(CAI_LJ, spool);
   rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, "tools/call", error);
@@ -3658,6 +3680,23 @@ static int cai_mcp_json_scan_skip_ws(cai_mcp_json_scan *scan, int *ch,
     }
   } while (*ch == ' ' || *ch == '\t' || *ch == '\r' || *ch == '\n');
   return 1;
+}
+
+static int cai_mcp_spooled_root_is(const lonejson_spooled *json, int root,
+                                   const char *message, cai_error *error) {
+  cai_mcp_json_scan scan;
+  int ch;
+  int rc;
+
+  rc = cai_mcp_json_scan_init(&scan, json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0 || ch != root) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+  }
+  return CAI_OK;
 }
 
 static int cai_mcp_json_hex_value(int ch) {

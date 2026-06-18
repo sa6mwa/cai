@@ -10488,6 +10488,12 @@ typedef enum test_mcp_result_operation {
   TEST_MCP_RESULT_COMPLETION
 } test_mcp_result_operation;
 
+typedef enum test_mcp_argument_operation {
+  TEST_MCP_ARGUMENT_TOOL_CALL,
+  TEST_MCP_ARGUMENT_PROMPT_GET,
+  TEST_MCP_ARGUMENT_COMPLETION
+} test_mcp_argument_operation;
+
 static void test_mcp_streamable_http_list_invalid_response(
     test_state *state, const char *test_name, test_mcp_list_operation operation,
     const char *method_fragment, const char *response_body,
@@ -10714,6 +10720,115 @@ static void test_mcp_streamable_http_invalid_result_response(
     test_fail(state, output_name,
               "invalid MCP result should not stream caller output");
   }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_invalid_argument_json(
+    test_state *state, const char *test_name,
+    test_mcp_argument_operation operation, const char *arguments_json,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-argument-session",
+      "\"method\":\"notifications/initialized\""};
+  mock_http_expectation script[2];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char append_name[128];
+  char call_name[128];
+  char message_name[128];
+  char output_name[128];
+  int rc;
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: invalid-argument-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 200;
+  script[1].status_text = "OK";
+  script[1].content_type = "application/json";
+  script[1].body = "{}";
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_invalid_argument_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  snprintf(append_name, sizeof(append_name), "%s_append", test_name);
+  expect_int(
+      state, append_name,
+      args.append(&args, arguments_json, strlen(arguments_json), &json_error),
+      LONEJSON_STATUS_OK);
+  switch (operation) {
+  case TEST_MCP_ARGUMENT_TOOL_CALL:
+    rc = cai_mcp_client_call_tool(client, "bad-tool", &args, sink, &error);
+    break;
+  case TEST_MCP_ARGUMENT_PROMPT_GET:
+    rc = cai_mcp_client_get_prompt(client, "bad-prompt", &args, sink, &error);
+    break;
+  case TEST_MCP_ARGUMENT_COMPLETION:
+  default:
+    rc = cai_mcp_client_complete(client, "ref/prompt", "bad-prompt", "name",
+                                 "ba", &args, sink, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  snprintf(output_name, sizeof(output_name), "%s_output", test_name);
+  expect_int(state, output_name, writer.length, 0L);
+  args.cleanup(&args);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
@@ -10994,6 +11109,30 @@ test_mcp_streamable_http_completion_missing_values(test_state *state) {
       state, "mcp_streamable_completion_missing_values",
       TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
       response_body, "failed to parse MCP completion/complete");
+}
+
+static void
+test_mcp_streamable_http_tool_call_array_arguments(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_tool_call_array_arguments",
+      TEST_MCP_ARGUMENT_TOOL_CALL, "[]",
+      "MCP tool arguments must be an object");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_array_arguments(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_prompt_get_array_arguments",
+      TEST_MCP_ARGUMENT_PROMPT_GET, "[]",
+      "MCP prompt arguments must be an object");
+}
+
+static void
+test_mcp_streamable_http_completion_array_context_arguments(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_completion_array_context_arguments",
+      TEST_MCP_ARGUMENT_COMPLETION, "[]",
+      "MCP completion context arguments must be an object");
 }
 
 static void
@@ -26648,6 +26787,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_array_content},
     {"mcp_streamable_http_completion_missing_values",
      test_mcp_streamable_http_completion_missing_values},
+    {"mcp_streamable_http_tool_call_array_arguments",
+     test_mcp_streamable_http_tool_call_array_arguments},
+    {"mcp_streamable_http_prompt_get_array_arguments",
+     test_mcp_streamable_http_prompt_get_array_arguments},
+    {"mcp_streamable_http_completion_array_context_arguments",
+     test_mcp_streamable_http_completion_array_context_arguments},
     {"mcp_streamable_http_resource_subscription_error",
      test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_list_changed_invalidates_cache",
