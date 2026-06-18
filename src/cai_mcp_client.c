@@ -179,8 +179,21 @@ typedef struct cai_mcp_tools_list_response_doc {
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_tools_list_response_doc;
 
+typedef struct cai_mcp_resource_content_doc {
+  char *uri;
+  char *mime_type;
+  char *text;
+  char *blob;
+} cai_mcp_resource_content_doc;
+
 typedef struct cai_mcp_tool_content_doc {
   char *type;
+  char *text;
+  char *data;
+  char *mime_type;
+  char *uri;
+  char *name;
+  lonejson_json_value resource;
 } cai_mcp_tool_content_doc;
 
 typedef struct cai_mcp_tool_call_result_doc {
@@ -286,13 +299,6 @@ typedef struct cai_mcp_prompts_list_response_doc {
   cai_mcp_prompts_list_result_doc result;
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_prompts_list_response_doc;
-
-typedef struct cai_mcp_resource_content_doc {
-  char *uri;
-  char *mime_type;
-  char *text;
-  char *blob;
-} cai_mcp_resource_content_doc;
 
 typedef struct cai_mcp_resource_read_result_doc {
   lonejson_object_array contents;
@@ -684,7 +690,19 @@ LONEJSON_MAP_DEFINE(cai_mcp_tools_list_response_map,
                     cai_mcp_tools_list_response_fields);
 
 static const lonejson_field cai_mcp_tool_content_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_tool_content_doc, type, "type")};
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_tool_content_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, text, "text"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, data, "data"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, mime_type,
+                                "mimeType"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, uri, "uri"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, name, "name"),
+    {"resource", LONEJSON__KEY_LEN("resource"), LONEJSON__KEY_FIRST("resource"),
+     LONEJSON__KEY_LAST("resource"),
+     offsetof(cai_mcp_tool_content_doc, resource),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_tool_content_map, cai_mcp_tool_content_doc,
                     cai_mcp_tool_content_fields);
 
@@ -5604,15 +5622,53 @@ static int cai_mcp_prompt_role_is_valid(const char *role) {
          (strcmp(role, "user") == 0 || strcmp(role, "assistant") == 0);
 }
 
+static int
+cai_mcp_tool_content_validate(const cai_mcp_tool_content_doc *content,
+                              cai_error *error) {
+  if (content == NULL || content->type == NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool content type is required");
+  }
+  if (strcmp(content->type, "text") == 0) {
+    if (content->text == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP text content requires text");
+    }
+  } else if (strcmp(content->type, "image") == 0 ||
+             strcmp(content->type, "audio") == 0) {
+    if (content->data == NULL || content->mime_type == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP media content requires data and mimeType");
+    }
+  } else if (strcmp(content->type, "resource_link") == 0) {
+    if (content->uri == NULL || content->name == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP resource_link content requires uri and name");
+    }
+  } else if (strcmp(content->type, "resource") == 0) {
+    if (content->resource.kind == LONEJSON_JSON_VALUE_NULL ||
+        !cai_mcp_json_value_root_is(&content->resource, '{', error)) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP embedded resource content requires resource");
+    }
+  } else {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool content type is not supported");
+  }
+  return CAI_OK;
+}
+
 static int cai_mcp_validate_tool_call_response_shape(
     const cai_mcp_http_response_capture *response, cai_error *error) {
   cai_mcp_tool_call_response_doc doc;
   cai_mcp_create_task_response_doc task_doc;
+  cai_mcp_tool_content_doc *contents;
   lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_error tool_json_error;
   lonejson_status status;
+  size_t i;
   int has_error;
   int result_is_object;
   int rc;
@@ -5671,8 +5727,16 @@ static int cai_mcp_validate_tool_call_response_shape(
     return cai_mcp_set_json_error(error, "failed to parse MCP tools/call",
                                   &tool_json_error);
   }
+  contents = (cai_mcp_tool_content_doc *)doc.result.content.items;
   rc = CAI_OK;
-  if (doc.result.structured_content.kind != LONEJSON_JSON_VALUE_NULL &&
+  for (i = 0U; i < doc.result.content.count; i++) {
+    rc = cai_mcp_tool_content_validate(&contents[i], error);
+    if (rc != CAI_OK) {
+      break;
+    }
+  }
+  if (rc == CAI_OK &&
+      doc.result.structured_content.kind != LONEJSON_JSON_VALUE_NULL &&
       !cai_mcp_json_value_root_is(&doc.result.structured_content, '{', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP tool structuredContent must be an object");

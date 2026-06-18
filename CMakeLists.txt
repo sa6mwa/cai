@@ -798,6 +798,11 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompts_list_object_icons
     mcp_streamable_http_tool_call_missing_content
     mcp_streamable_http_tool_call_missing_content_type
+    mcp_streamable_http_tool_call_text_missing_text
+    mcp_streamable_http_tool_call_image_missing_mime
+    mcp_streamable_http_tool_call_unknown_content_type
+    mcp_streamable_http_tool_call_resource_link_missing_name
+    mcp_streamable_http_tool_call_resource_missing_resource
     mcp_streamable_http_tool_call_array_structured_content
     mcp_streamable_http_resource_read_missing_contents
     mcp_streamable_http_resource_read_missing_body
