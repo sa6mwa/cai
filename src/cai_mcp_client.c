@@ -5622,6 +5622,62 @@ static int cai_mcp_prompt_role_is_valid(const char *role) {
          (strcmp(role, "user") == 0 || strcmp(role, "assistant") == 0);
 }
 
+static int cai_mcp_task_status_is_valid(const char *status) {
+  return status != NULL &&
+         (strcmp(status, "working") == 0 ||
+          strcmp(status, "input_required") == 0 ||
+          strcmp(status, "completed") == 0 || strcmp(status, "failed") == 0 ||
+          strcmp(status, "cancelled") == 0);
+}
+
+static int
+cai_mcp_json_value_is_number_or_null(const lonejson_json_value *value,
+                                     cai_error *error) {
+  char *text;
+  char *cursor;
+  char *end;
+  int ok;
+
+  if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return 1;
+  }
+  text = cai_mcp_json_value_to_cstr(value, error);
+  if (text == NULL) {
+    return 0;
+  }
+  cursor = text;
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
+         *cursor == '\n') {
+    cursor++;
+  }
+  ok = 0;
+  if (strncmp(cursor, "null", 4U) == 0) {
+    end = cursor + 4U;
+  } else {
+    (void)strtod(cursor, &end);
+  }
+  if (end != cursor) {
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+      end++;
+    }
+    ok = *end == '\0';
+  }
+  cai_free_mem(NULL, text);
+  return ok;
+}
+
+static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
+                                 cai_error *error) {
+  if (task == NULL || !cai_mcp_task_status_is_valid(task->status)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, "MCP task status is invalid");
+  }
+  if (!cai_mcp_json_value_is_number_or_null(&task->ttl, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP task ttl must be a number or null");
+  }
+  return CAI_OK;
+}
+
 static int
 cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
                                cai_error *error) {
@@ -5781,11 +5837,14 @@ static int cai_mcp_validate_tool_call_response_shape(
     status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_create_task_response_map,
                                   &task_doc, cai_mcp_spooled_read, &reader,
                                   &json_error);
+    if (status == LONEJSON_STATUS_OK) {
+      rc = cai_mcp_task_validate(&task_doc.result.task, error);
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_create_task_response_map, &task_doc);
+      json_body.cleanup(&json_body);
+      return rc;
+    }
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_create_task_response_map, &task_doc);
     json_body.cleanup(&json_body);
-    if (status == LONEJSON_STATUS_OK) {
-      return CAI_OK;
-    }
     return cai_mcp_set_json_error(error, "failed to parse MCP tools/call",
                                   &tool_json_error);
   }
@@ -5908,10 +5967,12 @@ static int cai_mcp_validate_completion_response_shape(
 static int cai_mcp_validate_tasks_list_response_shape(
     const cai_mcp_http_response_capture *response, cai_error *error) {
   cai_mcp_tasks_list_response_doc doc;
+  cai_mcp_task_doc *tasks;
   lonejson_spooled json_body;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  size_t i;
   int has_error;
   int rc;
 
@@ -5941,9 +6002,17 @@ static int cai_mcp_validate_tasks_list_response_shape(
     return cai_mcp_set_json_error(error, "failed to parse MCP tasks/list",
                                   &json_error);
   }
+  tasks = (cai_mcp_task_doc *)doc.result.tasks.items;
+  rc = CAI_OK;
+  for (i = 0U; i < doc.result.tasks.count; i++) {
+    rc = cai_mcp_task_validate(&tasks[i], error);
+    if (rc != CAI_OK) {
+      break;
+    }
+  }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tasks_list_response_map, &doc);
   json_body.cleanup(&json_body);
-  return CAI_OK;
+  return rc;
 }
 
 static int cai_mcp_validate_task_response_shape(
@@ -5981,9 +6050,10 @@ static int cai_mcp_validate_task_response_shape(
     json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, parse_name, &json_error);
   }
+  rc = cai_mcp_task_validate(&doc.result, error);
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_task_response_map, &doc);
   json_body.cleanup(&json_body);
-  return CAI_OK;
+  return rc;
 }
 
 static int

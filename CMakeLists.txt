@@ -752,6 +752,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_client_roundtrip
     mcp_streamable_http_call_result_must_be_object
     mcp_streamable_http_call_task_result
+    mcp_streamable_http_call_task_invalid_status
     mcp_streamable_http_ping_error
     mcp_streamable_http_ping_error_missing_code
     mcp_streamable_http_ping_error_missing_message
@@ -830,8 +831,12 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_task_utilities
     mcp_streamable_http_task_list_without_cursor
     mcp_streamable_http_tasks_list_missing_ttl
+    mcp_streamable_http_tasks_list_invalid_status
     mcp_streamable_http_tasks_get_missing_last_updated
+    mcp_streamable_http_tasks_get_string_ttl
     mcp_streamable_http_tasks_cancel_missing_created_at
+    mcp_streamable_http_tasks_cancel_object_ttl
+    mcp_streamable_http_tasks_get_null_ttl
     mcp_streamable_http_logging_error
     mcp_streamable_http_terminate_session_405
     mcp_streamable_http_terminate_session_error
