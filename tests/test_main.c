@@ -2011,13 +2011,21 @@ static void test_mcp_client_destroy(cai_mcp_client *client) {
 static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   memset(impl, 0, sizeof(*impl));
   impl->tools[0].name = "echo";
+  impl->tools[0].title = "Echo";
   impl->tools[0].description = "Echo through MCP";
   impl->tools[0].input_schema_json =
       "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}},"
       "\"required\":[\"message\"]}";
+  impl->tools[0].output_schema_json = "null";
+  impl->tools[0].annotations_json = "null";
+  impl->tools[0].execution_json = "null";
   impl->tools[1].name = "status";
+  impl->tools[1].title = "Status";
   impl->tools[1].description = "Return status";
   impl->tools[1].input_schema_json = "{\"type\":\"object\",\"properties\":{}}";
+  impl->tools[1].output_schema_json = "null";
+  impl->tools[1].annotations_json = "null";
+  impl->tools[1].execution_json = "null";
   impl->tool_count = 2U;
   impl->resources[0].uri = "resource://ok";
   impl->resources[0].name = "ok";
@@ -8971,9 +8979,13 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "event: message\n"
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
-      "\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\","
+      "\"title\":\"Echo Tool\",\"description\":\"Echo text\","
+      "\"inputSchema\":{\"type\":\"object\","
       "\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":["
-      "\"message\"]}}],\"nextCursor\":\"tools-page-2\"}}\n\n";
+      "\"message\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{"
+      "\"message\":{\"type\":\"string\"}}},\"annotations\":{\"readOnlyHint\":"
+      "true},\"execution\":{\"taskSupport\":\"optional\"}}],\"nextCursor\":"
+      "\"tools-page-2\"}}\n\n";
   static const char tools_list_page_2_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
       "\"status\",\"title\":\"Status\",\"inputSchema\":{\"type\":\"object\","
@@ -9264,18 +9276,33 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     test_fail(state, "mcp_streamable_tool", "tool missing");
   } else {
     expect_str(state, "mcp_streamable_tool_name", tool->name, "echo");
+    expect_str(state, "mcp_streamable_tool_title", tool->title, "Echo Tool");
     expect_str(state, "mcp_streamable_tool_description", tool->description,
                "Echo text");
     expect_substr(state, "mcp_streamable_tool_schema", tool->input_schema_json,
                   "\"message\"");
+    expect_substr(state, "mcp_streamable_tool_output_schema",
+                  tool->output_schema_json, "\"message\"");
+    expect_substr(state, "mcp_streamable_tool_annotations",
+                  tool->annotations_json, "\"readOnlyHint\":true");
+    expect_substr(state, "mcp_streamable_tool_execution", tool->execution_json,
+                  "\"taskSupport\":\"optional\"");
   }
   tool = cai_mcp_client_tool_at(client, 1U);
   if (tool == NULL) {
     test_fail(state, "mcp_streamable_tool_page_2", "second tool missing");
   } else {
     expect_str(state, "mcp_streamable_tool_page_2_name", tool->name, "status");
+    expect_str(state, "mcp_streamable_tool_page_2_title", tool->title,
+               "Status");
     expect_str(state, "mcp_streamable_tool_page_2_description",
                tool->description, "Status");
+    expect_str(state, "mcp_streamable_tool_page_2_output_schema",
+               tool->output_schema_json, "null");
+    expect_str(state, "mcp_streamable_tool_page_2_annotations",
+               tool->annotations_json, "null");
+    expect_str(state, "mcp_streamable_tool_page_2_execution",
+               tool->execution_json, "null");
   }
 
   sink_callbacks.write = test_write;

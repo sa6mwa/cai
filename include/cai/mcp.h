@@ -101,10 +101,18 @@ typedef struct cai_mcp_handler_config {
 typedef struct cai_mcp_client_tool {
   /** Tool name advertised by the MCP server. */
   const char *name;
+  /** Tool title, description fallback, or empty string when absent. */
+  const char *title;
   /** Tool description, or an empty string when absent. */
   const char *description;
   /** Tool input schema JSON. */
   const char *input_schema_json;
+  /** Tool output schema JSON, or "null" when absent. */
+  const char *output_schema_json;
+  /** Tool annotations JSON, or "null" when absent. */
+  const char *annotations_json;
+  /** Tool execution metadata JSON, or "null" when absent. */
+  const char *execution_json;
 } cai_mcp_client_tool;
 
 /** One remote MCP resource descriptor discovered from resources/list. */

@@ -11,8 +11,12 @@
 typedef struct cai_mcp_client_tool_impl {
   cai_mcp_client_tool public_tool;
   char *name;
+  char *title;
   char *description;
   char *input_schema_json;
+  char *output_schema_json;
+  char *annotations_json;
+  char *execution_json;
 } cai_mcp_client_tool_impl;
 
 typedef struct cai_mcp_client_resource_impl {
@@ -123,6 +127,9 @@ typedef struct cai_mcp_list_tool_doc {
   char *description;
   char *title;
   lonejson_json_value input_schema;
+  lonejson_json_value output_schema;
+  lonejson_json_value annotations;
+  lonejson_json_value execution;
 } cai_mcp_list_tool_doc;
 
 typedef struct cai_mcp_tools_list_result_doc {
@@ -291,7 +298,25 @@ static const lonejson_field cai_mcp_list_tool_fields[] = {
      offsetof(cai_mcp_list_tool_doc, input_schema),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
      LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
-     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"outputSchema", LONEJSON__KEY_LEN("outputSchema"),
+     LONEJSON__KEY_FIRST("outputSchema"), LONEJSON__KEY_LAST("outputSchema"),
+     offsetof(cai_mcp_list_tool_doc, output_schema),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"annotations", LONEJSON__KEY_LEN("annotations"),
+     LONEJSON__KEY_FIRST("annotations"), LONEJSON__KEY_LAST("annotations"),
+     offsetof(cai_mcp_list_tool_doc, annotations),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"execution", LONEJSON__KEY_LEN("execution"),
+     LONEJSON__KEY_FIRST("execution"), LONEJSON__KEY_LAST("execution"),
+     offsetof(cai_mcp_list_tool_doc, execution), LONEJSON_FIELD_KIND_JSON_VALUE,
+     LONEJSON_STORAGE_FIXED, LONEJSON_OVERFLOW_FAIL,
+     LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U, NULL, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_list_tool_map, cai_mcp_list_tool_doc,
                     cai_mcp_list_tool_fields);
 
@@ -2535,8 +2560,12 @@ static void cai_mcp_client_tool_impl_cleanup(const cai_allocator *allocator,
                                              cai_mcp_client_tool_impl *tool) {
   if (tool != NULL) {
     cai_free_mem(allocator, tool->name);
+    cai_free_mem(allocator, tool->title);
     cai_free_mem(allocator, tool->description);
     cai_free_mem(allocator, tool->input_schema_json);
+    cai_free_mem(allocator, tool->output_schema_json);
+    cai_free_mem(allocator, tool->annotations_json);
+    cai_free_mem(allocator, tool->execution_json);
     memset(tool, 0, sizeof(*tool));
   }
 }
@@ -2737,6 +2766,16 @@ static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
   return builder.data;
 }
 
+static char *
+cai_mcp_optional_json_value_to_cstr(const cai_allocator *allocator,
+                                    const lonejson_json_value *value,
+                                    cai_error *error) {
+  if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_strdup(allocator, "null");
+  }
+  return cai_mcp_json_value_to_cstr(value, error);
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -2789,6 +2828,12 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
     for (i = 0U; i < doc.result.tools.count; i++) {
       cai_mcp_client_tool_impl *dst = &impl->tools[base_count + i];
       dst->name = cai_strdup(&impl->allocator, src_tools[i].name);
+      dst->title =
+          cai_strdup(&impl->allocator, src_tools[i].title != NULL
+                                           ? src_tools[i].title
+                                           : (src_tools[i].description != NULL
+                                                  ? src_tools[i].description
+                                                  : ""));
       dst->description = cai_strdup(
           &impl->allocator,
           src_tools[i].description != NULL
@@ -2796,8 +2841,15 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
               : (src_tools[i].title != NULL ? src_tools[i].title : ""));
       dst->input_schema_json =
           cai_mcp_json_value_to_cstr(&src_tools[i].input_schema, error);
-      if (dst->name == NULL || dst->description == NULL ||
-          dst->input_schema_json == NULL) {
+      dst->output_schema_json = cai_mcp_optional_json_value_to_cstr(
+          &impl->allocator, &src_tools[i].output_schema, error);
+      dst->annotations_json = cai_mcp_optional_json_value_to_cstr(
+          &impl->allocator, &src_tools[i].annotations, error);
+      dst->execution_json = cai_mcp_optional_json_value_to_cstr(
+          &impl->allocator, &src_tools[i].execution, error);
+      if (dst->name == NULL || dst->title == NULL || dst->description == NULL ||
+          dst->input_schema_json == NULL || dst->output_schema_json == NULL ||
+          dst->annotations_json == NULL || dst->execution_json == NULL) {
         rc = error != NULL && error->code != CAI_OK
                  ? error->code
                  : cai_set_error(error, CAI_ERR_NOMEM,
@@ -2806,8 +2858,12 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
         break;
       }
       dst->public_tool.name = dst->name;
+      dst->public_tool.title = dst->title;
       dst->public_tool.description = dst->description;
       dst->public_tool.input_schema_json = dst->input_schema_json;
+      dst->public_tool.output_schema_json = dst->output_schema_json;
+      dst->public_tool.annotations_json = dst->annotations_json;
+      dst->public_tool.execution_json = dst->execution_json;
       impl->tool_count++;
     }
   }
