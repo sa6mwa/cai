@@ -1689,11 +1689,18 @@ static int cai_mcp_write_json_value(lonejson_spooled *spool,
 
 static int cai_mcp_build_roots_result(cai_mcp_streamable_http_client_impl *impl,
                                       lonejson_spooled *result,
-                                      cai_error *error) {
+                                      int *jsonrpc_error_code,
+                                      int *preserve_error, cai_error *error) {
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   int rc;
 
+  if (jsonrpc_error_code != NULL) {
+    *jsonrpc_error_code = -32603;
+  }
+  if (preserve_error != NULL) {
+    *preserve_error = 1;
+  }
   if (impl == NULL || impl->receiver.list_roots == NULL) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP roots/list receiver is not configured");
@@ -1832,13 +1839,20 @@ static int cai_mcp_validate_elicitation_params(
 static int
 cai_mcp_build_sampling_result(cai_mcp_streamable_http_client_impl *impl,
                               const cai_mcp_jsonrpc_message_doc *doc,
-                              lonejson_spooled *result, cai_error *error) {
+                              lonejson_spooled *result, int *jsonrpc_error_code,
+                              int *preserve_error, cai_error *error) {
   cai_sink_callbacks callbacks;
   lonejson_spooled params_json;
   cai_sink *sink;
   int uses_tools;
   int rc;
 
+  if (jsonrpc_error_code != NULL) {
+    *jsonrpc_error_code = -32603;
+  }
+  if (preserve_error != NULL) {
+    *preserve_error = 1;
+  }
   if (impl == NULL || impl->receiver.create_message == NULL) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP sampling/createMessage receiver is not "
@@ -1849,10 +1863,24 @@ cai_mcp_build_sampling_result(cai_mcp_streamable_http_client_impl *impl,
   if (rc == CAI_OK) {
     rc = cai_mcp_validate_sampling_params(impl, &params_json, &uses_tools,
                                           error);
+    if (rc != CAI_OK) {
+      if (jsonrpc_error_code != NULL) {
+        *jsonrpc_error_code = -32602;
+      }
+      if (preserve_error != NULL) {
+        *preserve_error = 0;
+      }
+    }
   }
   if (rc == CAI_OK && uses_tools && !impl->receiver.sampling_tools) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP sampling tools were not advertised");
+    if (jsonrpc_error_code != NULL) {
+      *jsonrpc_error_code = -32602;
+    }
+    if (preserve_error != NULL) {
+      *preserve_error = 0;
+    }
   }
   if (rc == CAI_OK) {
     CAI_LJ->spooled_init(CAI_LJ, result);
@@ -1874,15 +1902,21 @@ cai_mcp_build_sampling_result(cai_mcp_streamable_http_client_impl *impl,
   return rc;
 }
 
-static int
-cai_mcp_build_elicitation_result(cai_mcp_streamable_http_client_impl *impl,
-                                 const cai_mcp_jsonrpc_message_doc *doc,
-                                 lonejson_spooled *result, cai_error *error) {
+static int cai_mcp_build_elicitation_result(
+    cai_mcp_streamable_http_client_impl *impl,
+    const cai_mcp_jsonrpc_message_doc *doc, lonejson_spooled *result,
+    int *jsonrpc_error_code, int *preserve_error, cai_error *error) {
   cai_sink_callbacks callbacks;
   lonejson_spooled params_json;
   cai_sink *sink;
   int rc;
 
+  if (jsonrpc_error_code != NULL) {
+    *jsonrpc_error_code = -32603;
+  }
+  if (preserve_error != NULL) {
+    *preserve_error = 1;
+  }
   if (impl == NULL || impl->receiver.elicit == NULL) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP elicitation/create receiver is not configured");
@@ -1891,6 +1925,14 @@ cai_mcp_build_elicitation_result(cai_mcp_streamable_http_client_impl *impl,
   rc = cai_mcp_json_value_to_spooled(&doc->params, &params_json, error);
   if (rc == CAI_OK) {
     rc = cai_mcp_validate_elicitation_params(impl, &params_json, error);
+    if (rc != CAI_OK) {
+      if (jsonrpc_error_code != NULL) {
+        *jsonrpc_error_code = -32602;
+      }
+      if (preserve_error != NULL) {
+        *preserve_error = 0;
+      }
+    }
   }
   if (rc == CAI_OK) {
     CAI_LJ->spooled_init(CAI_LJ, result);
@@ -1926,8 +1968,10 @@ static int cai_mcp_write_jsonrpc_error(lonejson_spooled *response,
     rc = cai_mcp_write_cstr(response, ",\"error\":{\"code\":", error);
   }
   if (rc == CAI_OK) {
-    rc = code == -32601 ? cai_mcp_write_cstr(response, "-32601", error)
-                        : cai_mcp_write_cstr(response, "-32602", error);
+    char code_json[32];
+
+    snprintf(code_json, sizeof(code_json), "%d", code);
+    rc = cai_mcp_write_cstr(response, code_json, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(response, ",\"message\":", error);
@@ -1951,9 +1995,13 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
   lonejson_writer writer;
   lonejson_status status;
   const char *result_error_message;
+  int jsonrpc_error_code;
+  int preserve_error;
   int rc;
 
   memset(&result, 0, sizeof(result));
+  jsonrpc_error_code = -32603;
+  preserve_error = 1;
   if (doc == NULL || doc->method == NULL ||
       doc->id.kind == LONEJSON_JSON_VALUE_NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -1961,13 +2009,16 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
   }
   CAI_LJ->spooled_init(CAI_LJ, response);
   if (strcmp(doc->method, "roots/list") == 0) {
-    rc = cai_mcp_build_roots_result(impl, &result, error);
+    rc = cai_mcp_build_roots_result(impl, &result, &jsonrpc_error_code,
+                                    &preserve_error, error);
     result_error_message = "failed to write MCP roots result";
   } else if (strcmp(doc->method, "sampling/createMessage") == 0) {
-    rc = cai_mcp_build_sampling_result(impl, doc, &result, error);
+    rc = cai_mcp_build_sampling_result(impl, doc, &result, &jsonrpc_error_code,
+                                       &preserve_error, error);
     result_error_message = "failed to write MCP sampling result";
   } else if (strcmp(doc->method, "elicitation/create") == 0) {
-    rc = cai_mcp_build_elicitation_result(impl, doc, &result, error);
+    rc = cai_mcp_build_elicitation_result(
+        impl, doc, &result, &jsonrpc_error_code, &preserve_error, error);
     result_error_message = "failed to write MCP elicitation result";
   } else {
     rc = cai_mcp_write_jsonrpc_error(
@@ -1978,21 +2029,47 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
     }
     return rc;
   }
-  if (rc == CAI_ERR_PROTOCOL && response->size_fn(response) == 0U) {
+  if (rc == CAI_OK && strcmp(doc->method, "roots/list") == 0) {
+    rc = cai_mcp_validate_roots_result(&result, error);
+    if (rc != CAI_OK) {
+      jsonrpc_error_code = -32603;
+      preserve_error = 1;
+    }
+  } else if (rc == CAI_OK &&
+             strcmp(doc->method, "sampling/createMessage") == 0) {
+    rc = cai_mcp_validate_sampling_result(&result, error);
+    if (rc != CAI_OK) {
+      jsonrpc_error_code = -32603;
+      preserve_error = 1;
+    }
+  } else if (rc == CAI_OK && strcmp(doc->method, "elicitation/create") == 0) {
+    rc = cai_mcp_validate_elicitation_result(&result, error);
+    if (rc != CAI_OK) {
+      jsonrpc_error_code = -32603;
+      preserve_error = 1;
+    }
+  }
+  if (rc != CAI_OK && response->size_fn(response) == 0U) {
     char message[256];
+    int response_rc;
 
     snprintf(message, sizeof(message), "%s",
              error != NULL && error->message != NULL
                  ? error->message
                  : "MCP server request failed");
-    cai_mcp_clear_error(error);
-    rc =
-        cai_mcp_write_jsonrpc_error(response, &doc->id, -32602, message, error);
+    if (!preserve_error) {
+      cai_mcp_clear_error(error);
+    }
+    response_rc = cai_mcp_write_jsonrpc_error(
+        response, &doc->id, jsonrpc_error_code, message, error);
     if (out_len != NULL) {
       *out_len = response->size_fn(response);
     }
     cai_mcp_spooled_cleanup_if_initialized(&result);
-    return rc;
+    if (response_rc != CAI_OK) {
+      return response_rc;
+    }
+    return preserve_error ? rc : CAI_OK;
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(response, "{\"jsonrpc\":\"2.0\",\"id\":", error);
@@ -2003,14 +2080,6 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(response, ",\"result\":", error);
-  }
-  if (rc == CAI_OK && strcmp(doc->method, "roots/list") == 0) {
-    rc = cai_mcp_validate_roots_result(&result, error);
-  } else if (rc == CAI_OK &&
-             strcmp(doc->method, "sampling/createMessage") == 0) {
-    rc = cai_mcp_validate_sampling_result(&result, error);
-  } else if (rc == CAI_OK && strcmp(doc->method, "elicitation/create") == 0) {
-    rc = cai_mcp_validate_elicitation_result(&result, error);
   }
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
@@ -2055,9 +2124,14 @@ cai_mcp_handle_server_request(cai_mcp_streamable_http_client_impl *impl,
   response_len = 0U;
   rc = cai_mcp_server_request_response(impl, doc, &response, &response_len,
                                        error);
-  if (rc == CAI_OK) {
-    rc = cai_mcp_post(impl, &response, response_len, 0, &ack, error);
+  if (response.size_fn != NULL && response_len > 0U) {
+    int response_rc;
+
+    response_rc = cai_mcp_post(impl, &response, response_len, 0, &ack, error);
     cai_mcp_http_response_capture_cleanup(&ack);
+    if (response_rc != CAI_OK) {
+      rc = response_rc;
+    }
   }
   cai_mcp_spooled_cleanup_if_initialized(&response);
   return rc;

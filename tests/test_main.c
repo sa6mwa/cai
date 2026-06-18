@@ -12657,6 +12657,10 @@ test_mcp_streamable_http_roots_list_callback_error(test_state *state) {
   static const char *ping_required[] = {"POST /v1/mcp HTTP/",
                                         "MCP-Session-Id: roots-error-session",
                                         "\"id\":2", "\"method\":\"ping\""};
+  static const char *roots_error_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-error-session",
+      "\"id\":\"roots-1\"", "\"error\":{\"code\":-32603",
+      "\"message\":\"roots callback failed\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12667,7 +12671,11 @@ test_mcp_streamable_http_roots_list_callback_error(test_state *state) {
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", roots_error_response_required,
+       sizeof(roots_error_response_required) /
+           sizeof(roots_error_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -12728,6 +12736,10 @@ test_mcp_streamable_http_roots_list_invalid_result(test_state *state) {
   static const char *ping_required[] = {"POST /v1/mcp HTTP/",
                                         "MCP-Session-Id: roots-invalid-session",
                                         "\"id\":2", "\"method\":\"ping\""};
+  static const char *roots_error_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-invalid-session",
+      "\"id\":\"roots-1\"", "\"error\":{\"code\":-32603",
+      "\"message\":\"failed to parse MCP roots result\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12738,7 +12750,11 @@ test_mcp_streamable_http_roots_list_invalid_result(test_state *state) {
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", roots_error_response_required,
+       sizeof(roots_error_response_required) /
+           sizeof(roots_error_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -12799,6 +12815,10 @@ test_mcp_streamable_http_roots_list_invalid_shape(test_state *state) {
   static const char *ping_required[] = {"POST /v1/mcp HTTP/",
                                         "MCP-Session-Id: roots-shape-session",
                                         "\"id\":2", "\"method\":\"ping\""};
+  static const char *roots_error_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-shape-session",
+      "\"id\":\"roots-1\"", "\"error\":{\"code\":-32603",
+      "\"message\":\"failed to parse MCP roots result\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12809,7 +12829,11 @@ test_mcp_streamable_http_roots_list_invalid_shape(test_state *state) {
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", roots_error_response_required,
+       sizeof(roots_error_response_required) /
+           sizeof(roots_error_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -12952,6 +12976,10 @@ test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
   static const char *ping_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
       "\"id\":2", "\"method\":\"ping\""};
+  static const char *sampling_error_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
+      "\"id\":\"sample-1\"", "\"error\":{\"code\":-32603",
+      "\"message\":\"failed to parse MCP sampling result\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12962,7 +12990,10 @@ test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", sampling_error_required,
+       sizeof(sampling_error_required) / sizeof(sampling_error_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -13474,6 +13505,10 @@ test_mcp_streamable_http_elicitation_invalid_result(test_state *state) {
   static const char *ping_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: elicitation-invalid-session",
       "\"id\":2", "\"method\":\"ping\""};
+  static const char *elicitation_error_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: elicitation-invalid-session",
+      "\"id\":\"elicit-1\"", "\"error\":{\"code\":-32603",
+      "\"message\":\"failed to parse MCP elicitation result\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -13485,7 +13520,11 @@ test_mcp_streamable_http_elicitation_invalid_result(test_state *state) {
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", elicitation_error_required,
+       sizeof(elicitation_error_required) /
+           sizeof(elicitation_error_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -13549,6 +13588,11 @@ test_mcp_streamable_http_elicitation_invalid_action(test_state *state) {
   static const char *ping_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: elicitation-action-session",
       "\"id\":2", "\"method\":\"ping\""};
+  static const char *elicitation_error_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: elicitation-action-session",
+      "\"id\":\"elicit-1\"", "\"error\":{\"code\":-32603",
+      "\"message\":\"MCP elicitation result action must be accept, decline, or "
+      "cancel\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -13560,7 +13604,11 @@ test_mcp_streamable_http_elicitation_invalid_action(test_state *state) {
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body}};
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", elicitation_error_required,
+       sizeof(elicitation_error_required) /
+           sizeof(elicitation_error_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
