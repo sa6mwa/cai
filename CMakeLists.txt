@@ -784,6 +784,12 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompts_list_missing_prompts
     mcp_streamable_http_prompts_list_object_arguments
     mcp_streamable_http_prompts_list_object_icons
+    mcp_streamable_http_resource_read_missing_contents
+    mcp_streamable_http_resource_read_missing_body
+    mcp_streamable_http_prompt_get_missing_messages
+    mcp_streamable_http_prompt_get_invalid_role
+    mcp_streamable_http_prompt_get_array_content
+    mcp_streamable_http_completion_missing_values
     mcp_streamable_http_resource_subscription_error
     mcp_streamable_http_list_changed_invalidates_cache
     mcp_streamable_http_roots_list_changed_notification
