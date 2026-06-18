@@ -12247,6 +12247,83 @@ test_mcp_streamable_http_completion_missing_values(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_completion_non_string_value(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":["
+      "\"ok\",1]}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_non_string_value",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "failed to parse MCP completion/complete");
+}
+
+static void
+test_mcp_streamable_http_completion_too_many_values(test_state *state) {
+  char response_body[2048];
+  size_t offset;
+  int written;
+  int i;
+
+  offset = 0U;
+  written = snprintf(response_body + offset, sizeof(response_body) - offset,
+                     "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":"
+                     "{\"values\":[");
+  if (written < 0 || (size_t)written >= sizeof(response_body) - offset) {
+    test_fail(state, "mcp_streamable_completion_too_many_values_build",
+              "failed to build completion response");
+    return;
+  }
+  offset += (size_t)written;
+  for (i = 0; i < 101; i++) {
+    written = snprintf(response_body + offset, sizeof(response_body) - offset,
+                       "%s\"v%d\"", i == 0 ? "" : ",", i);
+    if (written < 0 || (size_t)written >= sizeof(response_body) - offset) {
+      test_fail(state, "mcp_streamable_completion_too_many_values_build",
+                "failed to build completion response");
+      return;
+    }
+    offset += (size_t)written;
+  }
+  written =
+      snprintf(response_body + offset, sizeof(response_body) - offset, "]}}}");
+  if (written < 0 || (size_t)written >= sizeof(response_body) - offset) {
+    test_fail(state, "mcp_streamable_completion_too_many_values_build",
+              "failed to build completion response");
+    return;
+  }
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_too_many_values",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "MCP completion values must not exceed 100 items");
+}
+
+static void
+test_mcp_streamable_http_completion_negative_total(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":[],"
+      "\"total\":-1}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_negative_total",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "MCP completion total must be non-negative");
+}
+
+static void
+test_mcp_streamable_http_completion_string_has_more(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":[],"
+      "\"hasMore\":\"false\"}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_string_has_more",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "failed to parse MCP completion/complete");
+}
+
+static void
 test_mcp_streamable_http_tool_call_array_arguments(test_state *state) {
   test_mcp_streamable_http_invalid_argument_json(
       state, "mcp_streamable_tool_call_array_arguments",
@@ -28913,6 +28990,14 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_unknown_content_type},
     {"mcp_streamable_http_completion_missing_values",
      test_mcp_streamable_http_completion_missing_values},
+    {"mcp_streamable_http_completion_non_string_value",
+     test_mcp_streamable_http_completion_non_string_value},
+    {"mcp_streamable_http_completion_too_many_values",
+     test_mcp_streamable_http_completion_too_many_values},
+    {"mcp_streamable_http_completion_negative_total",
+     test_mcp_streamable_http_completion_negative_total},
+    {"mcp_streamable_http_completion_string_has_more",
+     test_mcp_streamable_http_completion_string_has_more},
     {"mcp_streamable_http_tool_call_array_arguments",
      test_mcp_streamable_http_tool_call_array_arguments},
     {"mcp_streamable_http_prompt_get_array_arguments",

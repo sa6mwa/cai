@@ -6230,9 +6230,18 @@ static int cai_mcp_validate_completion_response_shape(
     return cai_mcp_set_json_error(
         error, "failed to parse MCP completion/complete", &json_error);
   }
+  if (doc.result.completion.values.count > 100U) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP completion values must not exceed 100 items");
+  }
+  if (rc == CAI_OK && doc.result.completion.has_total &&
+      doc.result.completion.total < 0) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP completion total must be non-negative");
+  }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_completion_response_map, &doc);
   json_body.cleanup(&json_body);
-  return CAI_OK;
+  return rc;
 }
 
 static int cai_mcp_validate_tasks_list_response_shape(

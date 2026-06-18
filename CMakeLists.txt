@@ -817,6 +817,10 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompt_get_resource_missing_body
     mcp_streamable_http_prompt_get_unknown_content_type
     mcp_streamable_http_completion_missing_values
+    mcp_streamable_http_completion_non_string_value
+    mcp_streamable_http_completion_too_many_values
+    mcp_streamable_http_completion_negative_total
+    mcp_streamable_http_completion_string_has_more
     mcp_streamable_http_tool_call_array_arguments
     mcp_streamable_http_prompt_get_array_arguments
     mcp_streamable_http_completion_array_context_arguments
