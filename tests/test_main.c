@@ -8450,8 +8450,8 @@ static void mock_mcp_get_sse_child(int pipe_fd) {
       strstr(request, "POST /v1/mcp HTTP/") == NULL ||
       strstr(request, "MCP-Session-Id: get-sse-session") == NULL ||
       strstr(request, "\"method\":\"notifications/initialized\"") == NULL ||
-      mock_write_status_response(client_fd, 200, "OK", "application/json", NULL,
-                                 "{}") != 0) {
+      mock_write_status_response(client_fd, 202, "Accepted", "application/json",
+                                 NULL, "") != 0) {
     if (client_fd >= 0) {
       close(client_fd);
     }
@@ -9170,7 +9170,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", list_required,
        sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, tools_list_body},
@@ -9542,7 +9542,7 @@ test_mcp_streamable_http_call_result_must_be_object(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", call_required,
        sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, call_body}};
@@ -9624,7 +9624,7 @@ static void test_mcp_streamable_http_ping_error(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_error_body}};
@@ -9684,7 +9684,7 @@ test_mcp_streamable_http_ping_error_missing_code(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_error_body}};
@@ -9744,7 +9744,7 @@ test_mcp_streamable_http_ping_error_missing_message(test_state *state) {
        "req-init\r\nMCP-Session-Id: missing-message-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_error_body}};
@@ -9803,7 +9803,7 @@ static void test_mcp_streamable_http_ping_error_empty(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_error_body}};
@@ -10017,7 +10017,7 @@ static void test_mcp_streamable_http_long_session_id_header(test_state *state) {
        "application/json", NULL, initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10091,7 +10091,7 @@ static void test_mcp_streamable_http_response_id_mismatch(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -10153,7 +10153,7 @@ test_mcp_streamable_http_error_response_id_mismatch(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10213,7 +10213,7 @@ test_mcp_streamable_http_response_invalid_id_type(test_state *state) {
        "req-init\r\nMCP-Session-Id: invalid-id-type-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10272,7 +10272,7 @@ static void test_mcp_streamable_http_response_null_id(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10335,7 +10335,7 @@ test_mcp_streamable_http_sse_request_invalid_id_type(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -10395,7 +10395,7 @@ test_mcp_streamable_http_response_jsonrpc_invalid(test_state *state) {
        "req-init\r\nMCP-Session-Id: jsonrpc-invalid-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10459,7 +10459,7 @@ static void test_mcp_streamable_http_sse_jsonrpc_invalid(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -10523,7 +10523,7 @@ static void test_mcp_streamable_http_sse_method_with_result(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -10589,7 +10589,7 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, interrupted_ping_body},
@@ -10651,7 +10651,7 @@ test_mcp_streamable_http_response_content_type_parameters(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "Application/Json; Charset=UTF-8", NULL, "{}"},
+       202, "Accepted", "Application/Json; Charset=UTF-8", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "Application/Json; Charset=UTF-8", NULL, ping_body}};
@@ -10710,7 +10710,7 @@ test_mcp_streamable_http_sse_content_type_parameters(test_state *state) {
        "req-init\r\nMCP-Session-Id: content-type-sse-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "Text/Event-Stream; charset=utf-8", NULL, ping_body}};
@@ -10768,7 +10768,7 @@ test_mcp_streamable_http_response_missing_result_error(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10830,7 +10830,7 @@ test_mcp_streamable_http_response_result_and_error(test_state *state) {
        "req-init\r\nMCP-Session-Id: result-and-error-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10890,7 +10890,7 @@ static void test_mcp_streamable_http_response_null_result(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, ping_body}};
@@ -10993,10 +10993,10 @@ static void test_mcp_streamable_http_list_invalid_response(
   script[1].required = initialized_required;
   script[1].required_count =
       sizeof(initialized_required) / sizeof(initialized_required[0]);
-  script[1].status = 200;
-  script[1].status_text = "OK";
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
   script[1].content_type = "application/json";
-  script[1].body = "{}";
+  script[1].body = "";
   script[2].request_prefix = "POST /v1/mcp HTTP/";
   script[2].required = list_required;
   script[2].required_count = sizeof(list_required) / sizeof(list_required[0]);
@@ -11121,10 +11121,10 @@ static void test_mcp_streamable_http_invalid_result_response(
   script[1].required = initialized_required;
   script[1].required_count =
       sizeof(initialized_required) / sizeof(initialized_required[0]);
-  script[1].status = 200;
-  script[1].status_text = "OK";
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
   script[1].content_type = "application/json";
-  script[1].body = "{}";
+  script[1].body = "";
   script[2].request_prefix = "POST /v1/mcp HTTP/";
   script[2].required = request_required;
   script[2].required_count =
@@ -11245,10 +11245,10 @@ static void test_mcp_streamable_http_invalid_argument_json(
   script[1].required = initialized_required;
   script[1].required_count =
       sizeof(initialized_required) / sizeof(initialized_required[0]);
-  script[1].status = 200;
-  script[1].status_text = "OK";
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
   script[1].content_type = "application/json";
-  script[1].body = "{}";
+  script[1].body = "";
   snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
   if (http_mock_server_open_script(state, mock_name, script,
                                    sizeof(script) / sizeof(script[0]),
@@ -11662,7 +11662,7 @@ test_mcp_streamable_http_resource_subscription_error(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", subscribe_required,
        sizeof(subscribe_required) / sizeof(subscribe_required[0]), NULL, 0U,
        200, "OK", "application/json", NULL, subscribe_error_body}};
@@ -11765,7 +11765,7 @@ test_mcp_streamable_http_list_changed_invalidates_cache(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", tools_list_required,
        sizeof(tools_list_required) / sizeof(tools_list_required[0]), NULL, 0U,
        200, "OK", "application/json", NULL, tools_list_body},
@@ -11861,7 +11861,7 @@ test_mcp_streamable_http_roots_list_changed_notification(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", roots_changed_required,
        sizeof(roots_changed_required) / sizeof(roots_changed_required[0]),
        notification_forbidden,
@@ -11925,7 +11925,7 @@ static void test_mcp_streamable_http_send_request_params(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", request_required,
        sizeof(request_required) / sizeof(request_required[0]), NULL, 0U, 200,
        "OK", "application/json", NULL, request_body}};
@@ -12025,7 +12025,7 @@ test_mcp_streamable_http_send_notification_params(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", notification_required,
        sizeof(notification_required) / sizeof(notification_required[0]),
        notification_forbidden,
@@ -12083,6 +12083,102 @@ test_mcp_streamable_http_send_notification_params(test_state *state) {
                     server.pid, &server.child_status);
 }
 
+static void test_mcp_streamable_http_notification_response_invalid(
+    test_state *state, const char *test_name, long status,
+    const char *status_text, const char *body, const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: bad-notification-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *notification_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: bad-notification-session",
+      "\"method\":\"notifications/test\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char call_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  cai_error_init(&error);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: bad-notification-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = notification_required;
+  script[2].required_count =
+      sizeof(notification_required) / sizeof(notification_required[0]);
+  script[2].status = status;
+  script[2].status_text = status_text;
+  script[2].content_type = "application/json";
+  script[2].body = body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name,
+             cai_mcp_client_send_notification(client, "notifications/test",
+                                              NULL, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_notification_response_wrong_status(test_state *state) {
+  test_mcp_streamable_http_notification_response_invalid(
+      state, "mcp_streamable_notification_response_wrong_status", 200, "OK",
+      "{}", "MCP notification response must be 202 Accepted");
+}
+
+static void
+test_mcp_streamable_http_notification_response_body(test_state *state) {
+  test_mcp_streamable_http_notification_response_invalid(
+      state, "mcp_streamable_notification_response_body", 202, "Accepted", "{}",
+      "MCP notification response body must be empty");
+}
+
 static void test_mcp_streamable_http_task_utilities(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -12127,7 +12223,7 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", tasks_list_required,
        sizeof(tasks_list_required) / sizeof(tasks_list_required[0]), NULL, 0U,
        200, "OK", "application/json", NULL, tasks_list_body},
@@ -12226,7 +12322,7 @@ static void test_mcp_streamable_http_logging_error(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", logging_required,
        sizeof(logging_required) / sizeof(logging_required[0]), NULL, 0U, 200,
        "OK", "application/json", NULL, logging_error_body}};
@@ -12289,7 +12385,7 @@ static void test_mcp_streamable_http_terminate_session_405(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"DELETE /v1/mcp HTTP/", delete_required,
        sizeof(delete_required) / sizeof(delete_required[0]), NULL, 0U, 405,
        "Method Not Allowed", "application/json", NULL, "{}"}};
@@ -12347,7 +12443,7 @@ test_mcp_streamable_http_terminate_session_error(test_state *state) {
        "req-init\r\nMCP-Session-Id: terminate-error-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"DELETE /v1/mcp HTTP/", delete_required,
        sizeof(delete_required) / sizeof(delete_required[0]), NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL,
@@ -12416,7 +12512,7 @@ test_mcp_streamable_http_notification_callback_error(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -12494,7 +12590,7 @@ static void test_mcp_streamable_http_roots_list_request(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -12568,7 +12664,7 @@ test_mcp_streamable_http_roots_list_callback_error(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -12639,7 +12735,7 @@ test_mcp_streamable_http_roots_list_invalid_result(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -12710,7 +12806,7 @@ test_mcp_streamable_http_roots_list_invalid_shape(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -12787,7 +12883,7 @@ static void test_mcp_streamable_http_sampling_request(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -12863,7 +12959,7 @@ test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
        "req-init\r\nMCP-Session-Id: sampling-invalid-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -12941,7 +13037,7 @@ test_mcp_streamable_http_sampling_invalid_params(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13008,7 +13104,7 @@ test_mcp_streamable_http_task_request_capabilities(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL,
@@ -13079,7 +13175,7 @@ static void test_mcp_streamable_http_task_request_flags_require_callbacks(
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL,
@@ -13152,7 +13248,7 @@ test_mcp_streamable_http_sampling_tools_not_advertised(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13228,7 +13324,7 @@ test_mcp_streamable_http_sampling_context_not_advertised(test_state *state) {
        "req-init\r\nMCP-Session-Id: sampling-context-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13307,7 +13403,7 @@ static void test_mcp_streamable_http_elicitation_request(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13386,7 +13482,7 @@ test_mcp_streamable_http_elicitation_invalid_result(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -13461,7 +13557,7 @@ test_mcp_streamable_http_elicitation_invalid_action(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body}};
@@ -13540,7 +13636,7 @@ test_mcp_streamable_http_elicitation_invalid_params(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13619,7 +13715,7 @@ test_mcp_streamable_http_elicitation_url_not_advertised(test_state *state) {
        "req-init\r\nMCP-Session-Id: elicitation-url-session", initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13695,7 +13791,7 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", ping_required,
        sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, ping_body},
@@ -13820,7 +13916,7 @@ test_mcp_streamable_http_drain_events_resume_get(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"GET /v1/mcp HTTP/", get_required,
        sizeof(get_required) / sizeof(get_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, roots_event},
@@ -13902,7 +13998,7 @@ test_mcp_streamable_http_drain_events_rejects_response(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"GET /v1/mcp HTTP/", get_required,
        sizeof(get_required) / sizeof(get_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, event_body}};
@@ -13959,7 +14055,7 @@ static void test_mcp_streamable_http_drain_events_405(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"GET /v1/mcp HTTP/", get_required,
        sizeof(get_required) / sizeof(get_required[0]), NULL, 0U, 405,
        "Method Not Allowed", "application/json", NULL,
@@ -14035,7 +14131,7 @@ static void test_mcp_streamable_http_session_recovery(test_state *state) {
        initialize_old_body},
       {"POST /v1/mcp HTTP/", initialized_old_required,
        sizeof(initialized_old_required) / sizeof(initialized_old_required[0]),
-       NULL, 0U, 200, "OK", "application/json", NULL, "{}"},
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", stale_list_required,
        sizeof(stale_list_required) / sizeof(stale_list_required[0]), NULL, 0U,
        404, "Not Found", "application/json", NULL, "{\"error\":\"stale\"}"},
@@ -14046,7 +14142,7 @@ static void test_mcp_streamable_http_session_recovery(test_state *state) {
        initialize_new_body},
       {"POST /v1/mcp HTTP/", initialized_new_required,
        sizeof(initialized_new_required) / sizeof(initialized_new_required[0]),
-       NULL, 0U, 200, "OK", "application/json", NULL, "{}"},
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", retry_list_required,
        sizeof(retry_list_required) / sizeof(retry_list_required[0]),
        retry_list_forbidden,
@@ -14114,7 +14210,7 @@ test_mcp_streamable_http_server_error_no_recovery(test_state *state) {
        initialize_body},
       {"POST /v1/mcp HTTP/", initialized_required,
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       200, "OK", "application/json", NULL, "{}"},
+       202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", list_required,
        sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL,
@@ -27424,6 +27520,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_send_request_params},
     {"mcp_streamable_http_send_notification_params",
      test_mcp_streamable_http_send_notification_params},
+    {"mcp_streamable_http_notification_response_wrong_status",
+     test_mcp_streamable_http_notification_response_wrong_status},
+    {"mcp_streamable_http_notification_response_body",
+     test_mcp_streamable_http_notification_response_body},
     {"mcp_streamable_http_task_utilities",
      test_mcp_streamable_http_task_utilities},
     {"mcp_streamable_http_logging_error",

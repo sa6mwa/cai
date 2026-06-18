@@ -809,6 +809,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_roots_list_changed_notification
     mcp_streamable_http_send_request_params
     mcp_streamable_http_send_notification_params
+    mcp_streamable_http_notification_response_wrong_status
+    mcp_streamable_http_notification_response_body
     mcp_streamable_http_task_utilities
     mcp_streamable_http_logging_error
     mcp_streamable_http_terminate_session_405

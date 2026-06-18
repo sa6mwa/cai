@@ -1198,6 +1198,23 @@ static int cai_mcp_response_ok(const cai_mcp_http_response_capture *res,
   return CAI_OK;
 }
 
+static int cai_mcp_validate_notification_response(
+    const cai_mcp_http_response_capture *response, cai_error *error) {
+  if (response == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "MCP HTTP response is missing");
+  }
+  if (response->status != 202L) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP notification response must be 202 Accepted");
+  }
+  if (response->body.size_fn(&response->body) != 0U) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP notification response body must be empty");
+  }
+  return CAI_OK;
+}
+
 static int cai_mcp_append_prefixed_header(struct curl_slist **headers,
                                           const char *prefix, const char *value,
                                           const char *error_message,
@@ -1317,6 +1334,9 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
                                 curl_easy_strerror(curl_rc));
   }
   rc = cai_mcp_response_ok(response, error);
+  if (rc == CAI_OK && !is_request) {
+    rc = cai_mcp_validate_notification_response(response, error);
+  }
   if (rc == CAI_OK && is_request && cai_mcp_response_is_sse(response)) {
     rc = cai_mcp_sse_normalize_response(impl, response, 1, error);
   }
