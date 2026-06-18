@@ -2021,6 +2021,55 @@ static int cai_mcp_initialized_notification(lonejson_spooled *spool,
   return rc;
 }
 
+static int cai_mcp_notification_request(const char *method,
+                                        lonejson_spooled *params_json,
+                                        lonejson_spooled *spool,
+                                        size_t *out_len, cai_error *error) {
+  lonejson_error json_error;
+  lonejson_writer writer;
+  lonejson_status status;
+  int rc;
+
+  if (method == NULL || method[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP notification method is required");
+  }
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  rc = cai_mcp_write_cstr(spool, "{\"jsonrpc\":\"2.0\",\"method\":", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_json_string(spool, method, error);
+  }
+  if (rc == CAI_OK && params_json != NULL) {
+    rc = cai_mcp_write_cstr(spool, ",\"params\":", error);
+    if (rc == CAI_OK) {
+      lonejson_error_init(&json_error);
+      status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_spool_sink,
+                                        spool, &json_error);
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.json_value_spooled(&writer, params_json, &json_error);
+      }
+      if (writer.cleanup != NULL) {
+        writer.cleanup(&writer);
+      }
+      if (status != LONEJSON_STATUS_OK) {
+        rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to write MCP notification params",
+                                  json_error.message);
+      }
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}", error);
+  }
+  if (out_len != NULL) {
+    *out_len = spool->size_fn(spool);
+  }
+  if (rc != CAI_OK) {
+    spool->cleanup(spool);
+  }
+  return rc;
+}
+
 static int cai_mcp_ping_request(cai_mcp_streamable_http_client_impl *impl,
                                 lonejson_spooled *spool, size_t *out_len,
                                 cai_error *error) {
@@ -3207,15 +3256,15 @@ static int cai_mcp_streamable_initialize(cai_mcp_client *client,
   return rc;
 }
 
-static int cai_mcp_post_request_with_session_recovery(
+static int cai_mcp_post_with_session_recovery(
     cai_mcp_streamable_http_client_impl *impl, const lonejson_spooled *request,
-    size_t request_len, cai_mcp_http_response_capture *response,
+    size_t request_len, int is_request, cai_mcp_http_response_capture *response,
     cai_error *error) {
   int had_session;
   int rc;
 
   had_session = impl != NULL && impl->initialized && impl->session_id != NULL;
-  rc = cai_mcp_post(impl, request, request_len, 1, response, error);
+  rc = cai_mcp_post(impl, request, request_len, is_request, response, error);
   if (rc == CAI_OK || !had_session || response == NULL ||
       response->status != 404L) {
     return rc;
@@ -3228,7 +3277,15 @@ static int cai_mcp_post_request_with_session_recovery(
   if (rc != CAI_OK) {
     return rc;
   }
-  return cai_mcp_post(impl, request, request_len, 1, response, error);
+  return cai_mcp_post(impl, request, request_len, is_request, response, error);
+}
+
+static int cai_mcp_post_request_with_session_recovery(
+    cai_mcp_streamable_http_client_impl *impl, const lonejson_spooled *request,
+    size_t request_len, cai_mcp_http_response_capture *response,
+    cai_error *error) {
+  return cai_mcp_post_with_session_recovery(impl, request, request_len, 1,
+                                            response, error);
 }
 
 static int cai_mcp_streamable_ping(cai_mcp_client *client, cai_error *error) {
@@ -3749,6 +3806,36 @@ static int cai_mcp_streamable_terminate_session(cai_mcp_client *client,
   return rc;
 }
 
+static int cai_mcp_streamable_send_notification(cai_mcp_client *client,
+                                                const char *method,
+                                                lonejson_spooled *params_json,
+                                                cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_http_response_capture response;
+  lonejson_spooled notification;
+  size_t notification_len;
+  int rc;
+
+  impl = cai_mcp_streamable_impl(client);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_notification_request(method, params_json, &notification,
+                                    &notification_len, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_post_with_session_recovery(
+        impl, &notification, notification_len, 0, &response, error);
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&notification);
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
 static int cai_mcp_streamable_drain_events(cai_mcp_client *client,
                                            cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
@@ -3896,6 +3983,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.complete = cai_mcp_streamable_complete;
   impl->public_client.set_log_level = cai_mcp_streamable_set_log_level;
   impl->public_client.terminate_session = cai_mcp_streamable_terminate_session;
+  impl->public_client.send_notification = cai_mcp_streamable_send_notification;
   impl->public_client.drain_events = cai_mcp_streamable_drain_events;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   impl->public_client.impl = impl;
@@ -4083,6 +4171,22 @@ int cai_mcp_client_terminate_session(cai_mcp_client *client, cai_error *error) {
                          "MCP client terminate_session receiver is required");
   }
   return client->terminate_session(client, error);
+}
+
+int cai_mcp_client_send_notification(cai_mcp_client *client, const char *method,
+                                     lonejson_spooled *params_json,
+                                     cai_error *error) {
+  if (client == NULL || client->send_notification == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client send_notification receiver is required");
+  }
+  return client->send_notification(client, method, params_json, error);
+}
+
+int cai_mcp_client_notify_roots_list_changed(cai_mcp_client *client,
+                                             cai_error *error) {
+  return cai_mcp_client_send_notification(
+      client, "notifications/roots/list_changed", NULL, error);
 }
 
 int cai_mcp_client_drain_events(cai_mcp_client *client, cai_error *error) {

@@ -153,6 +153,7 @@ typedef struct test_mcp_client_impl {
   int complete_count;
   int set_log_level_count;
   int terminate_session_count;
+  int send_notification_count;
   int drain_events_count;
   int destroy_count;
   char last_name[64];
@@ -162,6 +163,7 @@ typedef struct test_mcp_client_impl {
   char last_argument_name[64];
   char last_argument_value[128];
   char last_log_level[32];
+  char last_method[128];
   char last_arguments[256];
 } test_mcp_client_impl;
 
@@ -1944,6 +1946,25 @@ static int test_mcp_client_terminate_session(cai_mcp_client *client,
   return CAI_OK;
 }
 
+static int test_mcp_client_send_notification(cai_mcp_client *client,
+                                             const char *method,
+                                             lonejson_spooled *params_json,
+                                             cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->send_notification_count++;
+  snprintf(impl->last_method, sizeof(impl->last_method), "%s",
+           method != NULL ? method : "");
+  test_mcp_read_spooled_json(params_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  return CAI_OK;
+}
+
 static int test_mcp_client_drain_events(cai_mcp_client *client,
                                         cai_error *error) {
   test_mcp_client_impl *impl;
@@ -2020,6 +2041,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.complete = test_mcp_client_complete;
   impl->public_client.set_log_level = test_mcp_client_set_log_level;
   impl->public_client.terminate_session = test_mcp_client_terminate_session;
+  impl->public_client.send_notification = test_mcp_client_send_notification;
   impl->public_client.drain_events = test_mcp_client_drain_events;
   impl->public_client.destroy = test_mcp_client_destroy;
   impl->public_client.impl = impl;
@@ -3890,7 +3912,8 @@ static void test_mcp_client_config(test_state *state) {
       client->prompt_count == NULL || client->prompt_at == NULL ||
       client->get_prompt == NULL || client->complete == NULL ||
       client->set_log_level == NULL || client->terminate_session == NULL ||
-      client->drain_events == NULL || client->destroy == NULL) {
+      client->send_notification == NULL || client->drain_events == NULL ||
+      client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
   cai_mcp_client_destroy(client);
@@ -4050,6 +4073,14 @@ static void test_mcp_client_receiver_surface(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_client_receiver_terminate_session_count",
              fake.terminate_session_count, 1L);
+  expect_int(
+      state, "mcp_client_receiver_notify_roots_list_changed",
+      cai_mcp_client_notify_roots_list_changed(&fake.public_client, &error),
+      CAI_OK);
+  expect_int(state, "mcp_client_receiver_send_notification_count",
+             fake.send_notification_count, 1L);
+  expect_str(state, "mcp_client_receiver_send_notification_method",
+             fake.last_method, "notifications/roots/list_changed");
   expect_int(state, "mcp_client_receiver_drain_events",
              cai_mcp_client_drain_events(&fake.public_client, &error), CAI_OK);
   expect_int(state, "mcp_client_receiver_drain_events_count",
@@ -4080,6 +4111,12 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   cai_error_init(&error);
   expect_int(state, "mcp_client_receiver_null_terminate_session",
              cai_mcp_client_terminate_session(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_send_notification",
+             cai_mcp_client_send_notification(
+                 NULL, "notifications/roots/list_changed", NULL, &error),
+             CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "mcp_client_receiver_null_drain_events",
@@ -9487,6 +9524,153 @@ test_mcp_streamable_http_resource_subscription_error(test_state *state) {
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_resource_subscription_error_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_roots_list_changed_notification(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"roots\":{\"listChanged\":true}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-changed-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *roots_changed_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: roots-changed-session",
+      "\"method\":\"notifications/roots/list_changed\""};
+  static const char *notification_forbidden[] = {"\"id\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: roots-changed-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", roots_changed_required,
+       sizeof(roots_changed_required) / sizeof(roots_changed_required[0]),
+       notification_forbidden,
+       sizeof(notification_forbidden) / sizeof(notification_forbidden[0]), 202,
+       "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_roots_state roots;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&roots, 0, sizeof(roots));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_roots_list_changed_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &roots;
+  config.receiver.list_roots = test_mcp_roots_list_callback;
+  config.receiver.roots_list_changed = 1;
+  expect_int(state, "mcp_streamable_roots_changed_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_roots_changed_call",
+             cai_mcp_client_notify_roots_list_changed(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_roots_list_changed_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_send_notification_params(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-params-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *notification_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-params-session",
+      "\"method\":\"notifications/test\"", "\"params\":{\"ok\":true}"};
+  static const char *notification_forbidden[] = {"\"id\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: notification-params-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", notification_required,
+       sizeof(notification_required) / sizeof(notification_required[0]),
+       notification_forbidden,
+       sizeof(notification_forbidden) / sizeof(notification_forbidden[0]), 202,
+       "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  lonejson_spooled params;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_notification_params_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_notification_params_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_notification_params_append",
+             params.append(&params, "{\"ok\":true}", strlen("{\"ok\":true}"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_notification_params_call",
+             cai_mcp_client_send_notification(client, "notifications/test",
+                                              &params, &error),
+             CAI_OK);
+  params.cleanup(&params);
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_notification_invalid_params_append",
+             params.append(&params, "{\"broken\":", strlen("{\"broken\":"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_notification_invalid_params_call",
+             cai_mcp_client_send_notification(client, "notifications/bad",
+                                              &params, &error),
+             CAI_ERR_PROTOCOL);
+  params.cleanup(&params);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_notification_params_mock",
                     server.pid, &server.child_status);
 }
 
@@ -23771,6 +23955,10 @@ static const test_entry test_entries[] = {
     {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
     {"mcp_streamable_http_resource_subscription_error",
      test_mcp_streamable_http_resource_subscription_error},
+    {"mcp_streamable_http_roots_list_changed_notification",
+     test_mcp_streamable_http_roots_list_changed_notification},
+    {"mcp_streamable_http_send_notification_params",
+     test_mcp_streamable_http_send_notification_params},
     {"mcp_streamable_http_logging_error",
      test_mcp_streamable_http_logging_error},
     {"mcp_streamable_http_terminate_session_405",
