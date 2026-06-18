@@ -2616,7 +2616,11 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
                          "MCP server request is required");
   }
   CAI_LJ->spooled_init(CAI_LJ, response);
-  if (strcmp(doc->method, "roots/list") == 0) {
+  if (strcmp(doc->method, "ping") == 0) {
+    CAI_LJ->spooled_init(CAI_LJ, &result);
+    rc = cai_mcp_write_cstr(&result, "{}", error);
+    result_error_message = "failed to write MCP ping result";
+  } else if (strcmp(doc->method, "roots/list") == 0) {
     rc = cai_mcp_build_roots_result(impl, &result, &jsonrpc_error_code,
                                     &preserve_error, error);
     result_error_message = "failed to write MCP roots result";

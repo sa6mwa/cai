@@ -16015,6 +16015,74 @@ test_mcp_streamable_http_server_request_unsupported(test_state *state) {
                     server.pid, &server.child_status);
 }
 
+static void test_mcp_streamable_http_server_ping_request(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"server-ping-1\","
+      "\"method\":\"ping\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: server-ping-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *server_ping_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-session",
+      "\"id\":\"server-ping-1\"", "\"result\":{}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: server-ping-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", server_ping_response_required,
+       sizeof(server_ping_response_required) /
+           sizeof(server_ping_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_server_ping_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_ping_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_ping_call",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_ping_mock", server.pid,
+                    &server.child_status);
+}
+
 static void test_mcp_streamable_http_drain_events_get_sse(test_state *state) {
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
@@ -16059,6 +16127,73 @@ static void test_mcp_streamable_http_drain_events_get_sse(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_drain_events_get_sse_mock",
                     server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_drain_events_ping_request(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char event_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"drain-ping-1\","
+      "\"method\":\"ping\"}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: drain-ping-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *get_required[] = {"GET /v1/mcp HTTP/",
+                                       "Accept: text/event-stream",
+                                       "MCP-Session-Id: drain-ping-session"};
+  static const char *server_ping_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: drain-ping-session",
+      "\"id\":\"drain-ping-1\"", "\"result\":{}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: drain-ping-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"GET /v1/mcp HTTP/", get_required,
+       sizeof(get_required) / sizeof(get_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, event_body},
+      {"POST /v1/mcp HTTP/", server_ping_response_required,
+       sizeof(server_ping_response_required) /
+           sizeof(server_ping_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_drain_ping_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_drain_ping_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_drain_ping_call",
+             cai_mcp_client_drain_events(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_drain_ping_mock", server.pid,
+                    &server.child_status);
 }
 
 static void
@@ -29883,8 +30018,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_elicitation_url_not_advertised},
     {"mcp_streamable_http_server_request_unsupported",
      test_mcp_streamable_http_server_request_unsupported},
+    {"mcp_streamable_http_server_ping_request",
+     test_mcp_streamable_http_server_ping_request},
     {"mcp_streamable_http_drain_events_get_sse",
      test_mcp_streamable_http_drain_events_get_sse},
+    {"mcp_streamable_http_drain_events_ping_request",
+     test_mcp_streamable_http_drain_events_ping_request},
     {"mcp_streamable_http_drain_events_resume_get",
      test_mcp_streamable_http_drain_events_resume_get},
     {"mcp_streamable_http_drain_events_rejects_response",
