@@ -11261,16 +11261,15 @@ static void test_mcp_streamable_http_utility_notifications_ignore_malformed(
 }
 
 static void test_mcp_streamable_http_active_progress_notification_invalid(
-    test_state *state, const char *test_name, const char *progress_event,
-    const char *expected_message) {
+    test_state *state, const char *test_name, const char *progress_events,
+    const char *expected_message, long expected_notifications) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
       "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
       "\"version\":\"1\"}}}";
   static const char response_template[] =
-      "event: message\n"
-      "data: %s\n\n"
+      "%s"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
@@ -11300,7 +11299,7 @@ static void test_mcp_streamable_http_active_progress_notification_invalid(
   memset(&notifications, 0, sizeof(notifications));
   cai_error_init(&error);
   snprintf(response_body, sizeof(response_body), response_template,
-           progress_event);
+           progress_events);
   script[0].request_prefix = "POST /v1/mcp HTTP/";
   script[0].required = init_required;
   script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
@@ -11347,7 +11346,7 @@ static void test_mcp_streamable_http_active_progress_notification_invalid(
              CAI_ERR_PROTOCOL);
   snprintf(message_name, sizeof(message_name), "%s_message", test_name);
   expect_str(state, message_name, error.message, expected_message);
-  expect_int(state, test_name, notifications.count, 0L);
+  expect_int(state, test_name, notifications.count, expected_notifications);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, mock_name, server.pid, &server.child_status);
@@ -11357,18 +11356,46 @@ static void
 test_mcp_streamable_http_active_progress_missing_progress(test_state *state) {
   test_mcp_streamable_http_active_progress_notification_invalid(
       state, "mcp_streamable_active_progress_missing_progress",
-      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
-      "\"params\":{\"progressToken\":2}}",
-      "MCP progress notification requires progress");
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2}}\n\n",
+      "MCP progress notification requires progress", 0L);
 }
 
 static void
 test_mcp_streamable_http_active_progress_invalid_progress(test_state *state) {
   test_mcp_streamable_http_active_progress_notification_invalid(
       state, "mcp_streamable_active_progress_invalid_progress",
-      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
-      "\"params\":{\"progressToken\":2,\"progress\":\"1\"}}",
-      "failed to parse MCP progress notification params");
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":\"1\"}}\n\n",
+      "failed to parse MCP progress notification params", 0L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_equal_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_equal_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n",
+      "MCP progress value must increase", 1L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_decreasing_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_decreasing_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":2}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n",
+      "MCP progress value must increase", 1L);
 }
 
 static void test_mcp_streamable_http_cancelled_notification_aborts_request(
@@ -30524,6 +30551,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_active_progress_missing_progress},
     {"mcp_streamable_http_active_progress_invalid_progress",
      test_mcp_streamable_http_active_progress_invalid_progress},
+    {"mcp_streamable_http_active_progress_equal_progress",
+     test_mcp_streamable_http_active_progress_equal_progress},
+    {"mcp_streamable_http_active_progress_decreasing_progress",
+     test_mcp_streamable_http_active_progress_decreasing_progress},
     {"mcp_streamable_http_cancelled_notification_aborts_request",
      test_mcp_streamable_http_cancelled_notification_aborts_request},
     {"mcp_streamable_http_sse_resume_get",

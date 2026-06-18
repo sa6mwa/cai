@@ -75,6 +75,8 @@ typedef struct cai_mcp_streamable_http_client_impl {
   long long next_id;
   long long active_request_id;
   int has_active_request;
+  int has_active_progress;
+  double active_progress;
   cai_mcp_client_tool_impl *tools;
   size_t tool_count;
   size_t tool_capacity;
@@ -1592,6 +1594,8 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   if (is_request) {
     impl->active_request_id = impl->next_id;
     impl->has_active_request = 1;
+    impl->has_active_progress = 0;
+    impl->active_progress = 0.0;
   }
 
   upload.cursor = *request;
@@ -1617,6 +1621,7 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   if (curl_rc != CURLE_OK) {
     if (is_request) {
       impl->has_active_request = 0;
+      impl->has_active_progress = 0;
     }
     response->body.cleanup(&response->body);
     memset(&response->body, 0, sizeof(response->body));
@@ -1637,6 +1642,7 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   }
   if (is_request) {
     impl->has_active_request = 0;
+    impl->has_active_progress = 0;
   }
   return rc;
 }
@@ -2064,8 +2070,9 @@ static int cai_mcp_progress_matches_active_request(
 }
 
 static int
-cai_mcp_validate_progress_notification_params(const lonejson_json_value *params,
-                                              cai_error *error) {
+cai_mcp_validate_progress_notification_params(
+    cai_mcp_streamable_http_client_impl *impl,
+    const lonejson_json_value *params, cai_error *error) {
   cai_mcp_progress_params_doc doc;
   lonejson_spooled spool;
   cai_mcp_spooled_reader reader;
@@ -2098,6 +2105,15 @@ cai_mcp_validate_progress_notification_params(const lonejson_json_value *params,
   if (!doc.has_progress) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP progress notification requires progress");
+  }
+  if (rc == CAI_OK && impl != NULL && impl->has_active_progress &&
+      doc.progress <= impl->active_progress) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP progress value must increase");
+  }
+  if (rc == CAI_OK && impl != NULL) {
+    impl->has_active_progress = 1;
+    impl->active_progress = doc.progress;
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_params_map, &doc);
   spool.cleanup(&spool);
@@ -2348,7 +2364,8 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
     if (!cai_mcp_notification_should_dispatch(impl, doc)) {
       return CAI_OK;
     }
-    rc = cai_mcp_validate_progress_notification_params(&doc->params, error);
+    rc = cai_mcp_validate_progress_notification_params(impl, &doc->params,
+                                                       error);
     if (rc != CAI_OK) {
       return rc;
     }
