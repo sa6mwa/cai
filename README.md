@@ -559,8 +559,9 @@ partial JSON-RPC response. Set `tool_output_max_bytes` to
 `CAI_MCP_TOOL_OUTPUT_UNLIMITED` only when the embedding route deliberately
 accepts direct unbounded tool-output streaming. `GET`/SSE transport is
 implemented for compatibility, but cai does not yet provide a host callback
-surface for queued server-initiated MCP notifications or requests. Resources,
-prompts, and sampling are not implemented yet.
+surface for queued server-initiated MCP notifications or requests in the
+handler. The handler currently serves tools; resources, prompts, sampling, and
+elicitation are client-side capabilities.
 
 MCP session persistence is storage-neutral. The zero/default MCP config is
 stateless. Set `config.enable_sessions = 1` and provide
@@ -643,6 +644,27 @@ claude mcp add --transport http caiTodo http://127.0.0.1:18766/mcp
 See [examples/mcp-server/README.md](examples/mcp-server/README.md) for the
 equivalent config-file snippets and a todo-kanban workflow prompt that checks
 tool discovery, help text, WIP-limit denial, completion, and board state.
+
+## MCP Client
+
+`<cai/mcp.h>` also exposes a transport-independent `cai_mcp_client` interface
+that cai consumes through receiver-style function pointers. The built-in
+Streamable HTTP implementation can initialize sessions, ping, cache and call
+tools, read and subscribe to resources, cache resource templates, cache and get
+prompts, complete prompt/resource arguments, set logging levels, terminate
+sessions, send generic JSON-RPC requests/notifications, drain server events,
+and handle roots, sampling, elicitation, logging, progress, and cancellation
+messages from the server.
+
+The HTTP client config owns transport details: endpoint URL, client identity,
+protocol version, timeout, TLS verification behavior, optional CA bundle/path,
+notification callbacks, receiver callbacks, and allocator. When CA bundle/path
+are unset, libcurl/OpenSSL resolve their default trust store.
+
+Remote MCP tools can be registered into a local `cai_tool_registry` with
+`cai_mcp_client_register_tools`. The registry keeps a non-owning client pointer,
+so callers must keep the MCP client alive for as long as those registered tools
+can run.
 
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
