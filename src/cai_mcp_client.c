@@ -212,6 +212,21 @@ typedef struct cai_mcp_create_task_response_doc {
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_create_task_response_doc;
 
+typedef struct cai_mcp_task_response_doc {
+  cai_mcp_task_doc result;
+  cai_mcp_jsonrpc_error_doc error_doc;
+} cai_mcp_task_response_doc;
+
+typedef struct cai_mcp_tasks_list_result_doc {
+  lonejson_object_array tasks;
+  char *next_cursor;
+} cai_mcp_tasks_list_result_doc;
+
+typedef struct cai_mcp_tasks_list_response_doc {
+  cai_mcp_tasks_list_result_doc result;
+  cai_mcp_jsonrpc_error_doc error_doc;
+} cai_mcp_tasks_list_response_doc;
+
 typedef struct cai_mcp_list_resource_doc {
   char *uri;
   char *name;
@@ -731,6 +746,37 @@ static const lonejson_field cai_mcp_create_task_response_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_create_task_response_map,
                     cai_mcp_create_task_response_doc,
                     cai_mcp_create_task_response_fields);
+
+static const lonejson_field cai_mcp_task_response_fields[] = {
+    LONEJSON_FIELD_OBJECT(cai_mcp_task_response_doc, result, "result",
+                          &cai_mcp_task_map),
+    LONEJSON_FIELD_OBJECT(cai_mcp_task_response_doc, error_doc, "error",
+                          &cai_mcp_jsonrpc_error_map)};
+LONEJSON_MAP_DEFINE(cai_mcp_task_response_map, cai_mcp_task_response_doc,
+                    cai_mcp_task_response_fields);
+
+static const lonejson_field cai_mcp_tasks_list_result_fields[] = {
+    {"tasks", LONEJSON__KEY_LEN("tasks"), LONEJSON__KEY_FIRST("tasks"),
+     LONEJSON__KEY_LAST("tasks"),
+     offsetof(cai_mcp_tasks_list_result_doc, tasks),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_task_doc), &cai_mcp_task_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tasks_list_result_doc, next_cursor,
+                                "nextCursor")};
+LONEJSON_MAP_DEFINE(cai_mcp_tasks_list_result_map,
+                    cai_mcp_tasks_list_result_doc,
+                    cai_mcp_tasks_list_result_fields);
+
+static const lonejson_field cai_mcp_tasks_list_response_fields[] = {
+    LONEJSON_FIELD_OBJECT(cai_mcp_tasks_list_response_doc, result, "result",
+                          &cai_mcp_tasks_list_result_map),
+    LONEJSON_FIELD_OBJECT(cai_mcp_tasks_list_response_doc, error_doc, "error",
+                          &cai_mcp_jsonrpc_error_map)};
+LONEJSON_MAP_DEFINE(cai_mcp_tasks_list_response_map,
+                    cai_mcp_tasks_list_response_doc,
+                    cai_mcp_tasks_list_response_fields);
 
 static const lonejson_field cai_mcp_list_resource_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_resource_doc, uri, "uri"),
@@ -5729,6 +5775,87 @@ static int cai_mcp_validate_completion_response_shape(
   return CAI_OK;
 }
 
+static int cai_mcp_validate_tasks_list_response_shape(
+    const cai_mcp_http_response_capture *response, cai_error *error) {
+  cai_mcp_tasks_list_response_doc doc;
+  lonejson_spooled json_body;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int has_error;
+  int rc;
+
+  rc = cai_mcp_response_json_body(response, "MCP tasks/list response",
+                                  &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK || has_error) {
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = json_body;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_tasks_list_response_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tasks_list_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to parse MCP tasks/list",
+                                  &json_error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tasks_list_response_map, &doc);
+  json_body.cleanup(&json_body);
+  return CAI_OK;
+}
+
+static int cai_mcp_validate_task_response_shape(
+    const cai_mcp_http_response_capture *response, const char *response_name,
+    const char *parse_name, cai_error *error) {
+  cai_mcp_task_response_doc doc;
+  lonejson_spooled json_body;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int has_error;
+  int rc;
+
+  rc = cai_mcp_response_json_body(response, response_name, &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK || has_error) {
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = json_body;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_task_response_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_task_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, parse_name, &json_error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_task_response_map, &doc);
+  json_body.cleanup(&json_body);
+  return CAI_OK;
+}
+
 static int
 cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
                               const char *response_name, const char *parse_name,
@@ -6771,6 +6898,19 @@ static int cai_mcp_streamable_task_request(cai_mcp_client *client,
                                                     &response, error);
   }
   cai_mcp_spooled_cleanup_if_initialized(&request);
+  if (rc == CAI_OK) {
+    if (strcmp(method, "tasks/list") == 0) {
+      rc = cai_mcp_validate_tasks_list_response_shape(&response, error);
+    } else if (strcmp(method, "tasks/get") == 0) {
+      rc = cai_mcp_validate_task_response_shape(
+          &response, "MCP tasks/get response", "failed to parse MCP tasks/get",
+          error);
+    } else if (strcmp(method, "tasks/cancel") == 0) {
+      rc = cai_mcp_validate_task_response_shape(
+          &response, "MCP tasks/cancel response",
+          "failed to parse MCP tasks/cancel", error);
+    }
+  }
   if (rc == CAI_OK) {
     rc = cai_mcp_parse_result_response(&response, "MCP task response",
                                        "failed to parse MCP task response",

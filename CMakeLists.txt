@@ -817,6 +817,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_notification_response_body
     mcp_streamable_http_task_utilities
     mcp_streamable_http_task_list_without_cursor
+    mcp_streamable_http_tasks_list_missing_ttl
+    mcp_streamable_http_tasks_get_missing_last_updated
+    mcp_streamable_http_tasks_cancel_missing_created_at
     mcp_streamable_http_logging_error
     mcp_streamable_http_terminate_session_405
     mcp_streamable_http_terminate_session_error

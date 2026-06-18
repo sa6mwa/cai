@@ -12593,11 +12593,12 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
   static const char tasks_list_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tasks\":[{\"taskId\":"
       "\"task-1\",\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\""
-      "}],\"nextCursor\":\"tasks-page-2\"}}";
+      ",\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000}],"
+      "\"nextCursor\":\"tasks-page-2\"}}";
   static const char tasks_get_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"taskId\":\"task-1\","
       "\"status\":\"completed\",\"createdAt\":\"2025-11-25T10:30:00Z\","
-      "\"lastUpdatedAt\":\"2025-11-25T10:31:00Z\"}}";
+      "\"lastUpdatedAt\":\"2025-11-25T10:31:00Z\",\"ttl\":null}}";
   static const char tasks_result_body[] =
       "event: message\n"
       "data: "
@@ -12609,7 +12610,8 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
       "\"text\",\"text\":\"task result ok\"}],\"isError\":false}}\n\n";
   static const char tasks_cancel_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"taskId\":\"task-1\","
-      "\"status\":\"cancelled\"}}";
+      "\"status\":\"cancelled\",\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:10Z\",\"ttl\":60000}}";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
@@ -12797,6 +12799,127 @@ test_mcp_streamable_http_task_list_without_cursor(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_task_list_empty_mock", server.pid,
                     &server.child_status);
+}
+
+static void test_mcp_streamable_http_task_response_invalid(
+    test_state *state, const char *test_name, const char *method,
+    const char *body) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tasks\":{\"list\":{},\"cancel\":{}}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: bad-task-session",
+      "\"method\":\"notifications/initialized\""};
+  mock_http_expectation script[3];
+  const char *task_required[4];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char method_json[96];
+  int rc;
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  snprintf(method_json, sizeof(method_json), "\"method\":\"%s\"", method);
+  task_required[0] = "POST /v1/mcp HTTP/";
+  task_required[1] = "MCP-Session-Id: bad-task-session";
+  task_required[2] = method_json;
+  task_required[3] = "\"_meta\":{\"progressToken\":2}";
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: bad-task-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = task_required;
+  script[2].required_count = sizeof(task_required) / sizeof(task_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  if (strcmp(method, "tasks/list") == 0) {
+    rc = cai_mcp_client_list_tasks(client, NULL, sink, &error);
+  } else if (strcmp(method, "tasks/get") == 0) {
+    rc = cai_mcp_client_get_task(client, "task-1", sink, &error);
+  } else {
+    rc = cai_mcp_client_cancel_task(client, "task-1", sink, &error);
+  }
+  expect_int(state, test_name, rc, CAI_ERR_PROTOCOL);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_tasks_list_missing_ttl(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_list_missing_ttl", "tasks/list",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tasks\":[{\"taskId\":"
+      "\"task-1\",\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\""
+      ",\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\"}]}}");
+}
+
+static void
+test_mcp_streamable_http_tasks_get_missing_last_updated(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_get_missing_last_updated", "tasks/get",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"taskId\":\"task-1\","
+      "\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"ttl\":60000}}");
+}
+
+static void
+test_mcp_streamable_http_tasks_cancel_missing_created_at(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_cancel_missing_created_at", "tasks/cancel",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"taskId\":\"task-1\","
+      "\"status\":\"cancelled\",\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\","
+      "\"ttl\":60000}}");
 }
 
 static void test_mcp_streamable_http_logging_error(test_state *state) {
@@ -28248,6 +28371,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_task_utilities},
     {"mcp_streamable_http_task_list_without_cursor",
      test_mcp_streamable_http_task_list_without_cursor},
+    {"mcp_streamable_http_tasks_list_missing_ttl",
+     test_mcp_streamable_http_tasks_list_missing_ttl},
+    {"mcp_streamable_http_tasks_get_missing_last_updated",
+     test_mcp_streamable_http_tasks_get_missing_last_updated},
+    {"mcp_streamable_http_tasks_cancel_missing_created_at",
+     test_mcp_streamable_http_tasks_cancel_missing_created_at},
     {"mcp_streamable_http_logging_error",
      test_mcp_streamable_http_logging_error},
     {"mcp_streamable_http_terminate_session_405",
