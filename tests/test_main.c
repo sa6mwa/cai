@@ -10381,6 +10381,29 @@ test_mcp_streamable_http_initialize_missing_server_info(test_state *state) {
       "failed to parse MCP initialize");
 }
 
+static void
+test_mcp_streamable_http_initialize_missing_protocol_version(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_missing_protocol_version",
+      initialize_body, "MCP server negotiated unsupported protocol version");
+}
+
+static void test_mcp_streamable_http_initialize_unsupported_protocol_version(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"1900-01-01\",\"capabilities\":{},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_unsupported_protocol_version",
+      initialize_body, "MCP server negotiated unsupported protocol version");
+}
+
 static void test_mcp_streamable_http_invalid_session_id(
     test_state *state, const char *test_name, const char *session_header) {
   static const char initialize_body[] =
@@ -30515,6 +30538,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_initialize_capabilities_not_object},
     {"mcp_streamable_http_initialize_missing_server_info",
      test_mcp_streamable_http_initialize_missing_server_info},
+    {"mcp_streamable_http_initialize_missing_protocol_version",
+     test_mcp_streamable_http_initialize_missing_protocol_version},
+    {"mcp_streamable_http_initialize_unsupported_protocol_version",
+     test_mcp_streamable_http_initialize_unsupported_protocol_version},
     {"mcp_streamable_http_initialize_empty_session_id",
      test_mcp_streamable_http_initialize_empty_session_id},
     {"mcp_streamable_http_initialize_space_session_id",

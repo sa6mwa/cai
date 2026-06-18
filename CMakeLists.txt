@@ -764,6 +764,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_initialize_missing_capabilities
     mcp_streamable_http_initialize_capabilities_not_object
     mcp_streamable_http_initialize_missing_server_info
+    mcp_streamable_http_initialize_missing_protocol_version
+    mcp_streamable_http_initialize_unsupported_protocol_version
     mcp_streamable_http_initialize_empty_session_id
     mcp_streamable_http_initialize_space_session_id
     mcp_streamable_http_long_session_id_header
