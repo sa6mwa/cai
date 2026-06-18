@@ -121,6 +121,7 @@ typedef struct cai_mcp_spooled_reader {
 } cai_mcp_spooled_reader;
 
 typedef struct cai_mcp_jsonrpc_error_doc {
+  int has_code;
   int64_t code;
   char *message;
 } cai_mcp_jsonrpc_error_doc;
@@ -263,7 +264,8 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_error *error);
 
 static const lonejson_field cai_mcp_jsonrpc_error_fields[] = {
-    LONEJSON_FIELD_I64(cai_mcp_jsonrpc_error_doc, code, "code"),
+    LONEJSON_FIELD_I64_PRESENT(cai_mcp_jsonrpc_error_doc, code, has_code,
+                               "code"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_jsonrpc_error_doc, message, "message")};
 LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_error_map, cai_mcp_jsonrpc_error_doc,
                     cai_mcp_jsonrpc_error_fields);
@@ -745,14 +747,23 @@ static int cai_mcp_set_rpc_error(cai_error *error,
                                  const cai_mcp_jsonrpc_error_doc *rpc_error) {
   char detail[80];
 
-  if (rpc_error == NULL || rpc_error->message == NULL) {
+  if (rpc_error == NULL || !rpc_error->has_code || rpc_error->message == NULL) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP server returned an error");
+                         "MCP JSON-RPC error must include code and message");
   }
   snprintf(detail, sizeof(detail), "JSON-RPC error code %lld",
            (long long)rpc_error->code);
   return cai_set_error_detail(error, CAI_ERR_SERVER, rpc_error->message,
                               detail);
+}
+
+static int cai_mcp_response_has_jsonrpc_error(const lonejson_spooled *json_body,
+                                              int *has_error,
+                                              cai_error *error) {
+  int has_result;
+
+  return cai_mcp_jsonrpc_response_result_error_presence(json_body, &has_result,
+                                                        has_error, error);
 }
 
 static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res) {
@@ -2641,11 +2652,17 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int has_error;
   int rc;
 
   rc = cai_mcp_response_json_body(response, "MCP initialize response",
                                   &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -2664,7 +2681,7 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
     return cai_mcp_set_json_error(error, "failed to parse MCP initialize",
                                   &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
     json_body.cleanup(&json_body);
@@ -3359,6 +3376,7 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
   cai_mcp_list_tool_doc *src_tools;
   size_t base_count;
   size_t i;
+  int has_error;
   int rc;
 
   if (next_cursor != NULL) {
@@ -3367,6 +3385,11 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
   rc = cai_mcp_response_json_body(response, "MCP tools/list response",
                                   &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -3385,7 +3408,7 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
     return cai_mcp_set_json_error(error, "failed to parse MCP tools/list",
                                   &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
     json_body.cleanup(&json_body);
@@ -3469,6 +3492,7 @@ static int cai_mcp_parse_resources_list_response(
   cai_mcp_list_resource_doc *src_resources;
   size_t base_count;
   size_t i;
+  int has_error;
   int rc;
 
   if (next_cursor != NULL) {
@@ -3477,6 +3501,11 @@ static int cai_mcp_parse_resources_list_response(
   rc = cai_mcp_response_json_body(response, "MCP resources/list response",
                                   &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -3496,7 +3525,7 @@ static int cai_mcp_parse_resources_list_response(
     return cai_mcp_set_json_error(error, "failed to parse MCP resources/list",
                                   &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
     json_body.cleanup(&json_body);
@@ -3583,6 +3612,7 @@ static int cai_mcp_parse_resource_templates_list_response(
   cai_mcp_list_resource_template_doc *src_resource_templates;
   size_t base_count;
   size_t i;
+  int has_error;
   int rc;
 
   if (next_cursor != NULL) {
@@ -3591,6 +3621,11 @@ static int cai_mcp_parse_resource_templates_list_response(
   rc = cai_mcp_response_json_body(
       response, "MCP resources/templates/list response", &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -3611,7 +3646,7 @@ static int cai_mcp_parse_resource_templates_list_response(
     return cai_mcp_set_json_error(
         error, "failed to parse MCP resources/templates/list", &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
                     &doc);
@@ -3701,6 +3736,7 @@ static int cai_mcp_parse_prompts_list_response(
   cai_mcp_list_prompt_doc *src_prompts;
   size_t base_count;
   size_t i;
+  int has_error;
   int rc;
 
   if (next_cursor != NULL) {
@@ -3709,6 +3745,11 @@ static int cai_mcp_parse_prompts_list_response(
   rc = cai_mcp_response_json_body(response, "MCP prompts/list response",
                                   &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -3728,7 +3769,7 @@ static int cai_mcp_parse_prompts_list_response(
     return cai_mcp_set_json_error(error, "failed to parse MCP prompts/list",
                                   &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompts_list_response_map, &doc);
     json_body.cleanup(&json_body);
@@ -3800,10 +3841,16 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int has_error;
   int rc;
 
   rc = cai_mcp_response_json_body(response, response_name, &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -3835,7 +3882,7 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
     json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, parse_name, &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
@@ -3856,10 +3903,16 @@ static int cai_mcp_parse_empty_result_response(
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int has_error;
   int rc;
 
   rc = cai_mcp_response_json_body(response, response_name, &json_body, error);
   if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
@@ -3891,7 +3944,7 @@ static int cai_mcp_parse_empty_result_response(
     json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, parse_name, &json_error);
   }
-  if (doc.error_doc.message != NULL) {
+  if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
