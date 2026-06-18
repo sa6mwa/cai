@@ -379,9 +379,13 @@ LONEJSON_MAP_DEFINE(cai_mcp_list_tool_map, cai_mcp_list_tool_doc,
                     cai_mcp_list_tool_fields);
 
 static const lonejson_field cai_mcp_tools_list_result_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(cai_mcp_tools_list_result_doc, tools, "tools",
-                                cai_mcp_list_tool_doc, &cai_mcp_list_tool_map,
-                                LONEJSON_OVERFLOW_FAIL),
+    {"tools", LONEJSON__KEY_LEN("tools"), LONEJSON__KEY_FIRST("tools"),
+     LONEJSON__KEY_LAST("tools"),
+     offsetof(cai_mcp_tools_list_result_doc, tools),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_list_tool_doc), &cai_mcp_list_tool_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tools_list_result_doc, next_cursor,
                                 "nextCursor")};
 LONEJSON_MAP_DEFINE(cai_mcp_tools_list_result_map,
@@ -422,10 +426,13 @@ LONEJSON_MAP_DEFINE(cai_mcp_list_resource_map, cai_mcp_list_resource_doc,
                     cai_mcp_list_resource_fields);
 
 static const lonejson_field cai_mcp_resources_list_result_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(cai_mcp_resources_list_result_doc, resources,
-                                "resources", cai_mcp_list_resource_doc,
-                                &cai_mcp_list_resource_map,
-                                LONEJSON_OVERFLOW_FAIL),
+    {"resources", LONEJSON__KEY_LEN("resources"),
+     LONEJSON__KEY_FIRST("resources"), LONEJSON__KEY_LAST("resources"),
+     offsetof(cai_mcp_resources_list_result_doc, resources),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_list_resource_doc), &cai_mcp_list_resource_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_resources_list_result_doc, next_cursor,
                                 "nextCursor")};
 LONEJSON_MAP_DEFINE(cai_mcp_resources_list_result_map,
@@ -469,10 +476,15 @@ LONEJSON_MAP_DEFINE(cai_mcp_list_resource_template_map,
                     cai_mcp_list_resource_template_fields);
 
 static const lonejson_field cai_mcp_resource_templates_list_result_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(
-        cai_mcp_resource_templates_list_result_doc, resource_templates,
-        "resourceTemplates", cai_mcp_list_resource_template_doc,
-        &cai_mcp_list_resource_template_map, LONEJSON_OVERFLOW_FAIL),
+    {"resourceTemplates", LONEJSON__KEY_LEN("resourceTemplates"),
+     LONEJSON__KEY_FIRST("resourceTemplates"),
+     LONEJSON__KEY_LAST("resourceTemplates"),
+     offsetof(cai_mcp_resource_templates_list_result_doc, resource_templates),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_list_resource_template_doc),
+     &cai_mcp_list_resource_template_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_resource_templates_list_result_doc,
                                 next_cursor, "nextCursor")};
 LONEJSON_MAP_DEFINE(cai_mcp_resource_templates_list_result_map,
@@ -509,10 +521,13 @@ LONEJSON_MAP_DEFINE(cai_mcp_list_prompt_map, cai_mcp_list_prompt_doc,
                     cai_mcp_list_prompt_fields);
 
 static const lonejson_field cai_mcp_prompts_list_result_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(cai_mcp_prompts_list_result_doc, prompts,
-                                "prompts", cai_mcp_list_prompt_doc,
-                                &cai_mcp_list_prompt_map,
-                                LONEJSON_OVERFLOW_FAIL),
+    {"prompts", LONEJSON__KEY_LEN("prompts"), LONEJSON__KEY_FIRST("prompts"),
+     LONEJSON__KEY_LAST("prompts"),
+     offsetof(cai_mcp_prompts_list_result_doc, prompts),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_list_prompt_doc), &cai_mcp_list_prompt_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_prompts_list_result_doc, next_cursor,
                                 "nextCursor")};
 LONEJSON_MAP_DEFINE(cai_mcp_prompts_list_result_map,

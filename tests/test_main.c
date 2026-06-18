@@ -10385,6 +10385,156 @@ static void test_mcp_streamable_http_response_null_result(test_state *state) {
                     &server.child_status);
 }
 
+typedef enum test_mcp_list_operation {
+  TEST_MCP_LIST_TOOLS,
+  TEST_MCP_LIST_RESOURCES,
+  TEST_MCP_LIST_RESOURCE_TEMPLATES,
+  TEST_MCP_LIST_PROMPTS
+} test_mcp_list_operation;
+
+static void test_mcp_streamable_http_list_missing_array(
+    test_state *state, const char *test_name, test_mcp_list_operation operation,
+    const char *method_fragment, const char *response_body,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-missing-array-session",
+      "\"method\":\"notifications/initialized\""};
+  const char *list_required[4];
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char call_name[128];
+  char message_name[128];
+  int rc;
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  cai_error_init(&error);
+  list_required[0] = "POST /v1/mcp HTTP/";
+  list_required[1] = "MCP-Session-Id: list-missing-array-session";
+  list_required[2] = "\"id\":2";
+  list_required[3] = method_fragment;
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: list-missing-array-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 200;
+  script[1].status_text = "OK";
+  script[1].content_type = "application/json";
+  script[1].body = "{}";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = list_required;
+  script[2].required_count = sizeof(list_required) / sizeof(list_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  switch (operation) {
+  case TEST_MCP_LIST_TOOLS:
+    rc = cai_mcp_client_refresh_tools(client, &error);
+    break;
+  case TEST_MCP_LIST_RESOURCES:
+    rc = cai_mcp_client_refresh_resources(client, &error);
+    break;
+  case TEST_MCP_LIST_RESOURCE_TEMPLATES:
+    rc = cai_mcp_client_refresh_resource_templates(client, &error);
+    break;
+  case TEST_MCP_LIST_PROMPTS:
+  default:
+    rc = cai_mcp_client_refresh_prompts(client, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tools_list_missing_tools(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_missing_array(
+      state, "mcp_streamable_tools_list_missing_tools", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tools/list");
+}
+
+static void
+test_mcp_streamable_http_resources_list_missing_resources(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_missing_array(
+      state, "mcp_streamable_resources_list_missing_resources",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "failed to parse MCP resources/list");
+}
+
+static void test_mcp_streamable_http_resource_templates_list_missing_templates(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_missing_array(
+      state, "mcp_streamable_resource_templates_list_missing_templates",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "failed to parse MCP resources/templates/list");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_missing_prompts(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_missing_array(
+      state, "mcp_streamable_prompts_list_missing_prompts",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "failed to parse MCP prompts/list");
+}
+
 static void
 test_mcp_streamable_http_resource_subscription_error(test_state *state) {
   static const char initialize_body[] =
@@ -25356,6 +25506,14 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_response_result_and_error},
     {"mcp_streamable_http_response_null_result",
      test_mcp_streamable_http_response_null_result},
+    {"mcp_streamable_http_tools_list_missing_tools",
+     test_mcp_streamable_http_tools_list_missing_tools},
+    {"mcp_streamable_http_resources_list_missing_resources",
+     test_mcp_streamable_http_resources_list_missing_resources},
+    {"mcp_streamable_http_resource_templates_list_missing_templates",
+     test_mcp_streamable_http_resource_templates_list_missing_templates},
+    {"mcp_streamable_http_prompts_list_missing_prompts",
+     test_mcp_streamable_http_prompts_list_missing_prompts},
     {"mcp_streamable_http_resource_subscription_error",
      test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_list_changed_invalidates_cache",
