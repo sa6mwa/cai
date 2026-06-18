@@ -784,6 +784,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompts_list_missing_prompts
     mcp_streamable_http_prompts_list_object_arguments
     mcp_streamable_http_prompts_list_object_icons
+    mcp_streamable_http_tool_call_missing_content
+    mcp_streamable_http_tool_call_missing_content_type
+    mcp_streamable_http_tool_call_array_structured_content
     mcp_streamable_http_resource_read_missing_contents
     mcp_streamable_http_resource_read_missing_body
     mcp_streamable_http_prompt_get_missing_messages

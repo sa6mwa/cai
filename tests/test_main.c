@@ -10483,6 +10483,7 @@ typedef enum test_mcp_list_operation {
 } test_mcp_list_operation;
 
 typedef enum test_mcp_result_operation {
+  TEST_MCP_RESULT_TOOL_CALL,
   TEST_MCP_RESULT_RESOURCE_READ,
   TEST_MCP_RESULT_PROMPT_GET,
   TEST_MCP_RESULT_COMPLETION
@@ -10634,17 +10635,22 @@ static void test_mcp_streamable_http_invalid_result_response(
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
   cai_error error;
   char url[192];
   char mock_name[128];
   char open_name[128];
+  char append_name[128];
   char call_name[128];
   char message_name[128];
   char output_name[128];
+  int args_initialized;
   int rc;
 
   client = NULL;
   sink = NULL;
+  args_initialized = 0;
   memset(&server, 0, sizeof(server));
   memset(script, 0, sizeof(script));
   memset(&writer, 0, sizeof(writer));
@@ -10699,6 +10705,15 @@ static void test_mcp_streamable_http_invalid_result_response(
   expect_int(state, "mcp_streamable_invalid_result_sink",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
   switch (operation) {
+  case TEST_MCP_RESULT_TOOL_CALL:
+    CAI_LJ->spooled_init(CAI_LJ, &args);
+    args_initialized = 1;
+    lonejson_error_init(&json_error);
+    snprintf(append_name, sizeof(append_name), "%s_append", test_name);
+    expect_int(state, append_name, args.append(&args, "{}", 2U, &json_error),
+               LONEJSON_STATUS_OK);
+    rc = cai_mcp_client_call_tool(client, "bad-tool", &args, sink, &error);
+    break;
   case TEST_MCP_RESULT_RESOURCE_READ:
     rc = cai_mcp_client_read_resource(client, "resource://bad", sink, &error);
     break;
@@ -10719,6 +10734,9 @@ static void test_mcp_streamable_http_invalid_result_response(
   if (writer.length != 0U) {
     test_fail(state, output_name,
               "invalid MCP result should not stream caller output");
+  }
+  if (args_initialized) {
+    args.cleanup(&args);
   }
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
@@ -11038,6 +11056,41 @@ test_mcp_streamable_http_prompts_list_object_icons(test_state *state) {
       state, "mcp_streamable_prompts_list_object_icons", TEST_MCP_LIST_PROMPTS,
       "\"method\":\"prompts/list\"", response_body,
       "MCP prompt icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_tool_call_missing_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_missing_content",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "failed to parse MCP tools/call");
+}
+
+static void
+test_mcp_streamable_http_tool_call_missing_content_type(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"text\":"
+      "\"bad\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_missing_content_type",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "failed to parse MCP tools/call");
+}
+
+static void
+test_mcp_streamable_http_tool_call_array_structured_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\"}],\"structuredContent\":[]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_array_structured_content",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP tool structuredContent must be an object");
 }
 
 static void
@@ -26775,6 +26828,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompts_list_object_arguments},
     {"mcp_streamable_http_prompts_list_object_icons",
      test_mcp_streamable_http_prompts_list_object_icons},
+    {"mcp_streamable_http_tool_call_missing_content",
+     test_mcp_streamable_http_tool_call_missing_content},
+    {"mcp_streamable_http_tool_call_missing_content_type",
+     test_mcp_streamable_http_tool_call_missing_content_type},
+    {"mcp_streamable_http_tool_call_array_structured_content",
+     test_mcp_streamable_http_tool_call_array_structured_content},
     {"mcp_streamable_http_resource_read_missing_contents",
      test_mcp_streamable_http_resource_read_missing_contents},
     {"mcp_streamable_http_resource_read_missing_body",

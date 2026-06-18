@@ -167,6 +167,22 @@ typedef struct cai_mcp_tools_list_response_doc {
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_tools_list_response_doc;
 
+typedef struct cai_mcp_tool_content_doc {
+  char *type;
+} cai_mcp_tool_content_doc;
+
+typedef struct cai_mcp_tool_call_result_doc {
+  lonejson_object_array content;
+  lonejson_json_value structured_content;
+  int has_is_error;
+  int is_error;
+} cai_mcp_tool_call_result_doc;
+
+typedef struct cai_mcp_tool_call_response_doc {
+  cai_mcp_tool_call_result_doc result;
+  cai_mcp_jsonrpc_error_doc error_doc;
+} cai_mcp_tool_call_response_doc;
+
 typedef struct cai_mcp_list_resource_doc {
   char *uri;
   char *name;
@@ -570,6 +586,40 @@ static const lonejson_field cai_mcp_tools_list_response_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_tools_list_response_map,
                     cai_mcp_tools_list_response_doc,
                     cai_mcp_tools_list_response_fields);
+
+static const lonejson_field cai_mcp_tool_content_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_tool_content_doc, type, "type")};
+LONEJSON_MAP_DEFINE(cai_mcp_tool_content_map, cai_mcp_tool_content_doc,
+                    cai_mcp_tool_content_fields);
+
+static const lonejson_field cai_mcp_tool_call_result_fields[] = {
+    {"content", LONEJSON__KEY_LEN("content"), LONEJSON__KEY_FIRST("content"),
+     LONEJSON__KEY_LAST("content"),
+     offsetof(cai_mcp_tool_call_result_doc, content),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_tool_content_doc), &cai_mcp_tool_content_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"structuredContent", LONEJSON__KEY_LEN("structuredContent"),
+     LONEJSON__KEY_FIRST("structuredContent"),
+     LONEJSON__KEY_LAST("structuredContent"),
+     offsetof(cai_mcp_tool_call_result_doc, structured_content),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_BOOL_PRESENT(cai_mcp_tool_call_result_doc, is_error,
+                                has_is_error, "isError")};
+LONEJSON_MAP_DEFINE(cai_mcp_tool_call_result_map, cai_mcp_tool_call_result_doc,
+                    cai_mcp_tool_call_result_fields);
+
+static const lonejson_field cai_mcp_tool_call_response_fields[] = {
+    LONEJSON_FIELD_OBJECT(cai_mcp_tool_call_response_doc, result, "result",
+                          &cai_mcp_tool_call_result_map),
+    LONEJSON_FIELD_OBJECT(cai_mcp_tool_call_response_doc, error_doc, "error",
+                          &cai_mcp_jsonrpc_error_map)};
+LONEJSON_MAP_DEFINE(cai_mcp_tool_call_response_map,
+                    cai_mcp_tool_call_response_doc,
+                    cai_mcp_tool_call_response_fields);
 
 static const lonejson_field cai_mcp_list_resource_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_resource_doc, uri, "uri"),
@@ -4689,6 +4739,65 @@ static int cai_mcp_prompt_role_is_valid(const char *role) {
          (strcmp(role, "user") == 0 || strcmp(role, "assistant") == 0);
 }
 
+static int cai_mcp_validate_tool_call_response_shape(
+    const cai_mcp_http_response_capture *response, cai_error *error) {
+  cai_mcp_tool_call_response_doc doc;
+  lonejson_spooled json_body;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int has_error;
+  int result_is_object;
+  int rc;
+
+  rc = cai_mcp_response_json_body(response, "MCP tools/call response",
+                                  &json_body, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_response_has_jsonrpc_error(&json_body, &has_error, error);
+  if (rc != CAI_OK || has_error) {
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  rc = cai_mcp_jsonrpc_response_result_root_is_object(&json_body,
+                                                      &result_is_object, error);
+  if (rc != CAI_OK) {
+    json_body.cleanup(&json_body);
+    return rc;
+  }
+  if (!result_is_object) {
+    json_body.cleanup(&json_body);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP result must be an object");
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = json_body;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to rewind MCP response",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_tool_call_response_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_call_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_mcp_set_json_error(error, "failed to parse MCP tools/call",
+                                  &json_error);
+  }
+  rc = CAI_OK;
+  if (doc.result.structured_content.kind != LONEJSON_JSON_VALUE_NULL &&
+      !cai_mcp_json_value_root_is(&doc.result.structured_content, '{', error)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP tool structuredContent must be an object");
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_call_response_map, &doc);
+  json_body.cleanup(&json_body);
+  return rc;
+}
+
 static int cai_mcp_validate_prompt_get_response_shape(
     const cai_mcp_http_response_capture *response, cai_error *error) {
   cai_mcp_prompt_get_response_doc doc;
@@ -4936,6 +5045,12 @@ cai_mcp_parse_ping_response(const cai_mcp_http_response_capture *response,
 static int
 cai_mcp_parse_call_response(const cai_mcp_http_response_capture *response,
                             cai_sink *output, cai_error *error) {
+  int rc;
+
+  rc = cai_mcp_validate_tool_call_response_shape(response, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   return cai_mcp_parse_result_response(response, "MCP tools/call response",
                                        "failed to parse MCP tools/call", output,
                                        error);
