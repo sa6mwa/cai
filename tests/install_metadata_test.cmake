@@ -303,6 +303,9 @@ int main(void) {
   int (*mcp_client_call_tool)(cai_mcp_client *, const char *,
                               struct lonejson_spooled *, cai_sink *,
                               cai_error *);
+  int (*mcp_client_call_tool_task)(cai_mcp_client *, const char *,
+                                   struct lonejson_spooled *, long long,
+                                   cai_sink *, cai_error *);
   int (*mcp_client_refresh_resources)(cai_mcp_client *, cai_error *);
   size_t (*mcp_client_resource_count)(const cai_mcp_client *);
   const cai_mcp_client_resource *(*mcp_client_resource_at)(
@@ -330,6 +333,21 @@ int main(void) {
                              cai_error *);
   int (*mcp_client_set_log_level)(cai_mcp_client *, const char *, cai_error *);
   int (*mcp_client_terminate_session)(cai_mcp_client *, cai_error *);
+  int (*mcp_client_send_request)(cai_mcp_client *, const char *,
+                                 struct lonejson_spooled *, cai_sink *,
+                                 cai_error *);
+  int (*mcp_client_send_notification)(cai_mcp_client *, const char *,
+                                      struct lonejson_spooled *, cai_error *);
+  int (*mcp_client_notify_roots_list_changed)(cai_mcp_client *, cai_error *);
+  int (*mcp_client_list_tasks)(cai_mcp_client *, const char *, cai_sink *,
+                               cai_error *);
+  int (*mcp_client_get_task)(cai_mcp_client *, const char *, cai_sink *,
+                             cai_error *);
+  int (*mcp_client_get_task_result)(cai_mcp_client *, const char *, cai_sink *,
+                                    cai_error *);
+  int (*mcp_client_cancel_task)(cai_mcp_client *, const char *, cai_sink *,
+                                cai_error *);
+  int (*mcp_client_drain_events)(cai_mcp_client *, cai_error *);
   int (*mcp_client_register)(cai_mcp_client *, cai_tool_registry *,
                              const cai_mcp_tool_registration_config *,
                              cai_error *);
@@ -360,6 +378,7 @@ int main(void) {
   mcp_client_tool_count = cai_mcp_client_tool_count;
   mcp_client_tool_at = cai_mcp_client_tool_at;
   mcp_client_call_tool = cai_mcp_client_call_tool;
+  mcp_client_call_tool_task = cai_mcp_client_call_tool_task;
   mcp_client_refresh_resources = cai_mcp_client_refresh_resources;
   mcp_client_resource_count = cai_mcp_client_resource_count;
   mcp_client_resource_at = cai_mcp_client_resource_at;
@@ -377,6 +396,15 @@ int main(void) {
   mcp_client_complete = cai_mcp_client_complete;
   mcp_client_set_log_level = cai_mcp_client_set_log_level;
   mcp_client_terminate_session = cai_mcp_client_terminate_session;
+  mcp_client_send_request = cai_mcp_client_send_request;
+  mcp_client_send_notification = cai_mcp_client_send_notification;
+  mcp_client_notify_roots_list_changed =
+      cai_mcp_client_notify_roots_list_changed;
+  mcp_client_list_tasks = cai_mcp_client_list_tasks;
+  mcp_client_get_task = cai_mcp_client_get_task;
+  mcp_client_get_task_result = cai_mcp_client_get_task_result;
+  mcp_client_cancel_task = cai_mcp_client_cancel_task;
+  mcp_client_drain_events = cai_mcp_client_drain_events;
   mcp_client_register = cai_mcp_client_register_tools;
   mcp_client_destroy = cai_mcp_client_destroy;
   (void)sizeof(session_callbacks);
@@ -393,6 +421,7 @@ int main(void) {
       mcp_client_ping == 0 ||
       mcp_client_refresh_tools == 0 || mcp_client_tool_count == 0 ||
       mcp_client_tool_at == 0 || mcp_client_call_tool == 0 ||
+      mcp_client_call_tool_task == 0 ||
       mcp_client_refresh_resources == 0 || mcp_client_resource_count == 0 ||
       mcp_client_resource_at == 0 || mcp_client_read_resource == 0 ||
       mcp_client_subscribe_resource == 0 ||
@@ -403,7 +432,12 @@ int main(void) {
       mcp_client_refresh_prompts == 0 || mcp_client_prompt_count == 0 ||
       mcp_client_prompt_at == 0 || mcp_client_get_prompt == 0 ||
       mcp_client_complete == 0 || mcp_client_set_log_level == 0 ||
-      mcp_client_terminate_session == 0 || mcp_client_register == 0 ||
+      mcp_client_terminate_session == 0 ||
+      mcp_client_send_request == 0 || mcp_client_send_notification == 0 ||
+      mcp_client_notify_roots_list_changed == 0 ||
+      mcp_client_list_tasks == 0 || mcp_client_get_task == 0 ||
+      mcp_client_get_task_result == 0 || mcp_client_cancel_task == 0 ||
+      mcp_client_drain_events == 0 || mcp_client_register == 0 ||
       mcp_client_destroy == 0) {
     return 1;
   }
