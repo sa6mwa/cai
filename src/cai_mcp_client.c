@@ -139,6 +139,7 @@ typedef struct cai_mcp_jsonrpc_message_doc {
 } cai_mcp_jsonrpc_message_doc;
 
 typedef struct cai_mcp_jsonrpc_id_doc {
+  char *jsonrpc;
   lonejson_json_value id;
 } cai_mcp_jsonrpc_id_doc;
 
@@ -294,6 +295,7 @@ LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_message_map, cai_mcp_jsonrpc_message_doc,
                     cai_mcp_jsonrpc_message_fields);
 
 static const lonejson_field cai_mcp_jsonrpc_id_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_jsonrpc_id_doc, jsonrpc, "jsonrpc"),
     {"id", LONEJSON__KEY_LEN("id"), LONEJSON__KEY_FIRST("id"),
      LONEJSON__KEY_LAST("id"), offsetof(cai_mcp_jsonrpc_id_doc, id),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
@@ -2876,6 +2878,11 @@ static int cai_mcp_parse_jsonrpc_id(const lonejson_spooled *json,
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc);
     return cai_mcp_set_json_error(error, operation, &json_error);
+  }
+  if (doc->jsonrpc == NULL || strcmp(doc->jsonrpc, "2.0") != 0) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC version must be 2.0");
   }
   if (doc->id.kind == LONEJSON_JSON_VALUE_NULL) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc);
