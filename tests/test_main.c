@@ -2032,17 +2032,24 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->resources[0].title = "OK Resource";
   impl->resources[0].description = "Fake resource";
   impl->resources[0].mime_type = "text/plain";
+  impl->resources[0].icons_json = "[]";
+  impl->resources[0].annotations_json = "null";
+  impl->resources[0].has_size = 1;
+  impl->resources[0].size = 42;
   impl->resource_count = 1U;
   impl->resource_templates[0].uri_template = "resource://doc/{name}";
   impl->resource_templates[0].name = "doc";
   impl->resource_templates[0].title = "Doc Template";
   impl->resource_templates[0].description = "Fake template";
   impl->resource_templates[0].mime_type = "text/markdown";
+  impl->resource_templates[0].icons_json = "[]";
+  impl->resource_templates[0].annotations_json = "null";
   impl->resource_template_count = 1U;
   impl->prompts[0].name = "explain";
   impl->prompts[0].title = "Explain";
   impl->prompts[0].description = "Explain input";
   impl->prompts[0].arguments_json = "[{\"name\":\"topic\",\"required\":true}]";
+  impl->prompts[0].icons_json = "[]";
   impl->prompt_count = 1U;
   impl->public_client.initialize = test_mcp_client_initialize;
   impl->public_client.ping = test_mcp_client_ping;
@@ -9004,7 +9011,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"resources\":[{\"uri\":"
       "\"resource://alpha\",\"name\":\"alpha\",\"description\":\"Alpha doc\","
-      "\"mimeType\":\"text/plain\"}],\"nextCursor\":\"resources-page-2\"}}\n\n";
+      "\"mimeType\":\"text/plain\",\"icons\":[{\"src\":\"https://example.test/"
+      "alpha.png\",\"mimeType\":\"image/png\",\"sizes\":[\"48x48\"]}],"
+      "\"annotations\":{\"audience\":[\"assistant\"],\"priority\":0.8},"
+      "\"size\":1234}],\"nextCursor\":\"resources-page-2\"}}\n\n";
   static const char resources_list_page_2_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"resources\":[{\"uri\":"
       "\"resource://beta\",\"name\":\"beta\",\"title\":\"Beta Resource\","
@@ -9014,7 +9024,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"resourceTemplates\":[{"
       "\"uriTemplate\":\"resource://docs/{name}\",\"name\":\"doc\","
-      "\"description\":\"Doc template\",\"mimeType\":\"text/markdown\"}],"
+      "\"description\":\"Doc template\",\"mimeType\":\"text/markdown\","
+      "\"icons\":[{\"src\":\"https://example.test/doc.svg\","
+      "\"mimeType\":\"image/svg+xml\",\"sizes\":[\"any\"]}],"
+      "\"annotations\":{\"audience\":[\"user\"]}}],"
       "\"nextCursor\":\"resource-templates-page-2\"}}\n\n";
   static const char resource_templates_list_page_2_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"resourceTemplates\":[{"
@@ -9035,7 +9048,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"prompts\":[{\"name\":"
       "\"explain\",\"description\":\"Explain a topic\",\"arguments\":[{"
-      "\"name\":\"topic\",\"required\":true}]}],\"nextCursor\":"
+      "\"name\":\"topic\",\"required\":true}],\"icons\":[{\"src\":"
+      "\"https://example.test/prompt.svg\",\"mimeType\":\"image/svg+xml\","
+      "\"sizes\":[\"any\"]}]}],\"nextCursor\":"
       "\"prompts-page-2\"}}\n\n";
   static const char prompts_list_page_2_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"prompts\":[{\"name\":"
@@ -9343,6 +9358,13 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                resource->description, "Alpha doc");
     expect_str(state, "mcp_streamable_resource_mime", resource->mime_type,
                "text/plain");
+    expect_substr(state, "mcp_streamable_resource_icons", resource->icons_json,
+                  "alpha.png");
+    expect_substr(state, "mcp_streamable_resource_annotations",
+                  resource->annotations_json, "\"priority\":0.8");
+    expect_int(state, "mcp_streamable_resource_has_size", resource->has_size,
+               1L);
+    expect_int(state, "mcp_streamable_resource_size", resource->size, 1234L);
   }
   resource = cai_mcp_client_resource_at(client, 1U);
   if (resource == NULL) {
@@ -9353,6 +9375,12 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                "resource://beta");
     expect_str(state, "mcp_streamable_resource_page_2_title", resource->title,
                "Beta Resource");
+    expect_str(state, "mcp_streamable_resource_page_2_icons",
+               resource->icons_json, "[]");
+    expect_str(state, "mcp_streamable_resource_page_2_annotations",
+               resource->annotations_json, "null");
+    expect_int(state, "mcp_streamable_resource_page_2_has_size",
+               resource->has_size, 0L);
   }
   expect_int(state, "mcp_streamable_refresh_resource_templates",
              cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
@@ -9371,6 +9399,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                resource_template->title, "Doc template");
     expect_str(state, "mcp_streamable_resource_template_mime",
                resource_template->mime_type, "text/markdown");
+    expect_substr(state, "mcp_streamable_resource_template_icons",
+                  resource_template->icons_json, "doc.svg");
+    expect_substr(state, "mcp_streamable_resource_template_annotations",
+                  resource_template->annotations_json, "\"audience\"");
   }
   resource_template = cai_mcp_client_resource_template_at(client, 1U);
   if (resource_template == NULL) {
@@ -9381,6 +9413,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                resource_template->uri_template, "resource://metrics/{id}");
     expect_str(state, "mcp_streamable_resource_template_page_2_title",
                resource_template->title, "Metric Template");
+    expect_str(state, "mcp_streamable_resource_template_page_2_icons",
+               resource_template->icons_json, "[]");
+    expect_str(state, "mcp_streamable_resource_template_page_2_annotations",
+               resource_template->annotations_json, "null");
   }
   expect_int(
       state, "mcp_streamable_read_resource",
@@ -9411,6 +9447,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                "Explain a topic");
     expect_substr(state, "mcp_streamable_prompt_arguments",
                   prompt->arguments_json, "\"topic\"");
+    expect_substr(state, "mcp_streamable_prompt_icons", prompt->icons_json,
+                  "prompt.svg");
   }
   prompt = cai_mcp_client_prompt_at(client, 1U);
   if (prompt == NULL) {
@@ -9422,6 +9460,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                "Summarize");
     expect_str(state, "mcp_streamable_prompt_page_2_arguments",
                prompt->arguments_json, "[]");
+    expect_str(state, "mcp_streamable_prompt_page_2_icons", prompt->icons_json,
+               "[]");
   }
   args.cleanup(&args);
   CAI_LJ->spooled_init(CAI_LJ, &args);

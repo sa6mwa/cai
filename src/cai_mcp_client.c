@@ -26,6 +26,10 @@ typedef struct cai_mcp_client_resource_impl {
   char *title;
   char *description;
   char *mime_type;
+  char *icons_json;
+  char *annotations_json;
+  int has_size;
+  long long size;
 } cai_mcp_client_resource_impl;
 
 typedef struct cai_mcp_client_resource_template_impl {
@@ -35,6 +39,8 @@ typedef struct cai_mcp_client_resource_template_impl {
   char *title;
   char *description;
   char *mime_type;
+  char *icons_json;
+  char *annotations_json;
 } cai_mcp_client_resource_template_impl;
 
 typedef struct cai_mcp_client_prompt_impl {
@@ -43,6 +49,7 @@ typedef struct cai_mcp_client_prompt_impl {
   char *title;
   char *description;
   char *arguments_json;
+  char *icons_json;
 } cai_mcp_client_prompt_impl;
 
 typedef struct cai_mcp_streamable_http_client_impl {
@@ -148,6 +155,10 @@ typedef struct cai_mcp_list_resource_doc {
   char *title;
   char *description;
   char *mime_type;
+  lonejson_json_value icons;
+  lonejson_json_value annotations;
+  int has_size;
+  int64_t size;
 } cai_mcp_list_resource_doc;
 
 typedef struct cai_mcp_resources_list_result_doc {
@@ -166,6 +177,8 @@ typedef struct cai_mcp_list_resource_template_doc {
   char *title;
   char *description;
   char *mime_type;
+  lonejson_json_value icons;
+  lonejson_json_value annotations;
 } cai_mcp_list_resource_template_doc;
 
 typedef struct cai_mcp_resource_templates_list_result_doc {
@@ -183,6 +196,7 @@ typedef struct cai_mcp_list_prompt_doc {
   char *title;
   char *description;
   lonejson_json_value arguments;
+  lonejson_json_value icons;
 } cai_mcp_list_prompt_doc;
 
 typedef struct cai_mcp_prompts_list_result_doc {
@@ -346,7 +360,20 @@ static const lonejson_field cai_mcp_list_resource_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_doc, description,
                                 "description"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_doc, mime_type,
-                                "mimeType")};
+                                "mimeType"),
+    {"icons", LONEJSON__KEY_LEN("icons"), LONEJSON__KEY_FIRST("icons"),
+     LONEJSON__KEY_LAST("icons"), offsetof(cai_mcp_list_resource_doc, icons),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"annotations", LONEJSON__KEY_LEN("annotations"),
+     LONEJSON__KEY_FIRST("annotations"), LONEJSON__KEY_LAST("annotations"),
+     offsetof(cai_mcp_list_resource_doc, annotations),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_I64_PRESENT(cai_mcp_list_resource_doc, size, has_size,
+                               "size")};
 LONEJSON_MAP_DEFINE(cai_mcp_list_resource_map, cai_mcp_list_resource_doc,
                     cai_mcp_list_resource_fields);
 
@@ -380,7 +407,19 @@ static const lonejson_field cai_mcp_list_resource_template_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_template_doc, description,
                                 "description"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_resource_template_doc, mime_type,
-                                "mimeType")};
+                                "mimeType"),
+    {"icons", LONEJSON__KEY_LEN("icons"), LONEJSON__KEY_FIRST("icons"),
+     LONEJSON__KEY_LAST("icons"),
+     offsetof(cai_mcp_list_resource_template_doc, icons),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"annotations", LONEJSON__KEY_LEN("annotations"),
+     LONEJSON__KEY_FIRST("annotations"), LONEJSON__KEY_LAST("annotations"),
+     offsetof(cai_mcp_list_resource_template_doc, annotations),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_list_resource_template_map,
                     cai_mcp_list_resource_template_doc,
                     cai_mcp_list_resource_template_fields);
@@ -414,6 +453,11 @@ static const lonejson_field cai_mcp_list_prompt_fields[] = {
     {"arguments", LONEJSON__KEY_LEN("arguments"),
      LONEJSON__KEY_FIRST("arguments"), LONEJSON__KEY_LAST("arguments"),
      offsetof(cai_mcp_list_prompt_doc, arguments),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"icons", LONEJSON__KEY_LEN("icons"), LONEJSON__KEY_FIRST("icons"),
+     LONEJSON__KEY_LAST("icons"), offsetof(cai_mcp_list_prompt_doc, icons),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
      LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
      NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
@@ -2579,6 +2623,8 @@ cai_mcp_client_resource_impl_cleanup(const cai_allocator *allocator,
     cai_free_mem(allocator, resource->title);
     cai_free_mem(allocator, resource->description);
     cai_free_mem(allocator, resource->mime_type);
+    cai_free_mem(allocator, resource->icons_json);
+    cai_free_mem(allocator, resource->annotations_json);
     memset(resource, 0, sizeof(*resource));
   }
 }
@@ -2592,6 +2638,8 @@ static void cai_mcp_client_resource_template_impl_cleanup(
     cai_free_mem(allocator, resource_template->title);
     cai_free_mem(allocator, resource_template->description);
     cai_free_mem(allocator, resource_template->mime_type);
+    cai_free_mem(allocator, resource_template->icons_json);
+    cai_free_mem(allocator, resource_template->annotations_json);
     memset(resource_template, 0, sizeof(*resource_template));
   }
 }
@@ -2604,6 +2652,7 @@ cai_mcp_client_prompt_impl_cleanup(const cai_allocator *allocator,
     cai_free_mem(allocator, prompt->title);
     cai_free_mem(allocator, prompt->description);
     cai_free_mem(allocator, prompt->arguments_json);
+    cai_free_mem(allocator, prompt->icons_json);
     memset(prompt, 0, sizeof(*prompt));
   }
 }
@@ -2772,6 +2821,16 @@ cai_mcp_optional_json_value_to_cstr(const cai_allocator *allocator,
                                     cai_error *error) {
   if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
     return cai_strdup(allocator, "null");
+  }
+  return cai_mcp_json_value_to_cstr(value, error);
+}
+
+static char *
+cai_mcp_optional_json_array_to_cstr(const cai_allocator *allocator,
+                                    const lonejson_json_value *value,
+                                    cai_error *error) {
+  if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_strdup(allocator, "[]");
   }
   return cai_mcp_json_value_to_cstr(value, error);
 }
@@ -2953,10 +3012,19 @@ static int cai_mcp_parse_resources_list_response(
       dst->mime_type = cai_strdup(
           &impl->allocator,
           src_resources[i].mime_type != NULL ? src_resources[i].mime_type : "");
+      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
+          &impl->allocator, &src_resources[i].icons, error);
+      dst->annotations_json = cai_mcp_optional_json_value_to_cstr(
+          &impl->allocator, &src_resources[i].annotations, error);
+      dst->has_size = src_resources[i].has_size;
+      dst->size = (long long)src_resources[i].size;
       if (dst->uri == NULL || dst->name == NULL || dst->title == NULL ||
-          dst->description == NULL || dst->mime_type == NULL) {
-        rc = cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to copy MCP resource metadata");
+          dst->description == NULL || dst->mime_type == NULL ||
+          dst->icons_json == NULL || dst->annotations_json == NULL) {
+        rc = error != NULL && error->code != CAI_OK
+                 ? error->code
+                 : cai_set_error(error, CAI_ERR_NOMEM,
+                                 "failed to copy MCP resource metadata");
         cai_mcp_client_resource_impl_cleanup(&impl->allocator, dst);
         break;
       }
@@ -2965,6 +3033,10 @@ static int cai_mcp_parse_resources_list_response(
       dst->public_resource.title = dst->title;
       dst->public_resource.description = dst->description;
       dst->public_resource.mime_type = dst->mime_type;
+      dst->public_resource.icons_json = dst->icons_json;
+      dst->public_resource.annotations_json = dst->annotations_json;
+      dst->public_resource.has_size = dst->has_size;
+      dst->public_resource.size = dst->size;
       impl->resource_count++;
     }
   }
@@ -3060,11 +3132,19 @@ static int cai_mcp_parse_resource_templates_list_response(
                                   src_resource_templates[i].mime_type != NULL
                                       ? src_resource_templates[i].mime_type
                                       : "");
+      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
+          &impl->allocator, &src_resource_templates[i].icons, error);
+      dst->annotations_json = cai_mcp_optional_json_value_to_cstr(
+          &impl->allocator, &src_resource_templates[i].annotations, error);
       if (dst->uri_template == NULL || dst->name == NULL ||
           dst->title == NULL || dst->description == NULL ||
-          dst->mime_type == NULL) {
-        rc = cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to copy MCP resource template metadata");
+          dst->mime_type == NULL || dst->icons_json == NULL ||
+          dst->annotations_json == NULL) {
+        rc = error != NULL && error->code != CAI_OK
+                 ? error->code
+                 : cai_set_error(
+                       error, CAI_ERR_NOMEM,
+                       "failed to copy MCP resource template metadata");
         cai_mcp_client_resource_template_impl_cleanup(&impl->allocator, dst);
         break;
       }
@@ -3073,6 +3153,8 @@ static int cai_mcp_parse_resource_templates_list_response(
       dst->public_resource_template.title = dst->title;
       dst->public_resource_template.description = dst->description;
       dst->public_resource_template.mime_type = dst->mime_type;
+      dst->public_resource_template.icons_json = dst->icons_json;
+      dst->public_resource_template.annotations_json = dst->annotations_json;
       impl->resource_template_count++;
     }
   }
@@ -3157,12 +3239,12 @@ static int cai_mcp_parse_prompts_list_response(
       dst->description = cai_strdup(
           &impl->allocator,
           src_prompts[i].description != NULL ? src_prompts[i].description : "");
-      dst->arguments_json =
-          src_prompts[i].arguments.methods != NULL
-              ? cai_mcp_json_value_to_cstr(&src_prompts[i].arguments, error)
-              : cai_strdup(&impl->allocator, "[]");
+      dst->arguments_json = cai_mcp_optional_json_array_to_cstr(
+          &impl->allocator, &src_prompts[i].arguments, error);
+      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
+          &impl->allocator, &src_prompts[i].icons, error);
       if (dst->name == NULL || dst->title == NULL || dst->description == NULL ||
-          dst->arguments_json == NULL) {
+          dst->arguments_json == NULL || dst->icons_json == NULL) {
         rc = error != NULL && error->code != CAI_OK
                  ? error->code
                  : cai_set_error(error, CAI_ERR_NOMEM,
@@ -3174,6 +3256,7 @@ static int cai_mcp_parse_prompts_list_response(
       dst->public_prompt.title = dst->title;
       dst->public_prompt.description = dst->description;
       dst->public_prompt.arguments_json = dst->arguments_json;
+      dst->public_prompt.icons_json = dst->icons_json;
       impl->prompt_count++;
     }
   }

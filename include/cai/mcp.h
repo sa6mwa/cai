@@ -127,6 +127,14 @@ typedef struct cai_mcp_client_resource {
   const char *description;
   /** Resource MIME type, or an empty string when absent. */
   const char *mime_type;
+  /** Resource icons JSON array, or "[]" when absent. */
+  const char *icons_json;
+  /** Resource annotations JSON object, or "null" when absent. */
+  const char *annotations_json;
+  /** Non-zero when `size` was advertised by the server. */
+  int has_size;
+  /** Resource size in bytes when `has_size` is non-zero. */
+  long long size;
 } cai_mcp_client_resource;
 
 /** One remote MCP resource template descriptor discovered from
@@ -143,6 +151,10 @@ typedef struct cai_mcp_client_resource_template {
   const char *description;
   /** Resource MIME type, or an empty string when absent. */
   const char *mime_type;
+  /** Resource template icons JSON array, or "[]" when absent. */
+  const char *icons_json;
+  /** Resource template annotations JSON object, or "null" when absent. */
+  const char *annotations_json;
 } cai_mcp_client_resource_template;
 
 /** One remote MCP prompt descriptor discovered from prompts/list. */
@@ -155,6 +167,8 @@ typedef struct cai_mcp_client_prompt {
   const char *description;
   /** Prompt arguments array JSON, or "[]" when absent. */
   const char *arguments_json;
+  /** Prompt icons JSON array, or "[]" when absent. */
+  const char *icons_json;
 } cai_mcp_client_prompt;
 
 /** Callback for server-to-client MCP notifications observed by a client.
