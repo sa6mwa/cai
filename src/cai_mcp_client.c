@@ -131,6 +131,7 @@ typedef struct cai_mcp_jsonrpc_sink_response_doc {
 } cai_mcp_jsonrpc_sink_response_doc;
 
 typedef struct cai_mcp_jsonrpc_message_doc {
+  char *jsonrpc;
   lonejson_json_value id;
   char *method;
   lonejson_json_value params;
@@ -271,6 +272,8 @@ LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_sink_response_map,
                     cai_mcp_jsonrpc_sink_response_fields);
 
 static const lonejson_field cai_mcp_jsonrpc_message_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_jsonrpc_message_doc, jsonrpc,
+                                "jsonrpc"),
     {"id", LONEJSON__KEY_LEN("id"), LONEJSON__KEY_FIRST("id"),
      LONEJSON__KEY_LAST("id"), offsetof(cai_mcp_jsonrpc_message_doc, id),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
@@ -1422,6 +1425,11 @@ static int cai_mcp_parse_sse_message(lonejson_spooled *data,
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
     return cai_mcp_set_json_error(error, "failed to parse MCP SSE JSON-RPC",
                                   &json_error);
+  }
+  if (doc->jsonrpc == NULL || strcmp(doc->jsonrpc, "2.0") != 0) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC version must be 2.0");
   }
   return CAI_OK;
 }
