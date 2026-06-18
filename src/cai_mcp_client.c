@@ -324,6 +324,20 @@ typedef struct cai_mcp_sampling_params_doc {
   char *include_context;
 } cai_mcp_sampling_params_doc;
 
+typedef struct cai_mcp_cancelled_params_doc {
+  lonejson_json_value request_id;
+  char *reason;
+} cai_mcp_cancelled_params_doc;
+
+typedef struct cai_mcp_progress_params_doc {
+  lonejson_json_value progress_token;
+  int has_progress;
+  double progress;
+  int has_total;
+  double total;
+  char *message;
+} cai_mcp_progress_params_doc;
+
 typedef struct cai_mcp_elicitation_params_doc {
   char *mode;
   char *message;
@@ -477,6 +491,36 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
                                 "includeContext")};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
                     cai_mcp_sampling_params_fields);
+
+static const lonejson_field cai_mcp_cancelled_params_fields[] = {
+    {"requestId", LONEJSON__KEY_LEN("requestId"),
+     LONEJSON__KEY_FIRST("requestId"), LONEJSON__KEY_LAST("requestId"),
+     offsetof(cai_mcp_cancelled_params_doc, request_id),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_cancelled_params_doc, reason,
+                                "reason")};
+LONEJSON_MAP_DEFINE(cai_mcp_cancelled_params_map, cai_mcp_cancelled_params_doc,
+                    cai_mcp_cancelled_params_fields);
+
+static const lonejson_field cai_mcp_progress_params_fields[] = {
+    {"progressToken", LONEJSON__KEY_LEN("progressToken"),
+     LONEJSON__KEY_FIRST("progressToken"), LONEJSON__KEY_LAST("progressToken"),
+     offsetof(cai_mcp_progress_params_doc, progress_token),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_progress_params_doc, progress,
+                               has_progress, "progress"),
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_progress_params_doc, total, has_total,
+                               "total"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_progress_params_doc, message,
+                                "message")};
+LONEJSON_MAP_DEFINE(cai_mcp_progress_params_map, cai_mcp_progress_params_doc,
+                    cai_mcp_progress_params_fields);
 
 static const lonejson_field cai_mcp_elicitation_params_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_elicitation_params_doc, mode, "mode"),
@@ -1640,6 +1684,89 @@ cai_mcp_invalidate_for_notification(cai_mcp_streamable_http_client_impl *impl,
 }
 
 static int
+cai_mcp_json_value_id_shape_is_valid(const lonejson_json_value *value) {
+  cai_error ignored;
+  int rc;
+
+  cai_error_init(&ignored);
+  rc = cai_mcp_validate_jsonrpc_id_value(value, &ignored);
+  cai_error_cleanup(&ignored);
+  return rc == CAI_OK;
+}
+
+static int
+cai_mcp_cancelled_params_are_valid(const lonejson_json_value *params) {
+  cai_mcp_cancelled_params_doc doc;
+  lonejson_spooled spool;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int valid;
+
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
+      !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return 0;
+  }
+  memset(&doc, 0, sizeof(doc));
+  memset(&spool, 0, sizeof(spool));
+  if (cai_mcp_json_value_to_spooled(params, &spool, NULL) != CAI_OK) {
+    return 0;
+  }
+  reader.cursor = spool;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_cancelled_params_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  valid = status == LONEJSON_STATUS_OK &&
+          cai_mcp_json_value_id_shape_is_valid(&doc.request_id);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_cancelled_params_map, &doc);
+  spool.cleanup(&spool);
+  return valid;
+}
+
+static int
+cai_mcp_progress_params_are_valid(const lonejson_json_value *params) {
+  cai_mcp_progress_params_doc doc;
+  lonejson_spooled spool;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int valid;
+
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
+      !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return 0;
+  }
+  memset(&doc, 0, sizeof(doc));
+  memset(&spool, 0, sizeof(spool));
+  if (cai_mcp_json_value_to_spooled(params, &spool, NULL) != CAI_OK) {
+    return 0;
+  }
+  reader.cursor = spool;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_progress_params_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  valid = status == LONEJSON_STATUS_OK && doc.has_progress &&
+          cai_mcp_json_value_id_shape_is_valid(&doc.progress_token);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_params_map, &doc);
+  spool.cleanup(&spool);
+  return valid;
+}
+
+static int
+cai_mcp_notification_should_dispatch(const cai_mcp_jsonrpc_message_doc *doc) {
+  if (doc == NULL || doc->method == NULL) {
+    return 0;
+  }
+  if (strcmp(doc->method, "notifications/cancelled") == 0) {
+    return cai_mcp_cancelled_params_are_valid(&doc->params);
+  }
+  if (strcmp(doc->method, "notifications/progress") == 0) {
+    return cai_mcp_progress_params_are_valid(&doc->params);
+  }
+  return 1;
+}
+
+static int
 cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
                               const cai_mcp_jsonrpc_message_doc *doc,
                               cai_error *error) {
@@ -1650,6 +1777,9 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
   int rc;
 
   if (impl == NULL || doc == NULL || doc->method == NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_notification_should_dispatch(doc)) {
     return CAI_OK;
   }
   cai_mcp_invalidate_for_notification(impl, doc->method);
