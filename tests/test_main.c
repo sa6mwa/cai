@@ -13659,6 +13659,103 @@ static void test_mcp_streamable_http_drain_events_get_sse(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_drain_events_resume_get(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char roots_event[] =
+      "id: drain-resume-1\n"
+      "retry: 0\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-resume-1\","
+      "\"method\":\"roots/list\"}\n\n";
+  static const char notification_event[] =
+      "id: drain-resume-2\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"params\":{\"level\":\"info\",\"data\":\"hello resumed get\"}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: drain-resume-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *get_required[] = {"GET /v1/mcp HTTP/",
+                                       "Accept: text/event-stream",
+                                       "MCP-Session-Id: drain-resume-session"};
+  static const char *roots_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: drain-resume-session",
+      "\"id\":\"roots-resume-1\"",
+      "\"result\":{\"roots\":[{\"uri\":\"file:///tmp/cai-resume\","
+      "\"name\":\"cai-resume\"}]}"};
+  static const char *resume_required[] = {
+      "GET /v1/mcp HTTP/", "Accept: text/event-stream",
+      "MCP-Session-Id: drain-resume-session", "Last-Event-ID: drain-resume-1"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: drain-resume-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"GET /v1/mcp HTTP/", get_required,
+       sizeof(get_required) / sizeof(get_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, roots_event},
+      {"POST /v1/mcp HTTP/", roots_response_required,
+       sizeof(roots_response_required) / sizeof(roots_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
+      {"GET /v1/mcp HTTP/", resume_required,
+       sizeof(resume_required) / sizeof(resume_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, notification_event}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_receiver_state receiver;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&receiver, 0, sizeof(receiver));
+  receiver.roots.result_json =
+      "{\"roots\":[{\"uri\":\"file:///tmp/cai-resume\","
+      "\"name\":\"cai-resume\"}]}";
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_drain_resume_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &receiver;
+  config.receiver.notification = test_mcp_receiver_notification_callback;
+  config.receiver.list_roots = test_mcp_receiver_roots_list_callback;
+  config.receiver.roots_list_changed = 1;
+  expect_int(state, "mcp_streamable_drain_resume_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_drain_resume_call",
+             cai_mcp_client_drain_events(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_drain_resume_roots_count",
+             receiver.roots.count, 1L);
+  expect_int(state, "mcp_streamable_drain_resume_notification_count",
+             receiver.notifications.count, 1L);
+  expect_substr(state, "mcp_streamable_drain_resume_notification_params",
+                receiver.notifications.params,
+                "\"data\":\"hello resumed get\"");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_drain_resume_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_drain_events_rejects_response(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -27248,6 +27345,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_server_request_unsupported},
     {"mcp_streamable_http_drain_events_get_sse",
      test_mcp_streamable_http_drain_events_get_sse},
+    {"mcp_streamable_http_drain_events_resume_get",
+     test_mcp_streamable_http_drain_events_resume_get},
     {"mcp_streamable_http_drain_events_rejects_response",
      test_mcp_streamable_http_drain_events_rejects_response},
     {"mcp_streamable_http_drain_events_405",

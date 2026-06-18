@@ -103,9 +103,16 @@ typedef struct cai_mcp_http_response_capture {
   long status;
 } cai_mcp_http_response_capture;
 
+typedef struct cai_mcp_sse_resume_state {
+  char *last_event_id;
+  long retry_ms;
+  int has_retry;
+} cai_mcp_sse_resume_state;
+
 typedef struct cai_mcp_sse_stream_state {
   cai_mcp_streamable_http_client_impl *impl;
   lonejson_spooled event_data;
+  cai_mcp_sse_resume_state resume;
   cai_buffer_builder line;
   char event[64];
   cai_error *error;
@@ -113,12 +120,6 @@ typedef struct cai_mcp_sse_stream_state {
   int failed;
   int rc;
 } cai_mcp_sse_stream_state;
-
-typedef struct cai_mcp_sse_resume_state {
-  char *last_event_id;
-  long retry_ms;
-  int has_retry;
-} cai_mcp_sse_resume_state;
 
 typedef struct cai_mcp_spooled_upload {
   lonejson_spooled cursor;
@@ -2468,9 +2469,9 @@ static size_t cai_mcp_sse_stream_write(char *ptr, size_t size, size_t nmemb,
   for (i = 0U; i < total; i++) {
     if (ptr[i] == '\n') {
       rc = cai_mcp_sse_handle_line(&state->event_data, state->event,
-                                   sizeof(state->event), NULL, state->line.data,
-                                   state->line.length, &state->event_ready,
-                                   state->error);
+                                   sizeof(state->event), &state->resume,
+                                   state->line.data, state->line.length,
+                                   &state->event_ready, state->error);
       state->line.length = 0U;
       if (state->line.data != NULL) {
         state->line.data[0] = '\0';
@@ -2499,9 +2500,9 @@ static int cai_mcp_sse_stream_finish(cai_mcp_sse_stream_state *state) {
   rc = CAI_OK;
   if (state->line.length != 0U) {
     rc = cai_mcp_sse_handle_line(&state->event_data, state->event,
-                                 sizeof(state->event), NULL, state->line.data,
-                                 state->line.length, &state->event_ready,
-                                 state->error);
+                                 sizeof(state->event), &state->resume,
+                                 state->line.data, state->line.length,
+                                 &state->event_ready, state->error);
     state->line.length = 0U;
     if (state->line.data != NULL) {
       state->line.data[0] = '\0';
@@ -2517,8 +2518,10 @@ static int cai_mcp_sse_stream_finish(cai_mcp_sse_stream_state *state) {
   return rc;
 }
 
-static int cai_mcp_get_events(cai_mcp_streamable_http_client_impl *impl,
-                              cai_error *error) {
+static int cai_mcp_get_events_once(cai_mcp_streamable_http_client_impl *impl,
+                                   const char *last_event_id, int allow_405,
+                                   cai_mcp_sse_resume_state *resume_out,
+                                   cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -2547,11 +2550,15 @@ static int cai_mcp_get_events(cai_mcp_streamable_http_client_impl *impl,
   if (rc == CAI_OK) {
     rc = cai_mcp_append_session_headers(impl, &headers, error);
   }
+  if (rc == CAI_OK && last_event_id != NULL) {
+    rc = cai_mcp_append_last_event_id_header(&headers, last_event_id, error);
+  }
   if (rc != CAI_OK) {
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
     stream.event_data.cleanup(&stream.event_data);
     cai_free_mem(NULL, stream.line.data);
+    cai_free_mem(NULL, stream.resume.last_event_id);
     cai_mcp_http_response_capture_cleanup(&response);
     return rc;
   }
@@ -2579,7 +2586,7 @@ static int cai_mcp_get_events(cai_mcp_streamable_http_client_impl *impl,
                                 "MCP HTTP event stream failed",
                                 curl_easy_strerror(curl_rc));
     }
-  } else if (response.status == 405L) {
+  } else if (response.status == 405L && allow_405) {
     rc = CAI_OK;
   } else {
     rc = cai_mcp_response_ok(&response, error);
@@ -2591,9 +2598,35 @@ static int cai_mcp_get_events(cai_mcp_streamable_http_client_impl *impl,
       rc = cai_mcp_sse_stream_finish(&stream);
     }
   }
+  if (rc == CAI_OK && resume_out != NULL &&
+      stream.resume.last_event_id != NULL &&
+      stream.resume.last_event_id[0] != '\0') {
+    cai_free_mem(NULL, resume_out->last_event_id);
+    *resume_out = stream.resume;
+    memset(&stream.resume, 0, sizeof(stream.resume));
+  }
   stream.event_data.cleanup(&stream.event_data);
   cai_free_mem(NULL, stream.line.data);
+  cai_free_mem(NULL, stream.resume.last_event_id);
   cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+
+static int cai_mcp_get_events(cai_mcp_streamable_http_client_impl *impl,
+                              cai_error *error) {
+  cai_mcp_sse_resume_state resume;
+  int rc;
+
+  memset(&resume, 0, sizeof(resume));
+  rc = cai_mcp_get_events_once(impl, NULL, 1, &resume, error);
+  if (rc == CAI_OK && resume.last_event_id != NULL &&
+      resume.last_event_id[0] != '\0') {
+    if (resume.has_retry) {
+      cai_mcp_sleep_ms(resume.retry_ms);
+    }
+    rc = cai_mcp_get_events_once(impl, resume.last_event_id, 0, NULL, error);
+  }
+  cai_free_mem(NULL, resume.last_event_id);
   return rc;
 }
 

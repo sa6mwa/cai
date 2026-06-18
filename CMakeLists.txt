@@ -830,6 +830,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_elicitation_url_not_advertised
     mcp_streamable_http_server_request_unsupported
     mcp_streamable_http_drain_events_get_sse
+    mcp_streamable_http_drain_events_resume_get
     mcp_streamable_http_drain_events_rejects_response
     mcp_streamable_http_drain_events_405
     mcp_streamable_http_session_recovery
