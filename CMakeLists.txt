@@ -826,6 +826,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_request
     mcp_streamable_http_sampling_invalid_result
     mcp_streamable_http_sampling_invalid_params
+    mcp_streamable_http_sampling_params_not_object
     mcp_streamable_http_task_request_capabilities
     mcp_streamable_http_task_request_flags_require_callbacks
     mcp_streamable_http_sampling_tools_not_advertised
@@ -834,6 +835,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_elicitation_invalid_result
     mcp_streamable_http_elicitation_invalid_action
     mcp_streamable_http_elicitation_invalid_params
+    mcp_streamable_http_elicitation_missing_message
     mcp_streamable_http_elicitation_url_not_advertised
     mcp_streamable_http_server_request_unsupported
     mcp_streamable_http_drain_events_get_sse
