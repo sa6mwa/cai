@@ -12573,6 +12573,82 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
                     &server.child_status);
 }
 
+static void
+test_mcp_streamable_http_task_list_without_cursor(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tasks\":{\"list\":{}}},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char tasks_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tasks\":[],\"_meta\":{}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-list-empty-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *tasks_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-list-empty-session",
+      "\"method\":\"tasks/list\"",
+      "\"params\":{\"_meta\":{\"progressToken\":2}}"};
+  static const char *tasks_list_forbidden[] = {"\"params\":{,\"_meta\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: task-list-empty-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", tasks_list_required,
+       sizeof(tasks_list_required) / sizeof(tasks_list_required[0]),
+       tasks_list_forbidden,
+       sizeof(tasks_list_forbidden) / sizeof(tasks_list_forbidden[0]), 200,
+       "OK", "application/json", NULL, tasks_list_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_task_list_empty_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_task_list_empty_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_task_list_empty_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_task_list_empty_call",
+             cai_mcp_client_list_tasks(client, NULL, sink, &error), CAI_OK);
+  expect_substr(state, "mcp_streamable_task_list_empty_output", writer.buffer,
+                "\"tasks\":[]");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_task_list_empty_mock", server.pid,
+                    &server.child_status);
+}
+
 static void test_mcp_streamable_http_logging_error(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -28018,6 +28094,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_notification_response_body},
     {"mcp_streamable_http_task_utilities",
      test_mcp_streamable_http_task_utilities},
+    {"mcp_streamable_http_task_list_without_cursor",
+     test_mcp_streamable_http_task_list_without_cursor},
     {"mcp_streamable_http_logging_error",
      test_mcp_streamable_http_logging_error},
     {"mcp_streamable_http_terminate_session_405",

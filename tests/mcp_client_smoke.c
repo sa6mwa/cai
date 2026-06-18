@@ -298,6 +298,48 @@ int main(int argc, char **argv) {
     free(writer.data);
     return smoke_error("completion output was unexpected", NULL);
   }
+  rc = cai_mcp_client_set_log_level(client, "info", &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to set MCP log level", &error);
+  }
+  rc = cai_mcp_client_subscribe_resource(
+      client, "demo://resource/static/document/architecture.md", &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to subscribe to architecture resource", &error);
+  }
+  rc = cai_mcp_client_unsubscribe_resource(
+      client, "demo://resource/static/document/architecture.md", &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to unsubscribe from architecture resource",
+                       &error);
+  }
+  writer.length = 0U;
+  writer.data[0] = '\0';
+  callbacks.context = &writer;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to recreate task output sink", &error);
+  }
+  rc = cai_mcp_client_list_tasks(client, NULL, sink, &error);
+  cai_sink_close(sink);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to list MCP tasks", &error);
+  }
+  if (writer.data == NULL || strstr(writer.data, "\"tasks\"") == NULL) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("tasks/list output was unexpected", NULL);
+  }
   rc = cai_mcp_client_terminate_session(client, &error);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);

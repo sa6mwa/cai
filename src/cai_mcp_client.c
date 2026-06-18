@@ -3456,6 +3456,31 @@ cai_mcp_write_progress_meta(cai_mcp_streamable_http_client_impl *impl,
 }
 
 static int
+cai_mcp_write_progress_meta_member(cai_mcp_streamable_http_client_impl *impl,
+                                   lonejson_spooled *spool,
+                                   int has_prior_member, cai_error *error) {
+  int rc;
+
+  rc = CAI_OK;
+  if (has_prior_member) {
+    rc = cai_mcp_write_cstr(spool, ",", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "\"_meta\":{\"progressToken\":", error);
+  }
+  if (rc == CAI_OK) {
+    char token[64];
+
+    snprintf(token, sizeof(token), "%lld", impl->next_id);
+    rc = cai_mcp_write_cstr(spool, token, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}", error);
+  }
+  return rc;
+}
+
+static int
 cai_mcp_resource_read_request(cai_mcp_streamable_http_client_impl *impl,
                               const char *uri, lonejson_spooled *spool,
                               size_t *out_len, cai_error *error) {
@@ -6583,9 +6608,10 @@ static int cai_mcp_task_request(cai_mcp_streamable_http_client_impl *impl,
     if (rc == CAI_OK) {
       rc = cai_mcp_write_json_string(spool, cursor, error);
     }
+    has_param = 1;
   }
   if (rc == CAI_OK) {
-    rc = cai_mcp_write_progress_meta(impl, spool, error);
+    rc = cai_mcp_write_progress_meta_member(impl, spool, has_param, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, "}}", error);
