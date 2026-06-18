@@ -852,6 +852,11 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resource_updated_notification
     mcp_streamable_http_resource_updated_missing_uri
     mcp_streamable_http_resource_updated_array_params
+    mcp_streamable_http_task_status_notification
+    mcp_streamable_http_task_status_missing_ttl
+    mcp_streamable_http_task_status_invalid_status
+    mcp_streamable_http_task_status_string_ttl
+    mcp_streamable_http_task_status_array_params
     mcp_streamable_http_roots_list_request
     mcp_streamable_http_roots_list_callback_error
     mcp_streamable_http_roots_list_invalid_result

@@ -451,6 +451,8 @@ static int cai_mcp_json_value_root_is(const lonejson_json_value *value,
 static int cai_mcp_spooled_root_is(const lonejson_spooled *json, int root,
                                    const char *message, cai_error *error);
 static int cai_mcp_log_level_valid(const char *level);
+static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
+                                 cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
 static int cai_mcp_validate_roots_result(lonejson_spooled *json,
@@ -2115,6 +2117,42 @@ cai_mcp_validate_resource_updated_params(const lonejson_json_value *params,
   return CAI_OK;
 }
 
+static int cai_mcp_validate_task_status_notification_params(
+    const lonejson_json_value *params, cai_error *error) {
+  cai_mcp_task_doc doc;
+  lonejson_spooled spool;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
+      !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP task status params must be an object");
+  }
+  memset(&doc, 0, sizeof(doc));
+  memset(&spool, 0, sizeof(spool));
+  rc = cai_mcp_json_value_to_spooled(params, &spool, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  reader.cursor = spool;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_task_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_task_map, &doc);
+    spool.cleanup(&spool);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP task status params", &json_error);
+  }
+  rc = cai_mcp_task_validate(&doc, error);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_task_map, &doc);
+  spool.cleanup(&spool);
+  return rc;
+}
+
 static int cai_mcp_notification_should_dispatch(
     const cai_mcp_streamable_http_client_impl *impl,
     const cai_mcp_jsonrpc_message_doc *doc) {
@@ -2151,6 +2189,12 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
   }
   if (strcmp(doc->method, "notifications/resources/updated") == 0) {
     rc = cai_mcp_validate_resource_updated_params(&doc->params, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  if (strcmp(doc->method, "notifications/tasks/status") == 0) {
+    rc = cai_mcp_validate_task_status_notification_params(&doc->params, error);
     if (rc != CAI_OK) {
       return rc;
     }
