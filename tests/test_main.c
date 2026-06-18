@@ -10548,6 +10548,98 @@ static void test_mcp_streamable_http_long_session_id_header(test_state *state) {
                     &server.child_status);
 }
 
+static void
+test_mcp_streamable_http_initialize_response_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: initialize-id-mismatch-session",
+       initialize_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_initialize_id_mismatch_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_initialize_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_initialize_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_initialize_id_mismatch_message",
+             error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_initialize_id_mismatch_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_initialize_error_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"error\":{\"code\":-32000,"
+      "\"message\":\"wrong request\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, initialize_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_initialize_error_id_mismatch_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_initialize_error_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_initialize_error_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_initialize_error_id_mismatch_message",
+             error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_initialize_error_id_mismatch_mock",
+                    server.pid, &server.child_status);
+}
+
 static void test_mcp_streamable_http_response_id_mismatch(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -30548,6 +30640,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_initialize_space_session_id},
     {"mcp_streamable_http_long_session_id_header",
      test_mcp_streamable_http_long_session_id_header},
+    {"mcp_streamable_http_initialize_response_id_mismatch",
+     test_mcp_streamable_http_initialize_response_id_mismatch},
+    {"mcp_streamable_http_initialize_error_id_mismatch",
+     test_mcp_streamable_http_initialize_error_id_mismatch},
     {"mcp_streamable_http_response_id_mismatch",
      test_mcp_streamable_http_response_id_mismatch},
     {"mcp_streamable_http_error_response_id_mismatch",
