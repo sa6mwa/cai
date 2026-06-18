@@ -2295,12 +2295,30 @@ static void cai_mcp_sse_set_retry(cai_mcp_sse_resume_state *resume,
   resume->has_retry = 1;
 }
 
+typedef void (*cai_mcp_sleep_ms_fn)(long ms);
+
+#ifdef CAI_TESTING
+static cai_mcp_sleep_ms_fn cai_mcp_test_sleep_ms_fn = NULL;
+
+void cai_mcp_test_set_sleep_ms_fn(cai_mcp_sleep_ms_fn fn);
+
+void cai_mcp_test_set_sleep_ms_fn(cai_mcp_sleep_ms_fn fn) {
+  cai_mcp_test_sleep_ms_fn = fn;
+}
+#endif
+
 static void cai_mcp_sleep_ms(long ms) {
   struct timeval tv;
 
   if (ms <= 0L) {
     return;
   }
+#ifdef CAI_TESTING
+  if (cai_mcp_test_sleep_ms_fn != NULL) {
+    cai_mcp_test_sleep_ms_fn(ms);
+    return;
+  }
+#endif
   tv.tv_sec = ms / 1000L;
   tv.tv_usec = (ms % 1000L) * 1000L;
   (void)select(0, NULL, NULL, NULL, &tv);

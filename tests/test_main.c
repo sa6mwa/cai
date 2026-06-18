@@ -49,6 +49,27 @@ typedef struct test_entry {
 
 static const char *g_current_test_name = NULL;
 
+void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
+
+static long g_mcp_test_sleep_last_ms = 0L;
+static int g_mcp_test_sleep_count = 0;
+
+static void test_mcp_sleep_capture(long ms) {
+  g_mcp_test_sleep_last_ms = ms;
+  g_mcp_test_sleep_count++;
+}
+
+static void test_mcp_sleep_reset(void) {
+  g_mcp_test_sleep_last_ms = 0L;
+  g_mcp_test_sleep_count = 0;
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+}
+
+static void test_mcp_sleep_start_capture(void) {
+  test_mcp_sleep_reset();
+  cai_mcp_test_set_sleep_ms_fn(test_mcp_sleep_capture);
+}
+
 typedef struct read_state {
   const char *text;
   size_t offset;
@@ -10633,7 +10654,7 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
       "\"" CAI_MCP_PROTOCOL_VERSION
       "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
       "\"version\":\"1\"}}}";
-  static const char interrupted_ping_body[] = "id: resume-1\nretry: 0\n\n";
+  static const char interrupted_ping_body[] = "id: resume-1\nretry: 37\n\n";
   static const char resumed_ping_body[] =
       "event: message\n"
       "id: resume-2\n"
@@ -10685,8 +10706,15 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
   expect_int(state, "mcp_streamable_sse_resume_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
+  test_mcp_sleep_start_capture();
   expect_int(state, "mcp_streamable_sse_resume_ping",
              cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state, "mcp_streamable_sse_resume_retry_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state, "mcp_streamable_sse_resume_retry_sleep_ms",
+             g_mcp_test_sleep_last_ms, 37L);
+  test_mcp_sleep_reset();
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_sse_resume", server.pid,
@@ -13999,7 +14027,7 @@ test_mcp_streamable_http_drain_events_resume_get(test_state *state) {
       "\"version\":\"1\"}}}";
   static const char roots_event[] =
       "id: drain-resume-1\n"
-      "retry: 0\n"
+      "retry: 42\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":\"roots-resume-1\","
       "\"method\":\"roots/list\"}\n\n";
@@ -14072,8 +14100,15 @@ test_mcp_streamable_http_drain_events_resume_get(test_state *state) {
   expect_int(state, "mcp_streamable_drain_resume_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
+  test_mcp_sleep_start_capture();
   expect_int(state, "mcp_streamable_drain_resume_call",
              cai_mcp_client_drain_events(client, &error), CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state, "mcp_streamable_drain_resume_retry_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state, "mcp_streamable_drain_resume_retry_sleep_ms",
+             g_mcp_test_sleep_last_ms, 42L);
+  test_mcp_sleep_reset();
   expect_int(state, "mcp_streamable_drain_resume_roots_count",
              receiver.roots.count, 1L);
   expect_int(state, "mcp_streamable_drain_resume_notification_count",
