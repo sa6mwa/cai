@@ -153,6 +153,7 @@ typedef struct test_mcp_client_impl {
   int complete_count;
   int set_log_level_count;
   int terminate_session_count;
+  int send_request_count;
   int send_notification_count;
   int drain_events_count;
   int destroy_count;
@@ -1946,6 +1947,26 @@ static int test_mcp_client_terminate_session(cai_mcp_client *client,
   return CAI_OK;
 }
 
+static int test_mcp_client_send_request(cai_mcp_client *client,
+                                        const char *method,
+                                        lonejson_spooled *params_json,
+                                        cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->send_request_count++;
+  snprintf(impl->last_method, sizeof(impl->last_method), "%s",
+           method != NULL ? method : "");
+  test_mcp_read_spooled_json(params_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"ok\":true}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
 static int test_mcp_client_send_notification(cai_mcp_client *client,
                                              const char *method,
                                              lonejson_spooled *params_json,
@@ -2041,6 +2062,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->public_client.complete = test_mcp_client_complete;
   impl->public_client.set_log_level = test_mcp_client_set_log_level;
   impl->public_client.terminate_session = test_mcp_client_terminate_session;
+  impl->public_client.send_request = test_mcp_client_send_request;
   impl->public_client.send_notification = test_mcp_client_send_notification;
   impl->public_client.drain_events = test_mcp_client_drain_events;
   impl->public_client.destroy = test_mcp_client_destroy;
@@ -3912,8 +3934,8 @@ static void test_mcp_client_config(test_state *state) {
       client->prompt_count == NULL || client->prompt_at == NULL ||
       client->get_prompt == NULL || client->complete == NULL ||
       client->set_log_level == NULL || client->terminate_session == NULL ||
-      client->send_notification == NULL || client->drain_events == NULL ||
-      client->destroy == NULL) {
+      client->send_request == NULL || client->send_notification == NULL ||
+      client->drain_events == NULL || client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
   cai_mcp_client_destroy(client);
@@ -4073,6 +4095,22 @@ static void test_mcp_client_receiver_surface(test_state *state) {
              CAI_OK);
   expect_int(state, "mcp_client_receiver_terminate_session_count",
              fake.terminate_session_count, 1L);
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_5",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_client_receiver_get_task",
+      cai_mcp_client_get_task(&fake.public_client, "task-1", sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_client_receiver_send_request_method", fake.last_method,
+             "tasks/get");
+  expect_str(state, "mcp_client_receiver_send_request_params",
+             fake.last_arguments, "{\"taskId\":\"task-1\"}");
+  expect_str(state, "mcp_client_receiver_send_request_output", writer.buffer,
+             "{\"ok\":true}");
+  cai_sink_close(sink);
   expect_int(
       state, "mcp_client_receiver_notify_roots_list_changed",
       cai_mcp_client_notify_roots_list_changed(&fake.public_client, &error),
@@ -4111,6 +4149,12 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   cai_error_init(&error);
   expect_int(state, "mcp_client_receiver_null_terminate_session",
              cai_mcp_client_terminate_session(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
+      state, "mcp_client_receiver_null_send_request",
+      cai_mcp_client_send_request(NULL, "tasks/list", NULL, NULL, &error),
+      CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "mcp_client_receiver_null_send_notification",
@@ -9672,6 +9716,125 @@ test_mcp_streamable_http_send_notification_params(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_notification_params_mock",
                     server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_task_utilities(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tasks\":{\"list\":{},\"cancel\":{}}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char tasks_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tasks\":[{\"taskId\":"
+      "\"task-1\",\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\""
+      "}],\"nextCursor\":\"tasks-page-2\"}}";
+  static const char tasks_get_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"taskId\":\"task-1\","
+      "\"status\":\"completed\",\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:31:00Z\"}}";
+  static const char tasks_result_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"task result ok\"}],\"isError\":false}}";
+  static const char tasks_cancel_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"taskId\":\"task-1\","
+      "\"status\":\"cancelled\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *tasks_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
+      "\"method\":\"tasks/list\"", "\"params\":{\"cursor\":\"tasks-page-1\"}"};
+  static const char *tasks_get_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
+      "\"method\":\"tasks/get\"", "\"params\":{\"taskId\":\"task-1\"}"};
+  static const char *tasks_result_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
+      "\"method\":\"tasks/result\"", "\"params\":{\"taskId\":\"task-1\"}"};
+  static const char *tasks_cancel_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-session",
+      "\"method\":\"tasks/cancel\"", "\"params\":{\"taskId\":\"task-1\"}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: task-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", tasks_list_required,
+       sizeof(tasks_list_required) / sizeof(tasks_list_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tasks_list_body},
+      {"POST /v1/mcp HTTP/", tasks_get_required,
+       sizeof(tasks_get_required) / sizeof(tasks_get_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tasks_get_body},
+      {"POST /v1/mcp HTTP/", tasks_result_required,
+       sizeof(tasks_result_required) / sizeof(tasks_result_required[0]), NULL,
+       0U, 200, "OK", "application/json", NULL, tasks_result_body},
+      {"POST /v1/mcp HTTP/", tasks_cancel_required,
+       sizeof(tasks_cancel_required) / sizeof(tasks_cancel_required[0]), NULL,
+       0U, 200, "OK", "application/json", NULL, tasks_cancel_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_tasks_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_tasks_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_tasks_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_tasks_list",
+             cai_mcp_client_list_tasks(client, "tasks-page-1", sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_streamable_tasks_list_output", writer.buffer,
+                "\"nextCursor\":\"tasks-page-2\"");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_tasks_get",
+             cai_mcp_client_get_task(client, "task-1", sink, &error), CAI_OK);
+  expect_substr(state, "mcp_streamable_tasks_get_output", writer.buffer,
+                "\"status\":\"completed\"");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_tasks_result",
+             cai_mcp_client_get_task_result(client, "task-1", sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_streamable_tasks_result_output", writer.buffer,
+                "task result ok");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_tasks_cancel",
+             cai_mcp_client_cancel_task(client, "task-1", sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_streamable_tasks_cancel_output", writer.buffer,
+                "\"status\":\"cancelled\"");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tasks_mock", server.pid,
+                    &server.child_status);
 }
 
 static void test_mcp_streamable_http_logging_error(test_state *state) {
@@ -23959,6 +24122,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_roots_list_changed_notification},
     {"mcp_streamable_http_send_notification_params",
      test_mcp_streamable_http_send_notification_params},
+    {"mcp_streamable_http_task_utilities",
+     test_mcp_streamable_http_task_utilities},
     {"mcp_streamable_http_logging_error",
      test_mcp_streamable_http_logging_error},
     {"mcp_streamable_http_terminate_session_405",
