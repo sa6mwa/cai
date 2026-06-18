@@ -344,7 +344,7 @@ mcp-everything-wait:
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
-	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cai-compose-wait","version":"0.0.0"}}}'; \
+	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cai-compose-wait","version":"0.0.0"}}}'; \
 	for attempt in {1..30}; do \
 		if curl -fsS -D "$$tmpdir/headers" -o "$$tmpdir/body" \
 			-H 'content-type: application/json' \
@@ -371,7 +371,7 @@ mcp-everything-test:
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
-	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cai-compose-smoke","version":"0.0.0"}}}'; \
+	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cai-compose-smoke","version":"0.0.0"}}}'; \
 	curl -fsS -D "$$tmpdir/init.headers" -o "$$tmpdir/init.json" \
 		-H 'content-type: application/json' \
 		-H 'accept: application/json, text/event-stream' \
