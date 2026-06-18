@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
+#include <sys/time.h>
 
 typedef struct cai_mcp_client_tool_impl {
   cai_mcp_client_tool public_tool;
@@ -111,6 +113,12 @@ typedef struct cai_mcp_sse_stream_state {
   int failed;
   int rc;
 } cai_mcp_sse_stream_state;
+
+typedef struct cai_mcp_sse_resume_state {
+  char *last_event_id;
+  long retry_ms;
+  int has_retry;
+} cai_mcp_sse_resume_state;
 
 typedef struct cai_mcp_spooled_upload {
   lonejson_spooled cursor;
@@ -384,7 +392,10 @@ static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
 static int
 cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_mcp_http_response_capture *response,
-                               cai_error *error);
+                               int allow_resume, cai_error *error);
+static int cai_mcp_get_resume_response(
+    cai_mcp_streamable_http_client_impl *impl, const char *last_event_id,
+    cai_mcp_http_response_capture *response, cai_error *error);
 
 static const lonejson_field cai_mcp_jsonrpc_error_fields[] = {
     LONEJSON_FIELD_I64_PRESENT(cai_mcp_jsonrpc_error_doc, code, has_code,
@@ -1280,7 +1291,103 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   }
   rc = cai_mcp_response_ok(response, error);
   if (rc == CAI_OK && is_request && cai_mcp_response_is_sse(response)) {
-    rc = cai_mcp_sse_normalize_response(impl, response, error);
+    rc = cai_mcp_sse_normalize_response(impl, response, 1, error);
+  }
+  return rc;
+}
+
+static int cai_mcp_append_last_event_id_header(struct curl_slist **headers,
+                                               const char *last_event_id,
+                                               cai_error *error) {
+  cai_buffer_builder builder;
+  int rc;
+
+  if (last_event_id == NULL || last_event_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP SSE resume event id is required");
+  }
+  memset(&builder, 0, sizeof(builder));
+  rc = cai_buffer_append_cstr(&builder, "Last-Event-ID: ", error);
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, last_event_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append(&builder, "", 1U, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(headers, builder.data, error);
+  }
+  cai_free_mem(NULL, builder.data);
+  return rc;
+}
+
+static int cai_mcp_get_resume_response(
+    cai_mcp_streamable_http_client_impl *impl, const char *last_event_id,
+    cai_mcp_http_response_capture *response, cai_error *error) {
+  CURL *curl;
+  CURLcode curl_rc;
+  struct curl_slist *headers;
+  int rc;
+
+  if (impl == NULL || response == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  headers = NULL;
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize MCP HTTP request");
+  }
+  rc = cai_append_header(&headers, "Accept: text/event-stream", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_session_headers(impl, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_last_event_id_header(&headers, last_event_id, error);
+  }
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return rc;
+  }
+
+  response->content_type = NULL;
+  response->session_id = NULL;
+  response->status = 0L;
+  CAI_LJ->spooled_init(CAI_LJ, &response->body);
+  curl_easy_setopt(curl, CURLOPT_URL, impl->url);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_mcp_response_write);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
+  curl_easy_setopt(curl, CURLOPT_HEADERDATA, response);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
+  cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
+                         impl->ca_path);
+  curl_rc = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+  if (curl_rc != CURLE_OK) {
+    response->body.cleanup(&response->body);
+    memset(&response->body, 0, sizeof(response->body));
+    cai_free_mem(NULL, response->content_type);
+    response->content_type = NULL;
+    cai_free_mem(NULL, response->session_id);
+    response->session_id = NULL;
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "MCP HTTP event stream resume failed",
+                                curl_easy_strerror(curl_rc));
+  }
+  rc = cai_mcp_response_ok(response, error);
+  if (rc == CAI_OK && !cai_mcp_response_is_sse(response)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP resumed event stream response was not SSE");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_sse_normalize_response(impl, response, 0, error);
   }
   return rc;
 }
@@ -1999,9 +2106,78 @@ static int cai_mcp_sse_data_event_done(const char *event,
          (event[0] == '\0' || strcmp(event, "message") == 0);
 }
 
+static int cai_mcp_sse_set_last_event_id(char **last_event_id,
+                                         const char *value, size_t len,
+                                         cai_error *error) {
+  char *copy;
+
+  if (last_event_id == NULL) {
+    return CAI_OK;
+  }
+  if (len > 0U && *value == ' ') {
+    value++;
+    len--;
+  }
+  while (len > 0U && value[len - 1U] == '\r') {
+    len--;
+  }
+  copy = cai_strndup(NULL, value, len);
+  if (copy == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to store MCP SSE event id");
+  }
+  cai_free_mem(NULL, *last_event_id);
+  *last_event_id = copy;
+  return CAI_OK;
+}
+
+static void cai_mcp_sse_set_retry(cai_mcp_sse_resume_state *resume,
+                                  const char *value, size_t len) {
+  long retry_ms;
+  size_t i;
+
+  if (resume == NULL) {
+    return;
+  }
+  if (len > 0U && *value == ' ') {
+    value++;
+    len--;
+  }
+  while (len > 0U && value[len - 1U] == '\r') {
+    len--;
+  }
+  if (len == 0U) {
+    return;
+  }
+  retry_ms = 0L;
+  for (i = 0U; i < len; i++) {
+    if (value[i] < '0' || value[i] > '9') {
+      return;
+    }
+    if (retry_ms < 214748364L) {
+      retry_ms = retry_ms * 10L + (long)(value[i] - '0');
+    }
+  }
+  resume->retry_ms = retry_ms;
+  resume->has_retry = 1;
+}
+
+static void cai_mcp_sleep_ms(long ms) {
+  struct timeval tv;
+
+  if (ms <= 0L) {
+    return;
+  }
+  tv.tv_sec = ms / 1000L;
+  tv.tv_usec = (ms % 1000L) * 1000L;
+  (void)select(0, NULL, NULL, NULL, &tv);
+}
+
 static int cai_mcp_sse_handle_line(lonejson_spooled *data, char *event,
-                                   size_t event_size, const char *line,
-                                   size_t len, int *done, cai_error *error) {
+                                   size_t event_size,
+                                   cai_mcp_sse_resume_state *resume,
+                                   const char *line, size_t len, int *done,
+                                   cai_error *error) {
   lonejson_error json_error;
   const char *value;
 
@@ -2041,6 +2217,12 @@ static int cai_mcp_sse_handle_line(lonejson_spooled *data, char *event,
     }
   } else if (len >= 6U && memcmp(line, "event:", 6U) == 0) {
     cai_mcp_sse_set_event(event, event_size, line + 6U, len - 6U);
+  } else if (len >= 3U && memcmp(line, "id:", 3U) == 0) {
+    return cai_mcp_sse_set_last_event_id(resume != NULL ? &resume->last_event_id
+                                                        : NULL,
+                                         line + 3U, len - 3U, error);
+  } else if (len >= 6U && memcmp(line, "retry:", 6U) == 0) {
+    cai_mcp_sse_set_retry(resume, line + 6U, len - 6U);
   }
   return CAI_OK;
 }
@@ -2110,12 +2292,14 @@ cai_mcp_process_sse_server_message(cai_mcp_streamable_http_client_impl *impl,
 static int
 cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_mcp_http_response_capture *response,
-                               cai_error *error) {
+                               int allow_resume, cai_error *error) {
   lonejson_spooled cursor;
   lonejson_spooled event_data;
   lonejson_spooled final_body;
   lonejson_error json_error;
   lonejson_read_result chunk;
+  cai_mcp_http_response_capture resumed;
+  cai_mcp_sse_resume_state resume;
   cai_buffer_builder line;
   unsigned char buffer[4096];
   char event[64];
@@ -2131,6 +2315,8 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
   cursor = response->body;
   CAI_LJ->spooled_init(CAI_LJ, &event_data);
   memset(&final_body, 0, sizeof(final_body));
+  memset(&resumed, 0, sizeof(resumed));
+  memset(&resume, 0, sizeof(resume));
   memset(&line, 0, sizeof(line));
   event[0] = '\0';
   event_ready = 0;
@@ -2151,7 +2337,7 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
     }
     for (i = 0U; i < chunk.bytes_read; i++) {
       if (buffer[i] == '\n') {
-        rc = cai_mcp_sse_handle_line(&event_data, event, sizeof(event),
+        rc = cai_mcp_sse_handle_line(&event_data, event, sizeof(event), &resume,
                                      line.data, line.length, &event_ready,
                                      error);
         line.length = 0U;
@@ -2177,8 +2363,8 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
     }
   }
   if (rc == CAI_OK && line.length != 0U) {
-    rc = cai_mcp_sse_handle_line(&event_data, event, sizeof(event), line.data,
-                                 line.length, &event_ready, error);
+    rc = cai_mcp_sse_handle_line(&event_data, event, sizeof(event), &resume,
+                                 line.data, line.length, &event_ready, error);
     if (rc == CAI_OK && event_ready) {
       rc = cai_mcp_process_sse_message(impl, &event_data, &final_body,
                                        &final_seen, error);
@@ -2186,10 +2372,29 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
   }
   cai_free_mem(NULL, line.data);
   event_data.cleanup(&event_data);
+  if (rc == CAI_OK && !final_seen && allow_resume &&
+      resume.last_event_id != NULL && resume.last_event_id[0] != '\0') {
+    if (resume.has_retry) {
+      cai_mcp_sleep_ms(resume.retry_ms);
+    }
+    rc = cai_mcp_get_resume_response(impl, resume.last_event_id, &resumed,
+                                     error);
+    if (rc == CAI_OK) {
+      response->body.cleanup(&response->body);
+      cai_free_mem(NULL, response->content_type);
+      cai_free_mem(NULL, response->session_id);
+      *response = resumed;
+      memset(&resumed, 0, sizeof(resumed));
+      cai_free_mem(NULL, resume.last_event_id);
+      return CAI_OK;
+    }
+  }
   if (rc == CAI_OK && !final_seen) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP SSE response did not include JSON-RPC response");
   }
+  cai_mcp_http_response_capture_cleanup(&resumed);
+  cai_free_mem(NULL, resume.last_event_id);
   if (rc != CAI_OK) {
     cai_mcp_spooled_cleanup_if_initialized(&final_body);
     return rc;
@@ -2237,7 +2442,7 @@ static size_t cai_mcp_sse_stream_write(char *ptr, size_t size, size_t nmemb,
   for (i = 0U; i < total; i++) {
     if (ptr[i] == '\n') {
       rc = cai_mcp_sse_handle_line(&state->event_data, state->event,
-                                   sizeof(state->event), state->line.data,
+                                   sizeof(state->event), NULL, state->line.data,
                                    state->line.length, &state->event_ready,
                                    state->error);
       state->line.length = 0U;
@@ -2268,7 +2473,7 @@ static int cai_mcp_sse_stream_finish(cai_mcp_sse_stream_state *state) {
   rc = CAI_OK;
   if (state->line.length != 0U) {
     rc = cai_mcp_sse_handle_line(&state->event_data, state->event,
-                                 sizeof(state->event), state->line.data,
+                                 sizeof(state->event), NULL, state->line.data,
                                  state->line.length, &state->event_ready,
                                  state->error);
     state->line.length = 0U;
@@ -2400,7 +2605,7 @@ cai_mcp_sse_response_json_body(const cai_mcp_http_response_capture *response,
     }
     for (i = 0U; i < chunk.bytes_read && !done; i++) {
       if (buffer[i] == '\n') {
-        rc = cai_mcp_sse_handle_line(out, event, sizeof(event), line.data,
+        rc = cai_mcp_sse_handle_line(out, event, sizeof(event), NULL, line.data,
                                      line.length, &done, error);
         line.length = 0U;
         if (line.data != NULL) {
@@ -2418,7 +2623,7 @@ cai_mcp_sse_response_json_body(const cai_mcp_http_response_capture *response,
     }
   }
   if (rc == CAI_OK && !done && line.length != 0U) {
-    rc = cai_mcp_sse_handle_line(out, event, sizeof(event), line.data,
+    rc = cai_mcp_sse_handle_line(out, event, sizeof(event), NULL, line.data,
                                  line.length, &done, error);
   }
   cai_free_mem(NULL, line.data);
