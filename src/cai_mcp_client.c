@@ -244,10 +244,19 @@ typedef struct cai_mcp_initialize_response_doc {
 } cai_mcp_initialize_response_doc;
 
 typedef struct cai_mcp_sampling_params_doc {
+  lonejson_json_value messages;
   lonejson_json_value tools;
   lonejson_json_value tool_choice;
-  lonejson_json_value include_context;
+  char *include_context;
 } cai_mcp_sampling_params_doc;
+
+typedef struct cai_mcp_elicitation_params_doc {
+  char *mode;
+  char *message;
+  lonejson_json_value requested_schema;
+  char *url;
+  char *elicitation_id;
+} cai_mcp_elicitation_params_doc;
 
 typedef struct cai_mcp_root_doc {
   char *uri;
@@ -282,6 +291,8 @@ static int cai_mcp_set_json_error(cai_error *error, const char *message,
                                   const lonejson_error *json_error);
 static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
                                         cai_error *error);
+static int cai_mcp_json_value_root_is(const lonejson_json_value *value,
+                                      char root, cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
 static int cai_mcp_validate_roots_result(lonejson_spooled *json,
@@ -290,6 +301,12 @@ static int cai_mcp_validate_sampling_result(lonejson_spooled *json,
                                             cai_error *error);
 static int cai_mcp_validate_elicitation_result(lonejson_spooled *json,
                                                cai_error *error);
+static int cai_mcp_validate_sampling_params(
+    const cai_mcp_streamable_http_client_impl *impl,
+    lonejson_spooled *params_json, int *uses_tools, cai_error *error);
+static int cai_mcp_validate_elicitation_params(
+    const cai_mcp_streamable_http_client_impl *impl,
+    lonejson_spooled *params_json, cai_error *error);
 static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
@@ -356,6 +373,13 @@ LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_id_map, cai_mcp_jsonrpc_id_doc,
                     cai_mcp_jsonrpc_id_fields);
 
 static const lonejson_field cai_mcp_sampling_params_fields[] = {
+    {"messages", LONEJSON__KEY_LEN("messages"), LONEJSON__KEY_FIRST("messages"),
+     LONEJSON__KEY_LAST("messages"),
+     offsetof(cai_mcp_sampling_params_doc, messages),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     {"tools", LONEJSON__KEY_LEN("tools"), LONEJSON__KEY_FIRST("tools"),
      LONEJSON__KEY_LAST("tools"), offsetof(cai_mcp_sampling_params_doc, tools),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
@@ -367,15 +391,28 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
      LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
      NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
-    {"includeContext", LONEJSON__KEY_LEN("includeContext"),
-     LONEJSON__KEY_FIRST("includeContext"),
-     LONEJSON__KEY_LAST("includeContext"),
-     offsetof(cai_mcp_sampling_params_doc, include_context),
-     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
-     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
-     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_params_doc, include_context,
+                                "includeContext")};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
                     cai_mcp_sampling_params_fields);
+
+static const lonejson_field cai_mcp_elicitation_params_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_elicitation_params_doc, mode, "mode"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_elicitation_params_doc, message,
+                                    "message"),
+    {"requestedSchema", LONEJSON__KEY_LEN("requestedSchema"),
+     LONEJSON__KEY_FIRST("requestedSchema"),
+     LONEJSON__KEY_LAST("requestedSchema"),
+     offsetof(cai_mcp_elicitation_params_doc, requested_schema),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_elicitation_params_doc, url, "url"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_elicitation_params_doc, elicitation_id,
+                                "elicitationId")};
+LONEJSON_MAP_DEFINE(cai_mcp_elicitation_params_map,
+                    cai_mcp_elicitation_params_doc,
+                    cai_mcp_elicitation_params_fields);
 
 static const lonejson_field cai_mcp_root_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_root_doc, uri, "uri"),
@@ -1287,21 +1324,29 @@ static int cai_mcp_build_roots_result(cai_mcp_streamable_http_client_impl *impl,
   return rc;
 }
 
-static int cai_mcp_sampling_request_uses_tools(lonejson_spooled *params_json,
-                                               int *uses_tools,
-                                               cai_error *error) {
+static int cai_mcp_sampling_context_is_remote(const char *include_context) {
+  return include_context != NULL &&
+         (strcmp(include_context, "thisServer") == 0 ||
+          strcmp(include_context, "allServers") == 0);
+}
+
+static int cai_mcp_validate_sampling_params(
+    const cai_mcp_streamable_http_client_impl *impl,
+    lonejson_spooled *params_json, int *uses_tools, cai_error *error) {
   cai_mcp_sampling_params_doc doc;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int rc;
 
   if (uses_tools == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP sampling tool output pointer is required");
   }
   *uses_tools = 0;
-  if (params_json == NULL) {
-    return CAI_OK;
+  if (impl == NULL || params_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP sampling params are required");
   }
   memset(&doc, 0, sizeof(doc));
   reader.cursor = *params_json;
@@ -1319,8 +1364,79 @@ static int cai_mcp_sampling_request_uses_tools(lonejson_spooled *params_json,
   }
   *uses_tools = doc.tools.kind != LONEJSON_JSON_VALUE_NULL ||
                 doc.tool_choice.kind != LONEJSON_JSON_VALUE_NULL;
+  rc = CAI_OK;
+  if (cai_mcp_sampling_context_is_remote(doc.include_context) &&
+      !impl->receiver.sampling_context) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling context was not advertised");
+  }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_params_map, &doc);
-  return CAI_OK;
+  return rc;
+}
+
+static int cai_mcp_elicitation_form_is_supported(
+    const cai_mcp_streamable_http_client_impl *impl) {
+  return impl != NULL && impl->receiver.elicit != NULL &&
+         (!impl->receiver.elicitation_url || impl->receiver.elicitation_form);
+}
+
+static int cai_mcp_validate_elicitation_params(
+    const cai_mcp_streamable_http_client_impl *impl,
+    lonejson_spooled *params_json, cai_error *error) {
+  cai_mcp_elicitation_params_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  const char *mode;
+  int rc;
+
+  if (impl == NULL || params_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP elicitation params are required");
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = *params_json;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(
+        error, "failed to rewind MCP elicitation params", &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_elicitation_params_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_params_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP elicitation params", &json_error);
+  }
+
+  mode = doc.mode != NULL ? doc.mode : "form";
+  rc = CAI_OK;
+  if (strcmp(mode, "form") == 0) {
+    if (!cai_mcp_elicitation_form_is_supported(impl)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation form was not advertised");
+    } else if (doc.requested_schema.kind == LONEJSON_JSON_VALUE_NULL) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation form requestedSchema is required");
+    } else if (!cai_mcp_json_value_root_is(&doc.requested_schema, '{', error)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation requestedSchema must be an object");
+    }
+  } else if (strcmp(mode, "url") == 0) {
+    if (!impl->receiver.elicitation_url) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation url was not advertised");
+    } else if (doc.url == NULL || doc.elicitation_id == NULL) {
+      rc = cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "MCP elicitation url and elicitationId are required for url mode");
+    }
+  } else {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP elicitation mode must be form or url");
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_elicitation_params_map, &doc);
+  return rc;
 }
 
 static int
@@ -1341,7 +1457,8 @@ cai_mcp_build_sampling_result(cai_mcp_streamable_http_client_impl *impl,
   memset(&params_json, 0, sizeof(params_json));
   rc = cai_mcp_json_value_to_spooled(&doc->params, &params_json, error);
   if (rc == CAI_OK) {
-    rc = cai_mcp_sampling_request_uses_tools(&params_json, &uses_tools, error);
+    rc = cai_mcp_validate_sampling_params(impl, &params_json, &uses_tools,
+                                          error);
   }
   if (rc == CAI_OK && uses_tools && !impl->receiver.sampling_tools) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
@@ -1382,6 +1499,9 @@ cai_mcp_build_elicitation_result(cai_mcp_streamable_http_client_impl *impl,
   }
   memset(&params_json, 0, sizeof(params_json));
   rc = cai_mcp_json_value_to_spooled(&doc->params, &params_json, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_validate_elicitation_params(impl, &params_json, error);
+  }
   if (rc == CAI_OK) {
     CAI_LJ->spooled_init(CAI_LJ, result);
     memset(&callbacks, 0, sizeof(callbacks));
