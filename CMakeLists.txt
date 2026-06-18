@@ -907,6 +907,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_task_request_capabilities
     mcp_streamable_http_task_request_flags_require_callbacks
     mcp_streamable_http_sampling_tools_not_advertised
+    mcp_streamable_http_sampling_invalid_include_context
     mcp_streamable_http_sampling_context_not_advertised
     mcp_streamable_http_elicitation_request
     mcp_streamable_http_elicitation_invalid_result

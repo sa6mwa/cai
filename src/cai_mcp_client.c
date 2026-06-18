@@ -2453,6 +2453,12 @@ static int cai_mcp_sampling_context_is_remote(const char *include_context) {
           strcmp(include_context, "allServers") == 0);
 }
 
+static int cai_mcp_sampling_context_is_valid(const char *include_context) {
+  return include_context == NULL || strcmp(include_context, "none") == 0 ||
+         strcmp(include_context, "thisServer") == 0 ||
+         strcmp(include_context, "allServers") == 0;
+}
+
 static int cai_mcp_validate_sampling_params(
     const cai_mcp_streamable_http_client_impl *impl,
     lonejson_spooled *params_json, int *uses_tools, cai_error *error) {
@@ -2488,7 +2494,10 @@ static int cai_mcp_validate_sampling_params(
   *uses_tools = doc.tools.kind != LONEJSON_JSON_VALUE_NULL ||
                 doc.tool_choice.kind != LONEJSON_JSON_VALUE_NULL;
   rc = CAI_OK;
-  if (cai_mcp_sampling_context_is_remote(doc.include_context) &&
+  if (!cai_mcp_sampling_context_is_valid(doc.include_context)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling includeContext is invalid");
+  } else if (cai_mcp_sampling_context_is_remote(doc.include_context) &&
       !impl->receiver.sampling_context) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP sampling context was not advertised");
