@@ -1878,6 +1878,62 @@ static int cai_mcp_initialize_capability_separator(lonejson_spooled *spool,
   return CAI_OK;
 }
 
+static int cai_mcp_initialize_task_request_separator(lonejson_spooled *spool,
+                                                     int *has_request,
+                                                     cai_error *error) {
+  int rc;
+
+  if (has_request != NULL && *has_request) {
+    rc = cai_mcp_write_cstr(spool, ",", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  if (has_request != NULL) {
+    *has_request = 1;
+  }
+  return CAI_OK;
+}
+
+static int
+cai_mcp_initialize_task_requests(cai_mcp_streamable_http_client_impl *impl,
+                                 lonejson_spooled *spool, int *has_capability,
+                                 cai_error *error) {
+  int has_request;
+  int rc;
+
+  if ((impl->receiver.task_sampling_create_message == 0 ||
+       impl->receiver.create_message == NULL) &&
+      (impl->receiver.task_elicitation_create == 0 ||
+       impl->receiver.elicit == NULL)) {
+    return CAI_OK;
+  }
+  rc = cai_mcp_initialize_capability_separator(spool, has_capability, error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "\"tasks\":{\"requests\":{", error);
+  }
+  has_request = 0;
+  if (rc == CAI_OK && impl->receiver.task_sampling_create_message &&
+      impl->receiver.create_message != NULL) {
+    rc = cai_mcp_initialize_task_request_separator(spool, &has_request, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "\"sampling\":{\"createMessage\":{}}",
+                              error);
+    }
+  }
+  if (rc == CAI_OK && impl->receiver.task_elicitation_create &&
+      impl->receiver.elicit != NULL) {
+    rc = cai_mcp_initialize_task_request_separator(spool, &has_request, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "\"elicitation\":{\"create\":{}}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}", error);
+  }
+  return rc;
+}
+
 static int cai_mcp_initialize_request(cai_mcp_streamable_http_client_impl *impl,
                                       lonejson_spooled *spool, size_t *out_len,
                                       cai_error *error) {
@@ -1950,6 +2006,9 @@ static int cai_mcp_initialize_request(cai_mcp_streamable_http_client_impl *impl,
     if (rc == CAI_OK) {
       rc = cai_mcp_write_cstr(spool, "}", error);
     }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_initialize_task_requests(impl, spool, &has_capability, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, "},\"clientInfo\":{\"name\":", error);

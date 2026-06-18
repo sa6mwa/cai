@@ -214,6 +214,10 @@ typedef struct cai_mcp_client_receiver {
   int elicitation_form;
   /** Non-zero advertises elicitation.url during initialization. */
   int elicitation_url;
+  /** Non-zero advertises task-augmented sampling/createMessage requests. */
+  int task_sampling_create_message;
+  /** Non-zero advertises task-augmented elicitation/create requests. */
+  int task_elicitation_create;
 } cai_mcp_client_receiver;
 
 /** Configuration for cai's built-in Streamable HTTP MCP client. */

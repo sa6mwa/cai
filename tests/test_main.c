@@ -10397,6 +10397,140 @@ static void test_mcp_streamable_http_sampling_request(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_task_request_capabilities(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"sampling\":{},\"elicitation\":{"
+      "\"form\":{},\"url\":{}},\"tasks\":{\"requests\":{\"sampling\":{"
+      "\"createMessage\":{}},\"elicitation\":{\"create\":{}}}}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-cap-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: task-cap-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: task-cap-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL,
+       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_sampling_state sampling;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&sampling, 0, sizeof(sampling));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_task_request_capabilities_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &sampling;
+  config.receiver.create_message = test_mcp_sampling_callback;
+  config.receiver.elicit = test_mcp_elicitation_callback;
+  config.receiver.elicitation_form = 1;
+  config.receiver.elicitation_url = 1;
+  config.receiver.task_sampling_create_message = 1;
+  config.receiver.task_elicitation_create = 1;
+  expect_int(state, "mcp_streamable_task_caps_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_task_caps_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_task_request_capabilities_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_task_request_flags_require_callbacks(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\"",
+                                        "\"capabilities\":{}"};
+  static const char *init_forbidden[] = {
+      "\"tasks\":{\"requests\":", "\"sampling\":{\"createMessage\":{}",
+      "\"elicitation\":{\"create\":{}"};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-cap-empty-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-cap-empty-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: task-cap-empty-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL,
+       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_task_request_flags_require_callbacks_mock",
+          script, sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.task_sampling_create_message = 1;
+  config.receiver.task_elicitation_create = 1;
+  expect_int(state, "mcp_streamable_task_flags_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_task_flags_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state,
+                    "mcp_streamable_task_request_flags_require_callbacks_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_sampling_tools_not_advertised(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -24140,6 +24274,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_roots_list_invalid_result},
     {"mcp_streamable_http_sampling_request",
      test_mcp_streamable_http_sampling_request},
+    {"mcp_streamable_http_task_request_capabilities",
+     test_mcp_streamable_http_task_request_capabilities},
+    {"mcp_streamable_http_task_request_flags_require_callbacks",
+     test_mcp_streamable_http_task_request_flags_require_callbacks},
     {"mcp_streamable_http_sampling_tools_not_advertised",
      test_mcp_streamable_http_sampling_tools_not_advertised},
     {"mcp_streamable_http_elicitation_request",
