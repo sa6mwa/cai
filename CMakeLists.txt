@@ -849,6 +849,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_logging_notification_missing_data
     mcp_streamable_http_logging_notification_invalid_level
     mcp_streamable_http_logging_notification_array_params
+    mcp_streamable_http_resource_updated_notification
+    mcp_streamable_http_resource_updated_missing_uri
+    mcp_streamable_http_resource_updated_array_params
     mcp_streamable_http_roots_list_request
     mcp_streamable_http_roots_list_callback_error
     mcp_streamable_http_roots_list_invalid_result

@@ -13791,6 +13791,123 @@ test_mcp_streamable_http_logging_notification_array_params(test_state *state) {
       NULL);
 }
 
+static void test_mcp_streamable_http_resource_updated_notification_case(
+    test_state *state, const char *name, const char *ping_body, int expected_rc,
+    const char *expected_error, const char *expected_param_fragment) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"resources\":{\"subscribe\":true}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/", "\"id\":2",
+                                        "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: resource-updated-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  script[2].body = ping_body;
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_resource_updated_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_resource_updated_call",
+             cai_mcp_client_ping(client, &error), expected_rc);
+  if (expected_rc == CAI_OK) {
+    expect_int(state, "mcp_streamable_resource_updated_count",
+               notifications.count, 1L);
+    expect_str(state, "mcp_streamable_resource_updated_method",
+               notifications.method, "notifications/resources/updated");
+    expect_substr(state, "mcp_streamable_resource_updated_params",
+                  notifications.params, expected_param_fragment);
+  } else {
+    expect_int(state, "mcp_streamable_resource_updated_count",
+               notifications.count, 0L);
+    expect_str(state, "mcp_streamable_resource_updated_error", error.message,
+               expected_error);
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_resource_updated_notification(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\","
+      "\"params\":{\"uri\":\"resource://alpha\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_resource_updated_notification_case(
+      state, "mcp_streamable_resource_updated_notification_mock", ping_body,
+      CAI_OK, NULL, "\"uri\":\"resource://alpha\"");
+}
+
+static void
+test_mcp_streamable_http_resource_updated_missing_uri(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\","
+      "\"params\":{}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_resource_updated_notification_case(
+      state, "mcp_streamable_resource_updated_missing_uri_mock", ping_body,
+      CAI_ERR_PROTOCOL, "failed to parse MCP resource updated params", NULL);
+}
+
+static void
+test_mcp_streamable_http_resource_updated_array_params(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\","
+      "\"params\":[]}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_resource_updated_notification_case(
+      state, "mcp_streamable_resource_updated_array_params_mock", ping_body,
+      CAI_ERR_PROTOCOL, "MCP resource updated params must be an object", NULL);
+}
+
 static void test_mcp_streamable_http_roots_list_request(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -29191,6 +29308,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_logging_notification_invalid_level},
     {"mcp_streamable_http_logging_notification_array_params",
      test_mcp_streamable_http_logging_notification_array_params},
+    {"mcp_streamable_http_resource_updated_notification",
+     test_mcp_streamable_http_resource_updated_notification},
+    {"mcp_streamable_http_resource_updated_missing_uri",
+     test_mcp_streamable_http_resource_updated_missing_uri},
+    {"mcp_streamable_http_resource_updated_array_params",
+     test_mcp_streamable_http_resource_updated_array_params},
     {"mcp_streamable_http_roots_list_request",
      test_mcp_streamable_http_roots_list_request},
     {"mcp_streamable_http_roots_list_callback_error",
