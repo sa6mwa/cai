@@ -5996,13 +5996,21 @@ static int cai_mcp_task_status_is_valid(const char *status) {
 }
 
 static int
-cai_mcp_json_value_is_number_or_null(const lonejson_json_value *value,
-                                     cai_error *error) {
+cai_mcp_json_value_is_non_negative_number_or_null(
+    const lonejson_json_value *value, int *is_number, int *is_negative,
+    cai_error *error) {
   char *text;
   char *cursor;
   char *end;
+  double number;
   int ok;
 
+  if (is_number != NULL) {
+    *is_number = 0;
+  }
+  if (is_negative != NULL) {
+    *is_negative = 0;
+  }
   if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
     return 1;
   }
@@ -6019,13 +6027,19 @@ cai_mcp_json_value_is_number_or_null(const lonejson_json_value *value,
   if (strncmp(cursor, "null", 4U) == 0) {
     end = cursor + 4U;
   } else {
-    (void)strtod(cursor, &end);
+    number = strtod(cursor, &end);
+    if (end != cursor && is_number != NULL) {
+      *is_number = 1;
+    }
+    if (end != cursor && number < 0.0 && is_negative != NULL) {
+      *is_negative = 1;
+    }
   }
   if (end != cursor) {
     while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
       end++;
     }
-    ok = *end == '\0';
+    ok = *end == '\0' && (is_negative == NULL || !*is_negative);
   }
   cai_free_mem(NULL, text);
   return ok;
@@ -6033,10 +6047,20 @@ cai_mcp_json_value_is_number_or_null(const lonejson_json_value *value,
 
 static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
                                  cai_error *error) {
+  int ttl_is_number;
+  int ttl_is_negative;
+
   if (task == NULL || !cai_mcp_task_status_is_valid(task->status)) {
     return cai_set_error(error, CAI_ERR_PROTOCOL, "MCP task status is invalid");
   }
-  if (!cai_mcp_json_value_is_number_or_null(&task->ttl, error)) {
+  ttl_is_number = 0;
+  ttl_is_negative = 0;
+  if (!cai_mcp_json_value_is_non_negative_number_or_null(
+          &task->ttl, &ttl_is_number, &ttl_is_negative, error)) {
+    if (ttl_is_number && ttl_is_negative) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP task ttl must be non-negative or null");
+    }
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP task ttl must be a number or null");
   }
