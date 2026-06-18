@@ -757,6 +757,10 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_ping_error_missing_code
     mcp_streamable_http_ping_error_missing_message
     mcp_streamable_http_ping_error_empty
+    mcp_streamable_http_sse_ping_error
+    mcp_streamable_http_sse_ping_error_missing_code
+    mcp_streamable_http_sse_ping_error_missing_message
+    mcp_streamable_http_sse_ping_error_empty
     mcp_streamable_http_initialize_missing_capabilities
     mcp_streamable_http_initialize_capabilities_not_object
     mcp_streamable_http_initialize_missing_server_info
