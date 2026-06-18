@@ -845,6 +845,10 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_terminate_session_405
     mcp_streamable_http_terminate_session_error
     mcp_streamable_http_notification_callback_error
+    mcp_streamable_http_logging_notification_null_data
+    mcp_streamable_http_logging_notification_missing_data
+    mcp_streamable_http_logging_notification_invalid_level
+    mcp_streamable_http_logging_notification_array_params
     mcp_streamable_http_roots_list_request
     mcp_streamable_http_roots_list_callback_error
     mcp_streamable_http_roots_list_invalid_result

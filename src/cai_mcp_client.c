@@ -395,6 +395,12 @@ typedef struct cai_mcp_progress_params_doc {
   char *message;
 } cai_mcp_progress_params_doc;
 
+typedef struct cai_mcp_logging_message_params_doc {
+  char *level;
+  char *logger;
+  lonejson_json_value data;
+} cai_mcp_logging_message_params_doc;
+
 typedef struct cai_mcp_elicitation_params_doc {
   char *mode;
   char *message;
@@ -440,6 +446,7 @@ static int cai_mcp_json_value_root_is(const lonejson_json_value *value,
                                       char root, cai_error *error);
 static int cai_mcp_spooled_root_is(const lonejson_spooled *json, int root,
                                    const char *message, cai_error *error);
+static int cai_mcp_log_level_valid(const char *level);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
 static int cai_mcp_validate_roots_result(lonejson_spooled *json,
@@ -583,6 +590,22 @@ static const lonejson_field cai_mcp_progress_params_fields[] = {
                                 "message")};
 LONEJSON_MAP_DEFINE(cai_mcp_progress_params_map, cai_mcp_progress_params_doc,
                     cai_mcp_progress_params_fields);
+
+static const lonejson_field cai_mcp_logging_message_params_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_logging_message_params_doc, level,
+                                    "level"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_logging_message_params_doc, logger,
+                                "logger"),
+    {"data", LONEJSON__KEY_LEN("data"), LONEJSON__KEY_FIRST("data"),
+     LONEJSON__KEY_LAST("data"),
+     offsetof(cai_mcp_logging_message_params_doc, data),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_logging_message_params_map,
+                    cai_mcp_logging_message_params_doc,
+                    cai_mcp_logging_message_params_fields);
 
 static const lonejson_field cai_mcp_elicitation_params_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_elicitation_params_doc, mode, "mode"),
@@ -2001,6 +2024,49 @@ static int cai_mcp_progress_matches_active_request(
   return matches;
 }
 
+static int
+cai_mcp_validate_logging_message_params(const lonejson_json_value *params,
+                                        cai_error *error) {
+  cai_mcp_logging_message_params_doc doc;
+  lonejson_spooled spool;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
+      !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP logging notification params must be an object");
+  }
+  memset(&doc, 0, sizeof(doc));
+  memset(&spool, 0, sizeof(spool));
+  rc = cai_mcp_json_value_to_spooled(params, &spool, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  reader.cursor = spool;
+  lonejson_error_init(&json_error);
+  status =
+      CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_logging_message_params_map, &doc,
+                           cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_logging_message_params_map, &doc);
+    spool.cleanup(&spool);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP logging notification params", &json_error);
+  }
+  rc = CAI_OK;
+  if (!cai_mcp_log_level_valid(doc.level)) {
+    rc = cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP logging notification level must be a standard syslog severity");
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_logging_message_params_map, &doc);
+  spool.cleanup(&spool);
+  return rc;
+}
+
 static int cai_mcp_notification_should_dispatch(
     const cai_mcp_streamable_http_client_impl *impl,
     const cai_mcp_jsonrpc_message_doc *doc) {
@@ -2028,6 +2094,12 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
   }
   if (strcmp(doc->method, "notifications/cancelled") == 0) {
     return cai_mcp_dispatch_cancelled_notification(impl, &doc->params, error);
+  }
+  if (strcmp(doc->method, "notifications/message") == 0) {
+    rc = cai_mcp_validate_logging_message_params(&doc->params, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   }
   if (!cai_mcp_notification_should_dispatch(impl, doc)) {
     return CAI_OK;
