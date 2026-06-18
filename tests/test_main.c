@@ -12356,6 +12356,18 @@ test_mcp_streamable_http_resources_list_array_annotations(test_state *state) {
       "MCP resource annotations must be an object");
 }
 
+static void
+test_mcp_streamable_http_resources_list_negative_size(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"size\":-1}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_negative_size",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource size must be non-negative");
+}
+
 static void test_mcp_streamable_http_resource_templates_list_object_icons(
     test_state *state) {
   static const char response_body[] =
@@ -30408,6 +30420,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resources_list_object_icons},
     {"mcp_streamable_http_resources_list_array_annotations",
      test_mcp_streamable_http_resources_list_array_annotations},
+    {"mcp_streamable_http_resources_list_negative_size",
+     test_mcp_streamable_http_resources_list_negative_size},
     {"mcp_streamable_http_resource_templates_list_missing_templates",
      test_mcp_streamable_http_resource_templates_list_missing_templates},
     {"mcp_streamable_http_resource_templates_list_object_icons",

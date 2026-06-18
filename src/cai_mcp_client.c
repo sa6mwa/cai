@@ -5581,6 +5581,12 @@ static int cai_mcp_parse_resources_list_response(
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP resource annotations must be an object");
     }
+    if (src_resources[i].has_size && src_resources[i].size < 0) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP resource size must be non-negative");
+    }
   }
   base_count = impl->resource_count;
   rc = cai_mcp_client_reserve_resources(

@@ -798,6 +798,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resources_list_missing_resources
     mcp_streamable_http_resources_list_object_icons
     mcp_streamable_http_resources_list_array_annotations
+    mcp_streamable_http_resources_list_negative_size
     mcp_streamable_http_resource_templates_list_missing_templates
     mcp_streamable_http_resource_templates_list_object_icons
     mcp_streamable_http_resource_templates_list_array_annotations
