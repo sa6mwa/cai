@@ -11968,7 +11968,7 @@ test_mcp_streamable_http_tool_call_unknown_content_type(test_state *state) {
   test_mcp_streamable_http_invalid_result_response(
       state, "mcp_streamable_tool_call_unknown_content_type",
       TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
-      "MCP tool content type is not supported");
+      "MCP content block type is not supported");
 }
 
 static void test_mcp_streamable_http_tool_call_resource_link_missing_name(
@@ -11993,6 +11993,43 @@ static void test_mcp_streamable_http_tool_call_resource_missing_resource(
       state, "mcp_streamable_tool_call_resource_missing_resource",
       TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
       "MCP embedded resource content requires resource");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_missing_uri(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"text\":\"body\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_missing_uri",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "failed to parse MCP embedded resource content");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_missing_body(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"uri\":\"file:///tmp/readme.md\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_missing_body",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP embedded resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_text_and_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"uri\":\"file:///tmp/readme.md\",\"text\":"
+      "\"body\",\"blob\":\"Ym9keQ==\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_text_and_blob",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP embedded resource content must include exactly one of text or blob");
 }
 
 static void
@@ -12064,6 +12101,44 @@ test_mcp_streamable_http_prompt_get_array_content(test_state *state) {
       state, "mcp_streamable_prompt_get_array_content",
       TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
       "MCP prompt message content must be an object");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_text_missing_text(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_text_missing_text",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP text content requires text");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_resource_missing_body(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"resource\",\"resource\":{\"uri\":"
+      "\"file:///tmp/readme.md\"}}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_resource_missing_body",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP embedded resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_unknown_content_type(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"video\",\"data\":\"aGVsbG8=\","
+      "\"mimeType\":\"video/mp4\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_unknown_content_type",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP content block type is not supported");
 }
 
 static void
@@ -28471,6 +28546,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_resource_link_missing_name},
     {"mcp_streamable_http_tool_call_resource_missing_resource",
      test_mcp_streamable_http_tool_call_resource_missing_resource},
+    {"mcp_streamable_http_tool_call_resource_missing_uri",
+     test_mcp_streamable_http_tool_call_resource_missing_uri},
+    {"mcp_streamable_http_tool_call_resource_missing_body",
+     test_mcp_streamable_http_tool_call_resource_missing_body},
+    {"mcp_streamable_http_tool_call_resource_text_and_blob",
+     test_mcp_streamable_http_tool_call_resource_text_and_blob},
     {"mcp_streamable_http_tool_call_array_structured_content",
      test_mcp_streamable_http_tool_call_array_structured_content},
     {"mcp_streamable_http_resource_read_missing_contents",
@@ -28483,6 +28564,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_invalid_role},
     {"mcp_streamable_http_prompt_get_array_content",
      test_mcp_streamable_http_prompt_get_array_content},
+    {"mcp_streamable_http_prompt_get_text_missing_text",
+     test_mcp_streamable_http_prompt_get_text_missing_text},
+    {"mcp_streamable_http_prompt_get_resource_missing_body",
+     test_mcp_streamable_http_prompt_get_resource_missing_body},
+    {"mcp_streamable_http_prompt_get_unknown_content_type",
+     test_mcp_streamable_http_prompt_get_unknown_content_type},
     {"mcp_streamable_http_completion_missing_values",
      test_mcp_streamable_http_completion_missing_values},
     {"mcp_streamable_http_tool_call_array_arguments",

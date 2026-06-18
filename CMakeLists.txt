@@ -803,12 +803,18 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_unknown_content_type
     mcp_streamable_http_tool_call_resource_link_missing_name
     mcp_streamable_http_tool_call_resource_missing_resource
+    mcp_streamable_http_tool_call_resource_missing_uri
+    mcp_streamable_http_tool_call_resource_missing_body
+    mcp_streamable_http_tool_call_resource_text_and_blob
     mcp_streamable_http_tool_call_array_structured_content
     mcp_streamable_http_resource_read_missing_contents
     mcp_streamable_http_resource_read_missing_body
     mcp_streamable_http_prompt_get_missing_messages
     mcp_streamable_http_prompt_get_invalid_role
     mcp_streamable_http_prompt_get_array_content
+    mcp_streamable_http_prompt_get_text_missing_text
+    mcp_streamable_http_prompt_get_resource_missing_body
+    mcp_streamable_http_prompt_get_unknown_content_type
     mcp_streamable_http_completion_missing_values
     mcp_streamable_http_tool_call_array_arguments
     mcp_streamable_http_prompt_get_array_arguments

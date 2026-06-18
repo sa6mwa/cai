@@ -5623,11 +5623,17 @@ static int cai_mcp_prompt_role_is_valid(const char *role) {
 }
 
 static int
-cai_mcp_tool_content_validate(const cai_mcp_tool_content_doc *content,
-                              cai_error *error) {
+cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
+                               cai_error *error) {
+  cai_mcp_resource_content_doc resource;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *resource_json;
+  int rc;
+
   if (content == NULL || content->type == NULL) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP tool content type is required");
+                         "MCP content block type is required");
   }
   if (strcmp(content->type, "text") == 0) {
     if (content->text == NULL) {
@@ -5651,11 +5657,67 @@ cai_mcp_tool_content_validate(const cai_mcp_tool_content_doc *content,
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP embedded resource content requires resource");
     }
+    resource_json = cai_mcp_json_value_to_cstr(&content->resource, error);
+    if (resource_json == NULL) {
+      return CAI_ERR_NOMEM;
+    }
+    memset(&resource, 0, sizeof(resource));
+    lonejson_error_init(&json_error);
+    status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_resource_content_map,
+                                &resource, resource_json, &json_error);
+    cai_free_mem(NULL, resource_json);
+    if (status != LONEJSON_STATUS_OK) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_content_map, &resource);
+      return cai_mcp_set_json_error(
+          error, "failed to parse MCP embedded resource content", &json_error);
+    }
+    rc = CAI_OK;
+    if (!cai_mcp_resource_content_has_body(&resource)) {
+      rc = cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "MCP embedded resource content must include exactly one of text or "
+          "blob");
+    }
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_content_map, &resource);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   } else {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP tool content type is not supported");
+                         "MCP content block type is not supported");
   }
   return CAI_OK;
+}
+
+static int cai_mcp_prompt_content_validate(const lonejson_json_value *content,
+                                           cai_error *error) {
+  cai_mcp_tool_content_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *content_json;
+  int rc;
+
+  if (!cai_mcp_json_value_root_is(content, '{', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP prompt message content must be an object");
+  }
+  content_json = cai_mcp_json_value_to_cstr(content, error);
+  if (content_json == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_content_map, &doc,
+                              content_json, &json_error);
+  cai_free_mem(NULL, content_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_content_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP prompt message content", &json_error);
+  }
+  rc = cai_mcp_content_block_validate(&doc, error);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_content_map, &doc);
+  return rc;
 }
 
 static int cai_mcp_validate_tool_call_response_shape(
@@ -5730,7 +5792,7 @@ static int cai_mcp_validate_tool_call_response_shape(
   contents = (cai_mcp_tool_content_doc *)doc.result.content.items;
   rc = CAI_OK;
   for (i = 0U; i < doc.result.content.count; i++) {
-    rc = cai_mcp_tool_content_validate(&contents[i], error);
+    rc = cai_mcp_content_block_validate(&contents[i], error);
     if (rc != CAI_OK) {
       break;
     }
@@ -5792,9 +5854,8 @@ static int cai_mcp_validate_prompt_get_response_shape(
                          "MCP prompt message role must be user or assistant");
       break;
     }
-    if (!cai_mcp_json_value_root_is(&messages[i].content, '{', error)) {
-      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP prompt message content must be an object");
+    rc = cai_mcp_prompt_content_validate(&messages[i].content, error);
+    if (rc != CAI_OK) {
       break;
     }
   }
