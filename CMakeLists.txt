@@ -763,6 +763,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_long_session_id_header
     mcp_streamable_http_response_id_mismatch
     mcp_streamable_http_response_invalid_id_type
+    mcp_streamable_http_response_null_id
     mcp_streamable_http_sse_request_invalid_id_type
     mcp_streamable_http_response_jsonrpc_invalid
     mcp_streamable_http_sse_jsonrpc_invalid
