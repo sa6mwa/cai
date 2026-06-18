@@ -13693,8 +13693,10 @@ static void test_mcp_streamable_http_task_response_invalid(
     rc = cai_mcp_client_list_tasks(client, NULL, sink, &error);
   } else if (strcmp(method, "tasks/get") == 0) {
     rc = cai_mcp_client_get_task(client, "task-1", sink, &error);
-  } else {
+  } else if (strcmp(method, "tasks/cancel") == 0) {
     rc = cai_mcp_client_cancel_task(client, "task-1", sink, &error);
+  } else {
+    rc = cai_mcp_client_get_task_result(client, "task-1", sink, &error);
   }
   expect_int(state, test_name, rc, CAI_ERR_PROTOCOL);
   cai_sink_close(sink);
@@ -13753,6 +13755,86 @@ test_mcp_streamable_http_tasks_cancel_object_ttl(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"taskId\":\"task-1\","
       "\"status\":\"cancelled\",\"createdAt\":\"2025-11-25T10:30:00Z\","
       "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":{}}}");
+}
+
+static void
+test_mcp_streamable_http_tasks_result_payload_shape(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tasks\":{}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char tasks_result_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"payload shape ok\"}],\"isError\":false,"
+      "\"structuredContent\":{\"ok\":true}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-result-payload-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *tasks_result_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: task-result-payload-session",
+      "\"method\":\"tasks/result\"", "\"taskId\":\"task-1\"",
+      "\"_meta\":{\"progressToken\":2}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: task-result-payload-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", tasks_result_required,
+       sizeof(tasks_result_required) / sizeof(tasks_result_required[0]), NULL,
+       0U, 200, "OK", "application/json", NULL, tasks_result_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_tasks_result_payload_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_tasks_result_payload_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_tasks_result_payload_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_tasks_result_payload_call",
+             cai_mcp_client_get_task_result(client, "task-1", sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_streamable_tasks_result_payload_output",
+                writer.buffer, "payload shape ok");
+  expect_substr(state, "mcp_streamable_tasks_result_payload_structured",
+                writer.buffer, "\"structuredContent\":{\"ok\":true}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tasks_result_payload_mock",
+                    server.pid, &server.child_status);
 }
 
 static void test_mcp_streamable_http_tasks_get_null_ttl(test_state *state) {
@@ -30173,6 +30255,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tasks_cancel_missing_created_at},
     {"mcp_streamable_http_tasks_cancel_object_ttl",
      test_mcp_streamable_http_tasks_cancel_object_ttl},
+    {"mcp_streamable_http_tasks_result_payload_shape",
+     test_mcp_streamable_http_tasks_result_payload_shape},
     {"mcp_streamable_http_tasks_get_null_ttl",
      test_mcp_streamable_http_tasks_get_null_ttl},
     {"mcp_streamable_http_logging_error",

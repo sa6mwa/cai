@@ -849,6 +849,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tasks_get_string_ttl
     mcp_streamable_http_tasks_cancel_missing_created_at
     mcp_streamable_http_tasks_cancel_object_ttl
+    mcp_streamable_http_tasks_result_payload_shape
     mcp_streamable_http_tasks_get_null_ttl
     mcp_streamable_http_logging_error
     mcp_streamable_http_terminate_session_405
