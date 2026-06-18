@@ -225,8 +225,15 @@ typedef struct cai_mcp_prompts_list_response_doc {
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_prompts_list_response_doc;
 
+typedef struct cai_mcp_server_info_doc {
+  char *name;
+  char *version;
+} cai_mcp_server_info_doc;
+
 typedef struct cai_mcp_initialize_result_doc {
   char *protocol_version;
+  lonejson_json_value capabilities;
+  cai_mcp_server_info_doc server_info;
 } cai_mcp_initialize_result_doc;
 
 typedef struct cai_mcp_initialize_response_doc {
@@ -250,6 +257,8 @@ cai_mcp_streamable_reset_session(cai_mcp_streamable_http_client_impl *impl);
 static void cai_mcp_spooled_cleanup_if_initialized(lonejson_spooled *spool);
 static int cai_mcp_set_json_error(cai_error *error, const char *message,
                                   const lonejson_error *json_error);
+static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
+                                        cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
 static int
@@ -519,9 +528,25 @@ LONEJSON_MAP_DEFINE(cai_mcp_prompts_list_response_map,
                     cai_mcp_prompts_list_response_doc,
                     cai_mcp_prompts_list_response_fields);
 
+static const lonejson_field cai_mcp_server_info_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_server_info_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_server_info_doc, version,
+                                    "version")};
+LONEJSON_MAP_DEFINE(cai_mcp_server_info_map, cai_mcp_server_info_doc,
+                    cai_mcp_server_info_fields);
+
 static const lonejson_field cai_mcp_initialize_result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_result_doc, protocol_version,
-                                "protocolVersion")};
+                                "protocolVersion"),
+    {"capabilities", LONEJSON__KEY_LEN("capabilities"),
+     LONEJSON__KEY_FIRST("capabilities"), LONEJSON__KEY_LAST("capabilities"),
+     offsetof(cai_mcp_initialize_result_doc, capabilities),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_OBJECT_REQ(cai_mcp_initialize_result_doc, server_info,
+                              "serverInfo", &cai_mcp_server_info_map)};
 LONEJSON_MAP_DEFINE(cai_mcp_initialize_result_map,
                     cai_mcp_initialize_result_doc,
                     cai_mcp_initialize_result_fields);
@@ -2669,6 +2694,7 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
   reader.cursor = json_body;
   lonejson_error_init(&json_error);
   if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
     json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to rewind MCP response",
                                   &json_error);
@@ -2693,6 +2719,12 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
     json_body.cleanup(&json_body);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP server negotiated unsupported protocol version");
+  }
+  if (!cai_mcp_json_value_is_object(&doc.result.capabilities, error)) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP initialize capabilities must be an object");
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
   json_body.cleanup(&json_body);
@@ -2912,6 +2944,26 @@ static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
     return NULL;
   }
   return builder.data;
+}
+
+static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
+                                        cai_error *error) {
+  char *text;
+  const char *cursor;
+  int is_object;
+
+  text = cai_mcp_json_value_to_cstr(value, error);
+  if (text == NULL) {
+    return 0;
+  }
+  cursor = text;
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
+         *cursor == '\n') {
+    cursor++;
+  }
+  is_object = *cursor == '{';
+  cai_free_mem(NULL, text);
+  return is_object;
 }
 
 static int cai_mcp_jsonrpc_id_text_is_valid(const char *id) {
