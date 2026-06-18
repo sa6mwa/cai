@@ -10392,7 +10392,7 @@ typedef enum test_mcp_list_operation {
   TEST_MCP_LIST_PROMPTS
 } test_mcp_list_operation;
 
-static void test_mcp_streamable_http_list_missing_array(
+static void test_mcp_streamable_http_list_invalid_response(
     test_state *state, const char *test_name, test_mcp_list_operation operation,
     const char *method_fragment, const char *response_body,
     const char *expected_message) {
@@ -10417,6 +10417,7 @@ static void test_mcp_streamable_http_list_missing_array(
   char open_name[128];
   char call_name[128];
   char message_name[128];
+  char count_name[128];
   int rc;
 
   client = NULL;
@@ -10485,6 +10486,25 @@ static void test_mcp_streamable_http_list_missing_array(
   expect_int(state, call_name, rc, CAI_ERR_PROTOCOL);
   snprintf(message_name, sizeof(message_name), "%s_message", test_name);
   expect_str(state, message_name, error.message, expected_message);
+  snprintf(count_name, sizeof(count_name), "%s_count", test_name);
+  switch (operation) {
+  case TEST_MCP_LIST_TOOLS:
+    expect_int(state, count_name, (long)cai_mcp_client_tool_count(client), 0L);
+    break;
+  case TEST_MCP_LIST_RESOURCES:
+    expect_int(state, count_name, (long)cai_mcp_client_resource_count(client),
+               0L);
+    break;
+  case TEST_MCP_LIST_RESOURCE_TEMPLATES:
+    expect_int(state, count_name,
+               (long)cai_mcp_client_resource_template_count(client), 0L);
+    break;
+  case TEST_MCP_LIST_PROMPTS:
+  default:
+    expect_int(state, count_name, (long)cai_mcp_client_prompt_count(client),
+               0L);
+    break;
+  }
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, mock_name, server.pid, &server.child_status);
@@ -10495,7 +10515,7 @@ test_mcp_streamable_http_tools_list_missing_tools(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
 
-  test_mcp_streamable_http_list_missing_array(
+  test_mcp_streamable_http_list_invalid_response(
       state, "mcp_streamable_tools_list_missing_tools", TEST_MCP_LIST_TOOLS,
       "\"method\":\"tools/list\"", response_body,
       "failed to parse MCP tools/list");
@@ -10506,7 +10526,7 @@ test_mcp_streamable_http_resources_list_missing_resources(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
 
-  test_mcp_streamable_http_list_missing_array(
+  test_mcp_streamable_http_list_invalid_response(
       state, "mcp_streamable_resources_list_missing_resources",
       TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
       "failed to parse MCP resources/list");
@@ -10517,7 +10537,7 @@ static void test_mcp_streamable_http_resource_templates_list_missing_templates(
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
 
-  test_mcp_streamable_http_list_missing_array(
+  test_mcp_streamable_http_list_invalid_response(
       state, "mcp_streamable_resource_templates_list_missing_templates",
       TEST_MCP_LIST_RESOURCE_TEMPLATES,
       "\"method\":\"resources/templates/list\"", response_body,
@@ -10529,10 +10549,46 @@ test_mcp_streamable_http_prompts_list_missing_prompts(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
 
-  test_mcp_streamable_http_list_missing_array(
+  test_mcp_streamable_http_list_invalid_response(
       state, "mcp_streamable_prompts_list_missing_prompts",
       TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
       "failed to parse MCP prompts/list");
+}
+
+static void
+test_mcp_streamable_http_tools_list_missing_input_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\"}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_missing_input_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tools/list");
+}
+
+static void
+test_mcp_streamable_http_tools_list_null_input_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":null}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_null_input_schema", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema must be an object");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_input_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_input_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema must be an object");
 }
 
 static void
@@ -25508,6 +25564,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_response_null_result},
     {"mcp_streamable_http_tools_list_missing_tools",
      test_mcp_streamable_http_tools_list_missing_tools},
+    {"mcp_streamable_http_tools_list_missing_input_schema",
+     test_mcp_streamable_http_tools_list_missing_input_schema},
+    {"mcp_streamable_http_tools_list_null_input_schema",
+     test_mcp_streamable_http_tools_list_null_input_schema},
+    {"mcp_streamable_http_tools_list_array_input_schema",
+     test_mcp_streamable_http_tools_list_array_input_schema},
     {"mcp_streamable_http_resources_list_missing_resources",
      test_mcp_streamable_http_resources_list_missing_resources},
     {"mcp_streamable_http_resource_templates_list_missing_templates",

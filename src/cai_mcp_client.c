@@ -355,8 +355,9 @@ static const lonejson_field cai_mcp_list_tool_fields[] = {
      LONEJSON__KEY_FIRST("inputSchema"), LONEJSON__KEY_LAST("inputSchema"),
      offsetof(cai_mcp_list_tool_doc, input_schema),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
-     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
-     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     {"outputSchema", LONEJSON__KEY_LEN("outputSchema"),
      LONEJSON__KEY_FIRST("outputSchema"), LONEJSON__KEY_LAST("outputSchema"),
      offsetof(cai_mcp_list_tool_doc, output_schema),
@@ -3481,11 +3482,19 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
     json_body.cleanup(&json_body);
     return rc;
   }
+  src_tools = (cai_mcp_list_tool_doc *)doc.result.tools.items;
+  for (i = 0U; i < doc.result.tools.count; i++) {
+    if (!cai_mcp_json_value_is_object(&src_tools[i].input_schema, error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool inputSchema must be an object");
+    }
+  }
   base_count = impl->tool_count;
   rc = cai_mcp_client_reserve_tools(impl, base_count + doc.result.tools.count,
                                     error);
   if (rc == CAI_OK) {
-    src_tools = (cai_mcp_list_tool_doc *)doc.result.tools.items;
     for (i = 0U; i < doc.result.tools.count; i++) {
       cai_mcp_client_tool_impl *dst = &impl->tools[base_count + i];
       dst->name = cai_strdup(&impl->allocator, src_tools[i].name);
