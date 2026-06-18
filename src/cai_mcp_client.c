@@ -2900,14 +2900,304 @@ static int cai_mcp_parse_jsonrpc_id(const lonejson_spooled *json,
   return CAI_OK;
 }
 
+typedef struct cai_mcp_json_scan {
+  cai_mcp_spooled_reader reader;
+  unsigned char buffer[512];
+  size_t offset;
+  size_t length;
+  int pushed;
+  int pushed_ch;
+} cai_mcp_json_scan;
+
+static int cai_mcp_json_scan_init(cai_mcp_json_scan *scan,
+                                  const lonejson_spooled *json,
+                                  cai_error *error) {
+  lonejson_error json_error;
+
+  if (scan == NULL || json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP JSON is required");
+  }
+  memset(scan, 0, sizeof(*scan));
+  scan->reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (scan->reader.cursor.rewind(&scan->reader.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to rewind MCP JSON-RPC",
+                                  &json_error);
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_json_scan_get(cai_mcp_json_scan *scan, int *ch,
+                                 cai_error *error) {
+  lonejson_read_result chunk;
+
+  if (scan->pushed) {
+    scan->pushed = 0;
+    *ch = scan->pushed_ch;
+    return 1;
+  }
+  if (scan->offset >= scan->length) {
+    chunk = scan->reader.cursor.read(&scan->reader.cursor, scan->buffer,
+                                     sizeof(scan->buffer));
+    if (chunk.error_code != 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read MCP JSON-RPC response");
+    }
+    if (chunk.bytes_read == 0U) {
+      *ch = 0;
+      return 0;
+    }
+    scan->offset = 0U;
+    scan->length = chunk.bytes_read;
+  }
+  *ch = scan->buffer[scan->offset++];
+  return 1;
+}
+
+static void cai_mcp_json_scan_unget(cai_mcp_json_scan *scan, int ch) {
+  scan->pushed = 1;
+  scan->pushed_ch = ch;
+}
+
+static int cai_mcp_json_scan_skip_ws(cai_mcp_json_scan *scan, int *ch,
+                                     cai_error *error) {
+  int rc;
+
+  do {
+    rc = cai_mcp_json_scan_get(scan, ch, error);
+    if (rc <= 0) {
+      return rc;
+    }
+  } while (*ch == ' ' || *ch == '\t' || *ch == '\r' || *ch == '\n');
+  return 1;
+}
+
+static int cai_mcp_json_hex_value(int ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return 10 + ch - 'a';
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return 10 + ch - 'A';
+  }
+  return -1;
+}
+
+static int cai_mcp_json_scan_string(cai_mcp_json_scan *scan, char *out,
+                                    size_t out_size, cai_error *error) {
+  size_t len;
+  int ch;
+  int rc;
+
+  len = 0U;
+  for (;;) {
+    rc = cai_mcp_json_scan_get(scan, &ch, error);
+    if (rc <= 0) {
+      return rc;
+    }
+    if (ch == '"') {
+      if (out_size != 0U) {
+        out[len < out_size ? len : out_size - 1U] = '\0';
+      }
+      return 1;
+    }
+    if ((unsigned int)ch < 0x20U) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+    if (ch == '\\') {
+      int hex[4];
+      size_t i;
+
+      rc = cai_mcp_json_scan_get(scan, &ch, error);
+      if (rc <= 0) {
+        return rc;
+      }
+      if (ch == 'u') {
+        unsigned int codepoint;
+
+        codepoint = 0U;
+        for (i = 0U; i < 4U; i++) {
+          rc = cai_mcp_json_scan_get(scan, &ch, error);
+          if (rc <= 0) {
+            return rc;
+          }
+          hex[i] = cai_mcp_json_hex_value(ch);
+          if (hex[i] < 0) {
+            return cai_set_error(error, CAI_ERR_PROTOCOL,
+                                 "failed to parse MCP JSON-RPC response");
+          }
+          codepoint = (codepoint << 4U) | (unsigned int)hex[i];
+        }
+        ch = codepoint <= 0x7FU ? (int)codepoint : '?';
+      } else if (ch == '"' || ch == '\\' || ch == '/') {
+      } else if (ch == 'b') {
+        ch = '\b';
+      } else if (ch == 'f') {
+        ch = '\f';
+      } else if (ch == 'n') {
+        ch = '\n';
+      } else if (ch == 'r') {
+        ch = '\r';
+      } else if (ch == 't') {
+        ch = '\t';
+      } else {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "failed to parse MCP JSON-RPC response");
+      }
+    }
+    if (out_size > 0U && len + 1U < out_size) {
+      out[len] = (char)ch;
+    }
+    len++;
+  }
+}
+
+static int cai_mcp_json_scan_skip_string(cai_mcp_json_scan *scan,
+                                         cai_error *error) {
+  return cai_mcp_json_scan_string(scan, NULL, 0U, error);
+}
+
+static int cai_mcp_json_scan_skip_value(cai_mcp_json_scan *scan,
+                                        cai_error *error) {
+  int stack[64];
+  size_t depth;
+  int ch;
+  int rc;
+
+  rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+  if (rc <= 0) {
+    return rc;
+  }
+  if (ch == '"') {
+    return cai_mcp_json_scan_skip_string(scan, error);
+  }
+  if (ch != '{' && ch != '[') {
+    while ((rc = cai_mcp_json_scan_get(scan, &ch, error)) > 0) {
+      if (ch == ',' || ch == '}' || ch == ']' || ch == ' ' || ch == '\t' ||
+          ch == '\r' || ch == '\n') {
+        cai_mcp_json_scan_unget(scan, ch);
+        return 1;
+      }
+    }
+    return rc;
+  }
+  stack[0] = ch;
+  depth = 1U;
+  while (depth != 0U) {
+    rc = cai_mcp_json_scan_get(scan, &ch, error);
+    if (rc <= 0) {
+      return rc;
+    }
+    if (ch == '"') {
+      rc = cai_mcp_json_scan_skip_string(scan, error);
+      if (rc <= 0) {
+        return rc;
+      }
+    } else if (ch == '{' || ch == '[') {
+      if (depth >= sizeof(stack) / sizeof(stack[0])) {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "failed to parse MCP JSON-RPC response");
+      }
+      stack[depth++] = ch;
+    } else if (ch == '}' || ch == ']') {
+      if (depth == 0U || (ch == '}' && stack[depth - 1U] != '{') ||
+          (ch == ']' && stack[depth - 1U] != '[')) {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "failed to parse MCP JSON-RPC response");
+      }
+      depth--;
+    }
+  }
+  return 1;
+}
+
 static int
-cai_mcp_validate_response_id(const lonejson_spooled *request,
-                             const cai_mcp_http_response_capture *reply,
-                             cai_error *error) {
+cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
+                                               int *has_result, int *has_error,
+                                               cai_error *error) {
+  cai_mcp_json_scan scan;
+  char key[32];
+  int ch;
+  int rc;
+
+  *has_result = 0;
+  *has_error = 0;
+  rc = cai_mcp_json_scan_init(&scan, json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP JSON-RPC response");
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP JSON-RPC response");
+  }
+  if (ch == '}') {
+    return CAI_OK;
+  }
+  cai_mcp_json_scan_unget(&scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+    rc = cai_mcp_json_scan_string(&scan, key, sizeof(key), error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+    if (strcmp(key, "result") == 0) {
+      *has_result = 1;
+    } else if (strcmp(key, "error") == 0) {
+      *has_error = 1;
+    }
+    rc = cai_mcp_json_scan_skip_value(&scan, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    if (ch == '}') {
+      return CAI_OK;
+    }
+    if (ch != ',') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+  }
+}
+
+static int
+cai_mcp_validate_response_envelope(const lonejson_spooled *request,
+                                   const cai_mcp_http_response_capture *reply,
+                                   cai_error *error) {
   cai_mcp_jsonrpc_id_doc request_doc;
   cai_mcp_jsonrpc_id_doc reply_doc;
   char *request_id;
   char *reply_id;
+  int has_result;
+  int has_error;
   int rc;
 
   if (request == NULL || reply == NULL || !cai_mcp_response_is_json(reply)) {
@@ -2922,6 +3212,15 @@ cai_mcp_validate_response_id(const lonejson_spooled *request,
   if (rc == CAI_OK) {
     rc = cai_mcp_parse_jsonrpc_id(&reply->body, &reply_doc,
                                   "failed to parse MCP response id", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_jsonrpc_response_result_error_presence(
+        &reply->body, &has_result, &has_error, error);
+  }
+  if (rc == CAI_OK && has_result == has_error) {
+    rc = cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP JSON-RPC response must include exactly one of result or error");
   }
   if (rc == CAI_OK) {
     request_id = cai_mcp_json_value_to_cstr(&request_doc.id, error);
@@ -3603,7 +3902,7 @@ static int cai_mcp_streamable_initialize(cai_mcp_client *client,
     rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_mcp_validate_response_id(&request, &response, error);
+    rc = cai_mcp_validate_response_envelope(&request, &response, error);
   }
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
@@ -3646,7 +3945,7 @@ static int cai_mcp_post_with_session_recovery(
   if (rc == CAI_OK || !had_session || response == NULL ||
       response->status != 404L) {
     if (rc == CAI_OK && is_request) {
-      rc = cai_mcp_validate_response_id(request, response, error);
+      rc = cai_mcp_validate_response_envelope(request, response, error);
     }
     return rc;
   }
@@ -3660,7 +3959,7 @@ static int cai_mcp_post_with_session_recovery(
   }
   rc = cai_mcp_post(impl, request, request_len, is_request, response, error);
   if (rc == CAI_OK && is_request) {
-    rc = cai_mcp_validate_response_id(request, response, error);
+    rc = cai_mcp_validate_response_envelope(request, response, error);
   }
   return rc;
 }
