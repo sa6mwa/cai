@@ -935,6 +935,22 @@ static char *cai_mcp_trim_header_value(const cai_allocator *allocator,
   return cai_strndup(allocator, value, len);
 }
 
+static int cai_mcp_session_id_is_valid(const char *session_id) {
+  const unsigned char *p;
+
+  if (session_id == NULL || session_id[0] == '\0') {
+    return 0;
+  }
+  p = (const unsigned char *)session_id;
+  while (*p != '\0') {
+    if (*p < 0x21U || *p > 0x7eU) {
+      return 0;
+    }
+    p++;
+  }
+  return 1;
+}
+
 static size_t cai_mcp_header_callback(char *buffer, size_t size, size_t nitems,
                                       void *userdata) {
   cai_mcp_http_response_capture *capture;
@@ -5146,6 +5162,12 @@ static int cai_mcp_streamable_initialize(cai_mcp_client *client,
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
     rc = cai_mcp_parse_initialize_response(impl, &response, error);
+  }
+  if (rc == CAI_OK && response.session_id != NULL) {
+    if (!cai_mcp_session_id_is_valid(response.session_id)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP session id must contain visible ASCII only");
+    }
   }
   if (rc == CAI_OK && response.session_id != NULL) {
     impl->session_id = cai_strdup(&impl->allocator, response.session_id);

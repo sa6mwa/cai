@@ -9923,6 +9923,73 @@ test_mcp_streamable_http_initialize_missing_server_info(test_state *state) {
       "failed to parse MCP initialize");
 }
 
+static void test_mcp_streamable_http_invalid_session_id(
+    test_state *state, const char *test_name, const char *session_header) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, initialize_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char ping_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  script[0].request_id = session_header;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(ping_name, sizeof(ping_name), "%s_ping", test_name);
+  expect_int(state, ping_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message,
+             "MCP session id must contain visible ASCII only");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_initialize_empty_session_id(test_state *state) {
+  test_mcp_streamable_http_invalid_session_id(
+      state, "mcp_streamable_initialize_empty_session_id",
+      "req-init\r\nMCP-Session-Id: ");
+}
+
+static void
+test_mcp_streamable_http_initialize_space_session_id(test_state *state) {
+  test_mcp_streamable_http_invalid_session_id(
+      state, "mcp_streamable_initialize_space_session_id",
+      "req-init\r\nMCP-Session-Id: bad id");
+}
+
 static void test_mcp_streamable_http_response_id_mismatch(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -26776,6 +26843,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_initialize_capabilities_not_object},
     {"mcp_streamable_http_initialize_missing_server_info",
      test_mcp_streamable_http_initialize_missing_server_info},
+    {"mcp_streamable_http_initialize_empty_session_id",
+     test_mcp_streamable_http_initialize_empty_session_id},
+    {"mcp_streamable_http_initialize_space_session_id",
+     test_mcp_streamable_http_initialize_space_session_id},
     {"mcp_streamable_http_response_id_mismatch",
      test_mcp_streamable_http_response_id_mismatch},
     {"mcp_streamable_http_response_invalid_id_type",
