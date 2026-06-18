@@ -771,6 +771,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sse_jsonrpc_invalid
     mcp_streamable_http_sse_method_with_result
     mcp_streamable_http_utility_notifications_ignore_malformed
+    mcp_streamable_http_cancelled_notification_aborts_request
     mcp_streamable_http_sse_resume_get
     mcp_streamable_http_response_content_type_parameters
     mcp_streamable_http_sse_content_type_parameters

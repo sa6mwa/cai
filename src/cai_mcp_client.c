@@ -73,6 +73,8 @@ typedef struct cai_mcp_streamable_http_client_impl {
   char *session_id;
   int initialized;
   long long next_id;
+  long long active_request_id;
+  int has_active_request;
   cai_mcp_client_tool_impl *tools;
   size_t tool_count;
   size_t tool_capacity;
@@ -397,6 +399,8 @@ static int cai_mcp_validate_sampling_params(
 static int cai_mcp_validate_elicitation_params(
     const cai_mcp_streamable_http_client_impl *impl,
     lonejson_spooled *params_json, cai_error *error);
+static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
+                                        cai_error *error);
 static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
@@ -1349,6 +1353,10 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   response->session_id = NULL;
   response->status = 0L;
   CAI_LJ->spooled_init(CAI_LJ, &response->body);
+  if (is_request) {
+    impl->active_request_id = impl->next_id;
+    impl->has_active_request = 1;
+  }
 
   upload.cursor = *request;
   upload.rewound = 0;
@@ -1371,6 +1379,9 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   if (curl_rc != CURLE_OK) {
+    if (is_request) {
+      impl->has_active_request = 0;
+    }
     response->body.cleanup(&response->body);
     memset(&response->body, 0, sizeof(response->body));
     cai_free_mem(NULL, response->content_type);
@@ -1387,6 +1398,9 @@ static int cai_mcp_post(cai_mcp_streamable_http_client_impl *impl,
   }
   if (rc == CAI_OK && is_request && cai_mcp_response_is_sse(response)) {
     rc = cai_mcp_sse_normalize_response(impl, response, 1, error);
+  }
+  if (is_request) {
+    impl->has_active_request = 0;
   }
   return rc;
 }
@@ -1694,33 +1708,65 @@ cai_mcp_json_value_id_shape_is_valid(const lonejson_json_value *value) {
   return rc == CAI_OK;
 }
 
-static int
-cai_mcp_cancelled_params_are_valid(const lonejson_json_value *params) {
+static int cai_mcp_cancelled_request_id_text(const lonejson_json_value *params,
+                                             char **out) {
   cai_mcp_cancelled_params_doc doc;
   lonejson_spooled spool;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
-  int valid;
+  char *request_id;
 
+  if (out != NULL) {
+    *out = NULL;
+  }
   if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
-      !cai_mcp_json_value_root_is(params, '{', NULL)) {
-    return 0;
+      out == NULL || !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return CAI_ERR_PROTOCOL;
   }
   memset(&doc, 0, sizeof(doc));
   memset(&spool, 0, sizeof(spool));
   if (cai_mcp_json_value_to_spooled(params, &spool, NULL) != CAI_OK) {
-    return 0;
+    return CAI_ERR_TRANSPORT;
   }
   reader.cursor = spool;
   lonejson_error_init(&json_error);
   status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_cancelled_params_map, &doc,
                                 cai_mcp_spooled_read, &reader, &json_error);
-  valid = status == LONEJSON_STATUS_OK &&
-          cai_mcp_json_value_id_shape_is_valid(&doc.request_id);
+  request_id = NULL;
+  if (status == LONEJSON_STATUS_OK &&
+      cai_mcp_json_value_id_shape_is_valid(&doc.request_id)) {
+    request_id = cai_mcp_json_value_to_cstr(&doc.request_id, NULL);
+  }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_cancelled_params_map, &doc);
   spool.cleanup(&spool);
-  return valid;
+  if (request_id == NULL) {
+    return CAI_ERR_PROTOCOL;
+  }
+  *out = request_id;
+  return CAI_OK;
+}
+
+static int cai_mcp_dispatch_cancelled_notification(
+    cai_mcp_streamable_http_client_impl *impl,
+    const lonejson_json_value *params, cai_error *error) {
+  char *request_id;
+  char active_request_id[64];
+  int matches;
+
+  request_id = NULL;
+  if (cai_mcp_cancelled_request_id_text(params, &request_id) != CAI_OK) {
+    return CAI_OK;
+  }
+  snprintf(active_request_id, sizeof(active_request_id), "%lld",
+           impl != NULL ? impl->active_request_id : 0LL);
+  matches = impl != NULL && impl->has_active_request &&
+            strcmp(request_id, active_request_id) == 0;
+  cai_free_mem(NULL, request_id);
+  if (!matches) {
+    return CAI_OK;
+  }
+  return cai_set_error(error, CAI_ERR_CANCELLED, "MCP request was cancelled");
 }
 
 static int
@@ -1757,9 +1803,6 @@ cai_mcp_notification_should_dispatch(const cai_mcp_jsonrpc_message_doc *doc) {
   if (doc == NULL || doc->method == NULL) {
     return 0;
   }
-  if (strcmp(doc->method, "notifications/cancelled") == 0) {
-    return cai_mcp_cancelled_params_are_valid(&doc->params);
-  }
   if (strcmp(doc->method, "notifications/progress") == 0) {
     return cai_mcp_progress_params_are_valid(&doc->params);
   }
@@ -1778,6 +1821,9 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
 
   if (impl == NULL || doc == NULL || doc->method == NULL) {
     return CAI_OK;
+  }
+  if (strcmp(doc->method, "notifications/cancelled") == 0) {
+    return cai_mcp_dispatch_cancelled_notification(impl, &doc->params, error);
   }
   if (!cai_mcp_notification_should_dispatch(doc)) {
     return CAI_OK;
