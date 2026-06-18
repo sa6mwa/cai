@@ -267,6 +267,8 @@ static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
                                                cai_error *error);
+static int cai_mcp_jsonrpc_response_result_root_is_object(
+    const lonejson_spooled *json, int *is_object, cai_error *error);
 static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
                                      cai_error *error);
 static int
@@ -2701,6 +2703,7 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
   lonejson_error json_error;
   lonejson_status status;
   int has_error;
+  int result_is_object;
   int rc;
 
   rc = cai_mcp_response_json_body(response, "MCP initialize response",
@@ -2712,6 +2715,19 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
   if (rc != CAI_OK) {
     json_body.cleanup(&json_body);
     return rc;
+  }
+  if (!has_error) {
+    rc = cai_mcp_jsonrpc_response_result_root_is_object(
+        &json_body, &result_is_object, error);
+    if (rc != CAI_OK) {
+      json_body.cleanup(&json_body);
+      return rc;
+    }
+    if (!result_is_object) {
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP result must be an object");
+    }
   }
   memset(&doc, 0, sizeof(doc));
   reader.cursor = json_body;
@@ -3399,6 +3415,84 @@ cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
   }
 }
 
+static int cai_mcp_jsonrpc_response_result_root_is_object(
+    const lonejson_spooled *json, int *is_object, cai_error *error) {
+  cai_mcp_json_scan scan;
+  char key[32];
+  int ch;
+  int rc;
+
+  *is_object = 0;
+  rc = cai_mcp_json_scan_init(&scan, json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP JSON-RPC response");
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP JSON-RPC response");
+  }
+  if (ch == '}') {
+    return CAI_OK;
+  }
+  cai_mcp_json_scan_unget(&scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+    rc = cai_mcp_json_scan_string(&scan, key, sizeof(key), error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    if (strcmp(key, "result") == 0) {
+      *is_object = ch == '{';
+    }
+    cai_mcp_json_scan_unget(&scan, ch);
+    rc = cai_mcp_json_scan_skip_value(&scan, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    if (strcmp(key, "result") == 0) {
+      return CAI_OK;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                                     "failed to parse MCP JSON-RPC response")
+                     : rc;
+    }
+    if (ch == '}') {
+      return CAI_OK;
+    }
+    if (ch != ',') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP JSON-RPC response");
+    }
+  }
+}
+
 static int
 cai_mcp_validate_response_envelope(const lonejson_spooled *request,
                                    const cai_mcp_http_response_capture *reply,
@@ -4041,6 +4135,7 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
   lonejson_error json_error;
   lonejson_status status;
   int has_error;
+  int result_is_object;
   int rc;
 
   rc = cai_mcp_response_json_body(response, response_name, &json_body, error);
@@ -4051,6 +4146,19 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
   if (rc != CAI_OK) {
     json_body.cleanup(&json_body);
     return rc;
+  }
+  if (!has_error) {
+    rc = cai_mcp_jsonrpc_response_result_root_is_object(
+        &json_body, &result_is_object, error);
+    if (rc != CAI_OK) {
+      json_body.cleanup(&json_body);
+      return rc;
+    }
+    if (!result_is_object) {
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP result must be an object");
+    }
   }
   memset(&doc, 0, sizeof(doc));
   lonejson_error_init(&json_error);

@@ -9518,6 +9518,88 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                     &server.child_status);
 }
 
+static void
+test_mcp_streamable_http_call_result_must_be_object(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[]}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: call-result-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: call-result-session", "\"id\":2",
+      "\"method\":\"tools/call\"", "\"name\":\"echo\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: call-result-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_call_result_object_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_call_result_object_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_call_result_object_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_call_result_object_args",
+             args.append(&args, "{}", 2U, &json_error), LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_call_result_object_call",
+             cai_mcp_client_call_tool(client, "echo", &args, sink, &error),
+             CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_call_result_object_message", error.message,
+             "MCP result must be an object");
+  expect_str(state, "mcp_streamable_call_result_object_output", writer.buffer,
+             "");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_call_result_object_mock", server.pid,
+                    &server.child_status);
+}
+
 static void test_mcp_streamable_http_ping_error(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -25663,6 +25745,8 @@ static const test_entry test_entries[] = {
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
+    {"mcp_streamable_http_call_result_must_be_object",
+     test_mcp_streamable_http_call_result_must_be_object},
     {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
     {"mcp_streamable_http_ping_error_missing_code",
      test_mcp_streamable_http_ping_error_missing_code},
