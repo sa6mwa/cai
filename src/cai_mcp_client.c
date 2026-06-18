@@ -138,6 +138,10 @@ typedef struct cai_mcp_jsonrpc_message_doc {
   cai_mcp_jsonrpc_error_doc error_doc;
 } cai_mcp_jsonrpc_message_doc;
 
+typedef struct cai_mcp_jsonrpc_id_doc {
+  lonejson_json_value id;
+} cai_mcp_jsonrpc_id_doc;
+
 typedef struct cai_mcp_list_tool_doc {
   char *name;
   char *description;
@@ -288,6 +292,15 @@ static const lonejson_field cai_mcp_jsonrpc_message_fields[] = {
                           &cai_mcp_jsonrpc_error_map)};
 LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_message_map, cai_mcp_jsonrpc_message_doc,
                     cai_mcp_jsonrpc_message_fields);
+
+static const lonejson_field cai_mcp_jsonrpc_id_fields[] = {
+    {"id", LONEJSON__KEY_LEN("id"), LONEJSON__KEY_FIRST("id"),
+     LONEJSON__KEY_LAST("id"), offsetof(cai_mcp_jsonrpc_id_doc, id),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_jsonrpc_id_map, cai_mcp_jsonrpc_id_doc,
+                    cai_mcp_jsonrpc_id_fields);
 
 static const lonejson_field cai_mcp_sampling_params_fields[] = {
     {"tools", LONEJSON__KEY_LEN("tools"), LONEJSON__KEY_FIRST("tools"),
@@ -2841,6 +2854,82 @@ static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
   return builder.data;
 }
 
+static int cai_mcp_parse_jsonrpc_id(const lonejson_spooled *json,
+                                    cai_mcp_jsonrpc_id_doc *doc,
+                                    const char *operation, cai_error *error) {
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (json == NULL || doc == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP JSON-RPC is required");
+  }
+  memset(doc, 0, sizeof(*doc));
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to rewind MCP JSON-RPC",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc);
+    return cai_mcp_set_json_error(error, operation, &json_error);
+  }
+  if (doc->id.kind == LONEJSON_JSON_VALUE_NULL) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC was missing id");
+  }
+  return CAI_OK;
+}
+
+static int
+cai_mcp_validate_response_id(const lonejson_spooled *request,
+                             const cai_mcp_http_response_capture *reply,
+                             cai_error *error) {
+  cai_mcp_jsonrpc_id_doc request_doc;
+  cai_mcp_jsonrpc_id_doc reply_doc;
+  char *request_id;
+  char *reply_id;
+  int rc;
+
+  if (request == NULL || reply == NULL || !cai_mcp_response_is_json(reply)) {
+    return CAI_OK;
+  }
+  memset(&request_doc, 0, sizeof(request_doc));
+  memset(&reply_doc, 0, sizeof(reply_doc));
+  request_id = NULL;
+  reply_id = NULL;
+  rc = cai_mcp_parse_jsonrpc_id(request, &request_doc,
+                                "failed to parse MCP request id", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_jsonrpc_id(&reply->body, &reply_doc,
+                                  "failed to parse MCP response id", error);
+  }
+  if (rc == CAI_OK) {
+    request_id = cai_mcp_json_value_to_cstr(&request_doc.id, error);
+    reply_id = cai_mcp_json_value_to_cstr(&reply_doc.id, error);
+    if (request_id == NULL || reply_id == NULL) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read MCP JSON-RPC id");
+    } else if (strcmp(request_id, reply_id) != 0) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC response id did not match request id");
+    }
+  }
+  cai_free_mem(NULL, request_id);
+  cai_free_mem(NULL, reply_id);
+  if (request_doc.id.methods != NULL) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, &request_doc);
+  }
+  if (reply_doc.id.methods != NULL) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, &reply_doc);
+  }
+  return rc;
+}
+
 static char *
 cai_mcp_optional_json_value_to_cstr(const cai_allocator *allocator,
                                     const lonejson_json_value *value,
@@ -3498,6 +3587,9 @@ static int cai_mcp_streamable_initialize(cai_mcp_client *client,
   if (rc == CAI_OK) {
     rc = cai_mcp_post(impl, &request, request_len, 1, &response, error);
   }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_validate_response_id(&request, &response, error);
+  }
   cai_mcp_spooled_cleanup_if_initialized(&request);
   if (rc == CAI_OK) {
     rc = cai_mcp_parse_initialize_response(impl, &response, error);
@@ -3538,6 +3630,9 @@ static int cai_mcp_post_with_session_recovery(
   rc = cai_mcp_post(impl, request, request_len, is_request, response, error);
   if (rc == CAI_OK || !had_session || response == NULL ||
       response->status != 404L) {
+    if (rc == CAI_OK && is_request) {
+      rc = cai_mcp_validate_response_id(request, response, error);
+    }
     return rc;
   }
 
@@ -3548,7 +3643,11 @@ static int cai_mcp_post_with_session_recovery(
   if (rc != CAI_OK) {
     return rc;
   }
-  return cai_mcp_post(impl, request, request_len, is_request, response, error);
+  rc = cai_mcp_post(impl, request, request_len, is_request, response, error);
+  if (rc == CAI_OK && is_request) {
+    rc = cai_mcp_validate_response_id(request, response, error);
+  }
+  return rc;
 }
 
 static int cai_mcp_post_request_with_session_recovery(

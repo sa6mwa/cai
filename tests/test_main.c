@@ -9036,7 +9036,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   static const char resource_read_body[] =
       "event: message\n"
       "data: "
-      "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"contents\":[{\"uri\":"
+      "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"contents\":[{\"uri\":"
       "\"resource://beta\",\"mimeType\":\"application/json\",\"text\":"
       "\"{\\\"beta\\\":true}\"}]}}\n\n";
   static const char resource_subscribe_body[] =
@@ -9046,30 +9046,30 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   static const char prompts_list_body[] =
       "event: message\n"
       "data: "
-      "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"prompts\":[{\"name\":"
+      "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{\"prompts\":[{\"name\":"
       "\"explain\",\"description\":\"Explain a topic\",\"arguments\":[{"
       "\"name\":\"topic\",\"required\":true}],\"icons\":[{\"src\":"
       "\"https://example.test/prompt.svg\",\"mimeType\":\"image/svg+xml\","
       "\"sizes\":[\"any\"]}]}],\"nextCursor\":"
       "\"prompts-page-2\"}}\n\n";
   static const char prompts_list_page_2_body[] =
-      "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"prompts\":[{\"name\":"
+      "{\"jsonrpc\":\"2.0\",\"id\":13,\"result\":{\"prompts\":[{\"name\":"
       "\"summarize\",\"title\":\"Summarize\",\"arguments\":[]}]}}";
   static const char prompt_get_body[] =
       "event: message\n"
       "data: "
-      "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"description\":"
+      "{\"jsonrpc\":\"2.0\",\"id\":14,\"result\":{\"description\":"
       "\"Explain a topic\",\"messages\":[{\"role\":\"user\",\"content\":{"
       "\"type\":\"text\",\"text\":\"Explain MCP\"}}]}}\n\n";
   static const char complete_body[] =
       "event: message\n"
       "data: "
-      "{\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{\"completion\":{\"values\":"
+      "{\"jsonrpc\":\"2.0\",\"id\":15,\"result\":{\"completion\":{\"values\":"
       "[\"engineering\"],\"total\":1,\"hasMore\":false}}}\n\n";
   static const char ping_body[] =
-      "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{}}";
+      "{\"jsonrpc\":\"2.0\",\"id\":16,\"result\":{}}";
   static const char logging_set_level_body[] =
-      "{\"jsonrpc\":\"2.0\",\"id\":13,\"result\":{}}";
+      "{\"jsonrpc\":\"2.0\",\"id\":17,\"result\":{}}";
   static const char terminate_body[] = "{}";
   static const char *init_required[] = {
       "POST /v1/mcp HTTP/",
@@ -9567,6 +9567,66 @@ static void test_mcp_streamable_http_ping_error(test_state *state) {
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_ping_error_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_response_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: id-mismatch-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: id-mismatch-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: id-mismatch-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_id_mismatch_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_id_mismatch_message", error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_id_mismatch_mock", server.pid,
                     &server.child_status);
 }
 
@@ -24449,6 +24509,8 @@ static const test_entry test_entries[] = {
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
     {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
+    {"mcp_streamable_http_response_id_mismatch",
+     test_mcp_streamable_http_response_id_mismatch},
     {"mcp_streamable_http_resource_subscription_error",
      test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_list_changed_invalidates_cache",
