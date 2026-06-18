@@ -113,6 +113,8 @@ typedef struct cai_mcp_client_tool {
   const char *annotations_json;
   /** Tool execution metadata JSON, or "null" when absent. */
   const char *execution_json;
+  /** Tool icons JSON array, or "[]" when absent. */
+  const char *icons_json;
 } cai_mcp_client_tool;
 
 /** One remote MCP resource descriptor discovered from resources/list. */

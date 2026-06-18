@@ -2018,6 +2018,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
       "\"required\":[\"message\"]}";
   impl->tools[0].output_schema_json = "null";
   impl->tools[0].annotations_json = "null";
+  impl->tools[0].icons_json = "[]";
   impl->tools[0].execution_json = "null";
   impl->tools[1].name = "status";
   impl->tools[1].title = "Status";
@@ -2025,6 +2026,7 @@ static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
   impl->tools[1].input_schema_json = "{\"type\":\"object\",\"properties\":{}}";
   impl->tools[1].output_schema_json = "null";
   impl->tools[1].annotations_json = "null";
+  impl->tools[1].icons_json = "[]";
   impl->tools[1].execution_json = "null";
   impl->tool_count = 2U;
   impl->resources[0].uri = "resource://ok";
@@ -8991,7 +8993,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":["
       "\"message\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{"
       "\"message\":{\"type\":\"string\"}}},\"annotations\":{\"readOnlyHint\":"
-      "true},\"execution\":{\"taskSupport\":\"optional\"}}],\"nextCursor\":"
+      "true},\"icons\":[{\"src\":\"https://example.test/echo.svg\","
+      "\"mimeType\":\"image/svg+xml\"}],\"execution\":{\"taskSupport\":"
+      "\"optional\"}}],\"nextCursor\":"
       "\"tools-page-2\"}}\n\n";
   static const char tools_list_page_2_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
@@ -9300,6 +9304,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                   tool->output_schema_json, "\"message\"");
     expect_substr(state, "mcp_streamable_tool_annotations",
                   tool->annotations_json, "\"readOnlyHint\":true");
+    expect_substr(state, "mcp_streamable_tool_icons", tool->icons_json,
+                  "echo.svg");
     expect_substr(state, "mcp_streamable_tool_execution", tool->execution_json,
                   "\"taskSupport\":\"optional\"");
   }
@@ -9316,6 +9322,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                tool->output_schema_json, "null");
     expect_str(state, "mcp_streamable_tool_page_2_annotations",
                tool->annotations_json, "null");
+    expect_str(state, "mcp_streamable_tool_page_2_icons", tool->icons_json,
+               "[]");
     expect_str(state, "mcp_streamable_tool_page_2_execution",
                tool->execution_json, "null");
   }
