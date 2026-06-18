@@ -873,7 +873,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_elicitation_complete_notification
     mcp_streamable_http_elicitation_complete_missing_id
     mcp_streamable_http_elicitation_complete_array_params
+    mcp_streamable_http_server_ping_array_params
     mcp_streamable_http_roots_list_request
+    mcp_streamable_http_roots_list_array_params
     mcp_streamable_http_roots_list_callback_error
     mcp_streamable_http_roots_list_invalid_result
     mcp_streamable_http_roots_list_invalid_shape

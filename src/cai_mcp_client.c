@@ -2214,6 +2214,19 @@ cai_mcp_validate_optional_notification_params(const lonejson_json_value *params,
   return CAI_OK;
 }
 
+static int
+cai_mcp_validate_optional_request_params(const lonejson_json_value *params,
+                                         const char *message,
+                                         cai_error *error) {
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, message);
+  }
+  return CAI_OK;
+}
+
 static int cai_mcp_notification_should_dispatch(
     const cai_mcp_streamable_http_client_impl *impl,
     const cai_mcp_jsonrpc_message_doc *doc) {
@@ -2639,12 +2652,28 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
   }
   CAI_LJ->spooled_init(CAI_LJ, response);
   if (strcmp(doc->method, "ping") == 0) {
-    CAI_LJ->spooled_init(CAI_LJ, &result);
-    rc = cai_mcp_write_cstr(&result, "{}", error);
+    rc = cai_mcp_validate_optional_request_params(
+        &doc->params, "MCP ping params must be an object", error);
+    if (rc != CAI_OK) {
+      jsonrpc_error_code = -32602;
+      preserve_error = 0;
+    }
+    if (rc == CAI_OK) {
+      CAI_LJ->spooled_init(CAI_LJ, &result);
+      rc = cai_mcp_write_cstr(&result, "{}", error);
+    }
     result_error_message = "failed to write MCP ping result";
   } else if (strcmp(doc->method, "roots/list") == 0) {
-    rc = cai_mcp_build_roots_result(impl, &result, &jsonrpc_error_code,
-                                    &preserve_error, error);
+    rc = cai_mcp_validate_optional_request_params(
+        &doc->params, "MCP roots/list params must be an object", error);
+    if (rc != CAI_OK) {
+      jsonrpc_error_code = -32602;
+      preserve_error = 0;
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_build_roots_result(impl, &result, &jsonrpc_error_code,
+                                      &preserve_error, error);
+    }
     result_error_message = "failed to write MCP roots result";
   } else if (strcmp(doc->method, "sampling/createMessage") == 0) {
     rc = cai_mcp_build_sampling_result(impl, doc, &result, &jsonrpc_error_code,
