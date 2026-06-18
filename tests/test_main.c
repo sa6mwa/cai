@@ -11260,6 +11260,117 @@ static void test_mcp_streamable_http_utility_notifications_ignore_malformed(
                     &server.child_status);
 }
 
+static void test_mcp_streamable_http_active_progress_notification_invalid(
+    test_state *state, const char *test_name, const char *progress_event,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char response_template[] =
+      "event: message\n"
+      "data: %s\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: active-progress-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: active-progress-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+  char response_body[512];
+  char mock_name[128];
+  char open_name[128];
+  char ping_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  snprintf(response_body, sizeof(response_body), response_template,
+           progress_event);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: active-progress-invalid-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(ping_name, sizeof(ping_name), "%s_ping", test_name);
+  expect_int(state, ping_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  expect_int(state, test_name, notifications.count, 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_active_progress_missing_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_missing_progress",
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2}}",
+      "MCP progress notification requires progress");
+}
+
+static void
+test_mcp_streamable_http_active_progress_invalid_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_invalid_progress",
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":\"1\"}}",
+      "failed to parse MCP progress notification params");
+}
+
 static void test_mcp_streamable_http_cancelled_notification_aborts_request(
     test_state *state) {
   static const char initialize_body[] =
@@ -30409,6 +30520,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sse_response_result_and_error},
     {"mcp_streamable_http_utility_notifications_ignore_malformed",
      test_mcp_streamable_http_utility_notifications_ignore_malformed},
+    {"mcp_streamable_http_active_progress_missing_progress",
+     test_mcp_streamable_http_active_progress_missing_progress},
+    {"mcp_streamable_http_active_progress_invalid_progress",
+     test_mcp_streamable_http_active_progress_invalid_progress},
     {"mcp_streamable_http_cancelled_notification_aborts_request",
      test_mcp_streamable_http_cancelled_notification_aborts_request},
     {"mcp_streamable_http_sse_resume_get",

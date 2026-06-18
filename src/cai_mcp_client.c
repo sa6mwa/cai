@@ -395,6 +395,10 @@ typedef struct cai_mcp_progress_params_doc {
   char *message;
 } cai_mcp_progress_params_doc;
 
+typedef struct cai_mcp_progress_token_doc {
+  lonejson_json_value progress_token;
+} cai_mcp_progress_token_doc;
+
 typedef struct cai_mcp_logging_message_params_doc {
   char *level;
   char *logger;
@@ -600,6 +604,17 @@ static const lonejson_field cai_mcp_progress_params_fields[] = {
                                 "message")};
 LONEJSON_MAP_DEFINE(cai_mcp_progress_params_map, cai_mcp_progress_params_doc,
                     cai_mcp_progress_params_fields);
+
+static const lonejson_field cai_mcp_progress_token_fields[] = {
+    {"progressToken", LONEJSON__KEY_LEN("progressToken"),
+     LONEJSON__KEY_FIRST("progressToken"), LONEJSON__KEY_LAST("progressToken"),
+     offsetof(cai_mcp_progress_token_doc, progress_token),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL,
+     LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_progress_token_map, cai_mcp_progress_token_doc,
+                    cai_mcp_progress_token_fields);
 
 static const lonejson_field cai_mcp_logging_message_params_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_logging_message_params_doc, level,
@@ -1992,7 +2007,7 @@ static int cai_mcp_dispatch_cancelled_notification(
 
 static int cai_mcp_progress_token_text(const lonejson_json_value *params,
                                        char **out) {
-  cai_mcp_progress_params_doc doc;
+  cai_mcp_progress_token_doc doc;
   lonejson_spooled spool;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
@@ -2013,14 +2028,14 @@ static int cai_mcp_progress_token_text(const lonejson_json_value *params,
   }
   reader.cursor = spool;
   lonejson_error_init(&json_error);
-  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_progress_params_map, &doc,
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_progress_token_map, &doc,
                                 cai_mcp_spooled_read, &reader, &json_error);
   progress_token = NULL;
-  if (status == LONEJSON_STATUS_OK && doc.has_progress &&
+  if (status == LONEJSON_STATUS_OK &&
       cai_mcp_json_value_id_shape_is_valid(&doc.progress_token)) {
     progress_token = cai_mcp_json_value_to_cstr(&doc.progress_token, NULL);
   }
-  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_params_map, &doc);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_token_map, &doc);
   spool.cleanup(&spool);
   if (progress_token == NULL) {
     return CAI_ERR_PROTOCOL;
@@ -2046,6 +2061,47 @@ static int cai_mcp_progress_matches_active_request(
             strcmp(progress_token, active_request_id) == 0;
   cai_free_mem(NULL, progress_token);
   return matches;
+}
+
+static int
+cai_mcp_validate_progress_notification_params(const lonejson_json_value *params,
+                                              cai_error *error) {
+  cai_mcp_progress_params_doc doc;
+  lonejson_spooled spool;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
+      !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP progress params must be an object");
+  }
+  memset(&doc, 0, sizeof(doc));
+  memset(&spool, 0, sizeof(spool));
+  rc = cai_mcp_json_value_to_spooled(params, &spool, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  reader.cursor = spool;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_progress_params_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_params_map, &doc);
+    spool.cleanup(&spool);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP progress notification params", &json_error);
+  }
+  rc = CAI_OK;
+  if (!doc.has_progress) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP progress notification requires progress");
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_params_map, &doc);
+  spool.cleanup(&spool);
+  return rc;
 }
 
 static int
@@ -2288,8 +2344,18 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
       return rc;
     }
   }
-  if (!cai_mcp_notification_should_dispatch(impl, doc)) {
-    return CAI_OK;
+  if (strcmp(doc->method, "notifications/progress") == 0) {
+    if (!cai_mcp_notification_should_dispatch(impl, doc)) {
+      return CAI_OK;
+    }
+    rc = cai_mcp_validate_progress_notification_params(&doc->params, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  } else {
+    if (!cai_mcp_notification_should_dispatch(impl, doc)) {
+      return CAI_OK;
+    }
   }
   cai_mcp_invalidate_for_notification(impl, doc->method);
   notification = impl->receiver.notification != NULL

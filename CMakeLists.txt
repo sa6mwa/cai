@@ -780,6 +780,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sse_response_missing_result_error
     mcp_streamable_http_sse_response_result_and_error
     mcp_streamable_http_utility_notifications_ignore_malformed
+    mcp_streamable_http_active_progress_missing_progress
+    mcp_streamable_http_active_progress_invalid_progress
     mcp_streamable_http_cancelled_notification_aborts_request
     mcp_streamable_http_sse_resume_get
     mcp_streamable_http_response_content_type_parameters
