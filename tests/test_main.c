@@ -10363,6 +10363,124 @@ static void test_mcp_streamable_http_sse_method_with_result(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_response_content_type_parameters(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-json-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-json-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "Application/Json; Charset=UTF-8",
+       "req-init\r\nMCP-Session-Id: content-type-json-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "Application/Json; Charset=UTF-8", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "Application/Json; Charset=UTF-8", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_content_type_json",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_content_type_json_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_content_type_json_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_content_type_json", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_content_type_parameters(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-sse-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-sse-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: content-type-sse-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "Text/Event-Stream; charset=utf-8", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_content_type_sse",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_content_type_sse_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_content_type_sse_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_content_type_sse", server.pid,
+                    &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_response_missing_result_error(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -26859,6 +26977,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sse_jsonrpc_invalid},
     {"mcp_streamable_http_sse_method_with_result",
      test_mcp_streamable_http_sse_method_with_result},
+    {"mcp_streamable_http_response_content_type_parameters",
+     test_mcp_streamable_http_response_content_type_parameters},
+    {"mcp_streamable_http_sse_content_type_parameters",
+     test_mcp_streamable_http_sse_content_type_parameters},
     {"mcp_streamable_http_response_missing_result_error",
      test_mcp_streamable_http_response_missing_result_error},
     {"mcp_streamable_http_response_result_and_error",

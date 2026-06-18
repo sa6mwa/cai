@@ -1136,14 +1136,40 @@ static int cai_mcp_response_has_jsonrpc_error(const lonejson_spooled *json_body,
                                                         has_error, error);
 }
 
+static int cai_mcp_content_type_is(const char *content_type,
+                                   const char *media_type) {
+  const char *end;
+  size_t media_type_len;
+  size_t len;
+
+  if (content_type == NULL || media_type == NULL) {
+    return 0;
+  }
+  while (*content_type == ' ' || *content_type == '\t') {
+    content_type++;
+  }
+  end = content_type;
+  while (*end != '\0' && *end != ';') {
+    end++;
+  }
+  len = (size_t)(end - content_type);
+  while (len > 0U &&
+         (content_type[len - 1U] == ' ' || content_type[len - 1U] == '\t')) {
+    len--;
+  }
+  media_type_len = strlen(media_type);
+  return len == media_type_len &&
+         cai_mcp_ascii_ieq_n(content_type, media_type, media_type_len);
+}
+
 static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res) {
-  return res != NULL && res->content_type != NULL &&
-         strstr(res->content_type, "application/json") != NULL;
+  return res != NULL &&
+         cai_mcp_content_type_is(res->content_type, "application/json");
 }
 
 static int cai_mcp_response_is_sse(const cai_mcp_http_response_capture *res) {
-  return res != NULL && res->content_type != NULL &&
-         strstr(res->content_type, "text/event-stream") != NULL;
+  return res != NULL &&
+         cai_mcp_content_type_is(res->content_type, "text/event-stream");
 }
 
 static int cai_mcp_response_ok(const cai_mcp_http_response_capture *res,
