@@ -2990,6 +2990,41 @@ static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
   return is_object;
 }
 
+static int cai_mcp_json_value_root_is(const lonejson_json_value *value,
+                                      char root, cai_error *error) {
+  char *text;
+  const char *cursor;
+  int matches;
+
+  if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return 1;
+  }
+  text = cai_mcp_json_value_to_cstr(value, error);
+  if (text == NULL) {
+    return 0;
+  }
+  cursor = text;
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
+         *cursor == '\n') {
+    cursor++;
+  }
+  matches = *cursor == root;
+  cai_free_mem(NULL, text);
+  return matches;
+}
+
+static int
+cai_mcp_optional_json_object_is_valid(const lonejson_json_value *value,
+                                      cai_error *error) {
+  return cai_mcp_json_value_root_is(value, '{', error);
+}
+
+static int
+cai_mcp_optional_json_array_is_valid(const lonejson_json_value *value,
+                                     cai_error *error) {
+  return cai_mcp_json_value_root_is(value, '[', error);
+}
+
 static int cai_mcp_jsonrpc_id_text_is_valid(const char *id) {
   size_t i;
 
@@ -3498,6 +3533,33 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP tool inputSchema must be an object");
     }
+    if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].output_schema,
+                                               error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool outputSchema must be an object");
+    }
+    if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].annotations,
+                                               error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool annotations must be an object");
+    }
+    if (!cai_mcp_optional_json_array_is_valid(&src_tools[i].icons, error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool icons must be an array");
+    }
+    if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].execution,
+                                               error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool execution must be an object");
+    }
   }
   base_count = impl->tool_count;
   rc = cai_mcp_client_reserve_tools(impl, base_count + doc.result.tools.count,
@@ -3619,11 +3681,26 @@ static int cai_mcp_parse_resources_list_response(
     json_body.cleanup(&json_body);
     return rc;
   }
+  src_resources = (cai_mcp_list_resource_doc *)doc.result.resources.items;
+  for (i = 0U; i < doc.result.resources.count; i++) {
+    if (!cai_mcp_optional_json_array_is_valid(&src_resources[i].icons, error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP resource icons must be an array");
+    }
+    if (!cai_mcp_optional_json_object_is_valid(&src_resources[i].annotations,
+                                               error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP resource annotations must be an object");
+    }
+  }
   base_count = impl->resource_count;
   rc = cai_mcp_client_reserve_resources(
       impl, base_count + doc.result.resources.count, error);
   if (rc == CAI_OK) {
-    src_resources = (cai_mcp_list_resource_doc *)doc.result.resources.items;
     for (i = 0U; i < doc.result.resources.count; i++) {
       cai_mcp_client_resource_impl *dst = &impl->resources[base_count + i];
       dst->uri = cai_strdup(&impl->allocator, src_resources[i].uri);
@@ -3741,12 +3818,31 @@ static int cai_mcp_parse_resource_templates_list_response(
     json_body.cleanup(&json_body);
     return rc;
   }
+  src_resource_templates =
+      (cai_mcp_list_resource_template_doc *)doc.result.resource_templates.items;
+  for (i = 0U; i < doc.result.resource_templates.count; i++) {
+    if (!cai_mcp_optional_json_array_is_valid(&src_resource_templates[i].icons,
+                                              error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
+                      &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP resource template icons must be an array");
+    }
+    if (!cai_mcp_optional_json_object_is_valid(
+            &src_resource_templates[i].annotations, error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
+                      &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "MCP resource template annotations must be an object");
+    }
+  }
   base_count = impl->resource_template_count;
   rc = cai_mcp_client_reserve_resource_templates(
       impl, base_count + doc.result.resource_templates.count, error);
   if (rc == CAI_OK) {
-    src_resource_templates = (cai_mcp_list_resource_template_doc *)
-                                 doc.result.resource_templates.items;
     for (i = 0U; i < doc.result.resource_templates.count; i++) {
       cai_mcp_client_resource_template_impl *dst =
           &impl->resource_templates[base_count + i];
@@ -3863,11 +3959,26 @@ static int cai_mcp_parse_prompts_list_response(
     json_body.cleanup(&json_body);
     return rc;
   }
+  src_prompts = (cai_mcp_list_prompt_doc *)doc.result.prompts.items;
+  for (i = 0U; i < doc.result.prompts.count; i++) {
+    if (!cai_mcp_optional_json_array_is_valid(&src_prompts[i].arguments,
+                                              error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompts_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP prompt arguments must be an array");
+    }
+    if (!cai_mcp_optional_json_array_is_valid(&src_prompts[i].icons, error)) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompts_list_response_map, &doc);
+      json_body.cleanup(&json_body);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP prompt icons must be an array");
+    }
+  }
   base_count = impl->prompt_count;
   rc = cai_mcp_client_reserve_prompts(
       impl, base_count + doc.result.prompts.count, error);
   if (rc == CAI_OK) {
-    src_prompts = (cai_mcp_list_prompt_doc *)doc.result.prompts.items;
     for (i = 0U; i < doc.result.prompts.count; i++) {
       cai_mcp_client_prompt_impl *dst = &impl->prompts[base_count + i];
       dst->name = cai_strdup(&impl->allocator, src_prompts[i].name);

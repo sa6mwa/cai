@@ -10600,6 +10600,130 @@ test_mcp_streamable_http_tools_list_array_input_schema(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tools_list_array_output_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_output_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool outputSchema must be an object");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_annotations(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_annotations", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool annotations must be an object");
+}
+
+static void
+test_mcp_streamable_http_tools_list_object_icons(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_object_icons", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_execution(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"execution\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_execution", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool execution must be an object");
+}
+
+static void
+test_mcp_streamable_http_resources_list_object_icons(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_object_icons",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_resources_list_array_annotations(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_array_annotations",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource annotations must be an object");
+}
+
+static void test_mcp_streamable_http_resource_templates_list_object_icons(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_object_icons",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template icons must be an array");
+}
+
+static void test_mcp_streamable_http_resource_templates_list_array_annotations(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_array_annotations",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template annotations must be an object");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_object_arguments(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_object_arguments",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "MCP prompt arguments must be an array");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_object_icons(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_object_icons", TEST_MCP_LIST_PROMPTS,
+      "\"method\":\"prompts/list\"", response_body,
+      "MCP prompt icons must be an array");
+}
+
+static void
 test_mcp_streamable_http_resource_subscription_error(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -25578,12 +25702,32 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tools_list_null_input_schema},
     {"mcp_streamable_http_tools_list_array_input_schema",
      test_mcp_streamable_http_tools_list_array_input_schema},
+    {"mcp_streamable_http_tools_list_array_output_schema",
+     test_mcp_streamable_http_tools_list_array_output_schema},
+    {"mcp_streamable_http_tools_list_array_annotations",
+     test_mcp_streamable_http_tools_list_array_annotations},
+    {"mcp_streamable_http_tools_list_object_icons",
+     test_mcp_streamable_http_tools_list_object_icons},
+    {"mcp_streamable_http_tools_list_array_execution",
+     test_mcp_streamable_http_tools_list_array_execution},
     {"mcp_streamable_http_resources_list_missing_resources",
      test_mcp_streamable_http_resources_list_missing_resources},
+    {"mcp_streamable_http_resources_list_object_icons",
+     test_mcp_streamable_http_resources_list_object_icons},
+    {"mcp_streamable_http_resources_list_array_annotations",
+     test_mcp_streamable_http_resources_list_array_annotations},
     {"mcp_streamable_http_resource_templates_list_missing_templates",
      test_mcp_streamable_http_resource_templates_list_missing_templates},
+    {"mcp_streamable_http_resource_templates_list_object_icons",
+     test_mcp_streamable_http_resource_templates_list_object_icons},
+    {"mcp_streamable_http_resource_templates_list_array_annotations",
+     test_mcp_streamable_http_resource_templates_list_array_annotations},
     {"mcp_streamable_http_prompts_list_missing_prompts",
      test_mcp_streamable_http_prompts_list_missing_prompts},
+    {"mcp_streamable_http_prompts_list_object_arguments",
+     test_mcp_streamable_http_prompts_list_object_arguments},
+    {"mcp_streamable_http_prompts_list_object_icons",
+     test_mcp_streamable_http_prompts_list_object_icons},
     {"mcp_streamable_http_resource_subscription_error",
      test_mcp_streamable_http_resource_subscription_error},
     {"mcp_streamable_http_list_changed_invalidates_cache",
