@@ -11261,6 +11261,105 @@ test_mcp_streamable_http_roots_list_changed_notification(test_state *state) {
                     &server.child_status);
 }
 
+static void test_mcp_streamable_http_send_request_params(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char request_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-params-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *request_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-params-session",
+      "\"id\":2", "\"method\":\"test/request\"", "\"params\":{\"ok\":true}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: request-params-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", request_required,
+       sizeof(request_required) / sizeof(request_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, request_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled params;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_request_params_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_request_params_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_request_params_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_request_params_append",
+             params.append(&params, "{\"ok\":true}", strlen("{\"ok\":true}"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_request_params_call",
+             cai_mcp_client_send_request(client, "test/request", &params, sink,
+                                         &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_request_params_output", writer.buffer,
+             "{\"ok\":true}");
+  params.cleanup(&params);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_request_invalid_params_append",
+             params.append(&params, "{\"broken\":", strlen("{\"broken\":"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(
+      state, "mcp_streamable_request_invalid_params_call",
+      cai_mcp_client_send_request(client, "test/bad", &params, sink, &error),
+      CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_request_invalid_params_message",
+             error.message, "failed to write MCP request params");
+  expect_int(state, "mcp_streamable_request_invalid_params_output",
+             writer.length, 0L);
+  params.cleanup(&params);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_request_params_mock", server.pid,
+                    &server.child_status);
+}
+
 static void
 test_mcp_streamable_http_send_notification_params(test_state *state) {
   static const char initialize_body[] =
@@ -26555,6 +26654,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_list_changed_invalidates_cache},
     {"mcp_streamable_http_roots_list_changed_notification",
      test_mcp_streamable_http_roots_list_changed_notification},
+    {"mcp_streamable_http_send_request_params",
+     test_mcp_streamable_http_send_request_params},
     {"mcp_streamable_http_send_notification_params",
      test_mcp_streamable_http_send_notification_params},
     {"mcp_streamable_http_task_utilities",
