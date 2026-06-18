@@ -917,6 +917,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_elicitation_schema_properties_missing
     mcp_streamable_http_elicitation_schema_property_not_object
     mcp_streamable_http_elicitation_schema_property_type_invalid
+    mcp_streamable_http_elicitation_schema_array_items_missing
+    mcp_streamable_http_elicitation_schema_array_items_not_object
     mcp_streamable_http_elicitation_missing_message
     mcp_streamable_http_elicitation_url_not_advertised
     mcp_streamable_http_server_request_unsupported

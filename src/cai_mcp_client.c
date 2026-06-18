@@ -5316,7 +5316,9 @@ static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
                                                         cai_error *error) {
   char key[32];
   char type[16];
+  int has_items;
   int has_type;
+  int is_array;
   int ch;
   int rc;
 
@@ -5331,7 +5333,9 @@ static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "failed to parse MCP elicitation requestedSchema");
   }
+  has_items = 0;
   has_type = 0;
+  is_array = 0;
   if (ch == '}') {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP elicitation requestedSchema property type is "
@@ -5377,7 +5381,25 @@ static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
             error, CAI_ERR_PROTOCOL,
             "MCP elicitation requestedSchema property type must be primitive");
       }
+      is_array = strcmp(type, "array") == 0;
       has_type = 1;
+    } else if (strcmp(key, "items") == 0) {
+      rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+      if (rc <= 0 || ch != '{') {
+        return cai_set_error(
+            error, CAI_ERR_PROTOCOL,
+            "MCP elicitation requestedSchema array items must be an object");
+      }
+      cai_mcp_json_scan_unget(scan, ch);
+      rc = cai_mcp_json_scan_skip_value(scan, error);
+      if (rc <= 0) {
+        return rc == 0
+                   ? cai_set_error(
+                         error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema")
+                   : rc;
+      }
+      has_items = 1;
     } else {
       rc = cai_mcp_json_scan_skip_value(scan, error);
       if (rc <= 0) {
@@ -5398,6 +5420,11 @@ static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
         return cai_set_error(error, CAI_ERR_PROTOCOL,
                              "MCP elicitation requestedSchema property type is "
                              "required");
+      }
+      if (is_array && !has_items) {
+        return cai_set_error(
+            error, CAI_ERR_PROTOCOL,
+            "MCP elicitation requestedSchema array items are required");
       }
       return CAI_OK;
     }
