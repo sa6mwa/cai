@@ -251,6 +251,10 @@ static int cai_mcp_set_json_error(cai_error *error, const char *message,
                                   const lonejson_error *json_error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
+static int
+cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
+                                               int *has_result, int *has_error,
+                                               cai_error *error);
 static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
                                      cai_error *error);
 static int
@@ -1413,6 +1417,8 @@ static int cai_mcp_parse_sse_message(lonejson_spooled *data,
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int has_error;
+  int has_result;
   int rc;
 
   memset(doc, 0, sizeof(*doc));
@@ -1439,6 +1445,20 @@ static int cai_mcp_parse_sse_message(lonejson_spooled *data,
     if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
       return rc;
+    }
+  }
+  if (doc->method != NULL) {
+    rc = cai_mcp_jsonrpc_response_result_error_presence(data, &has_result,
+                                                        &has_error, error);
+    if (rc != CAI_OK) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+      return rc;
+    }
+    if (has_result || has_error) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+      return cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "MCP JSON-RPC message with method must not include result or error");
     }
   }
   return CAI_OK;
