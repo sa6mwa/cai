@@ -4203,6 +4203,76 @@ static void test_mcp_client_receiver_surface(test_state *state) {
   expect_str(state, "mcp_client_receiver_send_request_output", writer.buffer,
              "{\"ok\":true}");
   cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_7",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_client_receiver_list_tasks_cursor",
+      cai_mcp_client_list_tasks(&fake.public_client, "cursor-1", sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_client_receiver_list_tasks_method", fake.last_method,
+             "tasks/list");
+  expect_str(state, "mcp_client_receiver_list_tasks_params",
+             fake.last_arguments, "{\"cursor\":\"cursor-1\"}");
+  expect_str(state, "mcp_client_receiver_list_tasks_output", writer.buffer,
+             "{\"ok\":true}");
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_8",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_list_tasks_no_cursor",
+             cai_mcp_client_list_tasks(&fake.public_client, NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_client_receiver_list_tasks_no_cursor_method",
+             fake.last_method, "tasks/list");
+  expect_str(state, "mcp_client_receiver_list_tasks_no_cursor_params",
+             fake.last_arguments, "{}");
+  expect_str(state, "mcp_client_receiver_list_tasks_no_cursor_output",
+             writer.buffer, "{\"ok\":true}");
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_9",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_get_task_result",
+             cai_mcp_client_get_task_result(&fake.public_client, "task-2", sink,
+                                            &error),
+             CAI_OK);
+  expect_str(state, "mcp_client_receiver_get_task_result_method",
+             fake.last_method, "tasks/result");
+  expect_str(state, "mcp_client_receiver_get_task_result_params",
+             fake.last_arguments, "{\"taskId\":\"task-2\"}");
+  expect_str(state, "mcp_client_receiver_get_task_result_output", writer.buffer,
+             "{\"ok\":true}");
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_10",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_client_receiver_cancel_task",
+      cai_mcp_client_cancel_task(&fake.public_client, "task-3", sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_client_receiver_cancel_task_method", fake.last_method,
+             "tasks/cancel");
+  expect_str(state, "mcp_client_receiver_cancel_task_params",
+             fake.last_arguments, "{\"taskId\":\"task-3\"}");
+  expect_str(state, "mcp_client_receiver_cancel_task_output", writer.buffer,
+             "{\"ok\":true}");
+  cai_sink_close(sink);
+
+  expect_int(state, "mcp_client_receiver_send_request_count",
+             fake.send_request_count, 5L);
   expect_int(
       state, "mcp_client_receiver_notify_roots_list_changed",
       cai_mcp_client_notify_roots_list_changed(&fake.public_client, &error),
