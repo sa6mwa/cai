@@ -9026,7 +9026,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "event: message\n"
       "data: "
       "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{"
-      "\"progressToken\":\"call-4\",\"progress\":0.5,\"total\":1}}\n\n"
+      "\"progressToken\":4,\"progress\":0.5,\"total\":1}}\n\n"
       "event: message\n"
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
@@ -9121,7 +9121,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"tools/call\"",
       "\"name\":\"echo\"",
-      "\"arguments\":{\"message\":\"hello\"}"};
+      "\"arguments\":{\"message\":\"hello\"}",
+      "\"_meta\":{\"progressToken\":4}"};
   static const char *resources_list_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
@@ -9371,7 +9372,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   expect_str(state, "mcp_streamable_notification_method", notifications.method,
              "notifications/progress");
   expect_substr(state, "mcp_streamable_notification_params",
-                notifications.params, "\"progressToken\":\"call-4\"");
+                notifications.params, "\"progressToken\":4");
   memset(&writer, 0, sizeof(writer));
   expect_int(state, "mcp_streamable_refresh_resources",
              cai_mcp_client_refresh_resources(client, &error), CAI_OK);
@@ -10661,13 +10662,10 @@ static void test_mcp_streamable_http_utility_notifications_ignore_malformed(
       "\"params\":{\"progressToken\":{},\"progress\":1}}\n\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
-      "\"params\":{\"progressToken\":\"missing-progress\"}}\n\n"
+      "\"params\":{\"progressToken\":999,\"progress\":1}}\n\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
       "\"params\":{\"requestId\":{}}}\n\n"
-      "event: message\n"
-      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
-      "\"params\":null}\n\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",

@@ -1769,42 +1769,72 @@ static int cai_mcp_dispatch_cancelled_notification(
   return cai_set_error(error, CAI_ERR_CANCELLED, "MCP request was cancelled");
 }
 
-static int
-cai_mcp_progress_params_are_valid(const lonejson_json_value *params) {
+static int cai_mcp_progress_token_text(const lonejson_json_value *params,
+                                       char **out) {
   cai_mcp_progress_params_doc doc;
   lonejson_spooled spool;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
-  int valid;
+  char *progress_token;
 
+  if (out != NULL) {
+    *out = NULL;
+  }
   if (params == NULL || params->kind == LONEJSON_JSON_VALUE_NULL ||
-      !cai_mcp_json_value_root_is(params, '{', NULL)) {
-    return 0;
+      out == NULL || !cai_mcp_json_value_root_is(params, '{', NULL)) {
+    return CAI_ERR_PROTOCOL;
   }
   memset(&doc, 0, sizeof(doc));
   memset(&spool, 0, sizeof(spool));
   if (cai_mcp_json_value_to_spooled(params, &spool, NULL) != CAI_OK) {
-    return 0;
+    return CAI_ERR_TRANSPORT;
   }
   reader.cursor = spool;
   lonejson_error_init(&json_error);
   status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_progress_params_map, &doc,
                                 cai_mcp_spooled_read, &reader, &json_error);
-  valid = status == LONEJSON_STATUS_OK && doc.has_progress &&
-          cai_mcp_json_value_id_shape_is_valid(&doc.progress_token);
+  progress_token = NULL;
+  if (status == LONEJSON_STATUS_OK && doc.has_progress &&
+      cai_mcp_json_value_id_shape_is_valid(&doc.progress_token)) {
+    progress_token = cai_mcp_json_value_to_cstr(&doc.progress_token, NULL);
+  }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_progress_params_map, &doc);
   spool.cleanup(&spool);
-  return valid;
+  if (progress_token == NULL) {
+    return CAI_ERR_PROTOCOL;
+  }
+  *out = progress_token;
+  return CAI_OK;
 }
 
-static int
-cai_mcp_notification_should_dispatch(const cai_mcp_jsonrpc_message_doc *doc) {
+static int cai_mcp_progress_matches_active_request(
+    const cai_mcp_streamable_http_client_impl *impl,
+    const lonejson_json_value *params) {
+  char *progress_token;
+  char active_request_id[64];
+  int matches;
+
+  progress_token = NULL;
+  if (cai_mcp_progress_token_text(params, &progress_token) != CAI_OK) {
+    return 0;
+  }
+  snprintf(active_request_id, sizeof(active_request_id), "%lld",
+           impl != NULL ? impl->active_request_id : 0LL);
+  matches = impl != NULL && impl->has_active_request &&
+            strcmp(progress_token, active_request_id) == 0;
+  cai_free_mem(NULL, progress_token);
+  return matches;
+}
+
+static int cai_mcp_notification_should_dispatch(
+    const cai_mcp_streamable_http_client_impl *impl,
+    const cai_mcp_jsonrpc_message_doc *doc) {
   if (doc == NULL || doc->method == NULL) {
     return 0;
   }
   if (strcmp(doc->method, "notifications/progress") == 0) {
-    return cai_mcp_progress_params_are_valid(&doc->params);
+    return cai_mcp_progress_matches_active_request(impl, &doc->params);
   }
   return 1;
 }
@@ -1825,7 +1855,7 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
   if (strcmp(doc->method, "notifications/cancelled") == 0) {
     return cai_mcp_dispatch_cancelled_notification(impl, &doc->params, error);
   }
-  if (!cai_mcp_notification_should_dispatch(doc)) {
+  if (!cai_mcp_notification_should_dispatch(impl, doc)) {
     return CAI_OK;
   }
   cai_mcp_invalidate_for_notification(impl, doc->method);
@@ -3664,6 +3694,7 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
   lonejson_error json_error;
   lonejson_writer writer;
   lonejson_status status;
+  char token[64];
   int rc;
 
   if (name == NULL || name[0] == '\0' || arguments_json == NULL) {
@@ -3703,7 +3734,14 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(spool, "}}", error);
+    snprintf(token, sizeof(token), "%lld", impl->next_id);
+    rc = cai_mcp_write_cstr(spool, ",\"_meta\":{\"progressToken\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, token, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}}}", error);
   }
   if (out_len != NULL) {
     *out_len = spool->size_fn(spool);
