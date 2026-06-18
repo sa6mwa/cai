@@ -1197,24 +1197,50 @@ static int cai_mcp_response_ok(const cai_mcp_http_response_capture *res,
   return CAI_OK;
 }
 
+static int cai_mcp_append_prefixed_header(struct curl_slist **headers,
+                                          const char *prefix, const char *value,
+                                          const char *error_message,
+                                          cai_error *error) {
+  size_t prefix_len;
+  size_t value_len;
+  char *header;
+  int rc;
+
+  if (value == NULL) {
+    return CAI_OK;
+  }
+  prefix_len = strlen(prefix);
+  value_len = strlen(value);
+  if (value_len > SIZE_MAX - prefix_len - 1U) {
+    return cai_set_error(error, CAI_ERR_NOMEM, error_message);
+  }
+  header = (char *)cai_alloc(NULL, prefix_len + value_len + 1U);
+  if (header == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, error_message);
+  }
+  memcpy(header, prefix, prefix_len);
+  memcpy(header + prefix_len, value, value_len);
+  header[prefix_len + value_len] = '\0';
+  rc = cai_append_header(headers, header, error);
+  cai_free_mem(NULL, header);
+  return rc;
+}
+
 static int
 cai_mcp_append_session_headers(cai_mcp_streamable_http_client_impl *impl,
                                struct curl_slist **headers, cai_error *error) {
-  char protocol_header[128];
-  char session_header[192];
   int rc;
 
-  rc = CAI_OK;
-  if (impl != NULL && impl->initialized && impl->session_id != NULL) {
-    snprintf(session_header, sizeof(session_header), "MCP-Session-Id: %s",
-             impl->session_id);
-    rc = cai_append_header(headers, session_header, error);
+  if (impl == NULL || !impl->initialized) {
+    return CAI_OK;
   }
-  if (rc == CAI_OK && impl != NULL && impl->initialized &&
-      impl->protocol_version != NULL) {
-    snprintf(protocol_header, sizeof(protocol_header),
-             "MCP-Protocol-Version: %s", impl->protocol_version);
-    rc = cai_append_header(headers, protocol_header, error);
+  rc = cai_mcp_append_prefixed_header(
+      headers, "MCP-Session-Id: ", impl->session_id,
+      "failed to allocate MCP session header", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_prefixed_header(
+        headers, "MCP-Protocol-Version: ", impl->protocol_version,
+        "failed to allocate MCP protocol header", error);
   }
   return rc;
 }
