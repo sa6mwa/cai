@@ -84,6 +84,15 @@ typedef struct cai_mcp_streamable_http_client_impl {
   size_t prompt_capacity;
 } cai_mcp_streamable_http_client_impl;
 
+static void
+cai_mcp_client_clear_tools(cai_mcp_streamable_http_client_impl *impl);
+static void
+cai_mcp_client_clear_resources(cai_mcp_streamable_http_client_impl *impl);
+static void cai_mcp_client_clear_resource_templates(
+    cai_mcp_streamable_http_client_impl *impl);
+static void
+cai_mcp_client_clear_prompts(cai_mcp_streamable_http_client_impl *impl);
+
 typedef struct cai_mcp_http_response_capture {
   lonejson_spooled body;
   char *content_type;
@@ -1025,6 +1034,22 @@ static int cai_mcp_json_value_to_spooled(const lonejson_json_value *value,
   return CAI_OK;
 }
 
+static void
+cai_mcp_invalidate_for_notification(cai_mcp_streamable_http_client_impl *impl,
+                                    const char *method) {
+  if (impl == NULL || method == NULL) {
+    return;
+  }
+  if (strcmp(method, "notifications/tools/list_changed") == 0) {
+    cai_mcp_client_clear_tools(impl);
+  } else if (strcmp(method, "notifications/resources/list_changed") == 0) {
+    cai_mcp_client_clear_resources(impl);
+    cai_mcp_client_clear_resource_templates(impl);
+  } else if (strcmp(method, "notifications/prompts/list_changed") == 0) {
+    cai_mcp_client_clear_prompts(impl);
+  }
+}
+
 static int
 cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
                               const cai_mcp_jsonrpc_message_doc *doc,
@@ -1038,6 +1063,7 @@ cai_mcp_dispatch_notification(cai_mcp_streamable_http_client_impl *impl,
   if (impl == NULL || doc == NULL || doc->method == NULL) {
     return CAI_OK;
   }
+  cai_mcp_invalidate_for_notification(impl, doc->method);
   notification = impl->receiver.notification != NULL
                      ? impl->receiver.notification
                      : impl->notification;

@@ -9639,6 +9639,138 @@ test_mcp_streamable_http_resource_subscription_error(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_list_changed_invalidates_cache(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{\"listChanged\":true},"
+      "\"resources\":{\"listChanged\":true},"
+      "\"prompts\":{\"listChanged\":true}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char tools_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"old-tool\",\"inputSchema\":{\"type\":\"object\"}}]}}";
+  static const char resources_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://old\",\"name\":\"old-resource\"}]}}";
+  static const char resource_templates_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://old/{name}\",\"name\":\"old-template\"}]}}";
+  static const char prompts_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"prompts\":[{\"name\":"
+      "\"old-prompt\"}]}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/tools/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/resources/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/prompts/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *tools_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *resources_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":3",
+      "\"method\":\"resources/list\""};
+  static const char *resource_templates_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":4",
+      "\"method\":\"resources/templates/list\""};
+  static const char *prompts_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":5",
+      "\"method\":\"prompts/list\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: list-changed-session",
+                                        "\"id\":6", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: list-changed-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, "{}"},
+      {"POST /v1/mcp HTTP/", tools_list_required,
+       sizeof(tools_list_required) / sizeof(tools_list_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tools_list_body},
+      {"POST /v1/mcp HTTP/", resources_list_required,
+       sizeof(resources_list_required) / sizeof(resources_list_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, resources_list_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_required,
+       sizeof(resource_templates_list_required) /
+           sizeof(resource_templates_list_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resource_templates_list_body},
+      {"POST /v1/mcp HTTP/", prompts_list_required,
+       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]), NULL,
+       0U, 200, "OK", "application/json", NULL, prompts_list_body},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_list_changed_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_list_changed_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_tools",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_tool_count",
+             (long)cai_mcp_client_tool_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_resources",
+             cai_mcp_client_refresh_resources(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_resource_count",
+             (long)cai_mcp_client_resource_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_resource_templates",
+             cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_resource_template_count",
+             (long)cai_mcp_client_resource_template_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_prompts",
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_prompt_count",
+             (long)cai_mcp_client_prompt_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_tool_count_after",
+             (long)cai_mcp_client_tool_count(client), 0L);
+  expect_int(state, "mcp_streamable_list_changed_resource_count_after",
+             (long)cai_mcp_client_resource_count(client), 0L);
+  expect_int(state, "mcp_streamable_list_changed_resource_template_count_after",
+             (long)cai_mcp_client_resource_template_count(client), 0L);
+  expect_int(state, "mcp_streamable_list_changed_prompt_count_after",
+             (long)cai_mcp_client_prompt_count(client), 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_list_changed_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_roots_list_changed_notification(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -24319,6 +24451,8 @@ static const test_entry test_entries[] = {
     {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
     {"mcp_streamable_http_resource_subscription_error",
      test_mcp_streamable_http_resource_subscription_error},
+    {"mcp_streamable_http_list_changed_invalidates_cache",
+     test_mcp_streamable_http_list_changed_invalidates_cache},
     {"mcp_streamable_http_roots_list_changed_notification",
      test_mcp_streamable_http_roots_list_changed_notification},
     {"mcp_streamable_http_send_notification_params",
