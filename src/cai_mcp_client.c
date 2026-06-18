@@ -1581,6 +1581,9 @@ cai_mcp_process_sse_server_message(cai_mcp_streamable_http_client_impl *impl,
     } else {
       rc = cai_mcp_dispatch_notification(impl, &doc, error);
     }
+  } else {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP SSE server message was missing method");
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, &doc);
   return rc;
