@@ -746,6 +746,69 @@ if(CAI_BUILD_TESTS)
     lonejson_nested_mapped_array_stream
     lonejson_selected_array_rewrite
     tool_registry
+    mcp_client_config
+    mcp_client_receiver_surface
+    mcp_client_registry_adapter
+    mcp_streamable_http_client_roundtrip
+    mcp_streamable_http_call_result_must_be_object
+    mcp_streamable_http_ping_error
+    mcp_streamable_http_ping_error_missing_code
+    mcp_streamable_http_ping_error_missing_message
+    mcp_streamable_http_ping_error_empty
+    mcp_streamable_http_initialize_missing_capabilities
+    mcp_streamable_http_initialize_capabilities_not_object
+    mcp_streamable_http_initialize_missing_server_info
+    mcp_streamable_http_response_id_mismatch
+    mcp_streamable_http_response_invalid_id_type
+    mcp_streamable_http_sse_request_invalid_id_type
+    mcp_streamable_http_response_jsonrpc_invalid
+    mcp_streamable_http_sse_jsonrpc_invalid
+    mcp_streamable_http_sse_method_with_result
+    mcp_streamable_http_response_missing_result_error
+    mcp_streamable_http_response_result_and_error
+    mcp_streamable_http_response_null_result
+    mcp_streamable_http_tools_list_missing_tools
+    mcp_streamable_http_tools_list_missing_input_schema
+    mcp_streamable_http_tools_list_null_input_schema
+    mcp_streamable_http_tools_list_array_input_schema
+    mcp_streamable_http_tools_list_array_output_schema
+    mcp_streamable_http_tools_list_array_annotations
+    mcp_streamable_http_tools_list_object_icons
+    mcp_streamable_http_tools_list_array_execution
+    mcp_streamable_http_resources_list_missing_resources
+    mcp_streamable_http_resources_list_object_icons
+    mcp_streamable_http_resources_list_array_annotations
+    mcp_streamable_http_resource_templates_list_missing_templates
+    mcp_streamable_http_resource_templates_list_object_icons
+    mcp_streamable_http_resource_templates_list_array_annotations
+    mcp_streamable_http_prompts_list_missing_prompts
+    mcp_streamable_http_prompts_list_object_arguments
+    mcp_streamable_http_prompts_list_object_icons
+    mcp_streamable_http_resource_subscription_error
+    mcp_streamable_http_list_changed_invalidates_cache
+    mcp_streamable_http_roots_list_changed_notification
+    mcp_streamable_http_send_notification_params
+    mcp_streamable_http_task_utilities
+    mcp_streamable_http_logging_error
+    mcp_streamable_http_terminate_session_405
+    mcp_streamable_http_terminate_session_error
+    mcp_streamable_http_notification_callback_error
+    mcp_streamable_http_roots_list_request
+    mcp_streamable_http_roots_list_callback_error
+    mcp_streamable_http_roots_list_invalid_result
+    mcp_streamable_http_roots_list_invalid_shape
+    mcp_streamable_http_sampling_request
+    mcp_streamable_http_task_request_capabilities
+    mcp_streamable_http_task_request_flags_require_callbacks
+    mcp_streamable_http_sampling_tools_not_advertised
+    mcp_streamable_http_elicitation_request
+    mcp_streamable_http_elicitation_invalid_result
+    mcp_streamable_http_server_request_unsupported
+    mcp_streamable_http_drain_events_get_sse
+    mcp_streamable_http_drain_events_rejects_response
+    mcp_streamable_http_drain_events_405
+    mcp_streamable_http_session_recovery
+    mcp_streamable_http_server_error_no_recovery
     mcp_handler
     client_open
     mike_mind_prompt_contract

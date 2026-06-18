@@ -249,6 +249,15 @@ typedef struct cai_mcp_sampling_params_doc {
   lonejson_json_value include_context;
 } cai_mcp_sampling_params_doc;
 
+typedef struct cai_mcp_root_doc {
+  char *uri;
+  char *name;
+} cai_mcp_root_doc;
+
+typedef struct cai_mcp_roots_list_result_doc {
+  lonejson_object_array roots;
+} cai_mcp_roots_list_result_doc;
+
 typedef struct cai_mcp_registry_tool_context {
   cai_mcp_client *client;
   char *remote_name;
@@ -263,6 +272,8 @@ static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
                                         cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
+static int cai_mcp_validate_roots_result(lonejson_spooled *json,
+                                         cai_error *error);
 static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
@@ -349,6 +360,23 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
      NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
                     cai_mcp_sampling_params_fields);
+
+static const lonejson_field cai_mcp_root_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_root_doc, uri, "uri"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_root_doc, name, "name")};
+LONEJSON_MAP_DEFINE(cai_mcp_root_map, cai_mcp_root_doc, cai_mcp_root_fields);
+
+static const lonejson_field cai_mcp_roots_list_result_fields[] = {
+    {"roots", LONEJSON__KEY_LEN("roots"), LONEJSON__KEY_FIRST("roots"),
+     LONEJSON__KEY_LAST("roots"),
+     offsetof(cai_mcp_roots_list_result_doc, roots),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_root_doc), &cai_mcp_root_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_roots_list_result_map,
+                    cai_mcp_roots_list_result_doc,
+                    cai_mcp_roots_list_result_fields);
 
 static const lonejson_field cai_mcp_list_tool_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_tool_doc, name, "name"),
@@ -1420,6 +1448,9 @@ cai_mcp_server_request_response(cai_mcp_streamable_http_client_impl *impl,
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(response, ",\"result\":", error);
+  }
+  if (rc == CAI_OK && strcmp(doc->method, "roots/list") == 0) {
+    rc = cai_mcp_validate_roots_result(&result, error);
   }
   if (rc == CAI_OK) {
     lonejson_error_init(&json_error);
@@ -3124,6 +3155,35 @@ static int cai_mcp_parse_jsonrpc_id(const lonejson_spooled *json,
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, doc);
     return rc;
   }
+  return CAI_OK;
+}
+
+static int cai_mcp_validate_roots_result(lonejson_spooled *json,
+                                         cai_error *error) {
+  cai_mcp_roots_list_result_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP roots result is required");
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to rewind MCP roots result",
+                                  &json_error);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_roots_list_result_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_roots_list_result_map, &doc);
+    return cai_mcp_set_json_error(error, "failed to parse MCP roots result",
+                                  &json_error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_roots_list_result_map, &doc);
   return CAI_OK;
 }
 
