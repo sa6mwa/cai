@@ -11971,6 +11971,129 @@ static void test_mcp_streamable_http_invalid_result_response(
   expect_child_exit(state, mock_name, server.pid, &server.child_status);
 }
 
+static void test_mcp_streamable_http_valid_result_response(
+    test_state *state, const char *test_name,
+    test_mcp_result_operation operation, const char *method_fragment,
+    const char *response_body, const char *expected_output) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: valid-result-session",
+      "\"method\":\"notifications/initialized\""};
+  const char *request_required[4];
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char append_name[128];
+  char call_name[128];
+  int args_initialized;
+  int rc;
+
+  client = NULL;
+  sink = NULL;
+  args_initialized = 0;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  request_required[0] = "POST /v1/mcp HTTP/";
+  request_required[1] = "MCP-Session-Id: valid-result-session";
+  request_required[2] = "\"id\":2";
+  request_required[3] = method_fragment;
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: valid-result-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = request_required;
+  script[2].required_count =
+      sizeof(request_required) / sizeof(request_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_valid_result_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  switch (operation) {
+  case TEST_MCP_RESULT_TOOL_CALL:
+    CAI_LJ->spooled_init(CAI_LJ, &args);
+    args_initialized = 1;
+    lonejson_error_init(&json_error);
+    snprintf(append_name, sizeof(append_name), "%s_append", test_name);
+    expect_int(state, append_name, args.append(&args, "{}", 2U, &json_error),
+               LONEJSON_STATUS_OK);
+    rc = cai_mcp_client_call_tool(client, "audio-tool", &args, sink, &error);
+    break;
+  case TEST_MCP_RESULT_PROMPT_GET:
+    rc = cai_mcp_client_get_prompt(client, "audio-prompt", NULL, sink, &error);
+    break;
+  case TEST_MCP_RESULT_RESOURCE_READ:
+    rc = cai_mcp_client_read_resource(client, "resource://audio", sink, &error);
+    break;
+  case TEST_MCP_RESULT_COMPLETION:
+  default:
+    rc = cai_mcp_client_complete(client, "ref/prompt", "audio-prompt", "name",
+                                 "au", NULL, sink, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_OK);
+  expect_str(state, test_name, writer.buffer, expected_output);
+  if (args_initialized) {
+    args.cleanup(&args);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
 static void test_mcp_streamable_http_invalid_argument_json(
     test_state *state, const char *test_name,
     test_mcp_argument_operation operation, const char *arguments_json,
@@ -12333,6 +12456,21 @@ test_mcp_streamable_http_tool_call_image_missing_mime(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tool_call_audio_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"audio\",\"data\":\"UklGRg==\",\"mimeType\":\"audio/wav\"}]}}";
+  static const char expected_output[] =
+      "{\"content\":[{\"type\":\"audio\",\"data\":\"UklGRg==\","
+      "\"mimeType\":\"audio/wav\"}]}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_tool_call_audio_content",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      expected_output);
+}
+
+static void
 test_mcp_streamable_http_tool_call_unknown_content_type(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
@@ -12486,6 +12624,22 @@ test_mcp_streamable_http_prompt_get_text_missing_text(test_state *state) {
       state, "mcp_streamable_prompt_get_text_missing_text",
       TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
       "MCP text content requires text");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_audio_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"audio\",\"data\":\"UklGRg==\","
+      "\"mimeType\":\"audio/wav\"}}]}}";
+  static const char expected_output[] =
+      "{\"messages\":[{\"role\":\"assistant\",\"content\":{\"type\":\"audio\","
+      "\"data\":\"UklGRg==\",\"mimeType\":\"audio/wav\"}}]}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_prompt_get_audio_content",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      expected_output);
 }
 
 static void
@@ -15004,6 +15158,15 @@ static void test_mcp_streamable_http_sampling_array_content(test_state *state) {
       "sampling-array-content-session", result_json, CAI_OK, NULL);
 }
 
+static void test_mcp_streamable_http_sampling_audio_content(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":{"
+      "\"type\":\"audio\",\"data\":\"UklGRg==\",\"mimeType\":\"audio/wav\"}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_audio_content",
+      "sampling-audio-content-session", result_json, CAI_OK, NULL);
+}
+
 static void
 test_mcp_streamable_http_sampling_text_missing_text(test_state *state) {
   static const char result_json[] =
@@ -15049,6 +15212,18 @@ test_mcp_streamable_http_sampling_tool_result_bad_content(test_state *state) {
       state, "mcp_streamable_sampling_tool_result_bad_content",
       "sampling-tool-result-bad-content-session", result_json, CAI_ERR_PROTOCOL,
       "MCP media content requires data and mimeType");
+}
+
+static void
+test_mcp_streamable_http_sampling_tool_result_audio_content(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"tool_result\",\"toolUseId\":\"call-1\","
+      "\"content\":[{\"type\":\"audio\",\"data\":\"UklGRg==\","
+      "\"mimeType\":\"audio/wav\"}]}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_tool_result_audio_content",
+      "sampling-tool-result-audio-content-session", result_json, CAI_OK, NULL);
 }
 
 static void test_mcp_streamable_http_sampling_tool_result_structured_array(
@@ -29916,6 +30091,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_text_missing_text},
     {"mcp_streamable_http_tool_call_image_missing_mime",
      test_mcp_streamable_http_tool_call_image_missing_mime},
+    {"mcp_streamable_http_tool_call_audio_content",
+     test_mcp_streamable_http_tool_call_audio_content},
     {"mcp_streamable_http_tool_call_unknown_content_type",
      test_mcp_streamable_http_tool_call_unknown_content_type},
     {"mcp_streamable_http_tool_call_resource_link_missing_name",
@@ -29942,6 +30119,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_array_content},
     {"mcp_streamable_http_prompt_get_text_missing_text",
      test_mcp_streamable_http_prompt_get_text_missing_text},
+    {"mcp_streamable_http_prompt_get_audio_content",
+     test_mcp_streamable_http_prompt_get_audio_content},
     {"mcp_streamable_http_prompt_get_resource_missing_body",
      test_mcp_streamable_http_prompt_get_resource_missing_body},
     {"mcp_streamable_http_prompt_get_unknown_content_type",
@@ -30048,6 +30227,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_invalid_result},
     {"mcp_streamable_http_sampling_array_content",
      test_mcp_streamable_http_sampling_array_content},
+    {"mcp_streamable_http_sampling_audio_content",
+     test_mcp_streamable_http_sampling_audio_content},
     {"mcp_streamable_http_sampling_text_missing_text",
      test_mcp_streamable_http_sampling_text_missing_text},
     {"mcp_streamable_http_sampling_tool_use_missing_input",
@@ -30056,6 +30237,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_tool_use_array_input},
     {"mcp_streamable_http_sampling_tool_result_bad_content",
      test_mcp_streamable_http_sampling_tool_result_bad_content},
+    {"mcp_streamable_http_sampling_tool_result_audio_content",
+     test_mcp_streamable_http_sampling_tool_result_audio_content},
     {"mcp_streamable_http_sampling_tool_result_structured_array",
      test_mcp_streamable_http_sampling_tool_result_structured_array},
     {"mcp_streamable_http_sampling_tool_result_missing_content",

@@ -808,6 +808,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_missing_content_type
     mcp_streamable_http_tool_call_text_missing_text
     mcp_streamable_http_tool_call_image_missing_mime
+    mcp_streamable_http_tool_call_audio_content
     mcp_streamable_http_tool_call_unknown_content_type
     mcp_streamable_http_tool_call_resource_link_missing_name
     mcp_streamable_http_tool_call_resource_missing_resource
@@ -821,6 +822,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompt_get_invalid_role
     mcp_streamable_http_prompt_get_array_content
     mcp_streamable_http_prompt_get_text_missing_text
+    mcp_streamable_http_prompt_get_audio_content
     mcp_streamable_http_prompt_get_resource_missing_body
     mcp_streamable_http_prompt_get_unknown_content_type
     mcp_streamable_http_completion_missing_values
@@ -874,10 +876,12 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_request
     mcp_streamable_http_sampling_invalid_result
     mcp_streamable_http_sampling_array_content
+    mcp_streamable_http_sampling_audio_content
     mcp_streamable_http_sampling_text_missing_text
     mcp_streamable_http_sampling_tool_use_missing_input
     mcp_streamable_http_sampling_tool_use_array_input
     mcp_streamable_http_sampling_tool_result_bad_content
+    mcp_streamable_http_sampling_tool_result_audio_content
     mcp_streamable_http_sampling_tool_result_structured_array
     mcp_streamable_http_sampling_tool_result_missing_content
     mcp_streamable_http_sampling_unsupported_content
