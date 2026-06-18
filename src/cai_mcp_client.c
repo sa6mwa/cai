@@ -196,6 +196,23 @@ typedef struct cai_mcp_tool_content_doc {
   lonejson_json_value resource;
 } cai_mcp_tool_content_doc;
 
+typedef struct cai_mcp_sampling_content_doc {
+  char *type;
+  char *text;
+  char *data;
+  char *mime_type;
+  char *id;
+  char *name;
+  char *tool_use_id;
+  lonejson_json_value input;
+  lonejson_json_value content;
+  lonejson_json_value structured_content;
+} cai_mcp_sampling_content_doc;
+
+typedef struct cai_mcp_sampling_content_array_doc {
+  lonejson_object_array content;
+} cai_mcp_sampling_content_array_doc;
+
 typedef struct cai_mcp_tool_call_result_doc {
   lonejson_object_array content;
   lonejson_json_value structured_content;
@@ -429,6 +446,9 @@ static int cai_mcp_validate_roots_result(lonejson_spooled *json,
                                          cai_error *error);
 static int cai_mcp_validate_sampling_result(lonejson_spooled *json,
                                             cai_error *error);
+static int
+cai_mcp_sampling_content_value_validate(const lonejson_json_value *content,
+                                        cai_error *error);
 static int cai_mcp_validate_elicitation_result(lonejson_spooled *json,
                                                cai_error *error);
 static int cai_mcp_validate_sampling_params(
@@ -705,6 +725,49 @@ static const lonejson_field cai_mcp_tool_content_fields[] = {
      NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_tool_content_map, cai_mcp_tool_content_doc,
                     cai_mcp_tool_content_fields);
+
+static const lonejson_field cai_mcp_sampling_content_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_sampling_content_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_content_doc, text, "text"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_content_doc, data, "data"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_content_doc, mime_type,
+                                "mimeType"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_content_doc, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_content_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_content_doc, tool_use_id,
+                                "toolUseId"),
+    {"input", LONEJSON__KEY_LEN("input"), LONEJSON__KEY_FIRST("input"),
+     LONEJSON__KEY_LAST("input"), offsetof(cai_mcp_sampling_content_doc, input),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"content", LONEJSON__KEY_LEN("content"), LONEJSON__KEY_FIRST("content"),
+     LONEJSON__KEY_LAST("content"),
+     offsetof(cai_mcp_sampling_content_doc, content),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"structuredContent", LONEJSON__KEY_LEN("structuredContent"),
+     LONEJSON__KEY_FIRST("structuredContent"),
+     LONEJSON__KEY_LAST("structuredContent"),
+     offsetof(cai_mcp_sampling_content_doc, structured_content),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_sampling_content_map, cai_mcp_sampling_content_doc,
+                    cai_mcp_sampling_content_fields);
+
+static const lonejson_field cai_mcp_sampling_content_array_fields[] = {
+    {"content", LONEJSON__KEY_LEN("content"), LONEJSON__KEY_FIRST("content"),
+     LONEJSON__KEY_LAST("content"),
+     offsetof(cai_mcp_sampling_content_array_doc, content),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_sampling_content_doc), &cai_mcp_sampling_content_map, NULL,
+     0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_sampling_content_array_map,
+                    cai_mcp_sampling_content_array_doc,
+                    cai_mcp_sampling_content_array_fields);
 
 static const lonejson_field cai_mcp_tool_call_result_fields[] = {
     {"content", LONEJSON__KEY_LEN("content"), LONEJSON__KEY_FIRST("content"),
@@ -4398,6 +4461,7 @@ static int cai_mcp_validate_sampling_result(lonejson_spooled *json,
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
+  int rc;
 
   if (json == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -4422,12 +4486,10 @@ static int cai_mcp_validate_sampling_result(lonejson_spooled *json,
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP sampling result role must be assistant");
   }
-  if (!cai_mcp_json_value_root_is(&doc.content, '{', error) &&
-      !cai_mcp_json_value_root_is(&doc.content, '[', error)) {
+  rc = cai_mcp_sampling_content_value_validate(&doc.content, error);
+  if (rc != CAI_OK) {
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_result_map, &doc);
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "MCP sampling result content must be an object or "
-                         "array");
+    return rc;
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_result_map, &doc);
   return CAI_OK;
@@ -5743,6 +5805,215 @@ cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
                          "MCP content block type is not supported");
   }
   return CAI_OK;
+}
+
+static char *cai_mcp_wrap_content_array_json(const char *array_json,
+                                             cai_error *error) {
+  static const char prefix[] = "{\"content\":";
+  cai_buffer_builder builder;
+
+  if (array_json == NULL) {
+    return NULL;
+  }
+  memset(&builder, 0, sizeof(builder));
+  if (cai_buffer_append(&builder, prefix, sizeof(prefix) - 1U, error) !=
+          CAI_OK ||
+      cai_buffer_append(&builder, array_json, strlen(array_json), error) !=
+          CAI_OK ||
+      cai_buffer_append(&builder, "}", 1U, error) != CAI_OK ||
+      cai_buffer_append(&builder, "", 1U, error) != CAI_OK) {
+    cai_free_mem(NULL, builder.data);
+    return NULL;
+  }
+  return builder.data;
+}
+
+static int
+cai_mcp_tool_result_content_validate(const lonejson_json_value *content,
+                                     cai_error *error) {
+  cai_mcp_tool_call_result_doc doc;
+  cai_mcp_tool_content_doc *contents;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *content_json;
+  char *wrapped_json;
+  size_t i;
+  int rc;
+
+  if (content == NULL || content->kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool_result content is required");
+  }
+  if (!cai_mcp_json_value_root_is(content, '[', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool_result content must be an array");
+  }
+  content_json = cai_mcp_json_value_to_cstr(content, error);
+  if (content_json == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  wrapped_json = cai_mcp_wrap_content_array_json(content_json, error);
+  cai_free_mem(NULL, content_json);
+  if (wrapped_json == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_call_result_map, &doc,
+                              wrapped_json, &json_error);
+  cai_free_mem(NULL, wrapped_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_call_result_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP tool_result content", &json_error);
+  }
+  contents = (cai_mcp_tool_content_doc *)doc.content.items;
+  rc = CAI_OK;
+  for (i = 0U; i < doc.content.count; i++) {
+    rc = cai_mcp_content_block_validate(&contents[i], error);
+    if (rc != CAI_OK) {
+      break;
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_call_result_map, &doc);
+  return rc;
+}
+
+static int
+cai_mcp_sampling_content_doc_validate(const cai_mcp_sampling_content_doc *doc,
+                                      cai_error *error) {
+  if (doc == NULL || doc->type == NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling content block type is required");
+  }
+  if (strcmp(doc->type, "text") == 0) {
+    if (doc->text == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP text content requires text");
+    }
+  } else if (strcmp(doc->type, "image") == 0 ||
+             strcmp(doc->type, "audio") == 0) {
+    if (doc->data == NULL || doc->mime_type == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP media content requires data and mimeType");
+    }
+  } else if (strcmp(doc->type, "tool_use") == 0) {
+    if (doc->id == NULL || doc->name == NULL ||
+        doc->input.kind == LONEJSON_JSON_VALUE_NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool_use content requires id, name, and input");
+    }
+    if (!cai_mcp_json_value_root_is(&doc->input, '{', error)) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool_use input must be an object");
+    }
+  } else if (strcmp(doc->type, "tool_result") == 0) {
+    if (doc->tool_use_id == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP tool_result content requires toolUseId");
+    }
+    if (doc->structured_content.kind != LONEJSON_JSON_VALUE_NULL &&
+        !cai_mcp_json_value_root_is(&doc->structured_content, '{', error)) {
+      return cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "MCP tool_result structuredContent must be an object");
+    }
+    return cai_mcp_tool_result_content_validate(&doc->content, error);
+  } else {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling content block type is not supported");
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_sampling_content_json_validate(const char *content_json,
+                                                  cai_error *error) {
+  cai_mcp_sampling_content_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_sampling_content_map, &doc,
+                              content_json, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_content_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP sampling content block", &json_error);
+  }
+  rc = cai_mcp_sampling_content_doc_validate(&doc, error);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_content_map, &doc);
+  return rc;
+}
+
+static int cai_mcp_sampling_content_array_json_validate(const char *array_json,
+                                                        cai_error *error) {
+  cai_mcp_sampling_content_array_doc doc;
+  cai_mcp_sampling_content_doc *contents;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *wrapped_json;
+  size_t i;
+  int rc;
+
+  wrapped_json = cai_mcp_wrap_content_array_json(array_json, error);
+  if (wrapped_json == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_sampling_content_array_map, &doc,
+                              wrapped_json, &json_error);
+  cai_free_mem(NULL, wrapped_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_content_array_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP sampling content block", &json_error);
+  }
+  contents = (cai_mcp_sampling_content_doc *)doc.content.items;
+  rc = CAI_OK;
+  for (i = 0U; i < doc.content.count; i++) {
+    rc = cai_mcp_sampling_content_doc_validate(&contents[i], error);
+    if (rc != CAI_OK) {
+      break;
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_content_array_map, &doc);
+  return rc;
+}
+
+static int
+cai_mcp_sampling_content_value_validate(const lonejson_json_value *content,
+                                        cai_error *error) {
+  char *content_json;
+  int is_object;
+  int is_array;
+  int rc;
+
+  if (content == NULL || content->kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling result content must be an object or "
+                         "array");
+  }
+  is_object = cai_mcp_json_value_root_is(content, '{', error);
+  is_array = !is_object && cai_mcp_json_value_root_is(content, '[', error);
+  if (!is_object && !is_array) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling result content must be an object or "
+                         "array");
+  }
+  content_json = cai_mcp_json_value_to_cstr(content, error);
+  if (content_json == NULL) {
+    return CAI_ERR_NOMEM;
+  }
+  if (is_object) {
+    rc = cai_mcp_sampling_content_json_validate(content_json, error);
+  } else {
+    rc = cai_mcp_sampling_content_array_json_validate(content_json, error);
+  }
+  cai_free_mem(NULL, content_json);
+  return rc;
 }
 
 static int cai_mcp_prompt_content_validate(const lonejson_json_value *content,

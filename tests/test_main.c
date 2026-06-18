@@ -13972,8 +13972,9 @@ static void test_mcp_streamable_http_sampling_request(test_state *state) {
                     &server.child_status);
 }
 
-static void
-test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
+static void test_mcp_streamable_http_sampling_result_case(
+    test_state *state, const char *name, const char *session_id,
+    const char *result_json, int expected_rc, const char *expected_message) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
@@ -13990,46 +13991,91 @@ test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
                                         "\"method\":\"initialize\"",
                                         "\"capabilities\":{\"sampling\":{}}"};
-  static const char *initialized_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
-      "\"method\":\"notifications/initialized\""};
-  static const char *ping_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
-      "\"id\":2", "\"method\":\"ping\""};
-  static const char *sampling_error_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: sampling-invalid-session",
-      "\"id\":\"sample-1\"", "\"error\":{\"code\":-32603",
-      "\"message\":\"failed to parse MCP sampling result\""};
-  static const mock_http_expectation script[] = {
-      {"POST /v1/mcp HTTP/", init_required,
-       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
-       "application/json",
-       "req-init\r\nMCP-Session-Id: sampling-invalid-session", initialize_body},
-      {"POST /v1/mcp HTTP/", initialized_required,
-       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
-       202, "Accepted", "application/json", NULL, ""},
-      {"POST /v1/mcp HTTP/", ping_required,
-       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, ping_body},
-      {"POST /v1/mcp HTTP/", sampling_error_required,
-       sizeof(sampling_error_required) / sizeof(sampling_error_required[0]),
-       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  const char *initialized_required[3];
+  const char *ping_required[4];
+  const char *sampling_ok_required[4];
+  char error_message_required[256];
+  const char *sampling_error_required[5];
+  mock_http_expectation script[4];
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
   test_mcp_sampling_state sampling;
   cai_error error;
   char url[192];
+  char mock_name[128];
+  char init_response[128];
+
+  initialized_required[0] = "POST /v1/mcp HTTP/";
+  initialized_required[1] = session_id;
+  initialized_required[2] = "\"method\":\"notifications/initialized\"";
+  ping_required[0] = "POST /v1/mcp HTTP/";
+  ping_required[1] = session_id;
+  ping_required[2] = "\"id\":2";
+  ping_required[3] = "\"method\":\"ping\"";
+  sampling_ok_required[0] = "POST /v1/mcp HTTP/";
+  sampling_ok_required[1] = session_id;
+  sampling_ok_required[2] = "\"id\":\"sample-1\"";
+  sampling_ok_required[3] = "\"result\":";
+  sampling_error_required[0] = "POST /v1/mcp HTTP/";
+  sampling_error_required[1] = session_id;
+  sampling_error_required[2] = "\"id\":\"sample-1\"";
+  sampling_error_required[3] = "\"error\":{\"code\":-32603";
+  sampling_error_required[4] = error_message_required;
+
+  memset(script, 0, sizeof(script));
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].body = ping_body;
+  script[3].request_prefix = "POST /v1/mcp HTTP/";
+  script[3].status = 202;
+  script[3].status_text = "Accepted";
+  script[3].content_type = "application/json";
+  script[3].body = "";
+
+  if (expected_rc == CAI_OK) {
+    script[3].required = sampling_ok_required;
+    script[3].required_count =
+        sizeof(sampling_ok_required) / sizeof(sampling_ok_required[0]);
+  } else {
+    snprintf(error_message_required, sizeof(error_message_required),
+             "\"message\":\"%s\"", expected_message);
+    script[3].required = sampling_error_required;
+    script[3].required_count =
+        sizeof(sampling_error_required) / sizeof(sampling_error_required[0]);
+  }
+  snprintf(init_response, sizeof(init_response),
+           "req-init\r\nMCP-Session-Id: %s", session_id);
+  script[0].request_id = init_response;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", name);
 
   client = NULL;
   memset(&server, 0, sizeof(server));
   memset(&sampling, 0, sizeof(sampling));
-  sampling.result_json =
-      "{\"model\":\"cai-test-model\",\"role\":\"assistant\"}";
+  sampling.result_json = result_json;
   cai_error_init(&error);
-  if (http_mock_server_open_script(
-          state, "mcp_streamable_sampling_invalid_result_mock", script,
-          sizeof(script) / sizeof(script[0]), &server) != 0) {
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -14039,19 +14085,119 @@ test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
   config.timeout_ms = 500L;
   config.receiver.context = &sampling;
   config.receiver.create_message = test_mcp_sampling_callback;
-  expect_int(state, "mcp_streamable_sampling_invalid_open",
+  expect_int(state, name,
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
-  expect_int(state, "mcp_streamable_sampling_invalid_ping",
-             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
-  expect_int(state, "mcp_streamable_sampling_invalid_count", sampling.count,
-             1L);
-  expect_str(state, "mcp_streamable_sampling_invalid_message", error.message,
-             "failed to parse MCP sampling result");
+  expect_int(state, name, cai_mcp_client_ping(client, &error), expected_rc);
+  expect_int(state, name, sampling.count, 1L);
+  if (expected_rc != CAI_OK) {
+    expect_str(state, name, error.message, expected_message);
+  }
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
-  expect_child_exit(state, "mcp_streamable_sampling_invalid_result_mock",
-                    server.pid, &server.child_status);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sampling_invalid_result(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\"}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_invalid_result",
+      "sampling-invalid-session", result_json, CAI_ERR_PROTOCOL,
+      "failed to parse MCP sampling result");
+}
+
+static void test_mcp_streamable_http_sampling_array_content(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"text\",\"text\":\"one\"},{\"type\":\"tool_use\","
+      "\"id\":\"call-1\",\"name\":\"lookup\",\"input\":{\"q\":\"x\"}}]}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_array_content",
+      "sampling-array-content-session", result_json, CAI_OK, NULL);
+}
+
+static void
+test_mcp_streamable_http_sampling_text_missing_text(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"text\"}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_text_missing_text",
+      "sampling-text-missing-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP text content requires text");
+}
+
+static void
+test_mcp_streamable_http_sampling_tool_use_missing_input(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"tool_use\",\"id\":\"call-1\","
+      "\"name\":\"lookup\"}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_tool_use_missing_input",
+      "sampling-tool-use-missing-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP tool_use content requires id, name, and input");
+}
+
+static void
+test_mcp_streamable_http_sampling_tool_use_array_input(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"tool_use\",\"id\":\"call-1\","
+      "\"name\":\"lookup\",\"input\":[]}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_tool_use_array_input",
+      "sampling-tool-use-array-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP tool_use input must be an object");
+}
+
+static void
+test_mcp_streamable_http_sampling_tool_result_bad_content(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"tool_result\",\"toolUseId\":\"call-1\","
+      "\"content\":[{\"type\":\"image\",\"data\":\"abc\"}]}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_tool_result_bad_content",
+      "sampling-tool-result-bad-content-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP media content requires data and mimeType");
+}
+
+static void test_mcp_streamable_http_sampling_tool_result_structured_array(
+    test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"tool_result\",\"toolUseId\":\"call-1\","
+      "\"content\":[],\"structuredContent\":[]}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_tool_result_structured_array",
+      "sampling-tool-result-structured-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP tool_result structuredContent must be an object");
+}
+
+static void test_mcp_streamable_http_sampling_tool_result_missing_content(
+    test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"tool_result\",\"toolUseId\":\"call-1\"}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_tool_result_missing_content",
+      "sampling-tool-result-missing-content-session", result_json,
+      CAI_ERR_PROTOCOL, "MCP tool_result content is required");
+}
+
+static void
+test_mcp_streamable_http_sampling_unsupported_content(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
+      "\"content\":{\"type\":\"resource_link\",\"uri\":\"file:///x\","
+      "\"name\":\"x\"}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_unsupported_content",
+      "sampling-unsupported-content-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP sampling content block type is not supported");
 }
 
 static void
@@ -28827,6 +28973,22 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_request},
     {"mcp_streamable_http_sampling_invalid_result",
      test_mcp_streamable_http_sampling_invalid_result},
+    {"mcp_streamable_http_sampling_array_content",
+     test_mcp_streamable_http_sampling_array_content},
+    {"mcp_streamable_http_sampling_text_missing_text",
+     test_mcp_streamable_http_sampling_text_missing_text},
+    {"mcp_streamable_http_sampling_tool_use_missing_input",
+     test_mcp_streamable_http_sampling_tool_use_missing_input},
+    {"mcp_streamable_http_sampling_tool_use_array_input",
+     test_mcp_streamable_http_sampling_tool_use_array_input},
+    {"mcp_streamable_http_sampling_tool_result_bad_content",
+     test_mcp_streamable_http_sampling_tool_result_bad_content},
+    {"mcp_streamable_http_sampling_tool_result_structured_array",
+     test_mcp_streamable_http_sampling_tool_result_structured_array},
+    {"mcp_streamable_http_sampling_tool_result_missing_content",
+     test_mcp_streamable_http_sampling_tool_result_missing_content},
+    {"mcp_streamable_http_sampling_unsupported_content",
+     test_mcp_streamable_http_sampling_unsupported_content},
     {"mcp_streamable_http_sampling_invalid_params",
      test_mcp_streamable_http_sampling_invalid_params},
     {"mcp_streamable_http_sampling_params_not_object",

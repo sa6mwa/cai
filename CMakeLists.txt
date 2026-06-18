@@ -847,6 +847,14 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_roots_list_invalid_shape
     mcp_streamable_http_sampling_request
     mcp_streamable_http_sampling_invalid_result
+    mcp_streamable_http_sampling_array_content
+    mcp_streamable_http_sampling_text_missing_text
+    mcp_streamable_http_sampling_tool_use_missing_input
+    mcp_streamable_http_sampling_tool_use_array_input
+    mcp_streamable_http_sampling_tool_result_bad_content
+    mcp_streamable_http_sampling_tool_result_structured_array
+    mcp_streamable_http_sampling_tool_result_missing_content
+    mcp_streamable_http_sampling_unsupported_content
     mcp_streamable_http_sampling_invalid_params
     mcp_streamable_http_sampling_params_not_object
     mcp_streamable_http_task_request_capabilities
