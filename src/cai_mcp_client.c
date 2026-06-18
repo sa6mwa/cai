@@ -3719,6 +3719,11 @@ static int cai_mcp_completion_request(
         error, CAI_ERR_INVALID,
         "MCP completion reference and argument name are required");
   }
+  if (strcmp(ref_type, "ref/prompt") != 0 &&
+      strcmp(ref_type, "ref/resource") != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP completion reference type is invalid");
+  }
   if (context_arguments_json != NULL) {
     rc = cai_mcp_spooled_root_is(
         context_arguments_json, '{',
