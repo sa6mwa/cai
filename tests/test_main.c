@@ -10905,6 +10905,106 @@ static void test_mcp_streamable_http_sse_method_with_result(test_state *state) {
                     &server.child_status);
 }
 
+static void test_mcp_streamable_http_sse_response_invalid(
+    test_state *state, const char *test_name, const char *ping_body,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-response-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-response-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: sse-response-invalid-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char ping_name[128];
+  char message_name[128];
+
+  script[2].body = ping_body;
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(ping_name, sizeof(ping_name), "%s_ping", test_name);
+  expect_int(state, ping_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_response_missing_id(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_sse_response_invalid(
+      state, "mcp_streamable_sse_response_missing_id", ping_body,
+      "MCP JSON-RPC was missing id");
+}
+
+static void
+test_mcp_streamable_http_sse_response_missing_result_error(test_state *state) {
+  static const char ping_body[] = "event: message\n"
+                                  "data: {\"jsonrpc\":\"2.0\",\"id\":2}\n\n";
+
+  test_mcp_streamable_http_sse_response_invalid(
+      state, "mcp_streamable_sse_response_missing_result_error", ping_body,
+      "MCP JSON-RPC response must include exactly one of result or error");
+}
+
+static void
+test_mcp_streamable_http_sse_response_result_and_error(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{},\"error\":{\"code\":"
+      "-32000,\"message\":\"conflicting\"}}\n\n";
+
+  test_mcp_streamable_http_sse_response_invalid(
+      state, "mcp_streamable_sse_response_result_and_error", ping_body,
+      "MCP JSON-RPC response must include exactly one of result or error");
+}
+
 static void test_mcp_streamable_http_utility_notifications_ignore_malformed(
     test_state *state) {
   static const char initialize_body[] =
@@ -29429,6 +29529,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sse_jsonrpc_invalid},
     {"mcp_streamable_http_sse_method_with_result",
      test_mcp_streamable_http_sse_method_with_result},
+    {"mcp_streamable_http_sse_response_missing_id",
+     test_mcp_streamable_http_sse_response_missing_id},
+    {"mcp_streamable_http_sse_response_missing_result_error",
+     test_mcp_streamable_http_sse_response_missing_result_error},
+    {"mcp_streamable_http_sse_response_result_and_error",
+     test_mcp_streamable_http_sse_response_result_and_error},
     {"mcp_streamable_http_utility_notifications_ignore_malformed",
      test_mcp_streamable_http_utility_notifications_ignore_malformed},
     {"mcp_streamable_http_cancelled_notification_aborts_request",

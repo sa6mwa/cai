@@ -2802,6 +2802,24 @@ static int cai_mcp_parse_sse_message(lonejson_spooled *data,
           error, CAI_ERR_PROTOCOL,
           "MCP JSON-RPC message with method must not include result or error");
     }
+  } else {
+    if (!doc->has_id) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP JSON-RPC was missing id");
+    }
+    rc = cai_mcp_jsonrpc_response_result_error_presence(data, &has_result,
+                                                        &has_error, error);
+    if (rc != CAI_OK) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+      return rc;
+    }
+    if (has_result == has_error) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, doc);
+      return cai_set_error(
+          error, CAI_ERR_PROTOCOL,
+          "MCP JSON-RPC response must include exactly one of result or error");
+    }
   }
   return CAI_OK;
 }
