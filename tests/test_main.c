@@ -9061,6 +9061,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   static const char resource_read_body[] =
       "event: message\n"
       "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{"
+      "\"progressToken\":9,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"contents\":[{\"uri\":"
       "\"resource://beta\",\"mimeType\":\"application/json\",\"text\":"
       "\"{\\\"beta\\\":true}\"}]}}\n\n";
@@ -9132,9 +9136,12 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"resources/list\"", "\"cursor\":\"resources-page-2\""};
   static const char *resource_read_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
-      "\"method\":\"resources/read\"", "\"uri\":\"resource://beta\""};
+      "\"method\":\"resources/read\"",
+      "\"uri\":\"resource://beta\"",
+      "\"_meta\":{\"progressToken\":9}"};
   static const char *resource_subscribe_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
@@ -9166,7 +9173,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"prompts/get\"",
       "\"name\":\"explain\"",
-      "\"arguments\":{\"topic\":\"MCP\"}"};
+      "\"arguments\":{\"topic\":\"MCP\"}",
+      "\"_meta\":{\"progressToken\":14}"};
   static const char *complete_required[] = {
       "POST /v1/mcp HTTP/",
       "MCP-Session-Id: session-123",
@@ -9174,7 +9182,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"method\":\"completion/complete\"",
       "\"ref\":{\"type\":\"ref/prompt\",\"name\":\"completable-prompt\"}",
       "\"argument\":{\"name\":\"name\",\"value\":\"eng\"}",
-      "\"context\":{\"arguments\":{\"department\":\"engineering\"}}"};
+      "\"context\":{\"arguments\":{\"department\":\"engineering\"}}",
+      "\"_meta\":{\"progressToken\":15}"};
   static const char *ping_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION, "\"method\":\"ping\""};
@@ -9455,6 +9464,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   expect_str(state, "mcp_streamable_read_resource_output", writer.buffer,
              "{\"contents\":[{\"uri\":\"resource://beta\",\"mimeType\":"
              "\"application/json\",\"text\":\"{\\\"beta\\\":true}\"}]}");
+  expect_int(state, "mcp_streamable_read_resource_notify_count",
+             notifications.count, 2L);
+  expect_substr(state, "mcp_streamable_read_resource_notify_params",
+                notifications.params, "\"progressToken\":9");
   expect_int(
       state, "mcp_streamable_subscribe_resource",
       cai_mcp_client_subscribe_resource(client, "resource://beta", &error),

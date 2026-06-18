@@ -3439,6 +3439,23 @@ static int cai_mcp_ping_request(cai_mcp_streamable_http_client_impl *impl,
 }
 
 static int
+cai_mcp_write_progress_meta(cai_mcp_streamable_http_client_impl *impl,
+                            lonejson_spooled *spool, cai_error *error) {
+  char token[64];
+  int rc;
+
+  snprintf(token, sizeof(token), "%lld", impl->next_id);
+  rc = cai_mcp_write_cstr(spool, ",\"_meta\":{\"progressToken\":", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, token, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(spool, "}", error);
+  }
+  return rc;
+}
+
+static int
 cai_mcp_resource_read_request(cai_mcp_streamable_http_client_impl *impl,
                               const char *uri, lonejson_spooled *spool,
                               size_t *out_len, cai_error *error) {
@@ -3456,6 +3473,9 @@ cai_mcp_resource_read_request(cai_mcp_streamable_http_client_impl *impl,
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_json_string(spool, uri, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_progress_meta(impl, spool, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, "}}", error);
@@ -3548,6 +3568,9 @@ static int cai_mcp_prompt_get_request(cai_mcp_streamable_http_client_impl *impl,
                                   json_error.message);
       }
     }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_progress_meta(impl, spool, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, "}}", error);
@@ -3644,6 +3667,9 @@ static int cai_mcp_completion_request(
     }
   }
   if (rc == CAI_OK) {
+    rc = cai_mcp_write_progress_meta(impl, spool, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_mcp_write_cstr(spool, "}}", error);
   }
   if (out_len != NULL) {
@@ -3694,7 +3720,6 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
   lonejson_error json_error;
   lonejson_writer writer;
   lonejson_status status;
-  char token[64];
   int rc;
 
   if (name == NULL || name[0] == '\0' || arguments_json == NULL) {
@@ -3734,14 +3759,10 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
     }
   }
   if (rc == CAI_OK) {
-    snprintf(token, sizeof(token), "%lld", impl->next_id);
-    rc = cai_mcp_write_cstr(spool, ",\"_meta\":{\"progressToken\":", error);
+    rc = cai_mcp_write_progress_meta(impl, spool, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(spool, token, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(spool, "}}}", error);
+    rc = cai_mcp_write_cstr(spool, "}}", error);
   }
   if (out_len != NULL) {
     *out_len = spool->size_fn(spool);
