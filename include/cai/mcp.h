@@ -101,7 +101,7 @@ typedef struct cai_mcp_handler_config {
 typedef struct cai_mcp_client_tool {
   /** Tool name advertised by the MCP server. */
   const char *name;
-  /** Tool title, description fallback, or empty string when absent. */
+  /** Tool display title: title, annotations.title, or name fallback. */
   const char *title;
   /** Tool description, or an empty string when absent. */
   const char *description;
@@ -123,7 +123,7 @@ typedef struct cai_mcp_client_resource {
   const char *uri;
   /** Resource name advertised by the MCP server. */
   const char *name;
-  /** Resource title, description fallback, or empty string when absent. */
+  /** Resource display title: title or name fallback. */
   const char *title;
   /** Resource description, or an empty string when absent. */
   const char *description;
@@ -147,7 +147,7 @@ typedef struct cai_mcp_client_resource_template {
   const char *uri_template;
   /** Resource template name advertised by the MCP server. */
   const char *name;
-  /** Resource template title, description fallback, or empty string. */
+  /** Resource template display title: title or name fallback. */
   const char *title;
   /** Resource template description, or an empty string when absent. */
   const char *description;
@@ -163,7 +163,7 @@ typedef struct cai_mcp_client_resource_template {
 typedef struct cai_mcp_client_prompt {
   /** Prompt name advertised by the MCP server. */
   const char *name;
-  /** Prompt title, description fallback, or empty string when absent. */
+  /** Prompt display title: title or name fallback. */
   const char *title;
   /** Prompt description, or an empty string when absent. */
   const char *description;

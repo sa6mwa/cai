@@ -4680,6 +4680,42 @@ static int cai_mcp_validate_list_tool_doc(const cai_mcp_list_tool_doc *tool,
   return cai_mcp_validate_optional_tool_execution(&tool->execution, error);
 }
 
+static char *
+cai_mcp_tool_display_title(const cai_allocator *allocator,
+                           const cai_mcp_list_tool_doc *tool,
+                           cai_error *error) {
+  cai_mcp_tool_annotations_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *annotations_json;
+  char *title;
+
+  if (tool->title != NULL) {
+    return cai_strdup(allocator, tool->title);
+  }
+  if (tool->annotations.kind == LONEJSON_JSON_VALUE_NULL) {
+    return cai_strdup(allocator, tool->name);
+  }
+  annotations_json = cai_mcp_json_value_to_cstr(&tool->annotations, error);
+  if (annotations_json == NULL) {
+    return NULL;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_annotations_map, &doc,
+                              annotations_json, &json_error);
+  cai_free_mem(NULL, annotations_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_annotations_map, &doc);
+    cai_mcp_set_json_error(error, "failed to parse MCP tool annotations",
+                           &json_error);
+    return NULL;
+  }
+  title = cai_strdup(allocator, doc.title != NULL ? doc.title : tool->name);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_annotations_map, &doc);
+  return title;
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -4747,16 +4783,10 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       cai_mcp_client_tool_impl *dst = &impl->tools[base_count + i];
       dst->name = cai_strdup(&impl->allocator, src_tools[i].name);
       dst->title =
-          cai_strdup(&impl->allocator, src_tools[i].title != NULL
-                                           ? src_tools[i].title
-                                           : (src_tools[i].description != NULL
-                                                  ? src_tools[i].description
-                                                  : ""));
+          cai_mcp_tool_display_title(&impl->allocator, &src_tools[i], error);
       dst->description = cai_strdup(
           &impl->allocator,
-          src_tools[i].description != NULL
-              ? src_tools[i].description
-              : (src_tools[i].title != NULL ? src_tools[i].title : ""));
+          src_tools[i].description != NULL ? src_tools[i].description : "");
       dst->input_schema_json =
           cai_mcp_json_value_to_cstr(&src_tools[i].input_schema, error);
       dst->output_schema_json = cai_mcp_optional_json_value_to_cstr(
@@ -4899,9 +4929,7 @@ static int cai_mcp_parse_resources_list_response(
       dst->title = cai_strdup(&impl->allocator,
                               src_resources[i].title != NULL
                                   ? src_resources[i].title
-                                  : (src_resources[i].description != NULL
-                                         ? src_resources[i].description
-                                         : ""));
+                                  : src_resources[i].name);
       dst->description =
           cai_strdup(&impl->allocator, src_resources[i].description != NULL
                                            ? src_resources[i].description
@@ -5050,9 +5078,7 @@ static int cai_mcp_parse_resource_templates_list_response(
       dst->title = cai_strdup(
           &impl->allocator, src_resource_templates[i].title != NULL
                                 ? src_resource_templates[i].title
-                                : (src_resource_templates[i].description != NULL
-                                       ? src_resource_templates[i].description
-                                       : ""));
+                                : src_resource_templates[i].name);
       dst->description = cai_strdup(
           &impl->allocator, src_resource_templates[i].description != NULL
                                 ? src_resource_templates[i].description
@@ -5186,9 +5212,7 @@ static int cai_mcp_parse_prompts_list_response(
       dst->title =
           cai_strdup(&impl->allocator, src_prompts[i].title != NULL
                                            ? src_prompts[i].title
-                                           : (src_prompts[i].description != NULL
-                                                  ? src_prompts[i].description
-                                                  : ""));
+                                           : src_prompts[i].name);
       dst->description = cai_strdup(
           &impl->allocator,
           src_prompts[i].description != NULL ? src_prompts[i].description : "");

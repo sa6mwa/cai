@@ -8582,8 +8582,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "\"tools-page-2\"}}\n\n";
   static const char tools_list_page_2_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
-      "\"status\",\"title\":\"Status\",\"inputSchema\":{\"type\":\"object\","
-      "\"additionalProperties\":false}}]}}";
+      "\"status\",\"inputSchema\":{\"type\":\"object\","
+      "\"additionalProperties\":false},\"annotations\":{\"title\":"
+      "\"Status Display\"}}]}}";
   static const char call_body[] =
       "event: message\n"
       "data: "
@@ -8879,13 +8880,13 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   } else {
     expect_str(state, "mcp_streamable_tool_page_2_name", tool->name, "status");
     expect_str(state, "mcp_streamable_tool_page_2_title", tool->title,
-               "Status");
+               "Status Display");
     expect_str(state, "mcp_streamable_tool_page_2_description",
-               tool->description, "Status");
+               tool->description, "");
     expect_str(state, "mcp_streamable_tool_page_2_output_schema",
                tool->output_schema_json, "null");
-    expect_str(state, "mcp_streamable_tool_page_2_annotations",
-               tool->annotations_json, "null");
+    expect_substr(state, "mcp_streamable_tool_page_2_annotations",
+                  tool->annotations_json, "\"title\":\"Status Display\"");
     expect_str(state, "mcp_streamable_tool_page_2_icons", tool->icons_json,
                "[]");
     expect_str(state, "mcp_streamable_tool_page_2_execution",
@@ -8926,6 +8927,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
   } else {
     expect_str(state, "mcp_streamable_resource_uri", resource->uri,
                "resource://alpha");
+    expect_str(state, "mcp_streamable_resource_title", resource->title,
+               "alpha");
     expect_str(state, "mcp_streamable_resource_description",
                resource->description, "Alpha doc");
     expect_str(state, "mcp_streamable_resource_mime", resource->mime_type,
@@ -8968,7 +8971,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     expect_str(state, "mcp_streamable_resource_template_description",
                resource_template->description, "Doc template");
     expect_str(state, "mcp_streamable_resource_template_title",
-               resource_template->title, "Doc template");
+               resource_template->title, "doc");
     expect_str(state, "mcp_streamable_resource_template_mime",
                resource_template->mime_type, "text/markdown");
     expect_substr(state, "mcp_streamable_resource_template_icons",
@@ -9011,6 +9014,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     test_fail(state, "mcp_streamable_prompt", "prompt missing");
   } else {
     expect_str(state, "mcp_streamable_prompt_name", prompt->name, "explain");
+    expect_str(state, "mcp_streamable_prompt_title", prompt->title, "explain");
     expect_str(state, "mcp_streamable_prompt_description", prompt->description,
                "Explain a topic");
     expect_substr(state, "mcp_streamable_prompt_arguments",
