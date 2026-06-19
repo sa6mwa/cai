@@ -830,6 +830,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_text_missing_text
     mcp_streamable_http_tool_call_image_missing_mime
     mcp_streamable_http_tool_call_audio_content
+    mcp_streamable_http_tool_call_content_array_annotations
+    mcp_streamable_http_tool_call_content_invalid_annotation_role
     mcp_streamable_http_tool_call_unknown_content_type
     mcp_streamable_http_tool_call_resource_link_missing_name
     mcp_streamable_http_tool_call_resource_missing_resource
@@ -845,6 +847,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompt_get_invalid_role
     mcp_streamable_http_prompt_get_array_content
     mcp_streamable_http_prompt_get_text_missing_text
+    mcp_streamable_http_prompt_get_content_priority_not_number
     mcp_streamable_http_prompt_get_audio_content
     mcp_streamable_http_prompt_get_resource_missing_body
     mcp_streamable_http_prompt_get_unknown_content_type

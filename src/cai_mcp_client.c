@@ -241,6 +241,7 @@ typedef struct cai_mcp_tool_content_doc {
   char *mime_type;
   char *uri;
   char *name;
+  lonejson_json_value annotations;
   lonejson_json_value resource;
 } cai_mcp_tool_content_doc;
 
@@ -941,6 +942,12 @@ static const lonejson_field cai_mcp_tool_content_fields[] = {
                                 "mimeType"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, uri, "uri"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, name, "name"),
+    {"annotations", LONEJSON__KEY_LEN("annotations"),
+     LONEJSON__KEY_FIRST("annotations"), LONEJSON__KEY_LAST("annotations"),
+     offsetof(cai_mcp_tool_content_doc, annotations),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     {"resource", LONEJSON__KEY_LEN("resource"), LONEJSON__KEY_FIRST("resource"),
      LONEJSON__KEY_LAST("resource"),
      offsetof(cai_mcp_tool_content_doc, resource),
@@ -7293,6 +7300,13 @@ cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
   if (content == NULL || content->type == NULL) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP content block type is required");
+  }
+  rc = cai_mcp_validate_optional_annotations(
+      &content->annotations, "MCP content annotations must be an object",
+      "failed to parse MCP content annotations",
+      "MCP content annotation audience role is invalid", error);
+  if (rc != CAI_OK) {
+    return rc;
   }
   if (strcmp(content->type, "text") == 0) {
     if (content->text == NULL) {

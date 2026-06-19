@@ -12969,6 +12969,31 @@ test_mcp_streamable_http_tool_call_audio_content(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tool_call_content_array_annotations(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\",\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_content_array_annotations",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content annotations must be an object");
+}
+
+static void
+test_mcp_streamable_http_tool_call_content_invalid_annotation_role(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\",\"annotations\":{\"audience\":[\"system\"]}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_content_invalid_annotation_role",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content annotation audience role is invalid");
+}
+
+static void
 test_mcp_streamable_http_tool_call_unknown_content_type(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
@@ -13150,6 +13175,20 @@ test_mcp_streamable_http_prompt_get_text_missing_text(test_state *state) {
       state, "mcp_streamable_prompt_get_text_missing_text",
       TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
       "MCP text content requires text");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_content_priority_not_number(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"ok\","
+      "\"annotations\":{\"priority\":\"high\"}}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_content_priority_not_number",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "failed to parse MCP content annotations");
 }
 
 static void
@@ -32166,6 +32205,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_image_missing_mime},
     {"mcp_streamable_http_tool_call_audio_content",
      test_mcp_streamable_http_tool_call_audio_content},
+    {"mcp_streamable_http_tool_call_content_array_annotations",
+     test_mcp_streamable_http_tool_call_content_array_annotations},
+    {"mcp_streamable_http_tool_call_content_invalid_annotation_role",
+     test_mcp_streamable_http_tool_call_content_invalid_annotation_role},
     {"mcp_streamable_http_tool_call_unknown_content_type",
      test_mcp_streamable_http_tool_call_unknown_content_type},
     {"mcp_streamable_http_tool_call_resource_link_missing_name",
@@ -32196,6 +32239,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_array_content},
     {"mcp_streamable_http_prompt_get_text_missing_text",
      test_mcp_streamable_http_prompt_get_text_missing_text},
+    {"mcp_streamable_http_prompt_get_content_priority_not_number",
+     test_mcp_streamable_http_prompt_get_content_priority_not_number},
     {"mcp_streamable_http_prompt_get_audio_content",
      test_mcp_streamable_http_prompt_get_audio_content},
     {"mcp_streamable_http_prompt_get_resource_missing_body",
