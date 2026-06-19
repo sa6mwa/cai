@@ -10487,6 +10487,19 @@ test_mcp_streamable_http_initialize_server_info_description_not_string(
 }
 
 static void
+test_mcp_streamable_http_initialize_instructions_not_string(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"},\"instructions\":[]}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_instructions_not_string",
+      initialize_body, "failed to parse MCP initialize");
+}
+
+static void
 test_mcp_streamable_http_initialize_missing_server_info(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -32626,6 +32639,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_initialize_server_info_icon_bad_theme},
     {"mcp_streamable_http_initialize_server_info_description_not_string",
      test_mcp_streamable_http_initialize_server_info_description_not_string},
+    {"mcp_streamable_http_initialize_instructions_not_string",
+     test_mcp_streamable_http_initialize_instructions_not_string},
     {"mcp_streamable_http_initialize_missing_server_info",
      test_mcp_streamable_http_initialize_missing_server_info},
     {"mcp_streamable_http_initialize_missing_protocol_version",

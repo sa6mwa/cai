@@ -768,6 +768,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_initialize_server_info_icon_missing_src
     mcp_streamable_http_initialize_server_info_icon_bad_theme
     mcp_streamable_http_initialize_server_info_description_not_string
+    mcp_streamable_http_initialize_instructions_not_string
     mcp_streamable_http_initialize_missing_server_info
     mcp_streamable_http_initialize_missing_protocol_version
     mcp_streamable_http_initialize_unsupported_protocol_version

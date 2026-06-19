@@ -433,6 +433,7 @@ typedef struct cai_mcp_initialize_result_doc {
   char *protocol_version;
   lonejson_json_value capabilities;
   cai_mcp_server_info_doc server_info;
+  char *instructions;
 } cai_mcp_initialize_result_doc;
 
 typedef struct cai_mcp_initialize_response_doc {
@@ -1404,7 +1405,9 @@ static const lonejson_field cai_mcp_initialize_result_fields[] = {
      LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
      0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_OBJECT_REQ(cai_mcp_initialize_result_doc, server_info,
-                              "serverInfo", &cai_mcp_server_info_map)};
+                              "serverInfo", &cai_mcp_server_info_map),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_initialize_result_doc, instructions,
+                                "instructions")};
 LONEJSON_MAP_DEFINE(cai_mcp_initialize_result_map,
                     cai_mcp_initialize_result_doc,
                     cai_mcp_initialize_result_fields);
