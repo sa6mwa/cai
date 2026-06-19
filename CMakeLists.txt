@@ -921,6 +921,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_elicitation_schema_array_items_not_object
     mcp_streamable_http_elicitation_schema_array_items_empty
     mcp_streamable_http_elicitation_schema_array_items_type_invalid
+    mcp_streamable_http_elicitation_schema_array_items_enum_value_invalid
+    mcp_streamable_http_elicitation_schema_array_items_anyof_entry_invalid
+    mcp_streamable_http_elicitation_schema_array_items_anyof_entry_missing_title
     mcp_streamable_http_elicitation_missing_message
     mcp_streamable_http_elicitation_url_not_advertised
     mcp_streamable_http_server_request_unsupported

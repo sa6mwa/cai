@@ -17424,6 +17424,189 @@ test_mcp_streamable_http_elicitation_schema_array_items_type_invalid(
 }
 
 static void
+test_mcp_streamable_http_elicitation_schema_array_items_invalid_choice_case(
+    test_state *state, const char *case_name, const char *session_id,
+    const char *request_id, const char *property_json,
+    const char *error_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "\"id\":1", "\"method\":\"initialize\"",
+      "\"capabilities\":{\"elicitation\":{}}"};
+  char ping_body[1536];
+  char session_header[160];
+  char init_response_header[192];
+  char request_id_required[192];
+  char error_message_required[256];
+  char mock_name[192];
+  char open_label[192];
+  char ping_label[192];
+  char count_label[192];
+  char exit_label[192];
+  const char *initialized_required[3];
+  const char *ping_required[4];
+  const char *elicitation_error_required[5];
+  mock_http_expectation script[4];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_elicitation_state elicitation;
+  cai_error error;
+  char url[192];
+
+  if (snprintf(ping_body, sizeof(ping_body),
+               "event: message\n"
+               "data: {\"jsonrpc\":\"2.0\",\"id\":\"%s\","
+               "\"method\":\"elicitation/create\",\"params\":{\"message\":"
+               "\"Need data\",\"requestedSchema\":{\"type\":\"object\","
+               "\"properties\":{\"tags\":%s}}}}\n\n"
+               "event: message\n"
+               "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n",
+               request_id, property_json) >= (int)sizeof(ping_body) ||
+      snprintf(session_header, sizeof(session_header), "MCP-Session-Id: %s",
+               session_id) >= (int)sizeof(session_header) ||
+      snprintf(init_response_header, sizeof(init_response_header),
+               "req-init\r\nMCP-Session-Id: %s",
+               session_id) >= (int)sizeof(init_response_header) ||
+      snprintf(request_id_required, sizeof(request_id_required), "\"id\":\"%s\"",
+               request_id) >= (int)sizeof(request_id_required) ||
+      snprintf(error_message_required, sizeof(error_message_required),
+               "\"message\":\"%s\"", error_message) >=
+          (int)sizeof(error_message_required) ||
+      snprintf(mock_name, sizeof(mock_name), "%s_mock", case_name) >=
+          (int)sizeof(mock_name) ||
+      snprintf(open_label, sizeof(open_label), "%s_open", case_name) >=
+          (int)sizeof(open_label) ||
+      snprintf(ping_label, sizeof(ping_label), "%s_ping", case_name) >=
+          (int)sizeof(ping_label) ||
+      snprintf(count_label, sizeof(count_label), "%s_count", case_name) >=
+          (int)sizeof(count_label) ||
+      snprintf(exit_label, sizeof(exit_label), "%s_mock", case_name) >=
+          (int)sizeof(exit_label)) {
+    test_fail(state, case_name, "test buffer too small");
+    return;
+  }
+
+  initialized_required[0] = "POST /v1/mcp HTTP/";
+  initialized_required[1] = session_header;
+  initialized_required[2] = "\"method\":\"notifications/initialized\"";
+  ping_required[0] = "POST /v1/mcp HTTP/";
+  ping_required[1] = session_header;
+  ping_required[2] = "\"id\":2";
+  ping_required[3] = "\"method\":\"ping\"";
+  elicitation_error_required[0] = "POST /v1/mcp HTTP/";
+  elicitation_error_required[1] = session_header;
+  elicitation_error_required[2] = request_id_required;
+  elicitation_error_required[3] = "\"error\":{\"code\":-32602";
+  elicitation_error_required[4] = error_message_required;
+
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].forbidden = NULL;
+  script[0].forbidden_count = 0U;
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = init_response_header;
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].forbidden = NULL;
+  script[1].forbidden_count = 0U;
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].request_id = NULL;
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].forbidden = NULL;
+  script[2].forbidden_count = 0U;
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].request_id = NULL;
+  script[2].body = ping_body;
+  script[3].request_prefix = "POST /v1/mcp HTTP/";
+  script[3].required = elicitation_error_required;
+  script[3].required_count = sizeof(elicitation_error_required) /
+                             sizeof(elicitation_error_required[0]);
+  script[3].forbidden = NULL;
+  script[3].forbidden_count = 0U;
+  script[3].status = 202;
+  script[3].status_text = "Accepted";
+  script[3].content_type = "application/json";
+  script[3].request_id = NULL;
+  script[3].body = "";
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&elicitation, 0, sizeof(elicitation));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, mock_name, script, sizeof(script) / sizeof(script[0]),
+          &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &elicitation;
+  config.receiver.elicit = test_mcp_elicitation_callback;
+  expect_int(state, open_label,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, ping_label, cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, count_label, elicitation.count, 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, exit_label, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_elicitation_schema_array_items_enum_value_invalid(
+    test_state *state) {
+  test_mcp_streamable_http_elicitation_schema_array_items_invalid_choice_case(
+      state, "mcp_streamable_elicitation_schema_array_items_enum_value",
+      "elicitation-schema-array-items-enum-value-session",
+      "elicit-schema-array-items-enum-value-1",
+      "{\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"a\",1]}}",
+      "MCP elicitation requestedSchema array item enum values must be strings");
+}
+
+static void
+test_mcp_streamable_http_elicitation_schema_array_items_anyof_entry_invalid(
+    test_state *state) {
+  test_mcp_streamable_http_elicitation_schema_array_items_invalid_choice_case(
+      state, "mcp_streamable_elicitation_schema_array_items_anyof_entry",
+      "elicitation-schema-array-items-anyof-entry-session",
+      "elicit-schema-array-items-anyof-entry-1",
+      "{\"type\":\"array\",\"items\":{\"anyOf\":[\"a\"]}}",
+      "MCP elicitation requestedSchema array items anyOf entries must be "
+      "objects");
+}
+
+static void test_mcp_streamable_http_elicitation_schema_array_items_anyof_entry_missing_title(
+    test_state *state) {
+  test_mcp_streamable_http_elicitation_schema_array_items_invalid_choice_case(
+      state, "mcp_streamable_elicitation_schema_array_items_anyof_missing_title",
+      "elicitation-schema-array-items-anyof-missing-title-session",
+      "elicit-schema-array-items-anyof-missing-title-1",
+      "{\"type\":\"array\",\"items\":{\"anyOf\":[{\"const\":\"a\"}]}}",
+      "MCP elicitation requestedSchema array items anyOf entries require "
+      "string const and title");
+}
+
+static void
 test_mcp_streamable_http_elicitation_missing_message(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -31708,6 +31891,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_elicitation_schema_array_items_empty},
     {"mcp_streamable_http_elicitation_schema_array_items_type_invalid",
      test_mcp_streamable_http_elicitation_schema_array_items_type_invalid},
+    {"mcp_streamable_http_elicitation_schema_array_items_enum_value_invalid",
+     test_mcp_streamable_http_elicitation_schema_array_items_enum_value_invalid},
+    {"mcp_streamable_http_elicitation_schema_array_items_anyof_entry_invalid",
+     test_mcp_streamable_http_elicitation_schema_array_items_anyof_entry_invalid},
+    {"mcp_streamable_http_elicitation_schema_array_items_anyof_entry_missing_title",
+     test_mcp_streamable_http_elicitation_schema_array_items_anyof_entry_missing_title},
     {"mcp_streamable_http_elicitation_missing_message",
      test_mcp_streamable_http_elicitation_missing_message},
     {"mcp_streamable_http_elicitation_url_not_advertised",
