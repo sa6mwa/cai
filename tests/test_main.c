@@ -12859,6 +12859,20 @@ test_mcp_streamable_http_resources_list_annotation_priority_not_number(
 }
 
 static void
+test_mcp_streamable_http_resources_list_annotation_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":{\"priority\":"
+      "1.5}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_annotation_priority_out_of_range",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource annotation priority must be between 0 and 1");
+}
+
+static void
 test_mcp_streamable_http_resources_list_negative_size(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
@@ -12927,6 +12941,22 @@ test_mcp_streamable_http_resource_templates_list_annotation_invalid_role(
       TEST_MCP_LIST_RESOURCE_TEMPLATES,
       "\"method\":\"resources/templates/list\"", response_body,
       "MCP resource template annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"file:///{name}\",\"name\":\"files\","
+      "\"annotations\":{\"priority\":-0.1}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state,
+      "mcp_streamable_resource_templates_list_annotation_priority_out_of_range",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template annotation priority must be between 0 and 1");
 }
 
 static void
@@ -13170,6 +13200,19 @@ test_mcp_streamable_http_tool_call_content_invalid_annotation_role(
       state, "mcp_streamable_tool_call_content_invalid_annotation_role",
       TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
       "MCP content annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_tool_call_content_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\",\"annotations\":{\"priority\":1.1}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_content_priority_out_of_range",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content annotation priority must be between 0 and 1");
 }
 
 static void
@@ -13436,6 +13479,20 @@ test_mcp_streamable_http_prompt_get_content_priority_not_number(
       state, "mcp_streamable_prompt_get_content_priority_not_number",
       TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
       "failed to parse MCP content annotations");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_content_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"ok\","
+      "\"annotations\":{\"priority\":-0.01}}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_content_priority_out_of_range",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP content annotation priority must be between 0 and 1");
 }
 
 static void
@@ -16509,6 +16566,19 @@ test_mcp_streamable_http_sampling_content_annotation_invalid_role(
       "sampling-content-annotation-role-session", result_json,
       CAI_ERR_PROTOCOL,
       "MCP sampling content annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_sampling_content_priority_out_of_range(
+    test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":{"
+      "\"type\":\"text\",\"text\":\"one\",\"annotations\":{\"priority\":"
+      "2}}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_content_priority_out_of_range",
+      "sampling-content-priority-range-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP sampling content annotation priority must be between 0 and 1");
 }
 
 static void
@@ -32642,6 +32712,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resources_list_annotation_invalid_role},
     {"mcp_streamable_http_resources_list_annotation_priority_not_number",
      test_mcp_streamable_http_resources_list_annotation_priority_not_number},
+    {"mcp_streamable_http_resources_list_annotation_priority_out_of_range",
+     test_mcp_streamable_http_resources_list_annotation_priority_out_of_range},
     {"mcp_streamable_http_resources_list_negative_size",
      test_mcp_streamable_http_resources_list_negative_size},
     {"mcp_streamable_http_resource_templates_list_missing_templates",
@@ -32654,6 +32726,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_templates_list_array_annotations},
     {"mcp_streamable_http_resource_templates_list_annotation_invalid_role",
      test_mcp_streamable_http_resource_templates_list_annotation_invalid_role},
+    {"mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range",
+     test_mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range},
     {"mcp_streamable_http_resource_templates_list_annotation_modified_not_string",
      test_mcp_streamable_http_resource_templates_list_annotation_modified_not_string},
     {"mcp_streamable_http_prompts_list_missing_prompts",
@@ -32684,6 +32758,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_content_array_annotations},
     {"mcp_streamable_http_tool_call_content_invalid_annotation_role",
      test_mcp_streamable_http_tool_call_content_invalid_annotation_role},
+    {"mcp_streamable_http_tool_call_content_priority_out_of_range",
+     test_mcp_streamable_http_tool_call_content_priority_out_of_range},
     {"mcp_streamable_http_tool_call_unknown_content_type",
      test_mcp_streamable_http_tool_call_unknown_content_type},
     {"mcp_streamable_http_tool_call_resource_link_missing_name",
@@ -32726,6 +32802,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_text_missing_text},
     {"mcp_streamable_http_prompt_get_content_priority_not_number",
      test_mcp_streamable_http_prompt_get_content_priority_not_number},
+    {"mcp_streamable_http_prompt_get_content_priority_out_of_range",
+     test_mcp_streamable_http_prompt_get_content_priority_out_of_range},
     {"mcp_streamable_http_prompt_get_audio_content",
      test_mcp_streamable_http_prompt_get_audio_content},
     {"mcp_streamable_http_prompt_get_audio_invalid_base64",
@@ -32878,6 +32956,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_content_annotations},
     {"mcp_streamable_http_sampling_content_annotation_invalid_role",
      test_mcp_streamable_http_sampling_content_annotation_invalid_role},
+    {"mcp_streamable_http_sampling_content_priority_out_of_range",
+     test_mcp_streamable_http_sampling_content_priority_out_of_range},
     {"mcp_streamable_http_sampling_text_missing_text",
      test_mcp_streamable_http_sampling_text_missing_text},
     {"mcp_streamable_http_sampling_tool_use_missing_input",

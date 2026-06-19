@@ -821,12 +821,14 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resources_list_array_annotations
     mcp_streamable_http_resources_list_annotation_invalid_role
     mcp_streamable_http_resources_list_annotation_priority_not_number
+    mcp_streamable_http_resources_list_annotation_priority_out_of_range
     mcp_streamable_http_resources_list_negative_size
     mcp_streamable_http_resource_templates_list_missing_templates
     mcp_streamable_http_resource_templates_list_object_icons
     mcp_streamable_http_resource_templates_list_icon_size_not_string
     mcp_streamable_http_resource_templates_list_array_annotations
     mcp_streamable_http_resource_templates_list_annotation_invalid_role
+    mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range
     mcp_streamable_http_resource_templates_list_annotation_modified_not_string
     mcp_streamable_http_prompts_list_missing_prompts
     mcp_streamable_http_prompts_list_object_arguments
@@ -842,6 +844,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_audio_content
     mcp_streamable_http_tool_call_content_array_annotations
     mcp_streamable_http_tool_call_content_invalid_annotation_role
+    mcp_streamable_http_tool_call_content_priority_out_of_range
     mcp_streamable_http_tool_call_unknown_content_type
     mcp_streamable_http_tool_call_resource_link_missing_name
     mcp_streamable_http_tool_call_resource_link_icons_not_array
@@ -863,6 +866,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompt_get_array_content
     mcp_streamable_http_prompt_get_text_missing_text
     mcp_streamable_http_prompt_get_content_priority_not_number
+    mcp_streamable_http_prompt_get_content_priority_out_of_range
     mcp_streamable_http_prompt_get_audio_content
     mcp_streamable_http_prompt_get_audio_invalid_base64
     mcp_streamable_http_prompt_get_resource_missing_body
@@ -939,6 +943,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_audio_invalid_base64
     mcp_streamable_http_sampling_content_annotations
     mcp_streamable_http_sampling_content_annotation_invalid_role
+    mcp_streamable_http_sampling_content_priority_out_of_range
     mcp_streamable_http_sampling_text_missing_text
     mcp_streamable_http_sampling_tool_use_missing_input
     mcp_streamable_http_sampling_tool_use_array_input

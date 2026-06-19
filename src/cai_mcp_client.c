@@ -6624,7 +6624,8 @@ static int cai_mcp_annotation_role_is_valid(const char *role) {
 
 static int cai_mcp_validate_optional_annotations(
     const lonejson_json_value *annotations, const char *object_error,
-    const char *parse_error, const char *audience_error, cai_error *error) {
+    const char *parse_error, const char *audience_error,
+    const char *priority_error, cai_error *error) {
   cai_mcp_annotations_doc doc;
   lonejson_error json_error;
   lonejson_status status;
@@ -6660,6 +6661,10 @@ static int cai_mcp_validate_optional_annotations(
       rc = cai_set_error(error, CAI_ERR_PROTOCOL, audience_error);
       break;
     }
+  }
+  if (rc == CAI_OK && doc.has_priority &&
+      (doc.priority < 0.0 || doc.priority > 1.0)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, priority_error);
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_annotations_map, &doc);
   return rc;
@@ -7048,7 +7053,8 @@ static int cai_mcp_parse_resources_list_response(
         &src_resources[i].annotations,
         "MCP resource annotations must be an object",
         "failed to parse MCP resource annotations",
-        "MCP resource annotation audience role is invalid", error);
+        "MCP resource annotation audience role is invalid",
+        "MCP resource annotation priority must be between 0 and 1", error);
     if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
       json_body.cleanup(&json_body);
@@ -7200,7 +7206,9 @@ static int cai_mcp_parse_resource_templates_list_response(
         &src_resource_templates[i].annotations,
         "MCP resource template annotations must be an object",
         "failed to parse MCP resource template annotations",
-        "MCP resource template annotation audience role is invalid", error);
+        "MCP resource template annotation audience role is invalid",
+        "MCP resource template annotation priority must be between 0 and 1",
+        error);
     if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
                       &doc);
@@ -7616,7 +7624,8 @@ cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
   rc = cai_mcp_validate_optional_annotations(
       &content->annotations, "MCP content annotations must be an object",
       "failed to parse MCP content annotations",
-      "MCP content annotation audience role is invalid", error);
+      "MCP content annotation audience role is invalid",
+      "MCP content annotation priority must be between 0 and 1", error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -7777,7 +7786,9 @@ cai_mcp_sampling_content_doc_validate(const cai_mcp_sampling_content_doc *doc,
   rc = cai_mcp_validate_optional_annotations(
       &doc->annotations, "MCP sampling content annotations must be an object",
       "failed to parse MCP sampling content annotations",
-      "MCP sampling content annotation audience role is invalid", error);
+      "MCP sampling content annotation audience role is invalid",
+      "MCP sampling content annotation priority must be between 0 and 1",
+      error);
   if (rc != CAI_OK) {
     return rc;
   }
