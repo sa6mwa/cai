@@ -378,7 +378,8 @@ size_t cai_mcp_client_tool_count(const cai_mcp_client *client);
 /** Return cached MCP tool metadata by index, or NULL when out of range. */
 const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
                                                   size_t index);
-/** Call one remote MCP tool and stream result JSON to `output`. */
+/** Call one remote MCP tool and stream result JSON to `output`.
+    `arguments_json` may be NULL for tools without arguments. */
 int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
                              cai_sink *output, cai_error *error);

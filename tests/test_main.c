@@ -8670,6 +8670,7 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
       "\"method\":\"tools/list\""};
+  static const char *cursorless_list_forbidden[] = {"\"params\":"};
   static const char *list_page_2_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
       "MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION,
@@ -8743,8 +8744,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
        202, "Accepted", "application/json", NULL, ""},
       {"POST /v1/mcp HTTP/", list_required,
-       sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, tools_list_body},
+       sizeof(list_required) / sizeof(list_required[0]),
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, tools_list_body},
       {"POST /v1/mcp HTTP/", list_page_2_required,
        sizeof(list_page_2_required) / sizeof(list_page_2_required[0]), NULL, 0U,
        200, "OK", "application/json", NULL, tools_list_page_2_body},
@@ -8753,7 +8756,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        "text/event-stream", NULL, call_body},
       {"POST /v1/mcp HTTP/", resources_list_required,
        sizeof(resources_list_required) / sizeof(resources_list_required[0]),
-       NULL, 0U, 200, "OK", "text/event-stream", NULL, resources_list_body},
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, resources_list_body},
       {"POST /v1/mcp HTTP/", resources_list_page_2_required,
        sizeof(resources_list_page_2_required) /
            sizeof(resources_list_page_2_required[0]),
@@ -8762,7 +8767,9 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
       {"POST /v1/mcp HTTP/", resource_templates_list_required,
        sizeof(resource_templates_list_required) /
            sizeof(resource_templates_list_required[0]),
-       NULL, 0U, 200, "OK", "text/event-stream", NULL,
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL,
        resource_templates_list_body},
       {"POST /v1/mcp HTTP/", resource_templates_list_page_2_required,
        sizeof(resource_templates_list_page_2_required) /
@@ -8773,8 +8780,10 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
        sizeof(resource_read_required) / sizeof(resource_read_required[0]), NULL,
        0U, 200, "OK", "text/event-stream", NULL, resource_read_body},
       {"POST /v1/mcp HTTP/", prompts_list_required,
-       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]), NULL,
-       0U, 200, "OK", "text/event-stream", NULL, prompts_list_body},
+       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]),
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, prompts_list_body},
       {"POST /v1/mcp HTTP/", prompts_list_page_2_required,
        sizeof(prompts_list_page_2_required) /
            sizeof(prompts_list_page_2_required[0]),
@@ -9145,6 +9154,83 @@ test_mcp_streamable_http_call_result_must_be_object(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_call_result_object_mock", server.pid,
                     &server.child_status);
+}
+
+static void test_mcp_streamable_http_tool_call_omits_null_arguments(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\"}]}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: no-args-call-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: no-args-call-session",
+      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"status\"",
+      "\"_meta\":{\"progressToken\":2}"};
+  static const char *call_forbidden[] = {"\"arguments\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: no-args-call-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), call_forbidden,
+       sizeof(call_forbidden) / sizeof(call_forbidden[0]), 200, "OK",
+       "application/json", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_tool_call_null_args_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_tool_call_null_args_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_tool_call_null_args_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_tool_call_null_args_call",
+             cai_mcp_client_call_tool(client, "status", NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_tool_call_null_args_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tool_call_null_args_mock",
+                    server.pid, &server.child_status);
 }
 
 
@@ -27534,6 +27620,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompts_list_object_icons},
     {"mcp_streamable_http_prompts_list_icon_metadata",
      test_mcp_streamable_http_prompts_list_icon_metadata},
+    {"mcp_streamable_http_tool_call_omits_null_arguments",
+     test_mcp_streamable_http_tool_call_omits_null_arguments},
     {"mcp_streamable_http_tool_call_missing_content",
      test_mcp_streamable_http_tool_call_missing_content},
     {"mcp_streamable_http_tool_call_missing_content_type",

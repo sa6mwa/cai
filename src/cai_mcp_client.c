@@ -2880,17 +2880,20 @@ static int cai_mcp_list_request(cai_mcp_streamable_http_client_impl *impl,
 
   CAI_LJ->spooled_init(CAI_LJ, spool);
   rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, method, error);
-  if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(spool, ",\"params\":{", error);
-  }
   if (rc == CAI_OK && cursor != NULL && cursor[0] != '\0') {
-    rc = cai_mcp_write_cstr(spool, "\"cursor\":", error);
+    rc = cai_mcp_write_cstr(spool, ",\"params\":{", error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "\"cursor\":", error);
+    }
     if (rc == CAI_OK) {
       rc = cai_mcp_write_json_string(spool, cursor, error);
     }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_write_cstr(spool, "}", error);
+    }
   }
   if (rc == CAI_OK) {
-    rc = cai_mcp_write_cstr(spool, "}}", error);
+    rc = cai_mcp_write_cstr(spool, "}", error);
   }
   if (out_len != NULL) {
     *out_len = spool->size_fn(spool);
@@ -3264,14 +3267,15 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
   lonejson_status status;
   int rc;
 
-  if (name == NULL || name[0] == '\0' || arguments_json == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "MCP tool name and arguments are required");
+  if (name == NULL || name[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP tool name is required");
   }
-  rc = cai_mcp_spooled_root_is(arguments_json, '{',
-                               "MCP tool arguments must be an object", error);
-  if (rc != CAI_OK) {
-    return rc;
+  if (arguments_json != NULL) {
+    rc = cai_mcp_spooled_root_is(arguments_json, '{',
+                                 "MCP tool arguments must be an object", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   }
   CAI_LJ->spooled_init(CAI_LJ, spool);
   rc = cai_mcp_request_begin(impl, spool, ++impl->next_id, "tools/call", error);
@@ -3281,23 +3285,24 @@ static int cai_mcp_call_request(cai_mcp_streamable_http_client_impl *impl,
   if (rc == CAI_OK) {
     rc = cai_mcp_write_json_string(spool, name, error);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && arguments_json != NULL) {
     rc = cai_mcp_write_cstr(spool, ",\"arguments\":", error);
-  }
-  if (rc == CAI_OK) {
-    lonejson_error_init(&json_error);
-    status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_spool_sink,
-                                      spool, &json_error);
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.json_value_spooled(&writer, arguments_json, &json_error);
-    }
-    if (writer.cleanup != NULL) {
-      writer.cleanup(&writer);
-    }
-    if (status != LONEJSON_STATUS_OK) {
-      rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to write MCP tool arguments",
-                                json_error.message);
+    if (rc == CAI_OK) {
+      lonejson_error_init(&json_error);
+      status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_mcp_spool_sink,
+                                        spool, &json_error);
+      if (status == LONEJSON_STATUS_OK) {
+        status =
+            writer.json_value_spooled(&writer, arguments_json, &json_error);
+      }
+      if (writer.cleanup != NULL) {
+        writer.cleanup(&writer);
+      }
+      if (status != LONEJSON_STATUS_OK) {
+        rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to write MCP tool arguments",
+                                  json_error.message);
+      }
     }
   }
   if (rc == CAI_OK) {
