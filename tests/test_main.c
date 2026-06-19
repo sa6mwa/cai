@@ -16228,6 +16228,31 @@ static void test_mcp_streamable_http_sampling_audio_content(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_sampling_content_annotations(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":[{"
+      "\"type\":\"text\",\"text\":\"one\",\"annotations\":{\"audience\":["
+      "\"assistant\"],\"priority\":0.5}}]}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_content_annotations",
+      "sampling-content-annotations-session", result_json, CAI_OK, NULL);
+}
+
+static void
+test_mcp_streamable_http_sampling_content_annotation_invalid_role(
+    test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":{"
+      "\"type\":\"text\",\"text\":\"one\",\"annotations\":{\"audience\":["
+      "\"system\"]}}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_content_annotation_invalid_role",
+      "sampling-content-annotation-role-session", result_json,
+      CAI_ERR_PROTOCOL,
+      "MCP sampling content annotation audience role is invalid");
+}
+
+static void
 test_mcp_streamable_http_sampling_text_missing_text(test_state *state) {
   static const char result_json[] =
       "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
@@ -16651,6 +16676,29 @@ static void test_mcp_streamable_http_sampling_tool_choice_mode_invalid(
       "sample-tool-choice-mode-invalid-1",
       "{\"messages\":[],\"maxTokens\":16,\"toolChoice\":{\"mode\":\"maybe\"}}",
       "MCP sampling toolChoice mode is invalid");
+}
+
+static void
+test_mcp_streamable_http_sampling_param_content_annotation_invalid_role(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_param_content_annotation_invalid_role",
+      "sampling-param-content-annotation-role-session",
+      "sample-param-content-annotation-role-1",
+      "{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\","
+      "\"text\":\"hello\",\"annotations\":{\"audience\":[\"system\"]}}}],"
+      "\"maxTokens\":16}",
+      "MCP sampling content annotation audience role is invalid");
+}
+
+static void test_mcp_streamable_http_sampling_message_role_invalid(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_message_role_invalid",
+      "sampling-message-role-invalid-session", "sample-message-role-invalid-1",
+      "{\"messages\":[{\"role\":\"system\",\"content\":{\"type\":\"text\","
+      "\"text\":\"hello\"}}],\"maxTokens\":16}",
+      "MCP sampling message role must be user or assistant");
 }
 
 static void
@@ -32497,6 +32545,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_array_content},
     {"mcp_streamable_http_sampling_audio_content",
      test_mcp_streamable_http_sampling_audio_content},
+    {"mcp_streamable_http_sampling_content_annotations",
+     test_mcp_streamable_http_sampling_content_annotations},
+    {"mcp_streamable_http_sampling_content_annotation_invalid_role",
+     test_mcp_streamable_http_sampling_content_annotation_invalid_role},
     {"mcp_streamable_http_sampling_text_missing_text",
      test_mcp_streamable_http_sampling_text_missing_text},
     {"mcp_streamable_http_sampling_tool_use_missing_input",
@@ -32527,6 +32579,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_tool_choice_not_object},
     {"mcp_streamable_http_sampling_tool_choice_mode_invalid",
      test_mcp_streamable_http_sampling_tool_choice_mode_invalid},
+    {"mcp_streamable_http_sampling_param_content_annotation_invalid_role",
+     test_mcp_streamable_http_sampling_param_content_annotation_invalid_role},
+    {"mcp_streamable_http_sampling_message_role_invalid",
+     test_mcp_streamable_http_sampling_message_role_invalid},
     {"mcp_streamable_http_task_request_capabilities",
      test_mcp_streamable_http_task_request_capabilities},
     {"mcp_streamable_http_task_request_flags_require_callbacks",

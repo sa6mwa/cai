@@ -918,6 +918,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_invalid_result
     mcp_streamable_http_sampling_array_content
     mcp_streamable_http_sampling_audio_content
+    mcp_streamable_http_sampling_content_annotations
+    mcp_streamable_http_sampling_content_annotation_invalid_role
     mcp_streamable_http_sampling_text_missing_text
     mcp_streamable_http_sampling_tool_use_missing_input
     mcp_streamable_http_sampling_tool_use_array_input
@@ -933,6 +935,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_tools_not_array
     mcp_streamable_http_sampling_tool_choice_not_object
     mcp_streamable_http_sampling_tool_choice_mode_invalid
+    mcp_streamable_http_sampling_param_content_annotation_invalid_role
+    mcp_streamable_http_sampling_message_role_invalid
     mcp_streamable_http_task_request_capabilities
     mcp_streamable_http_task_request_flags_require_callbacks
     mcp_streamable_http_sampling_tools_not_advertised
