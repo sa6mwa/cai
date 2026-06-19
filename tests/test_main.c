@@ -13300,11 +13300,28 @@ test_mcp_streamable_http_prompt_get_array_arguments(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_prompt_get_non_string_argument(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_prompt_get_non_string_argument",
+      TEST_MCP_ARGUMENT_PROMPT_GET, "{\"topic\":42}",
+      "MCP prompt argument values must be strings");
+}
+
+static void
 test_mcp_streamable_http_completion_array_context_arguments(test_state *state) {
   test_mcp_streamable_http_invalid_argument_json(
       state, "mcp_streamable_completion_array_context_arguments",
       TEST_MCP_ARGUMENT_COMPLETION, "[]",
       "MCP completion context arguments must be an object");
+}
+
+static void
+test_mcp_streamable_http_completion_non_string_context_argument(
+    test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_completion_non_string_context_argument",
+      TEST_MCP_ARGUMENT_COMPLETION, "{\"department\":false}",
+      "MCP completion context argument values must be strings");
 }
 
 static void
@@ -32199,8 +32216,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_array_arguments},
     {"mcp_streamable_http_prompt_get_array_arguments",
      test_mcp_streamable_http_prompt_get_array_arguments},
+    {"mcp_streamable_http_prompt_get_non_string_argument",
+     test_mcp_streamable_http_prompt_get_non_string_argument},
     {"mcp_streamable_http_completion_array_context_arguments",
      test_mcp_streamable_http_completion_array_context_arguments},
+    {"mcp_streamable_http_completion_non_string_context_argument",
+     test_mcp_streamable_http_completion_non_string_context_argument},
     {"mcp_streamable_http_completion_invalid_ref_type",
      test_mcp_streamable_http_completion_invalid_ref_type},
     {"mcp_streamable_http_resource_subscription_error",

@@ -855,7 +855,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_completion_string_has_more
     mcp_streamable_http_tool_call_array_arguments
     mcp_streamable_http_prompt_get_array_arguments
+    mcp_streamable_http_prompt_get_non_string_argument
     mcp_streamable_http_completion_array_context_arguments
+    mcp_streamable_http_completion_non_string_context_argument
     mcp_streamable_http_completion_invalid_ref_type
     mcp_streamable_http_resource_subscription_error
     mcp_streamable_http_list_changed_invalidates_cache

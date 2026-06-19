@@ -517,6 +517,9 @@ static int cai_mcp_json_value_root_is(const lonejson_json_value *value,
                                       char root, cai_error *error);
 static int cai_mcp_spooled_root_is(const lonejson_spooled *json, int root,
                                    const char *message, cai_error *error);
+static int cai_mcp_spooled_object_string_values(
+    const lonejson_spooled *json, const char *object_error,
+    const char *value_error, const char *parse_error, cai_error *error);
 static int cai_mcp_log_level_valid(const char *level);
 static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
                                  cai_error *error);
@@ -4396,8 +4399,10 @@ static int cai_mcp_prompt_get_request(cai_mcp_streamable_http_client_impl *impl,
     return cai_set_error(error, CAI_ERR_INVALID, "MCP prompt name is required");
   }
   if (arguments_json != NULL) {
-    rc = cai_mcp_spooled_root_is(
-        arguments_json, '{', "MCP prompt arguments must be an object", error);
+    rc = cai_mcp_spooled_object_string_values(
+        arguments_json, "MCP prompt arguments must be an object",
+        "MCP prompt argument values must be strings",
+        "failed to parse MCP prompt arguments", error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -4469,9 +4474,11 @@ static int cai_mcp_completion_request(
                          "MCP completion reference type is invalid");
   }
   if (context_arguments_json != NULL) {
-    rc = cai_mcp_spooled_root_is(
-        context_arguments_json, '{',
-        "MCP completion context arguments must be an object", error);
+    rc = cai_mcp_spooled_object_string_values(
+        context_arguments_json,
+        "MCP completion context arguments must be an object",
+        "MCP completion context argument values must be strings",
+        "failed to parse MCP completion context arguments", error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -5293,6 +5300,79 @@ static int cai_mcp_spooled_root_is(const lonejson_spooled *json, int root,
     return cai_set_error(error, CAI_ERR_PROTOCOL, message);
   }
   return CAI_OK;
+}
+
+static int cai_mcp_json_scan_skip_string(cai_mcp_json_scan *scan,
+                                         cai_error *error);
+
+static int cai_mcp_spooled_object_string_values(
+    const lonejson_spooled *json, const char *object_error,
+    const char *value_error, const char *parse_error, cai_error *error) {
+  cai_mcp_json_scan scan;
+  int ch;
+  int rc;
+
+  rc = cai_mcp_json_scan_init(&scan, json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, object_error);
+  }
+  rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+  if (rc <= 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+  }
+  if (ch == '}') {
+    goto trailing;
+  }
+  cai_mcp_json_scan_unget(&scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+    }
+    rc = cai_mcp_json_scan_skip_string(&scan, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL, parse_error)
+                     : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+    }
+    if (ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, value_error);
+    }
+    rc = cai_mcp_json_scan_skip_string(&scan, error);
+    if (rc <= 0) {
+      return rc == 0 ? cai_set_error(error, CAI_ERR_PROTOCOL, parse_error)
+                     : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(&scan, &ch, error);
+    if (rc <= 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+    }
+    if (ch == '}') {
+      break;
+    }
+    if (ch != ',') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+    }
+  }
+
+trailing:
+  while ((rc = cai_mcp_json_scan_get(&scan, &ch, error)) > 0) {
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL, parse_error);
+    }
+  }
+  return rc < 0 ? rc : CAI_OK;
 }
 
 static int cai_mcp_json_hex_value(int ch) {
