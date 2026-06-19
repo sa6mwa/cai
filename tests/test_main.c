@@ -11604,6 +11604,26 @@ test_mcp_streamable_http_active_progress_invalid_progress(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_active_progress_negative_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_negative_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":-1}}\n\n",
+      "MCP progress value must be non-negative", 0L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_negative_total(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_negative_total",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1,\"total\":-1}}\n\n",
+      "MCP progress total must be non-negative", 0L);
+}
+
+static void
 test_mcp_streamable_http_active_progress_equal_progress(test_state *state) {
   test_mcp_streamable_http_active_progress_notification_invalid(
       state, "mcp_streamable_active_progress_equal_progress",
@@ -32652,6 +32672,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_active_progress_missing_progress},
     {"mcp_streamable_http_active_progress_invalid_progress",
      test_mcp_streamable_http_active_progress_invalid_progress},
+    {"mcp_streamable_http_active_progress_negative_progress",
+     test_mcp_streamable_http_active_progress_negative_progress},
+    {"mcp_streamable_http_active_progress_negative_total",
+     test_mcp_streamable_http_active_progress_negative_total},
     {"mcp_streamable_http_active_progress_equal_progress",
      test_mcp_streamable_http_active_progress_equal_progress},
     {"mcp_streamable_http_active_progress_decreasing_progress",

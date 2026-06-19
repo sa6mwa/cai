@@ -2333,6 +2333,14 @@ cai_mcp_validate_progress_notification_params(
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP progress notification requires progress");
   }
+  if (rc == CAI_OK && doc.progress < 0.0) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP progress value must be non-negative");
+  }
+  if (rc == CAI_OK && doc.has_total && doc.total < 0.0) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP progress total must be non-negative");
+  }
   if (rc == CAI_OK && impl != NULL && impl->has_active_progress &&
       doc.progress <= impl->active_progress) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
