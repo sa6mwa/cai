@@ -195,6 +195,7 @@ typedef struct cai_mcp_tool_execution_doc {
 } cai_mcp_tool_execution_doc;
 
 typedef struct cai_mcp_json_schema_doc {
+  char *schema;
   char *type;
   lonejson_json_value properties;
   lonejson_json_value required;
@@ -584,6 +585,7 @@ LONEJSON_MAP_DEFINE(cai_mcp_tool_execution_map, cai_mcp_tool_execution_doc,
                     cai_mcp_tool_execution_fields);
 
 static const lonejson_field cai_mcp_json_schema_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_json_schema_doc, schema, "$schema"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_json_schema_doc, type, "type"),
     {"properties", LONEJSON__KEY_LEN("properties"),
      LONEJSON__KEY_FIRST("properties"), LONEJSON__KEY_LAST("properties"),

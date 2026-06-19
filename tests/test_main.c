@@ -12091,6 +12091,18 @@ test_mcp_streamable_http_tools_list_input_schema_array_properties(
       "MCP tool inputSchema properties must be an object");
 }
 
+static void test_mcp_streamable_http_tools_list_input_schema_array_schema(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"$schema\":[],\"type\":\"object\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_array_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool inputSchema");
+}
+
 static void
 test_mcp_streamable_http_tools_list_input_schema_nonobject_property(
     test_state *state) {
@@ -12165,6 +12177,19 @@ static void test_mcp_streamable_http_tools_list_numeric_output_schema_type(
 
   test_mcp_streamable_http_list_invalid_response(
       state, "mcp_streamable_tools_list_numeric_output_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool outputSchema");
+}
+
+static void test_mcp_streamable_http_tools_list_output_schema_array_schema(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"$schema\":[],\"type\":\"object\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_output_schema_array_schema",
       TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
       "failed to parse MCP tool outputSchema");
 }
@@ -27816,6 +27841,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tools_list_string_input_schema_type},
     {"mcp_streamable_http_tools_list_input_schema_array_properties",
      test_mcp_streamable_http_tools_list_input_schema_array_properties},
+    {"mcp_streamable_http_tools_list_input_schema_array_schema",
+     test_mcp_streamable_http_tools_list_input_schema_array_schema},
     {"mcp_streamable_http_tools_list_input_schema_nonobject_property",
      test_mcp_streamable_http_tools_list_input_schema_nonobject_property},
     {"mcp_streamable_http_tools_list_input_schema_object_required",
@@ -27828,6 +27855,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tools_list_string_output_schema_type},
     {"mcp_streamable_http_tools_list_numeric_output_schema_type",
      test_mcp_streamable_http_tools_list_numeric_output_schema_type},
+    {"mcp_streamable_http_tools_list_output_schema_array_schema",
+     test_mcp_streamable_http_tools_list_output_schema_array_schema},
     {"mcp_streamable_http_tools_list_output_schema_nonobject_property",
      test_mcp_streamable_http_tools_list_output_schema_nonobject_property},
     {"mcp_streamable_http_tools_list_array_annotations",
