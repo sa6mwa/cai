@@ -810,11 +810,15 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resources_list_object_icons
     mcp_streamable_http_resources_list_icon_invalid_theme
     mcp_streamable_http_resources_list_array_annotations
+    mcp_streamable_http_resources_list_annotation_invalid_role
+    mcp_streamable_http_resources_list_annotation_priority_not_number
     mcp_streamable_http_resources_list_negative_size
     mcp_streamable_http_resource_templates_list_missing_templates
     mcp_streamable_http_resource_templates_list_object_icons
     mcp_streamable_http_resource_templates_list_icon_size_not_string
     mcp_streamable_http_resource_templates_list_array_annotations
+    mcp_streamable_http_resource_templates_list_annotation_invalid_role
+    mcp_streamable_http_resource_templates_list_annotation_modified_not_string
     mcp_streamable_http_prompts_list_missing_prompts
     mcp_streamable_http_prompts_list_object_arguments
     mcp_streamable_http_prompts_list_argument_missing_name

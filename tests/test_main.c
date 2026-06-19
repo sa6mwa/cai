@@ -12664,6 +12664,34 @@ test_mcp_streamable_http_resources_list_array_annotations(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_resources_list_annotation_invalid_role(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":{\"audience\":["
+      "\"system\"]}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_annotation_invalid_role",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_resources_list_annotation_priority_not_number(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":{\"priority\":"
+      "\"high\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_annotation_priority_not_number",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "failed to parse MCP resource annotations");
+}
+
+static void
 test_mcp_streamable_http_resources_list_negative_size(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
@@ -12717,6 +12745,37 @@ static void test_mcp_streamable_http_resource_templates_list_array_annotations(
       TEST_MCP_LIST_RESOURCE_TEMPLATES,
       "\"method\":\"resources/templates/list\"", response_body,
       "MCP resource template annotations must be an object");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_annotation_invalid_role(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"annotations\":{\"audience\":[\"system\"]}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_annotation_invalid_role",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_annotation_modified_not_string(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"annotations\":{\"lastModified\":123}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state,
+      "mcp_streamable_resource_templates_list_annotation_modified_not_string",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "failed to parse MCP resource template annotations");
 }
 
 static void
@@ -32050,6 +32109,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resources_list_icon_invalid_theme},
     {"mcp_streamable_http_resources_list_array_annotations",
      test_mcp_streamable_http_resources_list_array_annotations},
+    {"mcp_streamable_http_resources_list_annotation_invalid_role",
+     test_mcp_streamable_http_resources_list_annotation_invalid_role},
+    {"mcp_streamable_http_resources_list_annotation_priority_not_number",
+     test_mcp_streamable_http_resources_list_annotation_priority_not_number},
     {"mcp_streamable_http_resources_list_negative_size",
      test_mcp_streamable_http_resources_list_negative_size},
     {"mcp_streamable_http_resource_templates_list_missing_templates",
@@ -32060,6 +32123,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_templates_list_icon_size_not_string},
     {"mcp_streamable_http_resource_templates_list_array_annotations",
      test_mcp_streamable_http_resource_templates_list_array_annotations},
+    {"mcp_streamable_http_resource_templates_list_annotation_invalid_role",
+     test_mcp_streamable_http_resource_templates_list_annotation_invalid_role},
+    {"mcp_streamable_http_resource_templates_list_annotation_modified_not_string",
+     test_mcp_streamable_http_resource_templates_list_annotation_modified_not_string},
     {"mcp_streamable_http_prompts_list_missing_prompts",
      test_mcp_streamable_http_prompts_list_missing_prompts},
     {"mcp_streamable_http_prompts_list_object_arguments",

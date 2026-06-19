@@ -195,6 +195,13 @@ typedef struct cai_mcp_tool_annotations_doc {
   int open_world_hint;
 } cai_mcp_tool_annotations_doc;
 
+typedef struct cai_mcp_annotations_doc {
+  lonejson_string_array audience;
+  char *last_modified;
+  int has_priority;
+  double priority;
+} cai_mcp_annotations_doc;
+
 typedef struct cai_mcp_tool_execution_doc {
   char *task_support;
 } cai_mcp_tool_execution_doc;
@@ -693,6 +700,20 @@ static const lonejson_field cai_mcp_tool_annotations_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_tool_annotations_map,
                     cai_mcp_tool_annotations_doc,
                     cai_mcp_tool_annotations_fields);
+
+static const lonejson_field cai_mcp_annotations_fields[] = {
+    {"audience", LONEJSON__KEY_LEN("audience"),
+     LONEJSON__KEY_FIRST("audience"), LONEJSON__KEY_LAST("audience"),
+     offsetof(cai_mcp_annotations_doc, audience),
+     LONEJSON_FIELD_KIND_STRING_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, 0U, 0U, 0U, NULL, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_annotations_doc, last_modified,
+                                "lastModified"),
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_annotations_doc, priority,
+                               has_priority, "priority")};
+LONEJSON_MAP_DEFINE(cai_mcp_annotations_map, cai_mcp_annotations_doc,
+                    cai_mcp_annotations_fields);
 
 static const lonejson_field cai_mcp_tool_execution_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_execution_doc, task_support,
@@ -6359,6 +6380,54 @@ static int cai_mcp_validate_optional_tool_annotations(
   return CAI_OK;
 }
 
+static int cai_mcp_annotation_role_is_valid(const char *role) {
+  return role != NULL &&
+         (strcmp(role, "user") == 0 || strcmp(role, "assistant") == 0);
+}
+
+static int cai_mcp_validate_optional_annotations(
+    const lonejson_json_value *annotations, const char *object_error,
+    const char *parse_error, const char *audience_error, cai_error *error) {
+  cai_mcp_annotations_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *annotations_json;
+  char **audience;
+  size_t i;
+  int rc;
+
+  if (!cai_mcp_optional_json_object_is_valid(annotations, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, object_error);
+  }
+  if (annotations == NULL || annotations->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  annotations_json = cai_mcp_json_value_to_cstr(annotations, error);
+  if (annotations_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code
+                                                  : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_annotations_map, &doc,
+                              annotations_json, &json_error);
+  cai_free_mem(NULL, annotations_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_annotations_map, &doc);
+    return cai_mcp_set_json_error(error, parse_error, &json_error);
+  }
+  rc = CAI_OK;
+  audience = (char **)doc.audience.items;
+  for (i = 0U; i < doc.audience.count; i++) {
+    if (!cai_mcp_annotation_role_is_valid(audience[i])) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, audience_error);
+      break;
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_annotations_map, &doc);
+  return rc;
+}
+
 static int cai_mcp_tool_execution_task_support_is_valid(
     const char *task_support) {
   return task_support == NULL || strcmp(task_support, "forbidden") == 0 ||
@@ -6628,12 +6697,15 @@ static int cai_mcp_parse_resources_list_response(
       json_body.cleanup(&json_body);
       return rc;
     }
-    if (!cai_mcp_optional_json_object_is_valid(&src_resources[i].annotations,
-                                               error)) {
+    rc = cai_mcp_validate_optional_annotations(
+        &src_resources[i].annotations,
+        "MCP resource annotations must be an object",
+        "failed to parse MCP resource annotations",
+        "MCP resource annotation audience role is invalid", error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP resource annotations must be an object");
+      return rc;
     }
     if (src_resources[i].has_size && src_resources[i].size < 0) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
@@ -6777,14 +6849,16 @@ static int cai_mcp_parse_resource_templates_list_response(
       json_body.cleanup(&json_body);
       return rc;
     }
-    if (!cai_mcp_optional_json_object_is_valid(
-            &src_resource_templates[i].annotations, error)) {
+    rc = cai_mcp_validate_optional_annotations(
+        &src_resource_templates[i].annotations,
+        "MCP resource template annotations must be an object",
+        "failed to parse MCP resource template annotations",
+        "MCP resource template annotation audience role is invalid", error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
                       &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(
-          error, CAI_ERR_PROTOCOL,
-          "MCP resource template annotations must be an object");
+      return rc;
     }
   }
   base_count = impl->resource_template_count;
