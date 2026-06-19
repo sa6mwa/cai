@@ -14577,6 +14577,18 @@ test_mcp_streamable_http_tasks_list_invalid_status(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tasks_list_status_message_not_string(
+    test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_list_status_message_not_string",
+      "tasks/list",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tasks\":[{\"taskId\":"
+      "\"task-1\",\"status\":\"working\",\"statusMessage\":{},"
+      "\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000}]}}");
+}
+
+static void
 test_mcp_streamable_http_tasks_get_missing_last_updated(test_state *state) {
   test_mcp_streamable_http_task_response_invalid(
       state, "mcp_streamable_tasks_get_missing_last_updated", "tasks/get",
@@ -14599,6 +14611,26 @@ static void test_mcp_streamable_http_tasks_get_negative_ttl(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"taskId\":\"task-1\","
       "\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\","
       "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":-1}}");
+}
+
+static void
+test_mcp_streamable_http_tasks_get_string_poll_interval(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_get_string_poll_interval", "tasks/get",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"taskId\":\"task-1\","
+      "\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000,"
+      "\"pollInterval\":\"1000\"}}");
+}
+
+static void
+test_mcp_streamable_http_tasks_get_negative_poll_interval(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_get_negative_poll_interval", "tasks/get",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"taskId\":\"task-1\","
+      "\"status\":\"working\",\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000,"
+      "\"pollInterval\":-1}}");
 }
 
 static void
@@ -15367,7 +15399,8 @@ test_mcp_streamable_http_task_status_notification(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks/status\","
       "\"params\":{\"taskId\":\"task-1\",\"status\":\"working\","
       "\"createdAt\":\"2025-11-25T10:30:00Z\","
-      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000}}\n\n"
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000,"
+      "\"statusMessage\":\"still running\",\"pollInterval\":1000}}\n\n"
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
 
@@ -15441,6 +15474,62 @@ test_mcp_streamable_http_task_status_negative_ttl(test_state *state) {
   test_mcp_streamable_http_task_status_notification_case(
       state, "mcp_streamable_task_status_negative_ttl_mock", ping_body,
       CAI_ERR_PROTOCOL, "MCP task ttl must be non-negative or null", NULL);
+}
+
+static void
+test_mcp_streamable_http_task_status_string_poll_interval(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks/status\","
+      "\"params\":{\"taskId\":\"task-1\",\"status\":\"working\","
+      "\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000,"
+      "\"pollInterval\":\"1000\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_task_status_notification_case(
+      state, "mcp_streamable_task_status_string_poll_interval_mock", ping_body,
+      CAI_ERR_PROTOCOL, "failed to parse MCP task status params", NULL);
+}
+
+static void
+test_mcp_streamable_http_task_status_negative_poll_interval(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks/status\","
+      "\"params\":{\"taskId\":\"task-1\",\"status\":\"working\","
+      "\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000,"
+      "\"pollInterval\":-1}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_task_status_notification_case(
+      state, "mcp_streamable_task_status_negative_poll_interval_mock",
+      ping_body, CAI_ERR_PROTOCOL,
+      "MCP task pollInterval must be non-negative", NULL);
+}
+
+static void
+test_mcp_streamable_http_task_status_status_message_not_string(
+    test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks/status\","
+      "\"params\":{\"taskId\":\"task-1\",\"status\":\"working\","
+      "\"statusMessage\":{},\"createdAt\":\"2025-11-25T10:30:00Z\","
+      "\"lastUpdatedAt\":\"2025-11-25T10:30:05Z\",\"ttl\":60000}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_task_status_notification_case(
+      state, "mcp_streamable_task_status_status_message_not_string_mock",
+      ping_body, CAI_ERR_PROTOCOL, "failed to parse MCP task status params",
+      NULL);
 }
 
 static void
@@ -32562,12 +32651,18 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tasks_list_missing_ttl},
     {"mcp_streamable_http_tasks_list_invalid_status",
      test_mcp_streamable_http_tasks_list_invalid_status},
+    {"mcp_streamable_http_tasks_list_status_message_not_string",
+     test_mcp_streamable_http_tasks_list_status_message_not_string},
     {"mcp_streamable_http_tasks_get_missing_last_updated",
      test_mcp_streamable_http_tasks_get_missing_last_updated},
     {"mcp_streamable_http_tasks_get_string_ttl",
      test_mcp_streamable_http_tasks_get_string_ttl},
     {"mcp_streamable_http_tasks_get_negative_ttl",
      test_mcp_streamable_http_tasks_get_negative_ttl},
+    {"mcp_streamable_http_tasks_get_string_poll_interval",
+     test_mcp_streamable_http_tasks_get_string_poll_interval},
+    {"mcp_streamable_http_tasks_get_negative_poll_interval",
+     test_mcp_streamable_http_tasks_get_negative_poll_interval},
     {"mcp_streamable_http_tasks_cancel_missing_created_at",
      test_mcp_streamable_http_tasks_cancel_missing_created_at},
     {"mcp_streamable_http_tasks_cancel_object_ttl",
@@ -32608,6 +32703,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_task_status_string_ttl},
     {"mcp_streamable_http_task_status_negative_ttl",
      test_mcp_streamable_http_task_status_negative_ttl},
+    {"mcp_streamable_http_task_status_string_poll_interval",
+     test_mcp_streamable_http_task_status_string_poll_interval},
+    {"mcp_streamable_http_task_status_negative_poll_interval",
+     test_mcp_streamable_http_task_status_negative_poll_interval},
+    {"mcp_streamable_http_task_status_status_message_not_string",
+     test_mcp_streamable_http_task_status_status_message_not_string},
     {"mcp_streamable_http_task_status_array_params",
      test_mcp_streamable_http_task_status_array_params},
     {"mcp_streamable_http_elicitation_complete_notification",

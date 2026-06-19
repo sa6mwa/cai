@@ -282,9 +282,12 @@ typedef struct cai_mcp_tool_call_response_doc {
 typedef struct cai_mcp_task_doc {
   char *task_id;
   char *status;
+  char *status_message;
   char *created_at;
   char *last_updated_at;
   lonejson_json_value ttl;
+  int has_poll_interval;
+  double poll_interval;
 } cai_mcp_task_doc;
 
 typedef struct cai_mcp_create_task_result_doc {
@@ -1060,6 +1063,8 @@ LONEJSON_MAP_DEFINE(cai_mcp_tool_call_response_map,
 static const lonejson_field cai_mcp_task_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_task_doc, task_id, "taskId"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_task_doc, status, "status"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_task_doc, status_message,
+                                "statusMessage"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_task_doc, created_at, "createdAt"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_task_doc, last_updated_at,
                                     "lastUpdatedAt"),
@@ -1068,7 +1073,9 @@ static const lonejson_field cai_mcp_task_fields[] = {
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
      LONEJSON_OVERFLOW_FAIL,
      LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
-     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_task_doc, poll_interval,
+                               has_poll_interval, "pollInterval")};
 LONEJSON_MAP_DEFINE(cai_mcp_task_map, cai_mcp_task_doc, cai_mcp_task_fields);
 
 static const lonejson_field cai_mcp_create_task_result_fields[] = {
@@ -7522,6 +7529,10 @@ static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
     }
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP task ttl must be a number or null");
+  }
+  if (task->has_poll_interval && task->poll_interval < 0.0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP task pollInterval must be non-negative");
   }
   return CAI_OK;
 }

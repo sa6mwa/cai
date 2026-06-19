@@ -885,9 +885,12 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_task_list_without_cursor
     mcp_streamable_http_tasks_list_missing_ttl
     mcp_streamable_http_tasks_list_invalid_status
+    mcp_streamable_http_tasks_list_status_message_not_string
     mcp_streamable_http_tasks_get_missing_last_updated
     mcp_streamable_http_tasks_get_string_ttl
     mcp_streamable_http_tasks_get_negative_ttl
+    mcp_streamable_http_tasks_get_string_poll_interval
+    mcp_streamable_http_tasks_get_negative_poll_interval
     mcp_streamable_http_tasks_cancel_missing_created_at
     mcp_streamable_http_tasks_cancel_object_ttl
     mcp_streamable_http_tasks_result_payload_shape
@@ -908,6 +911,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_task_status_invalid_status
     mcp_streamable_http_task_status_string_ttl
     mcp_streamable_http_task_status_negative_ttl
+    mcp_streamable_http_task_status_string_poll_interval
+    mcp_streamable_http_task_status_negative_poll_interval
+    mcp_streamable_http_task_status_status_message_not_string
     mcp_streamable_http_task_status_array_params
     mcp_streamable_http_elicitation_complete_notification
     mcp_streamable_http_elicitation_complete_missing_id
