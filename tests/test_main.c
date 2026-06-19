@@ -12654,6 +12654,31 @@ test_mcp_streamable_http_tools_list_array_input_schema(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tools_list_missing_input_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_missing_input_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema type must be object");
+}
+
+static void test_mcp_streamable_http_tools_list_string_input_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"string\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_string_input_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema type must be object");
+}
+
+static void
 test_mcp_streamable_http_tools_list_array_output_schema(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
@@ -12663,6 +12688,32 @@ test_mcp_streamable_http_tools_list_array_output_schema(test_state *state) {
       state, "mcp_streamable_tools_list_array_output_schema",
       TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
       "MCP tool outputSchema must be an object");
+}
+
+static void test_mcp_streamable_http_tools_list_string_output_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"type\":\"string\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_string_output_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool outputSchema type must be object");
+}
+
+static void test_mcp_streamable_http_tools_list_numeric_output_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"type\":1}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_numeric_output_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool outputSchema");
 }
 
 static void
@@ -32317,8 +32368,16 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tools_list_null_input_schema},
     {"mcp_streamable_http_tools_list_array_input_schema",
      test_mcp_streamable_http_tools_list_array_input_schema},
+    {"mcp_streamable_http_tools_list_missing_input_schema_type",
+     test_mcp_streamable_http_tools_list_missing_input_schema_type},
+    {"mcp_streamable_http_tools_list_string_input_schema_type",
+     test_mcp_streamable_http_tools_list_string_input_schema_type},
     {"mcp_streamable_http_tools_list_array_output_schema",
      test_mcp_streamable_http_tools_list_array_output_schema},
+    {"mcp_streamable_http_tools_list_string_output_schema_type",
+     test_mcp_streamable_http_tools_list_string_output_schema_type},
+    {"mcp_streamable_http_tools_list_numeric_output_schema_type",
+     test_mcp_streamable_http_tools_list_numeric_output_schema_type},
     {"mcp_streamable_http_tools_list_array_annotations",
      test_mcp_streamable_http_tools_list_array_annotations},
     {"mcp_streamable_http_tools_list_annotation_hint_not_bool",

@@ -804,7 +804,11 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tools_list_missing_input_schema
     mcp_streamable_http_tools_list_null_input_schema
     mcp_streamable_http_tools_list_array_input_schema
+    mcp_streamable_http_tools_list_missing_input_schema_type
+    mcp_streamable_http_tools_list_string_input_schema_type
     mcp_streamable_http_tools_list_array_output_schema
+    mcp_streamable_http_tools_list_string_output_schema_type
+    mcp_streamable_http_tools_list_numeric_output_schema_type
     mcp_streamable_http_tools_list_array_annotations
     mcp_streamable_http_tools_list_annotation_hint_not_bool
     mcp_streamable_http_tools_list_object_icons

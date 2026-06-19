@@ -206,6 +206,10 @@ typedef struct cai_mcp_tool_execution_doc {
   char *task_support;
 } cai_mcp_tool_execution_doc;
 
+typedef struct cai_mcp_json_schema_doc {
+  char *type;
+} cai_mcp_json_schema_doc;
+
 typedef struct cai_mcp_list_tool_doc {
   char *name;
   char *description;
@@ -734,6 +738,11 @@ static const lonejson_field cai_mcp_tool_execution_fields[] = {
                                 "taskSupport")};
 LONEJSON_MAP_DEFINE(cai_mcp_tool_execution_map, cai_mcp_tool_execution_doc,
                     cai_mcp_tool_execution_fields);
+
+static const lonejson_field cai_mcp_json_schema_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_json_schema_doc, type, "type")};
+LONEJSON_MAP_DEFINE(cai_mcp_json_schema_map, cai_mcp_json_schema_doc,
+                    cai_mcp_json_schema_fields);
 
 static const lonejson_field cai_mcp_cancelled_params_fields[] = {
     {"requestId", LONEJSON__KEY_LEN("requestId"),
@@ -6675,6 +6684,46 @@ static int cai_mcp_validate_optional_tool_execution(
   return rc;
 }
 
+static int cai_mcp_validate_tool_schema_type(
+    const lonejson_json_value *schema, const char *object_message,
+    const char *parse_message, const char *type_message, int required,
+    cai_error *error) {
+  cai_mcp_json_schema_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *schema_json;
+  int rc;
+
+  if (schema == NULL || schema->kind == LONEJSON_JSON_VALUE_NULL) {
+    return required ? cai_set_error(error, CAI_ERR_PROTOCOL, object_message)
+                    : CAI_OK;
+  }
+  if (!cai_mcp_json_value_is_object(schema, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, object_message);
+  }
+  schema_json = cai_mcp_json_value_to_cstr(schema, error);
+  if (schema_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code
+                                                  : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_json_schema_map, &doc,
+                              schema_json, &json_error);
+  cai_free_mem(NULL, schema_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_json_schema_map, &doc);
+    return cai_mcp_set_json_error(error, parse_message, &json_error);
+  }
+  if (doc.type == NULL || strcmp(doc.type, "object") != 0) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, type_message);
+  } else {
+    rc = CAI_OK;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_json_schema_map, &doc);
+  return rc;
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -6727,18 +6776,23 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
   }
   src_tools = (cai_mcp_list_tool_doc *)doc.result.tools.items;
   for (i = 0U; i < doc.result.tools.count; i++) {
-    if (!cai_mcp_json_value_is_object(&src_tools[i].input_schema, error)) {
+    rc = cai_mcp_validate_tool_schema_type(
+        &src_tools[i].input_schema, "MCP tool inputSchema must be an object",
+        "failed to parse MCP tool inputSchema",
+        "MCP tool inputSchema type must be object", 1, error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP tool inputSchema must be an object");
+      return rc;
     }
-    if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].output_schema,
-                                               error)) {
+    rc = cai_mcp_validate_tool_schema_type(
+        &src_tools[i].output_schema, "MCP tool outputSchema must be an object",
+        "failed to parse MCP tool outputSchema",
+        "MCP tool outputSchema type must be object", 0, error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP tool outputSchema must be an object");
+      return rc;
     }
     rc = cai_mcp_validate_optional_tool_annotations(&src_tools[i].annotations,
                                                     error);
