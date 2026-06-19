@@ -385,6 +385,10 @@ typedef struct cai_mcp_sampling_params_doc {
   double max_tokens;
 } cai_mcp_sampling_params_doc;
 
+typedef struct cai_mcp_sampling_tool_choice_doc {
+  char *mode;
+} cai_mcp_sampling_tool_choice_doc;
+
 typedef struct cai_mcp_cancelled_params_doc {
   lonejson_json_value request_id;
   char *reason;
@@ -587,6 +591,12 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
                                has_max_tokens, "maxTokens")};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
                     cai_mcp_sampling_params_fields);
+
+static const lonejson_field cai_mcp_sampling_tool_choice_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_tool_choice_doc, mode, "mode")};
+LONEJSON_MAP_DEFINE(cai_mcp_sampling_tool_choice_map,
+                    cai_mcp_sampling_tool_choice_doc,
+                    cai_mcp_sampling_tool_choice_fields);
 
 static const lonejson_field cai_mcp_cancelled_params_fields[] = {
     {"requestId", LONEJSON__KEY_LEN("requestId"),
@@ -2483,6 +2493,57 @@ static int cai_mcp_sampling_context_is_valid(const char *include_context) {
          strcmp(include_context, "allServers") == 0;
 }
 
+static int cai_mcp_sampling_tool_choice_mode_is_valid(const char *mode) {
+  return mode == NULL || strcmp(mode, "auto") == 0 ||
+         strcmp(mode, "none") == 0 || strcmp(mode, "required") == 0;
+}
+
+static int cai_mcp_validate_sampling_tool_choice(
+    const lonejson_json_value *tool_choice, cai_error *error) {
+  cai_mcp_sampling_tool_choice_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_spooled tool_choice_json;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (tool_choice == NULL ||
+      tool_choice->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_json_value_root_is(tool_choice, '{', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling toolChoice must be an object");
+  }
+  memset(&tool_choice_json, 0, sizeof(tool_choice_json));
+  rc = cai_mcp_json_value_to_spooled(tool_choice, &tool_choice_json, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = tool_choice_json;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_sampling_tool_choice_map,
+                                &doc, cai_mcp_spooled_read, &reader,
+                                &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_tool_choice_map, &doc);
+    tool_choice_json.cleanup(&tool_choice_json);
+    return cai_mcp_set_json_error(error,
+                                  "failed to parse MCP sampling toolChoice",
+                                  &json_error);
+  }
+  if (!cai_mcp_sampling_tool_choice_mode_is_valid(doc.mode)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling toolChoice mode is invalid");
+  } else {
+    rc = CAI_OK;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_tool_choice_map, &doc);
+  tool_choice_json.cleanup(&tool_choice_json);
+  return rc;
+}
+
 static int cai_mcp_validate_sampling_params(
     const cai_mcp_streamable_http_client_impl *impl,
     lonejson_spooled *params_json, int *uses_tools, cai_error *error) {
@@ -2524,13 +2585,24 @@ static int cai_mcp_validate_sampling_params(
   } else if (!cai_mcp_json_value_root_is(&doc.messages, '[', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP sampling messages must be an array");
-  } else if (!cai_mcp_sampling_context_is_valid(doc.include_context)) {
+  } else if (doc.tools.kind != LONEJSON_JSON_VALUE_NULL &&
+             !cai_mcp_json_value_root_is(&doc.tools, '[', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                       "MCP sampling includeContext is invalid");
-  } else if (cai_mcp_sampling_context_is_remote(doc.include_context) &&
-      !impl->receiver.sampling_context) {
-    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                       "MCP sampling context was not advertised");
+                       "MCP sampling tools must be an array");
+  } else {
+    if (doc.tool_choice.kind != LONEJSON_JSON_VALUE_NULL) {
+      rc = cai_mcp_validate_sampling_tool_choice(&doc.tool_choice, error);
+    }
+    if (rc == CAI_OK && !cai_mcp_sampling_context_is_valid(
+                            doc.include_context)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling includeContext is invalid");
+    } else if (rc == CAI_OK &&
+               cai_mcp_sampling_context_is_remote(doc.include_context) &&
+               !impl->receiver.sampling_context) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling context was not advertised");
+    }
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_sampling_params_map, &doc);
   return rc;

@@ -16191,6 +16191,35 @@ test_mcp_streamable_http_sampling_messages_not_array(test_state *state) {
       "MCP sampling messages must be an array");
 }
 
+static void test_mcp_streamable_http_sampling_tools_not_array(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_tools_not_array",
+      "sampling-tools-not-array-session", "sample-tools-not-array-1",
+      "{\"messages\":[],\"maxTokens\":16,\"tools\":{}}",
+      "MCP sampling tools must be an array");
+}
+
+static void test_mcp_streamable_http_sampling_tool_choice_not_object(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_tool_choice_not_object",
+      "sampling-tool-choice-not-object-session",
+      "sample-tool-choice-not-object-1",
+      "{\"messages\":[],\"maxTokens\":16,\"toolChoice\":[]}",
+      "MCP sampling toolChoice must be an object");
+}
+
+static void test_mcp_streamable_http_sampling_tool_choice_mode_invalid(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_tool_choice_mode_invalid",
+      "sampling-tool-choice-mode-invalid-session",
+      "sample-tool-choice-mode-invalid-1",
+      "{\"messages\":[],\"maxTokens\":16,\"toolChoice\":{\"mode\":\"maybe\"}}",
+      "MCP sampling toolChoice mode is invalid");
+}
+
 static void
 test_mcp_streamable_http_task_request_capabilities(test_state *state) {
   static const char initialize_body[] =
@@ -32011,6 +32040,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_missing_max_tokens},
     {"mcp_streamable_http_sampling_messages_not_array",
      test_mcp_streamable_http_sampling_messages_not_array},
+    {"mcp_streamable_http_sampling_tools_not_array",
+     test_mcp_streamable_http_sampling_tools_not_array},
+    {"mcp_streamable_http_sampling_tool_choice_not_object",
+     test_mcp_streamable_http_sampling_tool_choice_not_object},
+    {"mcp_streamable_http_sampling_tool_choice_mode_invalid",
+     test_mcp_streamable_http_sampling_tool_choice_mode_invalid},
     {"mcp_streamable_http_task_request_capabilities",
      test_mcp_streamable_http_task_request_capabilities},
     {"mcp_streamable_http_task_request_flags_require_callbacks",
