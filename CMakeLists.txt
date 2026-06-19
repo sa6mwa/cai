@@ -838,6 +838,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompts_list_object_icons
     mcp_streamable_http_prompts_list_icon_metadata
     mcp_streamable_http_tool_call_omits_null_arguments
+    mcp_streamable_http_prompt_get_omits_null_arguments
     mcp_streamable_http_tool_call_missing_content
     mcp_streamable_http_tool_call_missing_content_type
     mcp_streamable_http_tool_call_text_missing_text

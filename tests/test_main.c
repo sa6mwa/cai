@@ -9237,6 +9237,88 @@ static void test_mcp_streamable_http_tool_call_omits_null_arguments(
                     server.pid, &server.child_status);
 }
 
+static void test_mcp_streamable_http_prompt_get_omits_null_arguments(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"prompts\":{}},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char prompt_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}]}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: no-args-prompt-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *prompt_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: no-args-prompt-session",
+      "\"id\":2",
+      "\"method\":\"prompts/get\"",
+      "\"name\":\"status-prompt\"",
+      "\"_meta\":{\"progressToken\":2}"};
+  static const char *prompt_forbidden[] = {"\"arguments\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: no-args-prompt-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", prompt_required,
+       sizeof(prompt_required) / sizeof(prompt_required[0]), prompt_forbidden,
+       sizeof(prompt_forbidden) / sizeof(prompt_forbidden[0]), 200, "OK",
+       "application/json", NULL, prompt_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_prompt_get_null_args_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_prompt_get_null_args_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_prompt_get_null_args_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_streamable_prompt_get_null_args_call",
+      cai_mcp_client_get_prompt(client, "status-prompt", NULL, sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_streamable_prompt_get_null_args_output", writer.buffer,
+             "{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\","
+             "\"text\":\"ok\"}}]}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_prompt_get_null_args_mock",
+                    server.pid, &server.child_status);
+}
+
 
 static void test_mcp_streamable_http_ping_error(test_state *state) {
   static const char initialize_body[] =
@@ -27715,6 +27797,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompts_list_icon_metadata},
     {"mcp_streamable_http_tool_call_omits_null_arguments",
      test_mcp_streamable_http_tool_call_omits_null_arguments},
+    {"mcp_streamable_http_prompt_get_omits_null_arguments",
+     test_mcp_streamable_http_prompt_get_omits_null_arguments},
     {"mcp_streamable_http_tool_call_missing_content",
      test_mcp_streamable_http_tool_call_missing_content},
     {"mcp_streamable_http_tool_call_missing_content_type",
