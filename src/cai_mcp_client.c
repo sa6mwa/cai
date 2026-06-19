@@ -245,8 +245,13 @@ typedef struct cai_mcp_tool_content_doc {
   char *mime_type;
   char *uri;
   char *name;
+  char *title;
+  char *description;
+  lonejson_json_value icons;
   lonejson_json_value annotations;
   lonejson_json_value resource;
+  int has_size;
+  int64_t size;
 } cai_mcp_tool_content_doc;
 
 typedef struct cai_mcp_sampling_content_doc {
@@ -967,6 +972,14 @@ static const lonejson_field cai_mcp_tool_content_fields[] = {
                                 "mimeType"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, uri, "uri"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_content_doc, description,
+                                "description"),
+    {"icons", LONEJSON__KEY_LEN("icons"), LONEJSON__KEY_FIRST("icons"),
+     LONEJSON__KEY_LAST("icons"), offsetof(cai_mcp_tool_content_doc, icons),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     {"annotations", LONEJSON__KEY_LEN("annotations"),
      LONEJSON__KEY_FIRST("annotations"), LONEJSON__KEY_LAST("annotations"),
      offsetof(cai_mcp_tool_content_doc, annotations),
@@ -978,7 +991,9 @@ static const lonejson_field cai_mcp_tool_content_fields[] = {
      offsetof(cai_mcp_tool_content_doc, resource),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
      LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
-     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_I64_PRESENT(cai_mcp_tool_content_doc, size, has_size,
+                               "size")};
 LONEJSON_MAP_DEFINE(cai_mcp_tool_content_map, cai_mcp_tool_content_doc,
                     cai_mcp_tool_content_fields);
 
@@ -7572,6 +7587,17 @@ cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
     if (content->uri == NULL || content->name == NULL) {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP resource_link content requires uri and name");
+    }
+    rc = cai_mcp_validate_optional_icons(
+        &content->icons, "MCP resource_link icons must be an array",
+        "failed to parse MCP resource_link icons",
+        "MCP resource_link icon theme must be light or dark", error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (content->has_size && content->size < 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP resource_link size must be non-negative");
     }
   } else if (strcmp(content->type, "resource") == 0) {
     if (content->resource.kind == LONEJSON_JSON_VALUE_NULL ||

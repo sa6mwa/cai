@@ -13184,6 +13184,48 @@ static void test_mcp_streamable_http_tool_call_resource_link_missing_name(
       "MCP resource_link content requires uri and name");
 }
 
+static void
+test_mcp_streamable_http_tool_call_resource_link_icons_not_array(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\",\"name\":\"readme\","
+      "\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_icons_not_array",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_link_invalid_icon_theme(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\",\"name\":\"readme\","
+      "\"icons\":[{\"src\":\"file:///tmp/icon.png\",\"theme\":\"sepia\"}]}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_invalid_icon_theme",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link icon theme must be light or dark");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_link_negative_size(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\",\"name\":\"readme\","
+      "\"size\":-1}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_negative_size",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link size must be non-negative");
+}
+
 static void test_mcp_streamable_http_tool_call_resource_missing_resource(
     test_state *state) {
   static const char response_body[] =
@@ -13385,6 +13427,20 @@ test_mcp_streamable_http_prompt_get_resource_missing_body(test_state *state) {
       state, "mcp_streamable_prompt_get_resource_missing_body",
       TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
       "MCP embedded resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_resource_link_negative_size(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"resource_link\",\"uri\":"
+      "\"file:///tmp/readme.md\",\"name\":\"readme\",\"size\":-1}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_resource_link_negative_size",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP resource_link size must be non-negative");
 }
 
 static void
@@ -32567,6 +32623,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_unknown_content_type},
     {"mcp_streamable_http_tool_call_resource_link_missing_name",
      test_mcp_streamable_http_tool_call_resource_link_missing_name},
+    {"mcp_streamable_http_tool_call_resource_link_icons_not_array",
+     test_mcp_streamable_http_tool_call_resource_link_icons_not_array},
+    {"mcp_streamable_http_tool_call_resource_link_invalid_icon_theme",
+     test_mcp_streamable_http_tool_call_resource_link_invalid_icon_theme},
+    {"mcp_streamable_http_tool_call_resource_link_negative_size",
+     test_mcp_streamable_http_tool_call_resource_link_negative_size},
     {"mcp_streamable_http_tool_call_resource_missing_resource",
      test_mcp_streamable_http_tool_call_resource_missing_resource},
     {"mcp_streamable_http_tool_call_resource_missing_uri",
@@ -32599,6 +32661,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_audio_content},
     {"mcp_streamable_http_prompt_get_resource_missing_body",
      test_mcp_streamable_http_prompt_get_resource_missing_body},
+    {"mcp_streamable_http_prompt_get_resource_link_negative_size",
+     test_mcp_streamable_http_prompt_get_resource_link_negative_size},
     {"mcp_streamable_http_prompt_get_unknown_content_type",
      test_mcp_streamable_http_prompt_get_unknown_content_type},
     {"mcp_streamable_http_completion_missing_values",
