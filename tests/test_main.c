@@ -10371,6 +10371,122 @@ test_mcp_streamable_http_initialize_capabilities_not_object(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_initialize_server_info_metadata(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"title\":\"Mock MCP\",\"version\":\"1\",\"description\":\"Test "
+      "server\",\"websiteUrl\":\"https://example.test/mcp\",\"icons\":[{"
+      "\"src\":\"https://example.test/icon.png\",\"sizes\":[\"64x64\"],"
+      "\"mimeType\":\"image/png\",\"theme\":\"dark\"}]}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-info-metadata-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-info-metadata-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: server-info-metadata-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_server_info_meta",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_info_meta_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_info_meta_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_info_meta", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_initialize_server_info_icons_not_array(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"icons\":{}}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_icons_not_array",
+      initialize_body, "MCP serverInfo icons must be an array");
+}
+
+static void test_mcp_streamable_http_initialize_server_info_icon_missing_src(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"icons\":[{\"mimeType\":\"image/png\"}]}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_icon_missing_src",
+      initialize_body, "failed to parse MCP serverInfo icons");
+}
+
+static void test_mcp_streamable_http_initialize_server_info_icon_bad_theme(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"icons\":[{\"src\":\"https://example.test/icon."
+      "png\",\"theme\":\"system\"}]}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_icon_bad_theme",
+      initialize_body, "MCP serverInfo icon theme must be light or dark");
+}
+
+static void
+test_mcp_streamable_http_initialize_server_info_description_not_string(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"description\":[]}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_description_not_string",
+      initialize_body, "failed to parse MCP initialize");
+}
+
+static void
 test_mcp_streamable_http_initialize_missing_server_info(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -32071,6 +32187,16 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_initialize_missing_capabilities},
     {"mcp_streamable_http_initialize_capabilities_not_object",
      test_mcp_streamable_http_initialize_capabilities_not_object},
+    {"mcp_streamable_http_initialize_server_info_metadata",
+     test_mcp_streamable_http_initialize_server_info_metadata},
+    {"mcp_streamable_http_initialize_server_info_icons_not_array",
+     test_mcp_streamable_http_initialize_server_info_icons_not_array},
+    {"mcp_streamable_http_initialize_server_info_icon_missing_src",
+     test_mcp_streamable_http_initialize_server_info_icon_missing_src},
+    {"mcp_streamable_http_initialize_server_info_icon_bad_theme",
+     test_mcp_streamable_http_initialize_server_info_icon_bad_theme},
+    {"mcp_streamable_http_initialize_server_info_description_not_string",
+     test_mcp_streamable_http_initialize_server_info_description_not_string},
     {"mcp_streamable_http_initialize_missing_server_info",
      test_mcp_streamable_http_initialize_missing_server_info},
     {"mcp_streamable_http_initialize_missing_protocol_version",

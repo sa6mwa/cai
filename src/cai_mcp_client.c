@@ -409,7 +409,11 @@ typedef struct cai_mcp_completion_response_doc {
 
 typedef struct cai_mcp_server_info_doc {
   char *name;
+  char *title;
   char *version;
+  char *description;
+  char *website_url;
+  lonejson_json_value icons;
 } cai_mcp_server_info_doc;
 
 typedef struct cai_mcp_initialize_result_doc {
@@ -522,6 +526,10 @@ static int cai_mcp_spooled_object_string_values(
     const lonejson_spooled *json, const char *object_error,
     const char *value_error, const char *parse_error, cai_error *error);
 static int cai_mcp_log_level_valid(const char *level);
+static int cai_mcp_validate_optional_icons(
+    const lonejson_json_value *icons, const char *array_error_message,
+    const char *parse_error_message, const char *theme_error_message,
+    cai_error *error);
 static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
                                  cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
@@ -1328,8 +1336,18 @@ LONEJSON_MAP_DEFINE(cai_mcp_completion_response_map,
 
 static const lonejson_field cai_mcp_server_info_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_server_info_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_server_info_doc, title, "title"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_server_info_doc, version,
-                                    "version")};
+                                    "version"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_server_info_doc, description,
+                                "description"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_server_info_doc, website_url,
+                                "websiteUrl"),
+    {"icons", LONEJSON__KEY_LEN("icons"), LONEJSON__KEY_FIRST("icons"),
+     LONEJSON__KEY_LAST("icons"), offsetof(cai_mcp_server_info_doc, icons),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
+     0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_server_info_map, cai_mcp_server_info_doc,
                     cai_mcp_server_info_fields);
 
@@ -4740,6 +4758,15 @@ cai_mcp_parse_initialize_response(cai_mcp_streamable_http_client_impl *impl,
     json_body.cleanup(&json_body);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "MCP initialize capabilities must be an object");
+  }
+  rc = cai_mcp_validate_optional_icons(
+      &doc.result.server_info.icons, "MCP serverInfo icons must be an array",
+      "failed to parse MCP serverInfo icons",
+      "MCP serverInfo icon theme must be light or dark", error);
+  if (rc != CAI_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
+    json_body.cleanup(&json_body);
+    return rc;
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_initialize_response_map, &doc);
   json_body.cleanup(&json_body);

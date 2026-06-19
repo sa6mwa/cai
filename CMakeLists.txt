@@ -763,6 +763,11 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sse_ping_error_empty
     mcp_streamable_http_initialize_missing_capabilities
     mcp_streamable_http_initialize_capabilities_not_object
+    mcp_streamable_http_initialize_server_info_metadata
+    mcp_streamable_http_initialize_server_info_icons_not_array
+    mcp_streamable_http_initialize_server_info_icon_missing_src
+    mcp_streamable_http_initialize_server_info_icon_bad_theme
+    mcp_streamable_http_initialize_server_info_description_not_string
     mcp_streamable_http_initialize_missing_server_info
     mcp_streamable_http_initialize_missing_protocol_version
     mcp_streamable_http_initialize_unsupported_protocol_version
