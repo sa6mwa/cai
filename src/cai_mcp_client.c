@@ -196,6 +196,8 @@ typedef struct cai_mcp_tool_execution_doc {
 
 typedef struct cai_mcp_json_schema_doc {
   char *type;
+  lonejson_json_value properties;
+  lonejson_json_value required;
 } cai_mcp_json_schema_doc;
 
 typedef struct cai_mcp_list_tool_doc {
@@ -582,7 +584,19 @@ LONEJSON_MAP_DEFINE(cai_mcp_tool_execution_map, cai_mcp_tool_execution_doc,
                     cai_mcp_tool_execution_fields);
 
 static const lonejson_field cai_mcp_json_schema_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_json_schema_doc, type, "type")};
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_json_schema_doc, type, "type"),
+    {"properties", LONEJSON__KEY_LEN("properties"),
+     LONEJSON__KEY_FIRST("properties"), LONEJSON__KEY_LAST("properties"),
+     offsetof(cai_mcp_json_schema_doc, properties),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"required", LONEJSON__KEY_LEN("required"),
+     LONEJSON__KEY_FIRST("required"), LONEJSON__KEY_LAST("required"),
+     offsetof(cai_mcp_json_schema_doc, required),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_json_schema_map, cai_mcp_json_schema_doc,
                     cai_mcp_json_schema_fields);
 
@@ -4605,9 +4619,244 @@ static int cai_mcp_validate_optional_tool_execution(
   return rc;
 }
 
+static void cai_mcp_json_cstr_skip_ws(const char **cursor) {
+  while (**cursor == ' ' || **cursor == '\t' || **cursor == '\r' ||
+         **cursor == '\n') {
+    (*cursor)++;
+  }
+}
+
+static int cai_mcp_json_cstr_skip_string(const char **cursor) {
+  const char *p;
+  size_t i;
+
+  p = *cursor;
+  if (*p != '"') {
+    return 0;
+  }
+  p++;
+  for (;;) {
+    if (*p == '\0') {
+      return 0;
+    }
+    if (*p == '"') {
+      *cursor = p + 1;
+      return 1;
+    }
+    if (*p == '\\') {
+      p++;
+      if (*p == '\0') {
+        return 0;
+      }
+      if (*p == 'u') {
+        for (i = 0U; i < 4U; i++) {
+          p++;
+          if (*p == '\0') {
+            return 0;
+          }
+        }
+      }
+    }
+    p++;
+  }
+}
+
+static int cai_mcp_json_cstr_skip_value(const char **cursor) {
+  int stack[64];
+  size_t depth;
+  const char *p;
+  const char *start;
+
+  cai_mcp_json_cstr_skip_ws(cursor);
+  p = *cursor;
+  if (*p == '"') {
+    return cai_mcp_json_cstr_skip_string(cursor);
+  }
+  if (*p != '{' && *p != '[') {
+    start = p;
+    while (*p != '\0' && *p != ',' && *p != '}' && *p != ']' && *p != ' ' &&
+           *p != '\t' && *p != '\r' && *p != '\n') {
+      p++;
+    }
+    *cursor = p;
+    return p != start;
+  }
+  stack[0] = *p;
+  depth = 1U;
+  p++;
+  *cursor = p;
+  while (depth != 0U) {
+    if (**cursor == '\0') {
+      return 0;
+    }
+    if (**cursor == '"') {
+      if (!cai_mcp_json_cstr_skip_string(cursor)) {
+        return 0;
+      }
+      continue;
+    }
+    if (**cursor == '{' || **cursor == '[') {
+      if (depth >= sizeof(stack) / sizeof(stack[0])) {
+        return 0;
+      }
+      stack[depth++] = **cursor;
+    } else if (**cursor == '}' || **cursor == ']') {
+      if ((**cursor == '}' && stack[depth - 1U] != '{') ||
+          (**cursor == ']' && stack[depth - 1U] != '[')) {
+        return 0;
+      }
+      depth--;
+    }
+    (*cursor)++;
+  }
+  return 1;
+}
+
+static int cai_mcp_validate_json_schema_properties(
+    const lonejson_json_value *properties, const char *object_message,
+    const char *value_message, const char *parse_message, cai_error *error) {
+  char *properties_json;
+  const char *cursor;
+  int rc;
+
+  if (properties == NULL || properties->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_json_value_root_is(properties, '{', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, object_message);
+  }
+  properties_json = cai_mcp_json_value_to_cstr(properties, error);
+  if (properties_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code
+                                                  : CAI_ERR_NOMEM;
+  }
+  cursor = properties_json;
+  rc = CAI_OK;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor != '{') {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, object_message);
+    goto done;
+  }
+  cursor++;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor == '}') {
+    cursor++;
+    goto trailing;
+  }
+  for (;;) {
+    if (!cai_mcp_json_cstr_skip_string(&cursor)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor != ':') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cursor++;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor != '{') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, value_message);
+      goto done;
+    }
+    if (!cai_mcp_json_cstr_skip_value(&cursor)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor == '}') {
+      cursor++;
+      break;
+    }
+    if (*cursor != ',') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cursor++;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+  }
+
+trailing:
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor != '\0') {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+  }
+
+done:
+  cai_free_mem(NULL, properties_json);
+  return rc;
+}
+
+static int cai_mcp_validate_json_schema_required(
+    const lonejson_json_value *required, const char *array_message,
+    const char *value_message, const char *parse_message, cai_error *error) {
+  char *required_json;
+  const char *cursor;
+  int rc;
+
+  if (required == NULL || required->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_json_value_root_is(required, '[', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, array_message);
+  }
+  required_json = cai_mcp_json_value_to_cstr(required, error);
+  if (required_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code
+                                                  : CAI_ERR_NOMEM;
+  }
+  cursor = required_json;
+  rc = CAI_OK;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor != '[') {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, array_message);
+    goto done;
+  }
+  cursor++;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor == ']') {
+    cursor++;
+    goto trailing;
+  }
+  for (;;) {
+    if (*cursor != '"') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, value_message);
+      goto done;
+    }
+    if (!cai_mcp_json_cstr_skip_string(&cursor)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor == ']') {
+      cursor++;
+      break;
+    }
+    if (*cursor != ',') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cursor++;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+  }
+
+trailing:
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor != '\0') {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+  }
+
+done:
+  cai_free_mem(NULL, required_json);
+  return rc;
+}
+
 static int cai_mcp_validate_tool_schema_type(
     const lonejson_json_value *schema, const char *object_message,
-    const char *parse_message, const char *type_message, int required,
+    const char *parse_message, const char *type_message,
+    const char *properties_object_message,
+    const char *properties_value_message, const char *required_array_message,
+    const char *required_value_message, int required,
     cai_error *error) {
   cai_mcp_json_schema_doc doc;
   lonejson_error json_error;
@@ -4639,7 +4888,14 @@ static int cai_mcp_validate_tool_schema_type(
   if (doc.type == NULL || strcmp(doc.type, "object") != 0) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL, type_message);
   } else {
-    rc = CAI_OK;
+    rc = cai_mcp_validate_json_schema_properties(
+        &doc.properties, properties_object_message, properties_value_message,
+        parse_message, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_validate_json_schema_required(
+          &doc.required, required_array_message, required_value_message,
+          parse_message, error);
+    }
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_json_schema_map, &doc);
   return rc;
@@ -4655,14 +4911,22 @@ static int cai_mcp_validate_list_tool_doc(const cai_mcp_list_tool_doc *tool,
   rc = cai_mcp_validate_tool_schema_type(
       &tool->input_schema, "MCP tool inputSchema must be an object",
       "failed to parse MCP tool inputSchema",
-      "MCP tool inputSchema type must be object", 1, error);
+      "MCP tool inputSchema type must be object",
+      "MCP tool inputSchema properties must be an object",
+      "MCP tool inputSchema properties values must be objects",
+      "MCP tool inputSchema required must be an array",
+      "MCP tool inputSchema required values must be strings", 1, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_mcp_validate_tool_schema_type(
       &tool->output_schema, "MCP tool outputSchema must be an object",
       "failed to parse MCP tool outputSchema",
-      "MCP tool outputSchema type must be object", 0, error);
+      "MCP tool outputSchema type must be object",
+      "MCP tool outputSchema properties must be an object",
+      "MCP tool outputSchema properties values must be objects",
+      "MCP tool outputSchema required must be an array",
+      "MCP tool outputSchema required values must be strings", 0, error);
   if (rc != CAI_OK) {
     return rc;
   }
