@@ -298,6 +298,30 @@ int main(int argc, char **argv) {
     free(writer.data);
     return smoke_error("completion output was unexpected", NULL);
   }
+  writer.length = 0U;
+  writer.data[0] = '\0';
+  callbacks.context = &writer;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to recreate resource completion sink", &error);
+  }
+  rc = cai_mcp_client_complete(client, "ref/resource",
+                               "demo://resource/dynamic/text/{resourceId}",
+                               "resourceId", "", NULL, sink, &error);
+  cai_sink_close(sink);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("failed to complete resource template argument", &error);
+  }
+  if (writer.data == NULL || strstr(writer.data, "\"completion\"") == NULL ||
+      strstr(writer.data, "\"values\"") == NULL) {
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return smoke_error("resource completion output was unexpected", NULL);
+  }
   cai_mcp_client_destroy(client);
   printf("MCP client smoke passed at %s\n", argv[1]);
   free(writer.data);

@@ -885,6 +885,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_completion_array_context_arguments
     mcp_streamable_http_completion_non_string_context_argument
     mcp_streamable_http_completion_invalid_ref_type
+    mcp_streamable_http_completion_resource_ref_uses_uri
     mcp_streamable_http_list_changed_invalidates_cache
     mcp_streamable_http_tools_list_changed_array_params
     mcp_streamable_http_resources_list_changed_array_params

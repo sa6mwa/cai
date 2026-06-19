@@ -13080,6 +13080,95 @@ test_mcp_streamable_http_completion_invalid_ref_type(test_state *state) {
                     &server.child_status);
 }
 
+static void
+test_mcp_streamable_http_completion_resource_ref_uses_uri(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"completions\":{}},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char complete_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":[],"
+      "\"total\":0,\"hasMore\":false}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: resource-completion-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *complete_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: resource-completion-session",
+      "\"id\":2",
+      "\"method\":\"completion/complete\"",
+      "\"ref\":{\"type\":\"ref/resource\",\"uri\":\"demo://resource/dynamic/"
+      "text/{resourceId}\"}",
+      "\"argument\":{\"name\":\"resourceId\",\"value\":\"\"}",
+      "\"_meta\":{\"progressToken\":2}"};
+  static const char *complete_forbidden[] = {
+      "\"ref\":{\"type\":\"ref/resource\",\"name\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: resource-completion-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", complete_required,
+       sizeof(complete_required) / sizeof(complete_required[0]),
+       complete_forbidden,
+       sizeof(complete_forbidden) / sizeof(complete_forbidden[0]), 200, "OK",
+       "application/json", NULL, complete_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_completion_uri_mock",
+                                   script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_completion_uri_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_completion_uri_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_streamable_completion_uri_call",
+      cai_mcp_client_complete(client, "ref/resource",
+                              "demo://resource/dynamic/text/{resourceId}",
+                              "resourceId", "", NULL, sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_streamable_completion_uri_output", writer.buffer,
+             "{\"completion\":{\"values\":[],\"total\":0,\"hasMore\":false}}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_completion_uri_mock", server.pid,
+                    &server.child_status);
+}
+
 
 static void
 test_mcp_streamable_http_list_changed_invalidates_cache(test_state *state) {
@@ -27720,6 +27809,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_completion_non_string_context_argument},
     {"mcp_streamable_http_completion_invalid_ref_type",
      test_mcp_streamable_http_completion_invalid_ref_type},
+    {"mcp_streamable_http_completion_resource_ref_uses_uri",
+     test_mcp_streamable_http_completion_resource_ref_uses_uri},
     {"mcp_streamable_http_list_changed_invalidates_cache",
      test_mcp_streamable_http_list_changed_invalidates_cache},
     {"mcp_streamable_http_tools_list_changed_array_params",
