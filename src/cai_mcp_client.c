@@ -456,6 +456,20 @@ typedef struct cai_mcp_sampling_params_doc {
   double max_tokens;
 } cai_mcp_sampling_params_doc;
 
+typedef struct cai_mcp_model_hint_doc {
+  char *name;
+} cai_mcp_model_hint_doc;
+
+typedef struct cai_mcp_model_preferences_doc {
+  lonejson_object_array hints;
+  int has_cost_priority;
+  double cost_priority;
+  int has_speed_priority;
+  double speed_priority;
+  int has_intelligence_priority;
+  double intelligence_priority;
+} cai_mcp_model_preferences_doc;
+
 typedef struct cai_mcp_sampling_tool_choice_doc {
   char *mode;
 } cai_mcp_sampling_tool_choice_doc;
@@ -697,6 +711,30 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
                                has_max_tokens, "maxTokens")};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
                     cai_mcp_sampling_params_fields);
+
+static const lonejson_field cai_mcp_model_hint_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_model_hint_doc, name, "name")};
+LONEJSON_MAP_DEFINE(cai_mcp_model_hint_map, cai_mcp_model_hint_doc,
+                    cai_mcp_model_hint_fields);
+
+static const lonejson_field cai_mcp_model_preferences_fields[] = {
+    {"hints", LONEJSON__KEY_LEN("hints"), LONEJSON__KEY_FIRST("hints"),
+     LONEJSON__KEY_LAST("hints"),
+     offsetof(cai_mcp_model_preferences_doc, hints),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, 0U, 0U, sizeof(cai_mcp_model_hint_doc),
+     &cai_mcp_model_hint_map, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_model_preferences_doc, cost_priority,
+                               has_cost_priority, "costPriority"),
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_model_preferences_doc, speed_priority,
+                               has_speed_priority, "speedPriority"),
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_model_preferences_doc,
+                               intelligence_priority,
+                               has_intelligence_priority,
+                               "intelligencePriority")};
+LONEJSON_MAP_DEFINE(cai_mcp_model_preferences_map,
+                    cai_mcp_model_preferences_doc,
+                    cai_mcp_model_preferences_fields);
 
 static const lonejson_field cai_mcp_sampling_tool_choice_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_tool_choice_doc, mode, "mode")};
@@ -2732,6 +2770,62 @@ static int cai_mcp_sampling_tool_choice_mode_is_valid(const char *mode) {
          strcmp(mode, "none") == 0 || strcmp(mode, "required") == 0;
 }
 
+static int cai_mcp_model_preference_priority_is_valid(double priority) {
+  return priority >= 0.0 && priority <= 1.0;
+}
+
+static int cai_mcp_validate_model_preferences(
+    const lonejson_json_value *model_preferences, cai_error *error) {
+  cai_mcp_model_preferences_doc doc;
+  cai_mcp_spooled_reader reader;
+  lonejson_spooled model_preferences_json;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (model_preferences == NULL ||
+      model_preferences->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  if (!cai_mcp_json_value_root_is(model_preferences, '{', error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP sampling modelPreferences must be an object");
+  }
+  memset(&model_preferences_json, 0, sizeof(model_preferences_json));
+  rc = cai_mcp_json_value_to_spooled(model_preferences, &model_preferences_json,
+                                     error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = model_preferences_json;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_mcp_model_preferences_map, &doc,
+                                cai_mcp_spooled_read, &reader, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_model_preferences_map, &doc);
+    model_preferences_json.cleanup(&model_preferences_json);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP sampling modelPreferences", &json_error);
+  }
+  if ((doc.has_cost_priority &&
+       !cai_mcp_model_preference_priority_is_valid(doc.cost_priority)) ||
+      (doc.has_speed_priority &&
+       !cai_mcp_model_preference_priority_is_valid(doc.speed_priority)) ||
+      (doc.has_intelligence_priority &&
+       !cai_mcp_model_preference_priority_is_valid(
+           doc.intelligence_priority))) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling modelPreferences priorities must be "
+                       "between 0 and 1");
+  } else {
+    rc = CAI_OK;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_model_preferences_map, &doc);
+  model_preferences_json.cleanup(&model_preferences_json);
+  return rc;
+}
+
 static int cai_mcp_validate_sampling_tool_choice(
     const lonejson_json_value *tool_choice, cai_error *error) {
   cai_mcp_sampling_tool_choice_doc doc;
@@ -2892,10 +2986,8 @@ static int cai_mcp_validate_sampling_params(
   } else if (!cai_mcp_json_value_root_is(&doc.messages, '[', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP sampling messages must be an array");
-  } else if (doc.model_preferences.kind != LONEJSON_JSON_VALUE_NULL &&
-             !cai_mcp_json_value_root_is(&doc.model_preferences, '{', error)) {
-    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
-                       "MCP sampling modelPreferences must be an object");
+  } else if ((rc = cai_mcp_validate_model_preferences(&doc.model_preferences,
+                                                      error)) != CAI_OK) {
   } else if (doc.metadata.kind != LONEJSON_JSON_VALUE_NULL &&
              !cai_mcp_json_value_root_is(&doc.metadata, '{', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,

@@ -17039,6 +17039,78 @@ static void test_mcp_streamable_http_sampling_model_preferences_not_object(
       "MCP sampling modelPreferences must be an object");
 }
 
+static void
+test_mcp_streamable_http_sampling_model_preferences_hints_not_array(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_model_preferences_hints_not_array",
+      "sampling-model-prefs-hints-not-array-session",
+      "sample-model-prefs-hints-not-array-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":{\"hints\":{}}}",
+      "failed to parse MCP sampling modelPreferences");
+}
+
+static void
+test_mcp_streamable_http_sampling_model_preferences_hint_name_not_string(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_model_preferences_hint_name_not_string",
+      "sampling-model-prefs-hint-name-not-string-session",
+      "sample-model-prefs-hint-name-not-string-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":{\"hints\":[{"
+      "\"name\":{}}]}}",
+      "failed to parse MCP sampling modelPreferences");
+}
+
+static void
+test_mcp_streamable_http_sampling_model_preferences_priority_not_number(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_model_preferences_priority_not_number",
+      "sampling-model-prefs-priority-not-number-session",
+      "sample-model-prefs-priority-not-number-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":{"
+      "\"costPriority\":\"low\"}}",
+      "failed to parse MCP sampling modelPreferences");
+}
+
+static void
+test_mcp_streamable_http_sampling_model_preferences_cost_priority_out_of_range(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_model_preferences_cost_priority_range",
+      "sampling-model-prefs-cost-priority-range-session",
+      "sample-model-prefs-cost-priority-range-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":{"
+      "\"costPriority\":1.1}}",
+      "MCP sampling modelPreferences priorities must be between 0 and 1");
+}
+
+static void
+test_mcp_streamable_http_sampling_model_preferences_speed_priority_out_of_range(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_model_preferences_speed_priority_range",
+      "sampling-model-prefs-speed-priority-range-session",
+      "sample-model-prefs-speed-priority-range-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":{"
+      "\"speedPriority\":-0.1}}",
+      "MCP sampling modelPreferences priorities must be between 0 and 1");
+}
+
+static void
+test_mcp_streamable_http_sampling_model_preferences_intelligence_priority_out_of_range(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state,
+      "mcp_streamable_sampling_model_preferences_intelligence_priority_range",
+      "sampling-model-prefs-intelligence-priority-range-session",
+      "sample-model-prefs-intelligence-priority-range-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":{"
+      "\"intelligencePriority\":1.01}}",
+      "MCP sampling modelPreferences priorities must be between 0 and 1");
+}
+
 static void test_mcp_streamable_http_sampling_system_prompt_not_string(
     test_state *state) {
   test_mcp_streamable_http_sampling_param_validation_case(
@@ -33076,6 +33148,18 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_metadata_not_object},
     {"mcp_streamable_http_sampling_model_preferences_not_object",
      test_mcp_streamable_http_sampling_model_preferences_not_object},
+    {"mcp_streamable_http_sampling_model_preferences_hints_not_array",
+     test_mcp_streamable_http_sampling_model_preferences_hints_not_array},
+    {"mcp_streamable_http_sampling_model_preferences_hint_name_not_string",
+     test_mcp_streamable_http_sampling_model_preferences_hint_name_not_string},
+    {"mcp_streamable_http_sampling_model_preferences_priority_not_number",
+     test_mcp_streamable_http_sampling_model_preferences_priority_not_number},
+    {"mcp_streamable_http_sampling_model_preferences_cost_priority_out_of_range",
+     test_mcp_streamable_http_sampling_model_preferences_cost_priority_out_of_range},
+    {"mcp_streamable_http_sampling_model_preferences_speed_priority_out_of_range",
+     test_mcp_streamable_http_sampling_model_preferences_speed_priority_out_of_range},
+    {"mcp_streamable_http_sampling_model_preferences_intelligence_priority_out_of_range",
+     test_mcp_streamable_http_sampling_model_preferences_intelligence_priority_out_of_range},
     {"mcp_streamable_http_sampling_system_prompt_not_string",
      test_mcp_streamable_http_sampling_system_prompt_not_string},
     {"mcp_streamable_http_sampling_temperature_not_number",

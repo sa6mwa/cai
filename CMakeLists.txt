@@ -962,6 +962,12 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_tools_not_array
     mcp_streamable_http_sampling_metadata_not_object
     mcp_streamable_http_sampling_model_preferences_not_object
+    mcp_streamable_http_sampling_model_preferences_hints_not_array
+    mcp_streamable_http_sampling_model_preferences_hint_name_not_string
+    mcp_streamable_http_sampling_model_preferences_priority_not_number
+    mcp_streamable_http_sampling_model_preferences_cost_priority_out_of_range
+    mcp_streamable_http_sampling_model_preferences_speed_priority_out_of_range
+    mcp_streamable_http_sampling_model_preferences_intelligence_priority_out_of_range
     mcp_streamable_http_sampling_system_prompt_not_string
     mcp_streamable_http_sampling_temperature_not_number
     mcp_streamable_http_sampling_stop_sequences_not_strings
