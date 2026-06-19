@@ -5312,6 +5312,128 @@ static int cai_mcp_elicitation_property_type_is_valid(const char *type) {
           strcmp(type, "array") == 0);
 }
 
+static int
+cai_mcp_validate_elicitation_array_items(cai_mcp_json_scan *scan,
+                                         cai_error *error) {
+  char key[32];
+  char type[16];
+  int has_any_of;
+  int has_enum;
+  int has_string_type;
+  int ch;
+  int rc;
+
+  rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+  if (rc <= 0 || ch != '{') {
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP elicitation requestedSchema array items must be an object");
+  }
+  rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+  if (rc <= 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema");
+  }
+  has_any_of = 0;
+  has_enum = 0;
+  has_string_type = 0;
+  if (ch == '}') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP elicitation requestedSchema array items must "
+                         "define enum or anyOf");
+  }
+  cai_mcp_json_scan_unget(scan, ch);
+  for (;;) {
+    rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+    if (rc <= 0 || ch != '"') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    rc = cai_mcp_json_scan_string(scan, key, sizeof(key), error);
+    if (rc <= 0) {
+      return rc == 0
+                 ? cai_set_error(
+                       error, CAI_ERR_PROTOCOL,
+                       "failed to parse MCP elicitation requestedSchema")
+                 : rc;
+    }
+    rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+    if (rc <= 0 || ch != ':') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    if (strcmp(key, "type") == 0) {
+      rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+      if (rc <= 0 || ch != '"') {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "MCP elicitation requestedSchema array items type "
+                             "must be string");
+      }
+      rc = cai_mcp_json_scan_string(scan, type, sizeof(type), error);
+      if (rc <= 0) {
+        return rc == 0
+                   ? cai_set_error(
+                         error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema")
+                   : rc;
+      }
+      if (strcmp(type, "string") != 0) {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "MCP elicitation requestedSchema array items type "
+                             "must be string");
+      }
+      has_string_type = 1;
+    } else if (strcmp(key, "enum") == 0 || strcmp(key, "anyOf") == 0) {
+      rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+      if (rc <= 0 || ch != '[') {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "MCP elicitation requestedSchema array items "
+                             "choices must be an array");
+      }
+      cai_mcp_json_scan_unget(scan, ch);
+      rc = cai_mcp_json_scan_skip_value(scan, error);
+      if (rc <= 0) {
+        return rc == 0
+                   ? cai_set_error(
+                         error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema")
+                   : rc;
+      }
+      if (strcmp(key, "enum") == 0) {
+        has_enum = 1;
+      } else {
+        has_any_of = 1;
+      }
+    } else {
+      rc = cai_mcp_json_scan_skip_value(scan, error);
+      if (rc <= 0) {
+        return rc == 0
+                   ? cai_set_error(
+                         error, CAI_ERR_PROTOCOL,
+                         "failed to parse MCP elicitation requestedSchema")
+                   : rc;
+      }
+    }
+    rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
+    if (rc <= 0) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+    if (ch == '}') {
+      if (!has_any_of && !(has_enum && has_string_type)) {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "MCP elicitation requestedSchema array items must "
+                             "define enum or anyOf");
+      }
+      return CAI_OK;
+    }
+    if (ch != ',') {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "failed to parse MCP elicitation requestedSchema");
+    }
+  }
+}
+
 static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
                                                         cai_error *error) {
   char key[32];
@@ -5384,20 +5506,9 @@ static int cai_mcp_validate_elicitation_schema_property(cai_mcp_json_scan *scan,
       is_array = strcmp(type, "array") == 0;
       has_type = 1;
     } else if (strcmp(key, "items") == 0) {
-      rc = cai_mcp_json_scan_skip_ws(scan, &ch, error);
-      if (rc <= 0 || ch != '{') {
-        return cai_set_error(
-            error, CAI_ERR_PROTOCOL,
-            "MCP elicitation requestedSchema array items must be an object");
-      }
-      cai_mcp_json_scan_unget(scan, ch);
-      rc = cai_mcp_json_scan_skip_value(scan, error);
-      if (rc <= 0) {
-        return rc == 0
-                   ? cai_set_error(
-                         error, CAI_ERR_PROTOCOL,
-                         "failed to parse MCP elicitation requestedSchema")
-                   : rc;
+      rc = cai_mcp_validate_elicitation_array_items(scan, error);
+      if (rc != CAI_OK) {
+        return rc;
       }
       has_items = 1;
     } else {
