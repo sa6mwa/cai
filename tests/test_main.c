@@ -13120,6 +13120,18 @@ test_mcp_streamable_http_tool_call_image_missing_mime(test_state *state) {
       "MCP media content requires data and mimeType");
 }
 
+static void test_mcp_streamable_http_tool_call_image_invalid_base64(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"image\",\"data\":\"not base64!\",\"mimeType\":\"image/png\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_image_invalid_base64",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP media content data must be base64");
+}
+
 static void
 test_mcp_streamable_http_tool_call_audio_content(test_state *state) {
   static const char response_body[] =
@@ -13276,6 +13288,19 @@ test_mcp_streamable_http_tool_call_resource_text_and_blob(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tool_call_resource_invalid_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"uri\":\"file:///tmp/readme.md\",\"blob\":"
+      "\"not base64!\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_invalid_blob",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource blob must be base64");
+}
+
+static void
 test_mcp_streamable_http_tool_call_array_structured_content(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
@@ -13337,6 +13362,19 @@ test_mcp_streamable_http_resource_read_blob_content(test_state *state) {
       response_body,
       "{\"contents\":[{\"uri\":\"resource://blob\",\"mimeType\":"
       "\"application/octet-stream\",\"blob\":\"AAE=\"}]}");
+}
+
+static void
+test_mcp_streamable_http_resource_read_invalid_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://blob\",\"mimeType\":\"application/octet-stream\","
+      "\"blob\":\"not base64!\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_resource_read_invalid_blob",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body, "MCP resource blob must be base64");
 }
 
 static void
@@ -13414,6 +13452,19 @@ test_mcp_streamable_http_prompt_get_audio_content(test_state *state) {
       state, "mcp_streamable_prompt_get_audio_content",
       TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
       expected_output);
+}
+
+static void
+test_mcp_streamable_http_prompt_get_audio_invalid_base64(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"audio\",\"data\":\"not base64!\","
+      "\"mimeType\":\"audio/wav\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_audio_invalid_base64",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP media content data must be base64");
 }
 
 static void
@@ -16421,6 +16472,18 @@ static void test_mcp_streamable_http_sampling_audio_content(test_state *state) {
   test_mcp_streamable_http_sampling_result_case(
       state, "mcp_streamable_sampling_audio_content",
       "sampling-audio-content-session", result_json, CAI_OK, NULL);
+}
+
+static void
+test_mcp_streamable_http_sampling_audio_invalid_base64(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":{"
+      "\"type\":\"audio\",\"data\":\"not base64!\",\"mimeType\":"
+      "\"audio/wav\"}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_audio_invalid_base64",
+      "sampling-audio-invalid-base64-session", result_json, CAI_ERR_PROTOCOL,
+      "MCP media content data must be base64");
 }
 
 static void
@@ -32613,6 +32676,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_text_missing_text},
     {"mcp_streamable_http_tool_call_image_missing_mime",
      test_mcp_streamable_http_tool_call_image_missing_mime},
+    {"mcp_streamable_http_tool_call_image_invalid_base64",
+     test_mcp_streamable_http_tool_call_image_invalid_base64},
     {"mcp_streamable_http_tool_call_audio_content",
      test_mcp_streamable_http_tool_call_audio_content},
     {"mcp_streamable_http_tool_call_content_array_annotations",
@@ -32637,6 +32702,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_resource_missing_body},
     {"mcp_streamable_http_tool_call_resource_text_and_blob",
      test_mcp_streamable_http_tool_call_resource_text_and_blob},
+    {"mcp_streamable_http_tool_call_resource_invalid_blob",
+     test_mcp_streamable_http_tool_call_resource_invalid_blob},
     {"mcp_streamable_http_tool_call_array_structured_content",
      test_mcp_streamable_http_tool_call_array_structured_content},
     {"mcp_streamable_http_resource_read_missing_contents",
@@ -32647,6 +32714,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_read_text_and_blob},
     {"mcp_streamable_http_resource_read_blob_content",
      test_mcp_streamable_http_resource_read_blob_content},
+    {"mcp_streamable_http_resource_read_invalid_blob",
+     test_mcp_streamable_http_resource_read_invalid_blob},
     {"mcp_streamable_http_prompt_get_missing_messages",
      test_mcp_streamable_http_prompt_get_missing_messages},
     {"mcp_streamable_http_prompt_get_invalid_role",
@@ -32659,6 +32728,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_content_priority_not_number},
     {"mcp_streamable_http_prompt_get_audio_content",
      test_mcp_streamable_http_prompt_get_audio_content},
+    {"mcp_streamable_http_prompt_get_audio_invalid_base64",
+     test_mcp_streamable_http_prompt_get_audio_invalid_base64},
     {"mcp_streamable_http_prompt_get_resource_missing_body",
      test_mcp_streamable_http_prompt_get_resource_missing_body},
     {"mcp_streamable_http_prompt_get_resource_link_negative_size",
@@ -32801,6 +32872,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_array_content},
     {"mcp_streamable_http_sampling_audio_content",
      test_mcp_streamable_http_sampling_audio_content},
+    {"mcp_streamable_http_sampling_audio_invalid_base64",
+     test_mcp_streamable_http_sampling_audio_invalid_base64},
     {"mcp_streamable_http_sampling_content_annotations",
      test_mcp_streamable_http_sampling_content_annotations},
     {"mcp_streamable_http_sampling_content_annotation_invalid_role",

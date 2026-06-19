@@ -7409,6 +7409,48 @@ cai_mcp_resource_content_has_body(const cai_mcp_resource_content_doc *content) {
                              (content->text == NULL && content->blob != NULL));
 }
 
+static int cai_mcp_base64_char_is_valid(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+         (c >= '0' && c <= '9') || c == '+' || c == '/';
+}
+
+static int cai_mcp_base64_is_valid(const char *text) {
+  size_t len;
+  size_t i;
+  size_t padding;
+  size_t first_padding;
+
+  if (text == NULL) {
+    return 0;
+  }
+  len = strlen(text);
+  if (len % 4U == 1U) {
+    return 0;
+  }
+  padding = 0U;
+  first_padding = len;
+  for (i = 0U; i < len; i++) {
+    if (text[i] == '=') {
+      if (first_padding == len) {
+        first_padding = i;
+      }
+      padding++;
+      if (padding > 2U) {
+        return 0;
+      }
+    } else {
+      if (padding != 0U || !cai_mcp_base64_char_is_valid(text[i])) {
+        return 0;
+      }
+    }
+  }
+  if (padding != 0U &&
+      (len % 4U != 0U || first_padding < len - 2U || first_padding < 2U)) {
+    return 0;
+  }
+  return 1;
+}
+
 static int cai_mcp_validate_resource_read_response_shape(
     const cai_mcp_http_response_capture *response, cai_error *error) {
   cai_mcp_resource_read_response_doc doc;
@@ -7455,6 +7497,12 @@ static int cai_mcp_validate_resource_read_response_shape(
       rc = cai_set_error(
           error, CAI_ERR_PROTOCOL,
           "MCP resource content must include exactly one of text or blob");
+      break;
+    }
+    if (contents[i].blob != NULL &&
+        !cai_mcp_base64_is_valid(contents[i].blob)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP resource blob must be base64");
       break;
     }
   }
@@ -7583,6 +7631,10 @@ cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP media content requires data and mimeType");
     }
+    if (!cai_mcp_base64_is_valid(content->data)) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP media content data must be base64");
+    }
   } else if (strcmp(content->type, "resource_link") == 0) {
     if (content->uri == NULL || content->name == NULL) {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
@@ -7625,6 +7677,10 @@ cai_mcp_content_block_validate(const cai_mcp_tool_content_doc *content,
           error, CAI_ERR_PROTOCOL,
           "MCP embedded resource content must include exactly one of text or "
           "blob");
+    } else if (resource.blob != NULL &&
+               !cai_mcp_base64_is_valid(resource.blob)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP resource blob must be base64");
     }
     CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_content_map, &resource);
     if (rc != CAI_OK) {
@@ -7735,6 +7791,10 @@ cai_mcp_sampling_content_doc_validate(const cai_mcp_sampling_content_doc *doc,
     if (doc->data == NULL || doc->mime_type == NULL) {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP media content requires data and mimeType");
+    }
+    if (!cai_mcp_base64_is_valid(doc->data)) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP media content data must be base64");
     }
   } else if (strcmp(doc->type, "tool_use") == 0) {
     if (doc->id == NULL || doc->name == NULL ||

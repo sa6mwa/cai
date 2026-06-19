@@ -838,6 +838,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_missing_content_type
     mcp_streamable_http_tool_call_text_missing_text
     mcp_streamable_http_tool_call_image_missing_mime
+    mcp_streamable_http_tool_call_image_invalid_base64
     mcp_streamable_http_tool_call_audio_content
     mcp_streamable_http_tool_call_content_array_annotations
     mcp_streamable_http_tool_call_content_invalid_annotation_role
@@ -850,17 +851,20 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_resource_missing_uri
     mcp_streamable_http_tool_call_resource_missing_body
     mcp_streamable_http_tool_call_resource_text_and_blob
+    mcp_streamable_http_tool_call_resource_invalid_blob
     mcp_streamable_http_tool_call_array_structured_content
     mcp_streamable_http_resource_read_missing_contents
     mcp_streamable_http_resource_read_missing_body
     mcp_streamable_http_resource_read_text_and_blob
     mcp_streamable_http_resource_read_blob_content
+    mcp_streamable_http_resource_read_invalid_blob
     mcp_streamable_http_prompt_get_missing_messages
     mcp_streamable_http_prompt_get_invalid_role
     mcp_streamable_http_prompt_get_array_content
     mcp_streamable_http_prompt_get_text_missing_text
     mcp_streamable_http_prompt_get_content_priority_not_number
     mcp_streamable_http_prompt_get_audio_content
+    mcp_streamable_http_prompt_get_audio_invalid_base64
     mcp_streamable_http_prompt_get_resource_missing_body
     mcp_streamable_http_prompt_get_resource_link_negative_size
     mcp_streamable_http_prompt_get_unknown_content_type
@@ -932,6 +936,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_invalid_result
     mcp_streamable_http_sampling_array_content
     mcp_streamable_http_sampling_audio_content
+    mcp_streamable_http_sampling_audio_invalid_base64
     mcp_streamable_http_sampling_content_annotations
     mcp_streamable_http_sampling_content_annotation_invalid_role
     mcp_streamable_http_sampling_text_missing_text
