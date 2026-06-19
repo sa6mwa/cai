@@ -9325,6 +9325,12 @@ static int cai_mcp_streamable_send_notification(cai_mcp_client *client,
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
   }
+  if (method != NULL &&
+      strcmp(method, "notifications/roots/list_changed") == 0 &&
+      (impl->receiver.list_roots == NULL || !impl->receiver.roots_list_changed)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP roots listChanged was not advertised");
+  }
   rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK) {
     return rc;

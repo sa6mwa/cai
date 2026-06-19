@@ -892,6 +892,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resources_list_changed_array_params
     mcp_streamable_http_prompts_list_changed_array_params
     mcp_streamable_http_roots_list_changed_notification
+    mcp_streamable_http_roots_list_changed_not_advertised
     mcp_streamable_http_send_request_params
     mcp_streamable_http_send_notification_params
     mcp_streamable_http_notification_response_wrong_status

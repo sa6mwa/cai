@@ -14165,6 +14165,35 @@ test_mcp_streamable_http_roots_list_changed_notification(test_state *state) {
                     &server.child_status);
 }
 
+static void
+test_mcp_streamable_http_roots_list_changed_not_advertised(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_roots_state roots;
+  cai_error error;
+
+  client = NULL;
+  memset(&roots, 0, sizeof(roots));
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.timeout_ms = 50L;
+  config.receiver.context = &roots;
+  config.receiver.list_roots = test_mcp_roots_list_callback;
+
+  expect_int(
+      state, "mcp_streamable_roots_changed_not_advertised_open",
+      cai_mcp_streamable_http_client_open(&config, &client, &error), CAI_OK);
+  expect_int(
+      state, "mcp_streamable_roots_changed_not_advertised_call",
+      cai_mcp_client_notify_roots_list_changed(client, &error), CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_roots_changed_not_advertised_error",
+             error.message, "MCP roots listChanged was not advertised");
+
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_mcp_streamable_http_send_request_params(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -33019,6 +33048,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompts_list_changed_array_params},
     {"mcp_streamable_http_roots_list_changed_notification",
      test_mcp_streamable_http_roots_list_changed_notification},
+    {"mcp_streamable_http_roots_list_changed_not_advertised",
+     test_mcp_streamable_http_roots_list_changed_not_advertised},
     {"mcp_streamable_http_send_request_params",
      test_mcp_streamable_http_send_request_params},
     {"mcp_streamable_http_send_notification_params",
