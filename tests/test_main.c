@@ -16615,6 +16615,17 @@ test_mcp_streamable_http_sampling_content_priority_out_of_range(
 }
 
 static void
+test_mcp_streamable_http_sampling_stop_reason_not_string(test_state *state) {
+  static const char result_json[] =
+      "{\"model\":\"cai-test-model\",\"role\":\"assistant\",\"content\":{"
+      "\"type\":\"text\",\"text\":\"one\"},\"stopReason\":{}}";
+  test_mcp_streamable_http_sampling_result_case(
+      state, "mcp_streamable_sampling_stop_reason_not_string",
+      "sampling-stop-reason-not-string-session", result_json, CAI_ERR_PROTOCOL,
+      "failed to parse MCP sampling result");
+}
+
+static void
 test_mcp_streamable_http_sampling_text_missing_text(test_state *state) {
   static const char result_json[] =
       "{\"model\":\"cai-test-model\",\"role\":\"assistant\","
@@ -33118,6 +33129,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_content_annotation_invalid_role},
     {"mcp_streamable_http_sampling_content_priority_out_of_range",
      test_mcp_streamable_http_sampling_content_priority_out_of_range},
+    {"mcp_streamable_http_sampling_stop_reason_not_string",
+     test_mcp_streamable_http_sampling_stop_reason_not_string},
     {"mcp_streamable_http_sampling_text_missing_text",
      test_mcp_streamable_http_sampling_text_missing_text},
     {"mcp_streamable_http_sampling_tool_use_missing_input",

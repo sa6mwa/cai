@@ -947,6 +947,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_content_annotations
     mcp_streamable_http_sampling_content_annotation_invalid_role
     mcp_streamable_http_sampling_content_priority_out_of_range
+    mcp_streamable_http_sampling_stop_reason_not_string
     mcp_streamable_http_sampling_text_missing_text
     mcp_streamable_http_sampling_tool_use_missing_input
     mcp_streamable_http_sampling_tool_use_array_input
