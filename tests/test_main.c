@@ -13019,6 +13019,34 @@ test_mcp_streamable_http_resource_read_missing_body(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_resource_read_text_and_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://bad\",\"text\":\"body\",\"blob\":\"Ym9keQ==\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_resource_read_text_and_blob",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body,
+      "MCP resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_resource_read_blob_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://blob\",\"mimeType\":\"application/octet-stream\","
+      "\"blob\":\"AAE=\"}]}}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_resource_read_blob_content",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body,
+      "{\"contents\":[{\"uri\":\"resource://blob\",\"mimeType\":"
+      "\"application/octet-stream\",\"blob\":\"AAE=\"}]}");
+}
+
+static void
 test_mcp_streamable_http_prompt_get_missing_messages(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"description\":\"bad\"}}";
@@ -32072,6 +32100,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_read_missing_contents},
     {"mcp_streamable_http_resource_read_missing_body",
      test_mcp_streamable_http_resource_read_missing_body},
+    {"mcp_streamable_http_resource_read_text_and_blob",
+     test_mcp_streamable_http_resource_read_text_and_blob},
+    {"mcp_streamable_http_resource_read_blob_content",
+     test_mcp_streamable_http_resource_read_blob_content},
     {"mcp_streamable_http_prompt_get_missing_messages",
      test_mcp_streamable_http_prompt_get_missing_messages},
     {"mcp_streamable_http_prompt_get_invalid_role",

@@ -835,6 +835,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tool_call_array_structured_content
     mcp_streamable_http_resource_read_missing_contents
     mcp_streamable_http_resource_read_missing_body
+    mcp_streamable_http_resource_read_text_and_blob
+    mcp_streamable_http_resource_read_blob_content
     mcp_streamable_http_prompt_get_missing_messages
     mcp_streamable_http_prompt_get_invalid_role
     mcp_streamable_http_prompt_get_array_content
