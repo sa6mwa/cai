@@ -160,6 +160,17 @@ typedef struct cai_mcp_jsonrpc_id_doc {
   lonejson_json_value id;
 } cai_mcp_jsonrpc_id_doc;
 
+typedef struct cai_mcp_icon_doc {
+  char *src;
+  lonejson_string_array sizes;
+  char *mime_type;
+  char *theme;
+} cai_mcp_icon_doc;
+
+typedef struct cai_mcp_icons_doc {
+  lonejson_object_array icons;
+} cai_mcp_icons_doc;
+
 typedef struct cai_mcp_list_tool_doc {
   char *name;
   char *description;
@@ -597,6 +608,27 @@ static const lonejson_field cai_mcp_sampling_tool_choice_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_tool_choice_map,
                     cai_mcp_sampling_tool_choice_doc,
                     cai_mcp_sampling_tool_choice_fields);
+
+static const lonejson_field cai_mcp_icon_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_icon_doc, src, "src"),
+    {"sizes", LONEJSON__KEY_LEN("sizes"), LONEJSON__KEY_FIRST("sizes"),
+     LONEJSON__KEY_LAST("sizes"), offsetof(cai_mcp_icon_doc, sizes),
+     LONEJSON_FIELD_KIND_STRING_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, 0U, 0U, 0U, NULL, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_icon_doc, mime_type, "mimeType"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_icon_doc, theme, "theme")};
+LONEJSON_MAP_DEFINE(cai_mcp_icon_map, cai_mcp_icon_doc, cai_mcp_icon_fields);
+
+static const lonejson_field cai_mcp_icons_fields[] = {
+    {"icons", LONEJSON__KEY_LEN("icons"), LONEJSON__KEY_FIRST("icons"),
+     LONEJSON__KEY_LAST("icons"), offsetof(cai_mcp_icons_doc, icons),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_icon_doc), &cai_mcp_icon_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_icons_map, cai_mcp_icons_doc,
+                    cai_mcp_icons_fields);
 
 static const lonejson_field cai_mcp_cancelled_params_fields[] = {
     {"requestId", LONEJSON__KEY_LEN("requestId"),
@@ -6111,6 +6143,69 @@ cai_mcp_optional_json_array_to_cstr(const cai_allocator *allocator,
   return cai_mcp_json_value_to_cstr(value, error);
 }
 
+static int cai_mcp_icon_theme_is_valid(const char *theme) {
+  return theme == NULL || strcmp(theme, "light") == 0 ||
+         strcmp(theme, "dark") == 0;
+}
+
+static int cai_mcp_validate_optional_icons(
+    const lonejson_json_value *icons, const char *array_error_message,
+    const char *parse_error_message, const char *theme_error_message,
+    cai_error *error) {
+  cai_mcp_icons_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  cai_mcp_icon_doc *items;
+  char *icons_json;
+  char *wrapped_json;
+  size_t icons_json_len;
+  size_t wrapped_len;
+  size_t i;
+  int rc;
+
+  if (!cai_mcp_optional_json_array_is_valid(icons, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, array_error_message);
+  }
+  if (icons == NULL || icons->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  icons_json = cai_mcp_json_value_to_cstr(icons, error);
+  if (icons_json == NULL) {
+    return error != NULL && error->code != CAI_OK
+               ? error->code
+               : CAI_ERR_NOMEM;
+  }
+  icons_json_len = strlen(icons_json);
+  wrapped_len = sizeof("{\"icons\":}") + icons_json_len;
+  wrapped_json = (char *)cai_alloc(NULL, wrapped_len);
+  if (wrapped_json == NULL) {
+    cai_free_mem(NULL, icons_json);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP icons validation JSON");
+  }
+  snprintf(wrapped_json, wrapped_len, "{\"icons\":%s}", icons_json);
+  cai_free_mem(NULL, icons_json);
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_icons_map, &doc, wrapped_json,
+                              &json_error);
+  cai_free_mem(NULL, wrapped_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_icons_map, &doc);
+    return cai_mcp_set_json_error(error, parse_error_message, &json_error);
+  }
+  items = (cai_mcp_icon_doc *)doc.icons.items;
+  rc = CAI_OK;
+  for (i = 0U; i < doc.icons.count; i++) {
+    if (!cai_mcp_icon_theme_is_valid(items[i].theme)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, theme_error_message);
+      break;
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_icons_map, &doc);
+  return rc;
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -6183,11 +6278,14 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP tool annotations must be an object");
     }
-    if (!cai_mcp_optional_json_array_is_valid(&src_tools[i].icons, error)) {
+    rc = cai_mcp_validate_optional_icons(
+        &src_tools[i].icons, "MCP tool icons must be an array",
+        "failed to parse MCP tool icons",
+        "MCP tool icon theme must be light or dark", error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP tool icons must be an array");
+      return rc;
     }
     if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].execution,
                                                error)) {
@@ -6319,11 +6417,14 @@ static int cai_mcp_parse_resources_list_response(
   }
   src_resources = (cai_mcp_list_resource_doc *)doc.result.resources.items;
   for (i = 0U; i < doc.result.resources.count; i++) {
-    if (!cai_mcp_optional_json_array_is_valid(&src_resources[i].icons, error)) {
+    rc = cai_mcp_validate_optional_icons(
+        &src_resources[i].icons, "MCP resource icons must be an array",
+        "failed to parse MCP resource icons",
+        "MCP resource icon theme must be light or dark", error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resources_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP resource icons must be an array");
+      return rc;
     }
     if (!cai_mcp_optional_json_object_is_valid(&src_resources[i].annotations,
                                                error)) {
@@ -6463,13 +6564,16 @@ static int cai_mcp_parse_resource_templates_list_response(
   src_resource_templates =
       (cai_mcp_list_resource_template_doc *)doc.result.resource_templates.items;
   for (i = 0U; i < doc.result.resource_templates.count; i++) {
-    if (!cai_mcp_optional_json_array_is_valid(&src_resource_templates[i].icons,
-                                              error)) {
+    rc = cai_mcp_validate_optional_icons(
+        &src_resource_templates[i].icons,
+        "MCP resource template icons must be an array",
+        "failed to parse MCP resource template icons",
+        "MCP resource template icon theme must be light or dark", error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_resource_templates_list_response_map,
                       &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP resource template icons must be an array");
+      return rc;
     }
     if (!cai_mcp_optional_json_object_is_valid(
             &src_resource_templates[i].annotations, error)) {
@@ -6610,11 +6714,14 @@ static int cai_mcp_parse_prompts_list_response(
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP prompt arguments must be an array");
     }
-    if (!cai_mcp_optional_json_array_is_valid(&src_prompts[i].icons, error)) {
+    rc = cai_mcp_validate_optional_icons(
+        &src_prompts[i].icons, "MCP prompt icons must be an array",
+        "failed to parse MCP prompt icons",
+        "MCP prompt icon theme must be light or dark", error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompts_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP prompt icons must be an array");
+      return rc;
     }
   }
   base_count = impl->prompt_count;

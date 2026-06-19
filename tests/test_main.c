@@ -12574,6 +12574,19 @@ test_mcp_streamable_http_tools_list_object_icons(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tools_list_icon_missing_src(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"icons\":[{\"theme\":"
+      "\"light\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_icon_missing_src",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool icons");
+}
+
+static void
 test_mcp_streamable_http_tools_list_array_execution(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
@@ -12595,6 +12608,19 @@ test_mcp_streamable_http_resources_list_object_icons(test_state *state) {
       state, "mcp_streamable_resources_list_object_icons",
       TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
       "MCP resource icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_resources_list_icon_invalid_theme(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"icons\":[{\"src\":\"https://"
+      "example.test/icon.png\",\"theme\":\"system\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_icon_invalid_theme",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource icon theme must be light or dark");
 }
 
 static void
@@ -12635,6 +12661,22 @@ static void test_mcp_streamable_http_resource_templates_list_object_icons(
       "MCP resource template icons must be an array");
 }
 
+static void
+test_mcp_streamable_http_resource_templates_list_icon_size_not_string(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"icons\":[{\"src\":\"https://example.test/icon.png\",\"sizes\":[48]}]}"
+      "]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_icon_size_not_string",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "failed to parse MCP resource template icons");
+}
+
 static void test_mcp_streamable_http_resource_templates_list_array_annotations(
     test_state *state) {
   static const char response_body[] =
@@ -12671,6 +12713,79 @@ test_mcp_streamable_http_prompts_list_object_icons(test_state *state) {
       state, "mcp_streamable_prompts_list_object_icons", TEST_MCP_LIST_PROMPTS,
       "\"method\":\"prompts/list\"", response_body,
       "MCP prompt icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_icon_metadata(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"icons\":[{\"src\":\"data:image/png;base64,aQ==\","
+      "\"mimeType\":\"image/png\",\"sizes\":[\"48x48\",\"any\"],\"theme\":"
+      "\"dark\"}]}]}}";
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  const cai_mcp_client_prompt *prompt;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  {
+    static const char initialize_body[] =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+        "\"" CAI_MCP_PROTOCOL_VERSION
+        "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+        "\"version\":\"1\"}}}";
+    static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                          "\"method\":\"initialize\""};
+    static const char *initialized_required[] = {
+        "POST /v1/mcp HTTP/", "MCP-Session-Id: prompt-icon-session",
+        "\"method\":\"notifications/initialized\""};
+    static const char *list_required[] = {
+        "POST /v1/mcp HTTP/", "MCP-Session-Id: prompt-icon-session",
+        "\"id\":2", "\"method\":\"prompts/list\""};
+    static const mock_http_expectation script[] = {
+        {"POST /v1/mcp HTTP/", init_required,
+         sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+         "application/json", "req-init\r\nMCP-Session-Id: prompt-icon-session",
+         initialize_body},
+        {"POST /v1/mcp HTTP/", initialized_required,
+         sizeof(initialized_required) / sizeof(initialized_required[0]), NULL,
+         0U, 202, "Accepted", "application/json", NULL, ""},
+        {"POST /v1/mcp HTTP/", list_required,
+         sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
+         "application/json", NULL, response_body}};
+    if (http_mock_server_open_script(
+            state, "mcp_streamable_prompts_list_icon_metadata_mock", script,
+            sizeof(script) / sizeof(script[0]), &server) != 0) {
+      cai_error_cleanup(&error);
+      return;
+    }
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_prompts_list_icon_metadata_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_prompts_list_icon_metadata_refresh",
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_prompts_list_icon_metadata_count",
+             (long)cai_mcp_client_prompt_count(client), 1L);
+  prompt = cai_mcp_client_prompt_at(client, 0U);
+  if (prompt == NULL || prompt->icons_json == NULL ||
+      strstr(prompt->icons_json, "\"theme\":\"dark\"") == NULL ||
+      strstr(prompt->icons_json, "\"sizes\":[\"48x48\",\"any\"]") == NULL) {
+    test_fail(state, "mcp_streamable_prompts_list_icon_metadata_json",
+              "prompt icon metadata was not preserved");
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_prompts_list_icon_metadata_mock",
+                    server.pid, &server.child_status);
 }
 
 static void
@@ -31832,12 +31947,16 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tools_list_array_annotations},
     {"mcp_streamable_http_tools_list_object_icons",
      test_mcp_streamable_http_tools_list_object_icons},
+    {"mcp_streamable_http_tools_list_icon_missing_src",
+     test_mcp_streamable_http_tools_list_icon_missing_src},
     {"mcp_streamable_http_tools_list_array_execution",
      test_mcp_streamable_http_tools_list_array_execution},
     {"mcp_streamable_http_resources_list_missing_resources",
      test_mcp_streamable_http_resources_list_missing_resources},
     {"mcp_streamable_http_resources_list_object_icons",
      test_mcp_streamable_http_resources_list_object_icons},
+    {"mcp_streamable_http_resources_list_icon_invalid_theme",
+     test_mcp_streamable_http_resources_list_icon_invalid_theme},
     {"mcp_streamable_http_resources_list_array_annotations",
      test_mcp_streamable_http_resources_list_array_annotations},
     {"mcp_streamable_http_resources_list_negative_size",
@@ -31846,6 +31965,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_resource_templates_list_missing_templates},
     {"mcp_streamable_http_resource_templates_list_object_icons",
      test_mcp_streamable_http_resource_templates_list_object_icons},
+    {"mcp_streamable_http_resource_templates_list_icon_size_not_string",
+     test_mcp_streamable_http_resource_templates_list_icon_size_not_string},
     {"mcp_streamable_http_resource_templates_list_array_annotations",
      test_mcp_streamable_http_resource_templates_list_array_annotations},
     {"mcp_streamable_http_prompts_list_missing_prompts",
@@ -31854,6 +31975,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompts_list_object_arguments},
     {"mcp_streamable_http_prompts_list_object_icons",
      test_mcp_streamable_http_prompts_list_object_icons},
+    {"mcp_streamable_http_prompts_list_icon_metadata",
+     test_mcp_streamable_http_prompts_list_icon_metadata},
     {"mcp_streamable_http_tool_call_missing_content",
      test_mcp_streamable_http_tool_call_missing_content},
     {"mcp_streamable_http_tool_call_missing_content_type",
