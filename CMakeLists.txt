@@ -801,9 +801,11 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tools_list_array_input_schema
     mcp_streamable_http_tools_list_array_output_schema
     mcp_streamable_http_tools_list_array_annotations
+    mcp_streamable_http_tools_list_annotation_hint_not_bool
     mcp_streamable_http_tools_list_object_icons
     mcp_streamable_http_tools_list_icon_missing_src
     mcp_streamable_http_tools_list_array_execution
+    mcp_streamable_http_tools_list_execution_task_support_invalid
     mcp_streamable_http_resources_list_missing_resources
     mcp_streamable_http_resources_list_object_icons
     mcp_streamable_http_resources_list_icon_invalid_theme

@@ -12562,6 +12562,20 @@ test_mcp_streamable_http_tools_list_array_annotations(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_tools_list_annotation_hint_not_bool(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"annotations\":{"
+      "\"readOnlyHint\":\"true\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_annotation_hint_not_bool",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool annotations");
+}
+
+static void
 test_mcp_streamable_http_tools_list_object_icons(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
@@ -12596,6 +12610,20 @@ test_mcp_streamable_http_tools_list_array_execution(test_state *state) {
       state, "mcp_streamable_tools_list_array_execution", TEST_MCP_LIST_TOOLS,
       "\"method\":\"tools/list\"", response_body,
       "MCP tool execution must be an object");
+}
+
+static void
+test_mcp_streamable_http_tools_list_execution_task_support_invalid(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"execution\":{"
+      "\"taskSupport\":\"always\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_execution_task_support_invalid",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool execution taskSupport is invalid");
 }
 
 static void
@@ -31976,12 +32004,16 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tools_list_array_output_schema},
     {"mcp_streamable_http_tools_list_array_annotations",
      test_mcp_streamable_http_tools_list_array_annotations},
+    {"mcp_streamable_http_tools_list_annotation_hint_not_bool",
+     test_mcp_streamable_http_tools_list_annotation_hint_not_bool},
     {"mcp_streamable_http_tools_list_object_icons",
      test_mcp_streamable_http_tools_list_object_icons},
     {"mcp_streamable_http_tools_list_icon_missing_src",
      test_mcp_streamable_http_tools_list_icon_missing_src},
     {"mcp_streamable_http_tools_list_array_execution",
      test_mcp_streamable_http_tools_list_array_execution},
+    {"mcp_streamable_http_tools_list_execution_task_support_invalid",
+     test_mcp_streamable_http_tools_list_execution_task_support_invalid},
     {"mcp_streamable_http_resources_list_missing_resources",
      test_mcp_streamable_http_resources_list_missing_resources},
     {"mcp_streamable_http_resources_list_object_icons",

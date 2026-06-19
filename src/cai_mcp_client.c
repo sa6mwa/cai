@@ -183,6 +183,22 @@ typedef struct cai_mcp_prompt_arguments_doc {
   lonejson_object_array arguments;
 } cai_mcp_prompt_arguments_doc;
 
+typedef struct cai_mcp_tool_annotations_doc {
+  char *title;
+  int has_read_only_hint;
+  int read_only_hint;
+  int has_destructive_hint;
+  int destructive_hint;
+  int has_idempotent_hint;
+  int idempotent_hint;
+  int has_open_world_hint;
+  int open_world_hint;
+} cai_mcp_tool_annotations_doc;
+
+typedef struct cai_mcp_tool_execution_doc {
+  char *task_support;
+} cai_mcp_tool_execution_doc;
+
 typedef struct cai_mcp_list_tool_doc {
   char *name;
   char *description;
@@ -663,6 +679,26 @@ static const lonejson_field cai_mcp_prompt_arguments_fields[] = {
 LONEJSON_MAP_DEFINE(cai_mcp_prompt_arguments_map,
                     cai_mcp_prompt_arguments_doc,
                     cai_mcp_prompt_arguments_fields);
+
+static const lonejson_field cai_mcp_tool_annotations_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_annotations_doc, title, "title"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_mcp_tool_annotations_doc, read_only_hint,
+                                has_read_only_hint, "readOnlyHint"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_mcp_tool_annotations_doc, destructive_hint,
+                                has_destructive_hint, "destructiveHint"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_mcp_tool_annotations_doc, idempotent_hint,
+                                has_idempotent_hint, "idempotentHint"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_mcp_tool_annotations_doc, open_world_hint,
+                                has_open_world_hint, "openWorldHint")};
+LONEJSON_MAP_DEFINE(cai_mcp_tool_annotations_map,
+                    cai_mcp_tool_annotations_doc,
+                    cai_mcp_tool_annotations_fields);
+
+static const lonejson_field cai_mcp_tool_execution_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_tool_execution_doc, task_support,
+                                "taskSupport")};
+LONEJSON_MAP_DEFINE(cai_mcp_tool_execution_map, cai_mcp_tool_execution_doc,
+                    cai_mcp_tool_execution_fields);
 
 static const lonejson_field cai_mcp_cancelled_params_fields[] = {
     {"requestId", LONEJSON__KEY_LEN("requestId"),
@@ -6288,6 +6324,90 @@ static int cai_mcp_validate_optional_prompt_arguments(
   return CAI_OK;
 }
 
+static int cai_mcp_validate_optional_tool_annotations(
+    const lonejson_json_value *annotations, cai_error *error) {
+  cai_mcp_tool_annotations_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *annotations_json;
+
+  if (!cai_mcp_optional_json_object_is_valid(annotations, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool annotations must be an object");
+  }
+  if (annotations == NULL || annotations->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  annotations_json = cai_mcp_json_value_to_cstr(annotations, error);
+  if (annotations_json == NULL) {
+    return error != NULL && error->code != CAI_OK
+               ? error->code
+               : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_annotations_map, &doc,
+                              annotations_json, &json_error);
+  cai_free_mem(NULL, annotations_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_annotations_map, &doc);
+    return cai_mcp_set_json_error(error,
+                                  "failed to parse MCP tool annotations",
+                                  &json_error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_annotations_map, &doc);
+  return CAI_OK;
+}
+
+static int cai_mcp_tool_execution_task_support_is_valid(
+    const char *task_support) {
+  return task_support == NULL || strcmp(task_support, "forbidden") == 0 ||
+         strcmp(task_support, "optional") == 0 ||
+         strcmp(task_support, "required") == 0;
+}
+
+static int cai_mcp_validate_optional_tool_execution(
+    const lonejson_json_value *execution, cai_error *error) {
+  cai_mcp_tool_execution_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *execution_json;
+  int rc;
+
+  if (!cai_mcp_optional_json_object_is_valid(execution, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool execution must be an object");
+  }
+  if (execution == NULL || execution->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  execution_json = cai_mcp_json_value_to_cstr(execution, error);
+  if (execution_json == NULL) {
+    return error != NULL && error->code != CAI_OK
+               ? error->code
+               : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_execution_map, &doc,
+                              execution_json, &json_error);
+  cai_free_mem(NULL, execution_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_execution_map, &doc);
+    return cai_mcp_set_json_error(error,
+                                  "failed to parse MCP tool execution",
+                                  &json_error);
+  }
+  if (!cai_mcp_tool_execution_task_support_is_valid(doc.task_support)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP tool execution taskSupport is invalid");
+  } else {
+    rc = CAI_OK;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_execution_map, &doc);
+  return rc;
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -6353,12 +6473,12 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP tool outputSchema must be an object");
     }
-    if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].annotations,
-                                               error)) {
+    rc = cai_mcp_validate_optional_tool_annotations(&src_tools[i].annotations,
+                                                    error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP tool annotations must be an object");
+      return rc;
     }
     rc = cai_mcp_validate_optional_icons(
         &src_tools[i].icons, "MCP tool icons must be an array",
@@ -6369,12 +6489,12 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       json_body.cleanup(&json_body);
       return rc;
     }
-    if (!cai_mcp_optional_json_object_is_valid(&src_tools[i].execution,
-                                               error)) {
+    rc = cai_mcp_validate_optional_tool_execution(&src_tools[i].execution,
+                                                  error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP tool execution must be an object");
+      return rc;
     }
   }
   base_count = impl->tool_count;
