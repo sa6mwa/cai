@@ -443,9 +443,15 @@ typedef struct cai_mcp_initialize_response_doc {
 
 typedef struct cai_mcp_sampling_params_doc {
   lonejson_json_value messages;
+  lonejson_json_value model_preferences;
+  char *system_prompt;
+  lonejson_string_array stop_sequences;
+  lonejson_json_value metadata;
   lonejson_json_value tools;
   lonejson_json_value tool_choice;
   char *include_context;
+  int has_temperature;
+  double temperature;
   int has_max_tokens;
   double max_tokens;
 } cai_mcp_sampling_params_doc;
@@ -650,6 +656,17 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
      LONEJSON_OVERFLOW_FAIL,
      LONEJSON_FIELD_REQUIRED | LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U,
      0U, NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"modelPreferences", LONEJSON__KEY_LEN("modelPreferences"),
+     LONEJSON__KEY_FIRST("modelPreferences"),
+     LONEJSON__KEY_LAST("modelPreferences"),
+     offsetof(cai_mcp_sampling_params_doc, model_preferences),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_params_doc, system_prompt,
+                                "systemPrompt"),
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_sampling_params_doc, temperature,
+                               has_temperature, "temperature"),
     {"tools", LONEJSON__KEY_LEN("tools"), LONEJSON__KEY_FIRST("tools"),
      LONEJSON__KEY_LAST("tools"), offsetof(cai_mcp_sampling_params_doc, tools),
      LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
@@ -663,6 +680,19 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
      NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_params_doc, include_context,
                                 "includeContext"),
+    {"stopSequences", LONEJSON__KEY_LEN("stopSequences"),
+     LONEJSON__KEY_FIRST("stopSequences"), LONEJSON__KEY_LAST("stopSequences"),
+     offsetof(cai_mcp_sampling_params_doc, stop_sequences.items),
+     LONEJSON_FIELD_KIND_STRING_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, 0U,
+     offsetof(cai_mcp_sampling_params_doc, stop_sequences.count), 0U, NULL,
+     NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    {"metadata", LONEJSON__KEY_LEN("metadata"), LONEJSON__KEY_FIRST("metadata"),
+     LONEJSON__KEY_LAST("metadata"),
+     offsetof(cai_mcp_sampling_params_doc, metadata),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_F64_PRESENT(cai_mcp_sampling_params_doc, max_tokens,
                                has_max_tokens, "maxTokens")};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
@@ -2862,6 +2892,14 @@ static int cai_mcp_validate_sampling_params(
   } else if (!cai_mcp_json_value_root_is(&doc.messages, '[', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP sampling messages must be an array");
+  } else if (doc.model_preferences.kind != LONEJSON_JSON_VALUE_NULL &&
+             !cai_mcp_json_value_root_is(&doc.model_preferences, '{', error)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling modelPreferences must be an object");
+  } else if (doc.metadata.kind != LONEJSON_JSON_VALUE_NULL &&
+             !cai_mcp_json_value_root_is(&doc.metadata, '{', error)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling metadata must be an object");
   } else if (doc.tools.kind != LONEJSON_JSON_VALUE_NULL &&
              !cai_mcp_json_value_root_is(&doc.tools, '[', error)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,

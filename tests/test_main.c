@@ -17020,6 +17020,55 @@ static void test_mcp_streamable_http_sampling_tools_not_array(
       "MCP sampling tools must be an array");
 }
 
+static void test_mcp_streamable_http_sampling_metadata_not_object(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_metadata_not_object",
+      "sampling-metadata-not-object-session", "sample-metadata-not-object-1",
+      "{\"messages\":[],\"maxTokens\":16,\"metadata\":[]}",
+      "MCP sampling metadata must be an object");
+}
+
+static void test_mcp_streamable_http_sampling_model_preferences_not_object(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_model_preferences_not_object",
+      "sampling-model-prefs-not-object-session",
+      "sample-model-prefs-not-object-1",
+      "{\"messages\":[],\"maxTokens\":16,\"modelPreferences\":[]}",
+      "MCP sampling modelPreferences must be an object");
+}
+
+static void test_mcp_streamable_http_sampling_system_prompt_not_string(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_system_prompt_not_string",
+      "sampling-system-prompt-not-string-session",
+      "sample-system-prompt-not-string-1",
+      "{\"messages\":[],\"maxTokens\":16,\"systemPrompt\":[]}",
+      "failed to parse MCP sampling params");
+}
+
+static void test_mcp_streamable_http_sampling_temperature_not_number(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_temperature_not_number",
+      "sampling-temperature-not-number-session",
+      "sample-temperature-not-number-1",
+      "{\"messages\":[],\"maxTokens\":16,\"temperature\":\"hot\"}",
+      "failed to parse MCP sampling params");
+}
+
+static void test_mcp_streamable_http_sampling_stop_sequences_not_strings(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_stop_sequences_not_strings",
+      "sampling-stop-sequences-not-strings-session",
+      "sample-stop-sequences-not-strings-1",
+      "{\"messages\":[],\"maxTokens\":16,\"stopSequences\":[1]}",
+      "failed to parse MCP sampling params");
+}
+
 static void test_mcp_streamable_http_sampling_tool_missing_input_schema(
     test_state *state) {
   test_mcp_streamable_http_sampling_param_validation_case(
@@ -33023,6 +33072,16 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_messages_not_array},
     {"mcp_streamable_http_sampling_tools_not_array",
      test_mcp_streamable_http_sampling_tools_not_array},
+    {"mcp_streamable_http_sampling_metadata_not_object",
+     test_mcp_streamable_http_sampling_metadata_not_object},
+    {"mcp_streamable_http_sampling_model_preferences_not_object",
+     test_mcp_streamable_http_sampling_model_preferences_not_object},
+    {"mcp_streamable_http_sampling_system_prompt_not_string",
+     test_mcp_streamable_http_sampling_system_prompt_not_string},
+    {"mcp_streamable_http_sampling_temperature_not_number",
+     test_mcp_streamable_http_sampling_temperature_not_number},
+    {"mcp_streamable_http_sampling_stop_sequences_not_strings",
+     test_mcp_streamable_http_sampling_stop_sequences_not_strings},
     {"mcp_streamable_http_sampling_tool_missing_input_schema",
      test_mcp_streamable_http_sampling_tool_missing_input_schema},
     {"mcp_streamable_http_sampling_tool_input_schema_type",
