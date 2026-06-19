@@ -182,38 +182,6 @@ typedef int (*cai_mcp_client_notification_fn)(
     void *context, const char *method, struct lonejson_spooled *params_json,
     cai_error *error);
 
-/** Callback for server-to-client MCP roots/list requests.
- *
- * Implementations write a complete MCP ListRootsResult JSON object to
- * `result_json`, for example
- * `{"roots":[{"uri":"file:///repo","name":"repo"}]}`. cai wraps that result in
- * the transport-specific JSON-RPC response.
- */
-typedef int (*cai_mcp_client_list_roots_fn)(void *context,
-                                            cai_sink *result_json,
-                                            cai_error *error);
-
-/** Callback for server-to-client MCP sampling/createMessage requests.
- *
- * `params_json` contains the CreateMessageRequestParams. Implementations write
- * a complete MCP CreateMessageResult JSON object to `result_json`; cai wraps
- * that result in the transport-specific JSON-RPC response.
- */
-typedef int (*cai_mcp_client_create_message_fn)(
-    void *context, struct lonejson_spooled *params_json, cai_sink *result_json,
-    cai_error *error);
-
-/** Callback for server-to-client MCP elicitation/create requests.
- *
- * `params_json` contains the ElicitRequestParams. Implementations write a
- * complete MCP ElicitResult JSON object to `result_json`; cai wraps that result
- * in the transport-specific JSON-RPC response.
- */
-typedef int (*cai_mcp_client_elicit_fn)(void *context,
-                                        struct lonejson_spooled *params_json,
-                                        cai_sink *result_json,
-                                        cai_error *error);
-
 /** Receiver callbacks for server-to-client MCP messages. */
 typedef struct cai_mcp_client_receiver {
   /** Shared receiver context passed to all callbacks. */
@@ -222,26 +190,6 @@ typedef struct cai_mcp_client_receiver {
   void (*cleanup)(void *context);
   /** Optional callback for server notifications on response streams. */
   cai_mcp_client_notification_fn notification;
-  /** Optional callback for roots/list requests. */
-  cai_mcp_client_list_roots_fn list_roots;
-  /** Optional callback for sampling/createMessage requests. */
-  cai_mcp_client_create_message_fn create_message;
-  /** Optional callback for elicitation/create requests. */
-  cai_mcp_client_elicit_fn elicit;
-  /** Non-zero advertises roots.listChanged during initialization. */
-  int roots_list_changed;
-  /** Non-zero advertises sampling.tools during initialization. */
-  int sampling_tools;
-  /** Non-zero advertises sampling.context during initialization. */
-  int sampling_context;
-  /** Non-zero advertises elicitation.form during initialization. */
-  int elicitation_form;
-  /** Non-zero advertises elicitation.url during initialization. */
-  int elicitation_url;
-  /** Non-zero advertises task-augmented sampling/createMessage requests. */
-  int task_sampling_create_message;
-  /** Non-zero advertises task-augmented elicitation/create requests. */
-  int task_elicitation_create;
 } cai_mcp_client_receiver;
 
 /** Configuration for cai's built-in Streamable HTTP MCP client. */
@@ -338,15 +286,6 @@ struct cai_mcp_client {
   int (*call_tool)(cai_mcp_client *client, const char *name,
                    struct lonejson_spooled *arguments_json, cai_sink *output,
                    cai_error *error);
-  /** Call one remote tool using task-augmented execution and stream result
-   * JSON.
-   *
-   * `ttl_ms` is the requested task retention duration in milliseconds; a
-   * negative value omits the optional TTL.
-   */
-  int (*call_tool_task)(cai_mcp_client *client, const char *name,
-                        struct lonejson_spooled *arguments_json,
-                        long long ttl_ms, cai_sink *output, cai_error *error);
   /** Refresh the cached remote resources/list metadata. */
   int (*refresh_resources)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached resources. */
@@ -357,12 +296,6 @@ struct cai_mcp_client {
   /** Read one remote resource by URI and stream result JSON. */
   int (*read_resource)(cai_mcp_client *client, const char *uri,
                        cai_sink *output, cai_error *error);
-  /** Subscribe to update notifications for one remote resource URI. */
-  int (*subscribe_resource)(cai_mcp_client *client, const char *uri,
-                            cai_error *error);
-  /** Unsubscribe from update notifications for one remote resource URI. */
-  int (*unsubscribe_resource)(cai_mcp_client *client, const char *uri,
-                              cai_error *error);
   /** Refresh the cached remote resources/templates/list metadata. */
   int (*refresh_resource_templates)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached resource templates. */
@@ -392,11 +325,6 @@ struct cai_mcp_client {
                   const char *argument_value,
                   struct lonejson_spooled *context_arguments_json,
                   cai_sink *output, cai_error *error);
-  /** Set the minimum server log level for MCP logging notifications. */
-  int (*set_log_level)(cai_mcp_client *client, const char *level,
-                       cai_error *error);
-  /** Explicitly terminate the remote MCP session when supported. */
-  int (*terminate_session)(cai_mcp_client *client, cai_error *error);
   /** Send one client-to-server JSON-RPC request and stream the result JSON. */
   int (*send_request)(cai_mcp_client *client, const char *method,
                       struct lonejson_spooled *params_json, cai_sink *output,
@@ -409,12 +337,6 @@ struct cai_mcp_client {
   int (*send_notification)(cai_mcp_client *client, const char *method,
                            struct lonejson_spooled *params_json,
                            cai_error *error);
-  /** Drain server-initiated MCP events until the transport stream closes.
-   *
-   * Transport implementations that do not support a standalone server event
-   * stream may treat this as a successful no-op.
-   */
-  int (*drain_events)(cai_mcp_client *client, cai_error *error);
   /** Destroy this MCP client and release associated resources. */
   void (*destroy)(cai_mcp_client *client);
   /** Private implementation pointer; custom clients may use this freely. */
@@ -460,11 +382,6 @@ const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
 int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
                              cai_sink *output, cai_error *error);
-/** Call one remote MCP tool as a task and stream CreateTaskResult JSON. */
-int cai_mcp_client_call_tool_task(cai_mcp_client *client, const char *name,
-                                  struct lonejson_spooled *arguments_json,
-                                  long long ttl_ms, cai_sink *output,
-                                  cai_error *error);
 /** Refresh cached remote resources/list metadata. */
 int cai_mcp_client_refresh_resources(cai_mcp_client *client, cai_error *error);
 /** Return the number of cached MCP resources. */
@@ -475,12 +392,6 @@ cai_mcp_client_resource_at(const cai_mcp_client *client, size_t index);
 /** Read one remote MCP resource and stream result JSON to `output`. */
 int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
                                  cai_sink *output, cai_error *error);
-/** Subscribe to update notifications for one remote MCP resource URI. */
-int cai_mcp_client_subscribe_resource(cai_mcp_client *client, const char *uri,
-                                      cai_error *error);
-/** Unsubscribe from update notifications for one remote MCP resource URI. */
-int cai_mcp_client_unsubscribe_resource(cai_mcp_client *client, const char *uri,
-                                        cai_error *error);
 /** Refresh cached remote resources/templates/list metadata. */
 int cai_mcp_client_refresh_resource_templates(cai_mcp_client *client,
                                               cai_error *error);
@@ -506,11 +417,6 @@ int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
                             const char *argument_value,
                             struct lonejson_spooled *context_arguments_json,
                             cai_sink *output, cai_error *error);
-/** Set the minimum server log level for MCP logging notifications. */
-int cai_mcp_client_set_log_level(cai_mcp_client *client, const char *level,
-                                 cai_error *error);
-/** Explicitly terminate the remote MCP session when supported. */
-int cai_mcp_client_terminate_session(cai_mcp_client *client, cai_error *error);
 /** Send one client-to-server JSON-RPC request and stream result JSON. */
 int cai_mcp_client_send_request(cai_mcp_client *client, const char *method,
                                 struct lonejson_spooled *params_json,
@@ -519,23 +425,6 @@ int cai_mcp_client_send_request(cai_mcp_client *client, const char *method,
 int cai_mcp_client_send_notification(cai_mcp_client *client, const char *method,
                                      struct lonejson_spooled *params_json,
                                      cai_error *error);
-/** Notify the server that the client roots list has changed. */
-int cai_mcp_client_notify_roots_list_changed(cai_mcp_client *client,
-                                             cai_error *error);
-/** Stream the tasks/list result JSON, optionally starting after `cursor`. */
-int cai_mcp_client_list_tasks(cai_mcp_client *client, const char *cursor,
-                              cai_sink *output, cai_error *error);
-/** Stream one tasks/get result JSON for `task_id`. */
-int cai_mcp_client_get_task(cai_mcp_client *client, const char *task_id,
-                            cai_sink *output, cai_error *error);
-/** Stream one tasks/result JSON for `task_id`. */
-int cai_mcp_client_get_task_result(cai_mcp_client *client, const char *task_id,
-                                   cai_sink *output, cai_error *error);
-/** Stream one tasks/cancel result JSON for `task_id`. */
-int cai_mcp_client_cancel_task(cai_mcp_client *client, const char *task_id,
-                               cai_sink *output, cai_error *error);
-/** Drain server-initiated MCP events until the transport stream closes. */
-int cai_mcp_client_drain_events(cai_mcp_client *client, cai_error *error);
 /** Register all cached/discovered MCP client tools into a local tool registry.
  *
  * The registry callbacks keep a non-owning pointer to `client`; callers must

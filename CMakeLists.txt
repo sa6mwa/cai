@@ -751,8 +751,6 @@ if(CAI_BUILD_TESTS)
     mcp_client_registry_adapter
     mcp_streamable_http_client_roundtrip
     mcp_streamable_http_call_result_must_be_object
-    mcp_streamable_http_call_task_result
-    mcp_streamable_http_call_task_invalid_status
     mcp_streamable_http_ping_error
     mcp_streamable_http_ping_error_missing_code
     mcp_streamable_http_ping_error_missing_message
@@ -886,36 +884,14 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_completion_array_context_arguments
     mcp_streamable_http_completion_non_string_context_argument
     mcp_streamable_http_completion_invalid_ref_type
-    mcp_streamable_http_resource_subscription_error
     mcp_streamable_http_list_changed_invalidates_cache
     mcp_streamable_http_tools_list_changed_array_params
     mcp_streamable_http_resources_list_changed_array_params
     mcp_streamable_http_prompts_list_changed_array_params
-    mcp_streamable_http_roots_list_changed_notification
-    mcp_streamable_http_roots_list_changed_not_advertised
     mcp_streamable_http_send_request_params
     mcp_streamable_http_send_notification_params
     mcp_streamable_http_notification_response_wrong_status
     mcp_streamable_http_notification_response_body
-    mcp_streamable_http_task_utilities
-    mcp_streamable_http_task_list_without_cursor
-    mcp_streamable_http_tasks_list_missing_ttl
-    mcp_streamable_http_tasks_list_invalid_status
-    mcp_streamable_http_tasks_list_status_message_not_string
-    mcp_streamable_http_tasks_get_missing_last_updated
-    mcp_streamable_http_tasks_get_string_ttl
-    mcp_streamable_http_tasks_get_negative_ttl
-    mcp_streamable_http_tasks_get_string_poll_interval
-    mcp_streamable_http_tasks_get_negative_poll_interval
-    mcp_streamable_http_tasks_cancel_missing_created_at
-    mcp_streamable_http_tasks_cancel_object_ttl
-    mcp_streamable_http_tasks_result_payload_shape
-    mcp_streamable_http_tasks_result_missing_related_task
-    mcp_streamable_http_tasks_result_related_task_mismatch
-    mcp_streamable_http_tasks_get_null_ttl
-    mcp_streamable_http_logging_error
-    mcp_streamable_http_terminate_session_405
-    mcp_streamable_http_terminate_session_error
     mcp_streamable_http_notification_callback_error
     mcp_streamable_http_logging_notification_null_data
     mcp_streamable_http_logging_notification_missing_data
@@ -924,93 +900,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resource_updated_notification
     mcp_streamable_http_resource_updated_missing_uri
     mcp_streamable_http_resource_updated_array_params
-    mcp_streamable_http_task_status_notification
-    mcp_streamable_http_task_status_missing_ttl
-    mcp_streamable_http_task_status_invalid_status
-    mcp_streamable_http_task_status_string_ttl
-    mcp_streamable_http_task_status_negative_ttl
-    mcp_streamable_http_task_status_string_poll_interval
-    mcp_streamable_http_task_status_negative_poll_interval
-    mcp_streamable_http_task_status_status_message_not_string
-    mcp_streamable_http_task_status_array_params
-    mcp_streamable_http_elicitation_complete_notification
-    mcp_streamable_http_elicitation_complete_missing_id
-    mcp_streamable_http_elicitation_complete_array_params
     mcp_streamable_http_server_ping_array_params
-    mcp_streamable_http_roots_list_request
-    mcp_streamable_http_roots_list_array_params
-    mcp_streamable_http_roots_list_callback_error
-    mcp_streamable_http_roots_list_invalid_result
-    mcp_streamable_http_roots_list_invalid_shape
-    mcp_streamable_http_sampling_request
-    mcp_streamable_http_sampling_invalid_result
-    mcp_streamable_http_sampling_array_content
-    mcp_streamable_http_sampling_audio_content
-    mcp_streamable_http_sampling_audio_invalid_base64
-    mcp_streamable_http_sampling_content_annotations
-    mcp_streamable_http_sampling_content_annotation_invalid_role
-    mcp_streamable_http_sampling_content_priority_out_of_range
-    mcp_streamable_http_sampling_stop_reason_not_string
-    mcp_streamable_http_sampling_text_missing_text
-    mcp_streamable_http_sampling_tool_use_missing_input
-    mcp_streamable_http_sampling_tool_use_array_input
-    mcp_streamable_http_sampling_tool_result_bad_content
-    mcp_streamable_http_sampling_tool_result_audio_content
-    mcp_streamable_http_sampling_tool_result_structured_array
-    mcp_streamable_http_sampling_tool_result_missing_content
-    mcp_streamable_http_sampling_unsupported_content
-    mcp_streamable_http_sampling_invalid_params
-    mcp_streamable_http_sampling_params_not_object
-    mcp_streamable_http_sampling_missing_max_tokens
-    mcp_streamable_http_sampling_messages_not_array
-    mcp_streamable_http_sampling_tools_not_array
-    mcp_streamable_http_sampling_metadata_not_object
-    mcp_streamable_http_sampling_model_preferences_not_object
-    mcp_streamable_http_sampling_model_preferences_hints_not_array
-    mcp_streamable_http_sampling_model_preferences_hint_name_not_string
-    mcp_streamable_http_sampling_model_preferences_priority_not_number
-    mcp_streamable_http_sampling_model_preferences_cost_priority_out_of_range
-    mcp_streamable_http_sampling_model_preferences_speed_priority_out_of_range
-    mcp_streamable_http_sampling_model_preferences_intelligence_priority_out_of_range
-    mcp_streamable_http_sampling_system_prompt_not_string
-    mcp_streamable_http_sampling_temperature_not_number
-    mcp_streamable_http_sampling_stop_sequences_not_strings
-    mcp_streamable_http_sampling_tool_missing_input_schema
-    mcp_streamable_http_sampling_tool_input_schema_type
-    mcp_streamable_http_sampling_tool_icon_bad_theme
-    mcp_streamable_http_sampling_tool_choice_not_object
-    mcp_streamable_http_sampling_tool_choice_mode_invalid
-    mcp_streamable_http_sampling_param_content_annotation_invalid_role
-    mcp_streamable_http_sampling_message_role_invalid
-    mcp_streamable_http_task_request_capabilities
-    mcp_streamable_http_task_request_flags_require_callbacks
-    mcp_streamable_http_sampling_tools_not_advertised
-    mcp_streamable_http_sampling_invalid_include_context
-    mcp_streamable_http_sampling_context_not_advertised
-    mcp_streamable_http_elicitation_request
-    mcp_streamable_http_elicitation_invalid_result
-    mcp_streamable_http_elicitation_invalid_action
-    mcp_streamable_http_elicitation_invalid_params
-    mcp_streamable_http_elicitation_schema_type_invalid
-    mcp_streamable_http_elicitation_schema_properties_missing
-    mcp_streamable_http_elicitation_schema_property_not_object
-    mcp_streamable_http_elicitation_schema_property_type_invalid
-    mcp_streamable_http_elicitation_schema_array_items_missing
-    mcp_streamable_http_elicitation_schema_array_items_not_object
-    mcp_streamable_http_elicitation_schema_array_items_empty
-    mcp_streamable_http_elicitation_schema_array_items_type_invalid
-    mcp_streamable_http_elicitation_schema_array_items_enum_value_invalid
-    mcp_streamable_http_elicitation_schema_array_items_anyof_entry_invalid
-    mcp_streamable_http_elicitation_schema_array_items_anyof_entry_missing_title
-    mcp_streamable_http_elicitation_missing_message
-    mcp_streamable_http_elicitation_url_not_advertised
     mcp_streamable_http_server_request_unsupported
     mcp_streamable_http_server_ping_request
-    mcp_streamable_http_drain_events_get_sse
-    mcp_streamable_http_drain_events_ping_request
-    mcp_streamable_http_drain_events_resume_get
-    mcp_streamable_http_drain_events_rejects_response
-    mcp_streamable_http_drain_events_405
     mcp_streamable_http_session_recovery
     mcp_streamable_http_server_error_no_recovery
     mcp_handler

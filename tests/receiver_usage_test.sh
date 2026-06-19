@@ -11,7 +11,7 @@ failures=$(
     -e 'cai_source_(read|reset|copy_to_sink|close)\(' \
     -e 'cai_sink_(write|close)\(' \
     -e 'cai_mcp_handler_(handle_http|destroy)\(' \
-    -e 'cai_mcp_client_(initialize|ping|refresh_tools|tool_count|tool_at|call_tool|call_tool_task|refresh_resources|resource_count|resource_at|read_resource|subscribe_resource|unsubscribe_resource|refresh_resource_templates|resource_template_count|resource_template_at|refresh_prompts|prompt_count|prompt_at|get_prompt|complete|set_log_level|terminate_session|send_request|send_notification|notify_roots_list_changed|list_tasks|get_task|get_task_result|cancel_task|drain_events|destroy)\(' \
+    -e 'cai_mcp_client_(initialize|ping|refresh_tools|tool_count|tool_at|call_tool|refresh_resources|resource_count|resource_at|read_resource|refresh_resource_templates|resource_template_count|resource_template_at|refresh_prompts|prompt_count|prompt_at|get_prompt|complete|send_request|send_notification|destroy)\(' \
     -e 'cai_chatgpt_auth_(access_token|refresh|close)\(' \
     -e 'cai_chatgpt_login_(handle_callback|completed|close)\(' \
     -e 'cai_tool_event_(write_output|write_arguments)\(' \

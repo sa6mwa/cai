@@ -230,37 +230,6 @@ int main(int argc, char **argv) {
   }
   writer.length = 0U;
   writer.data[0] = '\0';
-  CAI_LJ->spooled_init(CAI_LJ, &args);
-  lonejson_error_init(&json_error);
-  args_json = "{\"topic\":\"cai mcp task smoke\"}";
-  if (args.append(&args, args_json, strlen(args_json), &json_error) !=
-      LONEJSON_STATUS_OK) {
-    args.cleanup(&args);
-    cai_sink_close(sink);
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    fprintf(stderr, "failed to build task tool arguments: %s\n",
-            json_error.message);
-    return 1;
-  }
-  rc = cai_mcp_client_call_tool_task(client, "simulate-research-query", &args,
-                                     60000LL, sink, &error);
-  args.cleanup(&args);
-  if (rc != CAI_OK) {
-    cai_sink_close(sink);
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to call task-augmented tool", &error);
-  }
-  if (writer.data == NULL || strstr(writer.data, "\"task\"") == NULL ||
-      strstr(writer.data, "\"taskId\"") == NULL) {
-    cai_sink_close(sink);
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("task-augmented tool output was unexpected", NULL);
-  }
-  writer.length = 0U;
-  writer.data[0] = '\0';
   rc = cai_mcp_client_read_resource(
       client, "demo://resource/static/document/architecture.md", sink, &error);
   if (rc != CAI_OK) {
@@ -328,54 +297,6 @@ int main(int argc, char **argv) {
     cai_mcp_client_destroy(client);
     free(writer.data);
     return smoke_error("completion output was unexpected", NULL);
-  }
-  rc = cai_mcp_client_set_log_level(client, "info", &error);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to set MCP log level", &error);
-  }
-  rc = cai_mcp_client_subscribe_resource(
-      client, "demo://resource/static/document/architecture.md", &error);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to subscribe to architecture resource", &error);
-  }
-  rc = cai_mcp_client_unsubscribe_resource(
-      client, "demo://resource/static/document/architecture.md", &error);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to unsubscribe from architecture resource",
-                       &error);
-  }
-  writer.length = 0U;
-  writer.data[0] = '\0';
-  callbacks.context = &writer;
-  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to recreate task output sink", &error);
-  }
-  rc = cai_mcp_client_list_tasks(client, NULL, sink, &error);
-  cai_sink_close(sink);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to list MCP tasks", &error);
-  }
-  if (writer.data == NULL || strstr(writer.data, "\"tasks\"") == NULL) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("tasks/list output was unexpected", NULL);
-  }
-  rc = cai_mcp_client_terminate_session(client, &error);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    free(writer.data);
-    return smoke_error("failed to terminate MCP session", &error);
   }
   cai_mcp_client_destroy(client);
   printf("MCP client smoke passed at %s\n", argv[1]);
