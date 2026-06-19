@@ -536,6 +536,9 @@ static int cai_mcp_validate_optional_icons(
     const lonejson_json_value *icons, const char *array_error_message,
     const char *parse_error_message, const char *theme_error_message,
     cai_error *error);
+static int cai_mcp_validate_tool_array(const lonejson_json_value *tools,
+                                       const char *parse_message,
+                                       cai_error *error);
 static int cai_mcp_task_validate(const cai_mcp_task_doc *task,
                                  cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
@@ -2832,6 +2835,11 @@ static int cai_mcp_validate_sampling_params(
                        "MCP sampling tools must be an array");
   } else {
     rc = cai_mcp_validate_sampling_messages(&doc.messages, error);
+    if (rc == CAI_OK && doc.tools.kind != LONEJSON_JSON_VALUE_NULL) {
+      rc = cai_mcp_validate_tool_array(&doc.tools,
+                                       "failed to parse MCP sampling tools",
+                                       error);
+    }
     if (doc.tool_choice.kind != LONEJSON_JSON_VALUE_NULL) {
       if (rc == CAI_OK) {
         rc = cai_mcp_validate_sampling_tool_choice(&doc.tool_choice, error);
@@ -6724,6 +6732,106 @@ static int cai_mcp_validate_tool_schema_type(
   return rc;
 }
 
+static int cai_mcp_validate_list_tool_doc(const cai_mcp_list_tool_doc *tool,
+                                          cai_error *error) {
+  int rc;
+
+  if (tool == NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL, "MCP tool is required");
+  }
+  rc = cai_mcp_validate_tool_schema_type(
+      &tool->input_schema, "MCP tool inputSchema must be an object",
+      "failed to parse MCP tool inputSchema",
+      "MCP tool inputSchema type must be object", 1, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_validate_tool_schema_type(
+      &tool->output_schema, "MCP tool outputSchema must be an object",
+      "failed to parse MCP tool outputSchema",
+      "MCP tool outputSchema type must be object", 0, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_validate_optional_tool_annotations(&tool->annotations, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_mcp_validate_optional_icons(
+      &tool->icons, "MCP tool icons must be an array",
+      "failed to parse MCP tool icons",
+      "MCP tool icon theme must be light or dark", error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_mcp_validate_optional_tool_execution(&tool->execution, error);
+}
+
+static char *cai_mcp_wrap_tools_array_json(const char *array_json,
+                                           cai_error *error) {
+  static const char prefix[] = "{\"tools\":";
+  cai_buffer_builder builder;
+
+  if (array_json == NULL) {
+    return NULL;
+  }
+  memset(&builder, 0, sizeof(builder));
+  if (cai_buffer_append(&builder, prefix, sizeof(prefix) - 1U, error) !=
+          CAI_OK ||
+      cai_buffer_append(&builder, array_json, strlen(array_json), error) !=
+          CAI_OK ||
+      cai_buffer_append(&builder, "}", 1U, error) != CAI_OK ||
+      cai_buffer_append(&builder, "", 1U, error) != CAI_OK) {
+    cai_free_mem(NULL, builder.data);
+    return NULL;
+  }
+  return builder.data;
+}
+
+static int cai_mcp_validate_tool_array(const lonejson_json_value *tools,
+                                       const char *parse_message,
+                                       cai_error *error) {
+  cai_mcp_tools_list_result_doc doc;
+  cai_mcp_list_tool_doc *items;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *tools_json;
+  char *wrapped_json;
+  size_t i;
+  int rc;
+
+  tools_json = cai_mcp_json_value_to_cstr(tools, error);
+  if (tools_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code
+                                                  : CAI_ERR_NOMEM;
+  }
+  wrapped_json = cai_mcp_wrap_tools_array_json(tools_json, error);
+  cai_free_mem(NULL, tools_json);
+  if (wrapped_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code
+                                                  : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tools_list_result_map, &doc,
+                              wrapped_json, &json_error);
+  cai_free_mem(NULL, wrapped_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_result_map, &doc);
+    return cai_mcp_set_json_error(error, parse_message, &json_error);
+  }
+  items = (cai_mcp_list_tool_doc *)doc.tools.items;
+  rc = CAI_OK;
+  for (i = 0U; i < doc.tools.count; i++) {
+    rc = cai_mcp_validate_list_tool_doc(&items[i], error);
+    if (rc != CAI_OK) {
+      break;
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_result_map, &doc);
+  return rc;
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -6776,42 +6884,7 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
   }
   src_tools = (cai_mcp_list_tool_doc *)doc.result.tools.items;
   for (i = 0U; i < doc.result.tools.count; i++) {
-    rc = cai_mcp_validate_tool_schema_type(
-        &src_tools[i].input_schema, "MCP tool inputSchema must be an object",
-        "failed to parse MCP tool inputSchema",
-        "MCP tool inputSchema type must be object", 1, error);
-    if (rc != CAI_OK) {
-      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
-      json_body.cleanup(&json_body);
-      return rc;
-    }
-    rc = cai_mcp_validate_tool_schema_type(
-        &src_tools[i].output_schema, "MCP tool outputSchema must be an object",
-        "failed to parse MCP tool outputSchema",
-        "MCP tool outputSchema type must be object", 0, error);
-    if (rc != CAI_OK) {
-      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
-      json_body.cleanup(&json_body);
-      return rc;
-    }
-    rc = cai_mcp_validate_optional_tool_annotations(&src_tools[i].annotations,
-                                                    error);
-    if (rc != CAI_OK) {
-      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
-      json_body.cleanup(&json_body);
-      return rc;
-    }
-    rc = cai_mcp_validate_optional_icons(
-        &src_tools[i].icons, "MCP tool icons must be an array",
-        "failed to parse MCP tool icons",
-        "MCP tool icon theme must be light or dark", error);
-    if (rc != CAI_OK) {
-      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
-      json_body.cleanup(&json_body);
-      return rc;
-    }
-    rc = cai_mcp_validate_optional_tool_execution(&src_tools[i].execution,
-                                                  error);
+    rc = cai_mcp_validate_list_tool_doc(&src_tools[i], error);
     if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tools_list_response_map, &doc);
       json_body.cleanup(&json_body);

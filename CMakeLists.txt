@@ -937,6 +937,9 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_missing_max_tokens
     mcp_streamable_http_sampling_messages_not_array
     mcp_streamable_http_sampling_tools_not_array
+    mcp_streamable_http_sampling_tool_missing_input_schema
+    mcp_streamable_http_sampling_tool_input_schema_type
+    mcp_streamable_http_sampling_tool_icon_bad_theme
     mcp_streamable_http_sampling_tool_choice_not_object
     mcp_streamable_http_sampling_tool_choice_mode_invalid
     mcp_streamable_http_sampling_param_content_annotation_invalid_role

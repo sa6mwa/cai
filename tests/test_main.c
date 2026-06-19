@@ -16709,6 +16709,38 @@ static void test_mcp_streamable_http_sampling_tools_not_array(
       "MCP sampling tools must be an array");
 }
 
+static void test_mcp_streamable_http_sampling_tool_missing_input_schema(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_tool_missing_input_schema",
+      "sampling-tool-missing-input-schema-session",
+      "sample-tool-missing-input-schema-1",
+      "{\"messages\":[],\"maxTokens\":16,\"tools\":[{\"name\":\"lookup\"}]}",
+      "failed to parse MCP sampling tools");
+}
+
+static void test_mcp_streamable_http_sampling_tool_input_schema_type(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_tool_input_schema_type",
+      "sampling-tool-input-schema-type-session",
+      "sample-tool-input-schema-type-1",
+      "{\"messages\":[],\"maxTokens\":16,\"tools\":[{\"name\":\"lookup\","
+      "\"inputSchema\":{\"type\":\"array\"}}]}",
+      "MCP tool inputSchema type must be object");
+}
+
+static void test_mcp_streamable_http_sampling_tool_icon_bad_theme(
+    test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_tool_icon_bad_theme",
+      "sampling-tool-icon-bad-theme-session", "sample-tool-icon-bad-theme-1",
+      "{\"messages\":[],\"maxTokens\":16,\"tools\":[{\"name\":\"lookup\","
+      "\"inputSchema\":{\"type\":\"object\"},\"icons\":[{\"src\":\"icon."
+      "png\",\"theme\":\"system\"}]}]}",
+      "MCP tool icon theme must be light or dark");
+}
+
 static void test_mcp_streamable_http_sampling_tool_choice_not_object(
     test_state *state) {
   test_mcp_streamable_http_sampling_param_validation_case(
@@ -32634,6 +32666,12 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_messages_not_array},
     {"mcp_streamable_http_sampling_tools_not_array",
      test_mcp_streamable_http_sampling_tools_not_array},
+    {"mcp_streamable_http_sampling_tool_missing_input_schema",
+     test_mcp_streamable_http_sampling_tool_missing_input_schema},
+    {"mcp_streamable_http_sampling_tool_input_schema_type",
+     test_mcp_streamable_http_sampling_tool_input_schema_type},
+    {"mcp_streamable_http_sampling_tool_icon_bad_theme",
+     test_mcp_streamable_http_sampling_tool_icon_bad_theme},
     {"mcp_streamable_http_sampling_tool_choice_not_object",
      test_mcp_streamable_http_sampling_tool_choice_not_object},
     {"mcp_streamable_http_sampling_tool_choice_mode_invalid",
