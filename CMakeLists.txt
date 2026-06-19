@@ -815,6 +815,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resource_templates_list_array_annotations
     mcp_streamable_http_prompts_list_missing_prompts
     mcp_streamable_http_prompts_list_object_arguments
+    mcp_streamable_http_prompts_list_argument_missing_name
+    mcp_streamable_http_prompts_list_argument_required_not_bool
     mcp_streamable_http_prompts_list_object_icons
     mcp_streamable_http_prompts_list_icon_metadata
     mcp_streamable_http_tool_call_missing_content

@@ -171,6 +171,18 @@ typedef struct cai_mcp_icons_doc {
   lonejson_object_array icons;
 } cai_mcp_icons_doc;
 
+typedef struct cai_mcp_prompt_argument_doc {
+  char *name;
+  char *title;
+  char *description;
+  int has_required;
+  int required;
+} cai_mcp_prompt_argument_doc;
+
+typedef struct cai_mcp_prompt_arguments_doc {
+  lonejson_object_array arguments;
+} cai_mcp_prompt_arguments_doc;
+
 typedef struct cai_mcp_list_tool_doc {
   char *name;
   char *description;
@@ -629,6 +641,28 @@ static const lonejson_field cai_mcp_icons_fields[] = {
      LONEJSON_SPOOL_CLASS_DEFAULT}};
 LONEJSON_MAP_DEFINE(cai_mcp_icons_map, cai_mcp_icons_doc,
                     cai_mcp_icons_fields);
+
+static const lonejson_field cai_mcp_prompt_argument_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_prompt_argument_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_prompt_argument_doc, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC(cai_mcp_prompt_argument_doc, description,
+                                "description"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_mcp_prompt_argument_doc, required,
+                                has_required, "required")};
+LONEJSON_MAP_DEFINE(cai_mcp_prompt_argument_map, cai_mcp_prompt_argument_doc,
+                    cai_mcp_prompt_argument_fields);
+
+static const lonejson_field cai_mcp_prompt_arguments_fields[] = {
+    {"arguments", LONEJSON__KEY_LEN("arguments"),
+     LONEJSON__KEY_FIRST("arguments"), LONEJSON__KEY_LAST("arguments"),
+     offsetof(cai_mcp_prompt_arguments_doc, arguments),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_mcp_prompt_argument_doc), &cai_mcp_prompt_argument_map, NULL,
+     0U, LONEJSON_SPOOL_CLASS_DEFAULT}};
+LONEJSON_MAP_DEFINE(cai_mcp_prompt_arguments_map,
+                    cai_mcp_prompt_arguments_doc,
+                    cai_mcp_prompt_arguments_fields);
 
 static const lonejson_field cai_mcp_cancelled_params_fields[] = {
     {"requestId", LONEJSON__KEY_LEN("requestId"),
@@ -6206,6 +6240,54 @@ static int cai_mcp_validate_optional_icons(
   return rc;
 }
 
+static int cai_mcp_validate_optional_prompt_arguments(
+    const lonejson_json_value *arguments, cai_error *error) {
+  cai_mcp_prompt_arguments_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  char *arguments_json;
+  char *wrapped_json;
+  size_t arguments_json_len;
+  size_t wrapped_len;
+
+  if (!cai_mcp_optional_json_array_is_valid(arguments, error)) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP prompt arguments must be an array");
+  }
+  if (arguments == NULL || arguments->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  arguments_json = cai_mcp_json_value_to_cstr(arguments, error);
+  if (arguments_json == NULL) {
+    return error != NULL && error->code != CAI_OK
+               ? error->code
+               : CAI_ERR_NOMEM;
+  }
+  arguments_json_len = strlen(arguments_json);
+  wrapped_len = sizeof("{\"arguments\":}") + arguments_json_len;
+  wrapped_json = (char *)cai_alloc(NULL, wrapped_len);
+  if (wrapped_json == NULL) {
+    cai_free_mem(NULL, arguments_json);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP prompt arguments "
+                         "validation JSON");
+  }
+  snprintf(wrapped_json, wrapped_len, "{\"arguments\":%s}", arguments_json);
+  cai_free_mem(NULL, arguments_json);
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc,
+                              wrapped_json, &json_error);
+  cai_free_mem(NULL, wrapped_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc);
+    return cai_mcp_set_json_error(
+        error, "failed to parse MCP prompt arguments", &json_error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc);
+  return CAI_OK;
+}
+
 static int
 cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
                                   const cai_mcp_http_response_capture *response,
@@ -6707,12 +6789,12 @@ static int cai_mcp_parse_prompts_list_response(
   }
   src_prompts = (cai_mcp_list_prompt_doc *)doc.result.prompts.items;
   for (i = 0U; i < doc.result.prompts.count; i++) {
-    if (!cai_mcp_optional_json_array_is_valid(&src_prompts[i].arguments,
-                                              error)) {
+    rc = cai_mcp_validate_optional_prompt_arguments(&src_prompts[i].arguments,
+                                                    error);
+    if (rc != CAI_OK) {
       CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompts_list_response_map, &doc);
       json_body.cleanup(&json_body);
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP prompt arguments must be an array");
+      return rc;
     }
     rc = cai_mcp_validate_optional_icons(
         &src_prompts[i].icons, "MCP prompt icons must be an array",

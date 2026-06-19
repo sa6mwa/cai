@@ -12704,6 +12704,32 @@ test_mcp_streamable_http_prompts_list_object_arguments(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_prompts_list_argument_missing_name(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":[{\"description\":\"topic\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_argument_missing_name",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "failed to parse MCP prompt arguments");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_argument_required_not_bool(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":[{\"name\":\"topic\",\"required\":"
+      "\"true\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_argument_required_not_bool",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "failed to parse MCP prompt arguments");
+}
+
+static void
 test_mcp_streamable_http_prompts_list_object_icons(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
@@ -12719,7 +12745,9 @@ static void
 test_mcp_streamable_http_prompts_list_icon_metadata(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
-      "\"summarize\",\"icons\":[{\"src\":\"data:image/png;base64,aQ==\","
+      "\"summarize\",\"arguments\":[{\"name\":\"topic\",\"title\":\"Topic\","
+      "\"description\":\"Subject to summarize\",\"required\":true}],"
+      "\"icons\":[{\"src\":\"data:image/png;base64,aQ==\","
       "\"mimeType\":\"image/png\",\"sizes\":[\"48x48\",\"any\"],\"theme\":"
       "\"dark\"}]}]}}";
   http_mock_server server;
@@ -12777,10 +12805,13 @@ test_mcp_streamable_http_prompts_list_icon_metadata(test_state *state) {
              (long)cai_mcp_client_prompt_count(client), 1L);
   prompt = cai_mcp_client_prompt_at(client, 0U);
   if (prompt == NULL || prompt->icons_json == NULL ||
+      prompt->arguments_json == NULL ||
+      strstr(prompt->arguments_json, "\"name\":\"topic\"") == NULL ||
+      strstr(prompt->arguments_json, "\"required\":true") == NULL ||
       strstr(prompt->icons_json, "\"theme\":\"dark\"") == NULL ||
       strstr(prompt->icons_json, "\"sizes\":[\"48x48\",\"any\"]") == NULL) {
     test_fail(state, "mcp_streamable_prompts_list_icon_metadata_json",
-              "prompt icon metadata was not preserved");
+              "prompt argument or icon metadata was not preserved");
   }
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
@@ -31973,6 +32004,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompts_list_missing_prompts},
     {"mcp_streamable_http_prompts_list_object_arguments",
      test_mcp_streamable_http_prompts_list_object_arguments},
+    {"mcp_streamable_http_prompts_list_argument_missing_name",
+     test_mcp_streamable_http_prompts_list_argument_missing_name},
+    {"mcp_streamable_http_prompts_list_argument_required_not_bool",
+     test_mcp_streamable_http_prompts_list_argument_required_not_bool},
     {"mcp_streamable_http_prompts_list_object_icons",
      test_mcp_streamable_http_prompts_list_object_icons},
     {"mcp_streamable_http_prompts_list_icon_metadata",
