@@ -13031,6 +13031,18 @@ test_mcp_streamable_http_prompt_get_unknown_content_type(test_state *state) {
       "MCP content block type is not supported");
 }
 
+static void test_mcp_streamable_http_completion_result(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":["
+      "\"alpha\",\"alphabet\"],\"total\":2,\"hasMore\":false}}}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_completion_result", TEST_MCP_RESULT_COMPLETION,
+      "\"method\":\"completion/complete\"", response_body,
+      "{\"completion\":{\"values\":[\"alpha\",\"alphabet\"],\"total\":2,"
+      "\"hasMore\":false}}");
+}
+
 static void
 test_mcp_streamable_http_completion_missing_values(test_state *state) {
   static const char response_body[] =
@@ -27948,6 +27960,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_prompt_get_resource_link_negative_size},
     {"mcp_streamable_http_prompt_get_unknown_content_type",
      test_mcp_streamable_http_prompt_get_unknown_content_type},
+    {"mcp_streamable_http_completion_result",
+     test_mcp_streamable_http_completion_result},
     {"mcp_streamable_http_completion_missing_values",
      test_mcp_streamable_http_completion_missing_values},
     {"mcp_streamable_http_completion_non_string_value",

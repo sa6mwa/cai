@@ -5919,6 +5919,7 @@ static int cai_mcp_validate_completion_response_shape(
     return cai_mcp_set_json_error(
         error, "failed to parse MCP completion/complete", &json_error);
   }
+  rc = CAI_OK;
   if (doc.result.completion.values.count > 100U) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP completion values must not exceed 100 items");
