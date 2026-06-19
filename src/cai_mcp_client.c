@@ -381,6 +381,8 @@ typedef struct cai_mcp_sampling_params_doc {
   lonejson_json_value tools;
   lonejson_json_value tool_choice;
   char *include_context;
+  int has_max_tokens;
+  double max_tokens;
 } cai_mcp_sampling_params_doc;
 
 typedef struct cai_mcp_cancelled_params_doc {
@@ -580,7 +582,9 @@ static const lonejson_field cai_mcp_sampling_params_fields[] = {
      LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
      NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_sampling_params_doc, include_context,
-                                "includeContext")};
+                                "includeContext"),
+    LONEJSON_FIELD_F64_PRESENT(cai_mcp_sampling_params_doc, max_tokens,
+                               has_max_tokens, "maxTokens")};
 LONEJSON_MAP_DEFINE(cai_mcp_sampling_params_map, cai_mcp_sampling_params_doc,
                     cai_mcp_sampling_params_fields);
 
@@ -2514,7 +2518,13 @@ static int cai_mcp_validate_sampling_params(
   *uses_tools = doc.tools.kind != LONEJSON_JSON_VALUE_NULL ||
                 doc.tool_choice.kind != LONEJSON_JSON_VALUE_NULL;
   rc = CAI_OK;
-  if (!cai_mcp_sampling_context_is_valid(doc.include_context)) {
+  if (!doc.has_max_tokens) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling maxTokens is required");
+  } else if (!cai_mcp_json_value_root_is(&doc.messages, '[', error)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP sampling messages must be an array");
+  } else if (!cai_mcp_sampling_context_is_valid(doc.include_context)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP sampling includeContext is invalid");
   } else if (cai_mcp_sampling_context_is_remote(doc.include_context) &&

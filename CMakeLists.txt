@@ -904,6 +904,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sampling_unsupported_content
     mcp_streamable_http_sampling_invalid_params
     mcp_streamable_http_sampling_params_not_object
+    mcp_streamable_http_sampling_missing_max_tokens
+    mcp_streamable_http_sampling_messages_not_array
     mcp_streamable_http_task_request_capabilities
     mcp_streamable_http_task_request_flags_require_callbacks
     mcp_streamable_http_sampling_tools_not_advertised

@@ -16041,6 +16041,156 @@ test_mcp_streamable_http_sampling_params_not_object(test_state *state) {
                     server.pid, &server.child_status);
 }
 
+static void test_mcp_streamable_http_sampling_param_validation_case(
+    test_state *state, const char *case_name, const char *session_id,
+    const char *request_id, const char *params_json,
+    const char *error_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\"",
+                                        "\"capabilities\":{\"sampling\":{}}"};
+  char ping_body[1536];
+  char session_header[160];
+  char init_response_header[192];
+  char request_id_required[192];
+  char error_message_required[256];
+  char mock_name[192];
+  char open_label[192];
+  char ping_label[192];
+  char count_label[192];
+  const char *initialized_required[3];
+  const char *ping_required[4];
+  const char *sampling_error_required[5];
+  mock_http_expectation script[4];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_sampling_state sampling;
+  cai_error error;
+  char url[192];
+
+  if (snprintf(ping_body, sizeof(ping_body),
+               "event: message\n"
+               "data: {\"jsonrpc\":\"2.0\",\"id\":\"%s\","
+               "\"method\":\"sampling/createMessage\",\"params\":%s}\n\n"
+               "event: message\n"
+               "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n",
+               request_id, params_json) >= (int)sizeof(ping_body) ||
+      snprintf(session_header, sizeof(session_header), "MCP-Session-Id: %s",
+               session_id) >= (int)sizeof(session_header) ||
+      snprintf(init_response_header, sizeof(init_response_header),
+               "req-init\r\nMCP-Session-Id: %s",
+               session_id) >= (int)sizeof(init_response_header) ||
+      snprintf(request_id_required, sizeof(request_id_required), "\"id\":\"%s\"",
+               request_id) >= (int)sizeof(request_id_required) ||
+      snprintf(error_message_required, sizeof(error_message_required),
+               "\"message\":\"%s\"", error_message) >=
+          (int)sizeof(error_message_required) ||
+      snprintf(mock_name, sizeof(mock_name), "%s_mock", case_name) >=
+          (int)sizeof(mock_name) ||
+      snprintf(open_label, sizeof(open_label), "%s_open", case_name) >=
+          (int)sizeof(open_label) ||
+      snprintf(ping_label, sizeof(ping_label), "%s_ping", case_name) >=
+          (int)sizeof(ping_label) ||
+      snprintf(count_label, sizeof(count_label), "%s_count", case_name) >=
+          (int)sizeof(count_label)) {
+    test_fail(state, case_name, "test buffer too small");
+    return;
+  }
+
+  initialized_required[0] = "POST /v1/mcp HTTP/";
+  initialized_required[1] = session_header;
+  initialized_required[2] = "\"method\":\"notifications/initialized\"";
+  ping_required[0] = "POST /v1/mcp HTTP/";
+  ping_required[1] = session_header;
+  ping_required[2] = "\"id\":2";
+  ping_required[3] = "\"method\":\"ping\"";
+  sampling_error_required[0] = "POST /v1/mcp HTTP/";
+  sampling_error_required[1] = session_header;
+  sampling_error_required[2] = request_id_required;
+  sampling_error_required[3] = "\"error\":{\"code\":-32602";
+  sampling_error_required[4] = error_message_required;
+
+  memset(script, 0, sizeof(script));
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = init_response_header;
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].body = ping_body;
+  script[3].request_prefix = "POST /v1/mcp HTTP/";
+  script[3].required = sampling_error_required;
+  script[3].required_count =
+      sizeof(sampling_error_required) / sizeof(sampling_error_required[0]);
+  script[3].status = 202;
+  script[3].status_text = "Accepted";
+  script[3].content_type = "application/json";
+  script[3].body = "";
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&sampling, 0, sizeof(sampling));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.receiver.context = &sampling;
+  config.receiver.create_message = test_mcp_sampling_callback;
+  expect_int(state, open_label,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, ping_label, cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, count_label, sampling.count, 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sampling_missing_max_tokens(test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_missing_max_tokens",
+      "sampling-missing-max-tokens-session", "sample-missing-max-tokens-1",
+      "{\"messages\":[]}", "MCP sampling maxTokens is required");
+}
+
+static void
+test_mcp_streamable_http_sampling_messages_not_array(test_state *state) {
+  test_mcp_streamable_http_sampling_param_validation_case(
+      state, "mcp_streamable_sampling_messages_not_array",
+      "sampling-messages-not-array-session", "sample-messages-not-array-1",
+      "{\"messages\":{},\"maxTokens\":16}",
+      "MCP sampling messages must be an array");
+}
+
 static void
 test_mcp_streamable_http_task_request_capabilities(test_state *state) {
   static const char initialize_body[] =
@@ -31857,6 +32007,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sampling_invalid_params},
     {"mcp_streamable_http_sampling_params_not_object",
      test_mcp_streamable_http_sampling_params_not_object},
+    {"mcp_streamable_http_sampling_missing_max_tokens",
+     test_mcp_streamable_http_sampling_missing_max_tokens},
+    {"mcp_streamable_http_sampling_messages_not_array",
+     test_mcp_streamable_http_sampling_messages_not_array},
     {"mcp_streamable_http_task_request_capabilities",
      test_mcp_streamable_http_task_request_capabilities},
     {"mcp_streamable_http_task_request_flags_require_callbacks",
