@@ -14494,7 +14494,9 @@ static void test_mcp_streamable_http_task_utilities(test_state *state) {
       "event: message\n"
       "data: "
       "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"task result ok\"}],\"isError\":false}}\n\n";
+      "\"text\",\"text\":\"task result ok\"}],\"isError\":false,"
+      "\"_meta\":{\"io.modelcontextprotocol/related-task\":{\"taskId\":"
+      "\"task-1\"}}}}\n\n";
   static const char tasks_cancel_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"taskId\":\"task-1\","
       "\"status\":\"cancelled\",\"createdAt\":\"2025-11-25T10:30:00Z\","
@@ -14888,7 +14890,9 @@ test_mcp_streamable_http_tasks_result_payload_shape(test_state *state) {
   static const char tasks_result_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
       "\"text\",\"text\":\"payload shape ok\"}],\"isError\":false,"
-      "\"structuredContent\":{\"ok\":true}}}";
+      "\"structuredContent\":{\"ok\":true},"
+      "\"_meta\":{\"io.modelcontextprotocol/related-task\":{\"taskId\":"
+      "\"task-1\"}}}}";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
@@ -14955,6 +14959,26 @@ test_mcp_streamable_http_tasks_result_payload_shape(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_tasks_result_payload_mock",
                     server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tasks_result_missing_related_task(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_result_missing_related_task",
+      "tasks/result",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"missing related task\"}],\"isError\":false}}");
+}
+
+static void
+test_mcp_streamable_http_tasks_result_related_task_mismatch(test_state *state) {
+  test_mcp_streamable_http_task_response_invalid(
+      state, "mcp_streamable_tasks_result_related_task_mismatch",
+      "tasks/result",
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"wrong related task\"}],\"isError\":false,"
+      "\"_meta\":{\"io.modelcontextprotocol/related-task\":{\"taskId\":"
+      "\"other-task\"}}}}");
 }
 
 static void test_mcp_streamable_http_tasks_get_null_ttl(test_state *state) {
@@ -33084,6 +33108,10 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tasks_cancel_object_ttl},
     {"mcp_streamable_http_tasks_result_payload_shape",
      test_mcp_streamable_http_tasks_result_payload_shape},
+    {"mcp_streamable_http_tasks_result_missing_related_task",
+     test_mcp_streamable_http_tasks_result_missing_related_task},
+    {"mcp_streamable_http_tasks_result_related_task_mismatch",
+     test_mcp_streamable_http_tasks_result_related_task_mismatch},
     {"mcp_streamable_http_tasks_get_null_ttl",
      test_mcp_streamable_http_tasks_get_null_ttl},
     {"mcp_streamable_http_logging_error",
