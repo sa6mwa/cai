@@ -2,6 +2,8 @@
 
 #include <cai/mcp.h>
 
+#include <pslog.h>
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdint.h>
@@ -88,6 +90,8 @@ typedef struct cai_mcp_streamable_http_client_impl {
   char *ca_bundle_path;
   char *ca_path;
   cai_mcp_client_receiver receiver;
+  struct pslog_logger *logger;
+  int logger_disabled;
   char *session_id;
   int initialized;
   long long next_id;
@@ -108,6 +112,82 @@ typedef struct cai_mcp_streamable_http_client_impl {
   size_t prompt_count;
   size_t prompt_capacity;
 } cai_mcp_streamable_http_client_impl;
+
+static pslog_logger *
+cai_mcp_logger(const cai_mcp_streamable_http_client_impl *impl) {
+  if (impl == NULL || impl->logger_disabled) {
+    return NULL;
+  }
+  return impl->logger;
+}
+
+static void
+cai_mcp_log_client_opened(const cai_mcp_streamable_http_client_impl *impl) {
+  pslog_logger *log;
+
+  log = cai_mcp_logger(impl);
+  if (log == NULL || log->infof == NULL) {
+    return;
+  }
+  log->infof(log, "cai.mcp.client.opened",
+             "url=%s timeout_ms=%d verify_tls=%b protocol_version=%s",
+             impl->url != NULL ? impl->url : "", (int)impl->timeout_ms,
+             impl->insecure_skip_verify ? 0 : 1,
+             impl->protocol_version != NULL ? impl->protocol_version : "");
+}
+
+static void
+cai_mcp_log_http_request_start(const cai_mcp_streamable_http_client_impl *impl,
+                               const char *method, int stream,
+                               size_t request_bytes) {
+  pslog_logger *log;
+
+  log = cai_mcp_logger(impl);
+  if (log == NULL || log->tracef == NULL) {
+    return;
+  }
+  log->tracef(
+      log, "cai.mcp.http.request.start", "method=%s stream=%b request_bytes=%u",
+      method != NULL ? method : "", stream, (unsigned int)request_bytes);
+}
+
+static void
+cai_mcp_log_http_request_done(const cai_mcp_streamable_http_client_impl *impl,
+                              const char *method, long http_status,
+                              int stream) {
+  pslog_logger *log;
+
+  log = cai_mcp_logger(impl);
+  if (log == NULL) {
+    return;
+  }
+  if (http_status >= 500L && log->errorf != NULL) {
+    log->errorf(log, "cai.mcp.http.request.done",
+                "method=%s status=%d stream=%b", method != NULL ? method : "",
+                (int)http_status, stream);
+  } else if (http_status >= 400L && log->warnf != NULL) {
+    log->warnf(log, "cai.mcp.http.request.done",
+               "method=%s status=%d stream=%b", method != NULL ? method : "",
+               (int)http_status, stream);
+  } else if (log->debugf != NULL) {
+    log->debugf(log, "cai.mcp.http.request.done",
+                "method=%s status=%d stream=%b", method != NULL ? method : "",
+                (int)http_status, stream);
+  }
+}
+
+static void cai_mcp_log_http_transport_error(
+    const cai_mcp_streamable_http_client_impl *impl, const char *method,
+    const char *detail) {
+  pslog_logger *log;
+
+  log = cai_mcp_logger(impl);
+  if (log == NULL || log->errorf == NULL) {
+    return;
+  }
+  log->errorf(log, "cai.mcp.http.transport_error", "method=%s error=%s",
+              method != NULL ? method : "", detail != NULL ? detail : "");
+}
 
 static void
 cai_mcp_client_clear_tools(cai_mcp_streamable_http_client_impl *impl);
@@ -2794,6 +2874,8 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
   cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
                          impl->ca_path);
+  cai_mcp_log_http_request_start(impl, "POST", result_stream != NULL,
+                                 request_len);
   curl_rc = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status);
   curl_easy_cleanup(curl);
@@ -2804,6 +2886,10 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
       impl->has_active_request = 0;
       impl->has_active_progress = 0;
     }
+    cai_mcp_log_http_transport_error(impl, "POST",
+                                     result_stream->failed_message[0] != '\0'
+                                         ? result_stream->failed_message
+                                         : "failed to stream MCP result");
     return cai_set_error(error,
                          result_stream->failed_code != 0
                              ? result_stream->failed_code
@@ -2817,6 +2903,7 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
       impl->has_active_request = 0;
       impl->has_active_progress = 0;
     }
+    cai_mcp_log_http_transport_error(impl, "POST", curl_easy_strerror(curl_rc));
     response->body.cleanup(&response->body);
     memset(&response->body, 0, sizeof(response->body));
     cai_free_mem(NULL, response->content_type);
@@ -2827,6 +2914,8 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
                                 "MCP HTTP request failed",
                                 curl_easy_strerror(curl_rc));
   }
+  cai_mcp_log_http_request_done(impl, "POST", response->status,
+                                result_stream != NULL);
   if (result_stream != NULL && result_stream->result_started &&
       !result_stream->result_done) {
     if (is_request) {
@@ -2944,11 +3033,13 @@ static int cai_mcp_get_resume_response(
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
   cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
                          impl->ca_path);
+  cai_mcp_log_http_request_start(impl, "GET", 1, 0U);
   curl_rc = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status);
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   if (curl_rc != CURLE_OK) {
+    cai_mcp_log_http_transport_error(impl, "GET", curl_easy_strerror(curl_rc));
     response->body.cleanup(&response->body);
     memset(&response->body, 0, sizeof(response->body));
     cai_free_mem(NULL, response->content_type);
@@ -2959,6 +3050,7 @@ static int cai_mcp_get_resume_response(
                                 "MCP HTTP event stream resume failed",
                                 curl_easy_strerror(curl_rc));
   }
+  cai_mcp_log_http_request_done(impl, "GET", response->status, 1);
   rc = cai_mcp_response_ok(response, error);
   if (rc == CAI_OK && !cai_mcp_response_is_sse(response)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
@@ -8964,6 +9056,8 @@ int cai_mcp_streamable_http_client_open(
   impl->ca_bundle_path =
       cai_strdup(&impl->allocator, effective->ca_bundle_path);
   impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
+  impl->logger = effective->logger_disabled ? NULL : effective->logger;
+  impl->logger_disabled = effective->logger_disabled;
   impl->receiver = effective->receiver;
   if (impl->receiver.notification == NULL && effective->notification != NULL) {
     impl->receiver.notification = effective->notification;
@@ -9002,6 +9096,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.send_notification = cai_mcp_streamable_send_notification;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
   *out = &impl->public_client;
+  cai_mcp_log_client_opened(impl);
   return CAI_OK;
 }
 

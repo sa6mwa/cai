@@ -313,6 +313,10 @@ typedef struct cai_mcp_streamable_http_client_config {
   void *notification_context;
   /** Optional cleanup for notification_context. */
   void (*notification_context_cleanup)(void *context);
+  /** Optional pslog logger. */
+  struct pslog_logger *logger;
+  /** Non-zero disables MCP client logging even when logger is set. */
+  int logger_disabled;
   /** Optional custom allocator callbacks. */
   cai_allocator allocator;
 } cai_mcp_streamable_http_client_config;

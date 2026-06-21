@@ -1988,10 +1988,14 @@ static void test_mcp_client_destroy(cai_mcp_client *client) {
 static const char *const test_mcp_echo_schema_properties[] = {"message"};
 static const char *const test_mcp_echo_schema_required[] = {"message"};
 static const cai_mcp_client_schema test_mcp_echo_schema = {
-    "", "object", test_mcp_echo_schema_properties, 1U,
-    test_mcp_echo_schema_required, 1U};
-static const cai_mcp_client_schema test_mcp_empty_schema = {
-    "", "object", NULL, 0U, NULL, 0U};
+    "",
+    "object",
+    test_mcp_echo_schema_properties,
+    1U,
+    test_mcp_echo_schema_required,
+    1U};
+static const cai_mcp_client_schema test_mcp_empty_schema = {"", "object", NULL,
+                                                            0U, NULL,     0U};
 static const cai_mcp_client_prompt_argument test_mcp_prompt_arguments[] = {
     {"topic", "", "", 1, 1}};
 
@@ -3883,12 +3887,18 @@ static void test_mcp_client_config(test_state *state) {
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
   cai_error error;
+  pslog_logger fake_logger;
 
   client = NULL;
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
   cai_error_init(&error);
   cai_mcp_streamable_http_client_config_init(&config);
   expect_int(state, "mcp_client_config_zero_url", config.url == NULL, 1L);
   expect_int(state, "mcp_client_config_zero_timeout", config.timeout_ms, 0L);
+  expect_int(state, "mcp_client_config_zero_logger", config.logger == NULL, 1L);
+  expect_int(state, "mcp_client_config_zero_logger_disabled",
+             config.logger_disabled, 0L);
   expect_int(state, "mcp_client_open_no_out",
              cai_mcp_streamable_http_client_open(&config, NULL, &error),
              CAI_ERR_INVALID);
@@ -3902,9 +3912,12 @@ static void test_mcp_client_config(test_state *state) {
   cai_error_init(&error);
   config.url = "http://127.0.0.1:1/mcp";
   config.timeout_ms = 1234L;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
   expect_int(state, "mcp_client_open_ok",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
+  expect_int(state, "mcp_client_open_logged", g_test_infof_count, 1L);
   if (client == NULL || client->initialize == NULL || client->ping == NULL ||
       client->refresh_tools == NULL || client->tool_count == NULL ||
       client->tool_at == NULL || client->call_tool == NULL ||
@@ -3919,6 +3932,18 @@ static void test_mcp_client_config(test_state *state) {
       client->destroy == NULL) {
     test_fail(state, "mcp_client_open_methods", "client method missing");
   }
+  cai_mcp_client_destroy(client);
+  client = NULL;
+  cai_error_cleanup(&error);
+
+  cai_error_init(&error);
+  config.logger_disabled = 1;
+  g_test_infof_count = 0;
+  expect_int(state, "mcp_client_open_logger_disabled",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_open_logger_disabled_count", g_test_infof_count,
+             0L);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
 }
@@ -9312,13 +9337,13 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
                "message");
     expect_int(state, "mcp_streamable_tool_annotations_read_only",
                tool->annotations.read_only_hint, 1L);
-    expect_int(state, "mcp_streamable_tool_icon_count",
-               (long)tool->icon_count, 1L);
+    expect_int(state, "mcp_streamable_tool_icon_count", (long)tool->icon_count,
+               1L);
     expect_str(state, "mcp_streamable_tool_icon_src",
                tool->icon_count > 0U ? tool->icons[0].src : NULL,
                "https://example.test/echo.svg");
-    expect_int(state, "mcp_streamable_tool_execution",
-               tool->task_support, CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_OPTIONAL);
+    expect_int(state, "mcp_streamable_tool_execution", tool->task_support,
+               CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_OPTIONAL);
   }
   tool = cai_mcp_client_tool_at(client, 1U);
   if (tool == NULL) {
@@ -9477,8 +9502,8 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
     expect_str(state, "mcp_streamable_prompt_argument_name",
                prompt->argument_count > 0U ? prompt->arguments[0].name : NULL,
                "topic");
-    expect_int(state, "mcp_streamable_prompt_icons",
-               (long)prompt->icon_count, 1L);
+    expect_int(state, "mcp_streamable_prompt_icons", (long)prompt->icon_count,
+               1L);
     expect_str(state, "mcp_streamable_prompt_icon_src",
                prompt->icon_count > 0U ? prompt->icons[0].src : NULL,
                "https://example.test/prompt.svg");
@@ -9651,6 +9676,150 @@ test_mcp_streamable_http_client_custom_allocator_metadata(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "mcp_streamable_custom_allocator_metadata_mock",
                     server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_client_logging(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] = "{\"jsonrpc\":\"2.0\",\"id\":2,"
+                                  "\"result\":{}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,"
+      "\"message\":\"boom\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: logging-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: logging-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation success_script[3];
+  mock_http_expectation error_script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  pslog_logger fake_logger;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(success_script, 0, sizeof(success_script));
+  memset(error_script, 0, sizeof(error_script));
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  fake_logger.tracef = test_pslog_tracef;
+  fake_logger.debugf = test_pslog_debugf;
+  fake_logger.warnf = test_pslog_warnf;
+  fake_logger.errorf = test_pslog_errorf;
+
+  success_script[0].request_prefix = "POST /v1/mcp HTTP/";
+  success_script[0].required = init_required;
+  success_script[0].required_count =
+      sizeof(init_required) / sizeof(init_required[0]);
+  success_script[0].status = 200;
+  success_script[0].status_text = "OK";
+  success_script[0].content_type = "application/json";
+  success_script[0].request_id = "req-init\r\nMCP-Session-Id: logging-session";
+  success_script[0].body = initialize_body;
+  success_script[1].request_prefix = "POST /v1/mcp HTTP/";
+  success_script[1].required = initialized_required;
+  success_script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  success_script[1].status = 202;
+  success_script[1].status_text = "Accepted";
+  success_script[1].content_type = "application/json";
+  success_script[1].body = "";
+  success_script[2].request_prefix = "POST /v1/mcp HTTP/";
+  success_script[2].required = ping_required;
+  success_script[2].required_count =
+      sizeof(ping_required) / sizeof(ping_required[0]);
+  success_script[2].status = 200;
+  success_script[2].status_text = "OK";
+  success_script[2].content_type = "application/json";
+  success_script[2].body = ping_body;
+
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_logging_success_mock", success_script,
+          sizeof(success_script) / sizeof(success_script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_success_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_success_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_logging_success_info", g_test_infof_count,
+             1L);
+  expect_int(state, "mcp_streamable_logging_success_trace", g_test_tracef_count,
+             3L);
+  expect_int(state, "mcp_streamable_logging_success_debug", g_test_debugf_count,
+             3L);
+  expect_int(state, "mcp_streamable_logging_success_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_success_error", g_test_errorf_count,
+             0L);
+  cai_mcp_client_destroy(client);
+  client = NULL;
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_logging_success_mock", server.pid,
+                    &server.child_status);
+
+  error_script[0] = success_script[0];
+  error_script[1] = success_script[1];
+  error_script[2] = success_script[2];
+  error_script[2].status = 500;
+  error_script[2].status_text = "Internal Server Error";
+  error_script[2].body = ping_error_body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_logging_error_mock", error_script,
+          sizeof(error_script) / sizeof(error_script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  config.url = url;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_logging_error_info", g_test_infof_count,
+             1L);
+  expect_int(state, "mcp_streamable_logging_error_trace", g_test_tracef_count,
+             3L);
+  expect_int(state, "mcp_streamable_logging_error_debug", g_test_debugf_count,
+             2L);
+  expect_int(state, "mcp_streamable_logging_error_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_error_error", g_test_errorf_count,
+             1L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_logging_error_mock", server.pid,
+                    &server.child_status);
 }
 
 static void
@@ -13162,7 +13331,8 @@ test_mcp_streamable_http_prompts_list_icon_metadata(test_state *state) {
   prompt = cai_mcp_client_prompt_at(client, 0U);
   if (prompt == NULL || prompt->argument_count != 1U ||
       prompt->icon_count != 1U || prompt->arguments == NULL ||
-      prompt->icons == NULL || strcmp(prompt->arguments[0].name, "topic") != 0 ||
+      prompt->icons == NULL ||
+      strcmp(prompt->arguments[0].name, "topic") != 0 ||
       prompt->arguments[0].required != 1 ||
       strcmp(prompt->icons[0].theme, "dark") != 0 ||
       prompt->icons[0].size_count != 2U ||
@@ -16677,8 +16847,7 @@ static void mock_websocket_upgrade_failure_child(int pipe_fd) {
   if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
       strstr(request, "GET /v1/responses HTTP/") == NULL ||
       strstr(request, "Authorization: Bearer mock-key") == NULL ||
-      strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") ==
-          NULL) {
+      strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") == NULL) {
     _exit(4);
   }
   close(client_fd);
@@ -26133,8 +26302,7 @@ cleanup:
   }
 }
 
-static void
-test_stream_responses_websocket_fallback_disabled_before_output(
+static void test_stream_responses_websocket_fallback_disabled_before_output(
     test_state *state) {
   websocket_mock_server server;
   test_env_snapshot force_ws_env;
@@ -29617,6 +29785,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_client_roundtrip},
     {"mcp_streamable_http_client_custom_allocator_metadata",
      test_mcp_streamable_http_client_custom_allocator_metadata},
+    {"mcp_streamable_http_client_logging",
+     test_mcp_streamable_http_client_logging},
     {"mcp_streamable_http_call_result_must_be_object",
      test_mcp_streamable_http_call_result_must_be_object},
     {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},

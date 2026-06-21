@@ -754,6 +754,7 @@ if(CAI_BUILD_TESTS)
     mcp_client_registry_adapter
     mcp_streamable_http_client_roundtrip
     mcp_streamable_http_client_custom_allocator_metadata
+    mcp_streamable_http_client_logging
     mcp_streamable_http_call_result_must_be_object
     mcp_streamable_http_ping_error
     mcp_streamable_http_ping_error_missing_code
