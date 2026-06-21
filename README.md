@@ -650,16 +650,15 @@ tool discovery, help text, WIP-limit denial, completion, and board state.
 `<cai/mcp.h>` also exposes a transport-independent `cai_mcp_client` interface
 that cai consumes through receiver-style function pointers. The built-in
 Streamable HTTP implementation can initialize sessions, ping, cache and call
-tools, read and subscribe to resources, cache resource templates, cache and get
-prompts, complete prompt/resource arguments, set logging levels, terminate
-sessions, send generic JSON-RPC requests/notifications, drain server events,
-and handle roots, sampling, elicitation, logging, progress, and cancellation
-messages from the server.
+tools, cache and read resources, cache resource templates, cache and get
+prompts, complete prompt/resource arguments, send generic JSON-RPC
+requests/notifications, and observe server logging, resource-updated, progress,
+cancellation, and list-changed notifications on response streams.
 
 The HTTP client config owns transport details: endpoint URL, client identity,
 protocol version, timeout, TLS verification behavior, optional CA bundle/path,
-notification callbacks, receiver callbacks, and allocator. When CA bundle/path
-are unset, libcurl/OpenSSL resolve their default trust store.
+receiver callbacks, and allocator. When CA bundle/path are unset,
+libcurl/OpenSSL resolve their default trust store.
 
 Remote MCP tools can be registered into a local `cai_tool_registry` with
 `cai_mcp_client_register_tools`. The registry keeps a non-owning client pointer,

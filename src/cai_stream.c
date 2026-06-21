@@ -2866,6 +2866,10 @@ static int cai_client_stream_response_params_with_id(
     if (out_usage != NULL) {
       memset(out_usage, 0, sizeof(*out_usage));
     }
+    rc = cai_client_stream_response_params_with_id(
+        client, params, sinks, out_response_id, out_usage, error);
+    impl->responses_websocket_fallback_active = 0;
+    return rc;
   }
 retry_request:
   url = NULL;

@@ -15,7 +15,7 @@ CAI_MCP_EVERYTHING_BASE_URL ?= http://127.0.0.1:3001/mcp
 CAI_FUZZ_RUNS ?= 10000
 RELEASE_VERSION ?= $(shell ./scripts/detect_release_version.sh "$(CURDIR)")
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
-CAI_C_PKT_SYSTEMS_VERSION ?= 0.2.0
+CAI_C_PKT_SYSTEMS_VERSION ?= 0.4.0
 CAI_LONEJSON_VERSION ?= 0.32.0
 CAI_PSLOG_VERSION ?= 0.4.1
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
@@ -369,37 +369,6 @@ mcp-everything-logs: compose-check
 mcp-everything-test:
 	$(CMAKE) --build build/debug --target cai_mcp_client_smoke
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
-	tmpdir="$$(mktemp -d)"; \
-	trap 'rm -rf "$$tmpdir"' EXIT; \
-	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cai-compose-smoke","version":"0.0.0"}}}'; \
-	curl -fsS -D "$$tmpdir/init.headers" -o "$$tmpdir/init.json" \
-		-H 'content-type: application/json' \
-		-H 'accept: application/json, text/event-stream' \
-		-d "$$init" "$$url"; \
-	grep -q '"serverInfo"' "$$tmpdir/init.json"; \
-	session_id="$$(tr -d '\r' <"$$tmpdir/init.headers" | sed -n 's/^[Mm][Cc][Pp]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]-[Ii][Dd]:[[:space:]]*\(.*\)/\1/p' | head -n 1)"; \
-	if [[ -z "$$session_id" ]]; then \
-		printf '%s\n' 'MCP initialize response did not include Mcp-Session-Id' >&2; \
-		exit 1; \
-	fi; \
-	curl -fsS -o "$$tmpdir/initialized.out" \
-		-H 'content-type: application/json' \
-		-H 'accept: application/json, text/event-stream' \
-		-H "mcp-session-id: $$session_id" \
-		-d '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$$url"; \
-	curl -fsS -o "$$tmpdir/tools.json" \
-		-H 'content-type: application/json' \
-		-H 'accept: application/json, text/event-stream' \
-		-H "mcp-session-id: $$session_id" \
-		-d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' "$$url"; \
-	grep -Eq '"name"[[:space:]]*:[[:space:]]*"echo"' "$$tmpdir/tools.json"; \
-	curl -fsS -o "$$tmpdir/call.json" \
-		-H 'content-type: application/json' \
-		-H 'accept: application/json, text/event-stream' \
-		-H "mcp-session-id: $$session_id" \
-		-d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"cai-mcp-ok"}}}' "$$url"; \
-	grep -q 'cai-mcp-ok' "$$tmpdir/call.json"; \
-	printf 'MCP Everything protocol smoke test passed at %s\n' "$$url"; \
 	build/debug/cai_mcp_client_smoke "$$url"
 
 mcp-everything-live-test:

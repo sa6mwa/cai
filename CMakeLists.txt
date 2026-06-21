@@ -33,7 +33,7 @@ set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
 set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
     "Dependency mode: cpkt, host, or auto.")
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
-set(CAI_C_PKT_SYSTEMS_VERSION "0.2.0" CACHE STRING
+set(CAI_C_PKT_SYSTEMS_VERSION "0.4.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 set(CAI_ABI_VERSION "1" CACHE STRING "Shared library ABI/SOVERSION.")
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
@@ -111,19 +111,19 @@ endif()
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "69e699d18374987ba16dfd82640ba1c263b71f0e1daeef8af2a2018a6f1e39ef")
+    set(_sha256 "745fde56d564dcdcb22ed9f16a7b73c8c2e18f947d5fe37ab774e5154ef554b1")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "dcb1923af1d7529531f31637476f083070ccf1051ec217012d77a155ff4132d4")
+    set(_sha256 "e3a563a71d6bb9e1e3bdf14343d65bcc0ad8897713e6a8ddfd97cc7bc6b9c6f3")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "54e9ef336a0b092d0e68a84d2026a499c051df3c3e61b7a7dab1f0103d1e082b")
+    set(_sha256 "574e02e193330fd8e8fa5c56442ae8d11e9c901b3e89a53f299d66557941b67c")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "61f7cb43ca78f33a21b5719f84f864ac5ce5cf7d8268eef52a7a01da08582a38")
+    set(_sha256 "c1b1e6b482172760f5967d484d2ef271e1d44defaf7f8f6e35bc66811f4f48fc")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "33bfe771f2f2b36562c9e18094f79168d8d687dc7a55393584930ca434547d7d")
+    set(_sha256 "1e4de9dd3de7345629c86cd140177d4dc591c740f7432041bcd423be9bf82496")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "7edc2f61e01370da6af96c496ae5bfbec72e43761247dd2c310ac7627923c591")
+    set(_sha256 "222236dacf9df80f01fbc14768ed5163e08cbcdb32ae6460a0f494df14330f0b")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "204fcaa8d6d53b6affcdcb49668d60b0e41d2aa7ff5f4dc2c8fce0d24caa0022")
+    set(_sha256 "c5c0160ee65c94084350ee54eb21fc64c410b76c1d104071b29fb5e170ae0081")
   else()
     message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
   endif()
@@ -747,6 +747,7 @@ if(CAI_BUILD_TESTS)
     lonejson_selected_array_rewrite
     tool_registry
     mcp_client_config
+    mcp_streamable_http_header_callback_bounds
     mcp_client_receiver_surface
     mcp_client_registry_adapter
     mcp_streamable_http_client_roundtrip
@@ -900,6 +901,19 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_resources_list_changed_array_params
     mcp_streamable_http_prompts_list_changed_array_params
     mcp_streamable_http_send_request_params
+    mcp_streamable_http_send_request_scalar_result
+    mcp_streamable_http_tool_call_streams_result
+    mcp_streamable_http_tool_call_streams_sse_result
+    mcp_streamable_http_resource_read_streams_result
+    mcp_streamable_http_prompt_get_streams_result
+    mcp_streamable_http_completion_streams_result
+    mcp_streamable_http_send_request_streams_result
+    mcp_streamable_http_json_error_result_does_not_stream
+    mcp_streamable_http_sse_error_result_does_not_stream
+    mcp_streamable_http_streamed_result_rejects_mismatched_id
+    mcp_streamable_http_streamed_result_rejects_missing_id
+    mcp_streamable_http_streamed_sse_rejects_result_and_error
+    mcp_streamable_http_streamed_result_rejects_trailing_garbage
     mcp_streamable_http_send_notification_params
     mcp_streamable_http_notification_response_wrong_status
     mcp_streamable_http_notification_response_body
@@ -915,6 +929,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_server_request_unsupported
     mcp_streamable_http_server_ping_request
     mcp_streamable_http_session_recovery
+    mcp_streamable_http_session_recovery_preserves_request_id
+    mcp_streamable_http_initialized_failure_retries
     mcp_streamable_http_server_error_no_recovery
     mcp_handler
     client_open
