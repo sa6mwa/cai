@@ -14323,7 +14323,7 @@ test_mcp_streamable_http_sse_error_result_does_not_stream(test_state *state) {
 
 static void run_mcp_streamable_http_streamed_envelope_validation_test(
     test_state *state, const char *test_name, const char *content_type,
-    const char *body, const char *expected_error) {
+    const char *body, const char *expected_error, int expect_no_output) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
@@ -14400,6 +14400,9 @@ static void run_mcp_streamable_http_streamed_envelope_validation_test(
              cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
              CAI_ERR_PROTOCOL);
   expect_substr(state, test_name, error.message, expected_error);
+  if (expect_no_output) {
+    expect_str(state, test_name, writer.buffer, "");
+  }
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
@@ -14414,7 +14417,7 @@ static void test_mcp_streamable_http_streamed_result_rejects_mismatched_id(
   run_mcp_streamable_http_streamed_envelope_validation_test(
       state, "mcp_streamable_http_streamed_result_mismatched_id",
       "application/json", body,
-      "MCP JSON-RPC response id did not match request id");
+      "MCP JSON-RPC response id did not match request id", 1);
 }
 
 static void
@@ -14424,20 +14427,31 @@ test_mcp_streamable_http_streamed_result_rejects_missing_id(test_state *state) {
       "\"text\":\"streamed\"}],\"isError\":false}}";
   run_mcp_streamable_http_streamed_envelope_validation_test(
       state, "mcp_streamable_http_streamed_result_missing_id",
-      "application/json", body, "MCP JSON-RPC was missing id");
+      "application/json", body, "MCP JSON-RPC was missing id", 1);
+}
+
+static void test_mcp_streamable_http_streamed_result_rejects_result_before_id(
+    test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"streamed\"}],\"isError\":false},\"id\":2}";
+  run_mcp_streamable_http_streamed_envelope_validation_test(
+      state, "mcp_streamable_http_streamed_result_before_id",
+      "application/json", body, "MCP JSON-RPC was missing id", 1);
 }
 
 static void test_mcp_streamable_http_streamed_sse_rejects_result_and_error(
     test_state *state) {
   static const char body[] =
       "event: message\n"
-      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
-      "\"type\":\"text\",\"text\":\"streamed\"}],\"isError\":false},"
-      "\"error\":{\"code\":-32000,\"message\":\"bad\"}}\n\n";
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,"
+      "\"error\":{\"code\":-32000,\"message\":\"bad\"},\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"streamed\"}],"
+      "\"isError\":false}}\n\n";
   run_mcp_streamable_http_streamed_envelope_validation_test(
       state, "mcp_streamable_http_streamed_sse_result_and_error",
       "text/event-stream", body,
-      "MCP JSON-RPC response must include exactly one of result or error");
+      "MCP JSON-RPC response must include exactly one of result or error", 1);
 }
 
 static void test_mcp_streamable_http_streamed_result_rejects_trailing_garbage(
@@ -14447,7 +14461,7 @@ static void test_mcp_streamable_http_streamed_result_rejects_trailing_garbage(
       "\"text\",\"text\":\"streamed\"}],\"isError\":false}}garbage";
   run_mcp_streamable_http_streamed_envelope_validation_test(
       state, "mcp_streamable_http_streamed_result_trailing_garbage",
-      "application/json", body, "failed to parse MCP JSON-RPC response");
+      "application/json", body, "failed to parse MCP JSON-RPC response", 0);
 }
 
 static void run_mcp_streamable_http_streamed_invalid_result_json_test(
@@ -29304,6 +29318,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_streamed_result_rejects_mismatched_id},
     {"mcp_streamable_http_streamed_result_rejects_missing_id",
      test_mcp_streamable_http_streamed_result_rejects_missing_id},
+    {"mcp_streamable_http_streamed_result_rejects_result_before_id",
+     test_mcp_streamable_http_streamed_result_rejects_result_before_id},
     {"mcp_streamable_http_streamed_sse_rejects_result_and_error",
      test_mcp_streamable_http_streamed_sse_rejects_result_and_error},
     {"mcp_streamable_http_streamed_result_rejects_trailing_garbage",

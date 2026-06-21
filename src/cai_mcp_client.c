@@ -161,6 +161,7 @@ typedef enum cai_mcp_json_number_state {
 
 typedef struct cai_mcp_result_stream {
   cai_sink *output;
+  const lonejson_spooled *request;
   int require_object;
   cai_mcp_result_stream_state state;
   char key[32];
@@ -170,6 +171,7 @@ typedef struct cai_mcp_result_stream {
   int result_seen;
   int result_done;
   int result_started;
+  int result_envelope_validated;
   int result_placeholder_written;
   char result_root;
   int in_string;
@@ -550,6 +552,12 @@ static int cai_mcp_jsonrpc_top_level_member_presence(
     const char *message, cai_error *error);
 static int cai_mcp_jsonrpc_response_result_root_is_object(
     const lonejson_spooled *json, int *is_object, cai_error *error);
+static int cai_mcp_spool_copy(const lonejson_spooled *src,
+                              lonejson_spooled *dst, cai_error *error);
+static int
+cai_mcp_validate_response_envelope(const lonejson_spooled *request,
+                                   const cai_mcp_http_response_capture *reply,
+                                   cai_error *error);
 static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
                                      cai_error *error);
 static int
@@ -1317,12 +1325,14 @@ int cai_mcp_test_header_callback_unterminated(void) {
 #endif
 
 static void cai_mcp_result_stream_init(cai_mcp_result_stream *stream,
+                                       const lonejson_spooled *request,
                                        cai_sink *output, int require_object) {
   if (stream == NULL) {
     return;
   }
   memset(stream, 0, sizeof(*stream));
   stream->output = output;
+  stream->request = request;
   stream->require_object = require_object;
   stream->state = CAI_MCP_RESULT_STREAM_START;
   stream->sse_line_start = 1;
@@ -1388,6 +1398,59 @@ cai_mcp_result_stream_write_result_placeholder(cai_mcp_result_stream *stream) {
     return -1;
   }
   stream->result_placeholder_written = 1;
+  return 0;
+}
+
+static int cai_mcp_result_stream_validate_envelope_before_output(
+    cai_mcp_result_stream *stream) {
+  static char json_content_type[] = "application/json";
+  static const char close_object[] = "}";
+  cai_mcp_http_response_capture envelope_response;
+  lonejson_spooled envelope;
+  lonejson_error json_error;
+  cai_error error;
+  int rc;
+
+  if (stream == NULL || stream->result_envelope_validated) {
+    return 0;
+  }
+  if (stream->request == NULL || !stream->envelope_initialized) {
+    cai_mcp_result_stream_fail(stream, CAI_ERR_PROTOCOL,
+                               "MCP JSON-RPC response envelope is missing");
+    return -1;
+  }
+  memset(&envelope_response, 0, sizeof(envelope_response));
+  memset(&envelope, 0, sizeof(envelope));
+  cai_error_init(&error);
+  rc = cai_mcp_spool_copy(&stream->envelope, &envelope, &error);
+  if (rc == CAI_OK) {
+    lonejson_error_init(&json_error);
+    if (envelope.append(&envelope, close_object, sizeof(close_object) - 1U,
+                        &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_mcp_set_json_error(
+          &error, "failed to buffer MCP response envelope", &json_error);
+    }
+  }
+  if (rc == CAI_OK) {
+    envelope_response.content_type = json_content_type;
+    envelope_response.body = envelope;
+    envelope_response.status = 200L;
+    rc = cai_mcp_validate_response_envelope(stream->request, &envelope_response,
+                                            &error);
+  }
+  if (envelope.cleanup != NULL) {
+    envelope.cleanup(&envelope);
+  }
+  if (rc != CAI_OK) {
+    cai_mcp_result_stream_fail(
+        stream, error.code != CAI_OK ? error.code : rc,
+        error.message != NULL ? error.message
+                              : "failed to validate MCP JSON-RPC response");
+    cai_error_cleanup(&error);
+    return -1;
+  }
+  cai_error_cleanup(&error);
+  stream->result_envelope_validated = 1;
   return 0;
 }
 
@@ -1894,6 +1957,9 @@ static int cai_mcp_result_stream_value_char(cai_mcp_result_stream *stream,
     if (cai_mcp_result_stream_write_result_placeholder(stream) != 0) {
       return -1;
     }
+    if (cai_mcp_result_stream_validate_envelope_before_output(stream) != 0) {
+      return -1;
+    }
   }
   root_done = 0;
   consumed = 1;
@@ -1910,10 +1976,10 @@ static int cai_mcp_result_stream_value_char(cai_mcp_result_stream *stream,
     stream->state = CAI_MCP_RESULT_STREAM_AFTER_VALUE;
     if (!consumed) {
       if (ch == ',') {
-        if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
-          return -1;
-        }
-        stream->state = CAI_MCP_RESULT_STREAM_KEY_OR_END;
+        cai_mcp_result_stream_fail(
+            stream, CAI_ERR_PROTOCOL,
+            "MCP streamed JSON-RPC result must be final response member");
+        return -1;
       } else if (ch == '}') {
         if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
           return -1;
@@ -2056,6 +2122,12 @@ static int cai_mcp_result_stream_consume_one(cai_mcp_result_stream *stream,
       return 0;
     }
     if (ch == ',') {
+      if (stream->result_done) {
+        cai_mcp_result_stream_fail(
+            stream, CAI_ERR_PROTOCOL,
+            "MCP streamed JSON-RPC result must be final response member");
+        return -1;
+      }
       if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
         return -1;
       }
@@ -7435,7 +7507,7 @@ static int cai_mcp_stream_result_with_session_recovery(
                          "MCP client request and output sink are required");
   }
   had_session = impl->initialized && impl->session_id != NULL;
-  cai_mcp_result_stream_init(&stream, output, require_result_object);
+  cai_mcp_result_stream_init(&stream, request, output, require_result_object);
   rc = cai_mcp_post_ex(impl, request, request_len, 1, response, &stream, error);
   if (!had_session || response->status != 404L || stream.result_seen ||
       stream.result_started) {
@@ -7464,7 +7536,7 @@ static int cai_mcp_stream_result_with_session_recovery(
   if (rc != CAI_OK) {
     return rc;
   }
-  cai_mcp_result_stream_init(&stream, output, require_result_object);
+  cai_mcp_result_stream_init(&stream, request, output, require_result_object);
   rc = cai_mcp_post_ex(impl, request, request_len, 1, response, &stream, error);
   if (rc == CAI_OK && stream.result_seen && stream.result_done) {
     rc = cai_mcp_validate_streamed_response_envelope(request, &stream, error);

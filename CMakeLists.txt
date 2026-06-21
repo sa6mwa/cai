@@ -912,6 +912,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_sse_error_result_does_not_stream
     mcp_streamable_http_streamed_result_rejects_mismatched_id
     mcp_streamable_http_streamed_result_rejects_missing_id
+    mcp_streamable_http_streamed_result_rejects_result_before_id
     mcp_streamable_http_streamed_sse_rejects_result_and_error
     mcp_streamable_http_streamed_result_rejects_trailing_garbage
     mcp_streamable_http_streamed_result_rejects_bad_literal
