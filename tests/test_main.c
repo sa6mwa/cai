@@ -9698,7 +9698,8 @@ static void test_mcp_streamable_http_client_logging(test_state *state) {
                                         "MCP-Session-Id: logging-session",
                                         "\"id\":2", "\"method\":\"ping\""};
   mock_http_expectation success_script[3];
-  mock_http_expectation error_script[3];
+  mock_http_expectation client_error_script[3];
+  mock_http_expectation server_error_script[3];
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -9709,7 +9710,8 @@ static void test_mcp_streamable_http_client_logging(test_state *state) {
   client = NULL;
   memset(&server, 0, sizeof(server));
   memset(success_script, 0, sizeof(success_script));
-  memset(error_script, 0, sizeof(error_script));
+  memset(client_error_script, 0, sizeof(client_error_script));
+  memset(server_error_script, 0, sizeof(server_error_script));
   memset(&fake_logger, 0, sizeof(fake_logger));
   fake_logger.infof = test_pslog_infof;
   fake_logger.tracef = test_pslog_tracef;
@@ -9781,16 +9783,18 @@ static void test_mcp_streamable_http_client_logging(test_state *state) {
   expect_child_exit(state, "mcp_streamable_logging_success_mock", server.pid,
                     &server.child_status);
 
-  error_script[0] = success_script[0];
-  error_script[1] = success_script[1];
-  error_script[2] = success_script[2];
-  error_script[2].status = 500;
-  error_script[2].status_text = "Internal Server Error";
-  error_script[2].body = ping_error_body;
+  client_error_script[0] = success_script[0];
+  client_error_script[1] = success_script[1];
+  client_error_script[2] = success_script[2];
+  client_error_script[2].status = 400;
+  client_error_script[2].status_text = "Bad Request";
+  client_error_script[2].body = ping_error_body;
   cai_error_init(&error);
   if (http_mock_server_open_script(
-          state, "mcp_streamable_logging_error_mock", error_script,
-          sizeof(error_script) / sizeof(error_script[0]), &server) != 0) {
+          state, "mcp_streamable_logging_client_error_mock",
+          client_error_script,
+          sizeof(client_error_script) / sizeof(client_error_script[0]),
+          &server) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -9801,25 +9805,114 @@ static void test_mcp_streamable_http_client_logging(test_state *state) {
   g_test_debugf_count = 0;
   g_test_warnf_count = 0;
   g_test_errorf_count = 0;
-  expect_int(state, "mcp_streamable_logging_error_open",
+  expect_int(state, "mcp_streamable_logging_client_error_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
-  expect_int(state, "mcp_streamable_logging_error_ping",
+  expect_int(state, "mcp_streamable_logging_client_error_ping",
              cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
-  expect_int(state, "mcp_streamable_logging_error_info", g_test_infof_count,
-             1L);
-  expect_int(state, "mcp_streamable_logging_error_trace", g_test_tracef_count,
-             3L);
-  expect_int(state, "mcp_streamable_logging_error_debug", g_test_debugf_count,
-             2L);
-  expect_int(state, "mcp_streamable_logging_error_warn", g_test_warnf_count,
-             0L);
-  expect_int(state, "mcp_streamable_logging_error_error", g_test_errorf_count,
-             1L);
+  expect_int(state, "mcp_streamable_logging_client_error_info",
+             g_test_infof_count, 1L);
+  expect_int(state, "mcp_streamable_logging_client_error_trace",
+             g_test_tracef_count, 3L);
+  expect_int(state, "mcp_streamable_logging_client_error_debug",
+             g_test_debugf_count, 2L);
+  expect_int(state, "mcp_streamable_logging_client_error_warn",
+             g_test_warnf_count, 1L);
+  expect_int(state, "mcp_streamable_logging_client_error_error",
+             g_test_errorf_count, 0L);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
-  expect_child_exit(state, "mcp_streamable_logging_error_mock", server.pid,
-                    &server.child_status);
+  expect_child_exit(state, "mcp_streamable_logging_client_error_mock",
+                    server.pid, &server.child_status);
+
+  server_error_script[0] = success_script[0];
+  server_error_script[1] = success_script[1];
+  server_error_script[2] = success_script[2];
+  server_error_script[2].status = 500;
+  server_error_script[2].status_text = "Internal Server Error";
+  server_error_script[2].body = ping_error_body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_logging_server_error_mock",
+          server_error_script,
+          sizeof(server_error_script) / sizeof(server_error_script[0]),
+          &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  config.url = url;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_server_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_server_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_logging_server_error_info",
+             g_test_infof_count, 1L);
+  expect_int(state, "mcp_streamable_logging_server_error_trace",
+             g_test_tracef_count, 3L);
+  expect_int(state, "mcp_streamable_logging_server_error_debug",
+             g_test_debugf_count, 2L);
+  expect_int(state, "mcp_streamable_logging_server_error_warn",
+             g_test_warnf_count, 0L);
+  expect_int(state, "mcp_streamable_logging_server_error_error",
+             g_test_errorf_count, 1L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_logging_server_error_mock",
+                    server.pid, &server.child_status);
+
+  cai_error_init(&error);
+  config.url = "mcp://127.0.0.1/mcp";
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_transport_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_transport_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_TRANSPORT);
+  expect_int(state, "mcp_streamable_logging_transport_info", g_test_infof_count,
+             1L);
+  expect_int(state, "mcp_streamable_logging_transport_trace",
+             g_test_tracef_count, 1L);
+  expect_int(state, "mcp_streamable_logging_transport_debug",
+             g_test_debugf_count, 0L);
+  expect_int(state, "mcp_streamable_logging_transport_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_transport_error",
+             g_test_errorf_count, 1L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+
+  cai_error_init(&error);
+  config.url = "";
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_invalid_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_streamable_logging_invalid_info", g_test_infof_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_trace", g_test_tracef_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_debug", g_test_debugf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_error", g_test_errorf_count,
+             0L);
+  cai_error_cleanup(&error);
 }
 
 static void
