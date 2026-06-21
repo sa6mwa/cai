@@ -8449,6 +8449,7 @@ static int mock_write_chunked_cstr(int fd, const char *data,
 
 static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
                                      int sse_response, int one_byte_chunks,
+                                     int empty_sse_prelude,
                                      test_mcp_streaming_operation operation) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -8626,6 +8627,11 @@ static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
                          strlen("\r\n"
                                 "Transfer-Encoding: chunked\r\n"
                                 "Connection: close\r\n\r\n")) != 0 ||
+          (sse_response && empty_sse_prelude &&
+           mock_write_chunked_cstr(client_fd,
+                                   "id: empty-before-message\n"
+                                   "data: \n\n",
+                                   one_byte_chunks) != 0) ||
           mock_write_chunked_cstr(client_fd, first_chunk, one_byte_chunks) !=
               0) {
         close(client_fd);
@@ -8654,7 +8660,7 @@ static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
 static int http_mock_server_open_streaming_mcp_ex(
     test_state *state, const char *name, http_mock_server *server,
     int *signal_write_fd, int sse_response, int one_byte_chunks,
-    test_mcp_streaming_operation operation) {
+    int empty_sse_prelude, test_mcp_streaming_operation operation) {
   int pipe_fds[2];
   int signal_fds[2];
   int port;
@@ -8687,7 +8693,7 @@ static int http_mock_server_open_streaming_mcp_ex(
     close(pipe_fds[0]);
     close(signal_fds[1]);
     mock_streaming_mcp_child(pipe_fds[1], signal_fds[0], sse_response,
-                             one_byte_chunks, operation);
+                             one_byte_chunks, empty_sse_prelude, operation);
   }
   close(pipe_fds[1]);
   close(signal_fds[0]);
@@ -14667,7 +14673,8 @@ static void run_mcp_streamable_http_result_streaming_test_ex(
   cai_error_init(&error);
   if (http_mock_server_open_streaming_mcp_ex(state, test_name, &server,
                                              &signal_fd, sse_response,
-                                             one_byte_chunks, operation) != 0) {
+                                             one_byte_chunks, 0,
+                                             operation) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -14759,6 +14766,63 @@ test_mcp_streamable_http_streams_sse_result_one_byte_chunks(test_state *state) {
   run_mcp_streamable_http_result_streaming_test_ex(
       state, "mcp_streamable_tool_call_sse_one_byte_streaming_mock",
       TEST_MCP_STREAMING_TOOL_CALL, 1, 1);
+}
+
+static void
+test_mcp_streamable_http_streams_sse_result_after_empty_data_event(
+    test_state *state) {
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  streaming_write_state writer;
+  cai_error error;
+  char url[192];
+  int signal_fd;
+
+  client = NULL;
+  sink = NULL;
+  signal_fd = -1;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_streaming_mcp_ex(
+          state, "mcp_streamable_tool_call_sse_empty_data_prelude_mock",
+          &server, &signal_fd, 1, 0, 1, TEST_MCP_STREAMING_TOOL_CALL) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  writer.signal_fd = signal_fd;
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_streaming_write;
+  sink_callbacks.close = test_streaming_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_signalled",
+             writer.signalled, 1L);
+  expect_str(state, "mcp_streamable_tool_call_sse_empty_data_output",
+             writer.writer.buffer,
+             test_mcp_streaming_expected_output(TEST_MCP_STREAMING_TOOL_CALL));
+  if (signal_fd >= 0) {
+    close(signal_fd);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tool_call_sse_empty_data_prelude",
+                    server.pid, &server.child_status);
 }
 
 static void
@@ -30201,6 +30265,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_streams_result_one_byte_chunks},
     {"mcp_streamable_http_streams_sse_result_one_byte_chunks",
      test_mcp_streamable_http_streams_sse_result_one_byte_chunks},
+    {"mcp_streamable_http_streams_sse_result_after_empty_data_event",
+     test_mcp_streamable_http_streams_sse_result_after_empty_data_event},
     {"mcp_streamable_http_streamed_result_sink_failure",
      test_mcp_streamable_http_streamed_result_sink_failure},
     {"mcp_streamable_http_json_error_result_does_not_stream",
