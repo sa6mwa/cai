@@ -123,6 +123,42 @@ typedef enum cai_mcp_result_stream_state {
   CAI_MCP_RESULT_STREAM_FAILED
 } cai_mcp_result_stream_state;
 
+typedef enum cai_mcp_json_context_type {
+  CAI_MCP_JSON_CONTEXT_ROOT = 0,
+  CAI_MCP_JSON_CONTEXT_ARRAY,
+  CAI_MCP_JSON_CONTEXT_OBJECT
+} cai_mcp_json_context_type;
+
+typedef enum cai_mcp_json_expect {
+  CAI_MCP_JSON_EXPECT_VALUE = 0,
+  CAI_MCP_JSON_EXPECT_VALUE_OR_END,
+  CAI_MCP_JSON_EXPECT_KEY_OR_END,
+  CAI_MCP_JSON_EXPECT_AFTER_KEY,
+  CAI_MCP_JSON_EXPECT_AFTER_VALUE,
+  CAI_MCP_JSON_EXPECT_DONE
+} cai_mcp_json_expect;
+
+typedef enum cai_mcp_json_token {
+  CAI_MCP_JSON_TOKEN_NONE = 0,
+  CAI_MCP_JSON_TOKEN_STRING,
+  CAI_MCP_JSON_TOKEN_LITERAL,
+  CAI_MCP_JSON_TOKEN_NUMBER
+} cai_mcp_json_token;
+
+typedef enum cai_mcp_json_number_state {
+  CAI_MCP_JSON_NUMBER_START = 0,
+  CAI_MCP_JSON_NUMBER_AFTER_MINUS,
+  CAI_MCP_JSON_NUMBER_AFTER_ZERO,
+  CAI_MCP_JSON_NUMBER_INT,
+  CAI_MCP_JSON_NUMBER_FRACTION_START,
+  CAI_MCP_JSON_NUMBER_FRACTION,
+  CAI_MCP_JSON_NUMBER_EXP_START,
+  CAI_MCP_JSON_NUMBER_EXP_SIGN,
+  CAI_MCP_JSON_NUMBER_EXP
+} cai_mcp_json_number_state;
+
+#define CAI_MCP_JSON_STACK_MAX 64
+
 typedef struct cai_mcp_result_stream {
   cai_sink *output;
   int require_object;
@@ -140,6 +176,16 @@ typedef struct cai_mcp_result_stream {
   int escape;
   int depth;
   int literal_started;
+  cai_mcp_json_context_type json_context[CAI_MCP_JSON_STACK_MAX];
+  cai_mcp_json_expect json_expect[CAI_MCP_JSON_STACK_MAX];
+  size_t json_depth;
+  cai_mcp_json_token json_token;
+  int json_escape;
+  int json_unicode_remaining;
+  int json_string_is_key;
+  const char *json_literal;
+  size_t json_literal_pos;
+  cai_mcp_json_number_state json_number_state;
   int failed_code;
   char failed_message[256];
   lonejson_spooled envelope;
@@ -1349,6 +1395,11 @@ static int cai_mcp_json_delim(unsigned char ch) {
   return ch == ',' || ch == '}' || ch == ']' || isspace((int)ch);
 }
 
+static int cai_mcp_json_hex(unsigned char ch) {
+  return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+         (ch >= 'A' && ch <= 'F');
+}
+
 static int cai_mcp_stream_write_byte(cai_mcp_result_stream *stream,
                                      unsigned char ch) {
   cai_error error;
@@ -1366,6 +1417,404 @@ static int cai_mcp_stream_write_byte(cai_mcp_result_stream *stream,
   }
   cai_error_cleanup(&error);
   return rc;
+}
+
+static void cai_mcp_result_json_reset(cai_mcp_result_stream *stream) {
+  if (stream == NULL) {
+    return;
+  }
+  stream->json_depth = 1U;
+  stream->json_context[0] = CAI_MCP_JSON_CONTEXT_ROOT;
+  stream->json_expect[0] = CAI_MCP_JSON_EXPECT_VALUE;
+  stream->json_token = CAI_MCP_JSON_TOKEN_NONE;
+  stream->json_escape = 0;
+  stream->json_unicode_remaining = 0;
+  stream->json_string_is_key = 0;
+  stream->json_literal = NULL;
+  stream->json_literal_pos = 0U;
+  stream->json_number_state = CAI_MCP_JSON_NUMBER_START;
+}
+
+static int cai_mcp_result_json_top(cai_mcp_result_stream *stream) {
+  if (stream == NULL || stream->json_depth == 0U) {
+    return -1;
+  }
+  return (int)(stream->json_depth - 1U);
+}
+
+static int cai_mcp_result_json_complete_value(cai_mcp_result_stream *stream,
+                                              int is_key, int *root_done) {
+  int top;
+
+  if (root_done != NULL) {
+    *root_done = 0;
+  }
+  top = cai_mcp_result_json_top(stream);
+  if (top < 0) {
+    return -1;
+  }
+  if (is_key) {
+    if (stream->json_context[top] != CAI_MCP_JSON_CONTEXT_OBJECT ||
+        stream->json_expect[top] != CAI_MCP_JSON_EXPECT_KEY_OR_END) {
+      return -1;
+    }
+    stream->json_expect[top] = CAI_MCP_JSON_EXPECT_AFTER_KEY;
+    return 0;
+  }
+  if (stream->json_context[top] == CAI_MCP_JSON_CONTEXT_ROOT) {
+    stream->json_expect[top] = CAI_MCP_JSON_EXPECT_DONE;
+    if (root_done != NULL) {
+      *root_done = 1;
+    }
+    return 0;
+  }
+  if (stream->json_context[top] == CAI_MCP_JSON_CONTEXT_ARRAY) {
+    if (stream->json_expect[top] != CAI_MCP_JSON_EXPECT_VALUE &&
+        stream->json_expect[top] != CAI_MCP_JSON_EXPECT_VALUE_OR_END) {
+      return -1;
+    }
+    stream->json_expect[top] = CAI_MCP_JSON_EXPECT_AFTER_VALUE;
+    return 0;
+  }
+  if (stream->json_context[top] == CAI_MCP_JSON_CONTEXT_OBJECT) {
+    if (stream->json_expect[top] != CAI_MCP_JSON_EXPECT_VALUE) {
+      return -1;
+    }
+    stream->json_expect[top] = CAI_MCP_JSON_EXPECT_AFTER_VALUE;
+    return 0;
+  }
+  return -1;
+}
+
+static int cai_mcp_result_json_push(cai_mcp_result_stream *stream,
+                                    cai_mcp_json_context_type type) {
+  if (stream == NULL || stream->json_depth >= CAI_MCP_JSON_STACK_MAX) {
+    return -1;
+  }
+  stream->json_context[stream->json_depth] = type;
+  stream->json_expect[stream->json_depth] =
+      type == CAI_MCP_JSON_CONTEXT_ARRAY ? CAI_MCP_JSON_EXPECT_VALUE_OR_END
+                                         : CAI_MCP_JSON_EXPECT_KEY_OR_END;
+  stream->json_depth++;
+  return 0;
+}
+
+static int cai_mcp_result_json_pop(cai_mcp_result_stream *stream,
+                                   cai_mcp_json_context_type type,
+                                   int *root_done) {
+  int top;
+
+  top = cai_mcp_result_json_top(stream);
+  if (top <= 0 || stream->json_context[top] != type) {
+    return -1;
+  }
+  if (type == CAI_MCP_JSON_CONTEXT_ARRAY) {
+    if (stream->json_expect[top] != CAI_MCP_JSON_EXPECT_VALUE_OR_END &&
+        stream->json_expect[top] != CAI_MCP_JSON_EXPECT_AFTER_VALUE) {
+      return -1;
+    }
+  } else if (stream->json_expect[top] != CAI_MCP_JSON_EXPECT_KEY_OR_END &&
+             stream->json_expect[top] != CAI_MCP_JSON_EXPECT_AFTER_VALUE) {
+    return -1;
+  }
+  stream->json_depth--;
+  return cai_mcp_result_json_complete_value(stream, 0, root_done);
+}
+
+static int
+cai_mcp_result_json_number_accepts_end(const cai_mcp_result_stream *stream) {
+  return stream != NULL &&
+         (stream->json_number_state == CAI_MCP_JSON_NUMBER_AFTER_ZERO ||
+          stream->json_number_state == CAI_MCP_JSON_NUMBER_INT ||
+          stream->json_number_state == CAI_MCP_JSON_NUMBER_FRACTION ||
+          stream->json_number_state == CAI_MCP_JSON_NUMBER_EXP);
+}
+
+static int cai_mcp_result_json_number_char(cai_mcp_result_stream *stream,
+                                           unsigned char ch) {
+  switch (stream->json_number_state) {
+  case CAI_MCP_JSON_NUMBER_START:
+    if (ch == '-') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_AFTER_MINUS;
+    } else if (ch == '0') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_AFTER_ZERO;
+    } else if (ch >= '1' && ch <= '9') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_INT;
+    } else {
+      return -1;
+    }
+    return 0;
+  case CAI_MCP_JSON_NUMBER_AFTER_MINUS:
+    if (ch == '0') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_AFTER_ZERO;
+    } else if (ch >= '1' && ch <= '9') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_INT;
+    } else {
+      return -1;
+    }
+    return 0;
+  case CAI_MCP_JSON_NUMBER_AFTER_ZERO:
+    if (ch == '.') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_FRACTION_START;
+    } else if (ch == 'e' || ch == 'E') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_EXP_START;
+    } else {
+      return -1;
+    }
+    return 0;
+  case CAI_MCP_JSON_NUMBER_INT:
+    if (ch >= '0' && ch <= '9') {
+      return 0;
+    }
+    if (ch == '.') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_FRACTION_START;
+    } else if (ch == 'e' || ch == 'E') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_EXP_START;
+    } else {
+      return -1;
+    }
+    return 0;
+  case CAI_MCP_JSON_NUMBER_FRACTION_START:
+    if (ch >= '0' && ch <= '9') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_FRACTION;
+      return 0;
+    }
+    return -1;
+  case CAI_MCP_JSON_NUMBER_FRACTION:
+    if (ch >= '0' && ch <= '9') {
+      return 0;
+    }
+    if (ch == 'e' || ch == 'E') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_EXP_START;
+      return 0;
+    }
+    return -1;
+  case CAI_MCP_JSON_NUMBER_EXP_START:
+    if (ch == '+' || ch == '-') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_EXP_SIGN;
+    } else if (ch >= '0' && ch <= '9') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_EXP;
+    } else {
+      return -1;
+    }
+    return 0;
+  case CAI_MCP_JSON_NUMBER_EXP_SIGN:
+    if (ch >= '0' && ch <= '9') {
+      stream->json_number_state = CAI_MCP_JSON_NUMBER_EXP;
+      return 0;
+    }
+    return -1;
+  case CAI_MCP_JSON_NUMBER_EXP:
+    return ch >= '0' && ch <= '9' ? 0 : -1;
+  }
+  return -1;
+}
+
+static int cai_mcp_result_json_start_value(cai_mcp_result_stream *stream,
+                                           unsigned char ch, int *root_done) {
+  int top;
+
+  top = cai_mcp_result_json_top(stream);
+  if (top < 0) {
+    return -1;
+  }
+  if (stream->json_expect[top] != CAI_MCP_JSON_EXPECT_VALUE &&
+      stream->json_expect[top] != CAI_MCP_JSON_EXPECT_VALUE_OR_END) {
+    return -1;
+  }
+  if (ch == '{') {
+    return cai_mcp_result_json_push(stream, CAI_MCP_JSON_CONTEXT_OBJECT);
+  }
+  if (ch == '[') {
+    return cai_mcp_result_json_push(stream, CAI_MCP_JSON_CONTEXT_ARRAY);
+  }
+  if (ch == '"') {
+    stream->json_token = CAI_MCP_JSON_TOKEN_STRING;
+    stream->json_string_is_key = 0;
+    stream->json_escape = 0;
+    stream->json_unicode_remaining = 0;
+    return 0;
+  }
+  if (ch == 't' || ch == 'f' || ch == 'n') {
+    stream->json_token = CAI_MCP_JSON_TOKEN_LITERAL;
+    stream->json_literal = ch == 't' ? "true" : (ch == 'f' ? "false" : "null");
+    stream->json_literal_pos = 1U;
+    if (stream->json_literal[1] == '\0') {
+      stream->json_token = CAI_MCP_JSON_TOKEN_NONE;
+      return cai_mcp_result_json_complete_value(stream, 0, root_done);
+    }
+    return 0;
+  }
+  if (ch == '-' || (ch >= '0' && ch <= '9')) {
+    stream->json_token = CAI_MCP_JSON_TOKEN_NUMBER;
+    stream->json_number_state = CAI_MCP_JSON_NUMBER_START;
+    return cai_mcp_result_json_number_char(stream, ch);
+  }
+  return -1;
+}
+
+static int cai_mcp_result_json_consume(cai_mcp_result_stream *stream,
+                                       unsigned char ch, int *root_done,
+                                       int *consumed) {
+  int top;
+
+  if (root_done != NULL) {
+    *root_done = 0;
+  }
+  if (consumed != NULL) {
+    *consumed = 1;
+  }
+  if (stream == NULL || stream->json_depth == 0U) {
+    return -1;
+  }
+  if (stream->json_token == CAI_MCP_JSON_TOKEN_STRING) {
+    if (stream->json_unicode_remaining > 0) {
+      if (!cai_mcp_json_hex(ch)) {
+        return -1;
+      }
+      stream->json_unicode_remaining--;
+      return 0;
+    }
+    if (stream->json_escape) {
+      stream->json_escape = 0;
+      if (ch == '"' || ch == '\\' || ch == '/' || ch == 'b' || ch == 'f' ||
+          ch == 'n' || ch == 'r' || ch == 't') {
+        return 0;
+      }
+      if (ch == 'u') {
+        stream->json_unicode_remaining = 4;
+        return 0;
+      }
+      return -1;
+    }
+    if (ch == '\\') {
+      stream->json_escape = 1;
+      return 0;
+    }
+    if (ch == '"') {
+      stream->json_token = CAI_MCP_JSON_TOKEN_NONE;
+      return cai_mcp_result_json_complete_value(
+          stream, stream->json_string_is_key, root_done);
+    }
+    return ch >= 0x20U ? 0 : -1;
+  }
+  if (stream->json_token == CAI_MCP_JSON_TOKEN_LITERAL) {
+    if (stream->json_literal == NULL ||
+        ch != (unsigned char)stream->json_literal[stream->json_literal_pos]) {
+      return -1;
+    }
+    stream->json_literal_pos++;
+    if (stream->json_literal[stream->json_literal_pos] == '\0') {
+      stream->json_token = CAI_MCP_JSON_TOKEN_NONE;
+      stream->json_literal = NULL;
+      stream->json_literal_pos = 0U;
+      return cai_mcp_result_json_complete_value(stream, 0, root_done);
+    }
+    return 0;
+  }
+  if (stream->json_token == CAI_MCP_JSON_TOKEN_NUMBER) {
+    if (cai_mcp_json_delim(ch)) {
+      if (!cai_mcp_result_json_number_accepts_end(stream)) {
+        return -1;
+      }
+      stream->json_token = CAI_MCP_JSON_TOKEN_NONE;
+      if (cai_mcp_result_json_complete_value(stream, 0, root_done) != 0) {
+        return -1;
+      }
+      if (root_done != NULL && *root_done) {
+        if (consumed != NULL) {
+          *consumed = 0;
+        }
+        return 0;
+      }
+    } else {
+      return cai_mcp_result_json_number_char(stream, ch);
+    }
+  }
+  top = cai_mcp_result_json_top(stream);
+  if (top < 0) {
+    return -1;
+  }
+  switch (stream->json_expect[top]) {
+  case CAI_MCP_JSON_EXPECT_DONE:
+    if (isspace((int)ch)) {
+      if (consumed != NULL) {
+        *consumed = 0;
+      }
+      return 0;
+    }
+    if (consumed != NULL) {
+      *consumed = 0;
+    }
+    return cai_mcp_json_delim(ch) ? 0 : -1;
+  case CAI_MCP_JSON_EXPECT_VALUE:
+    if (isspace((int)ch)) {
+      return 0;
+    }
+    return cai_mcp_result_json_start_value(stream, ch, root_done);
+  case CAI_MCP_JSON_EXPECT_VALUE_OR_END:
+    if (isspace((int)ch)) {
+      return 0;
+    }
+    if (ch == ']') {
+      return cai_mcp_result_json_pop(stream, CAI_MCP_JSON_CONTEXT_ARRAY,
+                                     root_done);
+    }
+    return cai_mcp_result_json_start_value(stream, ch, root_done);
+  case CAI_MCP_JSON_EXPECT_KEY_OR_END:
+    if (isspace((int)ch)) {
+      return 0;
+    }
+    if (ch == '}') {
+      return cai_mcp_result_json_pop(stream, CAI_MCP_JSON_CONTEXT_OBJECT,
+                                     root_done);
+    }
+    if (ch != '"') {
+      return -1;
+    }
+    stream->json_token = CAI_MCP_JSON_TOKEN_STRING;
+    stream->json_string_is_key = 1;
+    stream->json_escape = 0;
+    stream->json_unicode_remaining = 0;
+    return 0;
+  case CAI_MCP_JSON_EXPECT_AFTER_KEY:
+    if (isspace((int)ch)) {
+      return 0;
+    }
+    if (ch != ':') {
+      return -1;
+    }
+    stream->json_expect[top] = CAI_MCP_JSON_EXPECT_VALUE;
+    return 0;
+  case CAI_MCP_JSON_EXPECT_AFTER_VALUE:
+    if (isspace((int)ch)) {
+      return 0;
+    }
+    if (stream->json_context[top] == CAI_MCP_JSON_CONTEXT_ARRAY) {
+      if (ch == ',') {
+        stream->json_expect[top] = CAI_MCP_JSON_EXPECT_VALUE;
+        return 0;
+      }
+      if (ch == ']') {
+        return cai_mcp_result_json_pop(stream, CAI_MCP_JSON_CONTEXT_ARRAY,
+                                       root_done);
+      }
+      return -1;
+    }
+    if (stream->json_context[top] == CAI_MCP_JSON_CONTEXT_OBJECT) {
+      if (ch == ',') {
+        stream->json_expect[top] = CAI_MCP_JSON_EXPECT_KEY_OR_END;
+        return 0;
+      }
+      if (ch == '}') {
+        return cai_mcp_result_json_pop(stream, CAI_MCP_JSON_CONTEXT_OBJECT,
+                                       root_done);
+      }
+      return -1;
+    }
+    return -1;
+  }
+  return -1;
 }
 
 static int cai_mcp_result_stream_skip_char(cai_mcp_result_stream *stream,
@@ -1424,7 +1873,8 @@ static int cai_mcp_result_stream_skip_char(cai_mcp_result_stream *stream,
 
 static int cai_mcp_result_stream_value_char(cai_mcp_result_stream *stream,
                                             unsigned char ch) {
-  int done;
+  int consumed;
+  int root_done;
 
   if (!stream->result_started && isspace((int)ch)) {
     if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
@@ -1440,46 +1890,42 @@ static int cai_mcp_result_stream_value_char(cai_mcp_result_stream *stream,
     }
     stream->result_seen = 1;
     stream->result_started = 1;
+    cai_mcp_result_json_reset(stream);
     if (cai_mcp_result_stream_write_result_placeholder(stream) != 0) {
       return -1;
     }
   }
-  if (stream->result_started && stream->result_root != '\0' &&
-      stream->result_root != '"' && stream->result_root != '{' &&
-      stream->result_root != '[' && cai_mcp_json_delim(ch)) {
-    stream->result_done = 1;
-    if (ch == ',') {
-      if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
-        return -1;
-      }
-      stream->state = CAI_MCP_RESULT_STREAM_KEY_OR_END;
-    } else if (ch == '}') {
-      if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
-        return -1;
-      }
-      stream->state = CAI_MCP_RESULT_STREAM_DONE;
-    } else if (isspace((int)ch)) {
-      if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
-        return -1;
-      }
-      stream->state = CAI_MCP_RESULT_STREAM_AFTER_VALUE;
-    } else {
-      cai_mcp_result_stream_fail(stream, CAI_ERR_PROTOCOL,
-                                 "failed to parse MCP JSON-RPC response");
-      return -1;
-    }
-    return 0;
-  }
-  if (cai_mcp_stream_write_byte(stream, ch) != CAI_OK) {
+  root_done = 0;
+  consumed = 1;
+  if (cai_mcp_result_json_consume(stream, ch, &root_done, &consumed) != 0) {
+    cai_mcp_result_stream_fail(stream, CAI_ERR_PROTOCOL,
+                               "failed to parse MCP JSON-RPC response");
     return -1;
   }
-  done = cai_mcp_result_stream_skip_char(stream, ch);
-  if (done < 0) {
+  if (consumed && cai_mcp_stream_write_byte(stream, ch) != CAI_OK) {
     return -1;
   }
-  if (done) {
+  if (root_done) {
     stream->result_done = 1;
     stream->state = CAI_MCP_RESULT_STREAM_AFTER_VALUE;
+    if (!consumed) {
+      if (ch == ',') {
+        if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
+          return -1;
+        }
+        stream->state = CAI_MCP_RESULT_STREAM_KEY_OR_END;
+      } else if (ch == '}') {
+        if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
+          return -1;
+        }
+        stream->state = CAI_MCP_RESULT_STREAM_DONE;
+      } else if (isspace((int)ch)) {
+        if (cai_mcp_result_stream_envelope_append_byte(stream, ch) != 0) {
+          return -1;
+        }
+        stream->state = CAI_MCP_RESULT_STREAM_AFTER_VALUE;
+      }
+    }
   }
   return 0;
 }
@@ -1673,6 +2119,7 @@ static void cai_mcp_result_stream_reset_json(cai_mcp_result_stream *stream) {
   stream->escape = 0;
   stream->depth = 0;
   stream->literal_started = 0;
+  cai_mcp_result_json_reset(stream);
   if (stream->envelope_initialized) {
     stream->envelope.reset(&stream->envelope);
   }

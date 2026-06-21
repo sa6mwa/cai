@@ -914,6 +914,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_streamed_result_rejects_missing_id
     mcp_streamable_http_streamed_sse_rejects_result_and_error
     mcp_streamable_http_streamed_result_rejects_trailing_garbage
+    mcp_streamable_http_streamed_result_rejects_bad_literal
+    mcp_streamable_http_streamed_result_rejects_bad_object
     mcp_streamable_http_send_notification_params
     mcp_streamable_http_notification_response_wrong_status
     mcp_streamable_http_notification_response_body
