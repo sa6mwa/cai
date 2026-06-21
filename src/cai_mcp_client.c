@@ -118,6 +118,16 @@ static void cai_mcp_client_clear_resource_templates(
 static void
 cai_mcp_client_clear_prompts(cai_mcp_streamable_http_client_impl *impl);
 
+static int cai_mcp_allocator_is_empty(const cai_allocator *allocator) {
+  return allocator->malloc_fn == NULL && allocator->realloc_fn == NULL &&
+         allocator->free_fn == NULL;
+}
+
+static int cai_mcp_allocator_is_complete(const cai_allocator *allocator) {
+  return allocator->malloc_fn != NULL && allocator->realloc_fn != NULL &&
+         allocator->free_fn != NULL;
+}
+
 typedef struct cai_mcp_http_response_capture {
   lonejson_spooled body;
   char *content_type;
@@ -8919,6 +8929,11 @@ int cai_mcp_streamable_http_client_open(
   *out = NULL;
   cai_mcp_streamable_http_client_config_init(&defaults);
   effective = config != NULL ? config : &defaults;
+  if (!cai_mcp_allocator_is_empty(&effective->allocator) &&
+      !cai_mcp_allocator_is_complete(&effective->allocator)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom allocator requires malloc, realloc, and free");
+  }
   if (effective->url == NULL || effective->url[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP Streamable HTTP URL is required");

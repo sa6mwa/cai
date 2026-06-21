@@ -747,6 +747,7 @@ if(CAI_BUILD_TESTS)
     lonejson_selected_array_rewrite
     tool_registry
     mcp_client_config
+    mcp_client_rejects_partial_allocator
     mcp_streamable_http_header_callback_bounds
     mcp_client_receiver_surface
     mcp_client_registry_adapter

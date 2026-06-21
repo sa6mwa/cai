@@ -3928,6 +3928,64 @@ static void test_mcp_streamable_http_header_callback_bounds(test_state *state) {
              cai_mcp_test_header_callback_unterminated(), 1L);
 }
 
+static void test_mcp_client_rejects_partial_allocator(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  alloc_count_state alloc_state;
+  cai_error error;
+
+  client = NULL;
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.allocator.malloc_fn = test_allocator_malloc;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_client_partial_malloc_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_partial_malloc_allocator_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_partial_malloc_allocator_no_alloc",
+             (long)alloc_state.allocs, 0L);
+  expect_int(state, "mcp_client_partial_malloc_allocator_no_free",
+             (long)alloc_state.frees, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  memset(&config.allocator, 0, sizeof(config.allocator));
+  config.allocator.realloc_fn = test_allocator_realloc;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_client_partial_realloc_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_partial_realloc_allocator_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_partial_realloc_allocator_no_alloc",
+             (long)alloc_state.allocs, 0L);
+  expect_int(state, "mcp_client_partial_realloc_allocator_no_free",
+             (long)alloc_state.frees, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  memset(&config.allocator, 0, sizeof(config.allocator));
+  config.allocator.free_fn = test_allocator_free;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_client_partial_free_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_partial_free_allocator_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_partial_free_allocator_no_alloc",
+             (long)alloc_state.allocs, 0L);
+  expect_int(state, "mcp_client_partial_free_allocator_no_free",
+             (long)alloc_state.frees, 0L);
+
+  cai_error_cleanup(&error);
+}
+
 static void test_mcp_client_receiver_surface(test_state *state) {
   test_mcp_client_impl fake;
   cai_sink_callbacks sink_callbacks;
@@ -29381,6 +29439,8 @@ static const test_entry test_entries[] = {
     {"lonejson_selected_array_rewrite", test_lonejson_selected_array_rewrite},
     {"tool_registry", test_tool_registry},
     {"mcp_client_config", test_mcp_client_config},
+    {"mcp_client_rejects_partial_allocator",
+     test_mcp_client_rejects_partial_allocator},
     {"mcp_streamable_http_header_callback_bounds",
      test_mcp_streamable_http_header_callback_bounds},
     {"mcp_client_receiver_surface", test_mcp_client_receiver_surface},
