@@ -3986,6 +3986,36 @@ static void test_mcp_client_rejects_partial_allocator(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_mcp_client_open_failure_cleans_allocator(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  fail_alloc_state alloc_state;
+  cai_error error;
+
+  client = NULL;
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  alloc_state.fail_after = 3U;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.client_name = "failing-mcp-client";
+  config.client_version = "1";
+  config.protocol_version = CAI_MCP_PROTOCOL_VERSION;
+  config.allocator.malloc_fn = test_fail_allocator_malloc;
+  config.allocator.realloc_fn = test_fail_allocator_realloc;
+  config.allocator.free_fn = test_fail_allocator_free;
+  config.allocator.context = &alloc_state;
+
+  expect_int(state, "mcp_client_open_failure_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_NOMEM);
+  expect_int(state, "mcp_client_open_failure_no_handle", client == NULL, 1L);
+  expect_int(state, "mcp_client_open_failure_alloc_balance",
+             (long)alloc_state.frees, (long)alloc_state.allocs);
+
+  cai_error_cleanup(&error);
+}
+
 static void test_mcp_client_receiver_surface(test_state *state) {
   test_mcp_client_impl fake;
   cai_sink_callbacks sink_callbacks;
@@ -29441,6 +29471,8 @@ static const test_entry test_entries[] = {
     {"mcp_client_config", test_mcp_client_config},
     {"mcp_client_rejects_partial_allocator",
      test_mcp_client_rejects_partial_allocator},
+    {"mcp_client_open_failure_cleans_allocator",
+     test_mcp_client_open_failure_cleans_allocator},
     {"mcp_streamable_http_header_callback_bounds",
      test_mcp_streamable_http_header_callback_bounds},
     {"mcp_client_receiver_surface", test_mcp_client_receiver_surface},

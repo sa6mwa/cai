@@ -748,6 +748,7 @@ if(CAI_BUILD_TESTS)
     tool_registry
     mcp_client_config
     mcp_client_rejects_partial_allocator
+    mcp_client_open_failure_cleans_allocator
     mcp_streamable_http_header_callback_bounds
     mcp_client_receiver_surface
     mcp_client_registry_adapter

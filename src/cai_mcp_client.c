@@ -8945,6 +8945,7 @@ int cai_mcp_streamable_http_client_open(
   }
   memset(impl, 0, sizeof(*impl));
   impl->allocator = effective->allocator;
+  impl->public_client.impl = impl;
   impl->url = cai_strdup(&impl->allocator, effective->url);
   impl->client_name = cai_strdup(
       &impl->allocator,
@@ -9000,7 +9001,6 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.send_request = cai_mcp_streamable_send_request;
   impl->public_client.send_notification = cai_mcp_streamable_send_notification;
   impl->public_client.destroy = cai_mcp_streamable_destroy;
-  impl->public_client.impl = impl;
   *out = &impl->public_client;
   return CAI_OK;
 }
