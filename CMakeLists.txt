@@ -1133,6 +1133,19 @@ if(CAI_BUILD_TESTS)
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   cai_link_internal_consumer(cai_mcp_client_smoke)
   cai_configure_c_target(cai_mcp_client_smoke)
+  add_executable(cai_mcp_client_e2e_driver tests/mcp_client_e2e.c)
+  target_include_directories(cai_mcp_client_e2e_driver PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  cai_link_internal_consumer(cai_mcp_client_e2e_driver)
+  cai_configure_c_target(cai_mcp_client_e2e_driver)
+  add_test(NAME cai_mcp_client_e2e
+    COMMAND /bin/sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_e2e.sh"
+      $<TARGET_FILE:cai_mcp_http_server>
+      $<TARGET_FILE:cai_mcp_client_e2e_driver>)
+  set_tests_properties(cai_mcp_client_e2e PROPERTIES
+    LABELS "e2e;local"
+    TIMEOUT 5)
   set(_cai_examples_help_smoke_args
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_help_smoke.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}")

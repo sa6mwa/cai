@@ -71,7 +71,7 @@ help:
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
 		'make release-matrix Incrementally build, test, package, and checksum release artifacts.' \
-		'make release      Clean first, then run the final release artifact gate.' \
+		'make release      Clean first, then run prerelease, live prerelease, and release matrix gates.' \
 		'make package-verify Verify release archive structure and metadata.' \
 		'make searxng-pull Pull the configured SearXNG container image.' \
 		'make searxng-up   Start local SearXNG via nerdctl compose or docker compose.' \
@@ -290,6 +290,7 @@ release-matrix:
 
 release:
 	$(MAKE) clean
+	$(MAKE) prerelease
 	CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) prerelease-live
 	$(MAKE) release-matrix
 
