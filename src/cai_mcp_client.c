@@ -1230,8 +1230,7 @@ static size_t cai_mcp_header_callback(char *buffer, size_t size, size_t nitems,
   if (cai_mcp_parse_http_status_line(buffer, len, &capture->status)) {
     return len;
   }
-  if (cai_mcp_header_is(buffer, len, "content-type",
-                        strlen("content-type"))) {
+  if (cai_mcp_header_is(buffer, len, "content-type", strlen("content-type"))) {
     cai_free_mem(NULL, capture->content_type);
     capture->content_type =
         cai_mcp_trim_header_value(NULL, buffer + strlen("content-type") + 1U,
@@ -1308,8 +1307,7 @@ static void cai_mcp_result_stream_fail(cai_mcp_result_stream *stream, int code,
 }
 
 static int cai_mcp_result_stream_envelope_append(cai_mcp_result_stream *stream,
-                                                 const void *data,
-                                                 size_t len) {
+                                                 const void *data, size_t len) {
   lonejson_error json_error;
 
   if (stream == NULL || data == NULL || len == 0U) {
@@ -1362,10 +1360,9 @@ static int cai_mcp_stream_write_byte(cai_mcp_result_stream *stream,
   cai_error_init(&error);
   rc = cai_sink_write(stream->output, &ch, 1U, &error);
   if (rc != CAI_OK) {
-    cai_mcp_result_stream_fail(stream, rc,
-                               error.message != NULL
-                                   ? error.message
-                                   : "failed to write MCP result");
+    cai_mcp_result_stream_fail(
+        stream, rc,
+        error.message != NULL ? error.message : "failed to write MCP result");
   }
   cai_error_cleanup(&error);
   return rc;
@@ -1542,9 +1539,9 @@ static int cai_mcp_result_stream_consume_one(cai_mcp_result_stream *stream,
     } else if (ch == '\\') {
       stream->key_escape = 1;
     } else if (ch == '"') {
-      stream->key[stream->key_len < sizeof(stream->key) ? stream->key_len
-                                                        : sizeof(stream->key) -
-                                                              1U] = '\0';
+      stream->key[stream->key_len < sizeof(stream->key)
+                      ? stream->key_len
+                      : sizeof(stream->key) - 1U] = '\0';
       stream->current_is_result = strcmp(stream->key, "result") == 0;
       stream->state = CAI_MCP_RESULT_STREAM_AFTER_KEY;
       return 0;
@@ -1681,13 +1678,13 @@ static void cai_mcp_result_stream_reset_json(cai_mcp_result_stream *stream) {
   }
 }
 
-static int cai_mcp_process_sse_message(cai_mcp_streamable_http_client_impl *impl,
-                                       lonejson_spooled *data,
-                                       lonejson_spooled *final_body,
-                                       int *final_seen, cai_error *error);
+static int cai_mcp_process_sse_message(
+    cai_mcp_streamable_http_client_impl *impl, lonejson_spooled *data,
+    lonejson_spooled *final_body, int *final_seen, cai_error *error);
 
-static int cai_mcp_result_stream_sse_event_ready(
-    cai_mcp_streamable_http_client_impl *impl, cai_mcp_result_stream *stream) {
+static int
+cai_mcp_result_stream_sse_event_ready(cai_mcp_streamable_http_client_impl *impl,
+                                      cai_mcp_result_stream *stream) {
   lonejson_spooled final_body;
   cai_error error;
   int final_seen;
@@ -1746,9 +1743,10 @@ static int cai_mcp_result_stream_sse_data_char(cai_mcp_result_stream *stream,
   return cai_mcp_result_stream_consume_one(stream, ch);
 }
 
-static int cai_mcp_result_stream_consume_sse(
-    cai_mcp_streamable_http_client_impl *impl, cai_mcp_result_stream *stream,
-    const char *ptr, size_t len) {
+static int
+cai_mcp_result_stream_consume_sse(cai_mcp_streamable_http_client_impl *impl,
+                                  cai_mcp_result_stream *stream,
+                                  const char *ptr, size_t len) {
   size_t i;
   unsigned char ch;
 
@@ -1818,8 +1816,8 @@ static int cai_mcp_result_stream_consume_sse(
 static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res);
 static int cai_mcp_response_is_sse(const cai_mcp_http_response_capture *res);
 
-static int cai_mcp_response_status_can_stream(
-    const cai_mcp_http_response_capture *res) {
+static int
+cai_mcp_response_status_can_stream(const cai_mcp_http_response_capture *res) {
   return res != NULL && res->status >= 200L && res->status < 300L;
 }
 
@@ -2120,9 +2118,8 @@ static int cai_mcp_parse_jsonrpc_id(const lonejson_spooled *json,
                                     cai_mcp_jsonrpc_id_doc *doc,
                                     const char *operation, cai_error *error);
 
-static int
-cai_mcp_request_id_i64(const lonejson_spooled *request, long long *out,
-                       cai_error *error) {
+static int cai_mcp_request_id_i64(const lonejson_spooled *request,
+                                  long long *out, cai_error *error) {
   cai_mcp_jsonrpc_id_doc doc;
   char *text;
   char *end;
@@ -6726,8 +6723,8 @@ static int cai_mcp_parse_result_fallback_error_only(
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_mcp_jsonrpc_response_result_error_presence(
-      &json_body, &has_result, &has_error, error);
+  rc = cai_mcp_jsonrpc_response_result_error_presence(&json_body, &has_result,
+                                                      &has_error, error);
   json_body.cleanup(&json_body);
   if (rc != CAI_OK) {
     return rc;
@@ -6826,8 +6823,8 @@ static int CAI_MCP_UNUSED_FN cai_mcp_parse_resource_read_response(
     return rc;
   }
   return cai_mcp_parse_result_response(response, "MCP resources/read response",
-                                       "failed to parse MCP resources/read",
-                                       1, output, error);
+                                       "failed to parse MCP resources/read", 1,
+                                       output, error);
 }
 
 static int CAI_MCP_UNUSED_FN
@@ -6840,8 +6837,8 @@ cai_mcp_parse_prompt_get_response(const cai_mcp_http_response_capture *response,
     return rc;
   }
   return cai_mcp_parse_result_response(response, "MCP prompts/get response",
-                                       "failed to parse MCP prompts/get",
-                                       1, output, error);
+                                       "failed to parse MCP prompts/get", 1,
+                                       output, error);
 }
 
 static int CAI_MCP_UNUSED_FN

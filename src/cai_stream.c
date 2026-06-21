@@ -226,6 +226,7 @@ typedef struct cai_sse_state {
   int done_line_start;
   int done_seen;
   int event_seen;
+  int caller_output_seen;
   char **emitted_call_ids;
   size_t emitted_call_count;
   size_t emitted_call_capacity;
@@ -1441,7 +1442,11 @@ static int cai_sse_write_reasoning_delta(cai_sse_state *state,
     state->reasoning_summary_started = 1;
   }
   state->reasoning_summary_suffixed = 0;
-  return cai_stream_write_spooled(state->sinks.reasoning_summary, delta, NULL);
+  rc = cai_stream_write_spooled(state->sinks.reasoning_summary, delta, NULL);
+  if (rc == CAI_OK) {
+    state->caller_output_seen = 1;
+  }
+  return rc;
 }
 
 static int cai_sse_write_output_delta(cai_sse_state *state,
@@ -1464,7 +1469,11 @@ static int cai_sse_write_output_delta(cai_sse_state *state,
     state->output_text_started = 1;
   }
   state->output_text_suffixed = 0;
-  return cai_stream_write_spooled(state->sinks.output_text, delta, NULL);
+  rc = cai_stream_write_spooled(state->sinks.output_text, delta, NULL);
+  if (rc == CAI_OK) {
+    state->caller_output_seen = 1;
+  }
+  return rc;
 }
 
 static int
@@ -1477,6 +1486,9 @@ cai_sse_emit_output_text_delta(cai_sse_state *state,
     rc = state->sinks.output_text_delta(state->sinks.output_text_context,
                                         doc->item_id, (int)doc->output_index,
                                         &doc->delta, NULL);
+    if (rc == CAI_OK) {
+      state->caller_output_seen = 1;
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_sse_write_output_delta(state, &doc->delta);
@@ -1487,24 +1499,36 @@ cai_sse_emit_output_text_delta(cai_sse_state *state,
 static int
 cai_sse_emit_function_call_delta(cai_sse_state *state,
                                  const cai_stream_delta_event_doc *doc) {
+  int rc;
+
   if (state->sinks.function_call_arguments_delta == NULL ||
       cai_stream_spooled_empty(&doc->delta)) {
     return CAI_OK;
   }
-  return state->sinks.function_call_arguments_delta(
+  rc = state->sinks.function_call_arguments_delta(
       state->sinks.function_call_context, doc->item_id, (int)doc->output_index,
       &doc->delta, state->error);
+  if (rc == CAI_OK) {
+    state->caller_output_seen = 1;
+  }
+  return rc;
 }
 
 static int cai_sse_emit_function_call_done_values(
     cai_sse_state *state, const char *item_id, int output_index,
     const char *call_id, const char *name, const lonejson_spooled *arguments) {
+  int rc;
+
   if (state->sinks.function_call_arguments_done == NULL) {
     return CAI_OK;
   }
-  return state->sinks.function_call_arguments_done(
+  rc = state->sinks.function_call_arguments_done(
       state->sinks.function_call_context, item_id, output_index, call_id, name,
       arguments, state->error);
+  if (rc == CAI_OK) {
+    state->caller_output_seen = 1;
+  }
+  return rc;
 }
 
 static int cai_sse_emit_function_call_done(
@@ -1524,12 +1548,18 @@ static int cai_sse_emit_output_item_done(cai_sse_state *state,
                                          const char *item_id, int output_index,
                                          const char *type,
                                          const lonejson_spooled *item_json) {
+  int rc;
+
   if (state->sinks.output_item_done == NULL) {
     return CAI_OK;
   }
-  return state->sinks.output_item_done(state->sinks.output_item_context,
-                                       item_id, output_index, type, item_json,
-                                       state->error);
+  rc = state->sinks.output_item_done(state->sinks.output_item_context, item_id,
+                                     output_index, type, item_json,
+                                     state->error);
+  if (rc == CAI_OK) {
+    state->caller_output_seen = 1;
+  }
+  return rc;
 }
 
 static int cai_sse_set_response_id(cai_sse_state *state, const char *id) {
@@ -2544,7 +2574,7 @@ static int cai_ws_receive_events(CURL *curl, cai_sse_state *state,
 static int cai_client_stream_response_websocket_with_id(
     cai_client *client, const cai_response_create_params *params,
     const cai_stream_sinks *sinks, char **out_response_id,
-    cai_token_usage *out_usage, cai_error *error) {
+    cai_token_usage *out_usage, int *out_caller_output_seen, cai_error *error) {
   CURL *curl;
   CURLcode curl_rc;
   struct curl_slist *headers;
@@ -2561,6 +2591,9 @@ static int cai_client_stream_response_websocket_with_id(
   int retried_transient;
 
   impl = CAI_CLIENT_IMPL(client);
+  if (out_caller_output_seen != NULL) {
+    *out_caller_output_seen = 0;
+  }
   retried_auth = 0;
   retried_transient = 0;
   keep_alive = 1;
@@ -2759,6 +2792,9 @@ retry_request:
   cai_free_mem(&impl->allocator, url);
   cai_response_request_upload_close(upload);
   cai_sse_cleanup_call_ids(&state);
+  if (out_caller_output_seen != NULL && state.caller_output_seen) {
+    *out_caller_output_seen = 1;
+  }
   cai_stream_event_json_cleanup(&state);
   return rc;
 }
@@ -2769,7 +2805,7 @@ int cai_client_stream_response_websocket_test(
     const cai_stream_sinks *sinks, char **out_response_id,
     cai_token_usage *out_usage, cai_error *error) {
   return cai_client_stream_response_websocket_with_id(
-      client, params, sinks, out_response_id, out_usage, error);
+      client, params, sinks, out_response_id, out_usage, NULL, error);
 }
 #endif
 
@@ -2825,6 +2861,7 @@ static int cai_client_stream_response_params_with_id(
   long http_status;
   int rc;
   int http_success;
+  int websocket_caller_output_seen;
   lonejson_sse_options sse_options;
   lonejson_error sse_error;
   lonejson_status sse_status;
@@ -2840,6 +2877,7 @@ static int cai_client_stream_response_params_with_id(
                          "callback are required");
   }
   retried_auth = 0;
+  websocket_caller_output_seen = 0;
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }
@@ -2849,9 +2887,10 @@ static int cai_client_stream_response_params_with_id(
   impl = CAI_CLIENT_IMPL(client);
   if (cai_client_should_use_responses_websocket(client)) {
     rc = cai_client_stream_response_websocket_with_id(
-        client, params, sinks, out_response_id, out_usage, error);
+        client, params, sinks, out_response_id, out_usage,
+        &websocket_caller_output_seen, error);
     if (rc == CAI_OK || impl->responses_websocket_fallback_disabled ||
-        rc != CAI_ERR_TRANSPORT) {
+        rc != CAI_ERR_TRANSPORT || websocket_caller_output_seen) {
       return rc;
     }
     impl->responses_websocket_fallback_active = 1;

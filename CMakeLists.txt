@@ -1009,6 +1009,7 @@ if(CAI_BUILD_TESTS)
     stream_responses_websocket_transient_retry
     stream_responses_websocket_midstream_drop
     stream_responses_websocket_https_fallback
+    stream_responses_websocket_no_fallback_after_output
     stream_responses_websocket_https_fallback_disabled
     stream_responses_websocket_fragmented_event
     session_stream_responses_websocket_multi_turn

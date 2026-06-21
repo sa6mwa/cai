@@ -2,9 +2,10 @@
 
 `cai` is a C89/POSIX SDK for building OpenAI Responses API agents in C and
 Lua. It gives applications a handle-oriented client, agents, sessions,
-streaming, tool execution, ChatGPT subscription auth, MCP serving, model/cost
-accounting, and release-packaged C/Lua integration without making embedders
-hand-roll HTTP, WebSocket, JSON, or tool orchestration.
+streaming, tool execution, ChatGPT subscription auth, MCP serving and client
+connectivity, model/cost accounting, and release-packaged C/Lua integration
+without making embedders hand-roll HTTP, WebSocket, JSON, or tool
+orchestration.
 
 The design target is systems software and embedded application runtimes such
 as Vectis: stream-first data flow, explicit ownership, zero-defaultable config
@@ -21,14 +22,17 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
   multi-turn workflows, including client-side history replay for stateless
   providers such as OpenRouter.
 - True streaming over HTTP/SSE and Responses WebSocket. OpenAI API-key and
-  ChatGPT subscription-auth streaming use Responses WebSocket when appropriate;
-  OpenRouter and local/mock providers use HTTP/SSE.
+  ChatGPT subscription-auth streaming use Responses WebSocket when appropriate,
+  with a default HTTPS streaming fallback for WebSocket failures that happen
+  before any output reaches caller sinks; OpenRouter and local/mock providers
+  use HTTP/SSE.
 - Local tool callbacks with streamed tool-call argument handling, tool output
   reporting, retryable tool errors, and configurable tool-round limits.
 - Built-in tool presets for SearXNG search, reverse geocoding, todo/kanban,
   sandboxed command execution, file reading, and file listing.
 - Streamable HTTP MCP handler for serving cai tools through an embedding-owned
-  HTTP server, plus a test/example MCP server.
+  HTTP server, plus a Streamable HTTP MCP client for consuming remote tools,
+  resources, prompts, and completions.
 - ChatGPT subscription authentication with Codex-compatible `auth.json`,
   browser OAuth login helper, token persistence, and transparent one-shot
   refresh retry on 401/403.
@@ -47,8 +51,8 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
 
 The first release is focused on the C SDK and Lua 5.5 facade for Responses API
 agents: Responses, Conversations, HTTP/SSE streaming, Responses WebSocket,
-ChatGPT subscription auth, agent/session DX, local tools, MCP tool serving,
-examples, LuaRock packaging, and release packaging.
+ChatGPT subscription auth, agent/session DX, local tools, MCP tool serving and
+client connectivity, examples, LuaRock packaging, and release packaging.
 
 Realtime WebSocket is intentionally not part of the first release. OpenAI's
 Realtime WebSocket API is a separate low-latency text/audio surface from
@@ -101,12 +105,13 @@ The verification tiers are split intentionally:
   `share/doc/libcai/`, plus supplemental docs under `share/doc/libcai/docs/`.
 - Dependency mode defaults to `cpkt`: the build uses the official
   `github.com/sa6mwa/c.pkt.systems` release tarball for the selected target to
-  provide curl, OpenSSL, nghttp2, libssh2, zlib, and the native dependency
-  stack. It also uses official `lonejson` and `libpslog` release artifacts for
-  the JSON library and logger header. Those dependency archives ship consumer
-  CMake and pkg-config metadata, and cai consumes that metadata when available.
-  Tarball URLs and SHA-256 values are pinned in CMake; sibling checkout
-  artifacts are not dependency inputs.
+  provide the native dependency stack. cai currently consumes curl, OpenSSL,
+  nghttp2, libssh2, and zlib from that archive. It also uses official
+  `lonejson` and `libpslog` release artifacts for the JSON library and logger
+  header. Those dependency archives ship consumer CMake and pkg-config
+  metadata, and cai consumes that metadata when available. Tarball URLs and
+  SHA-256 values are pinned in CMake; sibling checkout artifacts are not
+  dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
   libcurl 7.86.0 or newer, OpenSSL crypto, `lonejson.h` plus `liblonejson`,
   and `pslog.h`. The libcurl minimum is required for Responses WebSocket
@@ -157,6 +162,11 @@ The verification tiers are split intentionally:
   unterminated quoted values, empty keys, and control characters in key values.
 - OpenRouter can be selected with `cai_client_config_use_openrouter()`, which
   uses `OPENROUTER_API_KEY` and `https://openrouter.ai/api/v1`.
+- TLS verification is configurable on the surfaces that perform outbound HTTP:
+  `cai_client_config`, ChatGPT auth/login configs, and
+  `cai_mcp_streamable_http_client_config` expose `insecure_skip_verify`,
+  `ca_bundle_path`, and `ca_path`. Leave the CA paths unset to let
+  libcurl/OpenSSL use their default trust store.
 - Public config structs are zero-defaultable. A memset-zero config means "use
   cai defaults" for omitted knobs; fields are named so nonzero values opt into
   behavior or override a limit/path.
@@ -560,8 +570,10 @@ partial JSON-RPC response. Set `tool_output_max_bytes` to
 accepts direct unbounded tool-output streaming. `GET`/SSE transport is
 implemented for compatibility, but cai does not yet provide a host callback
 surface for queued server-initiated MCP notifications or requests in the
-handler. The handler currently serves tools; resources, prompts, sampling, and
-elicitation are client-side capabilities.
+handler. The handler currently serves tools; resources, prompts, completions,
+generic client requests, and server-to-client notification observation belong
+to the MCP client surface. Roots, sampling, elicitation, and resource
+subscriptions are not implemented.
 
 MCP session persistence is storage-neutral. The zero/default MCP config is
 stateless. Set `config.enable_sessions = 1` and provide
@@ -665,6 +677,12 @@ Remote MCP tools can be registered into a local `cai_tool_registry` with
 so callers must keep the MCP client alive for as long as those registered tools
 can run.
 
+Result-producing MCP client methods stream the JSON-RPC `result` value to the
+caller sink as it is parsed from JSON or SSE response chunks. The streamed path
+still validates the JSON-RPC envelope before accepting a result: ids must
+match, exactly one of `result` or `error` must be present, server errors do not
+write partial result JSON, and trailing non-whitespace bytes are rejected.
+
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 
 ```sh
@@ -715,7 +733,13 @@ to use HTTP/SSE streaming. The WebSocket implementation uses libcurl's
 connect-only WebSocket support, sends `response.create` messages, requests the
 OpenAI Responses WebSocket beta, reuses the connection while healthy, retries
 one transient upgrade or stale-connection failure before events are observed,
-and transparently refreshes ChatGPT OAuth bearer tokens once on 401/403.
+falls back to HTTPS streaming by default when a WebSocket stream fails before
+any output reaches caller sinks, and transparently refreshes ChatGPT OAuth
+bearer tokens once on 401/403. After text, reasoning, tool-call, or output-item
+events have been delivered to the caller, WebSocket transport failures are
+returned as errors instead of retrying and risking duplicated output. Set
+`cai_client_config.responses_websocket_fallback_disabled` to nonzero when
+callers prefer the WebSocket error instead of the HTTPS retry.
 
 Offline WebSocket tests cover handshake/header validation, normal streaming,
 large frames, pre-stream transient retry, midstream disconnect failure,

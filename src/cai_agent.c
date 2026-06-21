@@ -224,9 +224,8 @@ static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
 
 static int
 cai_client_uses_client_history_continuity(const cai_client_impl *client) {
-  return client != NULL &&
-         (client->chatgpt_auth != NULL ||
-          cai_client_base_url_is_openrouter(client));
+  return client != NULL && (client->chatgpt_auth != NULL ||
+                            cai_client_base_url_is_openrouter(client));
 }
 
 static void
@@ -455,10 +454,10 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          "invalid session continuity mode");
   }
   if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO) {
-    impl->session_continuity = cai_client_uses_client_history_continuity(
-                                   client_impl)
-                                   ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
-                                   : CAI_SESSION_CONTINUITY_SERVER;
+    impl->session_continuity =
+        cai_client_uses_client_history_continuity(client_impl)
+            ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
+            : CAI_SESSION_CONTINUITY_SERVER;
   } else {
     impl->session_continuity = config->session_continuity;
   }
