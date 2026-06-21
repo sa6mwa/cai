@@ -188,6 +188,7 @@ typedef struct cai_buffer_builder {
   char *data;
   size_t length;
   size_t capacity;
+  const cai_allocator *allocator;
   lonejson_sink_fn sink;
   void *sink_user;
   lonejson_error *sink_error;

@@ -97,6 +97,91 @@ typedef struct cai_mcp_handler_config {
   void *user_context;
 } cai_mcp_handler_config;
 
+/** One JSON Schema object discovered in MCP tool metadata.
+ *
+ * cai accepts MCP tool schemas as a typed, supported subset: object schemas
+ * with optional `$schema`, `properties`, and `required`. Property schemas must
+ * be JSON objects; their nested contents are validated but not exposed.
+ */
+typedef struct cai_mcp_client_schema {
+  /** JSON Schema URI, or an empty string when absent. */
+  const char *schema_uri;
+  /** Root schema type. Currently always "object". */
+  const char *type;
+  /** Property names advertised under `properties`. */
+  const char *const *properties;
+  /** Number of entries in `properties`. */
+  size_t property_count;
+  /** Required property names advertised under `required`. */
+  const char *const *required;
+  /** Number of entries in `required`. */
+  size_t required_count;
+} cai_mcp_client_schema;
+
+/** One icon descriptor discovered in MCP metadata. */
+typedef struct cai_mcp_client_icon {
+  /** Icon source URI. */
+  const char *src;
+  /** MIME type, or an empty string when absent. */
+  const char *mime_type;
+  /** Theme hint: "light", "dark", or an empty string when absent. */
+  const char *theme;
+  /** Icon sizes such as "48x48" or "any". */
+  const char *const *sizes;
+  /** Number of entries in `sizes`. */
+  size_t size_count;
+} cai_mcp_client_icon;
+
+/** Audience annotations shared by MCP resources and resource templates. */
+typedef struct cai_mcp_client_annotations {
+  /** Audience roles: "user" and/or "assistant". */
+  const char *const *audience;
+  /** Number of entries in `audience`. */
+  size_t audience_count;
+  /** Last modified timestamp, or an empty string when absent. */
+  const char *last_modified;
+  /** Non-zero when `priority` was advertised. */
+  int has_priority;
+  /** Priority value in the inclusive range [0, 1] when present. */
+  double priority;
+} cai_mcp_client_annotations;
+
+/** Tool annotations discovered from tools/list. */
+typedef struct cai_mcp_client_tool_annotations {
+  /** Annotation title, or an empty string when absent. */
+  const char *title;
+  int has_read_only_hint;
+  int read_only_hint;
+  int has_destructive_hint;
+  int destructive_hint;
+  int has_idempotent_hint;
+  int idempotent_hint;
+  int has_open_world_hint;
+  int open_world_hint;
+} cai_mcp_client_tool_annotations;
+
+/** MCP tool task support policy. */
+typedef enum cai_mcp_client_tool_task_support {
+  CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_UNSPECIFIED = 0,
+  CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_FORBIDDEN,
+  CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_OPTIONAL,
+  CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_REQUIRED
+} cai_mcp_client_tool_task_support;
+
+/** One prompt argument descriptor discovered from prompts/list. */
+typedef struct cai_mcp_client_prompt_argument {
+  /** Argument name. */
+  const char *name;
+  /** Display title, or an empty string when absent. */
+  const char *title;
+  /** Description, or an empty string when absent. */
+  const char *description;
+  /** Non-zero when `required` was advertised. */
+  int has_required;
+  /** Required value when present. */
+  int required;
+} cai_mcp_client_prompt_argument;
+
 /** One remote MCP tool descriptor discovered from tools/list. */
 typedef struct cai_mcp_client_tool {
   /** Tool name advertised by the MCP server. */
@@ -105,16 +190,18 @@ typedef struct cai_mcp_client_tool {
   const char *title;
   /** Tool description, or an empty string when absent. */
   const char *description;
-  /** Tool input schema JSON. */
-  const char *input_schema_json;
-  /** Tool output schema JSON, or "null" when absent. */
-  const char *output_schema_json;
-  /** Tool annotations JSON, or "null" when absent. */
-  const char *annotations_json;
-  /** Tool execution metadata JSON, or "null" when absent. */
-  const char *execution_json;
-  /** Tool icons JSON array, or "[]" when absent. */
-  const char *icons_json;
+  /** Tool input schema. */
+  const cai_mcp_client_schema *input_schema;
+  /** Tool output schema, or NULL when absent. */
+  const cai_mcp_client_schema *output_schema;
+  /** Tool annotations. */
+  cai_mcp_client_tool_annotations annotations;
+  /** Tool execution task support. */
+  cai_mcp_client_tool_task_support task_support;
+  /** Tool icons. */
+  const cai_mcp_client_icon *icons;
+  /** Number of entries in `icons`. */
+  size_t icon_count;
 } cai_mcp_client_tool;
 
 /** One remote MCP resource descriptor discovered from resources/list. */
@@ -129,10 +216,12 @@ typedef struct cai_mcp_client_resource {
   const char *description;
   /** Resource MIME type, or an empty string when absent. */
   const char *mime_type;
-  /** Resource icons JSON array, or "[]" when absent. */
-  const char *icons_json;
-  /** Resource annotations JSON object, or "null" when absent. */
-  const char *annotations_json;
+  /** Resource icons. */
+  const cai_mcp_client_icon *icons;
+  /** Number of entries in `icons`. */
+  size_t icon_count;
+  /** Resource annotations. */
+  cai_mcp_client_annotations annotations;
   /** Non-zero when `size` was advertised by the server. */
   int has_size;
   /** Resource size in bytes when `has_size` is non-zero. */
@@ -153,10 +242,12 @@ typedef struct cai_mcp_client_resource_template {
   const char *description;
   /** Resource MIME type, or an empty string when absent. */
   const char *mime_type;
-  /** Resource template icons JSON array, or "[]" when absent. */
-  const char *icons_json;
-  /** Resource template annotations JSON object, or "null" when absent. */
-  const char *annotations_json;
+  /** Resource template icons. */
+  const cai_mcp_client_icon *icons;
+  /** Number of entries in `icons`. */
+  size_t icon_count;
+  /** Resource template annotations. */
+  cai_mcp_client_annotations annotations;
 } cai_mcp_client_resource_template;
 
 /** One remote MCP prompt descriptor discovered from prompts/list. */
@@ -167,10 +258,14 @@ typedef struct cai_mcp_client_prompt {
   const char *title;
   /** Prompt description, or an empty string when absent. */
   const char *description;
-  /** Prompt arguments array JSON, or "[]" when absent. */
-  const char *arguments_json;
-  /** Prompt icons JSON array, or "[]" when absent. */
-  const char *icons_json;
+  /** Prompt arguments. */
+  const cai_mcp_client_prompt_argument *arguments;
+  /** Number of entries in `arguments`. */
+  size_t argument_count;
+  /** Prompt icons. */
+  const cai_mcp_client_icon *icons;
+  /** Number of entries in `icons`. */
+  size_t icon_count;
 } cai_mcp_client_prompt;
 
 /** Callback for server-to-client MCP notifications observed by a client.

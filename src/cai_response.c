@@ -653,7 +653,8 @@ int cai_buffer_append(cai_buffer_builder *builder, const char *text,
     while (new_capacity < needed) {
       new_capacity *= 2U;
     }
-    grown = (char *)cai_realloc_mem(NULL, builder->data, new_capacity);
+    grown = (char *)cai_realloc_mem(builder->allocator, builder->data,
+                                    new_capacity);
     if (grown == NULL) {
       return cai_set_error(error, CAI_ERR_NOMEM, "failed to grow buffer");
     }
@@ -790,6 +791,7 @@ static int cai_spooled_copy_to_cstr(const cai_allocator *allocator,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = NULL;
   builder.sink_user = NULL;
   builder.sink_error = NULL;
@@ -2217,6 +2219,7 @@ int cai_response_create_params_add_simple_hosted_tool(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = NULL;
   builder.sink_user = NULL;
   builder.sink_error = NULL;
@@ -2421,6 +2424,7 @@ int cai_response_create_params_add_hosted_mcp_tool(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = NULL;
   builder.sink_user = NULL;
   builder.sink_error = NULL;
@@ -3062,6 +3066,7 @@ static int cai_spooled_json_string_from_cstr(const char *value,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = cai_spooled_lonejson_sink;
   builder.sink_user = out;
   builder.sink_error = &json_error;
@@ -3084,6 +3089,7 @@ static int cai_spooled_json_string_from_spooled(const lonejson_spooled *value,
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = cai_spooled_lonejson_sink;
   builder.sink_user = out;
   builder.sink_error = &json_error;
@@ -3356,6 +3362,7 @@ int cai_response_params_input_items_json(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = NULL;
   builder.sink_user = NULL;
   builder.sink_error = NULL;
@@ -3619,6 +3626,7 @@ int cai_response_create_params_serialize_json(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = NULL;
   builder.sink_user = NULL;
   builder.sink_error = NULL;
@@ -3650,6 +3658,7 @@ int cai_response_create_params_spool_json(
   builder.data = NULL;
   builder.length = 0U;
   builder.capacity = 0U;
+  builder.allocator = NULL;
   builder.sink = cai_spooled_lonejson_sink;
   builder.sink_user = out;
   builder.sink_error = &json_error;
@@ -3780,6 +3789,7 @@ static int cai_response_request_state_prepare(
     choice_builder.data = NULL;
     choice_builder.length = 0U;
     choice_builder.capacity = 0U;
+    choice_builder.allocator = NULL;
     choice_builder.sink = NULL;
     choice_builder.sink_user = NULL;
     choice_builder.sink_error = NULL;

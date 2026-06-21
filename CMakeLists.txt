@@ -751,6 +751,7 @@ if(CAI_BUILD_TESTS)
     mcp_client_receiver_surface
     mcp_client_registry_adapter
     mcp_streamable_http_client_roundtrip
+    mcp_streamable_http_client_custom_allocator_metadata
     mcp_streamable_http_call_result_must_be_object
     mcp_streamable_http_ping_error
     mcp_streamable_http_ping_error_missing_code
@@ -813,6 +814,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_tools_list_input_schema_nonobject_property
     mcp_streamable_http_tools_list_input_schema_object_required
     mcp_streamable_http_tools_list_input_schema_nonstring_required
+    mcp_streamable_http_tools_list_input_schema_escaped_property
     mcp_streamable_http_tools_list_array_output_schema
     mcp_streamable_http_tools_list_string_output_schema_type
     mcp_streamable_http_tools_list_numeric_output_schema_type
@@ -1013,7 +1015,9 @@ if(CAI_BUILD_TESTS)
     stream_responses_websocket_transient_retry
     stream_responses_websocket_midstream_drop
     stream_responses_websocket_https_fallback
+    stream_responses_websocket_upgrade_failure_no_fallback
     stream_responses_websocket_no_fallback_after_output
+    stream_responses_websocket_fallback_disabled_before_output
     stream_responses_websocket_https_fallback_disabled
     stream_responses_websocket_fragmented_event
     session_stream_responses_websocket_multi_turn

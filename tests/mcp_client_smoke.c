@@ -109,9 +109,17 @@ int main(int argc, char **argv) {
   for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
     tool = cai_mcp_client_tool_at(client, i);
     if (tool != NULL && tool->name != NULL && strcmp(tool->name, "echo") == 0) {
+      size_t j;
       found_echo = 1;
-      if (tool->input_schema_json == NULL ||
-          strstr(tool->input_schema_json, "\"message\"") == NULL) {
+      for (j = 0U; tool->input_schema != NULL &&
+                   j < tool->input_schema->property_count;
+           j++) {
+        if (strcmp(tool->input_schema->properties[j], "message") == 0) {
+          break;
+        }
+      }
+      if (tool->input_schema == NULL ||
+          j == tool->input_schema->property_count) {
         cai_mcp_client_destroy(client);
         return smoke_error("echo tool schema did not include message", NULL);
       }
@@ -180,9 +188,14 @@ int main(int argc, char **argv) {
     prompt = cai_mcp_client_prompt_at(client, i);
     if (prompt != NULL && prompt->name != NULL &&
         strcmp(prompt->name, "args-prompt") == 0) {
+      size_t j;
       found_prompt = 1;
-      if (prompt->arguments_json == NULL ||
-          strstr(prompt->arguments_json, "\"city\"") == NULL) {
+      for (j = 0U; j < prompt->argument_count; j++) {
+        if (strcmp(prompt->arguments[j].name, "city") == 0) {
+          break;
+        }
+      }
+      if (j == prompt->argument_count) {
         cai_mcp_client_destroy(client);
         return smoke_error("args-prompt metadata did not include city", NULL);
       }

@@ -22,11 +22,21 @@ typedef struct cai_mcp_client_tool_impl {
   char *name;
   char *title;
   char *description;
+  cai_mcp_client_schema input_schema;
+  cai_mcp_client_schema output_schema;
+  char *input_schema_uri;
+  char *output_schema_uri;
+  char *input_schema_type;
+  char *output_schema_type;
+  char **input_schema_properties;
+  char **input_schema_required;
+  char **output_schema_properties;
+  char **output_schema_required;
+  cai_mcp_client_icon *icons;
+  cai_mcp_client_tool_annotations annotations;
+  char *annotations_title;
   char *input_schema_json;
   char *output_schema_json;
-  char *annotations_json;
-  char *icons_json;
-  char *execution_json;
 } cai_mcp_client_tool_impl;
 
 typedef struct cai_mcp_client_resource_impl {
@@ -36,8 +46,10 @@ typedef struct cai_mcp_client_resource_impl {
   char *title;
   char *description;
   char *mime_type;
-  char *icons_json;
-  char *annotations_json;
+  cai_mcp_client_icon *icons;
+  cai_mcp_client_annotations annotations;
+  char **annotation_audience;
+  char *annotation_last_modified;
   int has_size;
   long long size;
 } cai_mcp_client_resource_impl;
@@ -49,8 +61,10 @@ typedef struct cai_mcp_client_resource_template_impl {
   char *title;
   char *description;
   char *mime_type;
-  char *icons_json;
-  char *annotations_json;
+  cai_mcp_client_icon *icons;
+  cai_mcp_client_annotations annotations;
+  char **annotation_audience;
+  char *annotation_last_modified;
 } cai_mcp_client_resource_template_impl;
 
 typedef struct cai_mcp_client_prompt_impl {
@@ -58,8 +72,8 @@ typedef struct cai_mcp_client_prompt_impl {
   char *name;
   char *title;
   char *description;
-  char *arguments_json;
-  char *icons_json;
+  cai_mcp_client_prompt_argument *arguments;
+  cai_mcp_client_icon *icons;
 } cai_mcp_client_prompt_impl;
 
 typedef struct cai_mcp_streamable_http_client_impl {
@@ -541,8 +555,25 @@ static int cai_mcp_validate_optional_icons(const lonejson_json_value *icons,
                                            cai_error *error);
 static int cai_mcp_validate_jsonrpc_id_value(const lonejson_json_value *id,
                                              cai_error *error);
+static char *
+cai_mcp_json_value_to_cstr_with_allocator(const cai_allocator *allocator,
+                                          const lonejson_json_value *value,
+                                          cai_error *error);
 static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
                                         cai_error *error);
+static void cai_mcp_string_array_cleanup(const cai_allocator *allocator,
+                                         char **items, size_t count);
+static void cai_mcp_client_icons_cleanup(const cai_allocator *allocator,
+                                         cai_mcp_client_icon *icons,
+                                         size_t count);
+static void cai_mcp_client_schema_cleanup(const cai_allocator *allocator,
+                                          cai_mcp_client_schema *schema,
+                                          char **schema_uri, char **type,
+                                          char ***properties,
+                                          char ***required);
+static void cai_mcp_client_prompt_arguments_cleanup(
+    const cai_allocator *allocator, cai_mcp_client_prompt_argument *arguments,
+    size_t count);
 static int
 cai_mcp_jsonrpc_response_result_error_presence(const lonejson_spooled *json,
                                                int *has_result, int *has_error,
@@ -4764,11 +4795,19 @@ static void cai_mcp_client_tool_impl_cleanup(const cai_allocator *allocator,
     cai_free_mem(allocator, tool->name);
     cai_free_mem(allocator, tool->title);
     cai_free_mem(allocator, tool->description);
+    cai_mcp_client_schema_cleanup(
+        allocator, &tool->input_schema, &tool->input_schema_uri,
+        &tool->input_schema_type, &tool->input_schema_properties,
+        &tool->input_schema_required);
+    cai_mcp_client_schema_cleanup(
+        allocator, &tool->output_schema, &tool->output_schema_uri,
+        &tool->output_schema_type, &tool->output_schema_properties,
+        &tool->output_schema_required);
+    cai_mcp_client_icons_cleanup(allocator, tool->icons,
+                                 tool->public_tool.icon_count);
+    cai_free_mem(allocator, tool->annotations_title);
     cai_free_mem(allocator, tool->input_schema_json);
     cai_free_mem(allocator, tool->output_schema_json);
-    cai_free_mem(allocator, tool->annotations_json);
-    cai_free_mem(allocator, tool->icons_json);
-    cai_free_mem(allocator, tool->execution_json);
     memset(tool, 0, sizeof(*tool));
   }
 }
@@ -4782,8 +4821,11 @@ cai_mcp_client_resource_impl_cleanup(const cai_allocator *allocator,
     cai_free_mem(allocator, resource->title);
     cai_free_mem(allocator, resource->description);
     cai_free_mem(allocator, resource->mime_type);
-    cai_free_mem(allocator, resource->icons_json);
-    cai_free_mem(allocator, resource->annotations_json);
+    cai_mcp_client_icons_cleanup(allocator, resource->icons,
+                                 resource->public_resource.icon_count);
+    cai_mcp_string_array_cleanup(allocator, resource->annotation_audience,
+                                 resource->annotations.audience_count);
+    cai_free_mem(allocator, resource->annotation_last_modified);
     memset(resource, 0, sizeof(*resource));
   }
 }
@@ -4797,8 +4839,13 @@ static void cai_mcp_client_resource_template_impl_cleanup(
     cai_free_mem(allocator, resource_template->title);
     cai_free_mem(allocator, resource_template->description);
     cai_free_mem(allocator, resource_template->mime_type);
-    cai_free_mem(allocator, resource_template->icons_json);
-    cai_free_mem(allocator, resource_template->annotations_json);
+    cai_mcp_client_icons_cleanup(
+        allocator, resource_template->icons,
+        resource_template->public_resource_template.icon_count);
+    cai_mcp_string_array_cleanup(
+        allocator, resource_template->annotation_audience,
+        resource_template->annotations.audience_count);
+    cai_free_mem(allocator, resource_template->annotation_last_modified);
     memset(resource_template, 0, sizeof(*resource_template));
   }
 }
@@ -4810,8 +4857,10 @@ cai_mcp_client_prompt_impl_cleanup(const cai_allocator *allocator,
     cai_free_mem(allocator, prompt->name);
     cai_free_mem(allocator, prompt->title);
     cai_free_mem(allocator, prompt->description);
-    cai_free_mem(allocator, prompt->arguments_json);
-    cai_free_mem(allocator, prompt->icons_json);
+    cai_mcp_client_prompt_arguments_cleanup(allocator, prompt->arguments,
+                                            prompt->public_prompt.argument_count);
+    cai_mcp_client_icons_cleanup(allocator, prompt->icons,
+                                 prompt->public_prompt.icon_count);
     memset(prompt, 0, sizeof(*prompt));
   }
 }
@@ -4873,6 +4922,7 @@ static int
 cai_mcp_client_reserve_tools(cai_mcp_streamable_http_client_impl *impl,
                              size_t count, cai_error *error) {
   cai_mcp_client_tool_impl *tools;
+  size_t i;
 
   if (count <= impl->tool_capacity) {
     return CAI_OK;
@@ -4887,6 +4937,13 @@ cai_mcp_client_reserve_tools(cai_mcp_streamable_http_client_impl *impl,
          (count - impl->tool_capacity) * sizeof(*tools));
   impl->tools = tools;
   impl->tool_capacity = count;
+  for (i = 0U; i < impl->tool_count; i++) {
+    impl->tools[i].public_tool.input_schema = &impl->tools[i].input_schema;
+    impl->tools[i].public_tool.output_schema =
+        impl->tools[i].output_schema.type != NULL
+            ? &impl->tools[i].output_schema
+            : NULL;
+  }
   return CAI_OK;
 }
 
@@ -4954,24 +5011,32 @@ cai_mcp_client_reserve_prompts(cai_mcp_streamable_http_client_impl *impl,
   return CAI_OK;
 }
 
-static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
-                                        cai_error *error) {
+static char *
+cai_mcp_json_value_to_cstr_with_allocator(const cai_allocator *allocator,
+                                          const lonejson_json_value *value,
+                                          cai_error *error) {
   cai_buffer_builder builder;
   lonejson_error json_error;
 
   memset(&builder, 0, sizeof(builder));
+  builder.allocator = allocator;
   lonejson_error_init(&json_error);
   if (value == NULL ||
       value->methods->write_to_sink(value, cai_mcp_buffer_sink, &builder,
                                     &json_error) != LONEJSON_STATUS_OK) {
-    cai_free_mem(NULL, builder.data);
+    cai_free_mem(allocator, builder.data);
     return NULL;
   }
   if (cai_buffer_append(&builder, "", 1U, error) != CAI_OK) {
-    cai_free_mem(NULL, builder.data);
+    cai_free_mem(allocator, builder.data);
     return NULL;
   }
   return builder.data;
+}
+
+static char *cai_mcp_json_value_to_cstr(const lonejson_json_value *value,
+                                        cai_error *error) {
+  return cai_mcp_json_value_to_cstr_with_allocator(NULL, value, error);
 }
 
 static int cai_mcp_json_value_is_object(const lonejson_json_value *value,
@@ -5696,17 +5761,196 @@ cai_mcp_optional_json_value_to_cstr(const cai_allocator *allocator,
   if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
     return cai_strdup(allocator, "null");
   }
-  return cai_mcp_json_value_to_cstr(value, error);
+  return cai_mcp_json_value_to_cstr_with_allocator(allocator, value, error);
 }
 
-static char *
-cai_mcp_optional_json_array_to_cstr(const cai_allocator *allocator,
-                                    const lonejson_json_value *value,
-                                    cai_error *error) {
-  if (value == NULL || value->kind == LONEJSON_JSON_VALUE_NULL) {
-    return cai_strdup(allocator, "[]");
+static void cai_mcp_string_array_cleanup(const cai_allocator *allocator,
+                                         char **items, size_t count) {
+  size_t i;
+
+  if (items == NULL) {
+    return;
   }
-  return cai_mcp_json_value_to_cstr(value, error);
+  for (i = 0U; i < count; i++) {
+    cai_free_mem(allocator, items[i]);
+  }
+  cai_free_mem(allocator, items);
+}
+
+static void cai_mcp_free_const_mem(const cai_allocator *allocator,
+                                   const void *ptr) {
+  void *mutable_ptr;
+
+  if (ptr == NULL) {
+    return;
+  }
+  memcpy(&mutable_ptr, &ptr, sizeof(mutable_ptr));
+  cai_free_mem(allocator, mutable_ptr);
+}
+
+static int cai_mcp_copy_lonejson_string_array(
+    const cai_allocator *allocator, const lonejson_string_array *src,
+    char ***dst_items, size_t *dst_count, cai_error *error) {
+  char **items;
+  size_t i;
+
+  if (dst_items != NULL) {
+    *dst_items = NULL;
+  }
+  if (dst_count != NULL) {
+    *dst_count = 0U;
+  }
+  if (src == NULL || src->count == 0U) {
+    return CAI_OK;
+  }
+  items = (char **)cai_alloc(allocator, src->count * sizeof(*items));
+  if (items == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP string array");
+  }
+  memset(items, 0, src->count * sizeof(*items));
+  for (i = 0U; i < src->count; i++) {
+    items[i] = cai_strdup(allocator, src->items[i] != NULL ? src->items[i] : "");
+    if (items[i] == NULL) {
+      cai_mcp_string_array_cleanup(allocator, items, src->count);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP string array");
+    }
+  }
+  if (dst_items != NULL) {
+    *dst_items = items;
+  }
+  if (dst_count != NULL) {
+    *dst_count = src->count;
+  }
+  return CAI_OK;
+}
+
+static void cai_mcp_client_icons_cleanup(const cai_allocator *allocator,
+                                         cai_mcp_client_icon *icons,
+                                         size_t count) {
+  size_t i;
+
+  if (icons == NULL) {
+    return;
+  }
+  for (i = 0U; i < count; i++) {
+    char **sizes;
+    cai_mcp_free_const_mem(allocator, icons[i].src);
+    cai_mcp_free_const_mem(allocator, icons[i].mime_type);
+    cai_mcp_free_const_mem(allocator, icons[i].theme);
+    sizes = NULL;
+    memcpy(&sizes, &icons[i].sizes, sizeof(sizes));
+    cai_mcp_string_array_cleanup(allocator, sizes, icons[i].size_count);
+  }
+  cai_free_mem(allocator, icons);
+}
+
+static int cai_mcp_parse_wrapped_json_value(
+    const lonejson_json_value *value, const char *field_name,
+    const lonejson_map *map, void *doc, const char *alloc_error_message,
+    const char *parse_error_message, cai_error *error) {
+  lonejson_error json_error;
+  lonejson_status status;
+  char *value_json;
+  char *wrapped_json;
+  size_t field_len;
+  size_t value_len;
+  size_t wrapped_len;
+
+  value_json = cai_mcp_json_value_to_cstr(value, error);
+  if (value_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  field_len = strlen(field_name);
+  value_len = strlen(value_json);
+  wrapped_len = 2U + field_len + 2U + value_len + 2U;
+  wrapped_json = (char *)cai_alloc(NULL, wrapped_len);
+  if (wrapped_json == NULL) {
+    cai_free_mem(NULL, value_json);
+    return cai_set_error(error, CAI_ERR_NOMEM, alloc_error_message);
+  }
+  snprintf(wrapped_json, wrapped_len, "{\"%s\":%s}", field_name, value_json);
+  cai_free_mem(NULL, value_json);
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, map, doc, wrapped_json, &json_error);
+  cai_free_mem(NULL, wrapped_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, map, doc);
+    return cai_mcp_set_json_error(error, parse_error_message, &json_error);
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_copy_optional_icons(
+    const cai_allocator *allocator, const lonejson_json_value *icons,
+    cai_mcp_client_icon **dst_icons, size_t *dst_count, cai_error *error) {
+  cai_mcp_icons_doc doc;
+  cai_mcp_icon_doc *src;
+  cai_mcp_client_icon *items;
+  size_t i;
+  int rc;
+
+  if (dst_icons != NULL) {
+    *dst_icons = NULL;
+  }
+  if (dst_count != NULL) {
+    *dst_count = 0U;
+  }
+  if (icons == NULL || icons->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  memset(&doc, 0, sizeof(doc));
+  rc = cai_mcp_parse_wrapped_json_value(
+      icons, "icons", &cai_mcp_icons_map, &doc,
+      "failed to allocate MCP icons metadata JSON", "failed to parse MCP icons",
+      error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (doc.icons.count == 0U) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_icons_map, &doc);
+    return CAI_OK;
+  }
+  items = (cai_mcp_client_icon *)cai_alloc(allocator,
+                                           doc.icons.count * sizeof(*items));
+  if (items == NULL) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_icons_map, &doc);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP icons metadata");
+  }
+  memset(items, 0, doc.icons.count * sizeof(*items));
+  src = (cai_mcp_icon_doc *)doc.icons.items;
+  for (i = 0U; i < doc.icons.count; i++) {
+    char **sizes;
+    items[i].src = cai_strdup(allocator, src[i].src);
+    items[i].mime_type =
+        cai_strdup(allocator, src[i].mime_type != NULL ? src[i].mime_type : "");
+    items[i].theme =
+        cai_strdup(allocator, src[i].theme != NULL ? src[i].theme : "");
+    sizes = NULL;
+    rc = cai_mcp_copy_lonejson_string_array(
+        allocator, &src[i].sizes, &sizes, &items[i].size_count, error);
+    items[i].sizes = (const char *const *)sizes;
+    if (items[i].src == NULL || items[i].mime_type == NULL ||
+        items[i].theme == NULL || rc != CAI_OK) {
+      if (rc == CAI_OK) {
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP icons metadata");
+      }
+      cai_mcp_client_icons_cleanup(allocator, items, doc.icons.count);
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_icons_map, &doc);
+      return rc;
+    }
+  }
+  if (dst_icons != NULL) {
+    *dst_icons = items;
+  }
+  if (dst_count != NULL) {
+    *dst_count = doc.icons.count;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_icons_map, &doc);
+  return CAI_OK;
 }
 
 static int cai_mcp_icon_theme_is_valid(const char *theme) {
@@ -5949,6 +6193,245 @@ cai_mcp_validate_optional_tool_execution(const lonejson_json_value *execution,
   return rc;
 }
 
+static int cai_mcp_copy_optional_tool_annotations(
+    const cai_allocator *allocator, const lonejson_json_value *annotations,
+    cai_mcp_client_tool_annotations *dst, char **title, cai_error *error) {
+  cai_mcp_tool_annotations_doc doc;
+  char *annotations_json;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  memset(dst, 0, sizeof(*dst));
+  *title = NULL;
+  if (annotations == NULL || annotations->kind == LONEJSON_JSON_VALUE_NULL) {
+    *title = cai_strdup(allocator, "");
+    if (*title == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP tool annotations");
+    }
+    dst->title = *title;
+    return CAI_OK;
+  }
+  annotations_json = cai_mcp_json_value_to_cstr(annotations, error);
+  if (annotations_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_annotations_map, &doc,
+                              annotations_json, &json_error);
+  cai_free_mem(NULL, annotations_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_annotations_map, &doc);
+    return cai_mcp_set_json_error(error, "failed to parse MCP tool annotations",
+                                  &json_error);
+  }
+  *title = cai_strdup(allocator, doc.title != NULL ? doc.title : "");
+  if (*title == NULL) {
+    rc = cai_set_error(error, CAI_ERR_NOMEM,
+                       "failed to copy MCP tool annotations");
+  } else {
+    dst->title = *title;
+    dst->has_read_only_hint = doc.has_read_only_hint;
+    dst->read_only_hint = doc.read_only_hint;
+    dst->has_destructive_hint = doc.has_destructive_hint;
+    dst->destructive_hint = doc.destructive_hint;
+    dst->has_idempotent_hint = doc.has_idempotent_hint;
+    dst->idempotent_hint = doc.idempotent_hint;
+    dst->has_open_world_hint = doc.has_open_world_hint;
+    dst->open_world_hint = doc.open_world_hint;
+    rc = CAI_OK;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_annotations_map, &doc);
+  return rc;
+}
+
+static cai_mcp_client_tool_task_support
+cai_mcp_task_support_from_string(const char *task_support) {
+  if (task_support == NULL) {
+    return CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_UNSPECIFIED;
+  }
+  if (strcmp(task_support, "forbidden") == 0) {
+    return CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_FORBIDDEN;
+  }
+  if (strcmp(task_support, "optional") == 0) {
+    return CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_OPTIONAL;
+  }
+  if (strcmp(task_support, "required") == 0) {
+    return CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_REQUIRED;
+  }
+  return CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_UNSPECIFIED;
+}
+
+static int cai_mcp_copy_optional_tool_execution(
+    const lonejson_json_value *execution,
+    cai_mcp_client_tool_task_support *task_support, cai_error *error) {
+  cai_mcp_tool_execution_doc doc;
+  char *execution_json;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  *task_support = CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_UNSPECIFIED;
+  if (execution == NULL || execution->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  execution_json = cai_mcp_json_value_to_cstr(execution, error);
+  if (execution_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_tool_execution_map, &doc,
+                              execution_json, &json_error);
+  cai_free_mem(NULL, execution_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_execution_map, &doc);
+    return cai_mcp_set_json_error(error, "failed to parse MCP tool execution",
+                                  &json_error);
+  }
+  *task_support = cai_mcp_task_support_from_string(doc.task_support);
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_tool_execution_map, &doc);
+  return CAI_OK;
+}
+
+static int cai_mcp_copy_optional_annotations(
+    const cai_allocator *allocator, const lonejson_json_value *annotations,
+    cai_mcp_client_annotations *dst, char ***audience,
+    char **last_modified, cai_error *error) {
+  cai_mcp_annotations_doc doc;
+  char *annotations_json;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  memset(dst, 0, sizeof(*dst));
+  *audience = NULL;
+  *last_modified = NULL;
+  if (annotations == NULL || annotations->kind == LONEJSON_JSON_VALUE_NULL) {
+    *last_modified = cai_strdup(allocator, "");
+    if (*last_modified == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP annotations");
+    }
+    dst->last_modified = *last_modified;
+    return CAI_OK;
+  }
+  annotations_json = cai_mcp_json_value_to_cstr(annotations, error);
+  if (annotations_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_annotations_map, &doc,
+                              annotations_json, &json_error);
+  cai_free_mem(NULL, annotations_json);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_annotations_map, &doc);
+    return cai_mcp_set_json_error(error, "failed to parse MCP annotations",
+                                  &json_error);
+  }
+  rc = cai_mcp_copy_lonejson_string_array(
+      allocator, &doc.audience, audience, &dst->audience_count, error);
+  if (rc == CAI_OK) {
+    *last_modified =
+        cai_strdup(allocator, doc.last_modified != NULL ? doc.last_modified : "");
+    if (*last_modified == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP annotations");
+    }
+  }
+  if (rc == CAI_OK) {
+    dst->audience = (const char *const *)*audience;
+    dst->last_modified = *last_modified;
+    dst->has_priority = doc.has_priority;
+    dst->priority = doc.priority;
+  } else {
+    cai_mcp_string_array_cleanup(allocator, *audience, dst->audience_count);
+    *audience = NULL;
+    cai_free_mem(allocator, *last_modified);
+    *last_modified = NULL;
+    memset(dst, 0, sizeof(*dst));
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_annotations_map, &doc);
+  return rc;
+}
+
+static void cai_mcp_client_prompt_arguments_cleanup(
+    const cai_allocator *allocator, cai_mcp_client_prompt_argument *arguments,
+    size_t count) {
+  size_t i;
+
+  if (arguments == NULL) {
+    return;
+  }
+  for (i = 0U; i < count; i++) {
+    cai_mcp_free_const_mem(allocator, arguments[i].name);
+    cai_mcp_free_const_mem(allocator, arguments[i].title);
+    cai_mcp_free_const_mem(allocator, arguments[i].description);
+  }
+  cai_free_mem(allocator, arguments);
+}
+
+static int cai_mcp_copy_optional_prompt_arguments(
+    const cai_allocator *allocator, const lonejson_json_value *arguments,
+    cai_mcp_client_prompt_argument **dst_arguments, size_t *dst_count,
+    cai_error *error) {
+  cai_mcp_prompt_arguments_doc doc;
+  cai_mcp_prompt_argument_doc *src;
+  cai_mcp_client_prompt_argument *items;
+  size_t i;
+  int rc;
+
+  *dst_arguments = NULL;
+  *dst_count = 0U;
+  if (arguments == NULL || arguments->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  memset(&doc, 0, sizeof(doc));
+  rc = cai_mcp_parse_wrapped_json_value(
+      arguments, "arguments", &cai_mcp_prompt_arguments_map, &doc,
+      "failed to allocate MCP prompt arguments metadata JSON",
+      "failed to parse MCP prompt arguments", error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (doc.arguments.count == 0U) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc);
+    return CAI_OK;
+  }
+  items = (cai_mcp_client_prompt_argument *)cai_alloc(
+      allocator, doc.arguments.count * sizeof(*items));
+  if (items == NULL) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP prompt arguments metadata");
+  }
+  memset(items, 0, doc.arguments.count * sizeof(*items));
+  src = (cai_mcp_prompt_argument_doc *)doc.arguments.items;
+  for (i = 0U; i < doc.arguments.count; i++) {
+    items[i].name = cai_strdup(allocator, src[i].name);
+    items[i].title =
+        cai_strdup(allocator, src[i].title != NULL ? src[i].title : "");
+    items[i].description = cai_strdup(
+        allocator, src[i].description != NULL ? src[i].description : "");
+    items[i].has_required = src[i].has_required;
+    items[i].required = src[i].required;
+    if (items[i].name == NULL || items[i].title == NULL ||
+        items[i].description == NULL) {
+      cai_mcp_client_prompt_arguments_cleanup(allocator, items,
+                                              doc.arguments.count);
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP prompt arguments metadata");
+    }
+  }
+  *dst_arguments = items;
+  *dst_count = doc.arguments.count;
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_prompt_arguments_map, &doc);
+  return CAI_OK;
+}
+
 static void cai_mcp_json_cstr_skip_ws(const char **cursor) {
   while (**cursor == ' ' || **cursor == '\t' || **cursor == '\r' ||
          **cursor == '\n') {
@@ -6179,6 +6662,322 @@ done:
   return rc;
 }
 
+static char *cai_mcp_dup_simple_json_string_token(
+    const cai_allocator *allocator, const char *begin, const char **end,
+    const char *unsupported_message, cai_error *error) {
+  const char *p;
+  char *out;
+  size_t len;
+
+  if (begin == NULL || *begin != '"') {
+    cai_set_error(error, CAI_ERR_PROTOCOL, unsupported_message);
+    return NULL;
+  }
+  p = begin + 1;
+  while (*p != '\0' && *p != '"') {
+    if (*p == '\\') {
+      cai_set_error(error, CAI_ERR_PROTOCOL, unsupported_message);
+      return NULL;
+    }
+    p++;
+  }
+  if (*p != '"') {
+    cai_set_error(error, CAI_ERR_PROTOCOL, unsupported_message);
+    return NULL;
+  }
+  len = (size_t)(p - begin - 1);
+  out = (char *)cai_alloc(allocator, len + 1U);
+  if (out == NULL) {
+    cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate MCP schema name");
+    return NULL;
+  }
+  memcpy(out, begin + 1, len);
+  out[len] = '\0';
+  if (end != NULL) {
+    *end = p + 1;
+  }
+  return out;
+}
+
+static int cai_mcp_collect_json_object_keys(
+    const cai_allocator *allocator, const lonejson_json_value *object_value,
+    char ***items_out, size_t *count_out, const char *parse_message,
+    const char *unsupported_message, cai_error *error) {
+  char *json;
+  const char *cursor;
+  char **items;
+  size_t count;
+  size_t capacity;
+  int rc;
+
+  if (items_out != NULL) {
+    *items_out = NULL;
+  }
+  if (count_out != NULL) {
+    *count_out = 0U;
+  }
+  if (object_value == NULL || object_value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  json = cai_mcp_json_value_to_cstr(object_value, error);
+  if (json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  cursor = json;
+  items = NULL;
+  count = 0U;
+  capacity = 0U;
+  rc = CAI_OK;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor != '{') {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+    goto done;
+  }
+  cursor++;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor == '}') {
+    goto done;
+  }
+  for (;;) {
+    char *name;
+    char **grown;
+    name = cai_mcp_dup_simple_json_string_token(
+        allocator, cursor, &cursor, unsupported_message, error);
+    if (name == NULL) {
+      rc = error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+      goto done;
+    }
+    if (count == capacity) {
+      size_t new_capacity = capacity == 0U ? 4U : capacity * 2U;
+      grown = (char **)cai_realloc_mem(allocator, items,
+                                       new_capacity * sizeof(*items));
+      if (grown == NULL) {
+        cai_free_mem(allocator, name);
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate MCP schema names");
+        goto done;
+      }
+      items = grown;
+      capacity = new_capacity;
+    }
+    items[count++] = name;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor != ':') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cursor++;
+    if (!cai_mcp_json_cstr_skip_value(&cursor)) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor == '}') {
+      break;
+    }
+    if (*cursor != ',') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cursor++;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+  }
+
+done:
+  cai_free_mem(NULL, json);
+  if (rc != CAI_OK) {
+    cai_mcp_string_array_cleanup(allocator, items, count);
+    return rc;
+  }
+  if (items_out != NULL) {
+    *items_out = items;
+  }
+  if (count_out != NULL) {
+    *count_out = count;
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_collect_json_string_array(
+    const cai_allocator *allocator, const lonejson_json_value *array_value,
+    char ***items_out, size_t *count_out, const char *parse_message,
+    const char *unsupported_message, cai_error *error) {
+  char *json;
+  const char *cursor;
+  char **items;
+  size_t count;
+  size_t capacity;
+  int rc;
+
+  if (items_out != NULL) {
+    *items_out = NULL;
+  }
+  if (count_out != NULL) {
+    *count_out = 0U;
+  }
+  if (array_value == NULL || array_value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return CAI_OK;
+  }
+  json = cai_mcp_json_value_to_cstr(array_value, error);
+  if (json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  cursor = json;
+  items = NULL;
+  count = 0U;
+  capacity = 0U;
+  rc = CAI_OK;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor != '[') {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+    goto done;
+  }
+  cursor++;
+  cai_mcp_json_cstr_skip_ws(&cursor);
+  if (*cursor == ']') {
+    goto done;
+  }
+  for (;;) {
+    char *name;
+    char **grown;
+    name = cai_mcp_dup_simple_json_string_token(
+        allocator, cursor, &cursor, unsupported_message, error);
+    if (name == NULL) {
+      rc = error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+      goto done;
+    }
+    if (count == capacity) {
+      size_t new_capacity = capacity == 0U ? 4U : capacity * 2U;
+      grown = (char **)cai_realloc_mem(allocator, items,
+                                       new_capacity * sizeof(*items));
+      if (grown == NULL) {
+        cai_free_mem(allocator, name);
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate MCP schema names");
+        goto done;
+      }
+      items = grown;
+      capacity = new_capacity;
+    }
+    items[count++] = name;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+    if (*cursor == ']') {
+      break;
+    }
+    if (*cursor != ',') {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL, parse_message);
+      goto done;
+    }
+    cursor++;
+    cai_mcp_json_cstr_skip_ws(&cursor);
+  }
+
+done:
+  cai_free_mem(NULL, json);
+  if (rc != CAI_OK) {
+    cai_mcp_string_array_cleanup(allocator, items, count);
+    return rc;
+  }
+  if (items_out != NULL) {
+    *items_out = items;
+  }
+  if (count_out != NULL) {
+    *count_out = count;
+  }
+  return CAI_OK;
+}
+
+static void cai_mcp_client_schema_cleanup(const cai_allocator *allocator,
+                                          cai_mcp_client_schema *schema,
+                                          char **schema_uri, char **type,
+                                          char ***properties,
+                                          char ***required) {
+  if (schema == NULL) {
+    return;
+  }
+  cai_free_mem(allocator, schema_uri != NULL ? *schema_uri : NULL);
+  cai_free_mem(allocator, type != NULL ? *type : NULL);
+  cai_mcp_string_array_cleanup(allocator,
+                               properties != NULL ? *properties : NULL,
+                               schema->property_count);
+  cai_mcp_string_array_cleanup(allocator,
+                               required != NULL ? *required : NULL,
+                               schema->required_count);
+  if (schema_uri != NULL) {
+    *schema_uri = NULL;
+  }
+  if (type != NULL) {
+    *type = NULL;
+  }
+  if (properties != NULL) {
+    *properties = NULL;
+  }
+  if (required != NULL) {
+    *required = NULL;
+  }
+  memset(schema, 0, sizeof(*schema));
+}
+
+static int cai_mcp_copy_schema(
+    const cai_allocator *allocator, const lonejson_json_value *schema_value,
+    int required_schema, cai_mcp_client_schema *schema, char **schema_uri,
+    char **type, char ***properties, char ***required, cai_error *error) {
+  cai_mcp_json_schema_doc doc;
+  char *schema_json;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (schema_value == NULL || schema_value->kind == LONEJSON_JSON_VALUE_NULL) {
+    return required_schema
+               ? cai_set_error(error, CAI_ERR_PROTOCOL,
+                               "MCP tool inputSchema must be an object")
+               : CAI_OK;
+  }
+  schema_json = cai_mcp_json_value_to_cstr(schema_value, error);
+  if (schema_json == NULL) {
+    return error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_mcp_json_schema_map, &doc,
+                              schema_json, &json_error);
+  cai_free_mem(NULL, schema_json);
+  if (status != LONEJSON_STATUS_OK) {
+    return cai_mcp_set_json_error(error, "failed to parse MCP tool schema",
+                                  &json_error);
+  }
+  *schema_uri = cai_strdup(allocator, doc.schema != NULL ? doc.schema : "");
+  *type = cai_strdup(allocator, doc.type != NULL ? doc.type : "");
+  rc = cai_mcp_collect_json_object_keys(
+      allocator, &doc.properties, properties, &schema->property_count,
+      "failed to parse MCP tool schema properties",
+      "MCP tool schema property names with JSON escapes are unsupported",
+      error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_collect_json_string_array(
+        allocator, &doc.required, required, &schema->required_count,
+        "failed to parse MCP tool schema required",
+        "MCP tool schema required names with JSON escapes are unsupported",
+        error);
+  }
+  if (rc == CAI_OK && (*schema_uri == NULL || *type == NULL)) {
+    rc = cai_set_error(error, CAI_ERR_NOMEM,
+                       "failed to copy MCP tool schema metadata");
+  }
+  if (rc == CAI_OK) {
+    schema->schema_uri = *schema_uri;
+    schema->type = *type;
+    schema->properties = (const char *const *)*properties;
+    schema->required = (const char *const *)*required;
+  } else {
+    cai_mcp_client_schema_cleanup(allocator, schema, schema_uri, type,
+                                  properties, required);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_mcp_json_schema_map, &doc);
+  return rc;
+}
+
 static int cai_mcp_validate_tool_schema_type(
     const lonejson_json_value *schema, const char *object_message,
     const char *parse_message, const char *type_message,
@@ -6365,20 +7164,40 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       dst->description = cai_strdup(
           &impl->allocator,
           src_tools[i].description != NULL ? src_tools[i].description : "");
-      dst->input_schema_json =
-          cai_mcp_json_value_to_cstr(&src_tools[i].input_schema, error);
+      rc = cai_mcp_copy_schema(&impl->allocator, &src_tools[i].input_schema, 1,
+                               &dst->input_schema, &dst->input_schema_uri,
+                               &dst->input_schema_type,
+                               &dst->input_schema_properties,
+                               &dst->input_schema_required, error);
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_schema(&impl->allocator, &src_tools[i].output_schema,
+                                 0, &dst->output_schema,
+                                 &dst->output_schema_uri,
+                                 &dst->output_schema_type,
+                                 &dst->output_schema_properties,
+                                 &dst->output_schema_required, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_optional_tool_annotations(
+            &impl->allocator, &src_tools[i].annotations, &dst->annotations,
+            &dst->annotations_title, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_optional_icons(
+            &impl->allocator, &src_tools[i].icons, &dst->icons,
+            &dst->public_tool.icon_count, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_optional_tool_execution(
+            &src_tools[i].execution, &dst->public_tool.task_support, error);
+      }
+      dst->input_schema_json = cai_mcp_json_value_to_cstr_with_allocator(
+          &impl->allocator, &src_tools[i].input_schema, error);
       dst->output_schema_json = cai_mcp_optional_json_value_to_cstr(
           &impl->allocator, &src_tools[i].output_schema, error);
-      dst->annotations_json = cai_mcp_optional_json_value_to_cstr(
-          &impl->allocator, &src_tools[i].annotations, error);
-      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
-          &impl->allocator, &src_tools[i].icons, error);
-      dst->execution_json = cai_mcp_optional_json_value_to_cstr(
-          &impl->allocator, &src_tools[i].execution, error);
       if (dst->name == NULL || dst->title == NULL || dst->description == NULL ||
-          dst->input_schema_json == NULL || dst->output_schema_json == NULL ||
-          dst->annotations_json == NULL || dst->icons_json == NULL ||
-          dst->execution_json == NULL) {
+          rc != CAI_OK || dst->input_schema_json == NULL ||
+          dst->output_schema_json == NULL) {
         rc = error != NULL && error->code != CAI_OK
                  ? error->code
                  : cai_set_error(error, CAI_ERR_NOMEM,
@@ -6389,11 +7208,11 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
       dst->public_tool.name = dst->name;
       dst->public_tool.title = dst->title;
       dst->public_tool.description = dst->description;
-      dst->public_tool.input_schema_json = dst->input_schema_json;
-      dst->public_tool.output_schema_json = dst->output_schema_json;
-      dst->public_tool.annotations_json = dst->annotations_json;
-      dst->public_tool.icons_json = dst->icons_json;
-      dst->public_tool.execution_json = dst->execution_json;
+      dst->public_tool.input_schema = &dst->input_schema;
+      dst->public_tool.output_schema =
+          dst->output_schema.type != NULL ? &dst->output_schema : NULL;
+      dst->public_tool.annotations = dst->annotations;
+      dst->public_tool.icons = dst->icons;
       impl->tool_count++;
     }
   }
@@ -6503,15 +7322,19 @@ static int cai_mcp_parse_resources_list_response(
       dst->mime_type = cai_strdup(
           &impl->allocator,
           src_resources[i].mime_type != NULL ? src_resources[i].mime_type : "");
-      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
-          &impl->allocator, &src_resources[i].icons, error);
-      dst->annotations_json = cai_mcp_optional_json_value_to_cstr(
-          &impl->allocator, &src_resources[i].annotations, error);
+      rc = cai_mcp_copy_optional_icons(
+          &impl->allocator, &src_resources[i].icons, &dst->icons,
+          &dst->public_resource.icon_count, error);
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_optional_annotations(
+            &impl->allocator, &src_resources[i].annotations, &dst->annotations,
+            &dst->annotation_audience, &dst->annotation_last_modified, error);
+      }
       dst->has_size = src_resources[i].has_size;
       dst->size = (long long)src_resources[i].size;
       if (dst->uri == NULL || dst->name == NULL || dst->title == NULL ||
           dst->description == NULL || dst->mime_type == NULL ||
-          dst->icons_json == NULL || dst->annotations_json == NULL) {
+          rc != CAI_OK) {
         rc = error != NULL && error->code != CAI_OK
                  ? error->code
                  : cai_set_error(error, CAI_ERR_NOMEM,
@@ -6524,8 +7347,8 @@ static int cai_mcp_parse_resources_list_response(
       dst->public_resource.title = dst->title;
       dst->public_resource.description = dst->description;
       dst->public_resource.mime_type = dst->mime_type;
-      dst->public_resource.icons_json = dst->icons_json;
-      dst->public_resource.annotations_json = dst->annotations_json;
+      dst->public_resource.icons = dst->icons;
+      dst->public_resource.annotations = dst->annotations;
       dst->public_resource.has_size = dst->has_size;
       dst->public_resource.size = dst->size;
       impl->resource_count++;
@@ -6643,14 +7466,18 @@ static int cai_mcp_parse_resource_templates_list_response(
                                   src_resource_templates[i].mime_type != NULL
                                       ? src_resource_templates[i].mime_type
                                       : "");
-      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
-          &impl->allocator, &src_resource_templates[i].icons, error);
-      dst->annotations_json = cai_mcp_optional_json_value_to_cstr(
-          &impl->allocator, &src_resource_templates[i].annotations, error);
+      rc = cai_mcp_copy_optional_icons(
+          &impl->allocator, &src_resource_templates[i].icons, &dst->icons,
+          &dst->public_resource_template.icon_count, error);
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_optional_annotations(
+            &impl->allocator, &src_resource_templates[i].annotations,
+            &dst->annotations, &dst->annotation_audience,
+            &dst->annotation_last_modified, error);
+      }
       if (dst->uri_template == NULL || dst->name == NULL ||
           dst->title == NULL || dst->description == NULL ||
-          dst->mime_type == NULL || dst->icons_json == NULL ||
-          dst->annotations_json == NULL) {
+          dst->mime_type == NULL || rc != CAI_OK) {
         rc = error != NULL && error->code != CAI_OK
                  ? error->code
                  : cai_set_error(
@@ -6664,8 +7491,8 @@ static int cai_mcp_parse_resource_templates_list_response(
       dst->public_resource_template.title = dst->title;
       dst->public_resource_template.description = dst->description;
       dst->public_resource_template.mime_type = dst->mime_type;
-      dst->public_resource_template.icons_json = dst->icons_json;
-      dst->public_resource_template.annotations_json = dst->annotations_json;
+      dst->public_resource_template.icons = dst->icons;
+      dst->public_resource_template.annotations = dst->annotations;
       impl->resource_template_count++;
     }
   }
@@ -6760,12 +7587,16 @@ static int cai_mcp_parse_prompts_list_response(
       dst->description = cai_strdup(
           &impl->allocator,
           src_prompts[i].description != NULL ? src_prompts[i].description : "");
-      dst->arguments_json = cai_mcp_optional_json_array_to_cstr(
-          &impl->allocator, &src_prompts[i].arguments, error);
-      dst->icons_json = cai_mcp_optional_json_array_to_cstr(
-          &impl->allocator, &src_prompts[i].icons, error);
+      rc = cai_mcp_copy_optional_prompt_arguments(
+          &impl->allocator, &src_prompts[i].arguments, &dst->arguments,
+          &dst->public_prompt.argument_count, error);
+      if (rc == CAI_OK) {
+        rc = cai_mcp_copy_optional_icons(
+            &impl->allocator, &src_prompts[i].icons, &dst->icons,
+            &dst->public_prompt.icon_count, error);
+      }
       if (dst->name == NULL || dst->title == NULL || dst->description == NULL ||
-          dst->arguments_json == NULL || dst->icons_json == NULL) {
+          rc != CAI_OK) {
         rc = error != NULL && error->code != CAI_OK
                  ? error->code
                  : cai_set_error(error, CAI_ERR_NOMEM,
@@ -6776,8 +7607,8 @@ static int cai_mcp_parse_prompts_list_response(
       dst->public_prompt.name = dst->name;
       dst->public_prompt.title = dst->title;
       dst->public_prompt.description = dst->description;
-      dst->public_prompt.arguments_json = dst->arguments_json;
-      dst->public_prompt.icons_json = dst->icons_json;
+      dst->public_prompt.arguments = dst->arguments;
+      dst->public_prompt.icons = dst->icons;
       impl->prompt_count++;
     }
   }
@@ -8352,6 +9183,126 @@ static void cai_mcp_registered_tool_context_cleanup(void *context) {
   }
 }
 
+static const char *cai_mcp_streamable_tool_schema_json(
+    cai_mcp_client *client, const cai_mcp_client_tool *tool) {
+  cai_mcp_streamable_http_client_impl *impl;
+  size_t i;
+
+  if (client == NULL || tool == NULL || client->impl == NULL ||
+      client->tool_at != cai_mcp_streamable_tool_at) {
+    return NULL;
+  }
+  impl = (cai_mcp_streamable_http_client_impl *)client->impl;
+  for (i = 0U; i < impl->tool_count; i++) {
+    if (&impl->tools[i].public_tool == tool) {
+      return impl->tools[i].input_schema_json;
+    }
+  }
+  return NULL;
+}
+
+static int cai_mcp_append_json_string_literal(cai_buffer_builder *builder,
+                                              const char *text,
+                                              cai_error *error) {
+  const unsigned char *p;
+  char escape[7];
+  int rc;
+
+  rc = cai_buffer_append(builder, "\"", 1U, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  p = (const unsigned char *)(text != NULL ? text : "");
+  while (*p != '\0') {
+    switch (*p) {
+    case '"':
+      rc = cai_buffer_append(builder, "\\\"", 2U, error);
+      break;
+    case '\\':
+      rc = cai_buffer_append(builder, "\\\\", 2U, error);
+      break;
+    case '\b':
+      rc = cai_buffer_append(builder, "\\b", 2U, error);
+      break;
+    case '\f':
+      rc = cai_buffer_append(builder, "\\f", 2U, error);
+      break;
+    case '\n':
+      rc = cai_buffer_append(builder, "\\n", 2U, error);
+      break;
+    case '\r':
+      rc = cai_buffer_append(builder, "\\r", 2U, error);
+      break;
+    case '\t':
+      rc = cai_buffer_append(builder, "\\t", 2U, error);
+      break;
+    default:
+      if (*p < 0x20U) {
+        snprintf(escape, sizeof(escape), "\\u%04x", (unsigned int)*p);
+        rc = cai_buffer_append(builder, escape, 6U, error);
+      } else {
+        rc = cai_buffer_append(builder, (const char *)p, 1U, error);
+      }
+      break;
+    }
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    p++;
+  }
+  return cai_buffer_append(builder, "\"", 1U, error);
+}
+
+static char *cai_mcp_generate_registry_schema_json(
+    const cai_mcp_client_schema *schema, cai_error *error) {
+  cai_buffer_builder builder;
+  size_t i;
+  int rc;
+
+  if (schema == NULL || schema->type == NULL || strcmp(schema->type, "object") != 0) {
+    cai_set_error(error, CAI_ERR_PROTOCOL, "MCP tool input schema is incomplete");
+    return NULL;
+  }
+  memset(&builder, 0, sizeof(builder));
+  rc = cai_buffer_append_cstr(&builder, "{\"type\":\"object\",\"properties\":{",
+                              error);
+  for (i = 0U; rc == CAI_OK && i < schema->property_count; i++) {
+    if (i != 0U) {
+      rc = cai_buffer_append(&builder, ",", 1U, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_append_json_string_literal(&builder, schema->properties[i],
+                                              error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_buffer_append_cstr(&builder, ":{}", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, "},\"required\":[", error);
+  }
+  for (i = 0U; rc == CAI_OK && i < schema->required_count; i++) {
+    if (i != 0U) {
+      rc = cai_buffer_append(&builder, ",", 1U, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_mcp_append_json_string_literal(&builder, schema->required[i],
+                                              error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, "]}", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append(&builder, "", 1U, error);
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, builder.data);
+    return NULL;
+  }
+  return builder.data;
+}
+
 int cai_mcp_client_register_tools(
     cai_mcp_client *client, cai_tool_registry *registry,
     const cai_mcp_tool_registration_config *config, cai_error *error) {
@@ -8360,6 +9311,8 @@ int cai_mcp_client_register_tools(
   const cai_mcp_client_tool *tool;
   cai_mcp_registry_tool_context *context;
   cai_buffer_builder name_builder;
+  const char *schema_json;
+  char *generated_schema_json;
   size_t i;
   int rc;
 
@@ -8375,14 +9328,27 @@ int cai_mcp_client_register_tools(
   }
   for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
     tool = cai_mcp_client_tool_at(client, i);
-    if (tool == NULL || tool->name == NULL || tool->input_schema_json == NULL) {
+    if (tool == NULL || tool->name == NULL || tool->input_schema == NULL) {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP tool metadata is incomplete");
+    }
+    schema_json = cai_mcp_streamable_tool_schema_json(client, tool);
+    generated_schema_json = NULL;
+    if (schema_json == NULL) {
+      generated_schema_json =
+          cai_mcp_generate_registry_schema_json(tool->input_schema, error);
+      if (generated_schema_json == NULL) {
+        return error != NULL && error->code != CAI_OK
+                   ? error->code
+                   : CAI_ERR_NOMEM;
+      }
+      schema_json = generated_schema_json;
     }
     memset(&name_builder, 0, sizeof(name_builder));
     if (effective->name_prefix != NULL) {
       rc = cai_buffer_append_cstr(&name_builder, effective->name_prefix, error);
       if (rc != CAI_OK) {
+        cai_free_mem(NULL, generated_schema_json);
         cai_free_mem(NULL, name_builder.data);
         return rc;
       }
@@ -8392,12 +9358,14 @@ int cai_mcp_client_register_tools(
       rc = cai_buffer_append(&name_builder, "", 1U, error);
     }
     if (rc != CAI_OK) {
+      cai_free_mem(NULL, generated_schema_json);
       cai_free_mem(NULL, name_builder.data);
       return rc;
     }
     context =
         (cai_mcp_registry_tool_context *)cai_alloc(NULL, sizeof(*context));
     if (context == NULL) {
+      cai_free_mem(NULL, generated_schema_json);
       cai_free_mem(NULL, name_builder.data);
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to allocate MCP tool context");
@@ -8407,15 +9375,17 @@ int cai_mcp_client_register_tools(
     context->remote_name = cai_strdup(NULL, tool->name);
     if (context->remote_name == NULL) {
       cai_free_mem(NULL, context);
+      cai_free_mem(NULL, generated_schema_json);
       cai_free_mem(NULL, name_builder.data);
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to allocate MCP tool name");
     }
     rc = cai_tool_registry_register_raw_spooled_owned(
-        registry, name_builder.data, tool->description, tool->input_schema_json,
+        registry, name_builder.data, tool->description, schema_json,
         effective->strict, cai_mcp_registered_tool_callback, context,
         cai_mcp_registered_tool_context_cleanup, error);
     cai_free_mem(NULL, name_builder.data);
+    cai_free_mem(NULL, generated_schema_json);
     if (rc != CAI_OK) {
       cai_mcp_registered_tool_context_cleanup(context);
       return rc;
