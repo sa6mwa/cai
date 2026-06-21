@@ -6990,7 +6990,8 @@ static int cai_mcp_stream_result_with_session_recovery(
   had_session = impl->initialized && impl->session_id != NULL;
   cai_mcp_result_stream_init(&stream, output, require_result_object);
   rc = cai_mcp_post_ex(impl, request, request_len, 1, response, &stream, error);
-  if (rc != CAI_OK || !had_session || response->status != 404L) {
+  if (!had_session || response->status != 404L || stream.result_seen ||
+      stream.result_started) {
     if (rc == CAI_OK && stream.result_seen && stream.result_done) {
       rc = cai_mcp_validate_streamed_response_envelope(request, &stream, error);
       cai_mcp_result_stream_cleanup(&stream);

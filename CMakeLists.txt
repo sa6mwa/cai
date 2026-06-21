@@ -930,6 +930,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_server_ping_request
     mcp_streamable_http_session_recovery
     mcp_streamable_http_session_recovery_preserves_request_id
+    mcp_streamable_http_streamed_session_recovery
     mcp_streamable_http_initialized_failure_retries
     mcp_streamable_http_server_error_no_recovery
     mcp_handler
