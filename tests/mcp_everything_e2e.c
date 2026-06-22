@@ -198,6 +198,22 @@ static int e2e_expect_contains(const char *name, const char *text,
   return 0;
 }
 
+static int e2e_expect_error(const char *name, int rc, const cai_error *error,
+                            int expected_code, const char *expected_message) {
+  if (rc != expected_code) {
+    fprintf(stderr, "%s returned %d, expected %d\n", name, rc, expected_code);
+    return 1;
+  }
+  if (expected_message != NULL &&
+      (error == NULL || error->message == NULL ||
+       strstr(error->message, expected_message) == NULL)) {
+    fprintf(stderr, "%s error missing expected fragment: %s\n", name,
+            expected_message);
+    return 1;
+  }
+  return 0;
+}
+
 static int e2e_call_tool(cai_mcp_client *client, const char *name,
                          const char *args_json, cai_sink *sink,
                          e2e_writer *writer, cai_error *error) {
@@ -406,6 +422,80 @@ int main(int argc, char **argv) {
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);
     return e2e_error("failed to create output sink", &error);
+  }
+
+  e2e_writer_reset(&writer);
+  rc =
+      cai_mcp_client_send_request(client, "unknown/method", NULL, sink, &error);
+  if (e2e_expect_error("Everything unknown method", rc, &error, CAI_ERR_SERVER,
+                       "Method not found") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  if (writer.data != NULL && writer.data[0] != '\0') {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return e2e_error("Everything unknown method wrote result output", NULL);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = e2e_call_tool(client, "echo", "{}", sink, &writer, &error);
+  if (rc != CAI_OK ||
+      e2e_expect_contains("Everything invalid echo args", writer.data,
+                          "\"isError\":true") != 0 ||
+      e2e_expect_contains("Everything invalid echo args", writer.data,
+                          "Invalid arguments for tool echo") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return rc == CAI_OK ? 1
+                        : e2e_error("failed invalid echo args call", &error);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  e2e_writer_reset(&writer);
+  rc = cai_mcp_client_read_resource(
+      client, "demo://resource/static/document/missing.md", sink, &error);
+  if (e2e_expect_error("Everything missing resource", rc, &error,
+                       CAI_ERR_SERVER, "not found") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = e2e_get_prompt(client, "missing-prompt", NULL, sink, &writer, &error);
+  if (e2e_expect_error("Everything missing prompt", rc, &error, CAI_ERR_SERVER,
+                       "not found") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = e2e_complete(client, "ref/prompt", "completable-prompt", "name", "",
+                    "{\"department\":\"NoSuchDepartment\"}", sink, &writer,
+                    &error);
+  if (rc != CAI_OK ||
+      e2e_expect_contains("unknown department completion", writer.data,
+                          "\"completion\"") != 0 ||
+      e2e_expect_contains("unknown department completion", writer.data,
+                          "\"values\":[]") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return rc == CAI_OK
+               ? 1
+               : e2e_error("failed unknown department completion", &error);
   }
 
   rc = e2e_call_tool(client, "echo",

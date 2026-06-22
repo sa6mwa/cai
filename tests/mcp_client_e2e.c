@@ -107,6 +107,22 @@ static int e2e_expect_contains(const char *name, const char *text,
   return 0;
 }
 
+static int e2e_expect_error(const char *name, int rc, const cai_error *error,
+                            int expected_code, const char *expected_message) {
+  if (rc != expected_code) {
+    fprintf(stderr, "%s returned %d, expected %d\n", name, rc, expected_code);
+    return 1;
+  }
+  if (expected_message != NULL &&
+      (error == NULL || error->message == NULL ||
+       strstr(error->message, expected_message) == NULL)) {
+    fprintf(stderr, "%s error missing expected fragment: %s\n", name,
+            expected_message);
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   cai_mcp_streamable_http_client_config config;
   cai_mcp_client *client;
@@ -196,6 +212,76 @@ int main(int argc, char **argv) {
     free(writer.data);
     return rc == CAI_OK ? 1 : e2e_error("failed to send generic ping", &error);
   }
+  e2e_writer_reset(&writer);
+  rc =
+      cai_mcp_client_send_request(client, "unknown/method", NULL, sink, &error);
+  if (e2e_expect_error("unknown method", rc, &error, CAI_ERR_SERVER,
+                       "Method not found") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  if (writer.data != NULL && writer.data[0] != '\0') {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return e2e_error("unknown method wrote result output", NULL);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  e2e_writer_reset(&writer);
+  if (e2e_spool(&args, "{}") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return 1;
+  }
+  rc = cai_mcp_client_send_request(client, "tools/call", &args, sink, &error);
+  args.cleanup(&args);
+  if (e2e_expect_error("invalid tools/call params", rc, &error, CAI_ERR_SERVER,
+                       "Invalid tool call parameters") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  if (writer.data != NULL && writer.data[0] != '\0') {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return e2e_error("invalid tools/call wrote result output", NULL);
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  e2e_writer_reset(&writer);
+  rc = cai_mcp_client_refresh_resources(client, &error);
+  if (e2e_expect_error("unsupported resources/list", rc, &error, CAI_ERR_SERVER,
+                       "Method not found") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  e2e_writer_reset(&writer);
+  rc = cai_mcp_client_read_resource(client, "demo://missing", sink, &error);
+  if (e2e_expect_error("unsupported resources/read", rc, &error, CAI_ERR_SERVER,
+                       "Method not found") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   rc = cai_mcp_client_send_notification(client, "notifications/initialized",
                                         NULL, &error);
   if (rc != CAI_OK) {
@@ -222,6 +308,22 @@ int main(int argc, char **argv) {
     cai_mcp_client_destroy(client);
     free(writer.data);
     return rc == CAI_OK ? 1 : e2e_error("failed to call echo_message", &error);
+  }
+  e2e_writer_reset(&writer);
+  if (e2e_spool(&args, "{}") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return 1;
+  }
+  rc = cai_mcp_client_call_tool(client, "missing_tool", &args, sink, &error);
+  args.cleanup(&args);
+  if (rc != CAI_OK || e2e_expect_contains("missing tool output", writer.data,
+                                          "\"isError\":true") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return rc == CAI_OK ? 1 : e2e_error("failed to call missing tool", &error);
   }
   cai_sink_close(sink);
 
