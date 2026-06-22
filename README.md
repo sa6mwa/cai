@@ -899,9 +899,12 @@ make mcp-everything-test
 make mcp-everything-down
 ```
 
-The service listens on `http://127.0.0.1:3001/mcp` by default. Override the
-host port with `CAI_MCP_EVERYTHING_PORT` and query a different running instance
-with `CAI_MCP_EVERYTHING_BASE_URL`.
+`make mcp-everything-test` runs the MCP client against the pinned Everything
+server and asserts the expected tools, resources, resource templates, prompts,
+completions, and representative execution results. The service listens on
+`http://127.0.0.1:3001/mcp` by default. Override the host port with
+`CAI_MCP_EVERYTHING_PORT` and query a different running instance with
+`CAI_MCP_EVERYTHING_BASE_URL`.
 
 Agents or registries can register the opt-in SearXNG search preset by including
 `<cai/tools/searxng.h>` and calling `cai_agent_register_searxng_tool` or

@@ -1129,11 +1129,11 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_mcp_http_smoke PROPERTIES
     LABELS "smoke;local"
     TIMEOUT 3)
-  add_executable(cai_mcp_client_smoke tests/mcp_client_smoke.c)
-  target_include_directories(cai_mcp_client_smoke PRIVATE
+  add_executable(cai_mcp_everything_e2e tests/mcp_everything_e2e.c)
+  target_include_directories(cai_mcp_everything_e2e PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  cai_link_internal_consumer(cai_mcp_client_smoke)
-  cai_configure_c_target(cai_mcp_client_smoke)
+  cai_link_internal_consumer(cai_mcp_everything_e2e)
+  cai_configure_c_target(cai_mcp_everything_e2e)
   add_executable(cai_mcp_client_e2e_driver tests/mcp_client_e2e.c)
   target_include_directories(cai_mcp_client_e2e_driver PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")

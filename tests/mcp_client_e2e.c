@@ -45,6 +45,15 @@ static int e2e_write(void *context, const void *bytes, size_t count,
 
 static void e2e_close(void *context) { (void)context; }
 
+static void e2e_writer_reset(e2e_writer *writer) {
+  if (writer != NULL) {
+    writer->length = 0U;
+    if (writer->data != NULL) {
+      writer->data[0] = '\0';
+    }
+  }
+}
+
 static int e2e_error(const char *message, cai_error *error) {
   fprintf(stderr, "%s", message);
   if (error != NULL && error->message != NULL) {
@@ -54,7 +63,48 @@ static int e2e_error(const char *message, cai_error *error) {
     fprintf(stderr, " (%s)", error->detail);
   }
   fprintf(stderr, "\n");
+  if (error != NULL) {
+    cai_error_cleanup(error);
+  }
   return 1;
+}
+
+static int e2e_spool(lonejson_spooled *spool, const char *json) {
+  lonejson_error json_error;
+
+  CAI_LJ->spooled_init(CAI_LJ, spool);
+  lonejson_error_init(&json_error);
+  if (spool->append(spool, json, strlen(json), &json_error) !=
+      LONEJSON_STATUS_OK) {
+    fprintf(stderr, "failed to build JSON payload: %s\n", json_error.message);
+    spool->cleanup(spool);
+    return 1;
+  }
+  return 0;
+}
+
+static int e2e_has_property(const cai_mcp_client_schema *schema,
+                            const char *name) {
+  size_t i;
+
+  if (schema == NULL) {
+    return 0;
+  }
+  for (i = 0U; i < schema->property_count; i++) {
+    if (strcmp(schema->properties[i], name) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int e2e_expect_contains(const char *name, const char *text,
+                               const char *needle) {
+  if (text == NULL || strstr(text, needle) == NULL) {
+    fprintf(stderr, "%s missing expected fragment: %s\n", name, needle);
+    return 1;
+  }
+  return 0;
 }
 
 int main(int argc, char **argv) {
@@ -65,7 +115,6 @@ int main(int argc, char **argv) {
   cai_sink *sink;
   e2e_writer writer;
   lonejson_spooled args;
-  lonejson_error json_error;
   cai_error error;
   size_t i;
   int found_echo;
@@ -91,30 +140,37 @@ int main(int argc, char **argv) {
   if (rc != CAI_OK) {
     return e2e_error("failed to open MCP client", &error);
   }
+  rc = cai_mcp_client_initialize(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    return e2e_error("failed to initialize MCP client", &error);
+  }
+  rc = cai_mcp_client_ping(client, &error);
+  if (rc != CAI_OK) {
+    cai_mcp_client_destroy(client);
+    return e2e_error("failed to ping MCP server", &error);
+  }
 
   rc = cai_mcp_client_refresh_tools(client, &error);
   if (rc != CAI_OK) {
     cai_mcp_client_destroy(client);
     return e2e_error("failed to refresh MCP tools", &error);
   }
+  if (cai_mcp_client_tool_count(client) != 1U) {
+    cai_mcp_client_destroy(client);
+    return e2e_error("CAI MCP test server tool count changed", NULL);
+  }
   for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
     tool = cai_mcp_client_tool_at(client, i);
     if (tool != NULL && tool->name != NULL &&
         strcmp(tool->name, "echo_message") == 0) {
-      size_t j;
-
       found_echo = 1;
-      for (j = 0U;
-           tool->input_schema != NULL && j < tool->input_schema->property_count;
-           j++) {
-        if (strcmp(tool->input_schema->properties[j], "message") == 0) {
-          break;
-        }
-      }
-      if (tool->input_schema == NULL ||
-          j == tool->input_schema->property_count) {
+      if (strcmp(tool->title, "echo_message") != 0 ||
+          strcmp(tool->description,
+                 "Echo a message through the MCP test server") != 0 ||
+          !e2e_has_property(tool->input_schema, "message")) {
         cai_mcp_client_destroy(client);
-        return e2e_error("echo_message schema did not include message", NULL);
+        return e2e_error("echo_message metadata was incomplete", NULL);
       }
       break;
     }
@@ -122,12 +178,6 @@ int main(int argc, char **argv) {
   if (!found_echo) {
     cai_mcp_client_destroy(client);
     return e2e_error("MCP server did not advertise echo_message", NULL);
-  }
-
-  rc = cai_mcp_client_ping(client, &error);
-  if (rc != CAI_OK) {
-    cai_mcp_client_destroy(client);
-    return e2e_error("failed to ping MCP server", &error);
   }
 
   callbacks.write = e2e_write;
@@ -138,32 +188,42 @@ int main(int argc, char **argv) {
     cai_mcp_client_destroy(client);
     return e2e_error("failed to create output sink", &error);
   }
-  CAI_LJ->spooled_init(CAI_LJ, &args);
-  lonejson_error_init(&json_error);
-  if (args.append(&args, "{\"message\":\"cai-mcp-client-e2e-ok\"}",
-                  strlen("{\"message\":\"cai-mcp-client-e2e-ok\"}"),
-                  &json_error) != LONEJSON_STATUS_OK) {
-    args.cleanup(&args);
+  rc = cai_mcp_client_send_request(client, "ping", NULL, sink, &error);
+  if (rc != CAI_OK ||
+      e2e_expect_contains("generic ping result", writer.data, "{}") != 0) {
     cai_sink_close(sink);
     cai_mcp_client_destroy(client);
-    fprintf(stderr, "failed to build tool arguments: %s\n", json_error.message);
-    return 1;
+    free(writer.data);
+    return rc == CAI_OK ? 1 : e2e_error("failed to send generic ping", &error);
   }
-  rc = cai_mcp_client_call_tool(client, "echo_message", &args, sink, &error);
-  args.cleanup(&args);
+  rc = cai_mcp_client_send_notification(client, "notifications/initialized",
+                                        NULL, &error);
   if (rc != CAI_OK) {
     cai_sink_close(sink);
     cai_mcp_client_destroy(client);
     free(writer.data);
-    return e2e_error("failed to call echo_message", &error);
+    return e2e_error("failed to send initialized notification", &error);
   }
-  cai_sink_close(sink);
-  if (writer.data == NULL ||
-      strstr(writer.data, "cai-mcp-client-e2e-ok") == NULL) {
+  e2e_writer_reset(&writer);
+  if (e2e_spool(&args, "{\"message\":\"cai-mcp-client-e2e-ok\"}") != 0) {
+    cai_sink_close(sink);
     cai_mcp_client_destroy(client);
     free(writer.data);
-    return e2e_error("echo_message output did not include e2e marker", NULL);
+    return 1;
   }
+  rc = cai_mcp_client_call_tool(client, "echo_message", &args, sink, &error);
+  args.cleanup(&args);
+  if (rc != CAI_OK ||
+      e2e_expect_contains("echo_message output", writer.data,
+                          "cai-mcp-client-e2e-ok") != 0 ||
+      e2e_expect_contains("echo_message output", writer.data,
+                          "\"structuredContent\"") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return rc == CAI_OK ? 1 : e2e_error("failed to call echo_message", &error);
+  }
+  cai_sink_close(sink);
 
   cai_mcp_client_destroy(client);
   free(writer.data);

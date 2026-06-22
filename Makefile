@@ -80,7 +80,7 @@ help:
 		'make searxng-down Stop local SearXNG compose service.' \
 		'make mcp-everything-up Start local MCP Everything reference server.' \
 		'make mcp-everything-wait Wait for local MCP Everything to initialize.' \
-		'make mcp-everything-test Run a local MCP Everything protocol smoke test.' \
+		'make mcp-everything-test Run the MCP client Everything reference-server e2e matrix.' \
 		'make mcp-everything-live-test Run the live model MCP client tool integration test.' \
 		'make mcp-everything-down Stop local MCP Everything compose service.' \
 		'make format       Run clang-format over repo C sources.' \
@@ -368,9 +368,9 @@ mcp-everything-logs: compose-check
 	$(COMPOSE) -f "$(COMPOSE_FILE)" logs -f mcp-everything
 
 mcp-everything-test:
-	$(CMAKE) --build build/debug --target cai_mcp_client_smoke
+	$(CMAKE) --build build/debug --target cai_mcp_everything_e2e
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
-	build/debug/cai_mcp_client_smoke "$$url"
+	build/debug/cai_mcp_everything_e2e "$$url"
 
 mcp-everything-live-test:
 	$(MAKE) integration-build
