@@ -1641,8 +1641,9 @@ static int test_mcp_sink_write(void *context, const void *bytes, size_t count,
 
   state = (mcp_sink_state *)context;
   state->write_count++;
-  if (state->fail_after_writes > 0 &&
-      state->write_count > state->fail_after_writes) {
+  if (state->fail_after_writes < 0 ||
+      (state->fail_after_writes > 0 &&
+       state->write_count > state->fail_after_writes)) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "MCP sink failed deliberately");
   }
@@ -8637,16 +8638,16 @@ static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
         close(client_fd);
         _exit(13);
       }
-      if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
-          read(signal_fd, &signal_byte, 1U) != 1) {
-        close(client_fd);
-        _exit(14);
-      }
       if (mock_write_chunked_cstr(client_fd, second_chunk, one_byte_chunks) !=
               0 ||
           mock_write_chunk(client_fd, "", 0U) != 0) {
         close(client_fd);
         _exit(15);
+      }
+      if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
+          read(signal_fd, &signal_byte, 1U) != 1) {
+        close(client_fd);
+        _exit(14);
       }
     }
     close(client_fd);
@@ -9992,7 +9993,7 @@ test_mcp_streamable_http_call_result_must_be_object(test_state *state) {
              cai_mcp_client_call_tool(client, "echo", &args, sink, &error),
              CAI_ERR_PROTOCOL);
   expect_str(state, "mcp_streamable_call_result_object_message", error.message,
-             "MCP JSON-RPC result must be an object");
+             "MCP result must be an object");
   expect_str(state, "mcp_streamable_call_result_object_output", writer.buffer,
              "");
   args.cleanup(&args);
@@ -14650,7 +14651,7 @@ static int test_mcp_streaming_call(cai_mcp_client *client,
   }
 }
 
-static void run_mcp_streamable_http_result_streaming_test_ex(
+static void run_mcp_streamable_http_chunked_result_write_test_ex(
     test_state *state, const char *test_name,
     test_mcp_streaming_operation operation, int sse_response,
     int one_byte_chunks) {
@@ -14705,71 +14706,71 @@ static void run_mcp_streamable_http_result_streaming_test_ex(
   expect_child_exit(state, test_name, server.pid, &server.child_status);
 }
 
-static void run_mcp_streamable_http_result_streaming_test(
+static void run_mcp_streamable_http_chunked_result_write_test(
     test_state *state, const char *test_name,
     test_mcp_streaming_operation operation, int sse_response) {
-  run_mcp_streamable_http_result_streaming_test_ex(state, test_name, operation,
+  run_mcp_streamable_http_chunked_result_write_test_ex(state, test_name, operation,
                                                    sse_response, 0);
 }
 
 static void
-test_mcp_streamable_http_tool_call_streams_result(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test(
-      state, "mcp_streamable_tool_call_streaming_mock",
+test_mcp_streamable_http_tool_call_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_tool_call_chunked_mock",
       TEST_MCP_STREAMING_TOOL_CALL, 0);
 }
 
 static void
-test_mcp_streamable_http_tool_call_streams_sse_result(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test(
-      state, "mcp_streamable_tool_call_sse_streaming_mock",
+test_mcp_streamable_http_tool_call_writes_sse_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_tool_call_sse_chunked_mock",
       TEST_MCP_STREAMING_TOOL_CALL, 1);
 }
 
 static void
-test_mcp_streamable_http_resource_read_streams_result(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test(
-      state, "mcp_streamable_resource_read_streaming_mock",
+test_mcp_streamable_http_resource_read_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_resource_read_chunked_mock",
       TEST_MCP_STREAMING_RESOURCE_READ, 0);
 }
 
 static void
-test_mcp_streamable_http_prompt_get_streams_result(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test(
-      state, "mcp_streamable_prompt_get_streaming_mock",
+test_mcp_streamable_http_prompt_get_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_prompt_get_chunked_mock",
       TEST_MCP_STREAMING_PROMPT_GET, 0);
 }
 
 static void
-test_mcp_streamable_http_completion_streams_result(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test(
-      state, "mcp_streamable_completion_streaming_mock",
+test_mcp_streamable_http_completion_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_completion_chunked_mock",
       TEST_MCP_STREAMING_COMPLETION, 0);
 }
 
 static void
-test_mcp_streamable_http_send_request_streams_result(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test(
-      state, "mcp_streamable_send_request_streaming_mock",
+test_mcp_streamable_http_send_request_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_send_request_chunked_mock",
       TEST_MCP_STREAMING_GENERIC_REQUEST, 0);
 }
 
 static void
-test_mcp_streamable_http_streams_result_one_byte_chunks(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test_ex(
-      state, "mcp_streamable_tool_call_one_byte_streaming_mock",
+test_mcp_streamable_http_writes_result_one_byte_chunks(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_one_byte_chunked_mock",
       TEST_MCP_STREAMING_TOOL_CALL, 0, 1);
 }
 
 static void
-test_mcp_streamable_http_streams_sse_result_one_byte_chunks(test_state *state) {
-  run_mcp_streamable_http_result_streaming_test_ex(
-      state, "mcp_streamable_tool_call_sse_one_byte_streaming_mock",
+test_mcp_streamable_http_writes_sse_result_one_byte_chunks(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_sse_one_byte_chunked_mock",
       TEST_MCP_STREAMING_TOOL_CALL, 1, 1);
 }
 
 static void
-test_mcp_streamable_http_streams_sse_result_after_empty_data_event(
+test_mcp_streamable_http_writes_sse_result_after_empty_data_event(
     test_state *state) {
   http_mock_server server;
   cai_mcp_streamable_http_client_config config;
@@ -14826,7 +14827,7 @@ test_mcp_streamable_http_streams_sse_result_after_empty_data_event(
 }
 
 static void
-test_mcp_streamable_http_streamed_result_sink_failure(test_state *state) {
+test_mcp_streamable_http_result_sink_failure(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
@@ -14859,7 +14860,7 @@ test_mcp_streamable_http_streamed_result_sink_failure(test_state *state) {
   memset(&writer, 0, sizeof(writer));
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
   memset(script, 0, sizeof(script));
-  writer.fail_after_writes = 8;
+  writer.fail_after_writes = -1;
   script[0].request_prefix = "POST /v1/mcp HTTP/";
   script[0].required = init_required;
   script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
@@ -14908,13 +14909,8 @@ test_mcp_streamable_http_streamed_result_sink_failure(test_state *state) {
   expect_substr(state, "mcp_streamable_sink_failure_message", error.message,
                 "MCP sink failed deliberately");
   expect_int(state, "mcp_streamable_sink_failure_writes", writer.write_count,
-             9L);
-  expect_int(state, "mcp_streamable_sink_failure_partial",
-             writer.length > 0U &&
-                 strcmp(writer.buffer, "{\"content\":[{\"type\":\"text\","
-                                       "\"text\":\"partial\"}],\"isError\":"
-                                       "false}") != 0,
              1L);
+  expect_int(state, "mcp_streamable_sink_failure_no_output", writer.length, 0L);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
@@ -14922,7 +14918,7 @@ test_mcp_streamable_http_streamed_result_sink_failure(test_state *state) {
                     &server.child_status);
 }
 
-static void run_mcp_streamable_http_error_result_does_not_stream(
+static void run_mcp_streamable_http_error_result_not_written(
     test_state *state, const char *test_name, const char *content_type,
     const char *body) {
   static const char initialize_body[] =
@@ -15008,30 +15004,31 @@ static void run_mcp_streamable_http_error_result_does_not_stream(
 }
 
 static void
-test_mcp_streamable_http_json_error_result_does_not_stream(test_state *state) {
+test_mcp_streamable_http_json_error_result_not_written(test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"must not stream\"}],\"isError\":false}}";
-  run_mcp_streamable_http_error_result_does_not_stream(
-      state, "mcp_streamable_http_json_error_result_no_stream",
+      "\"text\",\"text\":\"must not write\"}],\"isError\":false}}";
+  run_mcp_streamable_http_error_result_not_written(
+      state, "mcp_streamable_http_json_error_result_not_written",
       "application/json", body);
 }
 
 static void
-test_mcp_streamable_http_sse_error_result_does_not_stream(test_state *state) {
+test_mcp_streamable_http_sse_error_result_not_written(test_state *state) {
   static const char body[] =
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
       "\"type\":\"text\",\"text\":\"must not "
       "stream\"}],\"isError\":false}}\n\n";
-  run_mcp_streamable_http_error_result_does_not_stream(
-      state, "mcp_streamable_http_sse_error_result_no_stream",
+  run_mcp_streamable_http_error_result_not_written(
+      state, "mcp_streamable_http_sse_error_result_not_written",
       "text/event-stream", body);
 }
 
-static void run_mcp_streamable_http_streamed_envelope_validation_test(
+static void run_mcp_streamable_http_result_envelope_validation_test(
     test_state *state, const char *test_name, const char *content_type,
-    const char *body, const char *expected_error, int expect_no_output) {
+    const char *body, const char *expected_error,
+    const char *expected_output, int expect_no_output) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
@@ -15040,10 +15037,10 @@ static void run_mcp_streamable_http_streamed_envelope_validation_test(
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-envelope-session",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: result-envelope-session",
       "\"method\":\"notifications/initialized\""};
   static const char *call_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-envelope-session",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: result-envelope-session",
       "\"id\":2", "\"method\":\"tools/call\""};
   mock_http_expectation script[3];
   http_mock_server server;
@@ -15068,7 +15065,7 @@ static void run_mcp_streamable_http_streamed_envelope_validation_test(
   script[0].status_text = "OK";
   script[0].content_type = "application/json";
   script[0].request_id =
-      "req-init\r\nMCP-Session-Id: streamed-envelope-session";
+      "req-init\r\nMCP-Session-Id: result-envelope-session";
   script[0].body = initialize_body;
   script[1].request_prefix = "POST /v1/mcp HTTP/";
   script[1].required = initialized_required;
@@ -15104,12 +15101,19 @@ static void run_mcp_streamable_http_streamed_envelope_validation_test(
   sink_callbacks.context = &writer;
   expect_int(state, test_name,
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
-  expect_int(state, test_name,
-             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
-             CAI_ERR_PROTOCOL);
-  expect_substr(state, test_name, error.message, expected_error);
-  if (expect_no_output) {
-    expect_str(state, test_name, writer.buffer, "");
+  if (expected_error != NULL) {
+    expect_int(state, test_name,
+               cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+               CAI_ERR_PROTOCOL);
+    expect_substr(state, test_name, error.message, expected_error);
+    if (expect_no_output) {
+      expect_str(state, test_name, writer.buffer, "");
+    }
+  } else {
+    expect_int(state, test_name,
+               cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+               CAI_OK);
+    expect_str(state, test_name, writer.buffer, expected_output);
   }
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
@@ -15117,62 +15121,66 @@ static void run_mcp_streamable_http_streamed_envelope_validation_test(
   expect_child_exit(state, test_name, server.pid, &server.child_status);
 }
 
-static void test_mcp_streamable_http_streamed_result_rejects_mismatched_id(
+static void test_mcp_streamable_http_result_rejects_mismatched_id(
     test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"streamed\"}],\"isError\":false}}";
-  run_mcp_streamable_http_streamed_envelope_validation_test(
-      state, "mcp_streamable_http_streamed_result_mismatched_id",
+      "\"text\",\"text\":\"chunked\"}],\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_mismatched_id",
       "application/json", body,
-      "MCP JSON-RPC response id did not match request id", 1);
+      "MCP JSON-RPC response id did not match request id", NULL, 1);
 }
 
 static void
-test_mcp_streamable_http_streamed_result_rejects_missing_id(test_state *state) {
+test_mcp_streamable_http_result_rejects_missing_id(test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
-      "\"text\":\"streamed\"}],\"isError\":false}}";
-  run_mcp_streamable_http_streamed_envelope_validation_test(
-      state, "mcp_streamable_http_streamed_result_missing_id",
-      "application/json", body, "MCP JSON-RPC was missing id", 1);
+      "\"text\":\"chunked\"}],\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_missing_id",
+      "application/json", body, "MCP JSON-RPC was missing id", NULL, 1);
 }
 
-static void test_mcp_streamable_http_streamed_result_rejects_result_before_id(
+static void test_mcp_streamable_http_result_accepts_result_before_id(
     test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
-      "\"text\":\"streamed\"}],\"isError\":false},\"id\":2}";
-  run_mcp_streamable_http_streamed_envelope_validation_test(
-      state, "mcp_streamable_http_streamed_result_before_id",
-      "application/json", body, "MCP JSON-RPC was missing id", 1);
+      "\"text\":\"chunked\"}],\"isError\":false},\"id\":2}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_before_id", "application/json", body,
+      NULL,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"chunked\"}],"
+      "\"isError\":false}",
+      0);
 }
 
-static void test_mcp_streamable_http_streamed_sse_rejects_result_and_error(
+static void test_mcp_streamable_http_sse_rejects_result_and_error(
     test_state *state) {
   static const char body[] =
       "event: message\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,"
       "\"error\":{\"code\":-32000,\"message\":\"bad\"},\"result\":{"
-      "\"content\":[{\"type\":\"text\",\"text\":\"streamed\"}],"
+      "\"content\":[{\"type\":\"text\",\"text\":\"chunked\"}],"
       "\"isError\":false}}\n\n";
-  run_mcp_streamable_http_streamed_envelope_validation_test(
-      state, "mcp_streamable_http_streamed_sse_result_and_error",
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_sse_result_and_error",
       "text/event-stream", body,
-      "MCP JSON-RPC response must include exactly one of result or error", 1);
+      "MCP JSON-RPC response must include exactly one of result or error", NULL,
+      1);
 }
 
-static void test_mcp_streamable_http_streamed_result_rejects_trailing_garbage(
+static void test_mcp_streamable_http_result_rejects_trailing_garbage(
     test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"streamed\"}],\"isError\":false}}garbage";
-  run_mcp_streamable_http_streamed_envelope_validation_test(
-      state, "mcp_streamable_http_streamed_result_trailing_garbage",
-      "application/json", body, "failed to parse MCP JSON-RPC response", 0);
+      "\"text\",\"text\":\"chunked\"}],\"isError\":false}}garbage";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_trailing_garbage",
+      "application/json", body, "failed to parse MCP response id", NULL, 0);
 }
 
-static void run_mcp_streamable_http_streamed_invalid_result_json_test(
+static void run_mcp_streamable_http_invalid_result_json_test(
     test_state *state, const char *test_name,
     test_mcp_streaming_operation operation, const char *body) {
   static const char initialize_body[] =
@@ -15183,10 +15191,10 @@ static void run_mcp_streamable_http_streamed_invalid_result_json_test(
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-invalid-json-session",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-result-json-session",
       "\"method\":\"notifications/initialized\""};
   static const char *request_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-invalid-json-session",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-result-json-session",
       "\"id\":2"};
   mock_http_expectation script[3];
   http_mock_server server;
@@ -15211,7 +15219,7 @@ static void run_mcp_streamable_http_streamed_invalid_result_json_test(
   script[0].status_text = "OK";
   script[0].content_type = "application/json";
   script[0].request_id =
-      "req-init\r\nMCP-Session-Id: streamed-invalid-json-session";
+      "req-init\r\nMCP-Session-Id: invalid-result-json-session";
   script[0].body = initialize_body;
   script[1].request_prefix = "POST /v1/mcp HTTP/";
   script[1].required = initialized_required;
@@ -15252,29 +15260,29 @@ static void run_mcp_streamable_http_streamed_invalid_result_json_test(
              test_mcp_streaming_call(client, operation, sink, &error),
              CAI_ERR_PROTOCOL);
   expect_substr(state, test_name, error.message,
-                "failed to parse MCP JSON-RPC response");
+                "failed to parse MCP response id");
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
   expect_child_exit(state, test_name, server.pid, &server.child_status);
 }
 
-static void test_mcp_streamable_http_streamed_result_rejects_bad_literal(
+static void test_mcp_streamable_http_result_rejects_bad_literal(
     test_state *state) {
   static const char body[] = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":tru}";
 
-  run_mcp_streamable_http_streamed_invalid_result_json_test(
-      state, "mcp_streamable_http_streamed_result_bad_literal",
+  run_mcp_streamable_http_invalid_result_json_test(
+      state, "mcp_streamable_http_result_bad_literal",
       TEST_MCP_STREAMING_GENERIC_REQUEST, body);
 }
 
 static void
-test_mcp_streamable_http_streamed_result_rejects_bad_object(test_state *state) {
+test_mcp_streamable_http_result_rejects_bad_object(test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":}}";
 
-  run_mcp_streamable_http_streamed_invalid_result_json_test(
-      state, "mcp_streamable_http_streamed_result_bad_object",
+  run_mcp_streamable_http_invalid_result_json_test(
+      state, "mcp_streamable_http_result_bad_object",
       TEST_MCP_STREAMING_TOOL_CALL, body);
 }
 
@@ -15454,7 +15462,7 @@ static void test_mcp_streamable_http_session_recovery_preserves_request_id(
 }
 
 static void
-test_mcp_streamable_http_streamed_session_recovery(test_state *state) {
+test_mcp_streamable_http_session_recovery_chunked_result(test_state *state) {
   static const char initialize_old_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
       "\"" CAI_MCP_PROTOCOL_VERSION
@@ -15472,27 +15480,27 @@ test_mcp_streamable_http_streamed_session_recovery(test_state *state) {
                                             "\"method\":\"initialize\""};
   static const char *init_forbidden[] = {"MCP-Session-Id:"};
   static const char *initialized_old_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-old-session",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-old-session",
       "\"method\":\"notifications/initialized\""};
   static const char *stale_call_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-old-session", "\"id\":2",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-old-session", "\"id\":2",
       "\"method\":\"tools/call\"", "\"name\":\"recover\""};
   static const char *init_new_required[] = {"POST /v1/mcp HTTP/", "\"id\":3",
                                             "\"method\":\"initialize\""};
   static const char *initialized_new_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-new-session",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-new-session",
       "\"method\":\"notifications/initialized\""};
   static const char *retry_call_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-new-session", "\"id\":2",
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-new-session", "\"id\":2",
       "\"method\":\"tools/call\"", "\"name\":\"recover\""};
   static const char *retry_call_forbidden[] = {
-      "MCP-Session-Id: streamed-old-session"};
+      "MCP-Session-Id: chunked-old-session"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_old_required,
        sizeof(init_old_required) / sizeof(init_old_required[0]), init_forbidden,
        sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
        "application/json",
-       "req-init-old\r\nMCP-Session-Id: streamed-old-session",
+       "req-init-old\r\nMCP-Session-Id: chunked-old-session",
        initialize_old_body},
       {"POST /v1/mcp HTTP/", initialized_old_required,
        sizeof(initialized_old_required) / sizeof(initialized_old_required[0]),
@@ -15504,7 +15512,7 @@ test_mcp_streamable_http_streamed_session_recovery(test_state *state) {
        sizeof(init_new_required) / sizeof(init_new_required[0]), init_forbidden,
        sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
        "application/json",
-       "req-init-new\r\nMCP-Session-Id: streamed-new-session",
+       "req-init-new\r\nMCP-Session-Id: chunked-new-session",
        initialize_new_body},
       {"POST /v1/mcp HTTP/", initialized_new_required,
        sizeof(initialized_new_required) / sizeof(initialized_new_required[0]),
@@ -15530,7 +15538,7 @@ test_mcp_streamable_http_streamed_session_recovery(test_state *state) {
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
   cai_error_init(&error);
   if (http_mock_server_open_script(
-          state, "mcp_streamable_streamed_session_recovery_mock", script,
+          state, "mcp_streamable_chunked_session_recovery_mock", script,
           sizeof(script) / sizeof(script[0]), &server) != 0) {
     cai_error_cleanup(&error);
     return;
@@ -15539,25 +15547,25 @@ test_mcp_streamable_http_streamed_session_recovery(test_state *state) {
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = url;
   config.timeout_ms = 500L;
-  expect_int(state, "mcp_streamable_streamed_session_recovery_open",
+  expect_int(state, "mcp_streamable_chunked_session_recovery_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
-  expect_int(state, "mcp_streamable_streamed_session_recovery_sink",
+  expect_int(state, "mcp_streamable_chunked_session_recovery_sink",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
-  expect_int(state, "mcp_streamable_streamed_session_recovery_call",
+  expect_int(state, "mcp_streamable_chunked_session_recovery_call",
              cai_mcp_client_call_tool(client, "recover", NULL, sink, &error),
              CAI_OK);
-  expect_str(state, "mcp_streamable_streamed_session_recovery_output",
+  expect_str(state, "mcp_streamable_chunked_session_recovery_output",
              writer.buffer,
              "{\"content\":[{\"type\":\"text\",\"text\":\"recovered call\"}],"
              "\"isError\":false}");
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);
-  expect_child_exit(state, "mcp_streamable_streamed_session_recovery_mock",
+  expect_child_exit(state, "mcp_streamable_chunked_session_recovery_mock",
                     server.pid, &server.child_status);
 }
 
@@ -30249,44 +30257,44 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_send_request_params},
     {"mcp_streamable_http_send_request_scalar_result",
      test_mcp_streamable_http_send_request_scalar_result},
-    {"mcp_streamable_http_tool_call_streams_result",
-     test_mcp_streamable_http_tool_call_streams_result},
-    {"mcp_streamable_http_tool_call_streams_sse_result",
-     test_mcp_streamable_http_tool_call_streams_sse_result},
-    {"mcp_streamable_http_resource_read_streams_result",
-     test_mcp_streamable_http_resource_read_streams_result},
-    {"mcp_streamable_http_prompt_get_streams_result",
-     test_mcp_streamable_http_prompt_get_streams_result},
-    {"mcp_streamable_http_completion_streams_result",
-     test_mcp_streamable_http_completion_streams_result},
-    {"mcp_streamable_http_send_request_streams_result",
-     test_mcp_streamable_http_send_request_streams_result},
-    {"mcp_streamable_http_streams_result_one_byte_chunks",
-     test_mcp_streamable_http_streams_result_one_byte_chunks},
-    {"mcp_streamable_http_streams_sse_result_one_byte_chunks",
-     test_mcp_streamable_http_streams_sse_result_one_byte_chunks},
-    {"mcp_streamable_http_streams_sse_result_after_empty_data_event",
-     test_mcp_streamable_http_streams_sse_result_after_empty_data_event},
-    {"mcp_streamable_http_streamed_result_sink_failure",
-     test_mcp_streamable_http_streamed_result_sink_failure},
-    {"mcp_streamable_http_json_error_result_does_not_stream",
-     test_mcp_streamable_http_json_error_result_does_not_stream},
-    {"mcp_streamable_http_sse_error_result_does_not_stream",
-     test_mcp_streamable_http_sse_error_result_does_not_stream},
-    {"mcp_streamable_http_streamed_result_rejects_mismatched_id",
-     test_mcp_streamable_http_streamed_result_rejects_mismatched_id},
-    {"mcp_streamable_http_streamed_result_rejects_missing_id",
-     test_mcp_streamable_http_streamed_result_rejects_missing_id},
-    {"mcp_streamable_http_streamed_result_rejects_result_before_id",
-     test_mcp_streamable_http_streamed_result_rejects_result_before_id},
-    {"mcp_streamable_http_streamed_sse_rejects_result_and_error",
-     test_mcp_streamable_http_streamed_sse_rejects_result_and_error},
-    {"mcp_streamable_http_streamed_result_rejects_trailing_garbage",
-     test_mcp_streamable_http_streamed_result_rejects_trailing_garbage},
-    {"mcp_streamable_http_streamed_result_rejects_bad_literal",
-     test_mcp_streamable_http_streamed_result_rejects_bad_literal},
-    {"mcp_streamable_http_streamed_result_rejects_bad_object",
-     test_mcp_streamable_http_streamed_result_rejects_bad_object},
+    {"mcp_streamable_http_tool_call_writes_chunked_result",
+     test_mcp_streamable_http_tool_call_writes_chunked_result},
+    {"mcp_streamable_http_tool_call_writes_sse_result",
+     test_mcp_streamable_http_tool_call_writes_sse_result},
+    {"mcp_streamable_http_resource_read_writes_chunked_result",
+     test_mcp_streamable_http_resource_read_writes_chunked_result},
+    {"mcp_streamable_http_prompt_get_writes_chunked_result",
+     test_mcp_streamable_http_prompt_get_writes_chunked_result},
+    {"mcp_streamable_http_completion_writes_chunked_result",
+     test_mcp_streamable_http_completion_writes_chunked_result},
+    {"mcp_streamable_http_send_request_writes_chunked_result",
+     test_mcp_streamable_http_send_request_writes_chunked_result},
+    {"mcp_streamable_http_writes_result_one_byte_chunks",
+     test_mcp_streamable_http_writes_result_one_byte_chunks},
+    {"mcp_streamable_http_writes_sse_result_one_byte_chunks",
+     test_mcp_streamable_http_writes_sse_result_one_byte_chunks},
+    {"mcp_streamable_http_writes_sse_result_after_empty_data_event",
+     test_mcp_streamable_http_writes_sse_result_after_empty_data_event},
+    {"mcp_streamable_http_result_sink_failure",
+     test_mcp_streamable_http_result_sink_failure},
+    {"mcp_streamable_http_json_error_result_not_written",
+     test_mcp_streamable_http_json_error_result_not_written},
+    {"mcp_streamable_http_sse_error_result_not_written",
+     test_mcp_streamable_http_sse_error_result_not_written},
+    {"mcp_streamable_http_result_rejects_mismatched_id",
+     test_mcp_streamable_http_result_rejects_mismatched_id},
+    {"mcp_streamable_http_result_rejects_missing_id",
+     test_mcp_streamable_http_result_rejects_missing_id},
+    {"mcp_streamable_http_result_accepts_result_before_id",
+     test_mcp_streamable_http_result_accepts_result_before_id},
+    {"mcp_streamable_http_sse_rejects_result_and_error",
+     test_mcp_streamable_http_sse_rejects_result_and_error},
+    {"mcp_streamable_http_result_rejects_trailing_garbage",
+     test_mcp_streamable_http_result_rejects_trailing_garbage},
+    {"mcp_streamable_http_result_rejects_bad_literal",
+     test_mcp_streamable_http_result_rejects_bad_literal},
+    {"mcp_streamable_http_result_rejects_bad_object",
+     test_mcp_streamable_http_result_rejects_bad_object},
     {"mcp_streamable_http_send_notification_params",
      test_mcp_streamable_http_send_notification_params},
     {"mcp_streamable_http_notification_response_wrong_status",
@@ -30319,8 +30327,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_session_recovery},
     {"mcp_streamable_http_session_recovery_preserves_request_id",
      test_mcp_streamable_http_session_recovery_preserves_request_id},
-    {"mcp_streamable_http_streamed_session_recovery",
-     test_mcp_streamable_http_streamed_session_recovery},
+    {"mcp_streamable_http_session_recovery_chunked_result",
+     test_mcp_streamable_http_session_recovery_chunked_result},
     {"mcp_streamable_http_initialized_failure_retries",
      test_mcp_streamable_http_initialized_failure_retries},
     {"mcp_streamable_http_server_error_no_recovery",

@@ -54,6 +54,9 @@ static int smoke_error(const char *message, cai_error *error) {
     fprintf(stderr, " (%s)", error->detail);
   }
   fprintf(stderr, "\n");
+  if (error != NULL) {
+    cai_error_cleanup(error);
+  }
   return 1;
 }
 

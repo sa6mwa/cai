@@ -380,8 +380,7 @@ struct cai_mcp_client {
   /** Return cached tool metadata by index, or NULL when out of range. */
   const cai_mcp_client_tool *(*tool_at)(const cai_mcp_client *client,
                                         size_t index);
-  /** Call one remote tool with spooled JSON arguments and stream result JSON.
-   */
+  /** Call one remote tool and write the validated result JSON to `output`. */
   int (*call_tool)(cai_mcp_client *client, const char *name,
                    struct lonejson_spooled *arguments_json, cai_sink *output,
                    cai_error *error);
@@ -392,7 +391,7 @@ struct cai_mcp_client {
   /** Return cached resource metadata by index, or NULL when out of range. */
   const cai_mcp_client_resource *(*resource_at)(const cai_mcp_client *client,
                                                 size_t index);
-  /** Read one remote resource by URI and stream result JSON. */
+  /** Read one remote resource and write the validated result JSON. */
   int (*read_resource)(cai_mcp_client *client, const char *uri,
                        cai_sink *output, cai_error *error);
   /** Refresh the cached remote resources/templates/list metadata. */
@@ -413,7 +412,7 @@ struct cai_mcp_client {
   int (*get_prompt)(cai_mcp_client *client, const char *name,
                     struct lonejson_spooled *arguments_json, cai_sink *output,
                     cai_error *error);
-  /** Complete one prompt or resource argument and stream result JSON.
+  /** Complete one prompt or resource argument and write result JSON.
    *
    * `ref_type` is usually "ref/prompt" with `ref_value` as a prompt name, or
    * "ref/resource" with `ref_value` as a resource/template URI.
@@ -424,7 +423,7 @@ struct cai_mcp_client {
                   const char *argument_value,
                   struct lonejson_spooled *context_arguments_json,
                   cai_sink *output, cai_error *error);
-  /** Send one client-to-server JSON-RPC request and stream the result JSON. */
+  /** Send one client-to-server request and write the validated result JSON. */
   int (*send_request)(cai_mcp_client *client, const char *method,
                       struct lonejson_spooled *params_json, cai_sink *output,
                       cai_error *error);
@@ -477,7 +476,7 @@ size_t cai_mcp_client_tool_count(const cai_mcp_client *client);
 /** Return cached MCP tool metadata by index, or NULL when out of range. */
 const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
                                                   size_t index);
-/** Call one remote MCP tool and stream result JSON to `output`.
+/** Call one remote MCP tool and write validated result JSON to `output`.
     `arguments_json` may be NULL for tools without arguments. */
 int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
@@ -489,7 +488,7 @@ size_t cai_mcp_client_resource_count(const cai_mcp_client *client);
 /** Return cached MCP resource metadata by index, or NULL when out of range. */
 const cai_mcp_client_resource *
 cai_mcp_client_resource_at(const cai_mcp_client *client, size_t index);
-/** Read one remote MCP resource and stream result JSON to `output`. */
+/** Read one remote MCP resource and write validated result JSON to `output`. */
 int cai_mcp_client_read_resource(cai_mcp_client *client, const char *uri,
                                  cai_sink *output, cai_error *error);
 /** Refresh cached remote resources/templates/list metadata. */
@@ -507,17 +506,17 @@ size_t cai_mcp_client_prompt_count(const cai_mcp_client *client);
 /** Return cached MCP prompt metadata by index, or NULL when out of range. */
 const cai_mcp_client_prompt *
 cai_mcp_client_prompt_at(const cai_mcp_client *client, size_t index);
-/** Get one remote MCP prompt and stream result JSON to `output`. */
+/** Get one remote MCP prompt and write validated result JSON to `output`. */
 int cai_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
                               struct lonejson_spooled *arguments_json,
                               cai_sink *output, cai_error *error);
-/** Complete one MCP prompt/resource argument and stream result JSON. */
+/** Complete one MCP prompt/resource argument and write validated result JSON. */
 int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
                             const char *ref_value, const char *argument_name,
                             const char *argument_value,
                             struct lonejson_spooled *context_arguments_json,
                             cai_sink *output, cai_error *error);
-/** Send one client-to-server JSON-RPC request and stream result JSON. */
+/** Send one client-to-server request and write validated result JSON. */
 int cai_mcp_client_send_request(cai_mcp_client *client, const char *method,
                                 struct lonejson_spooled *params_json,
                                 cai_sink *output, cai_error *error);

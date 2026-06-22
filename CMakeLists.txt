@@ -907,25 +907,25 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_prompts_list_changed_array_params
     mcp_streamable_http_send_request_params
     mcp_streamable_http_send_request_scalar_result
-    mcp_streamable_http_tool_call_streams_result
-    mcp_streamable_http_tool_call_streams_sse_result
-    mcp_streamable_http_resource_read_streams_result
-    mcp_streamable_http_prompt_get_streams_result
-    mcp_streamable_http_completion_streams_result
-    mcp_streamable_http_send_request_streams_result
-    mcp_streamable_http_streams_result_one_byte_chunks
-    mcp_streamable_http_streams_sse_result_one_byte_chunks
-    mcp_streamable_http_streams_sse_result_after_empty_data_event
-    mcp_streamable_http_streamed_result_sink_failure
-    mcp_streamable_http_json_error_result_does_not_stream
-    mcp_streamable_http_sse_error_result_does_not_stream
-    mcp_streamable_http_streamed_result_rejects_mismatched_id
-    mcp_streamable_http_streamed_result_rejects_missing_id
-    mcp_streamable_http_streamed_result_rejects_result_before_id
-    mcp_streamable_http_streamed_sse_rejects_result_and_error
-    mcp_streamable_http_streamed_result_rejects_trailing_garbage
-    mcp_streamable_http_streamed_result_rejects_bad_literal
-    mcp_streamable_http_streamed_result_rejects_bad_object
+    mcp_streamable_http_tool_call_writes_chunked_result
+    mcp_streamable_http_tool_call_writes_sse_result
+    mcp_streamable_http_resource_read_writes_chunked_result
+    mcp_streamable_http_prompt_get_writes_chunked_result
+    mcp_streamable_http_completion_writes_chunked_result
+    mcp_streamable_http_send_request_writes_chunked_result
+    mcp_streamable_http_writes_result_one_byte_chunks
+    mcp_streamable_http_writes_sse_result_one_byte_chunks
+    mcp_streamable_http_writes_sse_result_after_empty_data_event
+    mcp_streamable_http_result_sink_failure
+    mcp_streamable_http_json_error_result_not_written
+    mcp_streamable_http_sse_error_result_not_written
+    mcp_streamable_http_result_rejects_mismatched_id
+    mcp_streamable_http_result_rejects_missing_id
+    mcp_streamable_http_result_accepts_result_before_id
+    mcp_streamable_http_sse_rejects_result_and_error
+    mcp_streamable_http_result_rejects_trailing_garbage
+    mcp_streamable_http_result_rejects_bad_literal
+    mcp_streamable_http_result_rejects_bad_object
     mcp_streamable_http_send_notification_params
     mcp_streamable_http_notification_response_wrong_status
     mcp_streamable_http_notification_response_body
@@ -942,7 +942,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_server_ping_request
     mcp_streamable_http_session_recovery
     mcp_streamable_http_session_recovery_preserves_request_id
-    mcp_streamable_http_streamed_session_recovery
+    mcp_streamable_http_session_recovery_chunked_result
     mcp_streamable_http_initialized_failure_retries
     mcp_streamable_http_server_error_no_recovery
     mcp_handler
