@@ -367,7 +367,7 @@ mcp-everything-down: compose-check
 mcp-everything-logs: compose-check
 	$(COMPOSE) -f "$(COMPOSE_FILE)" logs -f mcp-everything
 
-mcp-everything-test:
+mcp-everything-test: build-debug
 	$(CMAKE) --build build/debug --target cai_mcp_everything_e2e
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
 	build/debug/cai_mcp_everything_e2e "$$url"
