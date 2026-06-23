@@ -13696,6 +13696,46 @@ test_mcp_streamable_http_tool_call_array_structured_content(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_result_field_order_variants(test_state *state) {
+  static const char tool_response[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"isError\":false,\"content\":[{"
+      "\"text\":\"ordered tool\",\"type\":\"text\"}]},\"id\":2}";
+  static const char resource_response[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"contents\":[{\"text\":\"ordered "
+      "resource\",\"mimeType\":\"text/plain\",\"uri\":\"resource://ordered\"}]},"
+      "\"id\":2}";
+  static const char prompt_response[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"messages\":[{\"content\":{\"text\":"
+      "\"ordered prompt\",\"type\":\"text\"},\"role\":\"user\"}]},\"id\":2}";
+  static const char completion_response[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"completion\":{\"hasMore\":false,"
+      "\"total\":1,\"values\":[\"ordered-completion\"]}},\"id\":2}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_tool_call",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", tool_response,
+      "{\"isError\":false,\"content\":[{\"text\":\"ordered tool\",\"type\":"
+      "\"text\"}]}");
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_resource_read",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      resource_response,
+      "{\"contents\":[{\"text\":\"ordered resource\",\"mimeType\":\"text/plain\","
+      "\"uri\":\"resource://ordered\"}]}");
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_prompt_get",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", prompt_response,
+      "{\"messages\":[{\"content\":{\"text\":\"ordered prompt\",\"type\":"
+      "\"text\"},\"role\":\"user\"}]}");
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_completion",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      completion_response,
+      "{\"completion\":{\"hasMore\":false,\"total\":1,\"values\":["
+      "\"ordered-completion\"]}}");
+}
+
+static void
 test_mcp_streamable_http_resource_read_missing_contents(test_state *state) {
   static const char response_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
@@ -30189,6 +30229,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_tool_call_resource_invalid_blob},
     {"mcp_streamable_http_tool_call_array_structured_content",
      test_mcp_streamable_http_tool_call_array_structured_content},
+    {"mcp_streamable_http_result_field_order_variants",
+     test_mcp_streamable_http_result_field_order_variants},
     {"mcp_streamable_http_resource_read_missing_contents",
      test_mcp_streamable_http_resource_read_missing_contents},
     {"mcp_streamable_http_resource_read_missing_body",
