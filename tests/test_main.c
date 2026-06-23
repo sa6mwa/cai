@@ -8638,16 +8638,16 @@ static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
         close(client_fd);
         _exit(13);
       }
+      if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
+          read(signal_fd, &signal_byte, 1U) != 1) {
+        close(client_fd);
+        _exit(14);
+      }
       if (mock_write_chunked_cstr(client_fd, second_chunk, one_byte_chunks) !=
               0 ||
           mock_write_chunk(client_fd, "", 0U) != 0) {
         close(client_fd);
         _exit(15);
-      }
-      if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
-          read(signal_fd, &signal_byte, 1U) != 1) {
-        close(client_fd);
-        _exit(14);
       }
     }
     close(client_fd);
@@ -15180,8 +15180,8 @@ test_mcp_streamable_http_result_rejects_missing_id(test_state *state) {
       "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
       "\"text\":\"chunked\"}],\"isError\":false}}";
   run_mcp_streamable_http_result_envelope_validation_test(
-      state, "mcp_streamable_http_result_missing_id",
-      "application/json", body, "MCP JSON-RPC was missing id", NULL, 1);
+      state, "mcp_streamable_http_result_missing_id", "application/json", body,
+      "MCP JSON-RPC was missing id", NULL, 0);
 }
 
 static void test_mcp_streamable_http_result_accepts_result_before_id(
@@ -15219,7 +15219,8 @@ static void test_mcp_streamable_http_result_rejects_trailing_garbage(
       "\"text\",\"text\":\"chunked\"}],\"isError\":false}}garbage";
   run_mcp_streamable_http_result_envelope_validation_test(
       state, "mcp_streamable_http_result_trailing_garbage",
-      "application/json", body, "failed to parse MCP response id", NULL, 0);
+      "application/json", body, "failed to parse MCP JSON-RPC response", NULL,
+      0);
 }
 
 static void run_mcp_streamable_http_invalid_result_json_test(
@@ -15302,7 +15303,7 @@ static void run_mcp_streamable_http_invalid_result_json_test(
              test_mcp_streaming_call(client, operation, sink, &error),
              CAI_ERR_PROTOCOL);
   expect_substr(state, test_name, error.message,
-                "failed to parse MCP response id");
+                "failed to parse MCP JSON-RPC response");
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
   cai_error_cleanup(&error);

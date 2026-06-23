@@ -346,7 +346,8 @@ mcp-everything-wait:
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cai-compose-wait","version":"0.0.0"}}}'; \
-	for attempt in {1..30}; do \
+	attempt=1; \
+	while [ "$$attempt" -le 30 ]; do \
 		if curl -fsS -D "$$tmpdir/headers" -o "$$tmpdir/body" \
 			-H 'content-type: application/json' \
 			-H 'accept: application/json, text/event-stream' \
@@ -355,6 +356,7 @@ mcp-everything-wait:
 			printf 'MCP Everything is ready at %s\n' "$$url"; \
 			exit 0; \
 		fi; \
+		attempt=$$((attempt + 1)); \
 		sleep 1; \
 	done; \
 	printf 'Timed out waiting for MCP Everything at %s\n' "$$url" >&2; \
