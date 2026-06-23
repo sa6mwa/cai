@@ -214,6 +214,14 @@ static int e2e_expect_error(const char *name, int rc, const cai_error *error,
   return 0;
 }
 
+static int e2e_expect_empty_output(const char *name, const e2e_writer *writer) {
+  if (writer != NULL && writer->data != NULL && writer->data[0] != '\0') {
+    fprintf(stderr, "%s unexpectedly wrote output: %s\n", name, writer->data);
+    return 1;
+  }
+  return 0;
+}
+
 static int e2e_call_tool(cai_mcp_client *client, const char *name,
                          const char *args_json, cai_sink *sink,
                          e2e_writer *writer, cai_error *error) {
@@ -286,6 +294,7 @@ int main(int argc, char **argv) {
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   e2e_writer writer;
+  lonejson_spooled context_arguments;
   cai_error error;
   int rc;
 
@@ -424,6 +433,123 @@ int main(int argc, char **argv) {
     return e2e_error("failed to create output sink", &error);
   }
 
+  rc = cai_mcp_client_send_request(client, "", NULL, sink, &error);
+  if (e2e_expect_error("empty request method", rc, &error, CAI_ERR_INVALID,
+                       "MCP request method is required") != 0 ||
+      e2e_expect_empty_output("empty request method", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = cai_mcp_client_send_notification(client, "", NULL, &error);
+  if (e2e_expect_error("empty notification method", rc, &error,
+                       CAI_ERR_INVALID,
+                       "MCP notification method is required") != 0 ||
+      e2e_expect_empty_output("empty notification method", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = cai_mcp_client_call_tool(client, "", NULL, sink, &error);
+  if (e2e_expect_error("empty tool name", rc, &error, CAI_ERR_INVALID,
+                       "MCP tool name is required") != 0 ||
+      e2e_expect_empty_output("empty tool name", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (e2e_spool(&context_arguments, "[]") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return 1;
+  }
+  rc = cai_mcp_client_call_tool(client, "echo", &context_arguments, sink,
+                                &error);
+  context_arguments.cleanup(&context_arguments);
+  if (e2e_expect_error("array tool arguments", rc, &error, CAI_ERR_PROTOCOL,
+                       "MCP tool arguments must be an object") != 0 ||
+      e2e_expect_empty_output("array tool arguments", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = cai_mcp_client_read_resource(client, "", sink, &error);
+  if (e2e_expect_error("empty resource URI", rc, &error, CAI_ERR_INVALID,
+                       "MCP resource URI is required") != 0 ||
+      e2e_expect_empty_output("empty resource URI", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = cai_mcp_client_get_prompt(client, "", NULL, sink, &error);
+  if (e2e_expect_error("empty prompt name", rc, &error, CAI_ERR_INVALID,
+                       "MCP prompt name is required") != 0 ||
+      e2e_expect_empty_output("empty prompt name", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  rc = cai_mcp_client_complete(client, "ref/unknown", "value", "argument", "",
+                               NULL, sink, &error);
+  if (e2e_expect_error("invalid completion ref type", rc, &error,
+                       CAI_ERR_INVALID,
+                       "MCP completion reference type is invalid") != 0 ||
+      e2e_expect_empty_output("invalid completion ref type", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (e2e_spool(&context_arguments, "[]") != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    return 1;
+  }
+  rc = cai_mcp_client_complete(client, "ref/prompt", "completable-prompt",
+                               "name", "", &context_arguments, sink, &error);
+  context_arguments.cleanup(&context_arguments);
+  if (e2e_expect_error("array completion context", rc, &error,
+                       CAI_ERR_PROTOCOL,
+                       "MCP completion context arguments must be an object") !=
+          0 ||
+      e2e_expect_empty_output("array completion context", &writer) != 0) {
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    free(writer.data);
+    cai_error_cleanup(&error);
+    return 1;
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   e2e_writer_reset(&writer);
   rc =
       cai_mcp_client_send_request(client, "unknown/method", NULL, sink, &error);
