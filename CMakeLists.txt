@@ -1119,6 +1119,12 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_makefile_targets_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_mcp_client_source_contract_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_source_contract_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_mcp_client_source_contract_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
   target_include_directories(cai_mcp_http_server PRIVATE

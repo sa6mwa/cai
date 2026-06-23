@@ -219,6 +219,12 @@ typedef struct cai_mcp_response_write_context {
   cai_mcp_http_response_capture *response;
 } cai_mcp_response_write_context;
 
+typedef struct cai_mcp_result_sink_context {
+  cai_sink *sink;
+  cai_error *error;
+  int rc;
+} cai_mcp_result_sink_context;
+
 typedef struct cai_mcp_sse_resume_state {
   char *last_event_id;
   long retry_ms;
@@ -1420,41 +1426,6 @@ static lonejson_status cai_mcp_spool_sink(void *user, const void *data,
   return spool->append(spool, data, len, json_error);
 }
 
-static int cai_mcp_spooled_write_to_sink(lonejson_spooled *spool,
-                                         cai_sink *sink,
-                                         const char *operation,
-                                         cai_error *error) {
-  lonejson_error json_error;
-  lonejson_read_result chunk;
-  unsigned char buffer[4096];
-  int rc;
-
-  if (spool == NULL || sink == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "MCP result spool and output sink are required");
-  }
-  lonejson_error_init(&json_error);
-  if (spool->rewind(spool, &json_error) != LONEJSON_STATUS_OK) {
-    return cai_mcp_set_json_error(error, operation, &json_error);
-  }
-  for (;;) {
-    chunk = spool->read(spool, buffer, sizeof(buffer));
-    if (chunk.error_code != 0) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT, operation);
-    }
-    if (chunk.bytes_read > 0U) {
-      rc = cai_sink_write(sink, buffer, chunk.bytes_read, error);
-      if (rc != CAI_OK) {
-        return rc;
-      }
-    }
-    if (chunk.eof) {
-      break;
-    }
-  }
-  return CAI_OK;
-}
-
 static lonejson_status cai_mcp_discard_sink(void *user, const void *data,
                                             size_t len,
                                             lonejson_error *json_error) {
@@ -1463,6 +1434,26 @@ static lonejson_status cai_mcp_discard_sink(void *user, const void *data,
   (void)len;
   (void)json_error;
   return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_mcp_result_sink(void *user, const void *data,
+                                           size_t len,
+                                           lonejson_error *json_error) {
+  cai_mcp_result_sink_context *context;
+
+  (void)json_error;
+  context = (cai_mcp_result_sink_context *)user;
+  if (context == NULL || context->sink == NULL) {
+    if (context != NULL) {
+      context->rc =
+          cai_set_error(context->error, CAI_ERR_INVALID,
+                        "MCP result output sink is required");
+    }
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  context->rc = cai_sink_write(context->sink, data, len, context->error);
+  return context->rc == CAI_OK ? LONEJSON_STATUS_OK
+                               : LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
 static lonejson_status cai_mcp_buffer_sink(void *user, const void *data,
@@ -6943,8 +6934,8 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
                               int require_result_object, cai_sink *output,
                               cai_error *error) {
   cai_mcp_jsonrpc_sink_response_doc doc;
+  cai_mcp_result_sink_context sink_context;
   lonejson_spooled json_body;
-  lonejson_spooled result;
   cai_mcp_spooled_reader reader;
   lonejson_error json_error;
   lonejson_status status;
@@ -6958,16 +6949,17 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
     return rc;
   }
   memset(&doc, 0, sizeof(doc));
-  memset(&result, 0, sizeof(result));
-  CAI_LJ->spooled_init(CAI_LJ, &result);
+  memset(&sink_context, 0, sizeof(sink_context));
+  sink_context.sink = output;
+  sink_context.error = error;
+  sink_context.rc = CAI_OK;
   lonejson_error_init(&json_error);
   CAI_LJ_PRESERVE->json_value_init(CAI_LJ_PRESERVE, &doc.result);
-  if (doc.result.methods->set_parse_sink(&doc.result, cai_mcp_spool_sink,
-                                         &result,
+  if (doc.result.methods->set_parse_sink(&doc.result, cai_mcp_result_sink,
+                                         &sink_context,
                                          &json_error) != LONEJSON_STATUS_OK) {
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
-    result.cleanup(&result);
     json_body.cleanup(&json_body);
     return cai_mcp_set_json_error(error, "failed to prepare MCP result sink",
                                   &json_error);
@@ -6978,25 +6970,23 @@ cai_mcp_parse_result_response(const cai_mcp_http_response_capture *response,
   if (status != LONEJSON_STATUS_OK) {
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
-    result.cleanup(&result);
     json_body.cleanup(&json_body);
+    if (sink_context.rc != CAI_OK) {
+      return sink_context.rc;
+    }
     return cai_mcp_set_json_error(error, parse_name, &json_error);
   }
   if (has_error) {
     rc = cai_mcp_set_rpc_error(error, &doc.error_doc);
     CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE,
                              &cai_mcp_jsonrpc_sink_response_map, &doc);
-    result.cleanup(&result);
     json_body.cleanup(&json_body);
     return rc;
   }
-  rc = cai_mcp_spooled_write_to_sink(&result, output,
-                                     "failed to write MCP result", error);
   CAI_LJ_PRESERVE->cleanup(CAI_LJ_PRESERVE, &cai_mcp_jsonrpc_sink_response_map,
                            &doc);
-  result.cleanup(&result);
   json_body.cleanup(&json_body);
-  return rc;
+  return CAI_OK;
 }
 
 static int cai_mcp_parse_empty_result_response(

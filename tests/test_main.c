@@ -14908,8 +14908,10 @@ test_mcp_streamable_http_result_sink_failure(test_state *state) {
              CAI_ERR_TRANSPORT);
   expect_substr(state, "mcp_streamable_sink_failure_message", error.message,
                 "MCP sink failed deliberately");
-  expect_int(state, "mcp_streamable_sink_failure_writes", writer.write_count,
-             1L);
+  if (writer.write_count <= 0) {
+    test_fail(state, "mcp_streamable_sink_failure_writes",
+              "result parser never reached caller sink");
+  }
   expect_int(state, "mcp_streamable_sink_failure_no_output", writer.length, 0L);
   cai_sink_close(sink);
   cai_mcp_client_destroy(client);
