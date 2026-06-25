@@ -116,7 +116,7 @@ The verification tiers are split intentionally:
   libcurl 7.86.0 or newer, OpenSSL crypto, `lonejson.h` plus `liblonejson`,
   and `pslog.h`. The libcurl minimum is required for Responses WebSocket
   support. The discovered `liblonejson` must match cai's required ABI
-  generation (`liblonejson.so.16` on Linux, `liblonejson.16.dylib` on Darwin).
+  generation (`liblonejson.so.19` on Linux, `liblonejson.19.dylib` on Darwin).
   `auto` chooses host only when all required host pieces are discoverable and
   the lonejson ABI matches, otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
@@ -207,9 +207,9 @@ make lua-test
 The LuaRock depends on the `lonejson` Lua rock and links against an installed
 `libcai` discovered through `pkg-config cai`; the local test target installs
 the current debug build into `build/luarocks/cai-prefix` first. `lonejson`
-0.32.1 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
+0.35.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
 from the official release source rock at
-`https://github.com/sa6mwa/lonejson/releases/download/v0.32.1/lonejson-0.32.1-1.src.rock`
+`https://github.com/sa6mwa/lonejson/releases/download/v0.35.0/lonejson-0.35.0-1.src.rock`
 when needed. Lua projects can use the rock as a facade over the C library,
 while Vectis can still call the C API directly where that fits its performance
 and integration needs better.
@@ -218,7 +218,7 @@ For manual LuaRock installation, install the matching lonejson source rock
 first because this version is served from the GitHub release, not LuaRocks.org:
 
 ```sh
-luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.32.1/lonejson-0.32.1-1.src.rock
+luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.35.0/lonejson-0.35.0-1.src.rock
 luarocks install cai-<version>-1.src.rock
 ```
 

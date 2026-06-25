@@ -16,7 +16,7 @@ CAI_FUZZ_RUNS ?= 10000
 RELEASE_VERSION ?= $(shell ./scripts/detect_release_version.sh "$(CURDIR)")
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
 CAI_C_PKT_SYSTEMS_VERSION ?= 0.4.0
-CAI_LONEJSON_VERSION ?= 0.32.1
+CAI_LONEJSON_VERSION ?= 0.35.0
 CAI_PSLOG_VERSION ?= 0.4.1
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
 CAI_C_PKT_SYSTEMS_PREFIX := $(CURDIR)/.cache/deps/c.pkt.systems-$(CAI_C_PKT_SYSTEMS_VERSION)-$(CAI_CPKT_TARGET)
@@ -198,6 +198,10 @@ $(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | build-debu
 
 $(LUA_LONEJSON_ROCK_STAMP):
 	mkdir -p "$(LUA_ROCK_TREE)"
+	PKG_CONFIG_PATH="$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}" \
+	CFLAGS="$${CFLAGS:+$$CFLAGS }-I$(CAI_LONEJSON_PREFIX)/include" \
+	LDFLAGS="$${LDFLAGS:+$$LDFLAGS }-L$(CAI_LONEJSON_PREFIX)/lib" \
+	LD_LIBRARY_PATH="$(CAI_LONEJSON_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	luarocks install --tree "$(LUA_ROCK_TREE)" "$(LONEJSON_LUA_ROCK_URL)"
 
 $(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh $(LUA_ROCK_NATIVE_INPUTS)
