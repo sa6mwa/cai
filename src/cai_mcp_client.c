@@ -1518,10 +1518,9 @@ cai_mcp_streaming_sse_line(cai_mcp_streaming_response_context *context,
   if (cai_mcp_sse_line_is_blank(line, len)) {
     if (context->data_started &&
         (context->event[0] == '\0' || strcmp(context->event, "message") == 0)) {
-      context->done = 1;
+      context->event[0] = '\0';
     } else {
       context->event[0] = '\0';
-      context->data_started = 0;
     }
     return 0;
   }

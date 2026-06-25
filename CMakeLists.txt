@@ -915,6 +915,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_send_request_writes_chunked_result
     mcp_streamable_http_writes_result_one_byte_chunks
     mcp_streamable_http_writes_sse_result_one_byte_chunks
+    mcp_streamable_http_writes_sse_result_after_notification
     mcp_streamable_http_writes_sse_result_after_empty_data_event
     mcp_streamable_http_result_sink_failure
     mcp_streamable_http_json_error_result_not_written
