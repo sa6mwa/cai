@@ -1754,7 +1754,8 @@ cai_mcp_streaming_sse_write(cai_mcp_streaming_response_context *context,
       if (context->line.length == 5U &&
           memcmp(context->line.data, "data:", 5U) == 0) {
         context->data_line_active = 1;
-        context->data_line_streaming = strcmp(context->event, "message") == 0;
+        context->data_line_streaming =
+            context->event[0] == '\0' || strcmp(context->event, "message") == 0;
         context->data_line_skip_space = 1;
         context->data_line_pending_cr = 0;
         context->data_line_pending_newline =
