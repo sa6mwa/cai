@@ -7757,6 +7757,80 @@ static int cai_mcp_dispatch_streamed_notification(
   return rc;
 }
 
+static int cai_mcp_handle_streamed_server_request(
+    cai_mcp_streamable_http_client_impl *impl,
+    const cai_buffer_builder *id_json, const cai_buffer_builder *method_json,
+    const cai_buffer_builder *params_json, cai_error *error) {
+  cai_mcp_jsonrpc_message_doc doc;
+  lonejson_spooled data;
+  int rc;
+
+  if (id_json == NULL || id_json->data == NULL || id_json->length == 0U ||
+      method_json == NULL || method_json->data == NULL ||
+      method_json->length == 0U) {
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP JSON-RPC server request id and method are required");
+  }
+  memset(&data, 0, sizeof(data));
+  CAI_LJ->spooled_init(CAI_LJ, &data);
+  rc = cai_mcp_write_cstr(&data, "{\"jsonrpc\":\"2.0\",\"id\":", error);
+  if (rc == CAI_OK) {
+    rc = cai_mcp_spooled_append_bytes(&data, id_json->data, id_json->length,
+                                      "failed to build MCP server request",
+                                      error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(&data, ",\"method\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_spooled_append_bytes(
+        &data, method_json->data, method_json->length,
+        "failed to build MCP server request", error);
+  }
+  if (rc == CAI_OK && params_json != NULL && params_json->data != NULL &&
+      params_json->length != 0U) {
+    rc = cai_mcp_write_cstr(&data, ",\"params\":", error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_spooled_append_bytes(
+          &data, params_json->data, params_json->length,
+          "failed to build MCP server request", error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_write_cstr(&data, "}", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_parse_sse_message(&data, &doc, error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_handle_server_request(impl, &doc, error);
+      CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_message_map, &doc);
+    }
+  }
+  cai_mcp_spooled_cleanup_if_initialized(&data);
+  return rc;
+}
+
+static int
+cai_mcp_streamed_id_matches_request(const cai_buffer_builder *id_json,
+                                    long long request_id, cai_error *error) {
+  char expected_id[32];
+  size_t expected_len;
+
+  if (id_json == NULL || id_json->data == NULL || id_json->length == 0U) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC was missing id");
+  }
+  snprintf(expected_id, sizeof(expected_id), "%lld", request_id);
+  expected_len = strlen(expected_id);
+  if (id_json->length != expected_len ||
+      memcmp(id_json->data, expected_id, expected_len) != 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC response id did not match request id");
+  }
+  return CAI_OK;
+}
+
 static int cai_mcp_parse_streamed_result_response(
     cai_mcp_streamable_http_client_impl *impl,
     lonejson_read_result (*read_fn)(void *, unsigned char *, size_t),
@@ -7770,7 +7844,6 @@ static int cai_mcp_parse_streamed_result_response(
   cai_buffer_builder params_json;
   lonejson_error json_error;
   lonejson_status json_status;
-  char expected_id[32];
   char key[64];
   int has_id;
   int has_result;
@@ -7834,15 +7907,6 @@ static int cai_mcp_parse_streamed_result_response(
     if (strcmp(key, "id") == 0) {
       rc = cai_mcp_stream_value(&reader, NULL, &id_json, NULL, error);
       has_id = rc == CAI_OK;
-      if (rc == CAI_OK) {
-        snprintf(expected_id, sizeof(expected_id), "%lld", request_id);
-        rc = cai_buffer_append(&id_json, "", 1U, error);
-        if (rc == CAI_OK && strcmp(id_json.data, expected_id) != 0) {
-          rc = cai_set_error(
-              error, CAI_ERR_PROTOCOL,
-              "MCP JSON-RPC response id did not match request id");
-        }
-      }
     } else if (strcmp(key, "method") == 0) {
       rc = cai_mcp_stream_value(&reader, NULL, &method_json, NULL, error);
       has_method = rc == CAI_OK;
@@ -7858,6 +7922,12 @@ static int cai_mcp_parse_streamed_result_response(
                            "MCP JSON-RPC response must include exactly one of "
                            "result or error");
         break;
+      }
+      if (has_id && !has_method) {
+        rc = cai_mcp_streamed_id_matches_request(&id_json, request_id, error);
+        if (rc != CAI_OK) {
+          break;
+        }
       }
       rc = cai_mcp_stream_skip_ws(&reader, &ch, error);
       if (rc <= 0) {
@@ -7906,9 +7976,15 @@ static int cai_mcp_parse_streamed_result_response(
     }
   }
   if (rc == CAI_OK && has_result == has_error) {
-    if (has_method && !has_id && !has_result && !has_error) {
-      rc = cai_mcp_dispatch_streamed_notification(
-          impl, &method_json, has_params ? &params_json : NULL, error);
+    if (has_method && !has_result && !has_error) {
+      if (has_id) {
+        rc = cai_mcp_handle_streamed_server_request(
+            impl, &id_json, &method_json, has_params ? &params_json : NULL,
+            error);
+      } else {
+        rc = cai_mcp_dispatch_streamed_notification(
+            impl, &method_json, has_params ? &params_json : NULL, error);
+      }
       cai_free_mem(NULL, id_json.data);
       cai_free_mem(NULL, error_json.data);
       cai_free_mem(NULL, method_json.data);
@@ -7947,6 +8023,9 @@ static int cai_mcp_parse_streamed_result_response(
   }
   if (rc == CAI_OK && !has_id) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL, "MCP JSON-RPC was missing id");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_streamed_id_matches_request(&id_json, request_id, error);
   }
   if (rc == CAI_OK && closed) {
     rc = cai_mcp_stream_skip_ws(&reader, &ch, error);
