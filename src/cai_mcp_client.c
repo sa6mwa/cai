@@ -239,9 +239,16 @@ typedef struct cai_mcp_result_sink_context {
   size_t bytes_written;
 } cai_mcp_result_sink_context;
 
+typedef struct cai_mcp_sse_resume_state {
+  char *last_event_id;
+  long retry_ms;
+  int has_retry;
+} cai_mcp_sse_resume_state;
+
 typedef struct cai_mcp_streaming_response_context {
   cai_mcp_http_response_capture *response;
   cai_buffer_builder line;
+  cai_mcp_sse_resume_state resume;
   int write_fd;
   int rc;
   char event[64];
@@ -258,17 +265,15 @@ typedef struct cai_mcp_streaming_post_context {
   const lonejson_spooled *request;
   size_t request_len;
   cai_mcp_http_response_capture *response;
+  const char *last_event_id;
+  char *next_last_event_id;
+  long next_retry_ms;
   int write_fd;
   int is_request;
+  int has_next_retry;
   CURLcode curl_rc;
   int rc;
 } cai_mcp_streaming_post_context;
-
-typedef struct cai_mcp_sse_resume_state {
-  char *last_event_id;
-  long retry_ms;
-  int has_retry;
-} cai_mcp_sse_resume_state;
 
 typedef struct cai_mcp_spooled_upload {
   lonejson_spooled cursor;
@@ -634,6 +639,11 @@ static int cai_mcp_write_json_string(lonejson_spooled *spool, const char *text,
 static int cai_mcp_sse_line_is_blank(const char *line, size_t len);
 static void cai_mcp_sse_set_event(char *event, size_t event_size,
                                   const char *value, size_t len);
+static int cai_mcp_sse_set_last_event_id(char **last_event_id,
+                                         const char *value, size_t len,
+                                         cai_error *error);
+static void cai_mcp_sse_set_retry(cai_mcp_sse_resume_state *resume,
+                                  const char *value, size_t len);
 static int
 cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
                                cai_mcp_http_response_capture *response,
@@ -641,6 +651,9 @@ cai_mcp_sse_normalize_response(cai_mcp_streamable_http_client_impl *impl,
 static int cai_mcp_get_resume_response(
     cai_mcp_streamable_http_client_impl *impl, const char *last_event_id,
     cai_mcp_http_response_capture *response, cai_error *error);
+static int cai_mcp_append_last_event_id_header(struct curl_slist **headers,
+                                               const char *last_event_id,
+                                               cai_error *error);
 #ifdef CAI_TESTING
 int cai_mcp_test_header_callback_unterminated(void);
 #endif
@@ -1527,6 +1540,14 @@ cai_mcp_streaming_sse_line(cai_mcp_streaming_response_context *context,
   if (len >= 6U && memcmp(line, "event:", 6U) == 0) {
     cai_mcp_sse_set_event(context->event, sizeof(context->event), line + 6U,
                           len - 6U);
+    return 0;
+  }
+  if (len >= 3U && memcmp(line, "id:", 3U) == 0) {
+    return cai_mcp_sse_set_last_event_id(&context->resume.last_event_id,
+                                         line + 3U, len - 3U, NULL);
+  }
+  if (len >= 6U && memcmp(line, "retry:", 6U) == 0) {
+    cai_mcp_sse_set_retry(&context->resume, line + 6U, len - 6U);
     return 0;
   }
   if (len < 5U || memcmp(line, "data:", 5U) != 0) {
@@ -2454,8 +2475,9 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   int rc;
 
   context = (cai_mcp_streaming_post_context *)user;
-  if (context == NULL || context->impl == NULL || context->request == NULL ||
-      context->response == NULL || context->write_fd < 0) {
+  if (context == NULL || context->impl == NULL || context->response == NULL ||
+      context->write_fd < 0 ||
+      (context->request == NULL && context->last_event_id == NULL)) {
     if (context != NULL) {
       context->rc = CAI_ERR_INVALID;
       if (context->write_fd >= 0) {
@@ -2474,13 +2496,22 @@ static void *cai_mcp_streaming_post_thread(void *user) {
     context->write_fd = -1;
     return NULL;
   }
-  rc = cai_append_header(&headers, "Content-Type: application/json", NULL);
-  if (rc == CAI_OK) {
+  rc = CAI_OK;
+  if (context->request != NULL) {
+    rc = cai_append_header(&headers, "Content-Type: application/json", NULL);
+  }
+  if (rc == CAI_OK && context->request != NULL) {
     rc = cai_append_header(&headers,
                            "Accept: application/json, text/event-stream", NULL);
+  } else if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Accept: text/event-stream", NULL);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_append_session_headers(context->impl, &headers, NULL);
+  }
+  if (rc == CAI_OK && context->last_event_id != NULL) {
+    rc = cai_mcp_append_last_event_id_header(&headers, context->last_event_id,
+                                             NULL);
   }
   if (rc != CAI_OK) {
     context->rc = rc;
@@ -2495,7 +2526,10 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   context->response->session_id = NULL;
   context->response->status = 0L;
   memset(&context->response->body, 0, sizeof(context->response->body));
-  upload.cursor = *context->request;
+  memset(&upload, 0, sizeof(upload));
+  if (context->request != NULL) {
+    upload.cursor = *context->request;
+  }
   upload.rewound = 0;
   memset(&write_context, 0, sizeof(write_context));
   write_context.response = context->response;
@@ -2505,11 +2539,15 @@ static void *cai_mcp_streaming_post_thread(void *user) {
 
   curl_easy_setopt(curl, CURLOPT_URL, context->impl->url);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl, CURLOPT_POST, 1L);
-  curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_mcp_upload_read);
-  curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
-                   (curl_off_t)context->request_len);
+  if (context->request != NULL) {
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_mcp_upload_read);
+    curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                     (curl_off_t)context->request_len);
+  } else {
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+  }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
                    cai_mcp_streaming_response_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_context);
@@ -2519,7 +2557,8 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, context->impl->timeout_ms);
   cai_configure_curl_tls(curl, context->impl->insecure_skip_verify,
                          context->impl->ca_bundle_path, context->impl->ca_path);
-  cai_mcp_log_http_request_start(context->impl, "POST", 1,
+  cai_mcp_log_http_request_start(context->impl,
+                                 context->request != NULL ? "POST" : "GET", 1,
                                  context->request_len);
   context->curl_rc = curl_easy_perform(curl);
   if (context->curl_rc == CURLE_OK && write_context.rc == 0 &&
@@ -2529,11 +2568,15 @@ static void *cai_mcp_streaming_post_thread(void *user) {
         &write_context, write_context.line.data, write_context.line.length);
   }
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &context->response->status);
-  cai_mcp_log_http_request_done(context->impl, "POST",
+  cai_mcp_log_http_request_done(context->impl,
+                                context->request != NULL ? "POST" : "GET",
                                 context->response->status, 1);
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   cai_free_mem(NULL, write_context.line.data);
+  context->next_last_event_id = write_context.resume.last_event_id;
+  context->next_retry_ms = write_context.resume.retry_ms;
+  context->has_next_retry = write_context.resume.has_retry;
   close(context->write_fd);
   context->write_fd = -1;
   if (context->curl_rc != CURLE_OK) {
@@ -7831,25 +7874,41 @@ cai_mcp_streamed_id_matches_request(const cai_buffer_builder *id_json,
   return CAI_OK;
 }
 
+static int
+cai_mcp_streamed_jsonrpc_is_valid(const cai_buffer_builder *jsonrpc_json,
+                                  cai_error *error) {
+  if (jsonrpc_json == NULL || jsonrpc_json->data == NULL ||
+      jsonrpc_json->length != 5U ||
+      memcmp(jsonrpc_json->data, "\"2.0\"", 5U) != 0) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP JSON-RPC version must be 2.0");
+  }
+  return CAI_OK;
+}
+
 static int cai_mcp_parse_streamed_result_response(
     cai_mcp_streamable_http_client_impl *impl,
     lonejson_read_result (*read_fn)(void *, unsigned char *, size_t),
     void *read_user, long long request_id, int require_result_object,
-    cai_sink *output, cai_error *error) {
+    cai_sink *output, int *result_seen, cai_error *error) {
   cai_mcp_stream_char_reader reader;
   cai_mcp_jsonrpc_error_doc error_doc;
+  cai_buffer_builder jsonrpc_json;
   cai_buffer_builder id_json;
   cai_buffer_builder error_json;
   cai_buffer_builder method_json;
   cai_buffer_builder params_json;
+  cai_buffer_builder result_json;
   lonejson_error json_error;
   lonejson_status json_status;
   char key[64];
+  int has_jsonrpc;
   int has_id;
   int has_result;
   int has_error;
   int has_method;
   int has_params;
+  int result_streamed;
   int closed;
   int ch;
   int rc;
@@ -7859,17 +7918,21 @@ static int cai_mcp_parse_streamed_result_response(
                          "MCP streamed response reader and sink are required");
   }
   memset(&reader, 0, sizeof(reader));
+  memset(&jsonrpc_json, 0, sizeof(jsonrpc_json));
   memset(&id_json, 0, sizeof(id_json));
   memset(&error_json, 0, sizeof(error_json));
   memset(&method_json, 0, sizeof(method_json));
   memset(&params_json, 0, sizeof(params_json));
+  memset(&result_json, 0, sizeof(result_json));
   reader.read_fn = read_fn;
   reader.read_user = read_user;
+  has_jsonrpc = 0;
   has_id = 0;
   has_result = 0;
   has_error = 0;
   has_method = 0;
   has_params = 0;
+  result_streamed = 0;
   closed = 0;
   rc = CAI_OK;
   rc = cai_mcp_stream_skip_ws(&reader, &ch, error);
@@ -7904,10 +7967,18 @@ static int cai_mcp_parse_streamed_result_response(
                          "failed to parse MCP JSON-RPC response");
       break;
     }
-    if (strcmp(key, "id") == 0) {
+    if (strcmp(key, "jsonrpc") == 0) {
+      rc = cai_mcp_stream_value(&reader, NULL, &jsonrpc_json, NULL, error);
+      has_jsonrpc = rc == CAI_OK;
+    } else if (strcmp(key, "id") == 0) {
       rc = cai_mcp_stream_value(&reader, NULL, &id_json, NULL, error);
       has_id = rc == CAI_OK;
     } else if (strcmp(key, "method") == 0) {
+      if (has_result || has_error) {
+        rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP JSON-RPC response must not include method");
+        break;
+      }
       rc = cai_mcp_stream_value(&reader, NULL, &method_json, NULL, error);
       has_method = rc == CAI_OK;
     } else if (strcmp(key, "params") == 0) {
@@ -7923,7 +7994,21 @@ static int cai_mcp_parse_streamed_result_response(
                            "result or error");
         break;
       }
-      if (has_id && !has_method) {
+      if (has_method) {
+        rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP JSON-RPC response must not include method");
+        break;
+      }
+      if (result_seen != NULL) {
+        *result_seen = 1;
+      }
+      if (has_jsonrpc) {
+        rc = cai_mcp_streamed_jsonrpc_is_valid(&jsonrpc_json, error);
+        if (rc != CAI_OK) {
+          break;
+        }
+      }
+      if (has_id && has_jsonrpc) {
         rc = cai_mcp_streamed_id_matches_request(&id_json, request_id, error);
         if (rc != CAI_OK) {
           break;
@@ -7941,8 +8026,16 @@ static int cai_mcp_parse_streamed_result_response(
         break;
       }
       cai_mcp_stream_unread_char(&reader, ch);
-      rc = cai_mcp_stream_value(&reader, output, NULL, &bytes_written, error);
-      has_result = rc == CAI_OK && bytes_written > 0U;
+      if (has_id && has_jsonrpc) {
+        rc = cai_mcp_stream_value(&reader, output, NULL, &bytes_written, error);
+        result_streamed = rc == CAI_OK;
+        has_result = rc == CAI_OK && bytes_written > 0U;
+      } else {
+        rc = cai_mcp_stream_value(&reader, NULL, &result_json, &bytes_written,
+                                  error);
+        (void)bytes_written;
+        has_result = rc == CAI_OK && result_json.length > 0U;
+      }
     } else if (strcmp(key, "error") == 0) {
       if (has_result) {
         rc = cai_set_error(error, CAI_ERR_PROTOCOL,
@@ -7985,20 +8078,25 @@ static int cai_mcp_parse_streamed_result_response(
         rc = cai_mcp_dispatch_streamed_notification(
             impl, &method_json, has_params ? &params_json : NULL, error);
       }
+      cai_free_mem(NULL, jsonrpc_json.data);
       cai_free_mem(NULL, id_json.data);
       cai_free_mem(NULL, error_json.data);
       cai_free_mem(NULL, method_json.data);
       cai_free_mem(NULL, params_json.data);
+      cai_free_mem(NULL, result_json.data);
       if (rc != CAI_OK) {
         return rc;
       }
       return cai_mcp_parse_streamed_result_response(
           impl, read_fn, read_user, request_id, require_result_object, output,
-          error);
+          result_seen, error);
     }
     rc = cai_set_error(
         error, CAI_ERR_PROTOCOL,
         "MCP JSON-RPC response must include exactly one of result or error");
+  }
+  if (rc == CAI_OK && has_jsonrpc) {
+    rc = cai_mcp_streamed_jsonrpc_is_valid(&jsonrpc_json, error);
   }
   if (rc == CAI_OK && has_error) {
     memset(&error_doc, 0, sizeof(error_doc));
@@ -8021,6 +8119,13 @@ static int cai_mcp_parse_streamed_result_response(
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP JSON-RPC response was missing result");
   }
+  if (rc == CAI_OK && !has_jsonrpc) {
+    rc = cai_mcp_streamed_jsonrpc_is_valid(&jsonrpc_json, error);
+  }
+  if (rc == CAI_OK && has_method) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "MCP JSON-RPC response must not include method");
+  }
   if (rc == CAI_OK && !has_id) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL, "MCP JSON-RPC was missing id");
   }
@@ -8036,10 +8141,16 @@ static int cai_mcp_parse_streamed_result_response(
       rc = CAI_OK;
     }
   }
+  if (rc == CAI_OK && !result_streamed && output != NULL &&
+      result_json.data != NULL && result_json.length != 0U) {
+    rc = cai_sink_write(output, result_json.data, result_json.length, error);
+  }
+  cai_free_mem(NULL, jsonrpc_json.data);
   cai_free_mem(NULL, id_json.data);
   cai_free_mem(NULL, error_json.data);
   cai_free_mem(NULL, method_json.data);
   cai_free_mem(NULL, params_json.data);
+  cai_free_mem(NULL, result_json.data);
   return rc;
 }
 
@@ -8341,6 +8452,8 @@ static int cai_mcp_stream_request_result_once(
   long long request_id;
   int fds[2];
   int thread_started;
+  int result_seen;
+  int resume_attempted;
   int rc;
 
   if (impl == NULL || request == NULL || response == NULL || output == NULL) {
@@ -8366,6 +8479,8 @@ static int cai_mcp_stream_request_result_once(
   context.is_request = 1;
   context.rc = CAI_OK;
   thread_started = 0;
+  result_seen = 0;
+  resume_attempted = 0;
   impl->active_request_id = request_id;
   impl->has_active_request = 1;
   impl->has_active_progress = 0;
@@ -8383,7 +8498,7 @@ static int cai_mcp_stream_request_result_once(
   reader.fd = fds[0];
   rc = cai_mcp_parse_streamed_result_response(impl, cai_mcp_pipe_read, &reader,
                                               request_id, require_result_object,
-                                              output, error);
+                                              output, &result_seen, error);
   if (rc != CAI_OK) {
     cai_mcp_drain_fd(fds[0]);
   }
@@ -8391,13 +8506,65 @@ static int cai_mcp_stream_request_result_once(
   if (thread_started) {
     pthread_join(thread, NULL);
   }
+  while (rc != CAI_OK && !result_seen && context.rc == CAI_OK &&
+         response->status >= 200L && response->status < 300L &&
+         cai_mcp_response_is_sse(response) &&
+         context.next_last_event_id != NULL &&
+         context.next_last_event_id[0] != '\0' && !resume_attempted) {
+    char *resume_event_id;
+    long retry_ms;
+    int has_retry;
+
+    resume_event_id = context.next_last_event_id;
+    retry_ms = context.next_retry_ms;
+    has_retry = context.has_next_retry;
+    context.next_last_event_id = NULL;
+    resume_attempted = 1;
+    cai_mcp_clear_error(error);
+    if (has_retry) {
+      cai_mcp_sleep_ms(retry_ms);
+    }
+    cai_mcp_http_response_capture_cleanup(response);
+    if (pipe(fds) != 0) {
+      cai_free_mem(NULL, resume_event_id);
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to create MCP streaming pipe");
+      break;
+    }
+    memset(&context, 0, sizeof(context));
+    context.impl = impl;
+    context.response = response;
+    context.last_event_id = resume_event_id;
+    context.write_fd = fds[1];
+    context.is_request = 1;
+    context.rc = CAI_OK;
+    if (pthread_create(&thread, NULL, cai_mcp_streaming_post_thread,
+                       &context) != 0) {
+      close(fds[0]);
+      close(fds[1]);
+      cai_free_mem(NULL, resume_event_id);
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to start MCP streaming resume request");
+      break;
+    }
+    reader.fd = fds[0];
+    rc = cai_mcp_parse_streamed_result_response(
+        impl, cai_mcp_pipe_read, &reader, request_id, require_result_object,
+        output, &result_seen, error);
+    if (rc != CAI_OK) {
+      cai_mcp_drain_fd(fds[0]);
+    }
+    close(fds[0]);
+    pthread_join(thread, NULL);
+    cai_free_mem(NULL, resume_event_id);
+  }
   impl->has_active_request = 0;
   impl->has_active_progress = 0;
   if (rc == CAI_OK && context.rc != CAI_OK) {
-    cai_mcp_log_http_transport_error(impl, "POST",
-                                     context.curl_rc != CURLE_OK
-                                         ? curl_easy_strerror(context.curl_rc)
-                                         : "streaming write failed");
+    cai_mcp_log_http_transport_error(
+        impl, context.request != NULL ? "POST" : "GET",
+        context.curl_rc != CURLE_OK ? curl_easy_strerror(context.curl_rc)
+                                    : "streaming write failed");
     rc = cai_set_error_detail(
         error, CAI_ERR_TRANSPORT, "MCP HTTP request failed",
         context.curl_rc != CURLE_OK ? curl_easy_strerror(context.curl_rc)
@@ -8410,6 +8577,7 @@ static int cai_mcp_stream_request_result_once(
   if (rc == CAI_OK) {
     rc = cai_mcp_response_ok(response, error);
   }
+  cai_free_mem(NULL, context.next_last_event_id);
   return rc;
 }
 

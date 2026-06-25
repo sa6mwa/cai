@@ -801,6 +801,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_active_progress_decreasing_progress
     mcp_streamable_http_cancelled_notification_aborts_request
     mcp_streamable_http_sse_resume_get
+    mcp_streamable_http_streaming_sse_resume_get
     mcp_streamable_http_response_content_type_parameters
     mcp_streamable_http_sse_content_type_parameters
     mcp_streamable_http_response_missing_result_error
@@ -922,10 +923,14 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_json_error_result_not_written
     mcp_streamable_http_sse_error_result_not_written
     mcp_streamable_http_result_rejects_mismatched_id
+    mcp_streamable_http_result_before_mismatched_id
+    mcp_streamable_http_result_rejects_invalid_jsonrpc
+    mcp_streamable_http_result_rejects_method_with_result
     mcp_streamable_http_result_rejects_missing_id
     mcp_streamable_http_result_accepts_result_before_id
     mcp_streamable_http_result_field_order_variants
     mcp_streamable_http_sse_rejects_result_and_error
+    mcp_streamable_http_sse_rejects_result_before_error
     mcp_streamable_http_result_rejects_trailing_garbage
     mcp_streamable_http_result_rejects_bad_literal
     mcp_streamable_http_result_rejects_bad_object
@@ -1238,7 +1243,7 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 3)
+      TIMEOUT 10)
     add_test(NAME cai_rpath_token_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"

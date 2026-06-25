@@ -678,10 +678,12 @@ so callers must keep the MCP client alive for as long as those registered tools
 can run.
 
 Result-producing MCP client methods stream the JSON-RPC `result` value to the
-caller sink as it is parsed from JSON or SSE response chunks. The streamed path
-still validates the JSON-RPC envelope before accepting a result: ids must
-match, exactly one of `result` or `error` must be present, server errors do not
-write partial result JSON, and trailing non-whitespace bytes are rejected.
+caller sink as it is parsed from JSON or SSE response chunks once the response
+id has been validated. Server notifications and requests that arrive before
+the final response are handled before result streaming starts. Invalid
+pre-result envelopes and server errors do not write partial result JSON;
+invalid data after streamed result bytes can still make the call fail after
+the sink has observed those bytes.
 
 Security fuzzing is available as an opt-in Clang/libFuzzer build:
 

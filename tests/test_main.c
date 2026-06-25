@@ -8453,6 +8453,7 @@ static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
                                      int empty_sse_prelude,
                                      int preliminary_sse_notification,
                                      int preliminary_sse_server_request,
+                                     int wait_for_stream_signal,
                                      test_mcp_streaming_operation operation) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -8680,10 +8681,12 @@ static void mock_streaming_mcp_child(int pipe_fd, int signal_fd,
         }
         close(response_fd);
       }
-      if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
-          read(signal_fd, &signal_byte, 1U) != 1) {
-        close(client_fd);
-        _exit(14);
+      if (wait_for_stream_signal) {
+        if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
+            read(signal_fd, &signal_byte, 1U) != 1) {
+          close(client_fd);
+          _exit(14);
+        }
       }
       if (mock_write_chunked_cstr(client_fd, second_chunk, one_byte_chunks) !=
               0 ||
@@ -8704,7 +8707,7 @@ static int http_mock_server_open_streaming_mcp_ex(
     test_state *state, const char *name, http_mock_server *server,
     int *signal_write_fd, int sse_response, int one_byte_chunks,
     int empty_sse_prelude, int preliminary_sse_notification,
-    int preliminary_sse_server_request,
+    int preliminary_sse_server_request, int wait_for_stream_signal,
     test_mcp_streaming_operation operation) {
   int pipe_fds[2];
   int signal_fds[2];
@@ -8737,10 +8740,10 @@ static int http_mock_server_open_streaming_mcp_ex(
   if (server->pid == 0) {
     close(pipe_fds[0]);
     close(signal_fds[1]);
-    mock_streaming_mcp_child(pipe_fds[1], signal_fds[0], sse_response,
-                             one_byte_chunks, empty_sse_prelude,
-                             preliminary_sse_notification,
-                             preliminary_sse_server_request, operation);
+    mock_streaming_mcp_child(
+        pipe_fds[1], signal_fds[0], sse_response, one_byte_chunks,
+        empty_sse_prelude, preliminary_sse_notification,
+        preliminary_sse_server_request, wait_for_stream_signal, operation);
   }
   close(pipe_fds[1]);
   close(signal_fds[0]);
@@ -8755,7 +8758,7 @@ static int http_mock_server_open_streaming_mcp_ex(
   close(pipe_fds[0]);
   snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
            port);
-  if (signal_write_fd != NULL) {
+  if (signal_write_fd != NULL && wait_for_stream_signal) {
     *signal_write_fd = signal_fds[1];
   } else {
     close(signal_fds[1]);
@@ -12066,6 +12069,103 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_streaming_sse_resume_get(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char interrupted_call_body[] =
+      "event: message\n"
+      "id: stream-resume-1\n"
+      "retry: 37\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"params\":{\"level\":\"info\",\"data\":\"before resume\"}}\n\n";
+  static const char resumed_call_body[] =
+      "event: message\n"
+      "id: stream-resume-2\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"resumed\"}],\"isError\":false}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
+      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+  static const char *resume_required[] = {
+      "GET /v1/mcp HTTP/", "Accept: text/event-stream",
+      "MCP-Session-Id: streaming-resume-session",
+      "Last-Event-ID: stream-resume-1"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: streaming-resume-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, interrupted_call_body},
+      {"GET /v1/mcp HTTP/", resume_required,
+       sizeof(resume_required) / sizeof(resume_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, resumed_call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_stream_sse_resume",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_stream_sse_resume_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_stream_sse_resume_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  test_mcp_sleep_start_capture();
+  expect_int(state, "mcp_streamable_stream_sse_resume_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state, "mcp_streamable_stream_sse_resume_retry_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state, "mcp_streamable_stream_sse_resume_retry_sleep_ms",
+             g_mcp_test_sleep_last_ms, 37L);
+  expect_str(state, "mcp_streamable_stream_sse_resume_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"resumed\"}],"
+             "\"isError\":false}");
+  test_mcp_sleep_reset();
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_stream_sse_resume", server.pid,
+                    &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_response_content_type_parameters(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -13745,19 +13845,19 @@ test_mcp_streamable_http_tool_call_array_structured_content(test_state *state) {
 static void
 test_mcp_streamable_http_result_field_order_variants(test_state *state) {
   static const char tool_response[] =
-      "{\"jsonrpc\":\"2.0\",\"result\":{\"isError\":false,\"content\":[{"
-      "\"text\":\"ordered tool\",\"type\":\"text\"}]},\"id\":2}";
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"isError\":false,"
+      "\"content\":[{\"text\":\"ordered tool\",\"type\":\"text\"}]}}";
   static const char resource_response[] =
-      "{\"jsonrpc\":\"2.0\",\"result\":{\"contents\":[{\"text\":\"ordered "
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"text\":"
+      "\"ordered "
       "resource\",\"mimeType\":\"text/plain\",\"uri\":\"resource://"
-      "ordered\"}]},"
-      "\"id\":2}";
+      "ordered\"}]}}";
   static const char prompt_response[] =
-      "{\"jsonrpc\":\"2.0\",\"result\":{\"messages\":[{\"content\":{\"text\":"
-      "\"ordered prompt\",\"type\":\"text\"},\"role\":\"user\"}]},\"id\":2}";
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"content\":{"
+      "\"text\":\"ordered prompt\",\"type\":\"text\"},\"role\":\"user\"}]}}";
   static const char completion_response[] =
-      "{\"jsonrpc\":\"2.0\",\"result\":{\"completion\":{\"hasMore\":false,"
-      "\"total\":1,\"values\":[\"ordered-completion\"]}},\"id\":2}";
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"hasMore\":"
+      "false,\"total\":1,\"values\":[\"ordered-completion\"]}}}";
 
   test_mcp_streamable_http_valid_result_response(
       state, "mcp_streamable_result_order_tool_call", TEST_MCP_RESULT_TOOL_CALL,
@@ -14764,7 +14864,7 @@ static void run_mcp_streamable_http_chunked_result_write_test_ex(
   cai_error_init(&error);
   if (http_mock_server_open_streaming_mcp_ex(
           state, test_name, &server, &signal_fd, sse_response, one_byte_chunks,
-          0, preliminary_sse_notification, preliminary_sse_server_request,
+          0, preliminary_sse_notification, preliminary_sse_server_request, 0,
           operation) != 0) {
     cai_error_cleanup(&error);
     return;
@@ -14895,7 +14995,7 @@ static void test_mcp_streamable_http_writes_sse_result_after_empty_data_event(
   cai_error_init(&error);
   if (http_mock_server_open_streaming_mcp_ex(
           state, "mcp_streamable_tool_call_sse_empty_data_prelude_mock",
-          &server, &signal_fd, 1, 0, 1, 0, 0,
+          &server, &signal_fd, 1, 0, 1, 0, 0, 0,
           TEST_MCP_STREAMING_TOOL_CALL) != 0) {
     cai_error_cleanup(&error);
     return;
@@ -15237,13 +15337,46 @@ test_mcp_streamable_http_result_rejects_mismatched_id(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_result_before_mismatched_id(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"must not stream\"}],\"isError\":false},\"id\":99}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_before_mismatched_id",
+      "application/json", body,
+      "MCP JSON-RPC response id did not match request id", NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_invalid_jsonrpc(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"1.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"must not stream\"}],\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_invalid_jsonrpc", "application/json",
+      body, "MCP JSON-RPC version must be 2.0", NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_method_with_result(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"must not stream\"}],"
+      "\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_method_with_result",
+      "application/json", body, "MCP JSON-RPC response must not include method",
+      NULL, 1);
+}
+
+static void
 test_mcp_streamable_http_result_rejects_missing_id(test_state *state) {
   static const char body[] =
       "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
       "\"text\":\"chunked\"}],\"isError\":false}}";
   run_mcp_streamable_http_result_envelope_validation_test(
       state, "mcp_streamable_http_result_missing_id", "application/json", body,
-      "MCP JSON-RPC was missing id", NULL, 0);
+      "MCP JSON-RPC was missing id", NULL, 1);
 }
 
 static void
@@ -15274,13 +15407,27 @@ test_mcp_streamable_http_sse_rejects_result_and_error(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_sse_rejects_result_before_error(test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"must not stream\"}],"
+      "\"isError\":false},\"error\":{\"code\":-32000,\"message\":\"bad\"},"
+      "\"id\":2}\n\n";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_sse_result_before_error", "text/event-stream",
+      body, "MCP JSON-RPC response must include exactly one of result or error",
+      NULL, 1);
+}
+
+static void
 test_mcp_streamable_http_result_rejects_trailing_garbage(test_state *state) {
   static const char body[] =
-      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
-      "\"text\",\"text\":\"chunked\"}],\"isError\":false}}garbage";
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"must not stream\"}],\"isError\":false},\"id\":2}garbage";
   run_mcp_streamable_http_result_envelope_validation_test(
       state, "mcp_streamable_http_result_trailing_garbage", "application/json",
-      body, "failed to parse MCP JSON-RPC response", NULL, 0);
+      body, "failed to parse MCP JSON-RPC response", NULL, 1);
 }
 
 static void run_mcp_streamable_http_invalid_result_json_test(
@@ -30176,6 +30323,8 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_cancelled_notification_aborts_request},
     {"mcp_streamable_http_sse_resume_get",
      test_mcp_streamable_http_sse_resume_get},
+    {"mcp_streamable_http_streaming_sse_resume_get",
+     test_mcp_streamable_http_streaming_sse_resume_get},
     {"mcp_streamable_http_response_content_type_parameters",
      test_mcp_streamable_http_response_content_type_parameters},
     {"mcp_streamable_http_sse_content_type_parameters",
@@ -30422,12 +30571,20 @@ static const test_entry test_entries[] = {
      test_mcp_streamable_http_sse_error_result_not_written},
     {"mcp_streamable_http_result_rejects_mismatched_id",
      test_mcp_streamable_http_result_rejects_mismatched_id},
+    {"mcp_streamable_http_result_before_mismatched_id",
+     test_mcp_streamable_http_result_before_mismatched_id},
+    {"mcp_streamable_http_result_rejects_invalid_jsonrpc",
+     test_mcp_streamable_http_result_rejects_invalid_jsonrpc},
+    {"mcp_streamable_http_result_rejects_method_with_result",
+     test_mcp_streamable_http_result_rejects_method_with_result},
     {"mcp_streamable_http_result_rejects_missing_id",
      test_mcp_streamable_http_result_rejects_missing_id},
     {"mcp_streamable_http_result_accepts_result_before_id",
      test_mcp_streamable_http_result_accepts_result_before_id},
     {"mcp_streamable_http_sse_rejects_result_and_error",
      test_mcp_streamable_http_sse_rejects_result_and_error},
+    {"mcp_streamable_http_sse_rejects_result_before_error",
+     test_mcp_streamable_http_sse_rejects_result_before_error},
     {"mcp_streamable_http_result_rejects_trailing_garbage",
      test_mcp_streamable_http_result_rejects_trailing_garbage},
     {"mcp_streamable_http_result_rejects_bad_literal",
