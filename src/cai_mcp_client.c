@@ -1466,6 +1466,19 @@ static size_t cai_mcp_upload_read(char *ptr, size_t size, size_t nmemb,
   return result.bytes_read;
 }
 
+static void
+cai_mcp_configure_curl_common(CURL *curl,
+                              const cai_mcp_streamable_http_client_impl *impl) {
+  if (curl == NULL || impl == NULL) {
+    return;
+  }
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
+  cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
+                         impl->ca_path);
+}
+
 static lonejson_read_result
 cai_mcp_spooled_read(void *user, unsigned char *buffer, size_t capacity) {
   cai_mcp_spooled_reader *reader;
@@ -2525,10 +2538,7 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_context);
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, response);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
-  cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
-                         impl->ca_path);
+  cai_mcp_configure_curl_common(curl, impl);
   cai_mcp_log_http_request_start(impl, "POST", 0, request_len);
   curl_rc = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status);
@@ -2660,10 +2670,7 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_context);
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, context->response);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, context->impl->timeout_ms);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, context->impl->timeout_ms);
-  cai_configure_curl_tls(curl, context->impl->insecure_skip_verify,
-                         context->impl->ca_bundle_path, context->impl->ca_path);
+  cai_mcp_configure_curl_common(curl, context->impl);
   cai_mcp_log_http_request_start(context->impl,
                                  context->request != NULL ? "POST" : "GET", 1,
                                  context->request_len);
@@ -2765,10 +2772,7 @@ static int cai_mcp_get_resume_response(
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_context);
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, response);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
-  cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
-                         impl->ca_path);
+  cai_mcp_configure_curl_common(curl, impl);
   cai_mcp_log_http_request_start(impl, "GET", 1, 0U);
   curl_rc = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status);
