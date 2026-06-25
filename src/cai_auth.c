@@ -1625,6 +1625,7 @@ int cai_chatgpt_login_open_browser_with_config(
       close(pipe_fds[1]);
       _exit(0);
     }
+    unsetenv("LD_PRELOAD");
     execlp(command, command, authorize_url, (char *)NULL);
     child_errno = errno;
     ignored_write = write(pipe_fds[1], &child_errno, sizeof(child_errno));

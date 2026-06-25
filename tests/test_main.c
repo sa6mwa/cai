@@ -19159,14 +19159,19 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
   char output_path[PATH_MAX];
   char script[PATH_MAX * 2];
   char command[64];
+  char expected_output[512];
   char *recorded;
+  char *original_ld_preload;
   FILE *fp;
   struct timespec delay;
   cai_chatgpt_login_browser_config config;
   cai_error error;
+  int had_ld_preload;
   int i;
 
   recorded = NULL;
+  original_ld_preload = NULL;
+  had_ld_preload = 0;
   script_path[0] = '\0';
   missing_path[0] = '\0';
   output_path[0] = '\0';
@@ -19196,7 +19201,8 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
   snprintf(missing_path, sizeof(missing_path), "%s/missing-browser",
            template_dir);
   snprintf(output_path, sizeof(output_path), "%s/url.txt", template_dir);
-  snprintf(script, sizeof(script), "#!/bin/sh\nprintf '%%s' \"$1\" > '%s'\n",
+  snprintf(script, sizeof(script),
+           "#!/bin/sh\nprintf '%%s\\n%%s' \"$1\" \"${LD_PRELOAD-}\" > '%s'\n",
            output_path);
   fp = fopen(script_path, "w");
   if (fp == NULL) {
@@ -19218,10 +19224,27 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   config.command = script_path;
+  if (getenv("LD_PRELOAD") != NULL) {
+    original_ld_preload = strdup(getenv("LD_PRELOAD"));
+    if (original_ld_preload == NULL) {
+      test_fail(state, "chatgpt_browser_ld_preload_copy", "strdup failed");
+      goto cleanup;
+    }
+    had_ld_preload = 1;
+  }
+  if (setenv("LD_PRELOAD", "/tmp/cai-test-asan-preload.so", 1) != 0) {
+    test_fail(state, "chatgpt_browser_ld_preload_set", "setenv failed");
+    goto cleanup;
+  }
   expect_int(
       state, "chatgpt_browser_custom_open",
       cai_chatgpt_login_open_browser_with_config(&config, test_url, &error),
       CAI_OK);
+  if (had_ld_preload) {
+    (void)setenv("LD_PRELOAD", original_ld_preload, 1);
+  } else {
+    unsetenv("LD_PRELOAD");
+  }
   delay.tv_sec = 0;
   delay.tv_nsec = 10000000L;
   for (i = 0; i < 100; i++) {
@@ -19235,9 +19258,16 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
     goto cleanup;
   }
   recorded = read_file_or_die(output_path);
-  expect_str(state, "chatgpt_browser_url_argument", recorded, test_url);
+  snprintf(expected_output, sizeof(expected_output), "%s\n", test_url);
+  expect_str(state, "chatgpt_browser_url_argument", recorded, expected_output);
 
 cleanup:
+  if (had_ld_preload) {
+    (void)setenv("LD_PRELOAD", original_ld_preload, 1);
+  } else {
+    unsetenv("LD_PRELOAD");
+  }
+  free(original_ld_preload);
   free(recorded);
   if (output_path[0] != '\0') {
     unlink(output_path);
