@@ -1736,7 +1736,7 @@ static void cai_mcp_stream_unread_char(cai_mcp_stream_char_reader *reader,
 static int cai_mcp_stream_skip_ws(cai_mcp_stream_char_reader *reader, int *out,
                                   cai_error *error) {
   int rc;
-  int ch;
+  int ch = 0;
 
   do {
     rc = cai_mcp_stream_read_char(reader, &ch, error);
@@ -1754,7 +1754,7 @@ static int cai_mcp_stream_read_string_key(cai_mcp_stream_char_reader *reader,
   size_t len;
   int escaped;
   int rc;
-  int ch;
+  int ch = 0;
 
   if (key == NULL || key_size == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID, "MCP JSON key is required");
@@ -1863,7 +1863,7 @@ static int cai_mcp_stream_read_emit(cai_mcp_stream_char_reader *reader,
                                     size_t *bytes_written, int *out,
                                     cai_error *error) {
   int rc;
-  int ch;
+  int ch = 0;
 
   rc = cai_mcp_stream_read_char(reader, &ch, error);
   if (rc <= 0) {
@@ -1883,7 +1883,7 @@ static int cai_mcp_stream_skip_ws_emit(cai_mcp_stream_char_reader *reader,
                                        size_t *bytes_written, int *out,
                                        cai_error *error) {
   int rc;
-  int ch;
+  int ch = 0;
 
   for (;;) {
     rc = cai_mcp_stream_read_emit(reader, sink, capture, bytes_written, &ch,
@@ -1904,7 +1904,7 @@ static int cai_mcp_stream_string_tail(cai_mcp_stream_char_reader *reader,
                                       size_t *bytes_written, cai_error *error) {
   int escaped;
   int rc;
-  int ch;
+  int ch = 0;
 
   escaped = 0;
   for (;;) {
@@ -1936,7 +1936,7 @@ static int cai_mcp_stream_value_inner(cai_mcp_stream_char_reader *reader,
   size_t primitive_len;
   int primitive_overflow;
   int rc;
-  int ch;
+  int ch = 0;
 
   if (depth > 64U) {
     return cai_set_error(error, CAI_ERR_PROTOCOL,
@@ -2313,8 +2313,8 @@ static int cai_mcp_request_id_i64(const lonejson_spooled *request,
                                   long long *out, cai_error *error) {
   cai_mcp_jsonrpc_id_doc doc;
   char *text;
-  char *end;
   long long value;
+  const char *cursor;
   int rc;
 
   if (out != NULL) {
@@ -2335,13 +2335,32 @@ static int cai_mcp_request_id_i64(const lonejson_spooled *request,
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to read MCP request id");
   }
-  errno = 0;
-  value = strtoll(text, &end, 10);
-  if (errno != 0 || end == text || *end != '\0') {
+  cursor = text;
+  value = 0LL;
+  if (*cursor == '\0') {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "MCP request id must be an integer");
   } else {
-    *out = value;
+    while (*cursor != '\0') {
+      int digit;
+
+      if (*cursor < '0' || *cursor > '9') {
+        rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP request id must be an integer");
+        break;
+      }
+      digit = *cursor - '0';
+      if (value > (9223372036854775807LL - digit) / 10LL) {
+        rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "MCP request id must be an integer");
+        break;
+      }
+      value = (value * 10LL) + digit;
+      cursor++;
+    }
+    if (rc == CAI_OK) {
+      *out = value;
+    }
   }
   cai_free_mem(NULL, text);
   CAI_LJ->cleanup(CAI_LJ, &cai_mcp_jsonrpc_id_map, &doc);
@@ -5089,7 +5108,7 @@ static int cai_mcp_json_hex_value(int ch) {
 static int cai_mcp_json_scan_string(cai_mcp_json_scan *scan, char *out,
                                     size_t out_size, cai_error *error) {
   size_t len;
-  int ch;
+  int ch = 0;
   int rc;
 
   len = 0U;
@@ -8333,7 +8352,7 @@ static int cai_mcp_streamable_initialize(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -8625,7 +8644,7 @@ static int cai_mcp_streamable_ping(cai_mcp_client *client, cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -8722,7 +8741,7 @@ static int cai_mcp_streamable_call_tool(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -8817,7 +8836,7 @@ static int cai_mcp_streamable_read_resource(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -8978,7 +8997,7 @@ static int cai_mcp_streamable_get_prompt(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -9013,7 +9032,7 @@ static int cai_mcp_streamable_complete(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -9046,7 +9065,7 @@ static int cai_mcp_streamable_send_request(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
-  size_t request_len;
+  size_t request_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
@@ -9078,7 +9097,7 @@ static int cai_mcp_streamable_send_notification(cai_mcp_client *client,
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled notification;
-  size_t notification_len;
+  size_t notification_len = 0U;
   int rc;
 
   impl = cai_mcp_streamable_impl(client);
