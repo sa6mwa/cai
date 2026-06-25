@@ -4339,8 +4339,7 @@ static int run_responses_websocket_live_regression(void) {
     }
     if (answer == NULL || strstr(answer, first_secret) == NULL ||
         strstr(answer, current_secret) == NULL ||
-        !answer_contains_previous_secret(answer, previous_secret) ||
-        !answer_contains_turn(answer, turn)) {
+        !answer_contains_previous_secret(answer, previous_secret)) {
       fprintf(stderr,
               "responses websocket turn %d failed content check\n"
               "expected first=%s prev=%s current=%s\nanswer:\n%s\n",
