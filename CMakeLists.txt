@@ -802,6 +802,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_cancelled_notification_aborts_request
     mcp_streamable_http_sse_resume_get
     mcp_streamable_http_streaming_sse_resume_get
+    mcp_streamable_http_streaming_sse_resume_before_result_bytes
+    mcp_streamable_http_ignores_sse_data_before_non_message_event
     mcp_streamable_http_response_content_type_parameters
     mcp_streamable_http_sse_content_type_parameters
     mcp_streamable_http_response_missing_result_error
@@ -929,6 +931,8 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_result_rejects_missing_id
     mcp_streamable_http_result_accepts_result_before_id
     mcp_streamable_http_result_field_order_variants
+    mcp_streamable_http_result_rejects_duplicate_result
+    mcp_streamable_http_result_before_id_rejects_duplicate_result
     mcp_streamable_http_sse_rejects_result_and_error
     mcp_streamable_http_sse_rejects_result_before_error
     mcp_streamable_http_result_rejects_trailing_garbage

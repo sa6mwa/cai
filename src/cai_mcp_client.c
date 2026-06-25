@@ -248,6 +248,7 @@ typedef struct cai_mcp_sse_resume_state {
 typedef struct cai_mcp_streaming_response_context {
   cai_mcp_http_response_capture *response;
   cai_buffer_builder line;
+  cai_buffer_builder pending_data;
   cai_mcp_sse_resume_state resume;
   int write_fd;
   int rc;
@@ -258,6 +259,8 @@ typedef struct cai_mcp_streaming_response_context {
   int data_line_streaming;
   int data_line_skip_space;
   int data_line_pending_cr;
+  int data_line_pending_newline;
+  int pending_data_started;
 } cai_mcp_streaming_response_context;
 
 typedef struct cai_mcp_streaming_post_context {
@@ -1520,6 +1523,72 @@ static int cai_mcp_write_all_fd(int fd, const char *data, size_t len) {
   return 0;
 }
 
+static int cai_mcp_streaming_sse_buffer_pending(
+    cai_mcp_streaming_response_context *context, char ch) {
+  cai_error ignored;
+
+  if (context == NULL) {
+    return EINVAL;
+  }
+  cai_error_init(&ignored);
+  if (context->data_line_pending_newline) {
+    if (cai_buffer_append(&context->pending_data, "\n", 1U, &ignored) !=
+        CAI_OK) {
+      cai_error_cleanup(&ignored);
+      return ENOMEM;
+    }
+    context->data_line_pending_newline = 0;
+  }
+  if (cai_buffer_append(&context->pending_data, &ch, 1U, &ignored) != CAI_OK) {
+    cai_error_cleanup(&ignored);
+    return ENOMEM;
+  }
+  context->pending_data_started = 1;
+  cai_error_cleanup(&ignored);
+  return 0;
+}
+
+static int cai_mcp_streaming_sse_flush_pending(
+    cai_mcp_streaming_response_context *context) {
+  if (context == NULL || context->pending_data.length == 0U) {
+    return 0;
+  }
+  if (context->data_started) {
+    context->rc = cai_mcp_write_all_fd(context->write_fd, "\n", 1U);
+    if (context->rc != 0) {
+      return context->rc;
+    }
+  }
+  context->rc =
+      cai_mcp_write_all_fd(context->write_fd, context->pending_data.data,
+                           context->pending_data.length);
+  if (context->rc != 0) {
+    return context->rc;
+  }
+  context->data_started = 1;
+  context->pending_data.length = 0U;
+  context->pending_data_started = 0;
+  if (context->pending_data.data != NULL) {
+    context->pending_data.data[0] = '\0';
+  }
+  return 0;
+}
+
+static void
+cai_mcp_streaming_sse_reset_event(cai_mcp_streaming_response_context *context) {
+  if (context == NULL) {
+    return;
+  }
+  context->event[0] = '\0';
+  context->data_started = 0;
+  context->pending_data.length = 0U;
+  context->pending_data_started = 0;
+  context->data_line_pending_newline = 0;
+  if (context->pending_data.data != NULL) {
+    context->pending_data.data[0] = '\0';
+  }
+}
+
 static int
 cai_mcp_streaming_sse_line(cai_mcp_streaming_response_context *context,
                            const char *line, size_t len) {
@@ -1529,17 +1598,24 @@ cai_mcp_streaming_sse_line(cai_mcp_streaming_response_context *context,
     return 0;
   }
   if (cai_mcp_sse_line_is_blank(line, len)) {
-    if (context->data_started &&
-        (context->event[0] == '\0' || strcmp(context->event, "message") == 0)) {
-      context->event[0] = '\0';
-    } else {
-      context->event[0] = '\0';
+    if (context->event[0] == '\0' || strcmp(context->event, "message") == 0) {
+      context->rc = cai_mcp_streaming_sse_flush_pending(context);
+      if (context->rc != 0) {
+        return context->rc;
+      }
     }
+    cai_mcp_streaming_sse_reset_event(context);
     return 0;
   }
   if (len >= 6U && memcmp(line, "event:", 6U) == 0) {
     cai_mcp_sse_set_event(context->event, sizeof(context->event), line + 6U,
                           len - 6U);
+    if (strcmp(context->event, "message") == 0) {
+      context->rc = cai_mcp_streaming_sse_flush_pending(context);
+      if (context->rc != 0) {
+        return context->rc;
+      }
+    }
     return 0;
   }
   if (len >= 3U && memcmp(line, "id:", 3U) == 0) {
@@ -1601,6 +1677,11 @@ cai_mcp_streaming_sse_write(cai_mcp_streaming_response_context *context,
           if (context->rc != 0) {
             return context->rc;
           }
+        } else {
+          context->rc = cai_mcp_streaming_sse_buffer_pending(context, '\r');
+          if (context->rc != 0) {
+            return context->rc;
+          }
         }
         context->data_line_pending_cr = 0;
       }
@@ -1612,6 +1693,7 @@ cai_mcp_streaming_sse_write(cai_mcp_streaming_response_context *context,
         context->data_line_active = 0;
         context->data_line_streaming = 0;
         context->data_line_skip_space = 0;
+        context->data_line_pending_newline = 0;
         continue;
       }
       if (context->data_line_skip_space) {
@@ -1625,6 +1707,11 @@ cai_mcp_streaming_sse_write(cai_mcp_streaming_response_context *context,
           context->data_started = 1;
         }
         context->rc = cai_mcp_write_all_fd(context->write_fd, &ch, 1U);
+        if (context->rc != 0) {
+          return context->rc;
+        }
+      } else {
+        context->rc = cai_mcp_streaming_sse_buffer_pending(context, ch);
         if (context->rc != 0) {
           return context->rc;
         }
@@ -1654,10 +1741,11 @@ cai_mcp_streaming_sse_write(cai_mcp_streaming_response_context *context,
       if (context->line.length == 5U &&
           memcmp(context->line.data, "data:", 5U) == 0) {
         context->data_line_active = 1;
-        context->data_line_streaming =
-            context->event[0] == '\0' || strcmp(context->event, "message") == 0;
+        context->data_line_streaming = strcmp(context->event, "message") == 0;
         context->data_line_skip_space = 1;
         context->data_line_pending_cr = 0;
+        context->data_line_pending_newline =
+            !context->data_line_streaming && context->pending_data_started;
         if (context->data_line_streaming && context->data_started) {
           context->rc = cai_mcp_write_all_fd(context->write_fd, "\n", 1U);
           if (context->rc != 0) {
@@ -2593,6 +2681,7 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   cai_free_mem(NULL, write_context.line.data);
+  cai_free_mem(NULL, write_context.pending_data.data);
   context->next_last_event_id = write_context.resume.last_event_id;
   context->next_retry_ms = write_context.resume.retry_ms;
   context->has_next_retry = write_context.resume.has_retry;
@@ -8007,7 +8096,7 @@ static int cai_mcp_parse_streamed_result_response(
       size_t bytes_written;
 
       bytes_written = 0U;
-      if (has_error) {
+      if (has_result || has_error) {
         rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP JSON-RPC response must include exactly one of "
                            "result or error");
@@ -8017,9 +8106,6 @@ static int cai_mcp_parse_streamed_result_response(
         rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                            "MCP JSON-RPC response must not include method");
         break;
-      }
-      if (result_seen != NULL) {
-        *result_seen = 1;
       }
       if (has_jsonrpc) {
         rc = cai_mcp_streamed_jsonrpc_is_valid(&jsonrpc_json, error);
@@ -8047,6 +8133,9 @@ static int cai_mcp_parse_streamed_result_response(
       cai_mcp_stream_unread_char(&reader, ch);
       if (has_id && has_jsonrpc) {
         rc = cai_mcp_stream_value(&reader, output, NULL, &bytes_written, error);
+        if (result_seen != NULL && bytes_written > 0U) {
+          *result_seen = 1;
+        }
         result_streamed = rc == CAI_OK;
         has_result = rc == CAI_OK && bytes_written > 0U;
       } else {
