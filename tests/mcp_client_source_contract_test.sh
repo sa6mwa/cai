@@ -93,6 +93,60 @@ if printf '%s\n' "$function_body" | grep -F 'cai_mcp_spooled_write_to_sink' >/de
   exit 1
 fi
 
+stream_write_body=$(extract_function cai_mcp_streaming_response_write)
+
+if [ -z "$stream_write_body" ]; then
+  printf 'cai_mcp_streaming_response_write was not found\n' >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$stream_write_body" |
+  grep -F 'cai_mcp_response_is_streamed_result_media' >/dev/null; then
+  printf 'streamed MCP response writes must gate successful bodies by content type\n' >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$stream_write_body" |
+  grep -F 'return len;' >/dev/null; then
+  printf 'invalid streamed MCP media must be consumed without reaching the parser pipe\n' >&2
+  exit 1
+fi
+
+stream_parse_body=$(extract_function cai_mcp_stream_request_result_once)
+
+if [ -z "$stream_parse_body" ]; then
+  printf 'cai_mcp_stream_request_result_once was not found\n' >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$stream_parse_body" |
+  grep -F 'cai_mcp_response_is_streamed_result_media' >/dev/null; then
+  printf 'streamed MCP result parsing must reject non-JSON/non-SSE content types\n' >&2
+  exit 1
+fi
+
+open_body=$(extract_function cai_mcp_streamable_http_client_open)
+
+if [ -z "$open_body" ]; then
+  printf 'cai_mcp_streamable_http_client_open was not found\n' >&2
+  exit 1
+fi
+
+receiver_line=$(printf '%s\n' "$open_body" |
+  awk '/impl->receiver = effective->receiver/ { print NR; exit }')
+copy_failure_line=$(printf '%s\n' "$open_body" |
+  awk '/failed to copy MCP config/ { print NR; exit }')
+
+if [ -z "$receiver_line" ] || [ -z "$copy_failure_line" ]; then
+  printf 'MCP client open receiver ownership or config copy failure path was not found\n' >&2
+  exit 1
+fi
+
+if [ "$receiver_line" -le "$copy_failure_line" ]; then
+  printf 'MCP client open must not take receiver cleanup ownership before fallible config copies succeed\n' >&2
+  exit 1
+fi
+
 helper_body=$(extract_function cai_mcp_configure_curl_common)
 
 if [ -z "$helper_body" ]; then

@@ -1416,6 +1416,8 @@ int cai_mcp_test_header_callback_unterminated(void) {
 
 static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res);
 static int cai_mcp_response_is_sse(const cai_mcp_http_response_capture *res);
+static int cai_mcp_response_is_streamed_result_media(
+    const cai_mcp_http_response_capture *res);
 
 static size_t cai_mcp_response_write(char *ptr, size_t size, size_t nmemb,
                                      void *userdata) {
@@ -1791,6 +1793,11 @@ static size_t cai_mcp_streaming_response_write(char *ptr, size_t size,
   }
   if (context->response != NULL && context->response->status != 0L &&
       (context->response->status < 200L || context->response->status >= 300L)) {
+    return len;
+  }
+  if (context->response != NULL && context->response->status >= 200L &&
+      context->response->status < 300L &&
+      !cai_mcp_response_is_streamed_result_media(context->response)) {
     return len;
   }
   if (context->response != NULL && cai_mcp_response_is_sse(context->response)) {
@@ -2326,6 +2333,11 @@ static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res) {
 static int cai_mcp_response_is_sse(const cai_mcp_http_response_capture *res) {
   return res != NULL &&
          cai_mcp_content_type_is(res->content_type, "text/event-stream");
+}
+
+static int cai_mcp_response_is_streamed_result_media(
+    const cai_mcp_http_response_capture *res) {
+  return cai_mcp_response_is_json(res) || cai_mcp_response_is_sse(res);
 }
 
 static int cai_mcp_response_ok(const cai_mcp_http_response_capture *res,
@@ -8619,6 +8631,13 @@ static int cai_mcp_stream_request_result_once(
   if (thread_started) {
     pthread_join(thread, NULL);
   }
+  if (context.rc == CAI_OK && response->status >= 200L &&
+      response->status < 300L &&
+      !cai_mcp_response_is_streamed_result_media(response)) {
+    rc = cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "MCP streamed response must be application/json or text/event-stream");
+  }
   while (rc != CAI_OK && !result_seen && context.rc == CAI_OK &&
          response->status >= 200L && response->status < 300L &&
          cai_mcp_response_is_sse(response) &&
@@ -9304,18 +9323,18 @@ int cai_mcp_streamable_http_client_open(
   impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
   impl->logger = effective->logger_disabled ? NULL : effective->logger;
   impl->logger_disabled = effective->logger_disabled;
-  impl->receiver = effective->receiver;
-  if (impl->receiver.notification == NULL && effective->notification != NULL) {
-    impl->receiver.notification = effective->notification;
-    impl->receiver.context = effective->notification_context;
-    impl->receiver.cleanup = effective->notification_context_cleanup;
-  }
   if (impl->url == NULL || impl->client_name == NULL ||
       impl->client_version == NULL || impl->protocol_version == NULL ||
       (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) ||
       (effective->ca_path != NULL && impl->ca_path == NULL)) {
     cai_mcp_streamable_destroy(&impl->public_client);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to copy MCP config");
+  }
+  impl->receiver = effective->receiver;
+  if (impl->receiver.notification == NULL && effective->notification != NULL) {
+    impl->receiver.notification = effective->notification;
+    impl->receiver.context = effective->notification_context;
+    impl->receiver.cleanup = effective->notification_context_cleanup;
   }
   impl->public_client.initialize = cai_mcp_streamable_initialize;
   impl->public_client.ping = cai_mcp_streamable_ping;

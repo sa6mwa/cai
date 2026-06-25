@@ -749,6 +749,7 @@ if(CAI_BUILD_TESTS)
     mcp_client_config
     mcp_client_rejects_partial_allocator
     mcp_client_open_failure_cleans_allocator
+    mcp_client_open_failure_keeps_receiver_cleanup
     mcp_streamable_http_header_callback_bounds
     mcp_client_receiver_surface
     mcp_client_registry_adapter
@@ -919,6 +920,7 @@ if(CAI_BUILD_TESTS)
     mcp_streamable_http_writes_result_one_byte_chunks
     mcp_streamable_http_writes_sse_result_one_byte_chunks
     mcp_streamable_http_writes_default_sse_message_immediately
+    mcp_streamable_http_rejects_streamed_text_plain_result
     mcp_streamable_http_writes_sse_result_after_notification
     mcp_streamable_http_writes_sse_result_after_server_ping_request
     mcp_streamable_http_writes_sse_result_after_empty_data_event
