@@ -510,7 +510,8 @@ cai_mcp_client_prompt_at(const cai_mcp_client *client, size_t index);
 int cai_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
                               struct lonejson_spooled *arguments_json,
                               cai_sink *output, cai_error *error);
-/** Complete one MCP prompt/resource argument and write validated result JSON. */
+/** Complete one MCP prompt/resource argument and write validated result JSON.
+ */
 int cai_mcp_client_complete(cai_mcp_client *client, const char *ref_type,
                             const char *ref_value, const char *argument_name,
                             const char *argument_value,

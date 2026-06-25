@@ -446,8 +446,7 @@ int main(int argc, char **argv) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   rc = cai_mcp_client_send_notification(client, "", NULL, &error);
-  if (e2e_expect_error("empty notification method", rc, &error,
-                       CAI_ERR_INVALID,
+  if (e2e_expect_error("empty notification method", rc, &error, CAI_ERR_INVALID,
                        "MCP notification method is required") != 0 ||
       e2e_expect_empty_output("empty notification method", &writer) != 0) {
     cai_sink_close(sink);
@@ -537,8 +536,7 @@ int main(int argc, char **argv) {
   rc = cai_mcp_client_complete(client, "ref/prompt", "completable-prompt",
                                "name", "", &context_arguments, sink, &error);
   context_arguments.cleanup(&context_arguments);
-  if (e2e_expect_error("array completion context", rc, &error,
-                       CAI_ERR_PROTOCOL,
+  if (e2e_expect_error("array completion context", rc, &error, CAI_ERR_PROTOCOL,
                        "MCP completion context arguments must be an object") !=
           0 ||
       e2e_expect_empty_output("array completion context", &writer) != 0) {
