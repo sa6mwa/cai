@@ -17,7 +17,7 @@ transport-neutral MCP Streamable HTTP handler.
 }
 dependencies = {
   "lua >= 5.5, < 5.6",
-  "lonejson >= 0.32.0",
+  "lonejson >= 0.35.0",
 }
 build = {
   type = "command",

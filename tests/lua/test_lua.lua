@@ -360,6 +360,9 @@ do
     issuer = "http://127.0.0.1:1",
     refresh_window_seconds = 300,
     http_timeout_ms = 250,
+    insecure_skip_verify = 1,
+    ca_bundle_path = "/tmp/cai-lua-ca.pem",
+    ca_path = "/tmp/cai-lua-ca-dir",
   }), nil, "Lua standalone ChatGPT auth open")
   assert_eq(assert_ok(standalone_auth:access_token(), nil,
     "Lua standalone ChatGPT access token"), future_token,
@@ -372,8 +375,13 @@ do
     chatgpt_auth_json = auth_path,
     base_url = "http://127.0.0.1:1/v1",
     http_2_disabled = 1,
+    ca_bundle_path = "/tmp/cai-lua-client-ca.pem",
+    ca_path = "/tmp/cai-lua-client-ca-dir",
     timeout_ms = 1,
     chatgpt_auth_http_timeout_ms = 250,
+    chatgpt_auth_insecure_skip_verify = 1,
+    chatgpt_auth_ca_bundle_path = "/tmp/cai-lua-auth-ca.pem",
+    chatgpt_auth_ca_path = "/tmp/cai-lua-auth-ca-dir",
   }), nil, "Lua ChatGPT auth client open")
   auth_client:close()
   os.remove(auth_path)
@@ -394,6 +402,9 @@ do
     code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789",
     originator = "cai-lua-test",
     http_timeout_ms = 250,
+    insecure_skip_verify = 1,
+    ca_bundle_path = "/tmp/cai-lua-login-ca.pem",
+    ca_path = "/tmp/cai-lua-login-ca-dir",
   })
   local authorize_url = authorize_url_or_err
   assert_ok(login, authorize_url_or_err, "Lua ChatGPT login start")

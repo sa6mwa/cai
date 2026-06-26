@@ -49,6 +49,28 @@ typedef struct test_entry {
 
 static const char *g_current_test_name = NULL;
 
+void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
+int cai_mcp_test_header_callback_unterminated(void);
+
+static long g_mcp_test_sleep_last_ms = 0L;
+static int g_mcp_test_sleep_count = 0;
+
+static void test_mcp_sleep_capture(long ms) {
+  g_mcp_test_sleep_last_ms = ms;
+  g_mcp_test_sleep_count++;
+}
+
+static void test_mcp_sleep_reset(void) {
+  g_mcp_test_sleep_last_ms = 0L;
+  g_mcp_test_sleep_count = 0;
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+}
+
+static void test_mcp_sleep_start_capture(void) {
+  test_mcp_sleep_reset();
+  cai_mcp_test_set_sleep_ms_fn(test_mcp_sleep_capture);
+}
+
 typedef struct read_state {
   const char *text;
   size_t offset;
@@ -84,6 +106,17 @@ typedef struct write_state {
   size_t length;
   int closed;
 } write_state;
+
+typedef struct fail_write_state {
+  int writes;
+  int closed;
+} fail_write_state;
+
+typedef struct streaming_write_state {
+  write_state writer;
+  int signal_fd;
+  int signalled;
+} streaming_write_state;
 
 typedef struct mcp_source_state {
   const char *text;
@@ -128,6 +161,39 @@ typedef struct mcp_session_test_store {
   int fail_save;
   int empty_create_id;
 } mcp_session_test_store;
+
+typedef struct test_mcp_client_impl {
+  cai_mcp_client public_client;
+  cai_mcp_client_tool tools[2];
+  cai_mcp_client_resource resources[1];
+  cai_mcp_client_resource_template resource_templates[1];
+  cai_mcp_client_prompt prompts[1];
+  size_t tool_count;
+  size_t resource_count;
+  size_t resource_template_count;
+  size_t prompt_count;
+  int initialize_count;
+  int ping_count;
+  int refresh_count;
+  int refresh_resources_count;
+  int refresh_resource_templates_count;
+  int refresh_prompts_count;
+  int call_count;
+  int read_resource_count;
+  int get_prompt_count;
+  int complete_count;
+  int send_request_count;
+  int send_notification_count;
+  int destroy_count;
+  char last_name[64];
+  char last_uri[128];
+  char last_ref_type[32];
+  char last_ref_value[128];
+  char last_argument_name[64];
+  char last_argument_value[128];
+  char last_method[128];
+  char last_arguments[256];
+} test_mcp_client_impl;
 
 typedef struct sse_json_capture {
   write_state json;
@@ -1322,6 +1388,25 @@ static void test_fail_allocator_free(void *context, void *ptr) {
   free(ptr);
 }
 
+static void test_cleanup_counter(void *context) {
+  int *count;
+
+  count = (int *)context;
+  if (count != NULL) {
+    (*count)++;
+  }
+}
+
+static int test_noop_mcp_notification(void *context, const char *method,
+                                      lonejson_spooled *params_json,
+                                      cai_error *error) {
+  (void)context;
+  (void)method;
+  (void)params_json;
+  (void)error;
+  return CAI_OK;
+}
+
 static size_t test_count_substrings(const char *haystack, const char *needle) {
   size_t count;
   size_t needle_len;
@@ -1356,6 +1441,8 @@ static void test_read_close(void *context) {
   state->closed = 1;
 }
 
+static int mock_write_all(int fd, const char *data, size_t length);
+
 static int test_write(void *context, const void *bytes, size_t count,
                       cai_error *error) {
   write_state *state;
@@ -1376,6 +1463,54 @@ static void test_write_close(void *context) {
 
   state = (write_state *)context;
   state->closed = 1;
+}
+
+static int test_fail_write(void *context, const void *bytes, size_t count,
+                           cai_error *error) {
+  fail_write_state *state;
+
+  (void)bytes;
+  (void)count;
+  state = (fail_write_state *)context;
+  if (state != NULL) {
+    state->writes++;
+  }
+  return cai_set_error(error, CAI_ERR_TRANSPORT, "test sink rejected output");
+}
+
+static void test_fail_write_close(void *context) {
+  fail_write_state *state;
+
+  state = (fail_write_state *)context;
+  if (state != NULL) {
+    state->closed = 1;
+  }
+}
+
+static int test_streaming_write(void *context, const void *bytes, size_t count,
+                                cai_error *error) {
+  streaming_write_state *state;
+  int rc;
+
+  state = (streaming_write_state *)context;
+  rc = test_write(&state->writer, bytes, count, error);
+  if (rc == CAI_OK && !state->signalled &&
+      strstr(state->writer.buffer, "first") != NULL) {
+    state->signalled = 1;
+    if (state->signal_fd >= 0 &&
+        mock_write_all(state->signal_fd, "x", 1U) != 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to signal streaming test server");
+    }
+  }
+  return rc;
+}
+
+static void test_streaming_write_close(void *context) {
+  streaming_write_state *state;
+
+  state = (streaming_write_state *)context;
+  state->writer.closed = 1;
 }
 
 static const char *test_mcp_header_get(void *context, const char *name) {
@@ -1552,8 +1687,9 @@ static int test_mcp_sink_write(void *context, const void *bytes, size_t count,
 
   state = (mcp_sink_state *)context;
   state->write_count++;
-  if (state->fail_after_writes > 0 &&
-      state->write_count > state->fail_after_writes) {
+  if (state->fail_after_writes < 0 ||
+      (state->fail_after_writes > 0 &&
+       state->write_count > state->fail_after_writes)) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "MCP sink failed deliberately");
   }
@@ -1572,6 +1708,400 @@ static void test_mcp_sink_close(void *context) {
 
   state = (mcp_sink_state *)context;
   state->closed = 1;
+}
+
+static test_mcp_client_impl *
+test_mcp_client_impl_from_public(const cai_mcp_client *client) {
+  return client != NULL ? (test_mcp_client_impl *)client->impl : NULL;
+}
+
+static int test_mcp_client_initialize(cai_mcp_client *client,
+                                      cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->initialize_count++;
+  return CAI_OK;
+}
+
+static int test_mcp_client_refresh_tools(cai_mcp_client *client,
+                                         cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_count++;
+  return CAI_OK;
+}
+
+static size_t test_mcp_client_tool_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->tool_count : 0U;
+}
+
+static const cai_mcp_client_tool *
+test_mcp_client_tool_at(const cai_mcp_client *client, size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->tool_count) {
+    return NULL;
+  }
+  return &impl->tools[index];
+}
+
+static int test_mcp_client_refresh_resources(cai_mcp_client *client,
+                                             cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_resources_count++;
+  return CAI_OK;
+}
+
+static size_t test_mcp_client_resource_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->resource_count : 0U;
+}
+
+static const cai_mcp_client_resource *
+test_mcp_client_resource_at(const cai_mcp_client *client, size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->resource_count) {
+    return NULL;
+  }
+  return &impl->resources[index];
+}
+
+static int test_mcp_client_refresh_resource_templates(cai_mcp_client *client,
+                                                      cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_resource_templates_count++;
+  return CAI_OK;
+}
+
+static size_t
+test_mcp_client_resource_template_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->resource_template_count : 0U;
+}
+
+static const cai_mcp_client_resource_template *
+test_mcp_client_resource_template_at(const cai_mcp_client *client,
+                                     size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->resource_template_count) {
+    return NULL;
+  }
+  return &impl->resource_templates[index];
+}
+
+static int test_mcp_client_refresh_prompts(cai_mcp_client *client,
+                                           cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->refresh_prompts_count++;
+  return CAI_OK;
+}
+
+static size_t test_mcp_client_prompt_count(const cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  return impl != NULL ? impl->prompt_count : 0U;
+}
+
+static const cai_mcp_client_prompt *
+test_mcp_client_prompt_at(const cai_mcp_client *client, size_t index) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || index >= impl->prompt_count) {
+    return NULL;
+  }
+  return &impl->prompts[index];
+}
+
+static void test_mcp_read_spooled_json(lonejson_spooled *spool, char *buffer,
+                                       size_t capacity) {
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result result;
+  size_t used;
+
+  if (buffer == NULL || capacity == 0U) {
+    return;
+  }
+  buffer[0] = '\0';
+  if (spool == NULL) {
+    return;
+  }
+  cursor = *spool;
+  lonejson_error_init(&json_error);
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return;
+  }
+  used = 0U;
+  while (used + 1U < capacity) {
+    result = cursor.read(&cursor, (unsigned char *)buffer + used,
+                         capacity - used - 1U);
+    used += result.bytes_read;
+    if (result.eof || result.error_code != 0) {
+      break;
+    }
+  }
+  buffer[used] = '\0';
+}
+
+static int test_mcp_client_call_tool(cai_mcp_client *client, const char *name,
+                                     lonejson_spooled *arguments_json,
+                                     cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->call_count++;
+  snprintf(impl->last_name, sizeof(impl->last_name), "%s",
+           name != NULL ? name : "");
+  test_mcp_read_spooled_json(arguments_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+           "\"isError\":false}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
+static int test_mcp_client_ping(cai_mcp_client *client, cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->ping_count++;
+  return CAI_OK;
+}
+
+static int test_mcp_client_read_resource(cai_mcp_client *client,
+                                         const char *uri, cai_sink *output,
+                                         cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->read_resource_count++;
+  snprintf(impl->last_uri, sizeof(impl->last_uri), "%s",
+           uri != NULL ? uri : "");
+  result = "{\"contents\":[{\"uri\":\"resource://ok\",\"mimeType\":"
+           "\"text/plain\",\"text\":\"ok\"}]}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
+static int test_mcp_client_get_prompt(cai_mcp_client *client, const char *name,
+                                      lonejson_spooled *arguments_json,
+                                      cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->get_prompt_count++;
+  snprintf(impl->last_name, sizeof(impl->last_name), "%s",
+           name != NULL ? name : "");
+  test_mcp_read_spooled_json(arguments_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"description\":\"ok prompt\",\"messages\":[{\"role\":\"user\","
+           "\"content\":{\"type\":\"text\",\"text\":\"ok\"}}]}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
+static int test_mcp_client_complete(cai_mcp_client *client,
+                                    const char *ref_type, const char *ref_value,
+                                    const char *argument_name,
+                                    const char *argument_value,
+                                    lonejson_spooled *context_arguments_json,
+                                    cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->complete_count++;
+  snprintf(impl->last_ref_type, sizeof(impl->last_ref_type), "%s",
+           ref_type != NULL ? ref_type : "");
+  snprintf(impl->last_ref_value, sizeof(impl->last_ref_value), "%s",
+           ref_value != NULL ? ref_value : "");
+  snprintf(impl->last_argument_name, sizeof(impl->last_argument_name), "%s",
+           argument_name != NULL ? argument_name : "");
+  snprintf(impl->last_argument_value, sizeof(impl->last_argument_value), "%s",
+           argument_value != NULL ? argument_value : "");
+  test_mcp_read_spooled_json(context_arguments_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"completion\":{\"values\":[\"engineering\"],\"total\":1,"
+           "\"hasMore\":false}}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
+static int test_mcp_client_send_request(cai_mcp_client *client,
+                                        const char *method,
+                                        lonejson_spooled *params_json,
+                                        cai_sink *output, cai_error *error) {
+  test_mcp_client_impl *impl;
+  const char *result;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL || output == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->send_request_count++;
+  snprintf(impl->last_method, sizeof(impl->last_method), "%s",
+           method != NULL ? method : "");
+  test_mcp_read_spooled_json(params_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  result = "{\"ok\":true}";
+  return cai_sink_write(output, result, strlen(result), error);
+}
+
+static int test_mcp_client_send_notification(cai_mcp_client *client,
+                                             const char *method,
+                                             lonejson_spooled *params_json,
+                                             cai_error *error) {
+  test_mcp_client_impl *impl;
+
+  (void)error;
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  impl->send_notification_count++;
+  snprintf(impl->last_method, sizeof(impl->last_method), "%s",
+           method != NULL ? method : "");
+  test_mcp_read_spooled_json(params_json, impl->last_arguments,
+                             sizeof(impl->last_arguments));
+  return CAI_OK;
+}
+
+static void test_mcp_client_destroy(cai_mcp_client *client) {
+  test_mcp_client_impl *impl;
+
+  impl = test_mcp_client_impl_from_public(client);
+  if (impl != NULL) {
+    impl->destroy_count++;
+  }
+}
+
+static const char *const test_mcp_echo_schema_properties[] = {"message"};
+static const char *const test_mcp_echo_schema_required[] = {"message"};
+static const cai_mcp_client_schema test_mcp_echo_schema = {
+    "",
+    "object",
+    test_mcp_echo_schema_properties,
+    1U,
+    test_mcp_echo_schema_required,
+    1U};
+static const cai_mcp_client_schema test_mcp_empty_schema = {"", "object", NULL,
+                                                            0U, NULL,     0U};
+static const cai_mcp_client_prompt_argument test_mcp_prompt_arguments[] = {
+    {"topic", "", "", 1, 1}};
+
+static void test_mcp_fake_client_init(test_mcp_client_impl *impl) {
+  memset(impl, 0, sizeof(*impl));
+  impl->tools[0].name = "echo";
+  impl->tools[0].title = "Echo";
+  impl->tools[0].description = "Echo through MCP";
+  impl->tools[0].input_schema = &test_mcp_echo_schema;
+  impl->tools[1].name = "status";
+  impl->tools[1].title = "Status";
+  impl->tools[1].description = "Return status";
+  impl->tools[1].input_schema = &test_mcp_empty_schema;
+  impl->tool_count = 2U;
+  impl->resources[0].uri = "resource://ok";
+  impl->resources[0].name = "ok";
+  impl->resources[0].title = "OK Resource";
+  impl->resources[0].description = "Fake resource";
+  impl->resources[0].mime_type = "text/plain";
+  impl->resources[0].has_size = 1;
+  impl->resources[0].size = 42;
+  impl->resource_count = 1U;
+  impl->resource_templates[0].uri_template = "resource://doc/{name}";
+  impl->resource_templates[0].name = "doc";
+  impl->resource_templates[0].title = "Doc Template";
+  impl->resource_templates[0].description = "Fake template";
+  impl->resource_templates[0].mime_type = "text/markdown";
+  impl->resource_template_count = 1U;
+  impl->prompts[0].name = "explain";
+  impl->prompts[0].title = "Explain";
+  impl->prompts[0].description = "Explain input";
+  impl->prompts[0].arguments = test_mcp_prompt_arguments;
+  impl->prompts[0].argument_count = 1U;
+  impl->prompt_count = 1U;
+  impl->public_client.initialize = test_mcp_client_initialize;
+  impl->public_client.ping = test_mcp_client_ping;
+  impl->public_client.refresh_tools = test_mcp_client_refresh_tools;
+  impl->public_client.tool_count = test_mcp_client_tool_count;
+  impl->public_client.tool_at = test_mcp_client_tool_at;
+  impl->public_client.call_tool = test_mcp_client_call_tool;
+  impl->public_client.refresh_resources = test_mcp_client_refresh_resources;
+  impl->public_client.resource_count = test_mcp_client_resource_count;
+  impl->public_client.resource_at = test_mcp_client_resource_at;
+  impl->public_client.read_resource = test_mcp_client_read_resource;
+  impl->public_client.refresh_resource_templates =
+      test_mcp_client_refresh_resource_templates;
+  impl->public_client.resource_template_count =
+      test_mcp_client_resource_template_count;
+  impl->public_client.resource_template_at =
+      test_mcp_client_resource_template_at;
+  impl->public_client.refresh_prompts = test_mcp_client_refresh_prompts;
+  impl->public_client.prompt_count = test_mcp_client_prompt_count;
+  impl->public_client.prompt_at = test_mcp_client_prompt_at;
+  impl->public_client.get_prompt = test_mcp_client_get_prompt;
+  impl->public_client.complete = test_mcp_client_complete;
+  impl->public_client.send_request = test_mcp_client_send_request;
+  impl->public_client.send_notification = test_mcp_client_send_notification;
+  impl->public_client.destroy = test_mcp_client_destroy;
+  impl->public_client.impl = impl;
 }
 
 static void expect_valid_json(test_state *state, const char *name,
@@ -3400,6 +3930,490 @@ static int test_mcp_handle_stream(
   return rc;
 }
 
+static void test_mcp_client_config(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  pslog_logger fake_logger;
+
+  client = NULL;
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  expect_int(state, "mcp_client_config_zero_url", config.url == NULL, 1L);
+  expect_int(state, "mcp_client_config_zero_timeout", config.timeout_ms, 0L);
+  expect_int(state, "mcp_client_config_zero_logger", config.logger == NULL, 1L);
+  expect_int(state, "mcp_client_config_zero_logger_disabled",
+             config.logger_disabled, 0L);
+  expect_int(state, "mcp_client_open_no_out",
+             cai_mcp_streamable_http_client_open(&config, NULL, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_open_no_url",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_open_no_url_null_out", client == NULL, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.timeout_ms = 1234L;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
+  expect_int(state, "mcp_client_open_ok",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_open_logged", g_test_infof_count, 1L);
+  if (client == NULL || client->initialize == NULL || client->ping == NULL ||
+      client->refresh_tools == NULL || client->tool_count == NULL ||
+      client->tool_at == NULL || client->call_tool == NULL ||
+      client->refresh_resources == NULL || client->resource_count == NULL ||
+      client->resource_at == NULL || client->read_resource == NULL ||
+      client->refresh_resource_templates == NULL ||
+      client->resource_template_count == NULL ||
+      client->resource_template_at == NULL || client->refresh_prompts == NULL ||
+      client->prompt_count == NULL || client->prompt_at == NULL ||
+      client->get_prompt == NULL || client->complete == NULL ||
+      client->send_request == NULL || client->send_notification == NULL ||
+      client->destroy == NULL) {
+    test_fail(state, "mcp_client_open_methods", "client method missing");
+  }
+  cai_mcp_client_destroy(client);
+  client = NULL;
+  cai_error_cleanup(&error);
+
+  cai_error_init(&error);
+  config.logger_disabled = 1;
+  g_test_infof_count = 0;
+  expect_int(state, "mcp_client_open_logger_disabled",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_open_logger_disabled_count", g_test_infof_count,
+             0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_streamable_http_header_callback_bounds(test_state *state) {
+  expect_int(state, "mcp_header_callback_unterminated",
+             cai_mcp_test_header_callback_unterminated(), 1L);
+}
+
+static void test_mcp_client_rejects_partial_allocator(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  alloc_count_state alloc_state;
+  cai_error error;
+
+  client = NULL;
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.allocator.malloc_fn = test_allocator_malloc;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_client_partial_malloc_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_partial_malloc_allocator_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_partial_malloc_allocator_no_alloc",
+             (long)alloc_state.allocs, 0L);
+  expect_int(state, "mcp_client_partial_malloc_allocator_no_free",
+             (long)alloc_state.frees, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  memset(&config.allocator, 0, sizeof(config.allocator));
+  config.allocator.realloc_fn = test_allocator_realloc;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_client_partial_realloc_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_partial_realloc_allocator_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_partial_realloc_allocator_no_alloc",
+             (long)alloc_state.allocs, 0L);
+  expect_int(state, "mcp_client_partial_realloc_allocator_no_free",
+             (long)alloc_state.frees, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  memset(&config.allocator, 0, sizeof(config.allocator));
+  config.allocator.free_fn = test_allocator_free;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_client_partial_free_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_client_partial_free_allocator_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_partial_free_allocator_no_alloc",
+             (long)alloc_state.allocs, 0L);
+  expect_int(state, "mcp_client_partial_free_allocator_no_free",
+             (long)alloc_state.frees, 0L);
+
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_client_open_failure_cleans_allocator(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  fail_alloc_state alloc_state;
+  cai_error error;
+
+  client = NULL;
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  alloc_state.fail_after = 3U;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.client_name = "failing-mcp-client";
+  config.client_version = "1";
+  config.protocol_version = CAI_MCP_PROTOCOL_VERSION;
+  config.allocator.malloc_fn = test_fail_allocator_malloc;
+  config.allocator.realloc_fn = test_fail_allocator_realloc;
+  config.allocator.free_fn = test_fail_allocator_free;
+  config.allocator.context = &alloc_state;
+
+  expect_int(state, "mcp_client_open_failure_allocator_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_NOMEM);
+  expect_int(state, "mcp_client_open_failure_no_handle", client == NULL, 1L);
+  expect_int(state, "mcp_client_open_failure_alloc_balance",
+             (long)alloc_state.frees, (long)alloc_state.allocs);
+
+  cai_error_cleanup(&error);
+}
+
+static void
+test_mcp_client_open_failure_keeps_receiver_cleanup(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  fail_alloc_state alloc_state;
+  cai_error error;
+  int cleanup_count;
+
+  client = NULL;
+  cleanup_count = 0;
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  alloc_state.fail_after = 5U;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.ca_path = "/tmp/cai-missing-ca-path";
+  config.notification = test_noop_mcp_notification;
+  config.notification_context = &cleanup_count;
+  config.notification_context_cleanup = test_cleanup_counter;
+  config.allocator.malloc_fn = test_fail_allocator_malloc;
+  config.allocator.realloc_fn = test_fail_allocator_realloc;
+  config.allocator.free_fn = test_fail_allocator_free;
+  config.allocator.context = &alloc_state;
+
+  expect_int(state, "mcp_client_open_failure_receiver_rejected",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_NOMEM);
+  expect_int(state, "mcp_client_open_failure_receiver_no_handle",
+             client == NULL, 1L);
+  expect_int(state, "mcp_client_open_failure_receiver_not_cleaned",
+             cleanup_count, 0L);
+  expect_int(state, "mcp_client_open_failure_receiver_alloc_balance",
+             (long)alloc_state.frees, (long)alloc_state.allocs);
+
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_client_receiver_surface(test_state *state) {
+  test_mcp_client_impl fake;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  const char *args_json;
+
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  test_mcp_fake_client_init(&fake);
+
+  expect_int(state, "mcp_client_receiver_initialize",
+             cai_mcp_client_initialize(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_initialize_count",
+             fake.initialize_count, 1L);
+  expect_int(state, "mcp_client_receiver_ping",
+             cai_mcp_client_ping(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_ping_count", fake.ping_count, 1L);
+  expect_int(state, "mcp_client_receiver_refresh_tools",
+             cai_mcp_client_refresh_tools(&fake.public_client, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_tool_count",
+             (long)cai_mcp_client_tool_count(&fake.public_client), 2L);
+  if (cai_mcp_client_tool_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_tool_at", "tool missing");
+  }
+  expect_int(state, "mcp_client_receiver_refresh_resources",
+             cai_mcp_client_refresh_resources(&fake.public_client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_resource_count",
+             (long)cai_mcp_client_resource_count(&fake.public_client), 1L);
+  if (cai_mcp_client_resource_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_resource_at", "resource missing");
+  }
+  expect_int(
+      state, "mcp_client_receiver_refresh_resource_templates",
+      cai_mcp_client_refresh_resource_templates(&fake.public_client, &error),
+      CAI_OK);
+  expect_int(state, "mcp_client_receiver_resource_template_count",
+             (long)cai_mcp_client_resource_template_count(&fake.public_client),
+             1L);
+  if (cai_mcp_client_resource_template_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_resource_template_at",
+              "resource template missing");
+  }
+  expect_int(state, "mcp_client_receiver_refresh_prompts",
+             cai_mcp_client_refresh_prompts(&fake.public_client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_prompt_count",
+             (long)cai_mcp_client_prompt_count(&fake.public_client), 1L);
+  if (cai_mcp_client_prompt_at(&fake.public_client, 0U) == NULL) {
+    test_fail(state, "mcp_client_receiver_prompt_at", "prompt missing");
+  }
+
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_client_receiver_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"message\":\"hello\"}";
+  expect_int(state, "mcp_client_receiver_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_client_receiver_call_tool",
+             cai_mcp_client_call_tool(&fake.public_client, "echo", &args, sink,
+                                      &error),
+             CAI_OK);
+  expect_str(state, "mcp_client_receiver_call_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_2",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_read_resource",
+             cai_mcp_client_read_resource(&fake.public_client, "resource://ok",
+                                          sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_client_receiver_read_resource_output",
+                writer.buffer, "\"contents\"");
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_3",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_client_receiver_prompt_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_client_receiver_get_prompt",
+             cai_mcp_client_get_prompt(&fake.public_client, "explain", &args,
+                                       sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_client_receiver_get_prompt_output", writer.buffer,
+                "\"messages\"");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_4",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_complete",
+             cai_mcp_client_complete(&fake.public_client, "ref/prompt",
+                                     "completable-prompt", "department", "",
+                                     NULL, sink, &error),
+             CAI_OK);
+  expect_substr(state, "mcp_client_receiver_complete_output", writer.buffer,
+                "\"completion\"");
+  cai_sink_close(sink);
+
+  memset(&writer, 0, sizeof(writer));
+  sink_callbacks.context = &writer;
+  sink = NULL;
+  expect_int(state, "mcp_client_receiver_sink_create_5",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_client_receiver_send_request",
+             cai_mcp_client_send_request(&fake.public_client, "custom/method",
+                                         NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_client_receiver_send_request_method", fake.last_method,
+             "custom/method");
+  expect_str(state, "mcp_client_receiver_send_request_output", writer.buffer,
+             "{\"ok\":true}");
+  cai_sink_close(sink);
+
+  expect_int(state, "mcp_client_receiver_send_request_count",
+             fake.send_request_count, 1L);
+  expect_int(state, "mcp_client_receiver_send_notification",
+             cai_mcp_client_send_notification(
+                 &fake.public_client, "notifications/custom", NULL, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_receiver_send_notification_count",
+             fake.send_notification_count, 1L);
+  expect_str(state, "mcp_client_receiver_send_notification_method",
+             fake.last_method, "notifications/custom");
+
+  expect_int(state, "mcp_client_receiver_null_initialize",
+             cai_mcp_client_initialize(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_ping",
+             cai_mcp_client_ping(NULL, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
+      state, "mcp_client_receiver_null_send_request",
+      cai_mcp_client_send_request(NULL, "test/request", NULL, NULL, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_client_receiver_null_send_notification",
+             cai_mcp_client_send_notification(NULL, "notifications/custom",
+                                              NULL, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+}
+
+static void test_mcp_client_registry_adapter(test_state *state) {
+  test_mcp_client_impl fake;
+  cai_mcp_tool_registration_config config;
+  cai_tool_registry *registry;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  const char *args_json;
+
+  registry = NULL;
+  client = NULL;
+  agent = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(&config, 0, sizeof(config));
+  cai_error_init(&error);
+  test_mcp_fake_client_init(&fake);
+  expect_int(state, "mcp_client_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  config.name_prefix = "mcp__";
+  config.strict = 1;
+  expect_int(state, "mcp_client_register_tools",
+             cai_mcp_client_register_tools(&fake.public_client, registry,
+                                           &config, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_refresh_count", fake.refresh_count, 1L);
+  expect_int(state, "mcp_client_registered_count",
+             (long)cai_tool_registry_count(registry), 2L);
+  expect_str(state, "mcp_client_registered_name",
+             cai_tool_registry_name_at(registry, 0), "mcp__echo");
+  expect_substr(state, "mcp_client_registered_schema",
+                cai_tool_registry_schema_at(registry, 0), "\"message\"");
+
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_client_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"message\":\"hello\"}";
+  expect_int(state, "mcp_client_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(
+      state, "mcp_client_registered_run",
+      cai_tool_registry_run_spooled(registry, "mcp__echo", &args, sink, &error),
+      CAI_OK);
+  expect_int(state, "mcp_client_call_count", fake.call_count, 1L);
+  expect_str(state, "mcp_client_call_name", fake.last_name, "echo");
+  expect_str(state, "mcp_client_call_args", fake.last_arguments, args_json);
+  expect_str(state, "mcp_client_call_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  sink = NULL;
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+
+  memset(&writer, 0, sizeof(writer));
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  if (cai_client_open(&client_config, &client, &error) != CAI_OK) {
+    test_fail(state, "mcp_client_agent_open",
+              error.message != NULL ? error.message : "client open failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (cai_client_new_agent(client, &agent_config, &agent, &error) != CAI_OK) {
+    test_fail(state, "mcp_client_agent_new",
+              error.message != NULL ? error.message : "agent new failed");
+    client->close(client);
+    cai_error_cleanup(&error);
+    return;
+  }
+  config.name_prefix = "agent__";
+  expect_int(state, "mcp_client_agent_register",
+             cai_agent_register_mcp_client_tools(agent, &fake.public_client,
+                                                 &config, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_agent_refresh_count", fake.refresh_count, 2L);
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_client_agent_sink_create",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_client_agent_args_append",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_client_agent_run",
+             cai_tool_registry_run_spooled(CAI_AGENT_IMPL(agent)->tools,
+                                           "agent__echo", &args, sink, &error),
+             CAI_OK);
+  expect_int(state, "mcp_client_agent_call_count", fake.call_count, 2L);
+  expect_str(state, "mcp_client_agent_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
+             "\"isError\":false}");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  agent->close(agent);
+  client->close(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_mcp_handler(test_state *state) {
   static const mcp_header_pair headers[] = {
       {"content-type", "application/json"},
@@ -4248,6 +5262,8 @@ static void test_client_open(test_state *state) {
   cai_error_init(&error);
   cai_client_config_init(&config);
   if (config.api_key_env != NULL || config.base_url != NULL ||
+      config.ca_bundle_path != NULL || config.ca_path != NULL ||
+      config.responses_websocket_fallback_disabled != 0 ||
       config.json_response_limit_bytes != 0U) {
     test_fail(state, "client_config_zero_defaults",
               "client config init should leave defaulted fields zero");
@@ -4278,6 +5294,8 @@ static void test_client_open(test_state *state) {
   logger = &fake_logger;
   config.api_key = "test-key";
   config.base_url = "http://example.test/v1";
+  config.ca_bundle_path = "/tmp/cai-test-ca.pem";
+  config.ca_path = "/tmp/cai-test-ca-dir";
   config.logger = logger;
   g_test_infof_count = 0;
   client = NULL;
@@ -4292,6 +5310,15 @@ static void test_client_open(test_state *state) {
                "test-key");
     expect_str(state, "client_base_url", CAI_CLIENT_IMPL(client)->base_url,
                "http://example.test/v1");
+    expect_str(state, "client_ca_bundle_path",
+               CAI_CLIENT_IMPL(client)->ca_bundle_path, "/tmp/cai-test-ca.pem");
+    expect_str(state, "client_ca_path", CAI_CLIENT_IMPL(client)->ca_path,
+               "/tmp/cai-test-ca-dir");
+    if (CAI_CLIENT_IMPL(client)->ca_bundle_path == config.ca_bundle_path ||
+        CAI_CLIENT_IMPL(client)->ca_path == config.ca_path) {
+      test_fail(state, "client_ca_paths_owned",
+                "client should own configured CA path strings");
+    }
     expect_int(state, "client_default_timeout",
                CAI_CLIENT_IMPL(client)->timeout_ms,
                CAI_DEFAULT_HTTP_TIMEOUT_MS);
@@ -6009,6 +7036,28 @@ static int mock_write_json_response(int fd, const char *body) {
   return mock_write_status_json_response(fd, 200, "OK", NULL, body);
 }
 
+static int mock_write_chunk(int fd, const char *data, size_t length) {
+  char header[32];
+  int header_len;
+
+  header_len =
+      snprintf(header, sizeof(header), "%lx\r\n", (unsigned long)length);
+  if (header_len <= 0 || (size_t)header_len >= sizeof(header)) {
+    return -1;
+  }
+  if (mock_write_all(fd, header, (size_t)header_len) != 0) {
+    return -1;
+  }
+  if (length > 0U && mock_write_all(fd, data, length) != 0) {
+    return -1;
+  }
+  return mock_write_all(fd, "\r\n", 2U);
+}
+
+static int mock_write_chunk_cstr(int fd, const char *data) {
+  return mock_write_chunk(fd, data, strlen(data));
+}
+
 static int mock_write_oversized_sse_response(int fd) {
   static const char header[] =
       "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
@@ -7459,6 +8508,377 @@ http_mock_server_open_script(test_state *state, const char *name,
   return 0;
 }
 
+typedef enum test_mcp_streaming_operation {
+  TEST_MCP_STREAMING_TOOL_CALL = 0,
+  TEST_MCP_STREAMING_RESOURCE_READ,
+  TEST_MCP_STREAMING_PROMPT_GET,
+  TEST_MCP_STREAMING_COMPLETION,
+  TEST_MCP_STREAMING_GENERIC_REQUEST
+} test_mcp_streaming_operation;
+
+static int mock_write_chunked_cstr(int fd, const char *data,
+                                   int one_byte_chunks) {
+  size_t i;
+
+  if (!one_byte_chunks) {
+    return mock_write_chunk_cstr(fd, data);
+  }
+  for (i = 0U; data[i] != '\0'; i++) {
+    if (mock_write_chunk(fd, data + i, 1U) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static void mock_streaming_mcp_child(
+    int pipe_fd, int signal_fd, int sse_response, int one_byte_chunks,
+    int empty_sse_prelude, int preliminary_sse_notification,
+    int preliminary_sse_server_request, int default_sse_message_event,
+    int wait_for_stream_signal, test_mcp_streaming_operation operation,
+    const char *stream_content_type_override) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char first_tool_json_chunk[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"first";
+  static const char second_tool_json_chunk[] = "second\"}],\"isError\":false}}";
+  static const char first_tool_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"first";
+  static const char first_tool_default_sse_chunk[] =
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"first";
+  static const char second_tool_sse_chunk[] =
+      "second\"}],\"isError\":false}}\n\n";
+  static const char first_resource_json_chunk[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://stream\",\"mimeType\":\"text/plain\",\"text\":\"first";
+  static const char second_resource_json_chunk[] = "second\"}]}}";
+  static const char first_resource_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{"
+      "\"uri\":\"resource://stream\",\"mimeType\":\"text/plain\",\"text\":"
+      "\"first";
+  static const char first_resource_default_sse_chunk[] =
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{"
+      "\"uri\":\"resource://stream\",\"mimeType\":\"text/plain\",\"text\":"
+      "\"first";
+  static const char second_resource_sse_chunk[] = "second\"}]}}\n\n";
+  static const char first_prompt_json_chunk[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"first";
+  static const char second_prompt_json_chunk[] = "second\"}}]}}";
+  static const char first_prompt_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{"
+      "\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"first";
+  static const char first_prompt_default_sse_chunk[] =
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{"
+      "\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"first";
+  static const char second_prompt_sse_chunk[] = "second\"}}]}}\n\n";
+  static const char first_completion_json_chunk[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":["
+      "\"first";
+  static const char second_completion_json_chunk[] =
+      "second\"],\"total\":1,\"hasMore\":false}}}";
+  static const char first_completion_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{"
+      "\"values\":[\"first";
+  static const char first_completion_default_sse_chunk[] =
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{"
+      "\"values\":[\"first";
+  static const char second_completion_sse_chunk[] =
+      "second\"],\"total\":1,\"hasMore\":false}}}\n\n";
+  static const char first_request_json_chunk[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"first";
+  static const char second_request_json_chunk[] = "second\"}";
+  static const char first_request_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"first";
+  static const char first_request_default_sse_chunk[] =
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"first";
+  static const char second_request_sse_chunk[] = "second\"}\n\n";
+  static const char preliminary_notification_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"params\":{\"level\":\"info\",\"data\":\"before final result\"}}\n\n";
+  static const char preliminary_server_request_sse_chunk[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"stream-server-ping-1\","
+      "\"method\":\"ping\"}\n\n";
+  const char *content_type;
+  const char *first_chunk;
+  const char *second_chunk;
+  const char *method_fragment;
+  char request[65536];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  int i;
+  char signal_byte;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0 || mock_set_socket_deadline(server_fd) != 0) {
+    _exit(4);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  content_type =
+      stream_content_type_override != NULL
+          ? stream_content_type_override
+          : (sse_response ? "text/event-stream" : "application/json");
+  switch (operation) {
+  case TEST_MCP_STREAMING_RESOURCE_READ:
+    method_fragment = "\"method\":\"resources/read\"";
+    first_chunk = sse_response ? (default_sse_message_event
+                                      ? first_resource_default_sse_chunk
+                                      : first_resource_sse_chunk)
+                               : first_resource_json_chunk;
+    second_chunk =
+        sse_response ? second_resource_sse_chunk : second_resource_json_chunk;
+    break;
+  case TEST_MCP_STREAMING_PROMPT_GET:
+    method_fragment = "\"method\":\"prompts/get\"";
+    first_chunk = sse_response ? (default_sse_message_event
+                                      ? first_prompt_default_sse_chunk
+                                      : first_prompt_sse_chunk)
+                               : first_prompt_json_chunk;
+    second_chunk =
+        sse_response ? second_prompt_sse_chunk : second_prompt_json_chunk;
+    break;
+  case TEST_MCP_STREAMING_COMPLETION:
+    method_fragment = "\"method\":\"completion/complete\"";
+    first_chunk = sse_response ? (default_sse_message_event
+                                      ? first_completion_default_sse_chunk
+                                      : first_completion_sse_chunk)
+                               : first_completion_json_chunk;
+    second_chunk = sse_response ? second_completion_sse_chunk
+                                : second_completion_json_chunk;
+    break;
+  case TEST_MCP_STREAMING_GENERIC_REQUEST:
+    method_fragment = "\"method\":\"test/stream\"";
+    first_chunk = sse_response ? (default_sse_message_event
+                                      ? first_request_default_sse_chunk
+                                      : first_request_sse_chunk)
+                               : first_request_json_chunk;
+    second_chunk =
+        sse_response ? second_request_sse_chunk : second_request_json_chunk;
+    break;
+  case TEST_MCP_STREAMING_TOOL_CALL:
+  default:
+    method_fragment = "\"method\":\"tools/call\"";
+    first_chunk =
+        sse_response ? (default_sse_message_event ? first_tool_default_sse_chunk
+                                                  : first_tool_sse_chunk)
+                     : first_tool_json_chunk;
+    second_chunk =
+        sse_response ? second_tool_sse_chunk : second_tool_json_chunk;
+    break;
+  }
+  for (i = 0; i < 3; i++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0) {
+      _exit(7);
+    }
+    if (mock_set_socket_deadline(client_fd) != 0) {
+      close(client_fd);
+      _exit(12);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      close(client_fd);
+      _exit(8);
+    }
+    if (i == 0) {
+      if (strstr(request, "\"method\":\"initialize\"") == NULL ||
+          mock_write_status_response(
+              client_fd, 200, "OK", "application/json",
+              "req-init\r\nMCP-Session-Id: streaming-session",
+              initialize_body) != 0) {
+        close(client_fd);
+        _exit(9);
+      }
+    } else if (i == 1) {
+      if (strstr(request, "\"method\":\"notifications/initialized\"") == NULL ||
+          mock_write_status_response(client_fd, 202, "Accepted",
+                                     "application/json", NULL, "") != 0) {
+        close(client_fd);
+        _exit(10);
+      }
+    } else {
+      if (strstr(request, "\"id\":2") == NULL ||
+          strstr(request, method_fragment) == NULL) {
+        close(client_fd);
+        _exit(11);
+      }
+      if (mock_write_all(client_fd,
+                         "HTTP/1.1 200 OK\r\n"
+                         "Content-Type: ",
+                         strlen("HTTP/1.1 200 OK\r\n"
+                                "Content-Type: ")) != 0 ||
+          mock_write_all(client_fd, content_type, strlen(content_type)) != 0 ||
+          mock_write_all(client_fd,
+                         "\r\n"
+                         "Transfer-Encoding: chunked\r\n"
+                         "Connection: close\r\n\r\n",
+                         strlen("\r\n"
+                                "Transfer-Encoding: chunked\r\n"
+                                "Connection: close\r\n\r\n")) != 0 ||
+          (sse_response && empty_sse_prelude &&
+           mock_write_chunked_cstr(client_fd,
+                                   "id: empty-before-message\n"
+                                   "data: \n\n",
+                                   one_byte_chunks) != 0) ||
+          (sse_response && preliminary_sse_notification &&
+           mock_write_chunked_cstr(client_fd,
+                                   preliminary_notification_sse_chunk,
+                                   one_byte_chunks) != 0) ||
+          (sse_response && preliminary_sse_server_request &&
+           mock_write_chunked_cstr(client_fd,
+                                   preliminary_server_request_sse_chunk,
+                                   one_byte_chunks) != 0) ||
+          mock_write_chunked_cstr(client_fd, first_chunk, one_byte_chunks) !=
+              0) {
+        close(client_fd);
+        _exit(13);
+      }
+      if (sse_response && preliminary_sse_server_request) {
+        int response_fd;
+
+        response_fd = mock_accept_with_deadline(server_fd);
+        if (response_fd < 0) {
+          close(client_fd);
+          _exit(16);
+        }
+        if (mock_set_socket_deadline(response_fd) != 0) {
+          close(response_fd);
+          close(client_fd);
+          _exit(17);
+        }
+        if (mock_read_request(response_fd, request, sizeof(request)) != 0 ||
+            strstr(request, "\"id\":\"stream-server-ping-1\"") == NULL ||
+            strstr(request, "\"result\":{}") == NULL ||
+            mock_write_status_response(response_fd, 202, "Accepted",
+                                       "application/json", NULL, "") != 0) {
+          close(response_fd);
+          close(client_fd);
+          _exit(18);
+        }
+        close(response_fd);
+      }
+      if (wait_for_stream_signal) {
+        if (mock_wait_fd(signal_fd, 0, MOCK_IO_TIMEOUT_MS) != 0 ||
+            read(signal_fd, &signal_byte, 1U) != 1) {
+          close(client_fd);
+          _exit(14);
+        }
+      }
+      if (mock_write_chunked_cstr(client_fd, second_chunk, one_byte_chunks) !=
+              0 ||
+          mock_write_chunk(client_fd, "", 0U) != 0) {
+        close(client_fd);
+        _exit(15);
+      }
+    }
+    close(client_fd);
+  }
+  close(signal_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int http_mock_server_open_streaming_mcp_ex(
+    test_state *state, const char *name, http_mock_server *server,
+    int *signal_write_fd, int sse_response, int one_byte_chunks,
+    int empty_sse_prelude, int preliminary_sse_notification,
+    int preliminary_sse_server_request, int default_sse_message_event,
+    int wait_for_stream_signal, test_mcp_streaming_operation operation,
+    const char *stream_content_type_override) {
+  int pipe_fds[2];
+  int signal_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (signal_write_fd != NULL) {
+    *signal_write_fd = -1;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, name, "pipe failed");
+    return -1;
+  }
+  if (pipe(signal_fds) != 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    test_fail(state, name, "signal pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    close(signal_fds[0]);
+    close(signal_fds[1]);
+    test_fail(state, name, "fork failed");
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    close(signal_fds[1]);
+    mock_streaming_mcp_child(
+        pipe_fds[1], signal_fds[0], sse_response, one_byte_chunks,
+        empty_sse_prelude, preliminary_sse_notification,
+        preliminary_sse_server_request, default_sse_message_event,
+        wait_for_stream_signal, operation, stream_content_type_override);
+  }
+  close(pipe_fds[1]);
+  close(signal_fds[0]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    close(signal_fds[1]);
+    test_fail(state, name, "failed to read mock port");
+    expect_child_exit(state, name, server->pid, &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  if (signal_write_fd != NULL && wait_for_stream_signal) {
+    *signal_write_fd = signal_fds[1];
+  } else {
+    close(signal_fds[1]);
+  }
+  return 0;
+}
+
 static void mock_stall_oauth_child(int pipe_fd, const char *request_prefix) {
   char request[4096];
   struct sockaddr_in addr;
@@ -7724,6 +9144,8528 @@ static void http_mock_client_close(test_state *state, const char *name,
     expect_child_exit(state, name, mock->pid, &mock->child_status);
     mock->pid = -1;
   }
+}
+
+typedef struct test_mcp_notification_state {
+  int count;
+  int fail;
+  char method[128];
+  char params[512];
+} test_mcp_notification_state;
+
+static int test_mcp_notification_callback(void *context, const char *method,
+                                          lonejson_spooled *params_json,
+                                          cai_error *error) {
+  test_mcp_notification_state *state;
+  char *params;
+
+  state = (test_mcp_notification_state *)context;
+  if (state == NULL || method == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "notification callback context is required");
+  }
+  state->count++;
+  snprintf(state->method, sizeof(state->method), "%s", method);
+  state->params[0] = '\0';
+  if (params_json != NULL) {
+    params = test_spooled_to_cstr(params_json);
+    if (params == NULL) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read notification params");
+    }
+    snprintf(state->params, sizeof(state->params), "%s", params);
+    free(params);
+  }
+  if (state->fail) {
+    return cai_set_error(error, CAI_ERR_CANCELLED,
+                         "notification callback failed");
+  }
+  return CAI_OK;
+}
+
+static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
+  static const char initialize_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{\"listChanged\":false}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}\n\n";
+  static const char tools_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
+      "\"title\":\"Echo Tool\",\"description\":\"Echo text\","
+      "\"inputSchema\":{\"type\":\"object\","
+      "\"properties\":{\"message\":{\"type\":\"string\"}},\"required\":["
+      "\"message\"]},\"outputSchema\":{\"type\":\"object\",\"properties\":{"
+      "\"message\":{\"type\":\"string\"}}},\"annotations\":{\"readOnlyHint\":"
+      "true},\"icons\":[{\"src\":\"https://example.test/echo.svg\","
+      "\"mimeType\":\"image/svg+xml\"}],\"execution\":{\"taskSupport\":"
+      "\"optional\"}}],\"nextCursor\":"
+      "\"tools-page-2\"}}\n\n";
+  static const char tools_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
+      "\"status\",\"inputSchema\":{\"type\":\"object\","
+      "\"additionalProperties\":false},\"annotations\":{\"title\":"
+      "\"Status Display\"}}]}}";
+  static const char call_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{"
+      "\"progressToken\":4,\"progress\":0.5,\"total\":1}}\n\n"
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"hello from mcp\"}],\"isError\":false}}\n\n";
+  static const char resources_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://alpha\",\"name\":\"alpha\",\"description\":\"Alpha doc\","
+      "\"mimeType\":\"text/plain\",\"icons\":[{\"src\":\"https://example.test/"
+      "alpha.png\",\"mimeType\":\"image/png\",\"sizes\":[\"48x48\"]}],"
+      "\"annotations\":{\"audience\":[\"assistant\"],\"priority\":0.8},"
+      "\"size\":1234}],\"nextCursor\":\"resources-page-2\"}}\n\n";
+  static const char resources_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://beta\",\"name\":\"beta\",\"title\":\"Beta Resource\","
+      "\"mimeType\":\"application/json\"}]}}";
+  static const char resource_templates_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://docs/{name}\",\"name\":\"doc\","
+      "\"description\":\"Doc template\",\"mimeType\":\"text/markdown\","
+      "\"icons\":[{\"src\":\"https://example.test/doc.svg\","
+      "\"mimeType\":\"image/svg+xml\",\"sizes\":[\"any\"]}],"
+      "\"annotations\":{\"audience\":[\"user\"]}}],"
+      "\"nextCursor\":\"resource-templates-page-2\"}}\n\n";
+  static const char resource_templates_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://metrics/{id}\",\"name\":\"metric\","
+      "\"title\":\"Metric Template\",\"mimeType\":\"application/json\"}]}}";
+  static const char resource_read_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{"
+      "\"progressToken\":9,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://beta\",\"mimeType\":\"application/json\",\"text\":"
+      "\"{\\\"beta\\\":true}\"}]}}\n\n";
+  static const char prompts_list_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"prompts\":[{\"name\":"
+      "\"explain\",\"description\":\"Explain a topic\",\"arguments\":[{"
+      "\"name\":\"topic\",\"required\":true}],\"icons\":[{\"src\":"
+      "\"https://example.test/prompt.svg\",\"mimeType\":\"image/svg+xml\","
+      "\"sizes\":[\"any\"]}]}],\"nextCursor\":"
+      "\"prompts-page-2\"}}\n\n";
+  static const char prompts_list_page_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"title\":\"Summarize\",\"arguments\":[]}]}}";
+  static const char prompt_get_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{\"description\":"
+      "\"Explain a topic\",\"messages\":[{\"role\":\"user\",\"content\":{"
+      "\"type\":\"text\",\"text\":\"Explain MCP\"}}]}}\n\n";
+  static const char complete_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"id\":13,\"result\":{\"completion\":{\"values\":"
+      "[\"engineering\"],\"total\":1,\"hasMore\":false}}}\n\n";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":14,\"result\":{}}";
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/",
+      "Accept: application/json, text/event-stream",
+      "Content-Type: application/json",
+      "\"method\":\"initialize\"",
+      "\"protocolVersion\":\"" CAI_MCP_PROTOCOL_VERSION "\"",
+      "\"name\":\"cai-test-client\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"notifications/initialized\""};
+  static const char *list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"tools/list\""};
+  static const char *cursorless_list_forbidden[] = {"\"params\":"};
+  static const char *list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"tools/list\"", "\"cursor\":\"tools-page-2\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"tools/call\"",
+      "\"name\":\"echo\"",
+      "\"arguments\":{\"message\":\"hello\"}",
+      "\"_meta\":{\"progressToken\":4}"};
+  static const char *resources_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"resources/list\""};
+  static const char *resources_list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"resources/list\"", "\"cursor\":\"resources-page-2\""};
+  static const char *resource_read_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"resources/read\"",
+      "\"uri\":\"resource://beta\"",
+      "\"_meta\":{\"progressToken\":9}"};
+  static const char *resource_templates_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"resources/templates/list\""};
+  static const char *resource_templates_list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"resources/templates/list\"",
+      "\"cursor\":\"resource-templates-page-2\""};
+  static const char *prompts_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"prompts/list\""};
+  static const char *prompts_list_page_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"prompts/list\"", "\"cursor\":\"prompts-page-2\""};
+  static const char *prompt_get_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"prompts/get\"",
+      "\"name\":\"explain\"",
+      "\"arguments\":{\"topic\":\"MCP\"}",
+      "\"_meta\":{\"progressToken\":12}"};
+  static const char *complete_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"completion/complete\"",
+      "\"ref\":{\"type\":\"ref/prompt\",\"name\":\"completable-prompt\"}",
+      "\"argument\":{\"name\":\"name\",\"value\":\"eng\"}",
+      "\"context\":{\"arguments\":{\"department\":\"engineering\"}}",
+      "\"_meta\":{\"progressToken\":13}"};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: session-123",
+      ("MCP-Protocol-Version: " CAI_MCP_PROTOCOL_VERSION),
+      "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", "req-init\r\nMCP-Session-Id: session-123",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", list_required,
+       sizeof(list_required) / sizeof(list_required[0]),
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, tools_list_body},
+      {"POST /v1/mcp HTTP/", list_page_2_required,
+       sizeof(list_page_2_required) / sizeof(list_page_2_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tools_list_page_2_body},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, call_body},
+      {"POST /v1/mcp HTTP/", resources_list_required,
+       sizeof(resources_list_required) / sizeof(resources_list_required[0]),
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, resources_list_body},
+      {"POST /v1/mcp HTTP/", resources_list_page_2_required,
+       sizeof(resources_list_page_2_required) /
+           sizeof(resources_list_page_2_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resources_list_page_2_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_required,
+       sizeof(resource_templates_list_required) /
+           sizeof(resource_templates_list_required[0]),
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, resource_templates_list_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_page_2_required,
+       sizeof(resource_templates_list_page_2_required) /
+           sizeof(resource_templates_list_page_2_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resource_templates_list_page_2_body},
+      {"POST /v1/mcp HTTP/", resource_read_required,
+       sizeof(resource_read_required) / sizeof(resource_read_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, resource_read_body},
+      {"POST /v1/mcp HTTP/", prompts_list_required,
+       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]),
+       cursorless_list_forbidden,
+       sizeof(cursorless_list_forbidden) / sizeof(cursorless_list_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, prompts_list_body},
+      {"POST /v1/mcp HTTP/", prompts_list_page_2_required,
+       sizeof(prompts_list_page_2_required) /
+           sizeof(prompts_list_page_2_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, prompts_list_page_2_body},
+      {"POST /v1/mcp HTTP/", prompt_get_required,
+       sizeof(prompt_get_required) / sizeof(prompt_get_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, prompt_get_body},
+      {"POST /v1/mcp HTTP/", complete_required,
+       sizeof(complete_required) / sizeof(complete_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, complete_body},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  const cai_mcp_client_tool *tool;
+  const cai_mcp_client_resource *resource;
+  const cai_mcp_client_resource_template *resource_template;
+  const cai_mcp_client_prompt *prompt;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  test_mcp_notification_state notifications;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  const char *args_json;
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&notifications, 0, sizeof(notifications));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_http_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.client_name = "cai-test-client";
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  if (client == NULL) {
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                      &server.child_status);
+    return;
+  }
+  if (cai_mcp_client_refresh_tools(client, &error) != CAI_OK) {
+    test_fail(state, "mcp_streamable_refresh",
+              error.message != NULL ? error.message : "refresh failed");
+    cai_mcp_client_destroy(client);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                      &server.child_status);
+    return;
+  }
+  expect_int(state, "mcp_streamable_tool_count",
+             (long)cai_mcp_client_tool_count(client), 2L);
+  tool = cai_mcp_client_tool_at(client, 0U);
+  if (tool == NULL) {
+    test_fail(state, "mcp_streamable_tool", "tool missing");
+  } else {
+    expect_str(state, "mcp_streamable_tool_name", tool->name, "echo");
+    expect_str(state, "mcp_streamable_tool_title", tool->title, "Echo Tool");
+    expect_str(state, "mcp_streamable_tool_description", tool->description,
+               "Echo text");
+    expect_int(state, "mcp_streamable_tool_schema_property_count",
+               tool->input_schema != NULL
+                   ? (long)tool->input_schema->property_count
+                   : -1L,
+               1L);
+    expect_str(state, "mcp_streamable_tool_schema_property",
+               tool->input_schema != NULL ? tool->input_schema->properties[0]
+                                          : NULL,
+               "message");
+    expect_int(state, "mcp_streamable_tool_output_schema_property_count",
+               tool->output_schema != NULL
+                   ? (long)tool->output_schema->property_count
+                   : -1L,
+               1L);
+    expect_str(state, "mcp_streamable_tool_output_schema_property",
+               tool->output_schema != NULL ? tool->output_schema->properties[0]
+                                           : NULL,
+               "message");
+    expect_int(state, "mcp_streamable_tool_annotations_read_only",
+               tool->annotations.read_only_hint, 1L);
+    expect_int(state, "mcp_streamable_tool_icon_count", (long)tool->icon_count,
+               1L);
+    expect_str(state, "mcp_streamable_tool_icon_src",
+               tool->icon_count > 0U ? tool->icons[0].src : NULL,
+               "https://example.test/echo.svg");
+    expect_int(state, "mcp_streamable_tool_execution", tool->task_support,
+               CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_OPTIONAL);
+  }
+  tool = cai_mcp_client_tool_at(client, 1U);
+  if (tool == NULL) {
+    test_fail(state, "mcp_streamable_tool_page_2", "second tool missing");
+  } else {
+    expect_str(state, "mcp_streamable_tool_page_2_name", tool->name, "status");
+    expect_str(state, "mcp_streamable_tool_page_2_title", tool->title,
+               "Status Display");
+    expect_str(state, "mcp_streamable_tool_page_2_description",
+               tool->description, "");
+    expect_int(state, "mcp_streamable_tool_page_2_output_schema",
+               tool->output_schema == NULL, 1L);
+    expect_str(state, "mcp_streamable_tool_page_2_annotations",
+               tool->annotations.title, "Status Display");
+    expect_int(state, "mcp_streamable_tool_page_2_icons",
+               (long)tool->icon_count, 0L);
+    expect_int(state, "mcp_streamable_tool_page_2_execution",
+               tool->task_support,
+               CAI_MCP_CLIENT_TOOL_TASK_SUPPORT_UNSPECIFIED);
+  }
+
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"message\":\"hello\"}";
+  expect_int(state, "mcp_streamable_args",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_call",
+             cai_mcp_client_call_tool(client, "echo", &args, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_call_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"hello from mcp\"}],"
+             "\"isError\":false}");
+  expect_int(state, "mcp_streamable_notification_count", notifications.count,
+             1L);
+  expect_str(state, "mcp_streamable_notification_method", notifications.method,
+             "notifications/progress");
+  expect_substr(state, "mcp_streamable_notification_params",
+                notifications.params, "\"progressToken\":4");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_refresh_resources",
+             cai_mcp_client_refresh_resources(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_resource_count",
+             (long)cai_mcp_client_resource_count(client), 2L);
+  resource = cai_mcp_client_resource_at(client, 0U);
+  if (resource == NULL) {
+    test_fail(state, "mcp_streamable_resource", "resource missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_uri", resource->uri,
+               "resource://alpha");
+    expect_str(state, "mcp_streamable_resource_title", resource->title,
+               "alpha");
+    expect_str(state, "mcp_streamable_resource_description",
+               resource->description, "Alpha doc");
+    expect_str(state, "mcp_streamable_resource_mime", resource->mime_type,
+               "text/plain");
+    expect_int(state, "mcp_streamable_resource_icons",
+               (long)resource->icon_count, 1L);
+    expect_str(state, "mcp_streamable_resource_icon_src",
+               resource->icon_count > 0U ? resource->icons[0].src : NULL,
+               "https://example.test/alpha.png");
+    expect_int(state, "mcp_streamable_resource_annotations_priority_present",
+               resource->annotations.has_priority, 1L);
+    expect_int(state, "mcp_streamable_resource_has_size", resource->has_size,
+               1L);
+    expect_int(state, "mcp_streamable_resource_size", resource->size, 1234L);
+  }
+  resource = cai_mcp_client_resource_at(client, 1U);
+  if (resource == NULL) {
+    test_fail(state, "mcp_streamable_resource_page_2",
+              "second resource missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_page_2_uri", resource->uri,
+               "resource://beta");
+    expect_str(state, "mcp_streamable_resource_page_2_title", resource->title,
+               "Beta Resource");
+    expect_int(state, "mcp_streamable_resource_page_2_icons",
+               (long)resource->icon_count, 0L);
+    expect_int(state, "mcp_streamable_resource_page_2_annotations",
+               (long)resource->annotations.audience_count, 0L);
+    expect_int(state, "mcp_streamable_resource_page_2_has_size",
+               resource->has_size, 0L);
+  }
+  expect_int(state, "mcp_streamable_refresh_resource_templates",
+             cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_resource_template_count",
+             (long)cai_mcp_client_resource_template_count(client), 2L);
+  resource_template = cai_mcp_client_resource_template_at(client, 0U);
+  if (resource_template == NULL) {
+    test_fail(state, "mcp_streamable_resource_template",
+              "resource template missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_template_uri",
+               resource_template->uri_template, "resource://docs/{name}");
+    expect_str(state, "mcp_streamable_resource_template_description",
+               resource_template->description, "Doc template");
+    expect_str(state, "mcp_streamable_resource_template_title",
+               resource_template->title, "doc");
+    expect_str(state, "mcp_streamable_resource_template_mime",
+               resource_template->mime_type, "text/markdown");
+    expect_int(state, "mcp_streamable_resource_template_icons",
+               (long)resource_template->icon_count, 1L);
+    expect_str(state, "mcp_streamable_resource_template_icon_src",
+               resource_template->icon_count > 0U
+                   ? resource_template->icons[0].src
+                   : NULL,
+               "https://example.test/doc.svg");
+    expect_int(state, "mcp_streamable_resource_template_annotations",
+               (long)resource_template->annotations.audience_count, 1L);
+  }
+  resource_template = cai_mcp_client_resource_template_at(client, 1U);
+  if (resource_template == NULL) {
+    test_fail(state, "mcp_streamable_resource_template_page_2",
+              "second resource template missing");
+  } else {
+    expect_str(state, "mcp_streamable_resource_template_page_2_uri",
+               resource_template->uri_template, "resource://metrics/{id}");
+    expect_str(state, "mcp_streamable_resource_template_page_2_title",
+               resource_template->title, "Metric Template");
+    expect_int(state, "mcp_streamable_resource_template_page_2_icons",
+               (long)resource_template->icon_count, 0L);
+    expect_int(state, "mcp_streamable_resource_template_page_2_annotations",
+               (long)resource_template->annotations.audience_count, 0L);
+  }
+  expect_int(
+      state, "mcp_streamable_read_resource",
+      cai_mcp_client_read_resource(client, "resource://beta", sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_streamable_read_resource_output", writer.buffer,
+             "{\"contents\":[{\"uri\":\"resource://beta\",\"mimeType\":"
+             "\"application/json\",\"text\":\"{\\\"beta\\\":true}\"}]}");
+  expect_int(state, "mcp_streamable_read_resource_notify_count",
+             notifications.count, 2L);
+  expect_substr(state, "mcp_streamable_read_resource_notify_params",
+                notifications.params, "\"progressToken\":9");
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "mcp_streamable_refresh_prompts",
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_prompt_count",
+             (long)cai_mcp_client_prompt_count(client), 2L);
+  prompt = cai_mcp_client_prompt_at(client, 0U);
+  if (prompt == NULL) {
+    test_fail(state, "mcp_streamable_prompt", "prompt missing");
+  } else {
+    expect_str(state, "mcp_streamable_prompt_name", prompt->name, "explain");
+    expect_str(state, "mcp_streamable_prompt_title", prompt->title, "explain");
+    expect_str(state, "mcp_streamable_prompt_description", prompt->description,
+               "Explain a topic");
+    expect_int(state, "mcp_streamable_prompt_arguments",
+               (long)prompt->argument_count, 1L);
+    expect_str(state, "mcp_streamable_prompt_argument_name",
+               prompt->argument_count > 0U ? prompt->arguments[0].name : NULL,
+               "topic");
+    expect_int(state, "mcp_streamable_prompt_icons", (long)prompt->icon_count,
+               1L);
+    expect_str(state, "mcp_streamable_prompt_icon_src",
+               prompt->icon_count > 0U ? prompt->icons[0].src : NULL,
+               "https://example.test/prompt.svg");
+  }
+  prompt = cai_mcp_client_prompt_at(client, 1U);
+  if (prompt == NULL) {
+    test_fail(state, "mcp_streamable_prompt_page_2", "second prompt missing");
+  } else {
+    expect_str(state, "mcp_streamable_prompt_page_2_name", prompt->name,
+               "summarize");
+    expect_str(state, "mcp_streamable_prompt_page_2_title", prompt->title,
+               "Summarize");
+    expect_int(state, "mcp_streamable_prompt_page_2_arguments",
+               (long)prompt->argument_count, 0L);
+    expect_int(state, "mcp_streamable_prompt_page_2_icons",
+               (long)prompt->icon_count, 0L);
+  }
+  args.cleanup(&args);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"topic\":\"MCP\"}";
+  expect_int(state, "mcp_streamable_prompt_args",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_get_prompt",
+             cai_mcp_client_get_prompt(client, "explain", &args, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_get_prompt_output", writer.buffer,
+             "{\"description\":\"Explain a topic\",\"messages\":[{\"role\":"
+             "\"user\",\"content\":{\"type\":\"text\",\"text\":\"Explain "
+             "MCP\"}}]}");
+  args.cleanup(&args);
+  memset(&writer, 0, sizeof(writer));
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  args_json = "{\"department\":\"engineering\"}";
+  expect_int(state, "mcp_streamable_complete_context",
+             args.append(&args, args_json, strlen(args_json), &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_complete",
+             cai_mcp_client_complete(client, "ref/prompt", "completable-prompt",
+                                     "name", "eng", &args, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_complete_output", writer.buffer,
+             "{\"completion\":{\"values\":[\"engineering\"],\"total\":1,"
+             "\"hasMore\":false}}");
+  args.cleanup(&args);
+  if (cai_mcp_client_ping(client, &error) != CAI_OK) {
+    test_fail(state, "mcp_streamable_ping",
+              error.detail != NULL
+                  ? error.detail
+                  : (error.message != NULL ? error.message : "ping failed"));
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_http_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_client_custom_allocator_metadata(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char tools_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
+      "\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\","
+      "\"properties\":{\"message\":{\"type\":\"string\"}}},\"outputSchema\":{"
+      "\"type\":\"object\"},\"annotations\":{\"readOnlyHint\":true},"
+      "\"icons\":[{\"src\":\"https://example.test/echo.svg\"}],"
+      "\"execution\":{\"taskSupport\":\"optional\"}}]}}";
+  static const char resources_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://alpha\",\"name\":\"alpha\",\"icons\":[{\"src\":"
+      "\"https://example.test/alpha.png\"}],\"annotations\":{\"priority\":"
+      "0.8}}]}}";
+  static const char resource_templates_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://docs/{name}\",\"name\":\"doc\","
+      "\"icons\":[{\"src\":\"https://example.test/doc.svg\"}],"
+      "\"annotations\":{\"audience\":[\"user\"]}}]}}";
+  static const char prompts_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"prompts\":[{\"name\":"
+      "\"explain\",\"arguments\":[{\"name\":\"topic\",\"required\":true}],"
+      "\"icons\":[{\"src\":\"https://example.test/prompt.svg\"}]}]}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: allocator-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *tools_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: allocator-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *resources_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: allocator-session", "\"id\":3",
+      "\"method\":\"resources/list\""};
+  static const char *resource_templates_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: allocator-session", "\"id\":4",
+      "\"method\":\"resources/templates/list\""};
+  static const char *prompts_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: allocator-session", "\"id\":5",
+      "\"method\":\"prompts/list\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: allocator-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", tools_list_required,
+       sizeof(tools_list_required) / sizeof(tools_list_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tools_list_body},
+      {"POST /v1/mcp HTTP/", resources_list_required,
+       sizeof(resources_list_required) / sizeof(resources_list_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, resources_list_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_required,
+       sizeof(resource_templates_list_required) /
+           sizeof(resource_templates_list_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resource_templates_list_body},
+      {"POST /v1/mcp HTTP/", prompts_list_required,
+       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]), NULL,
+       0U, 200, "OK", "application/json", NULL, prompts_list_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  tracking_alloc_state alloc_state;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_custom_allocator_metadata_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.allocator.malloc_fn = tracking_allocator_malloc;
+  config.allocator.realloc_fn = tracking_allocator_realloc;
+  config.allocator.free_fn = tracking_allocator_free;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_tools",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_resources",
+             cai_mcp_client_refresh_resources(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_templates",
+             cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_prompts",
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  client = NULL;
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_foreign_free",
+             alloc_state.foreign_frees, 0L);
+  expect_int(state, "mcp_streamable_custom_allocator_metadata_balance",
+             (long)(alloc_state.allocs - alloc_state.frees), 0L);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_custom_allocator_metadata_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_client_logging(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] = "{\"jsonrpc\":\"2.0\",\"id\":2,"
+                                  "\"result\":{}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,"
+      "\"message\":\"boom\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: logging-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: logging-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation success_script[3];
+  mock_http_expectation client_error_script[3];
+  mock_http_expectation server_error_script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  pslog_logger fake_logger;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(success_script, 0, sizeof(success_script));
+  memset(client_error_script, 0, sizeof(client_error_script));
+  memset(server_error_script, 0, sizeof(server_error_script));
+  memset(&fake_logger, 0, sizeof(fake_logger));
+  fake_logger.infof = test_pslog_infof;
+  fake_logger.tracef = test_pslog_tracef;
+  fake_logger.debugf = test_pslog_debugf;
+  fake_logger.warnf = test_pslog_warnf;
+  fake_logger.errorf = test_pslog_errorf;
+
+  success_script[0].request_prefix = "POST /v1/mcp HTTP/";
+  success_script[0].required = init_required;
+  success_script[0].required_count =
+      sizeof(init_required) / sizeof(init_required[0]);
+  success_script[0].status = 200;
+  success_script[0].status_text = "OK";
+  success_script[0].content_type = "application/json";
+  success_script[0].request_id = "req-init\r\nMCP-Session-Id: logging-session";
+  success_script[0].body = initialize_body;
+  success_script[1].request_prefix = "POST /v1/mcp HTTP/";
+  success_script[1].required = initialized_required;
+  success_script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  success_script[1].status = 202;
+  success_script[1].status_text = "Accepted";
+  success_script[1].content_type = "application/json";
+  success_script[1].body = "";
+  success_script[2].request_prefix = "POST /v1/mcp HTTP/";
+  success_script[2].required = ping_required;
+  success_script[2].required_count =
+      sizeof(ping_required) / sizeof(ping_required[0]);
+  success_script[2].status = 200;
+  success_script[2].status_text = "OK";
+  success_script[2].content_type = "application/json";
+  success_script[2].body = ping_body;
+
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_logging_success_mock", success_script,
+          sizeof(success_script) / sizeof(success_script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.logger = &fake_logger;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_success_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_success_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_logging_success_info", g_test_infof_count,
+             1L);
+  expect_int(state, "mcp_streamable_logging_success_trace", g_test_tracef_count,
+             3L);
+  expect_int(state, "mcp_streamable_logging_success_debug", g_test_debugf_count,
+             3L);
+  expect_int(state, "mcp_streamable_logging_success_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_success_error", g_test_errorf_count,
+             0L);
+  cai_mcp_client_destroy(client);
+  client = NULL;
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_logging_success_mock", server.pid,
+                    &server.child_status);
+
+  client_error_script[0] = success_script[0];
+  client_error_script[1] = success_script[1];
+  client_error_script[2] = success_script[2];
+  client_error_script[2].status = 400;
+  client_error_script[2].status_text = "Bad Request";
+  client_error_script[2].body = ping_error_body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_logging_client_error_mock",
+          client_error_script,
+          sizeof(client_error_script) / sizeof(client_error_script[0]),
+          &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  config.url = url;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_client_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_client_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_logging_client_error_info",
+             g_test_infof_count, 1L);
+  expect_int(state, "mcp_streamable_logging_client_error_trace",
+             g_test_tracef_count, 3L);
+  expect_int(state, "mcp_streamable_logging_client_error_debug",
+             g_test_debugf_count, 2L);
+  expect_int(state, "mcp_streamable_logging_client_error_warn",
+             g_test_warnf_count, 1L);
+  expect_int(state, "mcp_streamable_logging_client_error_error",
+             g_test_errorf_count, 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_logging_client_error_mock",
+                    server.pid, &server.child_status);
+
+  server_error_script[0] = success_script[0];
+  server_error_script[1] = success_script[1];
+  server_error_script[2] = success_script[2];
+  server_error_script[2].status = 500;
+  server_error_script[2].status_text = "Internal Server Error";
+  server_error_script[2].body = ping_error_body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_logging_server_error_mock",
+          server_error_script,
+          sizeof(server_error_script) / sizeof(server_error_script[0]),
+          &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  config.url = url;
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_server_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_server_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_logging_server_error_info",
+             g_test_infof_count, 1L);
+  expect_int(state, "mcp_streamable_logging_server_error_trace",
+             g_test_tracef_count, 3L);
+  expect_int(state, "mcp_streamable_logging_server_error_debug",
+             g_test_debugf_count, 2L);
+  expect_int(state, "mcp_streamable_logging_server_error_warn",
+             g_test_warnf_count, 0L);
+  expect_int(state, "mcp_streamable_logging_server_error_error",
+             g_test_errorf_count, 1L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_logging_server_error_mock",
+                    server.pid, &server.child_status);
+
+  cai_error_init(&error);
+  config.url = "mcp://127.0.0.1/mcp";
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_transport_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_transport_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_TRANSPORT);
+  expect_int(state, "mcp_streamable_logging_transport_info", g_test_infof_count,
+             1L);
+  expect_int(state, "mcp_streamable_logging_transport_trace",
+             g_test_tracef_count, 1L);
+  expect_int(state, "mcp_streamable_logging_transport_debug",
+             g_test_debugf_count, 0L);
+  expect_int(state, "mcp_streamable_logging_transport_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_transport_error",
+             g_test_errorf_count, 1L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+
+  cai_error_init(&error);
+  config.url = "";
+  g_test_infof_count = 0;
+  g_test_tracef_count = 0;
+  g_test_debugf_count = 0;
+  g_test_warnf_count = 0;
+  g_test_errorf_count = 0;
+  expect_int(state, "mcp_streamable_logging_invalid_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "mcp_streamable_logging_invalid_info", g_test_infof_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_trace", g_test_tracef_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_debug", g_test_debugf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_warn", g_test_warnf_count,
+             0L);
+  expect_int(state, "mcp_streamable_logging_invalid_error", g_test_errorf_count,
+             0L);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_mcp_streamable_http_call_result_must_be_object(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[]}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: call-result-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: call-result-session", "\"id\":2",
+      "\"method\":\"tools/call\"", "\"name\":\"echo\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: call-result-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_call_result_object_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_call_result_object_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_call_result_object_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_call_result_object_args",
+             args.append(&args, "{}", 2U, &json_error), LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_call_result_object_call",
+             cai_mcp_client_call_tool(client, "echo", &args, sink, &error),
+             CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_call_result_object_message", error.message,
+             "MCP result must be an object");
+  expect_str(state, "mcp_streamable_call_result_object_output", writer.buffer,
+             "");
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_call_result_object_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tool_call_omits_null_arguments(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\"}]}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: no-args-call-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: no-args-call-session",
+                                        "\"id\":2",
+                                        "\"method\":\"tools/call\"",
+                                        "\"name\":\"status\"",
+                                        "\"_meta\":{\"progressToken\":2}"};
+  static const char *call_forbidden[] = {"\"arguments\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: no-args-call-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), call_forbidden,
+       sizeof(call_forbidden) / sizeof(call_forbidden[0]), 200, "OK",
+       "application/json", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_tool_call_null_args_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_tool_call_null_args_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_tool_call_null_args_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_tool_call_null_args_call",
+             cai_mcp_client_call_tool(client, "status", NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_tool_call_null_args_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tool_call_null_args_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_prompt_get_omits_null_arguments(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"prompts\":{}},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char prompt_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}]}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: no-args-prompt-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *prompt_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: no-args-prompt-session",
+      "\"id\":2",
+      "\"method\":\"prompts/get\"",
+      "\"name\":\"status-prompt\"",
+      "\"_meta\":{\"progressToken\":2}"};
+  static const char *prompt_forbidden[] = {"\"arguments\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: no-args-prompt-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", prompt_required,
+       sizeof(prompt_required) / sizeof(prompt_required[0]), prompt_forbidden,
+       sizeof(prompt_forbidden) / sizeof(prompt_forbidden[0]), 200, "OK",
+       "application/json", NULL, prompt_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_prompt_get_null_args_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_prompt_get_null_args_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_prompt_get_null_args_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_streamable_prompt_get_null_args_call",
+      cai_mcp_client_get_prompt(client, "status-prompt", NULL, sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_streamable_prompt_get_null_args_output", writer.buffer,
+             "{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\","
+             "\"text\":\"ok\"}}]}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_prompt_get_null_args_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_ping_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,"
+      "\"message\":\"pong unavailable\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: ping-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: ping-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: ping-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_error_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_ping_error_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_ping_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_ping_error_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_str(state, "mcp_streamable_ping_error_message", error.message,
+             "pong unavailable");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_ping_error_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_ping_error_missing_code(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":\"missing code\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: missing-code-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: missing-code-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: missing-code-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_error_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_ping_missing_code_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_ping_missing_code_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_ping_missing_code_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_ping_missing_code_message", error.message,
+             "MCP JSON-RPC error must include code and message");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_ping_missing_code_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_ping_error_missing_message(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: missing-message-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: missing-message-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: missing-message-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_error_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_ping_missing_message_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_ping_missing_message_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_ping_missing_message_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_ping_missing_message_message",
+             error.message, "MCP JSON-RPC error must include code and message");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_ping_missing_message_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_ping_error_empty(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_error_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: empty-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: empty-error-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: empty-error-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_error_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_ping_empty_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_ping_empty_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_ping_empty_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_ping_empty_message", error.message,
+             "MCP JSON-RPC error must include code and message");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_ping_empty_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_ping_error_case(
+    test_state *state, const char *test_name, const char *ping_body,
+    int expected_rc, const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-ping-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-ping-error-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-ping-error-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char call_name[128];
+  char message_name[128];
+
+  script[2].body = ping_body;
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, cai_mcp_client_ping(client, &error),
+             expected_rc);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_ping_error(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,"
+      "\"message\":\"pong unavailable\"}}\n\n";
+
+  test_mcp_streamable_http_sse_ping_error_case(
+      state, "mcp_streamable_sse_ping_error", ping_body, CAI_ERR_SERVER,
+      "pong unavailable");
+}
+
+static void
+test_mcp_streamable_http_sse_ping_error_missing_code(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":\"missing "
+      "code\"}}\n\n";
+
+  test_mcp_streamable_http_sse_ping_error_case(
+      state, "mcp_streamable_sse_ping_missing_code", ping_body,
+      CAI_ERR_PROTOCOL, "MCP JSON-RPC error must include code and message");
+}
+
+static void
+test_mcp_streamable_http_sse_ping_error_missing_message(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000}}\n\n";
+
+  test_mcp_streamable_http_sse_ping_error_case(
+      state, "mcp_streamable_sse_ping_missing_message", ping_body,
+      CAI_ERR_PROTOCOL, "MCP JSON-RPC error must include code and message");
+}
+
+static void test_mcp_streamable_http_sse_ping_error_empty(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{}}\n\n";
+
+  test_mcp_streamable_http_sse_ping_error_case(
+      state, "mcp_streamable_sse_ping_empty", ping_body, CAI_ERR_PROTOCOL,
+      "MCP JSON-RPC error must include code and message");
+}
+
+static void test_mcp_streamable_http_initialize_invalid(
+    test_state *state, const char *test_name, const char *initialize_body,
+    const char *expected_message) {
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char call_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  script[0].body = initialize_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_initialize_missing_capabilities(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_missing_capabilities", initialize_body,
+      "failed to parse MCP initialize");
+}
+
+static void
+test_mcp_streamable_http_initialize_capabilities_not_object(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":[],\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_capabilities_not_object",
+      initialize_body, "MCP initialize capabilities must be an object");
+}
+
+static void
+test_mcp_streamable_http_initialize_server_info_metadata(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"title\":\"Mock MCP\",\"version\":\"1\",\"description\":\"Test "
+      "server\",\"websiteUrl\":\"https://example.test/mcp\",\"icons\":[{"
+      "\"src\":\"https://example.test/icon.png\",\"sizes\":[\"64x64\"],"
+      "\"mimeType\":\"image/png\",\"theme\":\"dark\"}]}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-info-metadata-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-info-metadata-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: server-info-metadata-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_server_info_meta",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_info_meta_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_info_meta_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_info_meta", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_initialize_server_info_icons_not_array(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"icons\":{}}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_icons_not_array",
+      initialize_body, "MCP serverInfo icons must be an array");
+}
+
+static void test_mcp_streamable_http_initialize_server_info_icon_missing_src(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"icons\":[{\"mimeType\":\"image/png\"}]}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_icon_missing_src",
+      initialize_body, "failed to parse MCP serverInfo icons");
+}
+
+static void test_mcp_streamable_http_initialize_server_info_icon_bad_theme(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"icons\":[{\"src\":\"https://example.test/icon."
+      "png\",\"theme\":\"system\"}]}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_icon_bad_theme",
+      initialize_body, "MCP serverInfo icon theme must be light or dark");
+}
+
+static void
+test_mcp_streamable_http_initialize_server_info_description_not_string(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\",\"description\":[]}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_server_info_description_not_string",
+      initialize_body, "failed to parse MCP initialize");
+}
+
+static void
+test_mcp_streamable_http_initialize_instructions_not_string(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"},\"instructions\":[]}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_instructions_not_string",
+      initialize_body, "failed to parse MCP initialize");
+}
+
+static void
+test_mcp_streamable_http_initialize_missing_server_info(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION "\",\"capabilities\":{}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_missing_server_info", initialize_body,
+      "failed to parse MCP initialize");
+}
+
+static void test_mcp_streamable_http_initialize_missing_protocol_version(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_missing_protocol_version",
+      initialize_body, "MCP server negotiated unsupported protocol version");
+}
+
+static void test_mcp_streamable_http_initialize_unsupported_protocol_version(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"1900-01-01\",\"capabilities\":{},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+
+  test_mcp_streamable_http_initialize_invalid(
+      state, "mcp_streamable_initialize_unsupported_protocol_version",
+      initialize_body, "MCP server negotiated unsupported protocol version");
+}
+
+static void test_mcp_streamable_http_invalid_session_id(
+    test_state *state, const char *test_name, const char *session_header) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, initialize_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char ping_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  script[0].request_id = session_header;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(ping_name, sizeof(ping_name), "%s_ping", test_name);
+  expect_int(state, ping_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message,
+             "MCP session id must contain visible ASCII only");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_initialize_empty_session_id(test_state *state) {
+  test_mcp_streamable_http_invalid_session_id(
+      state, "mcp_streamable_initialize_empty_session_id",
+      "req-init\r\nMCP-Session-Id: ");
+}
+
+static void
+test_mcp_streamable_http_initialize_space_session_id(test_state *state) {
+  test_mcp_streamable_http_invalid_session_id(
+      state, "mcp_streamable_initialize_space_session_id",
+      "req-init\r\nMCP-Session-Id: bad id");
+}
+
+static void test_mcp_streamable_http_long_session_id_header(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char long_session_id[] = "long-session-"
+                                        "0123456789abcdefghijklmnopqrstuvwxyz"
+                                        "0123456789abcdefghijklmnopqrstuvwxyz"
+                                        "0123456789abcdefghijklmnopqrstuvwxyz"
+                                        "0123456789abcdefghijklmnopqrstuvwxyz"
+                                        "0123456789abcdefghijklmnopqrstuvwxyz"
+                                        "0123456789abcdefghijklmnopqrstuvwxyz";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/", "\"id\":2",
+                                        "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  const char *full_session_required[4];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char session_response_header[320];
+  char full_session_header[320];
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  snprintf(session_response_header, sizeof(session_response_header),
+           "req-init\r\nMCP-Session-Id: %s", long_session_id);
+  snprintf(full_session_header, sizeof(full_session_header),
+           "MCP-Session-Id: %s", long_session_id);
+  full_session_required[0] = initialized_required[0];
+  full_session_required[1] = full_session_header;
+  full_session_required[2] = initialized_required[1];
+  full_session_required[3] = NULL;
+  script[0].request_id = session_response_header;
+  script[1].required = full_session_required;
+  script[1].required_count = 3U;
+  script[2].required = full_session_required;
+  script[2].required_count = 2U;
+  if (http_mock_server_open_script(state, "mcp_streamable_long_session_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_long_session_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_long_session_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_long_session_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_initialize_response_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: initialize-id-mismatch-session",
+       initialize_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_initialize_id_mismatch_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_initialize_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_initialize_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_initialize_id_mismatch_message",
+             error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_initialize_id_mismatch_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_initialize_error_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"error\":{\"code\":-32000,"
+      "\"message\":\"wrong request\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, initialize_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_initialize_error_id_mismatch_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_initialize_error_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_initialize_error_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_initialize_error_id_mismatch_message",
+             error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_initialize_error_id_mismatch_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_response_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: id-mismatch-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: id-mismatch-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: id-mismatch-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_id_mismatch_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_id_mismatch_message", error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_id_mismatch_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_error_response_id_mismatch(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"error\":{\"code\":-32000,"
+      "\"message\":\"wrong request\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: error-id-mismatch-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: error-id-mismatch-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: error-id-mismatch-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_error_id_mismatch_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_error_id_mismatch_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_error_id_mismatch_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_error_id_mismatch_message", error.message,
+             "MCP JSON-RPC response id did not match request id");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_error_id_mismatch_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_response_invalid_id_type(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":true,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-id-type-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-id-type-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: invalid-id-type-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_invalid_id_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_invalid_id_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_invalid_id_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_invalid_id_message", error.message,
+             "MCP JSON-RPC id must be a string or integer");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_invalid_id_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_response_null_id(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: null-id-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: null-id-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: null-id-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_null_id_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_null_id_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_null_id_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_null_id_message", error.message,
+             "MCP JSON-RPC id must be a string or integer");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_null_id_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_request_invalid_id_type(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2.5,\"method\":\"roots/list\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-invalid-id-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-invalid-id-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-invalid-id-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_invalid_id_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_invalid_id_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sse_invalid_id_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_sse_invalid_id_message", error.message,
+             "MCP JSON-RPC id must be a string or integer");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_invalid_id_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_request_null_id(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"roots/list\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-null-id-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: sse-null-id-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-null-id-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_null_id_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_null_id_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sse_null_id_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_sse_null_id_message", error.message,
+             "MCP JSON-RPC id must be a string or integer");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_null_id_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_response_jsonrpc_invalid(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.1\",\"id\":2,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: jsonrpc-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: jsonrpc-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: jsonrpc-invalid-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_jsonrpc_invalid_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_jsonrpc_invalid_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_jsonrpc_invalid_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_jsonrpc_invalid_message", error.message,
+             "MCP JSON-RPC version must be 2.0");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_jsonrpc_invalid_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_jsonrpc_invalid(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.1\",\"method\":\"notifications/message\","
+      "\"params\":{\"level\":\"info\",\"data\":\"bad version\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-jsonrpc-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-jsonrpc-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: sse-jsonrpc-invalid-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_jsonrpc_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_jsonrpc_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sse_jsonrpc_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_sse_jsonrpc_message", error.message,
+             "MCP JSON-RPC version must be 2.0");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_jsonrpc_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_method_with_result(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"result\":{},\"params\":{\"level\":\"info\",\"data\":\"bad\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-method-result-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-method-result-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: sse-method-result-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_method_result",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_method_result_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sse_method_result_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(
+      state, "mcp_streamable_sse_method_result_message", error.message,
+      "MCP JSON-RPC message with method must not include result or error");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_method_result", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_response_invalid(
+    test_state *state, const char *test_name, const char *ping_body,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-response-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-response-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: sse-response-invalid-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char ping_name[128];
+  char message_name[128];
+
+  script[2].body = ping_body;
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(ping_name, sizeof(ping_name), "%s_ping", test_name);
+  expect_int(state, ping_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_response_missing_id(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_sse_response_invalid(
+      state, "mcp_streamable_sse_response_missing_id", ping_body,
+      "MCP JSON-RPC was missing id");
+}
+
+static void
+test_mcp_streamable_http_sse_response_missing_result_error(test_state *state) {
+  static const char ping_body[] = "event: message\n"
+                                  "data: {\"jsonrpc\":\"2.0\",\"id\":2}\n\n";
+
+  test_mcp_streamable_http_sse_response_invalid(
+      state, "mcp_streamable_sse_response_missing_result_error", ping_body,
+      "MCP JSON-RPC response must include exactly one of result or error");
+}
+
+static void
+test_mcp_streamable_http_sse_response_result_and_error(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{},\"error\":{\"code\":"
+      "-32000,\"message\":\"conflicting\"}}\n\n";
+
+  test_mcp_streamable_http_sse_response_invalid(
+      state, "mcp_streamable_sse_response_result_and_error", ping_body,
+      "MCP JSON-RPC response must include exactly one of result or error");
+}
+
+static void test_mcp_streamable_http_utility_notifications_ignore_malformed(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":{},\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":999,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
+      "\"params\":{\"requestId\":{}}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: utility-notifications-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: utility-notifications-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: utility-notifications-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_utility_notify",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_utility_notify_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_utility_notify_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_utility_notify_count", notifications.count,
+             0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_utility_notify", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_active_progress_notification_invalid(
+    test_state *state, const char *test_name, const char *progress_events,
+    const char *expected_message, long expected_notifications) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char response_template[] =
+      "%s"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: active-progress-invalid-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: active-progress-invalid-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+  char response_body[512];
+  char mock_name[128];
+  char open_name[128];
+  char ping_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  snprintf(response_body, sizeof(response_body), response_template,
+           progress_events);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: active-progress-invalid-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(ping_name, sizeof(ping_name), "%s_ping", test_name);
+  expect_int(state, ping_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  expect_int(state, test_name, notifications.count, expected_notifications);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_active_progress_missing_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_missing_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2}}\n\n",
+      "MCP progress notification requires progress", 0L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_invalid_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_invalid_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":\"1\"}}\n\n",
+      "failed to parse MCP progress notification params", 0L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_negative_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_negative_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":-1}}\n\n",
+      "MCP progress value must be non-negative", 0L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_negative_total(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_negative_total",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1,\"total\":-1}}\n\n",
+      "MCP progress total must be non-negative", 0L);
+}
+
+static void
+test_mcp_streamable_http_active_progress_equal_progress(test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_equal_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n",
+      "MCP progress value must increase", 1L);
+}
+
+static void test_mcp_streamable_http_active_progress_decreasing_progress(
+    test_state *state) {
+  test_mcp_streamable_http_active_progress_notification_invalid(
+      state, "mcp_streamable_active_progress_decreasing_progress",
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":2}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n",
+      "MCP progress value must increase", 1L);
+}
+
+static void test_mcp_streamable_http_cancelled_notification_aborts_request(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\","
+      "\"params\":{\"requestId\":2,\"reason\":\"stopped\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: cancelled-notification-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: cancelled-notification-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: cancelled-notification-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_cancel_notify",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_cancel_notify_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_cancel_notify_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_CANCELLED);
+  expect_str(state, "mcp_streamable_cancel_notify_message", error.message,
+             "MCP request was cancelled");
+  expect_int(state, "mcp_streamable_cancel_notify_count", notifications.count,
+             0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_cancel_notify", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char interrupted_ping_body[] = "id: resume-1\nretry: 37\n\n";
+  static const char resumed_ping_body[] =
+      "event: message\n"
+      "id: resume-2\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-resume-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: sse-resume-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *resume_required[] = {
+      "GET /v1/mcp HTTP/", "Accept: text/event-stream",
+      "MCP-Session-Id: sse-resume-session", "Last-Event-ID: resume-1"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-resume-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, interrupted_ping_body},
+      {"GET /v1/mcp HTTP/", resume_required,
+       sizeof(resume_required) / sizeof(resume_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, resumed_ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_resume", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_resume_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  test_mcp_sleep_start_capture();
+  expect_int(state, "mcp_streamable_sse_resume_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state, "mcp_streamable_sse_resume_retry_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state, "mcp_streamable_sse_resume_retry_sleep_ms",
+             g_mcp_test_sleep_last_ms, 37L);
+  test_mcp_sleep_reset();
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_resume", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_sse_resume_caps_retry(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char interrupted_ping_body[] =
+      "id: capped-resume-1\nretry: 9999999999\n\n";
+  static const char resumed_ping_body[] =
+      "event: message\n"
+      "id: capped-resume-2\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-retry-cap-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: sse-retry-cap-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *resume_required[] = {
+      "GET /v1/mcp HTTP/", "Accept: text/event-stream",
+      "MCP-Session-Id: sse-retry-cap-session",
+      "Last-Event-ID: capped-resume-1"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-retry-cap-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, interrupted_ping_body},
+      {"GET /v1/mcp HTTP/", resume_required,
+       sizeof(resume_required) / sizeof(resume_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, resumed_ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_retry_cap",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_retry_cap_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  test_mcp_sleep_start_capture();
+  expect_int(state, "mcp_streamable_sse_retry_cap_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state, "mcp_streamable_sse_retry_cap_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state, "mcp_streamable_sse_retry_cap_sleep_ms",
+             g_mcp_test_sleep_last_ms, 500L);
+  test_mcp_sleep_reset();
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_retry_cap", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_resume_rejects_unsafe_id(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char interrupted_ping_body[] =
+      "id: unsafe-resume\rInjected: nope\nretry: 37\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-unsafe-id-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: sse-unsafe-id-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-unsafe-id-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, interrupted_ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_unsafe_id",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_unsafe_id_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_sse_unsafe_id_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_sse_unsafe_id_message", error.message,
+             "MCP SSE event id must be HTTP header safe");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_unsafe_id", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_streaming_sse_resume_get(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char interrupted_call_body[] =
+      "event: message\n"
+      "id: stream-resume-1\n"
+      "retry: 37\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"params\":{\"level\":\"info\",\"data\":\"before resume\"}}\n\n";
+  static const char resumed_call_body[] =
+      "event: message\n"
+      "id: stream-resume-2\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"resumed\"}],\"isError\":false}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
+      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+  static const char *resume_required[] = {
+      "GET /v1/mcp HTTP/", "Accept: text/event-stream",
+      "MCP-Session-Id: streaming-resume-session",
+      "Last-Event-ID: stream-resume-1"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: streaming-resume-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, interrupted_call_body},
+      {"GET /v1/mcp HTTP/", resume_required,
+       sizeof(resume_required) / sizeof(resume_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, resumed_call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_stream_sse_resume",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_stream_sse_resume_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_stream_sse_resume_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  test_mcp_sleep_start_capture();
+  expect_int(state, "mcp_streamable_stream_sse_resume_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state, "mcp_streamable_stream_sse_resume_retry_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state, "mcp_streamable_stream_sse_resume_retry_sleep_ms",
+             g_mcp_test_sleep_last_ms, 37L);
+  expect_str(state, "mcp_streamable_stream_sse_resume_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"resumed\"}],"
+             "\"isError\":false}");
+  test_mcp_sleep_reset();
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_stream_sse_resume", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_streaming_sse_resume_before_result_bytes(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char interrupted_call_body[] =
+      "event: message\n"
+      "id: stream-resume-before-result-1\n"
+      "retry: 9999999999\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":";
+  static const char resumed_call_body[] =
+      "event: message\n"
+      "id: stream-resume-before-result-2\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"resumed\"}],\"isError\":false}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: streaming-resume-before-result-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: streaming-resume-before-result-session", "\"id\":2",
+      "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+  static const char *resume_required[] = {
+      "GET /v1/mcp HTTP/", "Accept: text/event-stream",
+      "MCP-Session-Id: streaming-resume-before-result-session",
+      "Last-Event-ID: stream-resume-before-result-1"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: streaming-resume-before-result-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, interrupted_call_body},
+      {"GET /v1/mcp HTTP/", resume_required,
+       sizeof(resume_required) / sizeof(resume_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, resumed_call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_stream_sse_resume_before_result", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_stream_sse_resume_before_result_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_stream_sse_resume_before_result_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  test_mcp_sleep_start_capture();
+  expect_int(state, "mcp_streamable_stream_sse_resume_before_result_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  cai_mcp_test_set_sleep_ms_fn(NULL);
+  expect_int(state,
+             "mcp_streamable_stream_sse_resume_before_result_retry_sleep_count",
+             g_mcp_test_sleep_count, 1);
+  expect_int(state,
+             "mcp_streamable_stream_sse_resume_before_result_retry_sleep_ms",
+             g_mcp_test_sleep_last_ms, 500L);
+  expect_str(state, "mcp_streamable_stream_sse_resume_before_result_output",
+             writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"resumed\"}],"
+             "\"isError\":false}");
+  test_mcp_sleep_reset();
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_stream_sse_resume_before_result",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_ignores_sse_data_before_non_message_event(
+    test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "data: not-jsonrpc\n"
+      "event: progress\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"done\"}],\"isError\":false}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-late-event-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-late-event-session",
+      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: sse-late-event-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_late_event",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_late_event_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_sse_late_event_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_sse_late_event_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_sse_late_event_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"done\"}],"
+             "\"isError\":false}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_late_event", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_data_before_message_event(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"done\"}],\"isError\":false}}\n"
+      "event: message\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-message-late-event-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-message-late-event-session",
+      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: sse-message-late-event-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", call_required,
+       sizeof(call_required) / sizeof(call_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sse_message_late",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sse_message_late_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_sse_message_late_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_sse_message_late_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_sse_message_late_output", writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"done\"}],"
+             "\"isError\":false}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sse_message_late", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_response_content_type_parameters(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-json-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-json-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "Application/Json; Charset=UTF-8",
+       "req-init\r\nMCP-Session-Id: content-type-json-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "Application/Json; Charset=UTF-8", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "Application/Json; Charset=UTF-8", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_content_type_json",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_content_type_json_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_content_type_json_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_content_type_json", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_sse_content_type_parameters(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-sse-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: content-type-sse-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: content-type-sse-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "Text/Event-Stream; charset=utf-8", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_content_type_sse",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_content_type_sse_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_content_type_sse_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_content_type_sse", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_response_missing_result_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] = "{\"jsonrpc\":\"2.0\",\"id\":2}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: missing-result-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: missing-result-error-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: missing-result-error-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_missing_result_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_missing_result_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_missing_result_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(
+      state, "mcp_streamable_missing_result_message", error.message,
+      "MCP JSON-RPC response must include exactly one of result or error");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_missing_result_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_response_result_and_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{},\"error\":{\"code\":"
+      "-32000,\"message\":\"conflicting\"}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: result-and-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: result-and-error-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: result-and-error-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_result_error_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_result_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_result_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(
+      state, "mcp_streamable_result_error_message", error.message,
+      "MCP JSON-RPC response must include exactly one of result or error");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_result_error_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_response_null_result(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] = "{\"jsonrpc\":\"2.0\",\"id\":2,"
+                                  "\"result\":null}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: null-result-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: null-result-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: null-result-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_null_result_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_null_result_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_null_result_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_null_result_mock", server.pid,
+                    &server.child_status);
+}
+
+typedef enum test_mcp_list_operation {
+  TEST_MCP_LIST_TOOLS,
+  TEST_MCP_LIST_RESOURCES,
+  TEST_MCP_LIST_RESOURCE_TEMPLATES,
+  TEST_MCP_LIST_PROMPTS
+} test_mcp_list_operation;
+
+typedef enum test_mcp_result_operation {
+  TEST_MCP_RESULT_TOOL_CALL,
+  TEST_MCP_RESULT_RESOURCE_READ,
+  TEST_MCP_RESULT_PROMPT_GET,
+  TEST_MCP_RESULT_COMPLETION
+} test_mcp_result_operation;
+
+typedef enum test_mcp_argument_operation {
+  TEST_MCP_ARGUMENT_TOOL_CALL,
+  TEST_MCP_ARGUMENT_PROMPT_GET,
+  TEST_MCP_ARGUMENT_COMPLETION
+} test_mcp_argument_operation;
+
+static void test_mcp_streamable_http_list_invalid_response(
+    test_state *state, const char *test_name, test_mcp_list_operation operation,
+    const char *method_fragment, const char *response_body,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-missing-array-session",
+      "\"method\":\"notifications/initialized\""};
+  const char *list_required[4];
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char call_name[128];
+  char message_name[128];
+  char count_name[128];
+  int rc;
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  cai_error_init(&error);
+  list_required[0] = "POST /v1/mcp HTTP/";
+  list_required[1] = "MCP-Session-Id: list-missing-array-session";
+  list_required[2] = "\"id\":2";
+  list_required[3] = method_fragment;
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: list-missing-array-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = list_required;
+  script[2].required_count = sizeof(list_required) / sizeof(list_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  switch (operation) {
+  case TEST_MCP_LIST_TOOLS:
+    rc = cai_mcp_client_refresh_tools(client, &error);
+    break;
+  case TEST_MCP_LIST_RESOURCES:
+    rc = cai_mcp_client_refresh_resources(client, &error);
+    break;
+  case TEST_MCP_LIST_RESOURCE_TEMPLATES:
+    rc = cai_mcp_client_refresh_resource_templates(client, &error);
+    break;
+  case TEST_MCP_LIST_PROMPTS:
+  default:
+    rc = cai_mcp_client_refresh_prompts(client, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  snprintf(count_name, sizeof(count_name), "%s_count", test_name);
+  switch (operation) {
+  case TEST_MCP_LIST_TOOLS:
+    expect_int(state, count_name, (long)cai_mcp_client_tool_count(client), 0L);
+    break;
+  case TEST_MCP_LIST_RESOURCES:
+    expect_int(state, count_name, (long)cai_mcp_client_resource_count(client),
+               0L);
+    break;
+  case TEST_MCP_LIST_RESOURCE_TEMPLATES:
+    expect_int(state, count_name,
+               (long)cai_mcp_client_resource_template_count(client), 0L);
+    break;
+  case TEST_MCP_LIST_PROMPTS:
+  default:
+    expect_int(state, count_name, (long)cai_mcp_client_prompt_count(client),
+               0L);
+    break;
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_invalid_result_response(
+    test_state *state, const char *test_name,
+    test_mcp_result_operation operation, const char *method_fragment,
+    const char *response_body, const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-result-session",
+      "\"method\":\"notifications/initialized\""};
+  const char *request_required[4];
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char append_name[128];
+  char call_name[128];
+  char message_name[128];
+  char output_name[128];
+  int args_initialized;
+  int rc;
+
+  (void)expected_message;
+  client = NULL;
+  sink = NULL;
+  args_initialized = 0;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  request_required[0] = "POST /v1/mcp HTTP/";
+  request_required[1] = "MCP-Session-Id: invalid-result-session";
+  request_required[2] = "\"id\":2";
+  request_required[3] = method_fragment;
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: invalid-result-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = request_required;
+  script[2].required_count =
+      sizeof(request_required) / sizeof(request_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_invalid_result_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  switch (operation) {
+  case TEST_MCP_RESULT_TOOL_CALL:
+    CAI_LJ->spooled_init(CAI_LJ, &args);
+    args_initialized = 1;
+    lonejson_error_init(&json_error);
+    snprintf(append_name, sizeof(append_name), "%s_append", test_name);
+    expect_int(state, append_name, args.append(&args, "{}", 2U, &json_error),
+               LONEJSON_STATUS_OK);
+    rc = cai_mcp_client_call_tool(client, "bad-tool", &args, sink, &error);
+    break;
+  case TEST_MCP_RESULT_RESOURCE_READ:
+    rc = cai_mcp_client_read_resource(client, "resource://bad", sink, &error);
+    break;
+  case TEST_MCP_RESULT_PROMPT_GET:
+    rc = cai_mcp_client_get_prompt(client, "bad-prompt", NULL, sink, &error);
+    break;
+  case TEST_MCP_RESULT_COMPLETION:
+  default:
+    rc = cai_mcp_client_complete(client, "ref/prompt", "bad-prompt", "name",
+                                 "ba", NULL, sink, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_OK);
+  (void)message_name;
+  snprintf(output_name, sizeof(output_name), "%s_output", test_name);
+  if (writer.length == 0U) {
+    test_fail(state, output_name,
+              "schema-invalid MCP result object should stream caller output");
+  }
+  if (args_initialized) {
+    args.cleanup(&args);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_valid_result_response(
+    test_state *state, const char *test_name,
+    test_mcp_result_operation operation, const char *method_fragment,
+    const char *response_body, const char *expected_output) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: valid-result-session",
+      "\"method\":\"notifications/initialized\""};
+  const char *request_required[4];
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char append_name[128];
+  char call_name[128];
+  int args_initialized;
+  int rc;
+
+  client = NULL;
+  sink = NULL;
+  args_initialized = 0;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  request_required[0] = "POST /v1/mcp HTTP/";
+  request_required[1] = "MCP-Session-Id: valid-result-session";
+  request_required[2] = "\"id\":2";
+  request_required[3] = method_fragment;
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: valid-result-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = request_required;
+  script[2].required_count =
+      sizeof(request_required) / sizeof(request_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = response_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_valid_result_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  switch (operation) {
+  case TEST_MCP_RESULT_TOOL_CALL:
+    CAI_LJ->spooled_init(CAI_LJ, &args);
+    args_initialized = 1;
+    lonejson_error_init(&json_error);
+    snprintf(append_name, sizeof(append_name), "%s_append", test_name);
+    expect_int(state, append_name, args.append(&args, "{}", 2U, &json_error),
+               LONEJSON_STATUS_OK);
+    rc = cai_mcp_client_call_tool(client, "audio-tool", &args, sink, &error);
+    break;
+  case TEST_MCP_RESULT_PROMPT_GET:
+    rc = cai_mcp_client_get_prompt(client, "audio-prompt", NULL, sink, &error);
+    break;
+  case TEST_MCP_RESULT_RESOURCE_READ:
+    rc = cai_mcp_client_read_resource(client, "resource://audio", sink, &error);
+    break;
+  case TEST_MCP_RESULT_COMPLETION:
+  default:
+    rc = cai_mcp_client_complete(client, "ref/prompt", "audio-prompt", "name",
+                                 "au", NULL, sink, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_OK);
+  expect_str(state, test_name, writer.buffer, expected_output);
+  if (args_initialized) {
+    args.cleanup(&args);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_invalid_argument_json(
+    test_state *state, const char *test_name,
+    test_mcp_argument_operation operation, const char *arguments_json,
+    const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-argument-session",
+      "\"method\":\"notifications/initialized\""};
+  mock_http_expectation script[2];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled args;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char append_name[128];
+  char call_name[128];
+  char message_name[128];
+  char output_name[128];
+  int rc;
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: invalid-argument-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_invalid_argument_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &args);
+  lonejson_error_init(&json_error);
+  snprintf(append_name, sizeof(append_name), "%s_append", test_name);
+  expect_int(
+      state, append_name,
+      args.append(&args, arguments_json, strlen(arguments_json), &json_error),
+      LONEJSON_STATUS_OK);
+  switch (operation) {
+  case TEST_MCP_ARGUMENT_TOOL_CALL:
+    rc = cai_mcp_client_call_tool(client, "bad-tool", &args, sink, &error);
+    break;
+  case TEST_MCP_ARGUMENT_PROMPT_GET:
+    rc = cai_mcp_client_get_prompt(client, "bad-prompt", &args, sink, &error);
+    break;
+  case TEST_MCP_ARGUMENT_COMPLETION:
+  default:
+    rc = cai_mcp_client_complete(client, "ref/prompt", "bad-prompt", "name",
+                                 "ba", &args, sink, &error);
+    break;
+  }
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name, rc, CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  snprintf(output_name, sizeof(output_name), "%s_output", test_name);
+  expect_int(state, output_name, writer.length, 0L);
+  args.cleanup(&args);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tools_list_missing_tools(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_missing_tools", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tools/list");
+}
+
+static void
+test_mcp_streamable_http_resources_list_missing_resources(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_missing_resources",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "failed to parse MCP resources/list");
+}
+
+static void test_mcp_streamable_http_resource_templates_list_missing_templates(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_missing_templates",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "failed to parse MCP resources/templates/list");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_missing_prompts(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"nextCursor\":\"later\"}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_missing_prompts",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "failed to parse MCP prompts/list");
+}
+
+static void
+test_mcp_streamable_http_tools_list_missing_input_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\"}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_missing_input_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tools/list");
+}
+
+static void
+test_mcp_streamable_http_tools_list_null_input_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":null}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_null_input_schema", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema must be an object");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_input_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_input_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema must be an object");
+}
+
+static void test_mcp_streamable_http_tools_list_missing_input_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_missing_input_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema type must be object");
+}
+
+static void test_mcp_streamable_http_tools_list_string_input_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"string\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_string_input_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema type must be object");
+}
+
+static void test_mcp_streamable_http_tools_list_input_schema_array_properties(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\",\"properties\":[]}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_array_properties",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema properties must be an object");
+}
+
+static void test_mcp_streamable_http_tools_list_input_schema_array_schema(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"$schema\":[],\"type\":\"object\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_array_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool inputSchema");
+}
+
+static void test_mcp_streamable_http_tools_list_input_schema_nonobject_property(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":"
+      "\"string\"}}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_nonobject_property",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema properties values must be objects");
+}
+
+static void test_mcp_streamable_http_tools_list_input_schema_object_required(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\",\"required\":{}}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_object_required",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema required must be an array");
+}
+
+static void test_mcp_streamable_http_tools_list_input_schema_nonstring_required(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\",\"required\":[1]}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_nonstring_required",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool inputSchema required values must be strings");
+}
+
+static void test_mcp_streamable_http_tools_list_input_schema_escaped_property(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"bad\\n"
+      "name\":{}}}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_input_schema_escaped_property",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool schema property names with JSON escapes are unsupported");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_output_schema(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_output_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool outputSchema must be an object");
+}
+
+static void test_mcp_streamable_http_tools_list_string_output_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"type\":\"string\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_string_output_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool outputSchema type must be object");
+}
+
+static void test_mcp_streamable_http_tools_list_numeric_output_schema_type(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"type\":1}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_numeric_output_schema_type",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool outputSchema");
+}
+
+static void test_mcp_streamable_http_tools_list_output_schema_array_schema(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"$schema\":[],\"type\":\"object\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_output_schema_array_schema",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool outputSchema");
+}
+
+static void
+test_mcp_streamable_http_tools_list_output_schema_nonobject_property(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{"
+      "\"type\":\"object\",\"properties\":{\"ok\":true}}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_output_schema_nonobject_property",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool outputSchema properties values must be objects");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_annotations(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_annotations", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool annotations must be an object");
+}
+
+static void test_mcp_streamable_http_tools_list_annotation_hint_not_bool(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"annotations\":{"
+      "\"readOnlyHint\":\"true\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_annotation_hint_not_bool",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool annotations");
+}
+
+static void
+test_mcp_streamable_http_tools_list_object_icons(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_object_icons", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_tools_list_icon_missing_src(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"icons\":[{\"theme\":"
+      "\"light\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_icon_missing_src", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "failed to parse MCP tool icons");
+}
+
+static void
+test_mcp_streamable_http_tools_list_array_execution(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"execution\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_array_execution", TEST_MCP_LIST_TOOLS,
+      "\"method\":\"tools/list\"", response_body,
+      "MCP tool execution must be an object");
+}
+
+static void test_mcp_streamable_http_tools_list_execution_task_support_invalid(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"echo\",\"inputSchema\":{\"type\":\"object\"},\"execution\":{"
+      "\"taskSupport\":\"always\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_tools_list_execution_task_support_invalid",
+      TEST_MCP_LIST_TOOLS, "\"method\":\"tools/list\"", response_body,
+      "MCP tool execution taskSupport is invalid");
+}
+
+static void
+test_mcp_streamable_http_resources_list_object_icons(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_object_icons",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_resources_list_icon_invalid_theme(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"icons\":[{\"src\":\"https://"
+      "example.test/icon.png\",\"theme\":\"system\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_icon_invalid_theme",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource icon theme must be light or dark");
+}
+
+static void
+test_mcp_streamable_http_resources_list_array_annotations(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_array_annotations",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource annotations must be an object");
+}
+
+static void test_mcp_streamable_http_resources_list_annotation_invalid_role(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":{\"audience\":["
+      "\"system\"]}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_annotation_invalid_role",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_resources_list_annotation_priority_not_number(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":{\"priority\":"
+      "\"high\"}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_annotation_priority_not_number",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "failed to parse MCP resource annotations");
+}
+
+static void
+test_mcp_streamable_http_resources_list_annotation_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"annotations\":{\"priority\":"
+      "1.5}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_annotation_priority_out_of_range",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource annotation priority must be between 0 and 1");
+}
+
+static void
+test_mcp_streamable_http_resources_list_negative_size(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://ok\",\"name\":\"ok\",\"size\":-1}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resources_list_negative_size",
+      TEST_MCP_LIST_RESOURCES, "\"method\":\"resources/list\"", response_body,
+      "MCP resource size must be non-negative");
+}
+
+static void test_mcp_streamable_http_resource_templates_list_object_icons(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_object_icons",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_icon_size_not_string(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"icons\":[{\"src\":\"https://example.test/icon.png\",\"sizes\":[48]}]}"
+      "]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_icon_size_not_string",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "failed to parse MCP resource template icons");
+}
+
+static void test_mcp_streamable_http_resource_templates_list_array_annotations(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_array_annotations",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template annotations must be an object");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_annotation_invalid_role(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"annotations\":{\"audience\":[\"system\"]}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_resource_templates_list_annotation_invalid_role",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template annotation audience role is invalid");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"file:///{name}\",\"name\":\"files\","
+      "\"annotations\":{\"priority\":-0.1}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state,
+      "mcp_streamable_resource_templates_list_annotation_priority_out_of_range",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "MCP resource template annotation priority must be between 0 and 1");
+}
+
+static void
+test_mcp_streamable_http_resource_templates_list_annotation_modified_not_string(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://{id}\",\"name\":\"template\","
+      "\"annotations\":{\"lastModified\":123}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state,
+      "mcp_streamable_resource_templates_list_annotation_modified_not_string",
+      TEST_MCP_LIST_RESOURCE_TEMPLATES,
+      "\"method\":\"resources/templates/list\"", response_body,
+      "failed to parse MCP resource template annotations");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_object_arguments(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_object_arguments",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "MCP prompt arguments must be an array");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_argument_missing_name(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":[{\"description\":\"topic\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_argument_missing_name",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "failed to parse MCP prompt arguments");
+}
+
+static void test_mcp_streamable_http_prompts_list_argument_required_not_bool(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":[{\"name\":\"topic\",\"required\":"
+      "\"true\"}]}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_argument_required_not_bool",
+      TEST_MCP_LIST_PROMPTS, "\"method\":\"prompts/list\"", response_body,
+      "failed to parse MCP prompt arguments");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_object_icons(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_list_invalid_response(
+      state, "mcp_streamable_prompts_list_object_icons", TEST_MCP_LIST_PROMPTS,
+      "\"method\":\"prompts/list\"", response_body,
+      "MCP prompt icons must be an array");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_icon_metadata(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"prompts\":[{\"name\":"
+      "\"summarize\",\"arguments\":[{\"name\":\"topic\",\"title\":\"Topic\","
+      "\"description\":\"Subject to summarize\",\"required\":true}],"
+      "\"icons\":[{\"src\":\"data:image/png;base64,aQ==\","
+      "\"mimeType\":\"image/png\",\"sizes\":[\"48x48\",\"any\"],\"theme\":"
+      "\"dark\"}]}]}}";
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  const cai_mcp_client_prompt *prompt;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  {
+    static const char initialize_body[] =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+        "\"" CAI_MCP_PROTOCOL_VERSION
+        "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+        "\"version\":\"1\"}}}";
+    static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                          "\"method\":\"initialize\""};
+    static const char *initialized_required[] = {
+        "POST /v1/mcp HTTP/", "MCP-Session-Id: prompt-icon-session",
+        "\"method\":\"notifications/initialized\""};
+    static const char *list_required[] = {
+        "POST /v1/mcp HTTP/", "MCP-Session-Id: prompt-icon-session", "\"id\":2",
+        "\"method\":\"prompts/list\""};
+    static const mock_http_expectation script[] = {
+        {"POST /v1/mcp HTTP/", init_required,
+         sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+         "application/json", "req-init\r\nMCP-Session-Id: prompt-icon-session",
+         initialize_body},
+        {"POST /v1/mcp HTTP/", initialized_required,
+         sizeof(initialized_required) / sizeof(initialized_required[0]), NULL,
+         0U, 202, "Accepted", "application/json", NULL, ""},
+        {"POST /v1/mcp HTTP/", list_required,
+         sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 200, "OK",
+         "application/json", NULL, response_body}};
+    if (http_mock_server_open_script(
+            state, "mcp_streamable_prompts_list_icon_metadata_mock", script,
+            sizeof(script) / sizeof(script[0]), &server) != 0) {
+      cai_error_cleanup(&error);
+      return;
+    }
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_prompts_list_icon_metadata_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_prompts_list_icon_metadata_refresh",
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_prompts_list_icon_metadata_count",
+             (long)cai_mcp_client_prompt_count(client), 1L);
+  prompt = cai_mcp_client_prompt_at(client, 0U);
+  if (prompt == NULL || prompt->argument_count != 1U ||
+      prompt->icon_count != 1U || prompt->arguments == NULL ||
+      prompt->icons == NULL ||
+      strcmp(prompt->arguments[0].name, "topic") != 0 ||
+      prompt->arguments[0].required != 1 ||
+      strcmp(prompt->icons[0].theme, "dark") != 0 ||
+      prompt->icons[0].size_count != 2U ||
+      strcmp(prompt->icons[0].sizes[0], "48x48") != 0 ||
+      strcmp(prompt->icons[0].sizes[1], "any") != 0) {
+    test_fail(state, "mcp_streamable_prompts_list_icon_metadata_typed",
+              "prompt argument or icon metadata was not preserved");
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_prompts_list_icon_metadata_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tool_call_missing_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_missing_content",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "failed to parse MCP tools/call");
+}
+
+static void
+test_mcp_streamable_http_tool_call_missing_content_type(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"text\":"
+      "\"bad\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_missing_content_type",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "failed to parse MCP tools/call");
+}
+
+static void
+test_mcp_streamable_http_tool_call_text_missing_text(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_text_missing_text",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP text content requires text");
+}
+
+static void
+test_mcp_streamable_http_tool_call_image_missing_mime(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"image\",\"data\":\"aGVsbG8=\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_image_missing_mime",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP media content requires data and mimeType");
+}
+
+static void
+test_mcp_streamable_http_tool_call_image_invalid_base64(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"image\",\"data\":\"not base64!\",\"mimeType\":\"image/png\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_image_invalid_base64",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP media content data must be base64");
+}
+
+static void
+test_mcp_streamable_http_tool_call_audio_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"audio\",\"data\":\"UklGRg==\",\"mimeType\":\"audio/wav\"}]}}";
+  static const char expected_output[] =
+      "{\"content\":[{\"type\":\"audio\",\"data\":\"UklGRg==\","
+      "\"mimeType\":\"audio/wav\"}]}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_tool_call_audio_content",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      expected_output);
+}
+
+static void test_mcp_streamable_http_tool_call_content_array_annotations(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\",\"annotations\":[]}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_content_array_annotations",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content annotations must be an object");
+}
+
+static void test_mcp_streamable_http_tool_call_content_invalid_annotation_role(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\",\"annotations\":{\"audience\":[\"system\"]}}]}"
+      "}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_content_invalid_annotation_role",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content annotation audience role is invalid");
+}
+
+static void test_mcp_streamable_http_tool_call_content_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\",\"annotations\":{\"priority\":1.1}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_content_priority_out_of_range",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content annotation priority must be between 0 and 1");
+}
+
+static void
+test_mcp_streamable_http_tool_call_unknown_content_type(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"video\",\"data\":\"aGVsbG8=\",\"mimeType\":\"video/mp4\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_unknown_content_type",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP content block type is not supported");
+}
+
+static void test_mcp_streamable_http_tool_call_resource_link_missing_name(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_missing_name",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link content requires uri and name");
+}
+
+static void test_mcp_streamable_http_tool_call_resource_link_icons_not_array(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\",\"name\":\"readme\","
+      "\"icons\":{}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_icons_not_array",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link icons must be an array");
+}
+
+static void test_mcp_streamable_http_tool_call_resource_link_invalid_icon_theme(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\",\"name\":\"readme\","
+      "\"icons\":[{\"src\":\"file:///tmp/icon.png\",\"theme\":\"sepia\"}]}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_invalid_icon_theme",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link icon theme must be light or dark");
+}
+
+static void test_mcp_streamable_http_tool_call_resource_link_negative_size(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource_link\",\"uri\":\"file:///tmp/readme.md\",\"name\":\"readme\","
+      "\"size\":-1}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_link_negative_size",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource_link size must be non-negative");
+}
+
+static void test_mcp_streamable_http_tool_call_resource_missing_resource(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_missing_resource",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP embedded resource content requires resource");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_missing_uri(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"text\":\"body\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_missing_uri",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "failed to parse MCP embedded resource content");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_missing_body(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"uri\":\"file:///tmp/readme.md\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_missing_body",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP embedded resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_text_and_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"uri\":\"file:///tmp/readme.md\",\"text\":"
+      "\"body\",\"blob\":\"Ym9keQ==\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_text_and_blob",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP embedded resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_tool_call_resource_invalid_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"resource\",\"resource\":{\"uri\":\"file:///tmp/readme.md\",\"blob\":"
+      "\"not base64!\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_resource_invalid_blob",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP resource blob must be base64");
+}
+
+static void
+test_mcp_streamable_http_tool_call_array_structured_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"ok\"}],\"structuredContent\":[]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_tool_call_array_structured_content",
+      TEST_MCP_RESULT_TOOL_CALL, "\"method\":\"tools/call\"", response_body,
+      "MCP tool structuredContent must be an object");
+}
+
+static void
+test_mcp_streamable_http_result_field_order_variants(test_state *state) {
+  static const char tool_response[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"isError\":false,"
+      "\"content\":[{\"text\":\"ordered tool\",\"type\":\"text\"}]}}";
+  static const char resource_response[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"text\":"
+      "\"ordered "
+      "resource\",\"mimeType\":\"text/plain\",\"uri\":\"resource://"
+      "ordered\"}]}}";
+  static const char prompt_response[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"content\":{"
+      "\"text\":\"ordered prompt\",\"type\":\"text\"},\"role\":\"user\"}]}}";
+  static const char completion_response[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"hasMore\":"
+      "false,\"total\":1,\"values\":[\"ordered-completion\"]}}}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_tool_call", TEST_MCP_RESULT_TOOL_CALL,
+      "\"method\":\"tools/call\"", tool_response,
+      "{\"isError\":false,\"content\":[{\"text\":\"ordered tool\",\"type\":"
+      "\"text\"}]}");
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_resource_read",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      resource_response,
+      "{\"contents\":[{\"text\":\"ordered "
+      "resource\",\"mimeType\":\"text/plain\","
+      "\"uri\":\"resource://ordered\"}]}");
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_prompt_get",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", prompt_response,
+      "{\"messages\":[{\"content\":{\"text\":\"ordered prompt\",\"type\":"
+      "\"text\"},\"role\":\"user\"}]}");
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_result_order_completion",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      completion_response,
+      "{\"completion\":{\"hasMore\":false,\"total\":1,\"values\":["
+      "\"ordered-completion\"]}}");
+}
+
+static void
+test_mcp_streamable_http_resource_read_missing_contents(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_resource_read_missing_contents",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body, "failed to parse MCP resources/read");
+}
+
+static void
+test_mcp_streamable_http_resource_read_missing_body(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://bad\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_resource_read_missing_body",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body,
+      "MCP resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_resource_read_text_and_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://bad\",\"text\":\"body\",\"blob\":\"Ym9keQ==\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_resource_read_text_and_blob",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body,
+      "MCP resource content must include exactly one of text or blob");
+}
+
+static void
+test_mcp_streamable_http_resource_read_blob_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://blob\",\"mimeType\":\"application/octet-stream\","
+      "\"blob\":\"AAE=\"}]}}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_resource_read_blob_content",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body,
+      "{\"contents\":[{\"uri\":\"resource://blob\",\"mimeType\":"
+      "\"application/octet-stream\",\"blob\":\"AAE=\"}]}");
+}
+
+static void
+test_mcp_streamable_http_resource_read_invalid_blob(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":[{\"uri\":"
+      "\"resource://blob\",\"mimeType\":\"application/octet-stream\","
+      "\"blob\":\"not base64!\"}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_resource_read_invalid_blob",
+      TEST_MCP_RESULT_RESOURCE_READ, "\"method\":\"resources/read\"",
+      response_body, "MCP resource blob must be base64");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_missing_messages(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"description\":\"bad\"}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_missing_messages",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "failed to parse MCP prompts/get");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_invalid_role(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"system\",\"content\":{\"type\":\"text\",\"text\":\"bad\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_invalid_role",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP prompt message role must be user or assistant");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_array_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":[]}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_array_content",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP prompt message content must be an object");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_text_missing_text(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_text_missing_text",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP text content requires text");
+}
+
+static void test_mcp_streamable_http_prompt_get_content_priority_not_number(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"ok\","
+      "\"annotations\":{\"priority\":\"high\"}}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_content_priority_not_number",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "failed to parse MCP content annotations");
+}
+
+static void test_mcp_streamable_http_prompt_get_content_priority_out_of_range(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"user\",\"content\":{\"type\":\"text\",\"text\":\"ok\","
+      "\"annotations\":{\"priority\":-0.01}}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_content_priority_out_of_range",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP content annotation priority must be between 0 and 1");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_audio_content(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"audio\",\"data\":\"UklGRg==\","
+      "\"mimeType\":\"audio/wav\"}}]}}";
+  static const char expected_output[] =
+      "{\"messages\":[{\"role\":\"assistant\",\"content\":{\"type\":\"audio\","
+      "\"data\":\"UklGRg==\",\"mimeType\":\"audio/wav\"}}]}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_prompt_get_audio_content",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      expected_output);
+}
+
+static void
+test_mcp_streamable_http_prompt_get_audio_invalid_base64(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"audio\",\"data\":\"not base64!\","
+      "\"mimeType\":\"audio/wav\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_audio_invalid_base64",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP media content data must be base64");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_resource_missing_body(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"resource\",\"resource\":{\"uri\":"
+      "\"file:///tmp/readme.md\"}}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_resource_missing_body",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP embedded resource content must include exactly one of text or blob");
+}
+
+static void test_mcp_streamable_http_prompt_get_resource_link_negative_size(
+    test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"resource_link\",\"uri\":"
+      "\"file:///tmp/readme.md\",\"name\":\"readme\",\"size\":-1}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_resource_link_negative_size",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP resource_link size must be non-negative");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_unknown_content_type(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"messages\":[{\"role\":"
+      "\"assistant\",\"content\":{\"type\":\"video\",\"data\":\"aGVsbG8=\","
+      "\"mimeType\":\"video/mp4\"}}]}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_prompt_get_unknown_content_type",
+      TEST_MCP_RESULT_PROMPT_GET, "\"method\":\"prompts/get\"", response_body,
+      "MCP content block type is not supported");
+}
+
+static void test_mcp_streamable_http_completion_result(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":["
+      "\"alpha\",\"alphabet\"],\"total\":2,\"hasMore\":false}}}";
+
+  test_mcp_streamable_http_valid_result_response(
+      state, "mcp_streamable_completion_result", TEST_MCP_RESULT_COMPLETION,
+      "\"method\":\"completion/complete\"", response_body,
+      "{\"completion\":{\"values\":[\"alpha\",\"alphabet\"],\"total\":2,"
+      "\"hasMore\":false}}");
+}
+
+static void
+test_mcp_streamable_http_completion_missing_values(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"total\":0,"
+      "\"hasMore\":false}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_missing_values",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "failed to parse MCP completion/complete");
+}
+
+static void
+test_mcp_streamable_http_completion_non_string_value(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":["
+      "\"ok\",1]}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_non_string_value",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "failed to parse MCP completion/complete");
+}
+
+static void
+test_mcp_streamable_http_completion_too_many_values(test_state *state) {
+  char response_body[2048];
+  size_t offset;
+  int written;
+  int i;
+
+  offset = 0U;
+  written = snprintf(response_body + offset, sizeof(response_body) - offset,
+                     "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":"
+                     "{\"values\":[");
+  if (written < 0 || (size_t)written >= sizeof(response_body) - offset) {
+    test_fail(state, "mcp_streamable_completion_too_many_values_build",
+              "failed to build completion response");
+    return;
+  }
+  offset += (size_t)written;
+  for (i = 0; i < 101; i++) {
+    written = snprintf(response_body + offset, sizeof(response_body) - offset,
+                       "%s\"v%d\"", i == 0 ? "" : ",", i);
+    if (written < 0 || (size_t)written >= sizeof(response_body) - offset) {
+      test_fail(state, "mcp_streamable_completion_too_many_values_build",
+                "failed to build completion response");
+      return;
+    }
+    offset += (size_t)written;
+  }
+  written =
+      snprintf(response_body + offset, sizeof(response_body) - offset, "]}}}");
+  if (written < 0 || (size_t)written >= sizeof(response_body) - offset) {
+    test_fail(state, "mcp_streamable_completion_too_many_values_build",
+              "failed to build completion response");
+    return;
+  }
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_too_many_values",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "MCP completion values must not exceed 100 items");
+}
+
+static void
+test_mcp_streamable_http_completion_negative_total(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":[],"
+      "\"total\":-1}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_negative_total",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "MCP completion total must be non-negative");
+}
+
+static void
+test_mcp_streamable_http_completion_string_has_more(test_state *state) {
+  static const char response_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":[],"
+      "\"hasMore\":\"false\"}}}";
+
+  test_mcp_streamable_http_invalid_result_response(
+      state, "mcp_streamable_completion_string_has_more",
+      TEST_MCP_RESULT_COMPLETION, "\"method\":\"completion/complete\"",
+      response_body, "failed to parse MCP completion/complete");
+}
+
+static void
+test_mcp_streamable_http_tool_call_array_arguments(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_tool_call_array_arguments",
+      TEST_MCP_ARGUMENT_TOOL_CALL, "[]",
+      "MCP tool arguments must be an object");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_array_arguments(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_prompt_get_array_arguments",
+      TEST_MCP_ARGUMENT_PROMPT_GET, "[]",
+      "MCP prompt arguments must be an object");
+}
+
+static void
+test_mcp_streamable_http_prompt_get_non_string_argument(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_prompt_get_non_string_argument",
+      TEST_MCP_ARGUMENT_PROMPT_GET, "{\"topic\":42}",
+      "MCP prompt argument values must be strings");
+}
+
+static void
+test_mcp_streamable_http_completion_array_context_arguments(test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_completion_array_context_arguments",
+      TEST_MCP_ARGUMENT_COMPLETION, "[]",
+      "MCP completion context arguments must be an object");
+}
+
+static void test_mcp_streamable_http_completion_non_string_context_argument(
+    test_state *state) {
+  test_mcp_streamable_http_invalid_argument_json(
+      state, "mcp_streamable_completion_non_string_context_argument",
+      TEST_MCP_ARGUMENT_COMPLETION, "{\"department\":false}",
+      "MCP completion context argument values must be strings");
+}
+
+static void
+test_mcp_streamable_http_completion_invalid_ref_type(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"completions\":{}},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: bad-completion-ref-session",
+      "\"method\":\"notifications/initialized\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: bad-completion-ref-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_completion_ref_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_completion_ref_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_completion_ref_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_completion_ref_call",
+             cai_mcp_client_complete(client, "ref/tool", "bad", "name", "",
+                                     NULL, sink, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_completion_ref_message", error.message,
+             "MCP completion reference type is invalid");
+  expect_int(state, "mcp_streamable_completion_ref_output", writer.length, 0L);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_completion_ref_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_completion_resource_ref_uses_uri(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"completions\":{}},\"serverInfo\":{\"name\":"
+      "\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char complete_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"completion\":{\"values\":[],"
+      "\"total\":0,\"hasMore\":false}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: resource-completion-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *complete_required[] = {
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: resource-completion-session",
+      "\"id\":2",
+      "\"method\":\"completion/complete\"",
+      ("\"ref\":{\"type\":\"ref/resource\",\"uri\":\"demo://resource/dynamic/"
+       "text/{resourceId}\"}"),
+      "\"argument\":{\"name\":\"resourceId\",\"value\":\"\"}",
+      "\"_meta\":{\"progressToken\":2}"};
+  static const char *complete_forbidden[] = {
+      "\"ref\":{\"type\":\"ref/resource\",\"name\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: resource-completion-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", complete_required,
+       sizeof(complete_required) / sizeof(complete_required[0]),
+       complete_forbidden,
+       sizeof(complete_forbidden) / sizeof(complete_forbidden[0]), 200, "OK",
+       "application/json", NULL, complete_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_completion_uri_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_completion_uri_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_completion_uri_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_streamable_completion_uri_call",
+      cai_mcp_client_complete(client, "ref/resource",
+                              "demo://resource/dynamic/text/{resourceId}",
+                              "resourceId", "", NULL, sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_streamable_completion_uri_output", writer.buffer,
+             "{\"completion\":{\"values\":[],\"total\":0,\"hasMore\":false}}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_completion_uri_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_list_changed_invalidates_cache(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{\"listChanged\":true},"
+      "\"resources\":{\"listChanged\":true},"
+      "\"prompts\":{\"listChanged\":true}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char tools_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"old-tool\",\"inputSchema\":{\"type\":\"object\"}}]}}";
+  static const char resources_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[{\"uri\":"
+      "\"resource://old\",\"name\":\"old-resource\"}]}}";
+  static const char resource_templates_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"resourceTemplates\":[{"
+      "\"uriTemplate\":\"resource://old/{name}\",\"name\":\"old-template\"}]}}";
+  static const char prompts_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"prompts\":[{\"name\":"
+      "\"old-prompt\"}]}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/tools/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/resources/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/prompts/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *tools_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *resources_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":3",
+      "\"method\":\"resources/list\""};
+  static const char *resource_templates_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":4",
+      "\"method\":\"resources/templates/list\""};
+  static const char *prompts_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-session", "\"id\":5",
+      "\"method\":\"prompts/list\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: list-changed-session",
+                                        "\"id\":6", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: list-changed-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", tools_list_required,
+       sizeof(tools_list_required) / sizeof(tools_list_required[0]), NULL, 0U,
+       200, "OK", "application/json", NULL, tools_list_body},
+      {"POST /v1/mcp HTTP/", resources_list_required,
+       sizeof(resources_list_required) / sizeof(resources_list_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, resources_list_body},
+      {"POST /v1/mcp HTTP/", resource_templates_list_required,
+       sizeof(resource_templates_list_required) /
+           sizeof(resource_templates_list_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL,
+       resource_templates_list_body},
+      {"POST /v1/mcp HTTP/", prompts_list_required,
+       sizeof(prompts_list_required) / sizeof(prompts_list_required[0]), NULL,
+       0U, 200, "OK", "application/json", NULL, prompts_list_body},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_list_changed_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_list_changed_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_tools",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_tool_count",
+             (long)cai_mcp_client_tool_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_resources",
+             cai_mcp_client_refresh_resources(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_resource_count",
+             (long)cai_mcp_client_resource_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_resource_templates",
+             cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_resource_template_count",
+             (long)cai_mcp_client_resource_template_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_prompts",
+             cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_prompt_count",
+             (long)cai_mcp_client_prompt_count(client), 1L);
+  expect_int(state, "mcp_streamable_list_changed_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_list_changed_tool_count_after",
+             (long)cai_mcp_client_tool_count(client), 0L);
+  expect_int(state, "mcp_streamable_list_changed_resource_count_after",
+             (long)cai_mcp_client_resource_count(client), 0L);
+  expect_int(state, "mcp_streamable_list_changed_resource_template_count_after",
+             (long)cai_mcp_client_resource_template_count(client), 0L);
+  expect_int(state, "mcp_streamable_list_changed_prompt_count_after",
+             (long)cai_mcp_client_prompt_count(client), 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_list_changed_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_list_changed_array_params_case(
+    test_state *state, const char *test_name, const char *method) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{\"listChanged\":true},"
+      "\"resources\":{\"listChanged\":true},"
+      "\"prompts\":{\"listChanged\":true}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-array-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: list-changed-array-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char ping_body[512];
+  char mock_name[160];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  cai_error_init(&error);
+  snprintf(ping_body, sizeof(ping_body),
+           "event: message\n"
+           "data: {\"jsonrpc\":\"2.0\",\"method\":\"%s\","
+           "\"params\":[]}\n\n"
+           "event: message\n"
+           "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n",
+           method);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: list-changed-array-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = ping_required;
+  script[2].required_count = sizeof(ping_required) / sizeof(ping_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "text/event-stream";
+  script[2].body = ping_body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, test_name, cai_mcp_client_ping(client, &error),
+             CAI_ERR_PROTOCOL);
+  expect_str(state, test_name, error.message,
+             "MCP list changed params must be an object");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_tools_list_changed_array_params(test_state *state) {
+  test_mcp_streamable_http_list_changed_array_params_case(
+      state, "mcp_streamable_tools_list_changed_array_params",
+      "notifications/tools/list_changed");
+}
+
+static void test_mcp_streamable_http_resources_list_changed_array_params(
+    test_state *state) {
+  test_mcp_streamable_http_list_changed_array_params_case(
+      state, "mcp_streamable_resources_list_changed_array_params",
+      "notifications/resources/list_changed");
+}
+
+static void
+test_mcp_streamable_http_prompts_list_changed_array_params(test_state *state) {
+  test_mcp_streamable_http_list_changed_array_params_case(
+      state, "mcp_streamable_prompts_list_changed_array_params",
+      "notifications/prompts/list_changed");
+}
+
+static void test_mcp_streamable_http_send_request_params(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char request_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-params-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *request_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-params-session",
+      "\"id\":2", "\"method\":\"test/request\"", "\"params\":{\"ok\":true}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: request-params-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", request_required,
+       sizeof(request_required) / sizeof(request_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, request_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  lonejson_spooled params;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_request_params_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_request_params_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_request_params_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_request_params_append",
+             params.append(&params, "{\"ok\":true}", strlen("{\"ok\":true}"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_request_params_call",
+             cai_mcp_client_send_request(client, "test/request", &params, sink,
+                                         &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_request_params_output", writer.buffer,
+             "{\"ok\":true}");
+  params.cleanup(&params);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_request_invalid_params_append",
+             params.append(&params, "{\"broken\":", strlen("{\"broken\":"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(
+      state, "mcp_streamable_request_invalid_params_call",
+      cai_mcp_client_send_request(client, "test/bad", &params, sink, &error),
+      CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_request_invalid_params_message",
+             error.message, "failed to write MCP request params");
+  expect_int(state, "mcp_streamable_request_invalid_params_output",
+             writer.length, 0L);
+  params.cleanup(&params);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_request_params_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_send_request_scalar_result(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char request_body[] = "{\"jsonrpc\":\"2.0\",\"id\":2,"
+                                     "\"result\":\"scalar-ok\"}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-scalar-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *request_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-scalar-session",
+      "\"id\":2", "\"method\":\"test/scalar\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: request-scalar-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", request_required,
+       sizeof(request_required) / sizeof(request_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, request_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_request_scalar_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_request_scalar_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_request_scalar_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, "mcp_streamable_request_scalar_call",
+      cai_mcp_client_send_request(client, "test/scalar", NULL, sink, &error),
+      CAI_OK);
+  expect_str(state, "mcp_streamable_request_scalar_output", writer.buffer,
+             "\"scalar-ok\"");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_request_scalar_mock", server.pid,
+                    &server.child_status);
+}
+
+static void run_mcp_streamable_http_send_request_error_test(
+    test_state *state, const char *test_name, const char *content_type,
+    const char *body, int expected_rc, const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *request_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: request-error-session", "\"id\":2",
+      "\"method\":\"test/error\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(script, 0, sizeof(script));
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: request-error-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = request_required;
+  script[2].required_count =
+      sizeof(request_required) / sizeof(request_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = content_type;
+  script[2].body = body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, test_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(
+      state, test_name,
+      cai_mcp_client_send_request(client, "test/error", NULL, sink, &error),
+      expected_rc);
+  expect_str(state, test_name, error.message, expected_message);
+  expect_str(state, test_name, writer.buffer, "");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, test_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_send_request_json_error(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,"
+      "\"message\":\"Method not found\"}}";
+
+  run_mcp_streamable_http_send_request_error_test(
+      state, "mcp_streamable_send_request_json_error", "application/json", body,
+      CAI_ERR_SERVER, "Method not found");
+}
+
+static void test_mcp_streamable_http_send_request_sse_error(test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,"
+      "\"message\":\"Method not found\"}}\n\n";
+
+  run_mcp_streamable_http_send_request_error_test(
+      state, "mcp_streamable_send_request_sse_error", "text/event-stream", body,
+      CAI_ERR_SERVER, "Method not found");
+}
+
+static void test_mcp_streamable_http_send_request_sse_error_after_notification(
+    test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":"
+      "\"notifications/tools/list_changed\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,"
+      "\"message\":\"Method not found\"}}\n\n";
+
+  run_mcp_streamable_http_send_request_error_test(
+      state, "mcp_streamable_send_request_sse_error_after_notification",
+      "text/event-stream", body, CAI_ERR_SERVER, "Method not found");
+}
+
+static void test_mcp_streamable_http_send_request_sse_error_missing_code(
+    test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"message\":"
+      "\"broken\"}}\n\n";
+
+  run_mcp_streamable_http_send_request_error_test(
+      state, "mcp_streamable_send_request_sse_error_missing_code",
+      "text/event-stream", body, CAI_ERR_PROTOCOL,
+      "MCP JSON-RPC error must include code and message");
+}
+
+static void test_mcp_streamable_http_send_request_sse_empty_message_event(
+    test_state *state) {
+  static const char body[] = "event: message\n"
+                             "id: empty-final\n\n";
+
+  run_mcp_streamable_http_send_request_error_test(
+      state, "mcp_streamable_send_request_sse_empty_message_event",
+      "text/event-stream", body, CAI_ERR_PROTOCOL,
+      "MCP streamed response was missing JSON-RPC response");
+}
+
+static const char *
+test_mcp_streaming_expected_output(test_mcp_streaming_operation operation) {
+  switch (operation) {
+  case TEST_MCP_STREAMING_RESOURCE_READ:
+    return "{\"contents\":[{\"uri\":\"resource://stream\",\"mimeType\":"
+           "\"text/plain\",\"text\":\"firstsecond\"}]}";
+  case TEST_MCP_STREAMING_PROMPT_GET:
+    return "{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\","
+           "\"text\":\"firstsecond\"}}]}";
+  case TEST_MCP_STREAMING_COMPLETION:
+    return "{\"completion\":{\"values\":[\"firstsecond\"],\"total\":1,"
+           "\"hasMore\":false}}";
+  case TEST_MCP_STREAMING_GENERIC_REQUEST:
+    return "\"firstsecond\"";
+  case TEST_MCP_STREAMING_TOOL_CALL:
+  default:
+    return "{\"content\":[{\"type\":\"text\",\"text\":\"firstsecond\"}],"
+           "\"isError\":false}";
+  }
+}
+
+static int test_mcp_streaming_call(cai_mcp_client *client,
+                                   test_mcp_streaming_operation operation,
+                                   cai_sink *sink, cai_error *error) {
+  switch (operation) {
+  case TEST_MCP_STREAMING_RESOURCE_READ:
+    return cai_mcp_client_read_resource(client, "resource://stream", sink,
+                                        error);
+  case TEST_MCP_STREAMING_PROMPT_GET:
+    return cai_mcp_client_get_prompt(client, "stream-prompt", NULL, sink,
+                                     error);
+  case TEST_MCP_STREAMING_COMPLETION:
+    return cai_mcp_client_complete(client, "ref/prompt", "stream-prompt",
+                                   "name", "fir", NULL, sink, error);
+  case TEST_MCP_STREAMING_GENERIC_REQUEST:
+    return cai_mcp_client_send_request(client, "test/stream", NULL, sink,
+                                       error);
+  case TEST_MCP_STREAMING_TOOL_CALL:
+  default:
+    return cai_mcp_client_call_tool(client, "stream", NULL, sink, error);
+  }
+}
+
+static void run_mcp_streamable_http_chunked_result_write_test_ex(
+    test_state *state, const char *test_name,
+    test_mcp_streaming_operation operation, int sse_response,
+    int one_byte_chunks, int preliminary_sse_notification,
+    int preliminary_sse_server_request, int default_sse_message_event) {
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  streaming_write_state writer;
+  cai_error error;
+  char url[192];
+  int signal_fd;
+
+  client = NULL;
+  sink = NULL;
+  signal_fd = -1;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_streaming_mcp_ex(
+          state, test_name, &server, &signal_fd, sse_response, one_byte_chunks,
+          0, preliminary_sse_notification, preliminary_sse_server_request,
+          default_sse_message_event, 0, operation, NULL) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  writer.signal_fd = signal_fd;
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_streaming_write;
+  sink_callbacks.close = test_streaming_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, test_name,
+             test_mcp_streaming_call(client, operation, sink, &error), CAI_OK);
+  expect_int(state, test_name, writer.signalled, 1L);
+  expect_str(state, test_name, writer.writer.buffer,
+             test_mcp_streaming_expected_output(operation));
+  if (signal_fd >= 0) {
+    close(signal_fd);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, test_name, server.pid, &server.child_status);
+}
+
+static void run_mcp_streamable_http_chunked_result_write_test(
+    test_state *state, const char *test_name,
+    test_mcp_streaming_operation operation, int sse_response) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, test_name, operation, sse_response, 0, 0, 0, 0);
+}
+
+static void
+test_mcp_streamable_http_tool_call_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_tool_call_chunked_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 0);
+}
+
+static void
+test_mcp_streamable_http_tool_call_writes_sse_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_tool_call_sse_chunked_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 1);
+}
+
+static void test_mcp_streamable_http_resource_read_writes_chunked_result(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_resource_read_chunked_mock",
+      TEST_MCP_STREAMING_RESOURCE_READ, 0);
+}
+
+static void
+test_mcp_streamable_http_prompt_get_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_prompt_get_chunked_mock",
+      TEST_MCP_STREAMING_PROMPT_GET, 0);
+}
+
+static void
+test_mcp_streamable_http_completion_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_completion_chunked_mock",
+      TEST_MCP_STREAMING_COMPLETION, 0);
+}
+
+static void
+test_mcp_streamable_http_send_request_writes_chunked_result(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test(
+      state, "mcp_streamable_send_request_chunked_mock",
+      TEST_MCP_STREAMING_GENERIC_REQUEST, 0);
+}
+
+static void
+test_mcp_streamable_http_writes_result_one_byte_chunks(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_one_byte_chunked_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 0, 1, 0, 0, 0);
+}
+
+static void
+test_mcp_streamable_http_writes_sse_result_one_byte_chunks(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_sse_one_byte_chunked_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 1, 1, 0, 0, 0);
+}
+
+static void test_mcp_streamable_http_writes_default_sse_message_immediately(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_default_sse_message_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 1, 1, 0, 0, 1);
+}
+
+static void
+test_mcp_streamable_http_resource_read_default_sse_message(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_resource_read_default_sse_message_mock",
+      TEST_MCP_STREAMING_RESOURCE_READ, 1, 1, 0, 0, 1);
+}
+
+static void
+test_mcp_streamable_http_prompt_get_default_sse_message(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_prompt_get_default_sse_message_mock",
+      TEST_MCP_STREAMING_PROMPT_GET, 1, 1, 0, 0, 1);
+}
+
+static void
+test_mcp_streamable_http_completion_default_sse_message(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_completion_default_sse_message_mock",
+      TEST_MCP_STREAMING_COMPLETION, 1, 1, 0, 0, 1);
+}
+
+static void
+test_mcp_streamable_http_send_request_default_sse_message(test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_send_request_default_sse_message_mock",
+      TEST_MCP_STREAMING_GENERIC_REQUEST, 1, 1, 0, 0, 1);
+}
+
+static void
+test_mcp_streamable_http_rejects_streamed_text_plain_result(test_state *state) {
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  streaming_write_state writer;
+  cai_error error;
+  char url[192];
+  int signal_fd;
+
+  client = NULL;
+  sink = NULL;
+  signal_fd = -1;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_streaming_mcp_ex(
+          state, "mcp_streamable_tool_call_text_plain_result_mock", &server,
+          &signal_fd, 0, 1, 0, 0, 0, 0, 0, TEST_MCP_STREAMING_TOOL_CALL,
+          "text/plain") != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  writer.signal_fd = signal_fd;
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_text_plain_result_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_streaming_write;
+  sink_callbacks.close = test_streaming_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_text_plain_result_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_text_plain_result_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_ERR_PROTOCOL);
+  expect_substr(state, "mcp_streamable_text_plain_result_message",
+                error.message, "application/json or text/event-stream");
+  expect_int(state, "mcp_streamable_text_plain_result_no_signal",
+             writer.signalled, 0L);
+  expect_int(state, "mcp_streamable_text_plain_result_no_output",
+             (long)writer.writer.length, 0L);
+  if (signal_fd >= 0) {
+    close(signal_fd);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tool_call_text_plain_result_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_writes_sse_result_after_notification(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_sse_notification_prelude_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 1, 0, 1, 0, 0);
+}
+
+static void
+test_mcp_streamable_http_resource_read_sse_result_after_notification(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_resource_read_sse_notification_prelude_mock",
+      TEST_MCP_STREAMING_RESOURCE_READ, 1, 0, 1, 0, 0);
+}
+
+static void test_mcp_streamable_http_prompt_get_sse_result_after_notification(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_prompt_get_sse_notification_prelude_mock",
+      TEST_MCP_STREAMING_PROMPT_GET, 1, 0, 1, 0, 0);
+}
+
+static void test_mcp_streamable_http_completion_sse_result_after_notification(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_completion_sse_notification_prelude_mock",
+      TEST_MCP_STREAMING_COMPLETION, 1, 0, 1, 0, 0);
+}
+
+static void test_mcp_streamable_http_send_request_sse_result_after_notification(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_send_request_sse_notification_prelude_mock",
+      TEST_MCP_STREAMING_GENERIC_REQUEST, 1, 0, 1, 0, 0);
+}
+
+static void
+test_mcp_streamable_http_writes_sse_result_after_server_ping_request(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_tool_call_sse_server_ping_prelude_mock",
+      TEST_MCP_STREAMING_TOOL_CALL, 1, 0, 0, 1, 0);
+}
+
+static void
+test_mcp_streamable_http_resource_read_sse_result_after_server_ping_request(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_resource_read_sse_server_ping_prelude_mock",
+      TEST_MCP_STREAMING_RESOURCE_READ, 1, 0, 0, 1, 0);
+}
+
+static void
+test_mcp_streamable_http_prompt_get_sse_result_after_server_ping_request(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_prompt_get_sse_server_ping_prelude_mock",
+      TEST_MCP_STREAMING_PROMPT_GET, 1, 0, 0, 1, 0);
+}
+
+static void
+test_mcp_streamable_http_completion_sse_result_after_server_ping_request(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_completion_sse_server_ping_prelude_mock",
+      TEST_MCP_STREAMING_COMPLETION, 1, 0, 0, 1, 0);
+}
+
+static void
+test_mcp_streamable_http_send_request_sse_result_after_server_ping_request(
+    test_state *state) {
+  run_mcp_streamable_http_chunked_result_write_test_ex(
+      state, "mcp_streamable_send_request_sse_server_ping_prelude_mock",
+      TEST_MCP_STREAMING_GENERIC_REQUEST, 1, 0, 0, 1, 0);
+}
+
+static void test_mcp_streamable_http_writes_sse_result_after_empty_data_event(
+    test_state *state) {
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  streaming_write_state writer;
+  cai_error error;
+  char url[192];
+  int signal_fd;
+
+  client = NULL;
+  sink = NULL;
+  signal_fd = -1;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_streaming_mcp_ex(
+          state, "mcp_streamable_tool_call_sse_empty_data_prelude_mock",
+          &server, &signal_fd, 1, 0, 1, 0, 0, 0, 0,
+          TEST_MCP_STREAMING_TOOL_CALL, NULL) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  writer.signal_fd = signal_fd;
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_streaming_write;
+  sink_callbacks.close = test_streaming_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_tool_call_sse_empty_data_signalled",
+             writer.signalled, 1L);
+  expect_str(state, "mcp_streamable_tool_call_sse_empty_data_output",
+             writer.writer.buffer,
+             test_mcp_streaming_expected_output(TEST_MCP_STREAMING_TOOL_CALL));
+  if (signal_fd >= 0) {
+    close(signal_fd);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_tool_call_sse_empty_data_prelude",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_result_sink_failure(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"partial\"}],\"isError\":false}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sink-failure-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sink-failure-session", "\"id\":2",
+      "\"method\":\"tools/call\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  mcp_sink_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(script, 0, sizeof(script));
+  writer.fail_after_writes = -1;
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: sink-failure-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = call_required;
+  script[2].required_count = sizeof(call_required) / sizeof(call_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = call_body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_sink_failure_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_sink_failure_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_mcp_sink_write;
+  sink_callbacks.close = test_mcp_sink_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_sink_failure_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_sink_failure_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_ERR_TRANSPORT);
+  expect_substr(state, "mcp_streamable_sink_failure_message", error.message,
+                "MCP sink failed deliberately");
+  if (writer.write_count <= 0) {
+    test_fail(state, "mcp_streamable_sink_failure_writes",
+              "result parser never reached caller sink");
+  }
+  expect_int(state, "mcp_streamable_sink_failure_no_output", writer.length, 0L);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_sink_failure_mock", server.pid,
+                    &server.child_status);
+}
+
+static void run_mcp_streamable_http_error_result_not_written(
+    test_state *state, const char *test_name, const char *content_type,
+    const char *body) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: error-result-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: error-result-session", "\"id\":2",
+      "\"method\":\"tools/call\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(script, 0, sizeof(script));
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: error-result-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = call_required;
+  script[2].required_count = sizeof(call_required) / sizeof(call_required[0]);
+  script[2].status = 500;
+  script[2].status_text = "Internal Server Error";
+  script[2].content_type = content_type;
+  script[2].body = body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, test_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, test_name,
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_ERR_SERVER);
+  expect_int(state, test_name, error.http_status, 500L);
+  expect_str(state, test_name, writer.buffer, "");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, test_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_json_error_result_not_written(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"must not write\"}],\"isError\":false}}";
+  run_mcp_streamable_http_error_result_not_written(
+      state, "mcp_streamable_http_json_error_result_not_written",
+      "application/json", body);
+}
+
+static void
+test_mcp_streamable_http_sse_error_result_not_written(test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
+      "\"type\":\"text\",\"text\":\"must not "
+      "stream\"}],\"isError\":false}}\n\n";
+  run_mcp_streamable_http_error_result_not_written(
+      state, "mcp_streamable_http_sse_error_result_not_written",
+      "text/event-stream", body);
+}
+
+static void run_mcp_streamable_http_result_envelope_validation_test(
+    test_state *state, const char *test_name, const char *content_type,
+    const char *body, const char *expected_error, const char *expected_output,
+    int expect_no_output) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: result-envelope-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: result-envelope-session",
+      "\"id\":2", "\"method\":\"tools/call\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(script, 0, sizeof(script));
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: result-envelope-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = call_required;
+  script[2].required_count = sizeof(call_required) / sizeof(call_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = content_type;
+  script[2].body = body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, test_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  if (expected_error != NULL) {
+    expect_int(state, test_name,
+               cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+               CAI_ERR_PROTOCOL);
+    expect_substr(state, test_name, error.message, expected_error);
+    if (expect_no_output) {
+      expect_str(state, test_name, writer.buffer, "");
+    }
+  } else {
+    expect_int(state, test_name,
+               cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+               CAI_OK);
+    expect_str(state, test_name, writer.buffer, expected_output);
+  }
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, test_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_mismatched_id(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"chunked\"}],\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_mismatched_id", "application/json",
+      body, "MCP JSON-RPC response id did not match request id", NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_before_mismatched_id(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"must not stream\"}],\"isError\":false},\"id\":99}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_before_mismatched_id",
+      "application/json", body,
+      "MCP JSON-RPC response id did not match request id", NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_invalid_jsonrpc(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"1.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"must not stream\"}],\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_invalid_jsonrpc", "application/json",
+      body, "MCP JSON-RPC version must be 2.0", NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_method_with_result(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"must not stream\"}],"
+      "\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_method_with_result",
+      "application/json", body, "MCP JSON-RPC response must not include method",
+      NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_missing_id(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"chunked\"}],\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_missing_id", "application/json", body,
+      "MCP JSON-RPC was missing id", NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_accepts_result_before_id(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"chunked\"}],\"isError\":false},\"id\":2}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_before_id", "application/json", body,
+      NULL,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"chunked\"}],"
+      "\"isError\":false}",
+      0);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_duplicate_result(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"first\"}],\"isError\":false},\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"second\"}],"
+      "\"isError\":false}}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_duplicate_result", "application/json",
+      body, "MCP JSON-RPC response must include exactly one of result or error",
+      NULL, 0);
+}
+
+static void test_mcp_streamable_http_result_before_id_rejects_duplicate_result(
+    test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"must not stream\"}],\"isError\":false},\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"second\"}],"
+      "\"isError\":false},\"id\":2}";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_before_id_duplicate_result",
+      "application/json", body,
+      "MCP JSON-RPC response must include exactly one of result or error", NULL,
+      1);
+}
+
+static void
+test_mcp_streamable_http_sse_rejects_result_and_error(test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,"
+      "\"error\":{\"code\":-32000,\"message\":\"bad\"},\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"chunked\"}],"
+      "\"isError\":false}}\n\n";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_sse_result_and_error", "text/event-stream",
+      body, "MCP JSON-RPC response must include exactly one of result or error",
+      NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_sse_rejects_result_before_error(test_state *state) {
+  static const char body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"result\":{"
+      "\"content\":[{\"type\":\"text\",\"text\":\"must not stream\"}],"
+      "\"isError\":false},\"error\":{\"code\":-32000,\"message\":\"bad\"},"
+      "\"id\":2}\n\n";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_sse_result_before_error", "text/event-stream",
+      body, "MCP JSON-RPC response must include exactly one of result or error",
+      NULL, 1);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_trailing_garbage(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\","
+      "\"text\":\"must not stream\"}],\"isError\":false},\"id\":2}garbage";
+  run_mcp_streamable_http_result_envelope_validation_test(
+      state, "mcp_streamable_http_result_trailing_garbage", "application/json",
+      body, "failed to parse MCP JSON-RPC response", NULL, 1);
+}
+
+static void run_mcp_streamable_http_invalid_result_json_test(
+    test_state *state, const char *test_name,
+    test_mcp_streaming_operation operation, const char *body) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-result-json-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *request_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: invalid-result-json-session",
+      "\"id\":2"};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(script, 0, sizeof(script));
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: invalid-result-json-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = request_required;
+  script[2].required_count =
+      sizeof(request_required) / sizeof(request_required[0]);
+  script[2].status = 200;
+  script[2].status_text = "OK";
+  script[2].content_type = "application/json";
+  script[2].body = body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, test_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, test_name,
+             test_mcp_streaming_call(client, operation, sink, &error),
+             CAI_ERR_PROTOCOL);
+  expect_substr(state, test_name, error.message,
+                "failed to parse MCP JSON-RPC response");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, test_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_bad_literal(test_state *state) {
+  static const char body[] = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":tru}";
+
+  run_mcp_streamable_http_invalid_result_json_test(
+      state, "mcp_streamable_http_result_bad_literal",
+      TEST_MCP_STREAMING_GENERIC_REQUEST, body);
+}
+
+static void
+test_mcp_streamable_http_result_rejects_bad_object(test_state *state) {
+  static const char body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":}}";
+
+  run_mcp_streamable_http_invalid_result_json_test(
+      state, "mcp_streamable_http_result_bad_object",
+      TEST_MCP_STREAMING_TOOL_CALL, body);
+}
+
+static const char *
+test_mcp_streaming_operation_method_fragment(test_mcp_streaming_operation op) {
+  switch (op) {
+  case TEST_MCP_STREAMING_RESOURCE_READ:
+    return "\"method\":\"resources/read\"";
+  case TEST_MCP_STREAMING_PROMPT_GET:
+    return "\"method\":\"prompts/get\"";
+  case TEST_MCP_STREAMING_COMPLETION:
+    return "\"method\":\"completion/complete\"";
+  case TEST_MCP_STREAMING_GENERIC_REQUEST:
+    return "\"method\":\"test/stream\"";
+  case TEST_MCP_STREAMING_TOOL_CALL:
+  default:
+    return "\"method\":\"tools/call\"";
+  }
+}
+
+static void run_mcp_streamable_http_streamed_operation_http_error_test(
+    test_state *state, const char *test_name,
+    test_mcp_streaming_operation operation) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char error_body[] = "{\"error\":\"server unavailable\"}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: streamed-http-error-session",
+      "\"method\":\"notifications/initialized\""};
+  const char *operation_required[3];
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(script, 0, sizeof(script));
+  operation_required[0] = "POST /v1/mcp HTTP/";
+  operation_required[1] = "MCP-Session-Id: streamed-http-error-session";
+  operation_required[2] =
+      test_mcp_streaming_operation_method_fragment(operation);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id =
+      "req-init\r\nMCP-Session-Id: streamed-http-error-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = operation_required;
+  script[2].required_count =
+      sizeof(operation_required) / sizeof(operation_required[0]);
+  script[2].status = 503;
+  script[2].status_text = "Service Unavailable";
+  script[2].content_type = "application/json";
+  script[2].body = error_body;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, test_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, test_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, test_name,
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, test_name,
+             test_mcp_streaming_call(client, operation, sink, &error),
+             CAI_ERR_SERVER);
+  expect_int(state, test_name, error.http_status, 503L);
+  expect_str(state, test_name, error.message, "MCP server returned HTTP error");
+  expect_str(state, test_name, writer.buffer, "");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, test_name, server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_tool_call_http_error(test_state *state) {
+  run_mcp_streamable_http_streamed_operation_http_error_test(
+      state, "mcp_streamable_tool_call_http_error",
+      TEST_MCP_STREAMING_TOOL_CALL);
+}
+
+static void
+test_mcp_streamable_http_resource_read_http_error(test_state *state) {
+  run_mcp_streamable_http_streamed_operation_http_error_test(
+      state, "mcp_streamable_resource_read_http_error",
+      TEST_MCP_STREAMING_RESOURCE_READ);
+}
+
+static void test_mcp_streamable_http_prompt_get_http_error(test_state *state) {
+  run_mcp_streamable_http_streamed_operation_http_error_test(
+      state, "mcp_streamable_prompt_get_http_error",
+      TEST_MCP_STREAMING_PROMPT_GET);
+}
+
+static void test_mcp_streamable_http_complete_http_error(test_state *state) {
+  run_mcp_streamable_http_streamed_operation_http_error_test(
+      state, "mcp_streamable_complete_http_error",
+      TEST_MCP_STREAMING_COMPLETION);
+}
+
+static void
+test_mcp_streamable_http_send_request_http_error(test_state *state) {
+  run_mcp_streamable_http_streamed_operation_http_error_test(
+      state, "mcp_streamable_send_request_http_error",
+      TEST_MCP_STREAMING_GENERIC_REQUEST);
+}
+
+static void
+test_mcp_streamable_http_initialized_failure_retries(test_state *state) {
+  static const char initialize_1_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char initialize_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] = "{\"jsonrpc\":\"2.0\",\"id\":3,"
+                                  "\"result\":{}}";
+  static const char *init_1_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                          "\"method\":\"initialize\""};
+  static const char *initialized_1_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: failed-init-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *init_2_required[] = {"POST /v1/mcp HTTP/", "\"id\":2",
+                                          "\"method\":\"initialize\""};
+  static const char *initialized_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: retry-init-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: retry-init-session",
+                                        "\"id\":3", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_1_required,
+       sizeof(init_1_required) / sizeof(init_1_required[0]), NULL, 0U, 200,
+       "OK", "application/json",
+       "req-init\r\nMCP-Session-Id: failed-init-session", initialize_1_body},
+      {"POST /v1/mcp HTTP/", initialized_1_required,
+       sizeof(initialized_1_required) / sizeof(initialized_1_required[0]), NULL,
+       0U, 500, "Internal Server Error", "application/json", NULL,
+       "{\"error\":\"not initialized\"}"},
+      {"POST /v1/mcp HTTP/", init_2_required,
+       sizeof(init_2_required) / sizeof(init_2_required[0]), NULL, 0U, 200,
+       "OK", "application/json",
+       "req-init\r\nMCP-Session-Id: retry-init-session", initialize_2_body},
+      {"POST /v1/mcp HTTP/", initialized_2_required,
+       sizeof(initialized_2_required) / sizeof(initialized_2_required[0]), NULL,
+       0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_init_retry_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_init_retry_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_init_retry_first_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_init_retry_first_status", error.http_status,
+             500L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "mcp_streamable_init_retry_second_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_init_retry_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_session_recovery_preserves_request_id(
+    test_state *state) {
+  static const char initialize_1_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char initialize_2_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char retry_ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\","
+      "\"params\":{\"progressToken\":2,\"progress\":1}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_1_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                          "\"method\":\"initialize\""};
+  static const char *initialized_1_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: recovery-id-session-1",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_404_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: recovery-id-session-1", "\"id\":2",
+      "\"method\":\"ping\""};
+  static const char *init_2_required[] = {"POST /v1/mcp HTTP/", "\"id\":3",
+                                          "\"method\":\"initialize\""};
+  static const char *initialized_2_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: recovery-id-session-2",
+      "\"method\":\"notifications/initialized\""};
+  static const char *retry_ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: recovery-id-session-2", "\"id\":2",
+      "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_1_required,
+       sizeof(init_1_required) / sizeof(init_1_required[0]), NULL, 0U, 200,
+       "OK", "application/json",
+       "req-init\r\nMCP-Session-Id: recovery-id-session-1", initialize_1_body},
+      {"POST /v1/mcp HTTP/", initialized_1_required,
+       sizeof(initialized_1_required) / sizeof(initialized_1_required[0]), NULL,
+       0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_404_required,
+       sizeof(ping_404_required) / sizeof(ping_404_required[0]), NULL, 0U, 404,
+       "Not Found", "application/json", NULL, "{\"error\":\"gone\"}"},
+      {"POST /v1/mcp HTTP/", init_2_required,
+       sizeof(init_2_required) / sizeof(init_2_required[0]), NULL, 0U, 200,
+       "OK", "application/json",
+       "req-init\r\nMCP-Session-Id: recovery-id-session-2", initialize_2_body},
+      {"POST /v1/mcp HTTP/", initialized_2_required,
+       sizeof(initialized_2_required) / sizeof(initialized_2_required[0]), NULL,
+       0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", retry_ping_required,
+       sizeof(retry_ping_required) / sizeof(retry_ping_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, retry_ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_recovery_id_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_recovery_id_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_recovery_id_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_recovery_id_notification_count",
+             notifications.count, 1L);
+  expect_substr(state, "mcp_streamable_recovery_id_notification_params",
+                notifications.params, "\"progressToken\":2");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_recovery_id_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_session_recovery_chunked_result(test_state *state) {
+  static const char initialize_old_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char initialize_new_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char retry_call_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":"
+      "\"text\",\"text\":\"recovered call\"}],\"isError\":false}}";
+  static const char *init_old_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                            "\"method\":\"initialize\""};
+  static const char *init_forbidden[] = {"MCP-Session-Id:"};
+  static const char *initialized_old_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-old-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *stale_call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-old-session", "\"id\":2",
+      "\"method\":\"tools/call\"", "\"name\":\"recover\""};
+  static const char *init_new_required[] = {"POST /v1/mcp HTTP/", "\"id\":3",
+                                            "\"method\":\"initialize\""};
+  static const char *initialized_new_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-new-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *retry_call_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: chunked-new-session", "\"id\":2",
+      "\"method\":\"tools/call\"", "\"name\":\"recover\""};
+  static const char *retry_call_forbidden[] = {
+      "MCP-Session-Id: chunked-old-session"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_old_required,
+       sizeof(init_old_required) / sizeof(init_old_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json",
+       "req-init-old\r\nMCP-Session-Id: chunked-old-session",
+       initialize_old_body},
+      {"POST /v1/mcp HTTP/", initialized_old_required,
+       sizeof(initialized_old_required) / sizeof(initialized_old_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", stale_call_required,
+       sizeof(stale_call_required) / sizeof(stale_call_required[0]), NULL, 0U,
+       404, "Not Found", "application/json", NULL, "{\"error\":\"stale\"}"},
+      {"POST /v1/mcp HTTP/", init_new_required,
+       sizeof(init_new_required) / sizeof(init_new_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json",
+       "req-init-new\r\nMCP-Session-Id: chunked-new-session",
+       initialize_new_body},
+      {"POST /v1/mcp HTTP/", initialized_new_required,
+       sizeof(initialized_new_required) / sizeof(initialized_new_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", retry_call_required,
+       sizeof(retry_call_required) / sizeof(retry_call_required[0]),
+       retry_call_forbidden,
+       sizeof(retry_call_forbidden) / sizeof(retry_call_forbidden[0]), 200,
+       "OK", "application/json", NULL, retry_call_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_chunked_session_recovery_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_chunked_session_recovery_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streamable_chunked_session_recovery_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_chunked_session_recovery_call",
+             cai_mcp_client_call_tool(client, "recover", NULL, sink, &error),
+             CAI_OK);
+  expect_str(state, "mcp_streamable_chunked_session_recovery_output",
+             writer.buffer,
+             "{\"content\":[{\"type\":\"text\",\"text\":\"recovered call\"}],"
+             "\"isError\":false}");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_chunked_session_recovery_mock",
+                    server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_send_notification_params(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-params-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *notification_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-params-session",
+      "\"method\":\"notifications/test\"", "\"params\":{\"ok\":true}"};
+  static const char *notification_forbidden[] = {"\"id\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: notification-params-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", notification_required,
+       sizeof(notification_required) / sizeof(notification_required[0]),
+       notification_forbidden,
+       sizeof(notification_forbidden) / sizeof(notification_forbidden[0]), 202,
+       "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  lonejson_spooled params;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_notification_params_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_notification_params_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_notification_params_append",
+             params.append(&params, "{\"ok\":true}", strlen("{\"ok\":true}"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_notification_params_call",
+             cai_mcp_client_send_notification(client, "notifications/test",
+                                              &params, &error),
+             CAI_OK);
+  params.cleanup(&params);
+  CAI_LJ->spooled_init(CAI_LJ, &params);
+  lonejson_error_init(&json_error);
+  expect_int(state, "mcp_streamable_notification_invalid_params_append",
+             params.append(&params, "{\"broken\":", strlen("{\"broken\":"),
+                           &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "mcp_streamable_notification_invalid_params_call",
+             cai_mcp_client_send_notification(client, "notifications/bad",
+                                              &params, &error),
+             CAI_ERR_PROTOCOL);
+  params.cleanup(&params);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_notification_params_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_notification_response_invalid(
+    test_state *state, const char *test_name, long status,
+    const char *status_text, const char *body, const char *expected_message) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: bad-notification-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *notification_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: bad-notification-session",
+      "\"method\":\"notifications/test\""};
+  mock_http_expectation script[3];
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char mock_name[128];
+  char open_name[128];
+  char call_name[128];
+  char message_name[128];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(script, 0, sizeof(script));
+  cai_error_init(&error);
+  script[0].request_prefix = "POST /v1/mcp HTTP/";
+  script[0].required = init_required;
+  script[0].required_count = sizeof(init_required) / sizeof(init_required[0]);
+  script[0].status = 200;
+  script[0].status_text = "OK";
+  script[0].content_type = "application/json";
+  script[0].request_id = "req-init\r\nMCP-Session-Id: bad-notification-session";
+  script[0].body = initialize_body;
+  script[1].request_prefix = "POST /v1/mcp HTTP/";
+  script[1].required = initialized_required;
+  script[1].required_count =
+      sizeof(initialized_required) / sizeof(initialized_required[0]);
+  script[1].status = 202;
+  script[1].status_text = "Accepted";
+  script[1].content_type = "application/json";
+  script[1].body = "";
+  script[2].request_prefix = "POST /v1/mcp HTTP/";
+  script[2].required = notification_required;
+  script[2].required_count =
+      sizeof(notification_required) / sizeof(notification_required[0]);
+  script[2].status = status;
+  script[2].status_text = status_text;
+  script[2].content_type = "application/json";
+  script[2].body = body;
+  snprintf(mock_name, sizeof(mock_name), "%s_mock", test_name);
+  if (http_mock_server_open_script(state, mock_name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  snprintf(open_name, sizeof(open_name), "%s_open", test_name);
+  expect_int(state, open_name,
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  snprintf(call_name, sizeof(call_name), "%s_call", test_name);
+  expect_int(state, call_name,
+             cai_mcp_client_send_notification(client, "notifications/test",
+                                              NULL, &error),
+             CAI_ERR_PROTOCOL);
+  snprintf(message_name, sizeof(message_name), "%s_message", test_name);
+  expect_str(state, message_name, error.message, expected_message);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, mock_name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_notification_response_wrong_status(test_state *state) {
+  test_mcp_streamable_http_notification_response_invalid(
+      state, "mcp_streamable_notification_response_wrong_status", 200, "OK",
+      "{}", "MCP notification response must be 202 Accepted");
+}
+
+static void
+test_mcp_streamable_http_notification_response_body(test_state *state) {
+  test_mcp_streamable_http_notification_response_invalid(
+      state, "mcp_streamable_notification_response_body", 202, "Accepted", "{}",
+      "MCP notification response body must be empty");
+}
+
+static void
+test_mcp_streamable_http_notification_callback_error(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{"
+      "\"level\":\"warning\",\"logger\":\"mock\",\"data\":\"heads up\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-error-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: notification-error-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: notification-error-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  notifications.fail = 1;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_notification_callback_error_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_notification_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_notification_error_call",
+             cai_mcp_client_ping(client, &error), CAI_ERR_CANCELLED);
+  expect_int(state, "mcp_streamable_notification_error_count",
+             notifications.count, 1L);
+  expect_str(state, "mcp_streamable_notification_error_method",
+             notifications.method, "notifications/message");
+  expect_substr(state, "mcp_streamable_notification_error_params",
+                notifications.params, "\"level\":\"warning\"");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_notification_callback_error_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_logging_notification_case(
+    test_state *state, const char *name, const char *ping_body, int expected_rc,
+    const char *expected_error, const char *expected_param_fragment) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/", "\"id\":2",
+                                        "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: logging-notification-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  script[2].body = ping_body;
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_logging_notification_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_logging_notification_call",
+             cai_mcp_client_ping(client, &error), expected_rc);
+  if (expected_rc == CAI_OK) {
+    expect_int(state, "mcp_streamable_logging_notification_count",
+               notifications.count, 1L);
+    expect_str(state, "mcp_streamable_logging_notification_method",
+               notifications.method, "notifications/message");
+    expect_substr(state, "mcp_streamable_logging_notification_params",
+                  notifications.params, expected_param_fragment);
+  } else {
+    expect_int(state, "mcp_streamable_logging_notification_count",
+               notifications.count, 0L);
+    expect_str(state, "mcp_streamable_logging_notification_error",
+               error.message, expected_error);
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_logging_notification_null_data(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{"
+      "\"level\":\"debug\",\"logger\":\"mock\",\"data\":null}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_logging_notification_case(
+      state, "mcp_streamable_logging_notification_null_data_mock", ping_body,
+      CAI_OK, NULL, "\"data\":null");
+}
+
+static void
+test_mcp_streamable_http_logging_notification_missing_data(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{"
+      "\"level\":\"info\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_logging_notification_case(
+      state, "mcp_streamable_logging_notification_missing_data_mock", ping_body,
+      CAI_ERR_PROTOCOL, "failed to parse MCP logging notification params",
+      NULL);
+}
+
+static void
+test_mcp_streamable_http_logging_notification_invalid_level(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{"
+      "\"level\":\"verbose\",\"data\":\"bad\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_logging_notification_case(
+      state, "mcp_streamable_logging_notification_invalid_level_mock",
+      ping_body, CAI_ERR_PROTOCOL,
+      "MCP logging notification level must be a standard syslog severity",
+      NULL);
+}
+
+static void
+test_mcp_streamable_http_logging_notification_array_params(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\","
+      "\"params\":[]}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_logging_notification_case(
+      state, "mcp_streamable_logging_notification_array_params_mock", ping_body,
+      CAI_ERR_PROTOCOL, "MCP logging notification params must be an object",
+      NULL);
+}
+
+static void test_mcp_streamable_http_resource_updated_notification_case(
+    test_state *state, const char *name, const char *ping_body, int expected_rc,
+    const char *expected_error, const char *expected_param_fragment) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"resources\":{\"subscribe\":true}},"
+      "\"serverInfo\":{\"name\":\"mock-mcp\",\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/", "\"id\":2",
+                                        "\"method\":\"ping\""};
+  mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: resource-updated-session", initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, NULL}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  test_mcp_notification_state notifications;
+  cai_error error;
+  char url[192];
+
+  script[2].body = ping_body;
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&notifications, 0, sizeof(notifications));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, name, script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.notification = test_mcp_notification_callback;
+  config.notification_context = &notifications;
+  expect_int(state, "mcp_streamable_resource_updated_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_resource_updated_call",
+             cai_mcp_client_ping(client, &error), expected_rc);
+  if (expected_rc == CAI_OK) {
+    expect_int(state, "mcp_streamable_resource_updated_count",
+               notifications.count, 1L);
+    expect_str(state, "mcp_streamable_resource_updated_method",
+               notifications.method, "notifications/resources/updated");
+    expect_substr(state, "mcp_streamable_resource_updated_params",
+                  notifications.params, expected_param_fragment);
+  } else {
+    expect_int(state, "mcp_streamable_resource_updated_count",
+               notifications.count, 0L);
+    expect_str(state, "mcp_streamable_resource_updated_error", error.message,
+               expected_error);
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, name, server.pid, &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_resource_updated_notification(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\","
+      "\"params\":{\"uri\":\"resource://alpha\"}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_resource_updated_notification_case(
+      state, "mcp_streamable_resource_updated_notification_mock", ping_body,
+      CAI_OK, NULL, "\"uri\":\"resource://alpha\"");
+}
+
+static void
+test_mcp_streamable_http_resource_updated_missing_uri(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\","
+      "\"params\":{}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_resource_updated_notification_case(
+      state, "mcp_streamable_resource_updated_missing_uri_mock", ping_body,
+      CAI_ERR_PROTOCOL, "failed to parse MCP resource updated params", NULL);
+}
+
+static void
+test_mcp_streamable_http_resource_updated_array_params(test_state *state) {
+  static const char ping_body[] =
+      "event: message\n"
+      "data: "
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\","
+      "\"params\":[]}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+
+  test_mcp_streamable_http_resource_updated_notification_case(
+      state, "mcp_streamable_resource_updated_array_params_mock", ping_body,
+      CAI_ERR_PROTOCOL, "MCP resource updated params must be an object", NULL);
+}
+
+static void
+test_mcp_streamable_http_server_ping_array_params(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"server-ping-array-1\","
+      "\"method\":\"ping\",\"params\":[]}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-array-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-array-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const char *ping_error_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-array-session",
+      "\"id\":\"server-ping-array-1\"", "\"error\":{\"code\":-32602",
+      "\"message\":\"MCP ping params must be an object\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: server-ping-array-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", ping_error_response_required,
+       sizeof(ping_error_response_required) /
+           sizeof(ping_error_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_server_ping_array_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_ping_array_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_ping_array_call",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_ping_array_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_server_request_unsupported(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"unknown-1\","
+      "\"method\":\"unknown/clientRequest\",\"params\":{}}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
+      "\"id\":2", "\"method\":\"ping\""};
+  static const char *unsupported_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-request-session",
+      "\"id\":\"unknown-1\"", "\"error\":{\"code\":-32601",
+      "\"message\":\"MCP server-to-client request method is not supported\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: server-request-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", unsupported_response_required,
+       sizeof(unsupported_response_required) /
+           sizeof(unsupported_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_server_request_unsupported_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_request_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_request_call",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_request_unsupported_mock",
+                    server.pid, &server.child_status);
+}
+
+static void test_mcp_streamable_http_server_ping_request(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":\"server-ping-1\","
+      "\"method\":\"ping\"}\n\n"
+      "event: message\n"
+      "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
+                                        "MCP-Session-Id: server-ping-session",
+                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *server_ping_response_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: server-ping-session",
+      "\"id\":\"server-ping-1\"", "\"result\":{}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: server-ping-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, ping_body},
+      {"POST /v1/mcp HTTP/", server_ping_response_required,
+       sizeof(server_ping_response_required) /
+           sizeof(server_ping_response_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_server_ping_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_server_ping_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_server_ping_call",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_server_ping_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_session_recovery(test_state *state) {
+  static const char initialize_old_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char initialize_new_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char tools_list_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"recovered\",\"description\":\"Recovered tool\",\"inputSchema\":{"
+      "\"type\":\"object\",\"additionalProperties\":false}}]}}";
+  static const char *init_old_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                            "\"method\":\"initialize\""};
+  static const char *init_forbidden[] = {"MCP-Session-Id:"};
+  static const char *initialized_old_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: old-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *stale_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: old-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *init_new_required[] = {"POST /v1/mcp HTTP/", "\"id\":3",
+                                            "\"method\":\"initialize\""};
+  static const char *initialized_new_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: new-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *retry_list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: new-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const char *retry_list_forbidden[] = {"MCP-Session-Id: old-session"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_old_required,
+       sizeof(init_old_required) / sizeof(init_old_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json", "req-init-old\r\nMCP-Session-Id: old-session",
+       initialize_old_body},
+      {"POST /v1/mcp HTTP/", initialized_old_required,
+       sizeof(initialized_old_required) / sizeof(initialized_old_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", stale_list_required,
+       sizeof(stale_list_required) / sizeof(stale_list_required[0]), NULL, 0U,
+       404, "Not Found", "application/json", NULL, "{\"error\":\"stale\"}"},
+      {"POST /v1/mcp HTTP/", init_new_required,
+       sizeof(init_new_required) / sizeof(init_new_required[0]), init_forbidden,
+       sizeof(init_forbidden) / sizeof(init_forbidden[0]), 200, "OK",
+       "application/json", "req-init-new\r\nMCP-Session-Id: new-session",
+       initialize_new_body},
+      {"POST /v1/mcp HTTP/", initialized_new_required,
+       sizeof(initialized_new_required) / sizeof(initialized_new_required[0]),
+       NULL, 0U, 202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", retry_list_required,
+       sizeof(retry_list_required) / sizeof(retry_list_required[0]),
+       retry_list_forbidden,
+       sizeof(retry_list_forbidden) / sizeof(retry_list_forbidden[0]), 200,
+       "OK", "application/json", NULL, tools_list_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  const cai_mcp_client_tool *tool;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(
+          state, "mcp_streamable_session_recovery_mock", script,
+          sizeof(script) / sizeof(script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_session_recovery_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_session_recovery_refresh",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  expect_int(state, "mcp_streamable_session_recovery_tool_count",
+             (long)cai_mcp_client_tool_count(client), 1L);
+  tool = cai_mcp_client_tool_at(client, 0U);
+  if (tool == NULL) {
+    test_fail(state, "mcp_streamable_session_recovery_tool", "tool missing");
+  } else {
+    expect_str(state, "mcp_streamable_session_recovery_tool_name", tool->name,
+               "recovered");
+  }
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_session_recovery_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_server_error_no_recovery(test_state *state) {
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: stable-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *list_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: stable-session", "\"id\":2",
+      "\"method\":\"tools/list\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: stable-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", list_required,
+       sizeof(list_required) / sizeof(list_required[0]), NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL,
+       "{\"error\":\"server down\"}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_500_no_recovery_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  expect_int(state, "mcp_streamable_500_no_recovery_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_500_no_recovery_refresh",
+             cai_mcp_client_refresh_tools(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_500_no_recovery_status", error.http_status,
+             500L);
+  expect_int(state, "mcp_streamable_500_no_recovery_tool_count",
+             (long)cai_mcp_client_tool_count(client), 0L);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_500_no_recovery_mock", server.pid,
+                    &server.child_status);
 }
 
 typedef struct websocket_mock_server {
@@ -8191,6 +18133,227 @@ static void mock_websocket_drop_after_delta_child(int pipe_fd) {
   close(server_fd);
   alarm(0U);
   _exit(0);
+}
+
+static void mock_websocket_sink_failure_no_fallback_child(int pipe_fd) {
+  static const char delta[] =
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"rejected ws\"}";
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+  int fallback_fd;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = -1;
+  client_fd = -1;
+  fallback_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(4);
+  }
+  if (mock_websocket_write_text(client_fd, delta) != 0) {
+    _exit(5);
+  }
+  close(client_fd);
+  client_fd = -1;
+  fallback_fd = mock_accept_with_deadline(server_fd);
+  if (fallback_fd >= 0) {
+    close(fallback_fd);
+    close(server_fd);
+    _exit(6);
+  }
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int mock_websocket_fallback_write_sse(int client_fd,
+                                             const char *response_id,
+                                             const char *delta,
+                                             long total_tokens);
+
+static void mock_websocket_fallback_before_output_child(int pipe_fd) {
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(3U);
+  server_fd = -1;
+  client_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(4);
+  }
+  close(client_fd);
+  client_fd = -1;
+
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+    _exit(5);
+  }
+  if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "POST /v1/responses HTTP/") == NULL ||
+      strstr(request, "Accept: text/event-stream") == NULL ||
+      strstr(request, "\"stream\":true") == NULL ||
+      strstr(request, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(request, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(6);
+  }
+  if (mock_websocket_fallback_write_sse(client_fd, "resp_http_fallback",
+                                        "http fallback", 7L) != 0) {
+    _exit(7);
+  }
+  close(client_fd);
+  client_fd = -1;
+
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(8);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(9);
+  }
+  if (mock_websocket_write_text(
+          client_fd,
+          "{\"type\":\"response.output_text.delta\",\"delta\":\"ws after "
+          "fallback\"}") != 0 ||
+      mock_websocket_write_text(
+          client_fd,
+          "{\"type\":\"response.completed\",\"response\":{\"id\":"
+          "\"resp_ws_after_fallback\",\"usage\":{\"input_tokens\":2,"
+          "\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":3,"
+          "\"output_tokens_details\":{\"reasoning_tokens\":1},"
+          "\"total_tokens\":5}}}") != 0) {
+    _exit(10);
+  }
+  close(client_fd);
+  client_fd = -1;
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static void mock_websocket_upgrade_failure_child(int pipe_fd) {
+  char request[4096];
+  int server_fd;
+  int client_fd;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(3U);
+  server_fd = -1;
+  client_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  client_fd = mock_accept_with_deadline(server_fd);
+  if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+    _exit(3);
+  }
+  if (mock_read_request(client_fd, request, sizeof(request)) != 0 ||
+      strstr(request, "GET /v1/responses HTTP/") == NULL ||
+      strstr(request, "Authorization: Bearer mock-key") == NULL ||
+      strstr(request, "OpenAI-Beta: responses_websockets=2026-02-06") == NULL) {
+    _exit(4);
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static void mock_websocket_close_before_output_child(int pipe_fd) {
+  char request[4096];
+  char message[8192];
+  int server_fd;
+  int client_fd;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(2U);
+  server_fd = -1;
+  client_fd = -1;
+  if (mock_websocket_listen_and_publish_port(pipe_fd, &server_fd) != 0) {
+    _exit(2);
+  }
+  if (mock_websocket_accept_openai_request(server_fd, &client_fd, request,
+                                           sizeof(request)) != 0) {
+    _exit(3);
+  }
+  if (mock_websocket_read_text(client_fd, message, sizeof(message)) != 0 ||
+      strstr(message, "\"type\":\"response.create\"") == NULL ||
+      strstr(message, "\"stream\"") != NULL ||
+      strstr(message, "\"previous_response_id\":\"resp_ws_prev\"") == NULL ||
+      strstr(message, "\"text\":\"ws user turn\"") == NULL) {
+    _exit(4);
+  }
+  close(client_fd);
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int mock_websocket_fallback_write_sse(int client_fd,
+                                             const char *response_id,
+                                             const char *delta,
+                                             long total_tokens) {
+  char body[1024];
+  char header[256];
+  int body_len;
+  int header_len;
+
+  body_len = snprintf(
+      body, sizeof(body),
+      "event: response.output_text.delta\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"%s\"}\n\n"
+      "event: response.completed\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"%s\","
+      "\"usage\":{\"input_tokens\":2,\"input_tokens_details\":{"
+      "\"cached_tokens\":1},\"output_tokens\":3,\"output_tokens_details\":{"
+      "\"reasoning_tokens\":1},\"total_tokens\":%ld}}}\n\n",
+      delta, response_id, total_tokens);
+  if (body_len <= 0 || (size_t)body_len >= sizeof(body)) {
+    return -1;
+  }
+  header_len = snprintf(header, sizeof(header),
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/event-stream\r\n"
+                        "Content-Length: %d\r\n"
+                        "Connection: close\r\n\r\n",
+                        body_len);
+  if (header_len <= 0 || (size_t)header_len >= sizeof(header)) {
+    return -1;
+  }
+  return mock_write_all(client_fd, header, (size_t)header_len) == 0 &&
+                 mock_write_all(client_fd, body, (size_t)body_len) == 0
+             ? 0
+             : -1;
 }
 
 static void mock_websocket_fragmented_completed_child(int pipe_fd) {
@@ -10225,14 +20388,19 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
   char output_path[PATH_MAX];
   char script[PATH_MAX * 2];
   char command[64];
+  char expected_output[512];
   char *recorded;
+  char *original_ld_preload;
   FILE *fp;
   struct timespec delay;
   cai_chatgpt_login_browser_config config;
   cai_error error;
+  int had_ld_preload;
   int i;
 
   recorded = NULL;
+  original_ld_preload = NULL;
+  had_ld_preload = 0;
   script_path[0] = '\0';
   missing_path[0] = '\0';
   output_path[0] = '\0';
@@ -10262,7 +20430,8 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
   snprintf(missing_path, sizeof(missing_path), "%s/missing-browser",
            template_dir);
   snprintf(output_path, sizeof(output_path), "%s/url.txt", template_dir);
-  snprintf(script, sizeof(script), "#!/bin/sh\nprintf '%%s' \"$1\" > '%s'\n",
+  snprintf(script, sizeof(script),
+           "#!/bin/sh\nprintf '%%s\\n%%s' \"$1\" \"${LD_PRELOAD-}\" > '%s'\n",
            output_path);
   fp = fopen(script_path, "w");
   if (fp == NULL) {
@@ -10284,10 +20453,27 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   config.command = script_path;
+  if (getenv("LD_PRELOAD") != NULL) {
+    original_ld_preload = strdup(getenv("LD_PRELOAD"));
+    if (original_ld_preload == NULL) {
+      test_fail(state, "chatgpt_browser_ld_preload_copy", "strdup failed");
+      goto cleanup;
+    }
+    had_ld_preload = 1;
+  }
+  if (setenv("LD_PRELOAD", "/tmp/cai-test-asan-preload.so", 1) != 0) {
+    test_fail(state, "chatgpt_browser_ld_preload_set", "setenv failed");
+    goto cleanup;
+  }
   expect_int(
       state, "chatgpt_browser_custom_open",
       cai_chatgpt_login_open_browser_with_config(&config, test_url, &error),
       CAI_OK);
+  if (had_ld_preload) {
+    (void)setenv("LD_PRELOAD", original_ld_preload, 1);
+  } else {
+    unsetenv("LD_PRELOAD");
+  }
   delay.tv_sec = 0;
   delay.tv_nsec = 10000000L;
   for (i = 0; i < 100; i++) {
@@ -10301,9 +20487,16 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
     goto cleanup;
   }
   recorded = read_file_or_die(output_path);
-  expect_str(state, "chatgpt_browser_url_argument", recorded, test_url);
+  snprintf(expected_output, sizeof(expected_output), "%s\n", test_url);
+  expect_str(state, "chatgpt_browser_url_argument", recorded, expected_output);
 
 cleanup:
+  if (had_ld_preload) {
+    (void)setenv("LD_PRELOAD", original_ld_preload, 1);
+  } else {
+    unsetenv("LD_PRELOAD");
+  }
+  free(original_ld_preload);
   free(recorded);
   if (output_path[0] != '\0') {
     unlink(output_path);
@@ -12069,6 +22262,7 @@ static void test_agent_session(test_state *state) {
       client->close == NULL || agent->register_tool == NULL ||
       agent->register_raw_tool == NULL ||
       agent->register_raw_spooled_tool == NULL ||
+      agent->register_mcp_client_tools == NULL ||
       agent->add_hosted_tool_json == NULL ||
       agent->add_simple_hosted_tool == NULL ||
       agent->add_hosted_mcp_tool == NULL || agent->add_user_text == NULL ||
@@ -17298,6 +27492,545 @@ cleanup:
   }
 }
 
+static void test_stream_responses_websocket_https_fallback(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_http_fallback_mock",
+          mock_websocket_fallback_before_output_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_http_fallback_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_http_fallback_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_http_fallback_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_http_fallback_output", writer.buffer,
+             "http fallback");
+  expect_str(state, "stream_ws_http_fallback_response_id", response_id,
+             "resp_http_fallback");
+  expect_int(state, "stream_ws_http_fallback_usage", usage.total_tokens, 7LL);
+
+  cai_string_destroy(response_id);
+  response_id = NULL;
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  memset(&usage, 0, sizeof(usage));
+  expect_int(state, "stream_ws_http_fallback_next_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_OK);
+  expect_str(state, "stream_ws_http_fallback_next_output", writer.buffer,
+             "ws after fallback");
+  expect_str(state, "stream_ws_http_fallback_next_response_id", response_id,
+             "resp_ws_after_fallback");
+  expect_int(state, "stream_ws_http_fallback_next_usage", usage.total_tokens,
+             5LL);
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_http_fallback_mock", server.pid,
+                      &server.child_status);
+  }
+}
+
+static void
+test_stream_responses_websocket_upgrade_failure_no_fallback(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_upgrade_failure_no_fallback_mock",
+          mock_websocket_upgrade_failure_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_ERR_SERVER);
+  expect_str(state, "stream_ws_upgrade_failure_no_fallback_output",
+             writer.buffer, "");
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_upgrade_failure_no_fallback_no_response_id",
+              "failed upgrade returned a response id");
+  }
+  expect_int(state, "stream_ws_upgrade_failure_no_fallback_usage",
+             usage.total_tokens, 0LL);
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_upgrade_failure_no_fallback_mock",
+                      server.pid, &server.child_status);
+  }
+}
+
+static void
+test_stream_responses_websocket_no_fallback_after_output(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_no_fallback_after_output_mock",
+          mock_websocket_drop_after_delta_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_no_fallback_after_output_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_output_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_output_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_output_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_output_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_no_fallback_after_output_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_no_fallback_after_output_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "stream_ws_no_fallback_after_output_output", writer.buffer,
+             "partial ws");
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_no_fallback_after_output_no_response_id",
+              "dropped stream returned a response id");
+  }
+  expect_int(state, "stream_ws_no_fallback_after_output_usage",
+             usage.total_tokens, 0LL);
+  expect_substr(state, "stream_ws_no_fallback_after_output_error",
+                error.message, "websocket closed before response.completed");
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_no_fallback_after_output_mock",
+                      server.pid, &server.child_status);
+  }
+}
+
+static void test_stream_responses_websocket_no_fallback_after_sink_failure(
+    test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  fail_write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_no_fallback_after_sink_failure_mock",
+          mock_websocket_sink_failure_no_fallback_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_fail_write;
+  sink_callbacks.close = test_fail_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_ERR_TRANSPORT);
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_writes",
+             writer.writes, 1L);
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_no_fallback_after_sink_failure_no_response_id",
+              "sink failure returned a response id");
+  }
+  expect_int(state, "stream_ws_no_fallback_after_sink_failure_usage",
+             usage.total_tokens, 0LL);
+  expect_substr(state, "stream_ws_no_fallback_after_sink_failure_error",
+                error.message, "test sink rejected output");
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_no_fallback_after_sink_failure_mock",
+                      server.pid, &server.child_status);
+  }
+}
+
+static void test_stream_responses_websocket_fallback_disabled_before_output(
+    test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_fallback_disabled_before_output_mock",
+          mock_websocket_close_before_output_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  config.responses_websocket_fallback_disabled = 1;
+  expect_int(state, "stream_ws_fallback_disabled_before_output_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_fallback_disabled_before_output_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_fallback_disabled_before_output_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_fallback_disabled_before_output_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_fallback_disabled_before_output_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_fallback_disabled_before_output_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_fallback_disabled_before_output_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "stream_ws_fallback_disabled_before_output_output",
+             writer.buffer, "");
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_fallback_disabled_before_output_no_response_id",
+              "dropped stream returned a response id");
+  }
+  expect_int(state, "stream_ws_fallback_disabled_before_output_usage",
+             usage.total_tokens, 0LL);
+  expect_substr(state, "stream_ws_fallback_disabled_before_output_error",
+                error.message, "websocket closed before response.completed");
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_fallback_disabled_before_output_mock",
+                      server.pid, &server.child_status);
+  }
+}
+
+static void
+test_stream_responses_websocket_https_fallback_disabled(test_state *state) {
+  websocket_mock_server server;
+  test_env_snapshot force_ws_env;
+  cai_client_config config;
+  cai_response_create_params *params;
+  cai_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  cai_token_usage usage;
+  write_state writer;
+  cai_error error;
+  char *response_id;
+  int server_opened;
+
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&writer, 0, sizeof(writer));
+  memset(&usage, 0, sizeof(usage));
+  cai_error_init(&error);
+  params = NULL;
+  client = NULL;
+  sink = NULL;
+  response_id = NULL;
+  server_opened = 0;
+  test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
+
+  if (websocket_mock_server_open_child(
+          state, "stream_ws_http_fallback_disabled_mock",
+          mock_websocket_drop_after_delta_child, &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 500L;
+  config.responses_websocket_fallback_disabled = 1;
+  expect_int(state, "stream_ws_http_fallback_disabled_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_model",
+             params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_previous",
+             params->set_previous_response_id(params, "resp_ws_prev", &error),
+             CAI_OK);
+  expect_int(state, "stream_ws_http_fallback_disabled_text",
+             params->add_text(params, "user", "ws user turn", &error), CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "stream_ws_http_fallback_disabled_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+
+  expect_int(state, "stream_ws_http_fallback_disabled_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                &response_id, &usage, &error),
+             CAI_ERR_TRANSPORT);
+  expect_str(state, "stream_ws_http_fallback_disabled_output", writer.buffer,
+             "partial ws");
+  if (response_id != NULL) {
+    test_fail(state, "stream_ws_http_fallback_disabled_no_response_id",
+              "dropped stream returned a response id");
+  }
+  expect_int(state, "stream_ws_http_fallback_disabled_usage",
+             usage.total_tokens, 0LL);
+  expect_substr(state, "stream_ws_http_fallback_disabled_error", error.message,
+                "websocket closed before response.completed");
+
+cleanup:
+  cai_string_destroy(response_id);
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  test_env_restore(&force_ws_env);
+  if (server_opened) {
+    expect_child_exit(state, "stream_ws_http_fallback_disabled_mock",
+                      server.pid, &server.child_status);
+  }
+}
+
 static void
 test_stream_responses_websocket_fragmented_event(test_state *state) {
   websocket_mock_server server;
@@ -20590,6 +31323,482 @@ static const test_entry test_entries[] = {
      test_lonejson_nested_mapped_array_stream},
     {"lonejson_selected_array_rewrite", test_lonejson_selected_array_rewrite},
     {"tool_registry", test_tool_registry},
+    {"mcp_client_config", test_mcp_client_config},
+    {"mcp_client_rejects_partial_allocator",
+     test_mcp_client_rejects_partial_allocator},
+    {"mcp_client_open_failure_cleans_allocator",
+     test_mcp_client_open_failure_cleans_allocator},
+    {"mcp_client_open_failure_keeps_receiver_cleanup",
+     test_mcp_client_open_failure_keeps_receiver_cleanup},
+    {"mcp_streamable_http_header_callback_bounds",
+     test_mcp_streamable_http_header_callback_bounds},
+    {"mcp_client_receiver_surface", test_mcp_client_receiver_surface},
+    {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
+    {"mcp_streamable_http_client_roundtrip",
+     test_mcp_streamable_http_client_roundtrip},
+    {"mcp_streamable_http_client_custom_allocator_metadata",
+     test_mcp_streamable_http_client_custom_allocator_metadata},
+    {"mcp_streamable_http_client_logging",
+     test_mcp_streamable_http_client_logging},
+    {"mcp_streamable_http_call_result_must_be_object",
+     test_mcp_streamable_http_call_result_must_be_object},
+    {"mcp_streamable_http_ping_error", test_mcp_streamable_http_ping_error},
+    {"mcp_streamable_http_ping_error_missing_code",
+     test_mcp_streamable_http_ping_error_missing_code},
+    {"mcp_streamable_http_ping_error_missing_message",
+     test_mcp_streamable_http_ping_error_missing_message},
+    {"mcp_streamable_http_ping_error_empty",
+     test_mcp_streamable_http_ping_error_empty},
+    {"mcp_streamable_http_sse_ping_error",
+     test_mcp_streamable_http_sse_ping_error},
+    {"mcp_streamable_http_sse_ping_error_missing_code",
+     test_mcp_streamable_http_sse_ping_error_missing_code},
+    {"mcp_streamable_http_sse_ping_error_missing_message",
+     test_mcp_streamable_http_sse_ping_error_missing_message},
+    {"mcp_streamable_http_sse_ping_error_empty",
+     test_mcp_streamable_http_sse_ping_error_empty},
+    {"mcp_streamable_http_initialize_missing_capabilities",
+     test_mcp_streamable_http_initialize_missing_capabilities},
+    {"mcp_streamable_http_initialize_capabilities_not_object",
+     test_mcp_streamable_http_initialize_capabilities_not_object},
+    {"mcp_streamable_http_initialize_server_info_metadata",
+     test_mcp_streamable_http_initialize_server_info_metadata},
+    {"mcp_streamable_http_initialize_server_info_icons_not_array",
+     test_mcp_streamable_http_initialize_server_info_icons_not_array},
+    {"mcp_streamable_http_initialize_server_info_icon_missing_src",
+     test_mcp_streamable_http_initialize_server_info_icon_missing_src},
+    {"mcp_streamable_http_initialize_server_info_icon_bad_theme",
+     test_mcp_streamable_http_initialize_server_info_icon_bad_theme},
+    {"mcp_streamable_http_initialize_server_info_description_not_string",
+     test_mcp_streamable_http_initialize_server_info_description_not_string},
+    {"mcp_streamable_http_initialize_instructions_not_string",
+     test_mcp_streamable_http_initialize_instructions_not_string},
+    {"mcp_streamable_http_initialize_missing_server_info",
+     test_mcp_streamable_http_initialize_missing_server_info},
+    {"mcp_streamable_http_initialize_missing_protocol_version",
+     test_mcp_streamable_http_initialize_missing_protocol_version},
+    {"mcp_streamable_http_initialize_unsupported_protocol_version",
+     test_mcp_streamable_http_initialize_unsupported_protocol_version},
+    {"mcp_streamable_http_initialize_empty_session_id",
+     test_mcp_streamable_http_initialize_empty_session_id},
+    {"mcp_streamable_http_initialize_space_session_id",
+     test_mcp_streamable_http_initialize_space_session_id},
+    {"mcp_streamable_http_long_session_id_header",
+     test_mcp_streamable_http_long_session_id_header},
+    {"mcp_streamable_http_initialize_response_id_mismatch",
+     test_mcp_streamable_http_initialize_response_id_mismatch},
+    {"mcp_streamable_http_initialize_error_id_mismatch",
+     test_mcp_streamable_http_initialize_error_id_mismatch},
+    {"mcp_streamable_http_response_id_mismatch",
+     test_mcp_streamable_http_response_id_mismatch},
+    {"mcp_streamable_http_error_response_id_mismatch",
+     test_mcp_streamable_http_error_response_id_mismatch},
+    {"mcp_streamable_http_response_invalid_id_type",
+     test_mcp_streamable_http_response_invalid_id_type},
+    {"mcp_streamable_http_response_null_id",
+     test_mcp_streamable_http_response_null_id},
+    {"mcp_streamable_http_sse_request_invalid_id_type",
+     test_mcp_streamable_http_sse_request_invalid_id_type},
+    {"mcp_streamable_http_sse_request_null_id",
+     test_mcp_streamable_http_sse_request_null_id},
+    {"mcp_streamable_http_response_jsonrpc_invalid",
+     test_mcp_streamable_http_response_jsonrpc_invalid},
+    {"mcp_streamable_http_sse_jsonrpc_invalid",
+     test_mcp_streamable_http_sse_jsonrpc_invalid},
+    {"mcp_streamable_http_sse_method_with_result",
+     test_mcp_streamable_http_sse_method_with_result},
+    {"mcp_streamable_http_sse_response_missing_id",
+     test_mcp_streamable_http_sse_response_missing_id},
+    {"mcp_streamable_http_sse_response_missing_result_error",
+     test_mcp_streamable_http_sse_response_missing_result_error},
+    {"mcp_streamable_http_sse_response_result_and_error",
+     test_mcp_streamable_http_sse_response_result_and_error},
+    {"mcp_streamable_http_utility_notifications_ignore_malformed",
+     test_mcp_streamable_http_utility_notifications_ignore_malformed},
+    {"mcp_streamable_http_active_progress_missing_progress",
+     test_mcp_streamable_http_active_progress_missing_progress},
+    {"mcp_streamable_http_active_progress_invalid_progress",
+     test_mcp_streamable_http_active_progress_invalid_progress},
+    {"mcp_streamable_http_active_progress_negative_progress",
+     test_mcp_streamable_http_active_progress_negative_progress},
+    {"mcp_streamable_http_active_progress_negative_total",
+     test_mcp_streamable_http_active_progress_negative_total},
+    {"mcp_streamable_http_active_progress_equal_progress",
+     test_mcp_streamable_http_active_progress_equal_progress},
+    {"mcp_streamable_http_active_progress_decreasing_progress",
+     test_mcp_streamable_http_active_progress_decreasing_progress},
+    {"mcp_streamable_http_cancelled_notification_aborts_request",
+     test_mcp_streamable_http_cancelled_notification_aborts_request},
+    {"mcp_streamable_http_sse_resume_get",
+     test_mcp_streamable_http_sse_resume_get},
+    {"mcp_streamable_http_sse_resume_caps_retry",
+     test_mcp_streamable_http_sse_resume_caps_retry},
+    {"mcp_streamable_http_sse_resume_rejects_unsafe_id",
+     test_mcp_streamable_http_sse_resume_rejects_unsafe_id},
+    {"mcp_streamable_http_streaming_sse_resume_get",
+     test_mcp_streamable_http_streaming_sse_resume_get},
+    {"mcp_streamable_http_streaming_sse_resume_before_result_bytes",
+     test_mcp_streamable_http_streaming_sse_resume_before_result_bytes},
+    {"mcp_streamable_http_ignores_sse_data_before_non_message_event",
+     test_mcp_streamable_http_ignores_sse_data_before_non_message_event},
+    {"mcp_streamable_http_sse_data_before_message_event",
+     test_mcp_streamable_http_sse_data_before_message_event},
+    {"mcp_streamable_http_response_content_type_parameters",
+     test_mcp_streamable_http_response_content_type_parameters},
+    {"mcp_streamable_http_sse_content_type_parameters",
+     test_mcp_streamable_http_sse_content_type_parameters},
+    {"mcp_streamable_http_response_missing_result_error",
+     test_mcp_streamable_http_response_missing_result_error},
+    {"mcp_streamable_http_response_result_and_error",
+     test_mcp_streamable_http_response_result_and_error},
+    {"mcp_streamable_http_response_null_result",
+     test_mcp_streamable_http_response_null_result},
+    {"mcp_streamable_http_tools_list_missing_tools",
+     test_mcp_streamable_http_tools_list_missing_tools},
+    {"mcp_streamable_http_tools_list_missing_input_schema",
+     test_mcp_streamable_http_tools_list_missing_input_schema},
+    {"mcp_streamable_http_tools_list_null_input_schema",
+     test_mcp_streamable_http_tools_list_null_input_schema},
+    {"mcp_streamable_http_tools_list_array_input_schema",
+     test_mcp_streamable_http_tools_list_array_input_schema},
+    {"mcp_streamable_http_tools_list_missing_input_schema_type",
+     test_mcp_streamable_http_tools_list_missing_input_schema_type},
+    {"mcp_streamable_http_tools_list_string_input_schema_type",
+     test_mcp_streamable_http_tools_list_string_input_schema_type},
+    {"mcp_streamable_http_tools_list_input_schema_array_properties",
+     test_mcp_streamable_http_tools_list_input_schema_array_properties},
+    {"mcp_streamable_http_tools_list_input_schema_array_schema",
+     test_mcp_streamable_http_tools_list_input_schema_array_schema},
+    {"mcp_streamable_http_tools_list_input_schema_nonobject_property",
+     test_mcp_streamable_http_tools_list_input_schema_nonobject_property},
+    {"mcp_streamable_http_tools_list_input_schema_object_required",
+     test_mcp_streamable_http_tools_list_input_schema_object_required},
+    {"mcp_streamable_http_tools_list_input_schema_nonstring_required",
+     test_mcp_streamable_http_tools_list_input_schema_nonstring_required},
+    {"mcp_streamable_http_tools_list_input_schema_escaped_property",
+     test_mcp_streamable_http_tools_list_input_schema_escaped_property},
+    {"mcp_streamable_http_tools_list_array_output_schema",
+     test_mcp_streamable_http_tools_list_array_output_schema},
+    {"mcp_streamable_http_tools_list_string_output_schema_type",
+     test_mcp_streamable_http_tools_list_string_output_schema_type},
+    {"mcp_streamable_http_tools_list_numeric_output_schema_type",
+     test_mcp_streamable_http_tools_list_numeric_output_schema_type},
+    {"mcp_streamable_http_tools_list_output_schema_array_schema",
+     test_mcp_streamable_http_tools_list_output_schema_array_schema},
+    {"mcp_streamable_http_tools_list_output_schema_nonobject_property",
+     test_mcp_streamable_http_tools_list_output_schema_nonobject_property},
+    {"mcp_streamable_http_tools_list_array_annotations",
+     test_mcp_streamable_http_tools_list_array_annotations},
+    {"mcp_streamable_http_tools_list_annotation_hint_not_bool",
+     test_mcp_streamable_http_tools_list_annotation_hint_not_bool},
+    {"mcp_streamable_http_tools_list_object_icons",
+     test_mcp_streamable_http_tools_list_object_icons},
+    {"mcp_streamable_http_tools_list_icon_missing_src",
+     test_mcp_streamable_http_tools_list_icon_missing_src},
+    {"mcp_streamable_http_tools_list_array_execution",
+     test_mcp_streamable_http_tools_list_array_execution},
+    {"mcp_streamable_http_tools_list_execution_task_support_invalid",
+     test_mcp_streamable_http_tools_list_execution_task_support_invalid},
+    {"mcp_streamable_http_resources_list_missing_resources",
+     test_mcp_streamable_http_resources_list_missing_resources},
+    {"mcp_streamable_http_resources_list_object_icons",
+     test_mcp_streamable_http_resources_list_object_icons},
+    {"mcp_streamable_http_resources_list_icon_invalid_theme",
+     test_mcp_streamable_http_resources_list_icon_invalid_theme},
+    {"mcp_streamable_http_resources_list_array_annotations",
+     test_mcp_streamable_http_resources_list_array_annotations},
+    {"mcp_streamable_http_resources_list_annotation_invalid_role",
+     test_mcp_streamable_http_resources_list_annotation_invalid_role},
+    {"mcp_streamable_http_resources_list_annotation_priority_not_number",
+     test_mcp_streamable_http_resources_list_annotation_priority_not_number},
+    {"mcp_streamable_http_resources_list_annotation_priority_out_of_range",
+     test_mcp_streamable_http_resources_list_annotation_priority_out_of_range},
+    {"mcp_streamable_http_resources_list_negative_size",
+     test_mcp_streamable_http_resources_list_negative_size},
+    {"mcp_streamable_http_resource_templates_list_missing_templates",
+     test_mcp_streamable_http_resource_templates_list_missing_templates},
+    {"mcp_streamable_http_resource_templates_list_object_icons",
+     test_mcp_streamable_http_resource_templates_list_object_icons},
+    {"mcp_streamable_http_resource_templates_list_icon_size_not_string",
+     test_mcp_streamable_http_resource_templates_list_icon_size_not_string},
+    {"mcp_streamable_http_resource_templates_list_array_annotations",
+     test_mcp_streamable_http_resource_templates_list_array_annotations},
+    {"mcp_streamable_http_resource_templates_list_annotation_invalid_role",
+     test_mcp_streamable_http_resource_templates_list_annotation_invalid_role},
+    {"mcp_streamable_http_resource_templates_list_annotation_priority_out_of_"
+     "range",
+     test_mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range},
+    {"mcp_streamable_http_resource_templates_list_annotation_modified_not_"
+     "string",
+     test_mcp_streamable_http_resource_templates_list_annotation_modified_not_string},
+    {"mcp_streamable_http_prompts_list_missing_prompts",
+     test_mcp_streamable_http_prompts_list_missing_prompts},
+    {"mcp_streamable_http_prompts_list_object_arguments",
+     test_mcp_streamable_http_prompts_list_object_arguments},
+    {"mcp_streamable_http_prompts_list_argument_missing_name",
+     test_mcp_streamable_http_prompts_list_argument_missing_name},
+    {"mcp_streamable_http_prompts_list_argument_required_not_bool",
+     test_mcp_streamable_http_prompts_list_argument_required_not_bool},
+    {"mcp_streamable_http_prompts_list_object_icons",
+     test_mcp_streamable_http_prompts_list_object_icons},
+    {"mcp_streamable_http_prompts_list_icon_metadata",
+     test_mcp_streamable_http_prompts_list_icon_metadata},
+    {"mcp_streamable_http_tool_call_omits_null_arguments",
+     test_mcp_streamable_http_tool_call_omits_null_arguments},
+    {"mcp_streamable_http_prompt_get_omits_null_arguments",
+     test_mcp_streamable_http_prompt_get_omits_null_arguments},
+    {"mcp_streamable_http_tool_call_missing_content",
+     test_mcp_streamable_http_tool_call_missing_content},
+    {"mcp_streamable_http_tool_call_missing_content_type",
+     test_mcp_streamable_http_tool_call_missing_content_type},
+    {"mcp_streamable_http_tool_call_text_missing_text",
+     test_mcp_streamable_http_tool_call_text_missing_text},
+    {"mcp_streamable_http_tool_call_image_missing_mime",
+     test_mcp_streamable_http_tool_call_image_missing_mime},
+    {"mcp_streamable_http_tool_call_image_invalid_base64",
+     test_mcp_streamable_http_tool_call_image_invalid_base64},
+    {"mcp_streamable_http_tool_call_audio_content",
+     test_mcp_streamable_http_tool_call_audio_content},
+    {"mcp_streamable_http_tool_call_content_array_annotations",
+     test_mcp_streamable_http_tool_call_content_array_annotations},
+    {"mcp_streamable_http_tool_call_content_invalid_annotation_role",
+     test_mcp_streamable_http_tool_call_content_invalid_annotation_role},
+    {"mcp_streamable_http_tool_call_content_priority_out_of_range",
+     test_mcp_streamable_http_tool_call_content_priority_out_of_range},
+    {"mcp_streamable_http_tool_call_unknown_content_type",
+     test_mcp_streamable_http_tool_call_unknown_content_type},
+    {"mcp_streamable_http_tool_call_resource_link_missing_name",
+     test_mcp_streamable_http_tool_call_resource_link_missing_name},
+    {"mcp_streamable_http_tool_call_resource_link_icons_not_array",
+     test_mcp_streamable_http_tool_call_resource_link_icons_not_array},
+    {"mcp_streamable_http_tool_call_resource_link_invalid_icon_theme",
+     test_mcp_streamable_http_tool_call_resource_link_invalid_icon_theme},
+    {"mcp_streamable_http_tool_call_resource_link_negative_size",
+     test_mcp_streamable_http_tool_call_resource_link_negative_size},
+    {"mcp_streamable_http_tool_call_resource_missing_resource",
+     test_mcp_streamable_http_tool_call_resource_missing_resource},
+    {"mcp_streamable_http_tool_call_resource_missing_uri",
+     test_mcp_streamable_http_tool_call_resource_missing_uri},
+    {"mcp_streamable_http_tool_call_resource_missing_body",
+     test_mcp_streamable_http_tool_call_resource_missing_body},
+    {"mcp_streamable_http_tool_call_resource_text_and_blob",
+     test_mcp_streamable_http_tool_call_resource_text_and_blob},
+    {"mcp_streamable_http_tool_call_resource_invalid_blob",
+     test_mcp_streamable_http_tool_call_resource_invalid_blob},
+    {"mcp_streamable_http_tool_call_array_structured_content",
+     test_mcp_streamable_http_tool_call_array_structured_content},
+    {"mcp_streamable_http_result_field_order_variants",
+     test_mcp_streamable_http_result_field_order_variants},
+    {"mcp_streamable_http_resource_read_missing_contents",
+     test_mcp_streamable_http_resource_read_missing_contents},
+    {"mcp_streamable_http_resource_read_missing_body",
+     test_mcp_streamable_http_resource_read_missing_body},
+    {"mcp_streamable_http_resource_read_text_and_blob",
+     test_mcp_streamable_http_resource_read_text_and_blob},
+    {"mcp_streamable_http_resource_read_blob_content",
+     test_mcp_streamable_http_resource_read_blob_content},
+    {"mcp_streamable_http_resource_read_invalid_blob",
+     test_mcp_streamable_http_resource_read_invalid_blob},
+    {"mcp_streamable_http_prompt_get_missing_messages",
+     test_mcp_streamable_http_prompt_get_missing_messages},
+    {"mcp_streamable_http_prompt_get_invalid_role",
+     test_mcp_streamable_http_prompt_get_invalid_role},
+    {"mcp_streamable_http_prompt_get_array_content",
+     test_mcp_streamable_http_prompt_get_array_content},
+    {"mcp_streamable_http_prompt_get_text_missing_text",
+     test_mcp_streamable_http_prompt_get_text_missing_text},
+    {"mcp_streamable_http_prompt_get_content_priority_not_number",
+     test_mcp_streamable_http_prompt_get_content_priority_not_number},
+    {"mcp_streamable_http_prompt_get_content_priority_out_of_range",
+     test_mcp_streamable_http_prompt_get_content_priority_out_of_range},
+    {"mcp_streamable_http_prompt_get_audio_content",
+     test_mcp_streamable_http_prompt_get_audio_content},
+    {"mcp_streamable_http_prompt_get_audio_invalid_base64",
+     test_mcp_streamable_http_prompt_get_audio_invalid_base64},
+    {"mcp_streamable_http_prompt_get_resource_missing_body",
+     test_mcp_streamable_http_prompt_get_resource_missing_body},
+    {"mcp_streamable_http_prompt_get_resource_link_negative_size",
+     test_mcp_streamable_http_prompt_get_resource_link_negative_size},
+    {"mcp_streamable_http_prompt_get_unknown_content_type",
+     test_mcp_streamable_http_prompt_get_unknown_content_type},
+    {"mcp_streamable_http_completion_result",
+     test_mcp_streamable_http_completion_result},
+    {"mcp_streamable_http_completion_missing_values",
+     test_mcp_streamable_http_completion_missing_values},
+    {"mcp_streamable_http_completion_non_string_value",
+     test_mcp_streamable_http_completion_non_string_value},
+    {"mcp_streamable_http_completion_too_many_values",
+     test_mcp_streamable_http_completion_too_many_values},
+    {"mcp_streamable_http_completion_negative_total",
+     test_mcp_streamable_http_completion_negative_total},
+    {"mcp_streamable_http_completion_string_has_more",
+     test_mcp_streamable_http_completion_string_has_more},
+    {"mcp_streamable_http_tool_call_array_arguments",
+     test_mcp_streamable_http_tool_call_array_arguments},
+    {"mcp_streamable_http_prompt_get_array_arguments",
+     test_mcp_streamable_http_prompt_get_array_arguments},
+    {"mcp_streamable_http_prompt_get_non_string_argument",
+     test_mcp_streamable_http_prompt_get_non_string_argument},
+    {"mcp_streamable_http_completion_array_context_arguments",
+     test_mcp_streamable_http_completion_array_context_arguments},
+    {"mcp_streamable_http_completion_non_string_context_argument",
+     test_mcp_streamable_http_completion_non_string_context_argument},
+    {"mcp_streamable_http_completion_invalid_ref_type",
+     test_mcp_streamable_http_completion_invalid_ref_type},
+    {"mcp_streamable_http_completion_resource_ref_uses_uri",
+     test_mcp_streamable_http_completion_resource_ref_uses_uri},
+    {"mcp_streamable_http_list_changed_invalidates_cache",
+     test_mcp_streamable_http_list_changed_invalidates_cache},
+    {"mcp_streamable_http_tools_list_changed_array_params",
+     test_mcp_streamable_http_tools_list_changed_array_params},
+    {"mcp_streamable_http_resources_list_changed_array_params",
+     test_mcp_streamable_http_resources_list_changed_array_params},
+    {"mcp_streamable_http_prompts_list_changed_array_params",
+     test_mcp_streamable_http_prompts_list_changed_array_params},
+    {"mcp_streamable_http_send_request_params",
+     test_mcp_streamable_http_send_request_params},
+    {"mcp_streamable_http_send_request_scalar_result",
+     test_mcp_streamable_http_send_request_scalar_result},
+    {"mcp_streamable_http_send_request_json_error",
+     test_mcp_streamable_http_send_request_json_error},
+    {"mcp_streamable_http_send_request_sse_error",
+     test_mcp_streamable_http_send_request_sse_error},
+    {"mcp_streamable_http_send_request_sse_error_after_notification",
+     test_mcp_streamable_http_send_request_sse_error_after_notification},
+    {"mcp_streamable_http_send_request_sse_error_missing_code",
+     test_mcp_streamable_http_send_request_sse_error_missing_code},
+    {"mcp_streamable_http_send_request_sse_empty_message_event",
+     test_mcp_streamable_http_send_request_sse_empty_message_event},
+    {"mcp_streamable_http_tool_call_writes_chunked_result",
+     test_mcp_streamable_http_tool_call_writes_chunked_result},
+    {"mcp_streamable_http_tool_call_writes_sse_result",
+     test_mcp_streamable_http_tool_call_writes_sse_result},
+    {"mcp_streamable_http_resource_read_writes_chunked_result",
+     test_mcp_streamable_http_resource_read_writes_chunked_result},
+    {"mcp_streamable_http_prompt_get_writes_chunked_result",
+     test_mcp_streamable_http_prompt_get_writes_chunked_result},
+    {"mcp_streamable_http_completion_writes_chunked_result",
+     test_mcp_streamable_http_completion_writes_chunked_result},
+    {"mcp_streamable_http_send_request_writes_chunked_result",
+     test_mcp_streamable_http_send_request_writes_chunked_result},
+    {"mcp_streamable_http_writes_result_one_byte_chunks",
+     test_mcp_streamable_http_writes_result_one_byte_chunks},
+    {"mcp_streamable_http_writes_sse_result_one_byte_chunks",
+     test_mcp_streamable_http_writes_sse_result_one_byte_chunks},
+    {"mcp_streamable_http_writes_default_sse_message_immediately",
+     test_mcp_streamable_http_writes_default_sse_message_immediately},
+    {"mcp_streamable_http_resource_read_default_sse_message",
+     test_mcp_streamable_http_resource_read_default_sse_message},
+    {"mcp_streamable_http_prompt_get_default_sse_message",
+     test_mcp_streamable_http_prompt_get_default_sse_message},
+    {"mcp_streamable_http_completion_default_sse_message",
+     test_mcp_streamable_http_completion_default_sse_message},
+    {"mcp_streamable_http_send_request_default_sse_message",
+     test_mcp_streamable_http_send_request_default_sse_message},
+    {"mcp_streamable_http_rejects_streamed_text_plain_result",
+     test_mcp_streamable_http_rejects_streamed_text_plain_result},
+    {"mcp_streamable_http_writes_sse_result_after_notification",
+     test_mcp_streamable_http_writes_sse_result_after_notification},
+    {"mcp_streamable_http_resource_read_sse_result_after_notification",
+     test_mcp_streamable_http_resource_read_sse_result_after_notification},
+    {"mcp_streamable_http_prompt_get_sse_result_after_notification",
+     test_mcp_streamable_http_prompt_get_sse_result_after_notification},
+    {"mcp_streamable_http_completion_sse_result_after_notification",
+     test_mcp_streamable_http_completion_sse_result_after_notification},
+    {"mcp_streamable_http_send_request_sse_result_after_notification",
+     test_mcp_streamable_http_send_request_sse_result_after_notification},
+    {"mcp_streamable_http_writes_sse_result_after_server_ping_request",
+     test_mcp_streamable_http_writes_sse_result_after_server_ping_request},
+    {"mcp_streamable_http_resource_read_sse_result_after_server_ping_request",
+     test_mcp_streamable_http_resource_read_sse_result_after_server_ping_request},
+    {"mcp_streamable_http_prompt_get_sse_result_after_server_ping_request",
+     test_mcp_streamable_http_prompt_get_sse_result_after_server_ping_request},
+    {"mcp_streamable_http_completion_sse_result_after_server_ping_request",
+     test_mcp_streamable_http_completion_sse_result_after_server_ping_request},
+    {"mcp_streamable_http_send_request_sse_result_after_server_ping_request",
+     test_mcp_streamable_http_send_request_sse_result_after_server_ping_request},
+    {"mcp_streamable_http_writes_sse_result_after_empty_data_event",
+     test_mcp_streamable_http_writes_sse_result_after_empty_data_event},
+    {"mcp_streamable_http_result_sink_failure",
+     test_mcp_streamable_http_result_sink_failure},
+    {"mcp_streamable_http_json_error_result_not_written",
+     test_mcp_streamable_http_json_error_result_not_written},
+    {"mcp_streamable_http_sse_error_result_not_written",
+     test_mcp_streamable_http_sse_error_result_not_written},
+    {"mcp_streamable_http_result_rejects_mismatched_id",
+     test_mcp_streamable_http_result_rejects_mismatched_id},
+    {"mcp_streamable_http_result_before_mismatched_id",
+     test_mcp_streamable_http_result_before_mismatched_id},
+    {"mcp_streamable_http_result_rejects_invalid_jsonrpc",
+     test_mcp_streamable_http_result_rejects_invalid_jsonrpc},
+    {"mcp_streamable_http_result_rejects_method_with_result",
+     test_mcp_streamable_http_result_rejects_method_with_result},
+    {"mcp_streamable_http_result_rejects_missing_id",
+     test_mcp_streamable_http_result_rejects_missing_id},
+    {"mcp_streamable_http_result_accepts_result_before_id",
+     test_mcp_streamable_http_result_accepts_result_before_id},
+    {"mcp_streamable_http_result_rejects_duplicate_result",
+     test_mcp_streamable_http_result_rejects_duplicate_result},
+    {"mcp_streamable_http_result_before_id_rejects_duplicate_result",
+     test_mcp_streamable_http_result_before_id_rejects_duplicate_result},
+    {"mcp_streamable_http_sse_rejects_result_and_error",
+     test_mcp_streamable_http_sse_rejects_result_and_error},
+    {"mcp_streamable_http_sse_rejects_result_before_error",
+     test_mcp_streamable_http_sse_rejects_result_before_error},
+    {"mcp_streamable_http_result_rejects_trailing_garbage",
+     test_mcp_streamable_http_result_rejects_trailing_garbage},
+    {"mcp_streamable_http_result_rejects_bad_literal",
+     test_mcp_streamable_http_result_rejects_bad_literal},
+    {"mcp_streamable_http_result_rejects_bad_object",
+     test_mcp_streamable_http_result_rejects_bad_object},
+    {"mcp_streamable_http_tool_call_http_error",
+     test_mcp_streamable_http_tool_call_http_error},
+    {"mcp_streamable_http_resource_read_http_error",
+     test_mcp_streamable_http_resource_read_http_error},
+    {"mcp_streamable_http_prompt_get_http_error",
+     test_mcp_streamable_http_prompt_get_http_error},
+    {"mcp_streamable_http_complete_http_error",
+     test_mcp_streamable_http_complete_http_error},
+    {"mcp_streamable_http_send_request_http_error",
+     test_mcp_streamable_http_send_request_http_error},
+    {"mcp_streamable_http_send_notification_params",
+     test_mcp_streamable_http_send_notification_params},
+    {"mcp_streamable_http_notification_response_wrong_status",
+     test_mcp_streamable_http_notification_response_wrong_status},
+    {"mcp_streamable_http_notification_response_body",
+     test_mcp_streamable_http_notification_response_body},
+    {"mcp_streamable_http_notification_callback_error",
+     test_mcp_streamable_http_notification_callback_error},
+    {"mcp_streamable_http_logging_notification_null_data",
+     test_mcp_streamable_http_logging_notification_null_data},
+    {"mcp_streamable_http_logging_notification_missing_data",
+     test_mcp_streamable_http_logging_notification_missing_data},
+    {"mcp_streamable_http_logging_notification_invalid_level",
+     test_mcp_streamable_http_logging_notification_invalid_level},
+    {"mcp_streamable_http_logging_notification_array_params",
+     test_mcp_streamable_http_logging_notification_array_params},
+    {"mcp_streamable_http_resource_updated_notification",
+     test_mcp_streamable_http_resource_updated_notification},
+    {"mcp_streamable_http_resource_updated_missing_uri",
+     test_mcp_streamable_http_resource_updated_missing_uri},
+    {"mcp_streamable_http_resource_updated_array_params",
+     test_mcp_streamable_http_resource_updated_array_params},
+    {"mcp_streamable_http_server_ping_array_params",
+     test_mcp_streamable_http_server_ping_array_params},
+    {"mcp_streamable_http_server_request_unsupported",
+     test_mcp_streamable_http_server_request_unsupported},
+    {"mcp_streamable_http_server_ping_request",
+     test_mcp_streamable_http_server_ping_request},
+    {"mcp_streamable_http_session_recovery",
+     test_mcp_streamable_http_session_recovery},
+    {"mcp_streamable_http_session_recovery_preserves_request_id",
+     test_mcp_streamable_http_session_recovery_preserves_request_id},
+    {"mcp_streamable_http_session_recovery_chunked_result",
+     test_mcp_streamable_http_session_recovery_chunked_result},
+    {"mcp_streamable_http_initialized_failure_retries",
+     test_mcp_streamable_http_initialized_failure_retries},
+    {"mcp_streamable_http_server_error_no_recovery",
+     test_mcp_streamable_http_server_error_no_recovery},
     {"mcp_handler", test_mcp_handler},
     {"client_open", test_client_open},
     {"mike_mind_prompt_contract", test_mike_mind_prompt_contract},
@@ -20693,6 +31902,18 @@ static const test_entry test_entries[] = {
      test_stream_responses_websocket_transient_retry},
     {"stream_responses_websocket_midstream_drop",
      test_stream_responses_websocket_midstream_drop},
+    {"stream_responses_websocket_https_fallback",
+     test_stream_responses_websocket_https_fallback},
+    {"stream_responses_websocket_upgrade_failure_no_fallback",
+     test_stream_responses_websocket_upgrade_failure_no_fallback},
+    {"stream_responses_websocket_no_fallback_after_output",
+     test_stream_responses_websocket_no_fallback_after_output},
+    {"stream_responses_websocket_no_fallback_after_sink_failure",
+     test_stream_responses_websocket_no_fallback_after_sink_failure},
+    {"stream_responses_websocket_fallback_disabled_before_output",
+     test_stream_responses_websocket_fallback_disabled_before_output},
+    {"stream_responses_websocket_https_fallback_disabled",
+     test_stream_responses_websocket_https_fallback_disabled},
     {"stream_responses_websocket_fragmented_event",
      test_stream_responses_websocket_fragmented_event},
     {"session_stream_responses_websocket_multi_turn",

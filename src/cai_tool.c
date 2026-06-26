@@ -1512,6 +1512,15 @@ int cai_tool_registry_register_raw_spooled(cai_tool_registry *registry,
       NULL, NULL, NULL, NULL, callback, context, NULL, error);
 }
 
+int cai_tool_registry_register_raw_spooled_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error) {
+  return cai_tool_registry_register_common(
+      registry, name, description, schema_json, strict, CAI_TOOL_RAW_SPOOLED,
+      NULL, NULL, NULL, NULL, callback, context, context_cleanup, error);
+}
+
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,
                                              cai_error *error) {

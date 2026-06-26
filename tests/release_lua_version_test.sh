@@ -57,8 +57,24 @@ git -C "$tmpdir/repo" commit -q -m 'fixture'
 git -C "$tmpdir/repo" tag v1.2.3
 git -C "$tmpdir/repo" worktree add -q "$tmpdir/worktree" HEAD
 
+actual=$(CAI_VERSION_OVERRIDE=$expected "$repo_root/scripts/detect_release_version.sh" "$tmpdir/worktree")
+if [[ "$actual" != "$expected" ]]; then
+  printf 'detect_release_version returned %s for tagged worktree with override, expected %s\n' "$actual" "$expected" >&2
+  exit 1
+fi
+
 actual=$("$repo_root/scripts/detect_release_version.sh" "$tmpdir/worktree")
 if [[ "$actual" != "1.2.3" ]]; then
   printf 'detect_release_version returned %s for tagged worktree, expected 1.2.3\n' "$actual" >&2
+  exit 1
+fi
+
+git -C "$tmpdir/repo" worktree add -q "$tmpdir/untagged-worktree" HEAD
+git -C "$tmpdir/untagged-worktree" tag -d v1.2.3 >/dev/null
+printf '9.9.9\n' >"$tmpdir/untagged-worktree/VERSION"
+
+actual=$("$repo_root/scripts/detect_release_version.sh" "$tmpdir/untagged-worktree")
+if [[ "$actual" != "0.0.0" ]]; then
+  printf 'detect_release_version returned %s for untagged git worktree with VERSION, expected 0.0.0\n' "$actual" >&2
   exit 1
 fi

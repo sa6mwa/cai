@@ -44,6 +44,12 @@ typedef struct cai_chatgpt_auth_config {
   long long refresh_window_seconds;
   /** Overall OAuth token HTTP timeout in milliseconds; zero uses default. */
   long http_timeout_ms;
+  /** Non-zero disables TLS certificate verification for OAuth token HTTP. */
+  int insecure_skip_verify;
+  /** Optional PEM CA bundle path for OAuth token TLS verification. */
+  const char *ca_bundle_path;
+  /** Optional CA certificate directory for OAuth token TLS verification. */
+  const char *ca_path;
   /** Optional pslog logger. */
   struct pslog_logger *logger;
   /** Non-zero disables auth logging even when logger is set. */
@@ -112,6 +118,12 @@ typedef struct cai_chatgpt_login_config {
   const char *code_verifier;
   /** Overall OAuth token HTTP timeout in milliseconds; zero uses default. */
   long http_timeout_ms;
+  /** Non-zero disables TLS certificate verification for OAuth token HTTP. */
+  int insecure_skip_verify;
+  /** Optional PEM CA bundle path for OAuth token TLS verification. */
+  const char *ca_bundle_path;
+  /** Optional CA certificate directory for OAuth token TLS verification. */
+  const char *ca_path;
   /** Optional pslog logger. */
   struct pslog_logger *logger;
   /** Non-zero disables auth logging even when logger is set. */

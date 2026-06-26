@@ -27,6 +27,10 @@ typedef struct cai_client_impl {
   long timeout_ms;
   int http_2_disabled;
   int insecure_skip_verify;
+  char *ca_bundle_path;
+  char *ca_path;
+  int responses_websocket_fallback_disabled;
+  int responses_websocket_fallback_active;
   size_t json_response_limit_bytes;
   struct pslog_logger *logger;
   int logger_disabled;
@@ -184,6 +188,7 @@ typedef struct cai_buffer_builder {
   char *data;
   size_t length;
   size_t capacity;
+  const cai_allocator *allocator;
   lonejson_sink_fn sink;
   void *sink_user;
   lonejson_error *sink_error;
@@ -326,6 +331,10 @@ int cai_tool_registry_register_lonejson_schema_owned(
     const char *schema_json, int strict, const lonejson_map *params_map,
     const lonejson_map *result_map, cai_tool_fn callback, void *context,
     void (*context_cleanup)(void *context), cai_error *error);
+int cai_tool_registry_register_raw_spooled_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error);
 int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
                                   lonejson_spooled *arguments_json,
                                   cai_sink *output, cai_error *error);
@@ -338,6 +347,8 @@ const char *cai_tool_registry_schema_at(const cai_tool_registry *registry,
                                         size_t index);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
+void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
+                            const char *ca_bundle_path, const char *ca_path);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
 

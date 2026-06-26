@@ -277,6 +277,9 @@ int main(void) {
   int (*register_raw_spooled)(cai_tool_registry *, const char *, const char *,
                               const char *, int, cai_tool_raw_spooled_fn,
                               void *, cai_error *);
+  int (*agent_register_mcp)(cai_agent *, cai_mcp_client *,
+                            const cai_mcp_tool_registration_config *,
+                            cai_error *);
   int (*set_tool_choice_json)(cai_response_create_params *, const char *,
                               cai_error *);
   int (*set_max_tool_calls)(cai_response_create_params *, int, cai_error *);
@@ -288,6 +291,48 @@ int main(void) {
   int (*mcp_handle)(cai_mcp_handler *, const cai_mcp_http_request *,
                     cai_mcp_http_response *, cai_error *);
   void (*mcp_destroy)(cai_mcp_handler *);
+  void (*mcp_client_config_init)(cai_mcp_streamable_http_client_config *);
+  int (*mcp_client_open)(const cai_mcp_streamable_http_client_config *,
+                         cai_mcp_client **, cai_error *);
+  int (*mcp_client_initialize)(cai_mcp_client *, cai_error *);
+  int (*mcp_client_ping)(cai_mcp_client *, cai_error *);
+  int (*mcp_client_refresh_tools)(cai_mcp_client *, cai_error *);
+  size_t (*mcp_client_tool_count)(const cai_mcp_client *);
+  const cai_mcp_client_tool *(*mcp_client_tool_at)(const cai_mcp_client *,
+                                                   size_t);
+  int (*mcp_client_call_tool)(cai_mcp_client *, const char *,
+                              struct lonejson_spooled *, cai_sink *,
+                              cai_error *);
+  int (*mcp_client_refresh_resources)(cai_mcp_client *, cai_error *);
+  size_t (*mcp_client_resource_count)(const cai_mcp_client *);
+  const cai_mcp_client_resource *(*mcp_client_resource_at)(
+      const cai_mcp_client *, size_t);
+  int (*mcp_client_read_resource)(cai_mcp_client *, const char *, cai_sink *,
+                                  cai_error *);
+  int (*mcp_client_refresh_resource_templates)(cai_mcp_client *, cai_error *);
+  size_t (*mcp_client_resource_template_count)(const cai_mcp_client *);
+  const cai_mcp_client_resource_template *(*mcp_client_resource_template_at)(
+      const cai_mcp_client *, size_t);
+  int (*mcp_client_refresh_prompts)(cai_mcp_client *, cai_error *);
+  size_t (*mcp_client_prompt_count)(const cai_mcp_client *);
+  const cai_mcp_client_prompt *(*mcp_client_prompt_at)(const cai_mcp_client *,
+                                                       size_t);
+  int (*mcp_client_get_prompt)(cai_mcp_client *, const char *,
+                               struct lonejson_spooled *, cai_sink *,
+                               cai_error *);
+  int (*mcp_client_complete)(cai_mcp_client *, const char *, const char *,
+                             const char *, const char *,
+                             struct lonejson_spooled *, cai_sink *,
+                             cai_error *);
+  int (*mcp_client_send_request)(cai_mcp_client *, const char *,
+                                 struct lonejson_spooled *, cai_sink *,
+                                 cai_error *);
+  int (*mcp_client_send_notification)(cai_mcp_client *, const char *,
+                                      struct lonejson_spooled *, cai_error *);
+  int (*mcp_client_register)(cai_mcp_client *, cai_tool_registry *,
+                             const cai_mcp_tool_registration_config *,
+                             cai_error *);
+  void (*mcp_client_destroy)(cai_mcp_client *);
   cai_mcp_session_callbacks session_callbacks;
   cai_mcp_session_state session_state;
   (void)sizeof(error);
@@ -298,6 +343,7 @@ int main(void) {
   register_searxng = cai_tool_registry_register_searxng_tool;
   register_todo = cai_tool_registry_register_todo_tool;
   register_raw_spooled = cai_tool_registry_register_raw_spooled;
+  agent_register_mcp = cai_agent_register_mcp_client_tools;
   set_tool_choice_json = cai_response_create_params_set_tool_choice_json;
   set_max_tool_calls = cai_response_create_params_set_max_tool_calls;
   count_input_tokens = cai_client_count_response_input_tokens;
@@ -305,6 +351,31 @@ int main(void) {
   mcp_new = cai_mcp_handler_new;
   mcp_handle = cai_mcp_handler_handle_http;
   mcp_destroy = cai_mcp_handler_destroy;
+  mcp_client_config_init = cai_mcp_streamable_http_client_config_init;
+  mcp_client_open = cai_mcp_streamable_http_client_open;
+  mcp_client_initialize = cai_mcp_client_initialize;
+  mcp_client_ping = cai_mcp_client_ping;
+  mcp_client_refresh_tools = cai_mcp_client_refresh_tools;
+  mcp_client_tool_count = cai_mcp_client_tool_count;
+  mcp_client_tool_at = cai_mcp_client_tool_at;
+  mcp_client_call_tool = cai_mcp_client_call_tool;
+  mcp_client_refresh_resources = cai_mcp_client_refresh_resources;
+  mcp_client_resource_count = cai_mcp_client_resource_count;
+  mcp_client_resource_at = cai_mcp_client_resource_at;
+  mcp_client_read_resource = cai_mcp_client_read_resource;
+  mcp_client_refresh_resource_templates =
+      cai_mcp_client_refresh_resource_templates;
+  mcp_client_resource_template_count = cai_mcp_client_resource_template_count;
+  mcp_client_resource_template_at = cai_mcp_client_resource_template_at;
+  mcp_client_refresh_prompts = cai_mcp_client_refresh_prompts;
+  mcp_client_prompt_count = cai_mcp_client_prompt_count;
+  mcp_client_prompt_at = cai_mcp_client_prompt_at;
+  mcp_client_get_prompt = cai_mcp_client_get_prompt;
+  mcp_client_complete = cai_mcp_client_complete;
+  mcp_client_send_request = cai_mcp_client_send_request;
+  mcp_client_send_notification = cai_mcp_client_send_notification;
+  mcp_client_register = cai_mcp_client_register_tools;
+  mcp_client_destroy = cai_mcp_client_destroy;
   (void)sizeof(session_callbacks);
   (void)sizeof(session_state);
   if (register_exec == 0 || register_read == 0 ||
@@ -312,8 +383,24 @@ int main(void) {
       register_searxng == 0 || register_todo == 0 ||
       register_raw_spooled == 0 || set_tool_choice_json == 0 ||
       set_max_tool_calls == 0 || count_input_tokens == 0 ||
+      agent_register_mcp == 0 ||
       mcp_config_init == 0 || mcp_new == 0 || mcp_handle == 0 ||
-      mcp_destroy == 0) {
+      mcp_destroy == 0 || mcp_client_config_init == 0 ||
+      mcp_client_open == 0 || mcp_client_initialize == 0 ||
+      mcp_client_ping == 0 ||
+      mcp_client_refresh_tools == 0 || mcp_client_tool_count == 0 ||
+      mcp_client_tool_at == 0 || mcp_client_call_tool == 0 ||
+      mcp_client_refresh_resources == 0 || mcp_client_resource_count == 0 ||
+      mcp_client_resource_at == 0 || mcp_client_read_resource == 0 ||
+      mcp_client_refresh_resource_templates == 0 ||
+      mcp_client_resource_template_count == 0 ||
+      mcp_client_resource_template_at == 0 ||
+      mcp_client_refresh_prompts == 0 || mcp_client_prompt_count == 0 ||
+      mcp_client_prompt_at == 0 || mcp_client_get_prompt == 0 ||
+      mcp_client_complete == 0 ||
+      mcp_client_send_request == 0 || mcp_client_send_notification == 0 ||
+      mcp_client_register == 0 ||
+      mcp_client_destroy == 0) {
     return 1;
   }
   (void)registry;

@@ -224,9 +224,8 @@ static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
 
 static int
 cai_client_uses_client_history_continuity(const cai_client_impl *client) {
-  return client != NULL &&
-         (client->chatgpt_auth != NULL ||
-          cai_client_base_url_is_openrouter(client));
+  return client != NULL && (client->chatgpt_auth != NULL ||
+                            cai_client_base_url_is_openrouter(client));
 }
 
 static void
@@ -455,10 +454,10 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
                          "invalid session continuity mode");
   }
   if (config->session_continuity == CAI_SESSION_CONTINUITY_AUTO) {
-    impl->session_continuity = cai_client_uses_client_history_continuity(
-                                   client_impl)
-                                   ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
-                                   : CAI_SESSION_CONTINUITY_SERVER;
+    impl->session_continuity =
+        cai_client_uses_client_history_continuity(client_impl)
+            ? CAI_SESSION_CONTINUITY_CLIENT_HISTORY
+            : CAI_SESSION_CONTINUITY_SERVER;
   } else {
     impl->session_continuity = config->session_continuity;
   }
@@ -4655,6 +4654,7 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
   agent->register_raw_spooled_tool = cai_agent_register_raw_spooled_tool;
+  agent->register_mcp_client_tools = cai_agent_register_mcp_client_tools;
   agent->add_hosted_tool_json = cai_agent_add_hosted_tool_json;
   agent->add_simple_hosted_tool = cai_agent_add_simple_hosted_tool;
   agent->add_hosted_mcp_tool = cai_agent_add_hosted_mcp_tool;

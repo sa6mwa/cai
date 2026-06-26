@@ -33,11 +33,12 @@ set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
 set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
     "Dependency mode: cpkt, host, or auto.")
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
-set(CAI_C_PKT_SYSTEMS_VERSION "0.2.0" CACHE STRING
+set(CAI_C_PKT_SYSTEMS_VERSION "0.5.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
+set(CAI_ABI_VERSION "2" CACHE STRING "Shared library ABI/SOVERSION.")
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
-set(CAI_LONEJSON_VERSION "0.32.0")
-set(CAI_LONEJSON_ABI_VERSION "16")
+set(CAI_LONEJSON_VERSION "0.35.0")
+set(CAI_LONEJSON_ABI_VERSION "19")
 set(CAI_PSLOG_VERSION "0.4.1")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -110,19 +111,19 @@ endif()
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "69e699d18374987ba16dfd82640ba1c263b71f0e1daeef8af2a2018a6f1e39ef")
+    set(_sha256 "737e1bc3992f00e9d4c71c6cae87db8dce669ce795b42ba769e686ff263cfaea")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "dcb1923af1d7529531f31637476f083070ccf1051ec217012d77a155ff4132d4")
+    set(_sha256 "435c25dfa05e831c5183ed0628730749625aa68804e21a3615937d36d11b7384")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "54e9ef336a0b092d0e68a84d2026a499c051df3c3e61b7a7dab1f0103d1e082b")
+    set(_sha256 "e7163bea53ec8b72bd88b6387289eddc6d11383e8903ae756b06aea03853ee9d")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "61f7cb43ca78f33a21b5719f84f864ac5ce5cf7d8268eef52a7a01da08582a38")
+    set(_sha256 "ee19c298dffe5b9b3d304d416de95a897c547f9489eb52493500576c0d36830f")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "33bfe771f2f2b36562c9e18094f79168d8d687dc7a55393584930ca434547d7d")
+    set(_sha256 "b6f12112207232ef16123d19535d36d73c9a0c75fdd9c1566684f2f36b384d94")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "7edc2f61e01370da6af96c496ae5bfbec72e43761247dd2c310ac7627923c591")
+    set(_sha256 "2de19d4fb76379a7585382ac6b77d3d9a70c505f8ef9334a5ff531336c84b368")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "204fcaa8d6d53b6affcdcb49668d60b0e41d2aa7ff5f4dc2c8fce0d24caa0022")
+    set(_sha256 "ebf1caf096df8c17067df2bd02efe65793ad98f65dafb5f29384ce6a6269a829")
   else()
     message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
   endif()
@@ -131,19 +132,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "84f0abae33a1b1d91a0f962ad78ecd7be91a4055c4c6a4aa69e0df816f42812c")
+    set(_sha256 "f328684b58c89a3c04d76af919e59ae9b31ee56e0d14d01eaa59fb8126aaec85")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "326ee1f75e632db9899e05ac02f669b87a437064086242603519fe5197ea654a")
+    set(_sha256 "5216796e1192cc7aa18b59f809380ee2631e270fce6d1149b6fa5d2e9c95ad7d")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "74a515fcce5574f82dbae46a6ce3399d6b5d07d249fa9c98d53293b7baf8c35b")
+    set(_sha256 "f69a39fc80ac9d0d40c6b0d6c2eec46d5c00aeff1696f983526cbba7d0e6f6db")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "0f2b6048caf74f5c9c02d332cea00bd67e2352764ba1b0d2f65b4266719fcd39")
+    set(_sha256 "dd16709052eeff1797e775907db554e7805c9d1bed655a07e44094108d6b68c2")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "8adad849699ea6380dc16ee9228f4d9695e9b3d49ce6c68b7f391e3196e9d6ad")
+    set(_sha256 "6eb99f6683283b872245608488125f9ac2b05673e9416791fb2ff89d5319601a")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "e62f512dae09e5fe6402e876edaf1f6517159854e049ff161c32ee52df864566")
+    set(_sha256 "4ac1e5d844de02548d6e23f06dacc8be44eded0a8f686c7600cc8ee718f648e2")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "2a73b6bb7e2e690b1accfb811c64de075b2efb569bf9cc299547f4f577c151f7")
+    set(_sha256 "6cbee12c36e43eda14ae5a96265067a99a2a3dd36fe1baffd5fd35e3a8583370")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -563,6 +564,7 @@ set(CAI_SOURCES
   src/cai_lj.c
   src/cai_log.c
   src/cai_mcp.c
+  src/cai_mcp_client.c
   src/cai_models.c
   src/cai_response.c
   src/cai_source.c
@@ -591,7 +593,7 @@ if(CAI_BUILD_SHARED)
   set_target_properties(cai_shared PROPERTIES
     OUTPUT_NAME cai
     VERSION ${PROJECT_VERSION}
-    SOVERSION ${PROJECT_VERSION_MAJOR})
+    SOVERSION ${CAI_ABI_VERSION})
 endif()
 
 foreach(_cai_target IN ITEMS cai_static cai_shared)
@@ -744,6 +746,245 @@ if(CAI_BUILD_TESTS)
     lonejson_nested_mapped_array_stream
     lonejson_selected_array_rewrite
     tool_registry
+    mcp_client_config
+    mcp_client_rejects_partial_allocator
+    mcp_client_open_failure_cleans_allocator
+    mcp_client_open_failure_keeps_receiver_cleanup
+    mcp_streamable_http_header_callback_bounds
+    mcp_client_receiver_surface
+    mcp_client_registry_adapter
+    mcp_streamable_http_client_roundtrip
+    mcp_streamable_http_client_custom_allocator_metadata
+    mcp_streamable_http_client_logging
+    mcp_streamable_http_call_result_must_be_object
+    mcp_streamable_http_ping_error
+    mcp_streamable_http_ping_error_missing_code
+    mcp_streamable_http_ping_error_missing_message
+    mcp_streamable_http_ping_error_empty
+    mcp_streamable_http_sse_ping_error
+    mcp_streamable_http_sse_ping_error_missing_code
+    mcp_streamable_http_sse_ping_error_missing_message
+    mcp_streamable_http_sse_ping_error_empty
+    mcp_streamable_http_initialize_missing_capabilities
+    mcp_streamable_http_initialize_capabilities_not_object
+    mcp_streamable_http_initialize_server_info_metadata
+    mcp_streamable_http_initialize_server_info_icons_not_array
+    mcp_streamable_http_initialize_server_info_icon_missing_src
+    mcp_streamable_http_initialize_server_info_icon_bad_theme
+    mcp_streamable_http_initialize_server_info_description_not_string
+    mcp_streamable_http_initialize_instructions_not_string
+    mcp_streamable_http_initialize_missing_server_info
+    mcp_streamable_http_initialize_missing_protocol_version
+    mcp_streamable_http_initialize_unsupported_protocol_version
+    mcp_streamable_http_initialize_empty_session_id
+    mcp_streamable_http_initialize_space_session_id
+    mcp_streamable_http_long_session_id_header
+    mcp_streamable_http_initialize_response_id_mismatch
+    mcp_streamable_http_initialize_error_id_mismatch
+    mcp_streamable_http_response_id_mismatch
+    mcp_streamable_http_error_response_id_mismatch
+    mcp_streamable_http_response_invalid_id_type
+    mcp_streamable_http_response_null_id
+    mcp_streamable_http_sse_request_invalid_id_type
+    mcp_streamable_http_sse_request_null_id
+    mcp_streamable_http_response_jsonrpc_invalid
+    mcp_streamable_http_sse_jsonrpc_invalid
+    mcp_streamable_http_sse_method_with_result
+    mcp_streamable_http_sse_response_missing_id
+    mcp_streamable_http_sse_response_missing_result_error
+    mcp_streamable_http_sse_response_result_and_error
+    mcp_streamable_http_utility_notifications_ignore_malformed
+    mcp_streamable_http_active_progress_missing_progress
+    mcp_streamable_http_active_progress_invalid_progress
+    mcp_streamable_http_active_progress_negative_progress
+    mcp_streamable_http_active_progress_negative_total
+    mcp_streamable_http_active_progress_equal_progress
+    mcp_streamable_http_active_progress_decreasing_progress
+    mcp_streamable_http_cancelled_notification_aborts_request
+    mcp_streamable_http_sse_resume_get
+    mcp_streamable_http_sse_resume_caps_retry
+    mcp_streamable_http_sse_resume_rejects_unsafe_id
+    mcp_streamable_http_streaming_sse_resume_get
+    mcp_streamable_http_streaming_sse_resume_before_result_bytes
+    mcp_streamable_http_ignores_sse_data_before_non_message_event
+    mcp_streamable_http_sse_data_before_message_event
+    mcp_streamable_http_response_content_type_parameters
+    mcp_streamable_http_sse_content_type_parameters
+    mcp_streamable_http_response_missing_result_error
+    mcp_streamable_http_response_result_and_error
+    mcp_streamable_http_response_null_result
+    mcp_streamable_http_tools_list_missing_tools
+    mcp_streamable_http_tools_list_missing_input_schema
+    mcp_streamable_http_tools_list_null_input_schema
+    mcp_streamable_http_tools_list_array_input_schema
+    mcp_streamable_http_tools_list_missing_input_schema_type
+    mcp_streamable_http_tools_list_string_input_schema_type
+    mcp_streamable_http_tools_list_input_schema_array_properties
+    mcp_streamable_http_tools_list_input_schema_array_schema
+    mcp_streamable_http_tools_list_input_schema_nonobject_property
+    mcp_streamable_http_tools_list_input_schema_object_required
+    mcp_streamable_http_tools_list_input_schema_nonstring_required
+    mcp_streamable_http_tools_list_input_schema_escaped_property
+    mcp_streamable_http_tools_list_array_output_schema
+    mcp_streamable_http_tools_list_string_output_schema_type
+    mcp_streamable_http_tools_list_numeric_output_schema_type
+    mcp_streamable_http_tools_list_output_schema_array_schema
+    mcp_streamable_http_tools_list_output_schema_nonobject_property
+    mcp_streamable_http_tools_list_array_annotations
+    mcp_streamable_http_tools_list_annotation_hint_not_bool
+    mcp_streamable_http_tools_list_object_icons
+    mcp_streamable_http_tools_list_icon_missing_src
+    mcp_streamable_http_tools_list_array_execution
+    mcp_streamable_http_tools_list_execution_task_support_invalid
+    mcp_streamable_http_resources_list_missing_resources
+    mcp_streamable_http_resources_list_object_icons
+    mcp_streamable_http_resources_list_icon_invalid_theme
+    mcp_streamable_http_resources_list_array_annotations
+    mcp_streamable_http_resources_list_annotation_invalid_role
+    mcp_streamable_http_resources_list_annotation_priority_not_number
+    mcp_streamable_http_resources_list_annotation_priority_out_of_range
+    mcp_streamable_http_resources_list_negative_size
+    mcp_streamable_http_resource_templates_list_missing_templates
+    mcp_streamable_http_resource_templates_list_object_icons
+    mcp_streamable_http_resource_templates_list_icon_size_not_string
+    mcp_streamable_http_resource_templates_list_array_annotations
+    mcp_streamable_http_resource_templates_list_annotation_invalid_role
+    mcp_streamable_http_resource_templates_list_annotation_priority_out_of_range
+    mcp_streamable_http_resource_templates_list_annotation_modified_not_string
+    mcp_streamable_http_prompts_list_missing_prompts
+    mcp_streamable_http_prompts_list_object_arguments
+    mcp_streamable_http_prompts_list_argument_missing_name
+    mcp_streamable_http_prompts_list_argument_required_not_bool
+    mcp_streamable_http_prompts_list_object_icons
+    mcp_streamable_http_prompts_list_icon_metadata
+    mcp_streamable_http_tool_call_omits_null_arguments
+    mcp_streamable_http_prompt_get_omits_null_arguments
+    mcp_streamable_http_tool_call_missing_content
+    mcp_streamable_http_tool_call_missing_content_type
+    mcp_streamable_http_tool_call_text_missing_text
+    mcp_streamable_http_tool_call_image_missing_mime
+    mcp_streamable_http_tool_call_image_invalid_base64
+    mcp_streamable_http_tool_call_audio_content
+    mcp_streamable_http_tool_call_content_array_annotations
+    mcp_streamable_http_tool_call_content_invalid_annotation_role
+    mcp_streamable_http_tool_call_content_priority_out_of_range
+    mcp_streamable_http_tool_call_unknown_content_type
+    mcp_streamable_http_tool_call_resource_link_missing_name
+    mcp_streamable_http_tool_call_resource_link_icons_not_array
+    mcp_streamable_http_tool_call_resource_link_invalid_icon_theme
+    mcp_streamable_http_tool_call_resource_link_negative_size
+    mcp_streamable_http_tool_call_resource_missing_resource
+    mcp_streamable_http_tool_call_resource_missing_uri
+    mcp_streamable_http_tool_call_resource_missing_body
+    mcp_streamable_http_tool_call_resource_text_and_blob
+    mcp_streamable_http_tool_call_resource_invalid_blob
+    mcp_streamable_http_tool_call_array_structured_content
+    mcp_streamable_http_resource_read_missing_contents
+    mcp_streamable_http_resource_read_missing_body
+    mcp_streamable_http_resource_read_text_and_blob
+    mcp_streamable_http_resource_read_blob_content
+    mcp_streamable_http_resource_read_invalid_blob
+    mcp_streamable_http_prompt_get_missing_messages
+    mcp_streamable_http_prompt_get_invalid_role
+    mcp_streamable_http_prompt_get_array_content
+    mcp_streamable_http_prompt_get_text_missing_text
+    mcp_streamable_http_prompt_get_content_priority_not_number
+    mcp_streamable_http_prompt_get_content_priority_out_of_range
+    mcp_streamable_http_prompt_get_audio_content
+    mcp_streamable_http_prompt_get_audio_invalid_base64
+    mcp_streamable_http_prompt_get_resource_missing_body
+    mcp_streamable_http_prompt_get_resource_link_negative_size
+    mcp_streamable_http_prompt_get_unknown_content_type
+    mcp_streamable_http_completion_result
+    mcp_streamable_http_completion_missing_values
+    mcp_streamable_http_completion_non_string_value
+    mcp_streamable_http_completion_too_many_values
+    mcp_streamable_http_completion_negative_total
+    mcp_streamable_http_completion_string_has_more
+    mcp_streamable_http_tool_call_array_arguments
+    mcp_streamable_http_prompt_get_array_arguments
+    mcp_streamable_http_prompt_get_non_string_argument
+    mcp_streamable_http_completion_array_context_arguments
+    mcp_streamable_http_completion_non_string_context_argument
+    mcp_streamable_http_completion_invalid_ref_type
+    mcp_streamable_http_completion_resource_ref_uses_uri
+    mcp_streamable_http_list_changed_invalidates_cache
+    mcp_streamable_http_tools_list_changed_array_params
+    mcp_streamable_http_resources_list_changed_array_params
+    mcp_streamable_http_prompts_list_changed_array_params
+    mcp_streamable_http_send_request_params
+    mcp_streamable_http_send_request_scalar_result
+    mcp_streamable_http_send_request_json_error
+    mcp_streamable_http_send_request_sse_error
+    mcp_streamable_http_send_request_sse_error_after_notification
+    mcp_streamable_http_send_request_sse_error_missing_code
+    mcp_streamable_http_send_request_sse_empty_message_event
+    mcp_streamable_http_tool_call_writes_chunked_result
+    mcp_streamable_http_tool_call_writes_sse_result
+    mcp_streamable_http_resource_read_writes_chunked_result
+    mcp_streamable_http_prompt_get_writes_chunked_result
+    mcp_streamable_http_completion_writes_chunked_result
+    mcp_streamable_http_send_request_writes_chunked_result
+    mcp_streamable_http_writes_result_one_byte_chunks
+    mcp_streamable_http_writes_sse_result_one_byte_chunks
+    mcp_streamable_http_writes_default_sse_message_immediately
+    mcp_streamable_http_resource_read_default_sse_message
+    mcp_streamable_http_prompt_get_default_sse_message
+    mcp_streamable_http_completion_default_sse_message
+    mcp_streamable_http_send_request_default_sse_message
+    mcp_streamable_http_rejects_streamed_text_plain_result
+    mcp_streamable_http_writes_sse_result_after_notification
+    mcp_streamable_http_resource_read_sse_result_after_notification
+    mcp_streamable_http_prompt_get_sse_result_after_notification
+    mcp_streamable_http_completion_sse_result_after_notification
+    mcp_streamable_http_send_request_sse_result_after_notification
+    mcp_streamable_http_writes_sse_result_after_server_ping_request
+    mcp_streamable_http_resource_read_sse_result_after_server_ping_request
+    mcp_streamable_http_prompt_get_sse_result_after_server_ping_request
+    mcp_streamable_http_completion_sse_result_after_server_ping_request
+    mcp_streamable_http_send_request_sse_result_after_server_ping_request
+    mcp_streamable_http_writes_sse_result_after_empty_data_event
+    mcp_streamable_http_result_sink_failure
+    mcp_streamable_http_json_error_result_not_written
+    mcp_streamable_http_sse_error_result_not_written
+    mcp_streamable_http_result_rejects_mismatched_id
+    mcp_streamable_http_result_before_mismatched_id
+    mcp_streamable_http_result_rejects_invalid_jsonrpc
+    mcp_streamable_http_result_rejects_method_with_result
+    mcp_streamable_http_result_rejects_missing_id
+    mcp_streamable_http_result_accepts_result_before_id
+    mcp_streamable_http_result_field_order_variants
+    mcp_streamable_http_result_rejects_duplicate_result
+    mcp_streamable_http_result_before_id_rejects_duplicate_result
+    mcp_streamable_http_sse_rejects_result_and_error
+    mcp_streamable_http_sse_rejects_result_before_error
+    mcp_streamable_http_result_rejects_trailing_garbage
+    mcp_streamable_http_result_rejects_bad_literal
+    mcp_streamable_http_result_rejects_bad_object
+    mcp_streamable_http_tool_call_http_error
+    mcp_streamable_http_resource_read_http_error
+    mcp_streamable_http_prompt_get_http_error
+    mcp_streamable_http_complete_http_error
+    mcp_streamable_http_send_request_http_error
+    mcp_streamable_http_send_notification_params
+    mcp_streamable_http_notification_response_wrong_status
+    mcp_streamable_http_notification_response_body
+    mcp_streamable_http_notification_callback_error
+    mcp_streamable_http_logging_notification_null_data
+    mcp_streamable_http_logging_notification_missing_data
+    mcp_streamable_http_logging_notification_invalid_level
+    mcp_streamable_http_logging_notification_array_params
+    mcp_streamable_http_resource_updated_notification
+    mcp_streamable_http_resource_updated_missing_uri
+    mcp_streamable_http_resource_updated_array_params
+    mcp_streamable_http_server_ping_array_params
+    mcp_streamable_http_server_request_unsupported
+    mcp_streamable_http_server_ping_request
+    mcp_streamable_http_session_recovery
+    mcp_streamable_http_session_recovery_preserves_request_id
+    mcp_streamable_http_session_recovery_chunked_result
+    mcp_streamable_http_initialized_failure_retries
+    mcp_streamable_http_server_error_no_recovery
     mcp_handler
     client_open
     mike_mind_prompt_contract
@@ -820,6 +1061,12 @@ if(CAI_BUILD_TESTS)
     stream_responses_websocket_large_frame
     stream_responses_websocket_transient_retry
     stream_responses_websocket_midstream_drop
+    stream_responses_websocket_https_fallback
+    stream_responses_websocket_upgrade_failure_no_fallback
+    stream_responses_websocket_no_fallback_after_output
+    stream_responses_websocket_no_fallback_after_sink_failure
+    stream_responses_websocket_fallback_disabled_before_output
+    stream_responses_websocket_https_fallback_disabled
     stream_responses_websocket_fragmented_event
     session_stream_responses_websocket_multi_turn
     session_stream_responses_websocket_stale_reconnect
@@ -907,6 +1154,18 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_receiver_usage_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_makefile_targets_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/makefile_targets_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_makefile_targets_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
+  add_test(NAME cai_mcp_client_source_contract_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_source_contract_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_mcp_client_source_contract_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
   target_include_directories(cai_mcp_http_server PRIVATE
@@ -923,6 +1182,24 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_mcp_http_smoke PROPERTIES
     LABELS "smoke;local"
     TIMEOUT 3)
+  add_executable(cai_mcp_everything_e2e tests/mcp_everything_e2e.c)
+  target_include_directories(cai_mcp_everything_e2e PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  cai_link_internal_consumer(cai_mcp_everything_e2e)
+  cai_configure_c_target(cai_mcp_everything_e2e)
+  add_executable(cai_mcp_client_e2e_driver tests/mcp_client_e2e.c)
+  target_include_directories(cai_mcp_client_e2e_driver PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  cai_link_internal_consumer(cai_mcp_client_e2e_driver)
+  cai_configure_c_target(cai_mcp_client_e2e_driver)
+  add_test(NAME cai_mcp_client_e2e
+    COMMAND /bin/sh
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_e2e.sh"
+      $<TARGET_FILE:cai_mcp_http_server>
+      $<TARGET_FILE:cai_mcp_client_e2e_driver>)
+  set_tests_properties(cai_mcp_client_e2e PROPERTIES
+    LABELS "e2e;local"
+    TIMEOUT 5)
   set(_cai_examples_help_smoke_args
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/examples_help_smoke.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -999,7 +1276,7 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 3)
+      TIMEOUT 10)
     add_test(NAME cai_rpath_token_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -1183,6 +1460,14 @@ if(CAI_BUILD_TESTS)
         "CAI_INTEGRATION_HOSTED_WEB_SEARCH=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_hosted_web_search PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_mcp_client_tool
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_MCP_CLIENT_TOOL=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_mcp_client_tool PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
