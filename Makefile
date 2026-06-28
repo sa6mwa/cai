@@ -7,7 +7,7 @@ CMAKE := cmake
 CTEST := ctest
 CTEST_FLAGS := --stop-on-failure
 COMPOSE_FILE := docker-compose.yaml
-COMPOSE := $(shell if command -v nerdctl >/dev/null 2>&1; then printf 'nerdctl compose'; elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then printf 'docker compose'; else printf ''; fi)
+COMPOSE := bash ./scripts/compose.sh
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
@@ -41,15 +41,23 @@ RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help build build-debug build-release integration-build test test-debug test-release test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify release-matrix release compose-check searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test format clean
+.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test format clean clean-dist
 
 help:
 	@printf '%s\n' \
+		'make deps-debug  Configure the debug dependency/build root.' \
+		'make deps-release Configure the host release dependency/build root.' \
+		'make deps-cross  Configure all available release cross dependency/build roots.' \
 		'make build        Configure and build the debug preset.' \
+		'make build-host   Alias for build-release host artifact build.' \
 		'make build-release Configure and build the release preset.' \
+		'make cross-build  Alias for build-release cross matrix build.' \
 		'make integration-build  Configure and build the integration preset without running live tests.' \
 		'make test         Build and run the debug unit tests.' \
+		'make test-all     Run broad local confidence gates.' \
+		'make test-e2e     Run deterministic compose-backed local e2e.' \
 		'make test-release Build and run the release unit tests.' \
+		'make test-cross   Build cross targets; execution is target/tooling dependent.' \
 		'make test-integration  Run opt-in OpenAI API integration tests.' \
 		'make asan         Build and run the ASan/UBSan unit tests.' \
 		'make tsan         Build and run the TSan local test suite.' \
@@ -57,22 +65,34 @@ help:
 		'make fuzz         Build all libFuzzer harnesses.' \
 		'make fuzz-smoke   Run one-iteration smoke checks for every fuzzer.' \
 		'make fuzz-full    Run every fuzzer with the checked-in corpus and CAI_FUZZ_RUNS iterations.' \
+		'make fuzz-long    Alias for fuzz-full.' \
+		'make coverage     Build the coverage preset.' \
+		'make test-coverage Run the coverage preset tests.' \
 		'make example-smoke-local  Run deterministic local example smoke checks.' \
 		'make example-smoke-live   Run curated live non-interactive example smoke checks.' \
 		'make finalize-slice Run format and debug tests before committing a slice.' \
 		'make prerelease   Run the standard local prerelease verification tier.' \
-		'make prerelease-live  Run the live-provider prerelease verification tier.' \
+		'make prerelease-live  Run live-provider verification; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
 		'make prerelease-hardening Run the hardening tier: prerelease, live checks, long fuzz, and release matrix.' \
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
 		'make lua-env      Print shell exports for running local Lua examples.' \
 		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
 		'make release-lua-artifacts Generate dist LuaRock source artifacts.' \
+		'make print-release-version Print the exact packaging/release version.' \
 		'make package      Build release and write dist/cai-*.tar.gz.' \
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
+		'make package-checksums Generate the checksum upload manifest.' \
+		'make package-verify Verify release archive structure, privacy, and metadata.' \
+		'make verify-release-archives Alias for package-verify.' \
+		'make verify-release-privacy Alias for package-verify privacy/relocatability gate.' \
 		'make release-matrix Incrementally build, test, package, and checksum release artifacts.' \
 		'make release      Clean first, then run prerelease, live prerelease, and release matrix gates.' \
-		'make package-verify Verify release archive structure and metadata.' \
+		'make dev-up       Start local compose-backed development services.' \
+		'make dev-down     Stop local compose-backed development services.' \
+		'make dev-reset    Stop services and remove generated local service state.' \
+		'make dev-ps       Show local compose-backed service state.' \
+		'make dev-logs     Follow local compose-backed service logs.' \
 		'make searxng-pull Pull the configured SearXNG container image.' \
 		'make searxng-up   Start local SearXNG via nerdctl compose or docker compose.' \
 		'make searxng-wait Wait for the local SearXNG endpoint to answer.' \
@@ -84,7 +104,16 @@ help:
 		'make mcp-everything-live-test Run the live model MCP client tool integration test.' \
 		'make mcp-everything-down Stop local MCP Everything compose service.' \
 		'make format       Run clang-format over repo C sources.' \
-		'make clean        Remove generated build outputs.'
+		'make clean        Remove generated build outputs.' \
+		'make clean-dist   Remove dist release artifacts only.'
+
+deps-debug:
+	$(CMAKE) --preset debug
+
+deps-release:
+	$(CMAKE) --preset x86_64-linux-gnu-release
+
+deps-cross: build-release
 
 build: build-debug
 
@@ -94,6 +123,10 @@ build-debug:
 
 build-release:
 	bash ./scripts/build_release_matrix.sh
+
+build-host: build-release
+
+cross-build: build-release
 
 integration-build:
 	$(CMAKE) --preset integration
@@ -106,8 +139,23 @@ test:
 test-debug: build-debug
 	$(CTEST) --preset debug $(CTEST_FLAGS)
 
+test-host: test-release
+
 test-release: build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
+
+test-cross: cross-test
+
+cross-test: build-release
+
+test-all:
+	$(MAKE) test-debug
+	$(MAKE) asan
+	$(MAKE) test-e2e
+	$(MAKE) package-verify
+
+test-e2e:
+	bash ./scripts/test-e2e.sh
 
 test-integration:
 	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
@@ -153,6 +201,15 @@ fuzz-full: fuzz
 	build/fuzz/cai_session_fuzz tests/fuzz-corpus/session -runs=$(CAI_FUZZ_RUNS)
 	build/fuzz/cai_todo_fuzz tests/fuzz-corpus/todo -runs=$(CAI_FUZZ_RUNS)
 
+fuzz-long: fuzz-full
+
+coverage:
+	$(CMAKE) --preset coverage
+	$(CMAKE) --build --preset coverage
+
+test-coverage: coverage
+	$(CTEST) --preset coverage $(CTEST_FLAGS)
+
 example-smoke-local: build-debug
 	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -L example-smoke
 
@@ -176,6 +233,7 @@ prerelease:
 	$(MAKE) msan
 	$(MAKE) fuzz-smoke
 	$(MAKE) lua-test
+	$(MAKE) test-e2e
 	$(MAKE) example-smoke-local
 
 prerelease-live:
@@ -284,6 +342,10 @@ package-checksums: package release-lua-artifacts
 package-verify: package-checksums
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
+verify-release-archives: package-verify
+
+verify-release-privacy: package-verify
+
 release-matrix:
 	$(MAKE) build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
@@ -299,17 +361,29 @@ release:
 	$(MAKE) release-matrix
 
 compose-check:
-	@if [[ -z "$(COMPOSE)" ]]; then \
-		printf '%s\n' 'Neither nerdctl compose nor docker compose was found in PATH.' >&2; \
-		exit 2; \
-	fi
+	@$(COMPOSE) version >/dev/null
+
+dev-up:
+	bash ./scripts/dev-up.sh
+
+dev-down:
+	bash ./scripts/dev-down.sh
+
+dev-reset:
+	bash ./scripts/dev-reset.sh
+
+dev-ps:
+	bash ./scripts/dev-ps.sh
+
+dev-logs:
+	bash ./scripts/dev-logs.sh
 
 searxng-pull: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" pull searxng
+	$(COMPOSE) pull searxng
 
 searxng-up: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" pull searxng
-	$(COMPOSE) -f "$(COMPOSE_FILE)" up -d searxng
+	$(COMPOSE) pull searxng
+	$(COMPOSE) up -d searxng
 
 searxng-wait:
 	@url="$${CAI_SEARXNG_BASE_URL:-$(CAI_SEARXNG_BASE_URL)}/"; \
@@ -324,10 +398,11 @@ searxng-wait:
 	exit 1
 
 searxng-down: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" down
+	$(COMPOSE) stop searxng
+	$(COMPOSE) rm -f searxng
 
 searxng-logs: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" logs -f searxng
+	$(COMPOSE) logs -f searxng
 
 searxng-test:
 	@url="$${CAI_SEARXNG_BASE_URL:-$(CAI_SEARXNG_BASE_URL)}/search"; \
@@ -343,7 +418,7 @@ searxng-test:
 	printf '\n'
 
 mcp-everything-up: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" up -d --build mcp-everything
+	$(COMPOSE) up -d --build mcp-everything
 
 mcp-everything-wait:
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
@@ -367,11 +442,11 @@ mcp-everything-wait:
 	exit 1
 
 mcp-everything-down: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" stop mcp-everything
-	$(COMPOSE) -f "$(COMPOSE_FILE)" rm -f mcp-everything
+	$(COMPOSE) stop mcp-everything
+	$(COMPOSE) rm -f mcp-everything
 
 mcp-everything-logs: compose-check
-	$(COMPOSE) -f "$(COMPOSE_FILE)" logs -f mcp-everything
+	$(COMPOSE) logs -f mcp-everything
 
 mcp-everything-test: build-debug
 	$(CMAKE) --build build/debug --target cai_mcp_everything_e2e
@@ -388,3 +463,6 @@ format:
 
 clean:
 	$(CMAKE) -E rm -rf build dist .cache .luarocks-build
+
+clean-dist:
+	$(CMAKE) -E rm -rf dist

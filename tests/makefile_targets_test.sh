@@ -8,9 +8,84 @@ fi
 
 repo_root=$1
 makefile=$repo_root/Makefile
+compose_file=$repo_root/docker-compose.yaml
 
 if [ ! -f "$makefile" ]; then
   printf 'Makefile not found: %s\n' "$makefile" >&2
+  exit 1
+fi
+
+require_target() {
+  target=$1
+  if ! grep -E "^${target}:" "$makefile" >/dev/null; then
+    printf 'required lifecycle Make target is missing: %s\n' "$target" >&2
+    exit 1
+  fi
+}
+
+require_help() {
+  target=$1
+  if ! grep -F "make $target" "$makefile" >/dev/null; then
+    printf 'make help must list lifecycle target: %s\n' "$target" >&2
+    exit 1
+  fi
+}
+
+require_script() {
+  script=$1
+  if [ ! -x "$repo_root/$script" ]; then
+    printf 'required lifecycle script is missing or not executable: %s\n' \
+      "$script" >&2
+    exit 1
+  fi
+}
+
+for target in \
+  deps-debug deps-release deps-cross build-host cross-build test-host \
+  test-cross cross-test test-all test-e2e coverage test-coverage fuzz-long \
+  verify-release-archives verify-release-privacy dev-up dev-down dev-reset \
+  dev-ps dev-logs clean-dist; do
+  require_target "$target"
+done
+
+for target in \
+  deps-debug deps-release deps-cross build-host cross-build test-all test-e2e \
+  test-cross coverage test-coverage fuzz-long verify-release-archives \
+  verify-release-privacy dev-up dev-down dev-reset dev-ps dev-logs clean-dist; do
+  require_help "$target"
+done
+
+for script in \
+  scripts/compose.sh scripts/dev-up.sh scripts/dev-down.sh \
+  scripts/dev-reset.sh scripts/dev-ps.sh scripts/dev-logs.sh \
+  scripts/test-e2e.sh; do
+  require_script "$script"
+done
+
+if ! grep -F 'COMPOSE := bash ./scripts/compose.sh' "$makefile" >/dev/null; then
+  printf 'Makefile compose operations must route through scripts/compose.sh\n' >&2
+  exit 1
+fi
+
+if ! grep -F '$(MAKE) test-e2e' "$makefile" >/dev/null; then
+  printf 'prerelease must include deterministic compose-backed test-e2e\n' >&2
+  exit 1
+fi
+
+if [ ! -f "$compose_file" ]; then
+  printf 'docker-compose.yaml not found: %s\n' "$compose_file" >&2
+  exit 1
+fi
+if ! grep -F 'name: cai-e2e' "$compose_file" >/dev/null; then
+  printf 'docker-compose.yaml must set the lifecycle project name\n' >&2
+  exit 1
+fi
+if grep -E '^[[:space:]]*container_name:' "$compose_file" >/dev/null; then
+  printf 'docker-compose.yaml must not pin fixed container names\n' >&2
+  exit 1
+fi
+if grep -E 'image:.*:latest' "$compose_file" >/dev/null; then
+  printf 'docker-compose.yaml must not use latest image tags\n' >&2
   exit 1
 fi
 
