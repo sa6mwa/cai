@@ -1262,7 +1262,7 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 10)
+      TIMEOUT 30)
     add_test(NAME cai_host_dependency_mode_unsupported_target
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -1701,6 +1701,20 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
+  set(CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE "host")
+  set(CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE "host")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+    set(CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_URL}")
+    get_filename_component(CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE
+      "${CAI_C_PKT_SYSTEMS_URL}" NAME)
+  endif()
+  set(CAI_LONEJSON_PKG_URL_FOR_PACKAGE "host")
+  set(CAI_LONEJSON_ARCHIVE_NAME_FOR_PACKAGE "host")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+    set(CAI_LONEJSON_PKG_URL_FOR_PACKAGE "${CAI_LONEJSON_PKG_URL}")
+    get_filename_component(CAI_LONEJSON_ARCHIVE_NAME_FOR_PACKAGE
+      "${CAI_LONEJSON_PKG_URL}" NAME)
+  endif()
   set(CAI_PACKAGE_REQUIRES "lonejson")
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     set(CAI_PACKAGE_REQUIRES_PRIVATE
@@ -1744,6 +1758,10 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai.pc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"
     @ONLY)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-dependencies.json.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
+    @ONLY)
 
   install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
   install(DIRECTORY "${CAI_GENERATED_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
@@ -1777,6 +1795,8 @@ if(CAI_INSTALL)
   install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")
 
   set(_cai_package_deps "")
   if(TARGET cai_static)

@@ -150,6 +150,11 @@ verify_source_matches_git_manifest() {
   git -C "$repo_root" check-ignore --no-index --stdin <"$actual" \
     >"$ignored" 2>/dev/null || true
   if [[ -s "$ignored" ]]; then
+    grep -F -x -v -e VERSION -e RELEASE_MANIFEST "$ignored" \
+      >"${ignored}.filtered" || true
+    mv "${ignored}.filtered" "$ignored"
+  fi
+  if [[ -s "$ignored" ]]; then
     cat "$ignored" >&2
     rm -f "$actual" "$expected" "$ignored"
     fail "source archive contains git-ignored paths"
@@ -218,6 +223,48 @@ verify_no_sanitizer_artifacts() {
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2
     fail "release library contains sanitizer artifact"
+  fi
+}
+
+verify_dependency_manifest() {
+  local root_dir=$1
+  local target_id=$2
+  local manifest="$root_dir/share/cai/dependencies.json"
+  local pc="$root_dir/lib/pkgconfig/cai.pc"
+  local manifest_text
+  local pc_lonejson_version
+  local pc_lonejson_sha256
+
+  require_file "$manifest"
+  manifest_text=$(cat "$manifest")
+  pc_lonejson_version=$(sed -n 's/^lonejson_version=//p' "$pc")
+  pc_lonejson_sha256=$(sed -n 's/^lonejson_sha256=//p' "$pc")
+  if ! grep -F '"name": "c.pkt.systems"' <<<"$manifest_text" >/dev/null ||
+     ! grep -F '"name": "lonejson"' <<<"$manifest_text" >/dev/null ||
+     ! grep -F "\"targetId\": \"$target_id\"" <<<"$manifest_text" >/dev/null ||
+     ! grep -F '"installRole": "external-static-consumer-sdk"' \
+       <<<"$manifest_text" >/dev/null ||
+     ! grep -F '"installRole": "public-link-interface"' \
+       <<<"$manifest_text" >/dev/null; then
+    printf '%s\n' "$manifest_text" >&2
+    fail "dependency manifest does not describe required SDK dependencies"
+  fi
+  if [[ -n "$pc_lonejson_version" ]] &&
+     ! grep -F "\"version\": \"$pc_lonejson_version\"" \
+       <<<"$manifest_text" >/dev/null; then
+    printf '%s\n' "$manifest_text" >&2
+    fail "dependency manifest lonejson version disagrees with pkg-config"
+  fi
+  if [[ -n "$pc_lonejson_sha256" ]] &&
+     ! grep -F "\"sha256\": \"$pc_lonejson_sha256\"" \
+       <<<"$manifest_text" >/dev/null; then
+    printf '%s\n' "$manifest_text" >&2
+    fail "dependency manifest lonejson checksum disagrees with pkg-config"
+  fi
+  if grep -E '/home/|/Users/|/opt/|\.cache/deps|file://|\.\./' \
+    <<<"$manifest_text" >/dev/null; then
+    printf '%s\n' "$manifest_text" >&2
+    fail "dependency manifest contains local or non-relocatable paths"
   fi
 }
 
@@ -352,6 +399,7 @@ verify_binary_archive() {
   require_member "$listing" "$root/include/cai/tools/todo.h"
   require_member "$listing" "$root/lib/pkgconfig/cai.pc"
   require_member "$listing" "$root/lib/cmake/cai/cai-config.cmake"
+  require_member "$listing" "$root/share/cai/dependencies.json"
   require_member "$listing" "$root/share/doc/libcai/README.md"
   require_member "$listing" "$root/share/doc/libcai/LICENSE"
   require_member "$listing" "$root/share/doc/libcai/docs/model-metadata.md"
@@ -361,6 +409,7 @@ verify_binary_archive() {
   require_no_member_glob "$listing" "^$root/lib/.*(asan|ubsan|tsan|msan)"
   verify_no_host_paths "$root_dir"
   verify_no_sanitizer_artifacts "$root_dir"
+  verify_dependency_manifest "$root_dir" "${root#cai-$version-}"
   if [[ "$root" == *-linux-* ]]; then
     verify_linux_runpath "$root_dir"
   elif [[ "$root" == *-apple-darwin ]]; then

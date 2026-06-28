@@ -60,7 +60,8 @@ set(required_files
   "${prefix}/lib/cmake/cai/cai-config.cmake"
   "${prefix}/lib/cmake/cai/cai-config-version.cmake"
   "${prefix}/lib/cmake/cai/cai-targets.cmake"
-  "${prefix}/lib/pkgconfig/cai.pc")
+  "${prefix}/lib/pkgconfig/cai.pc"
+  "${prefix}/share/cai/dependencies.json")
 foreach(path IN LISTS required_files)
   if(NOT EXISTS "${path}")
     message(FATAL_ERROR "missing installed file: ${path}")
@@ -165,6 +166,32 @@ if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
    pc_c_pkt_url_pos EQUAL -1 OR pc_lonejson_url_pos EQUAL -1 OR
    pc_lonejson_abi_pos EQUAL -1)
   message(FATAL_ERROR "cai.pc does not point at required dependencies")
+endif()
+
+file(READ "${prefix}/share/cai/dependencies.json" dependencies_text)
+string(FIND "${dependencies_text}" "\"name\": \"c.pkt.systems\""
+       deps_c_pkt_pos)
+string(FIND "${dependencies_text}" "\"name\": \"lonejson\""
+       deps_lonejson_pos)
+string(FIND "${dependencies_text}" "\"targetId\": \"${CAI_TARGET_ID}\""
+       deps_target_pos)
+string(FIND "${dependencies_text}"
+       "\"dependencyMode\": \"${CAI_RESOLVED_DEPENDENCY_MODE}\""
+       deps_mode_pos)
+string(FIND "${dependencies_text}" "\"installRole\": \"public-link-interface\""
+       deps_lonejson_role_pos)
+string(FIND "${dependencies_text}"
+       "\"installRole\": \"external-static-consumer-sdk\""
+       deps_c_pkt_role_pos)
+if(deps_c_pkt_pos EQUAL -1 OR deps_lonejson_pos EQUAL -1 OR
+   deps_target_pos EQUAL -1 OR deps_mode_pos EQUAL -1 OR
+   deps_lonejson_role_pos EQUAL -1 OR deps_c_pkt_role_pos EQUAL -1)
+  message(FATAL_ERROR
+    "dependencies.json does not record SDK dependency provenance")
+endif()
+if(dependencies_text MATCHES "/home/|/Users/|/opt/|\\.cache/deps|file://|\\.\\./")
+  message(FATAL_ERROR
+    "dependencies.json contains local or non-relocatable paths")
 endif()
 
 if(DEFINED CAI_SOURCE_DIR AND NOT CAI_SOURCE_DIR STREQUAL "")
