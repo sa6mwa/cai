@@ -118,10 +118,13 @@ discover_tool() {
 
 cc=$(cache_value CMAKE_C_COMPILER || true)
 cc_host=""
-if [[ -n "$cc" ]]; then
+if [[ -n "${CPKT_OSXCROSS_HOST:-}" && "$target_id" == *-apple-darwin ]]; then
+  cc_host=$CPKT_OSXCROSS_HOST
+elif [[ -n "$cc" ]]; then
   cc_host=$(host_from_cc "$cc" || true)
 fi
 
+linker_tool=$(discover_tool LINKER CAI_LINKER "CMAKE_LINKER" "ld" "ld" || true)
 strip_tool=$(discover_tool STRIP CAI_STRIP "CMAKE_STRIP" "strip" "strip" || true)
 install_name_tool=$(discover_tool INSTALL_NAME_TOOL CAI_INSTALL_NAME_TOOL "CMAKE_INSTALL_NAME_TOOL" "install_name_tool" "install_name_tool" || true)
 otool_tool=$(discover_tool OTOOL CAI_OTOOL "CPKT_OTOOL,CMAKE_OTOOL" "otool" "llvm-otool-20,llvm-otool,otool" || true)
@@ -129,6 +132,7 @@ readelf_tool=$(discover_tool READELF CAI_READELF "CMAKE_READELF" "readelf" "read
 
 printf 'CC=%q\n' "$cc"
 printf 'TARGET_HOST=%q\n' "$cc_host"
+printf 'LINKER=%q\n' "$linker_tool"
 printf 'STRIP=%q\n' "$strip_tool"
 printf 'INSTALL_NAME_TOOL=%q\n' "$install_name_tool"
 printf 'OTOOL=%q\n' "$otool_tool"

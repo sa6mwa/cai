@@ -1296,6 +1296,12 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_target_tool_discovery_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_darwin_linker_route_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/darwin_linker_route_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_darwin_linker_route_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_release_artifacts_darwin_metadata_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_artifacts_darwin_metadata_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")

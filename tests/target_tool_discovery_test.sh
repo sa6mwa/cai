@@ -30,6 +30,7 @@ tool_dir=$tmpdir/toolchain/bin
 mkdir -p "$cache_dir" "$tool_dir"
 make_tool "$tool_dir/custom-otool"
 make_tool "$tool_dir/arm64-apple-darwin25-clang"
+make_tool "$tool_dir/arm64-apple-darwin25-ld"
 make_tool "$tool_dir/arm64-apple-darwin25-strip"
 make_tool "$tool_dir/arm64-apple-darwin25-install_name_tool"
 make_tool "$tool_dir/arm64-apple-darwin25-otool"
@@ -47,6 +48,10 @@ if [[ "$(value_of "$assignments" OTOOL)" != "$tool_dir/custom-otool" ]]; then
 fi
 if [[ "$(value_of "$assignments" STRIP)" != "$tool_dir/arm64-apple-darwin25-strip" ]]; then
   printf 'expected target-prefixed sibling strip, got:\n%s\n' "$assignments" >&2
+  exit 1
+fi
+if [[ "$(value_of "$assignments" LINKER)" != "$tool_dir/arm64-apple-darwin25-ld" ]]; then
+  printf 'expected target-prefixed sibling linker, got:\n%s\n' "$assignments" >&2
   exit 1
 fi
 if [[ "$(value_of "$assignments" INSTALL_NAME_TOOL)" != "$tool_dir/arm64-apple-darwin25-install_name_tool" ]]; then
@@ -69,6 +74,25 @@ assignments=$("$repo_root/scripts/discover_target_tools.sh" \
   "$cache_dir" arm64-apple-darwin)
 if [[ "$(value_of "$assignments" OTOOL)" != "$tool_dir/arm64-apple-darwin25-otool" ]]; then
   printf 'expected target-prefixed sibling otool, got:\n%s\n' "$assignments" >&2
+  exit 1
+fi
+
+custom_tool_dir=$tmpdir/custom-toolchain/bin
+mkdir -p "$custom_tool_dir"
+make_tool "$custom_tool_dir/custom-darwin-clang"
+make_tool "$custom_tool_dir/custom-darwin-ld"
+make_tool "$custom_tool_dir/custom-darwin-otool"
+cat >"$cache_dir/CMakeCache.txt" <<EOF_CACHE
+CMAKE_C_COMPILER:FILEPATH=$custom_tool_dir/custom-darwin-clang
+EOF_CACHE
+assignments=$(CPKT_OSXCROSS_HOST=custom-darwin "$repo_root/scripts/discover_target_tools.sh" \
+  "$cache_dir" arm64-apple-darwin)
+if [[ "$(value_of "$assignments" TARGET_HOST)" != "custom-darwin" ]]; then
+  printf 'expected CPKT_OSXCROSS_HOST to define target host, got:\n%s\n' "$assignments" >&2
+  exit 1
+fi
+if [[ "$(value_of "$assignments" LINKER)" != "$custom_tool_dir/custom-darwin-ld" ]]; then
+  printf 'expected CPKT_OSXCROSS_HOST-prefixed linker, got:\n%s\n' "$assignments" >&2
   exit 1
 fi
 

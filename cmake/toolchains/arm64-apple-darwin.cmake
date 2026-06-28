@@ -10,7 +10,13 @@ else()
   message(FATAL_ERROR "OSXCROSS_ROOT is not set and HOME is unavailable")
 endif()
 
-set(CAI_OSXCROSS_HOST "arm64-apple-darwin25" CACHE STRING "osxcross target host triple")
+if(DEFINED ENV{CPKT_OSXCROSS_HOST} AND NOT "$ENV{CPKT_OSXCROSS_HOST}" STREQUAL "")
+  set(CAI_OSXCROSS_HOST "$ENV{CPKT_OSXCROSS_HOST}" CACHE STRING
+      "osxcross target host triple")
+else()
+  set(CAI_OSXCROSS_HOST "arm64-apple-darwin25" CACHE STRING
+      "osxcross target host triple")
+endif()
 set(CAI_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment target")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "${CAI_MACOS_DEPLOYMENT_TARGET}" CACHE STRING "" FORCE)
 
