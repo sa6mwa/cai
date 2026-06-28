@@ -58,7 +58,7 @@ done
 for script in \
   scripts/compose.sh scripts/dev-up.sh scripts/dev-down.sh \
   scripts/dev-reset.sh scripts/dev-ps.sh scripts/dev-logs.sh \
-  scripts/test-e2e.sh; do
+  scripts/test-e2e.sh scripts/host_release_preset.sh; do
   require_script "$script"
 done
 
@@ -69,6 +69,48 @@ fi
 
 if ! grep -F '$(MAKE) test-e2e' "$makefile" >/dev/null; then
   printf 'prerelease must include deterministic compose-backed test-e2e\n' >&2
+  exit 1
+fi
+
+build_host_body=$(awk '
+  /^build-host:/ {
+    in_target = 1
+    next
+  }
+  in_target && /^[^[:space:]].*:/ {
+    exit
+  }
+  in_target {
+    print
+  }
+' "$makefile")
+if ! printf '%s\n' "$build_host_body" | grep -F '$(HOST_RELEASE_PRESET)' >/dev/null; then
+  printf 'build-host must resolve the explicit host release target preset\n' >&2
+  exit 1
+fi
+if printf '%s\n' "$build_host_body" | grep -F ' --preset release' >/dev/null; then
+  printf 'build-host must not use the generic release preset as a host target\n' >&2
+  exit 1
+fi
+
+test_release_body=$(awk '
+  /^test-release:/ {
+    in_target = 1
+    next
+  }
+  in_target && /^[^[:space:]].*:/ {
+    exit
+  }
+  in_target {
+    print
+  }
+' "$makefile")
+if ! printf '%s\n' "$test_release_body" | grep -F '$(HOST_RELEASE_PRESET)' >/dev/null; then
+  printf 'test-release must resolve the explicit host release target preset\n' >&2
+  exit 1
+fi
+if printf '%s\n' "$test_release_body" | grep -F 'build/release' >/dev/null; then
+  printf 'test-release must not use the generic release build tree as a host target\n' >&2
   exit 1
 fi
 

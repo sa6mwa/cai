@@ -108,6 +108,7 @@ if(CAI_TARGET_ID STREQUAL "")
     set(CAI_TARGET_ID "${_cai_processor_lower}-${_cai_system_name_lower}")
   endif()
 endif()
+set(CAI_TARGET_ID "${CAI_TARGET_ID}" CACHE STRING "Release archive target id." FORCE)
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
@@ -1294,6 +1295,12 @@ if(CAI_BUILD_TESTS)
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/target_tool_discovery_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(cai_target_tool_discovery_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_host_release_preset_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_release_preset_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_host_release_preset_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
     add_test(NAME cai_darwin_linker_route_test

@@ -6,6 +6,7 @@ ROOT := $(CURDIR)
 CMAKE := cmake
 CTEST := ctest
 CTEST_FLAGS := --stop-on-failure
+HOST_RELEASE_PRESET := ./scripts/host_release_preset.sh
 COMPOSE_FILE := docker-compose.yaml
 COMPOSE := bash ./scripts/compose.sh
 CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
@@ -46,11 +47,11 @@ LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -na
 help:
 	@printf '%s\n' \
 		'make deps-debug  Configure the debug dependency/build root.' \
-		'make deps-release Configure the host release dependency/build root.' \
+		'make deps-release Configure the host release target build root.' \
 		'make deps-cross  Configure all available release cross dependency/build roots.' \
 		'make build        Configure and build the debug preset.' \
-		'make build-host   Alias for build-release host artifact build.' \
-		'make build-release Configure and build the release preset.' \
+		'make build-host   Build the native host release preset.' \
+		'make build-release Configure and build the release target matrix.' \
 		'make cross-build  Alias for build-release cross matrix build.' \
 		'make integration-build  Configure and build the integration preset without running live tests.' \
 		'make test         Build and run the debug unit tests.' \
@@ -111,7 +112,7 @@ deps-debug:
 	$(CMAKE) --preset debug
 
 deps-release:
-	$(CMAKE) --preset x86_64-linux-gnu-release
+	preset="$$($(HOST_RELEASE_PRESET))"; $(CMAKE) --preset "$$preset"
 
 deps-cross: build-release
 
@@ -124,7 +125,8 @@ build-debug:
 build-release:
 	bash ./scripts/build_release_matrix.sh
 
-build-host: build-release
+build-host:
+	preset="$$($(HOST_RELEASE_PRESET))"; $(CMAKE) --preset "$$preset"; $(CMAKE) --build --preset "$$preset"
 
 cross-build: build-release
 
@@ -141,8 +143,8 @@ test-debug: build-debug
 
 test-host: test-release
 
-test-release: build-release
-	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
+test-release: build-host
+	preset="$$($(HOST_RELEASE_PRESET))"; $(CTEST) --test-dir "build/$$preset" --output-on-failure $(CTEST_FLAGS)
 
 test-cross: cross-test
 

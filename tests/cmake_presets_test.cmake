@@ -17,3 +17,34 @@ if(NOT _cai_presets_text MATCHES
     "base CMake preset must pin CAI_DEPENDENCY_MODE=cpkt so stale build "
     "cache state cannot change sanitizer or fuzz dependency resolution")
 endif()
+
+set(_cai_x86_release_target_id "")
+string(JSON _cai_configure_preset_count LENGTH "${_cai_presets_text}" configurePresets)
+math(EXPR _cai_configure_preset_last "${_cai_configure_preset_count} - 1")
+foreach(_cai_preset_index RANGE 0 ${_cai_configure_preset_last})
+  string(JSON _cai_preset_name GET "${_cai_presets_text}" configurePresets
+         ${_cai_preset_index} name)
+  if(_cai_preset_name STREQUAL "release")
+    string(JSON _cai_release_target_id ERROR_VARIABLE _cai_release_target_id_error
+           GET "${_cai_presets_text}" configurePresets ${_cai_preset_index}
+           cacheVariables CAI_TARGET_ID)
+    if(_cai_release_target_id_error OR
+       NOT _cai_release_target_id STREQUAL "x86_64-linux-gnu")
+      message(FATAL_ERROR
+        "release preset must retain the baseline x86_64-linux-gnu release "
+        "target id used by the release lifecycle")
+    endif()
+  elseif(_cai_preset_name STREQUAL "x86_64-linux-gnu-release")
+    string(JSON _cai_x86_release_target_id ERROR_VARIABLE _cai_x86_target_id_error
+           GET "${_cai_presets_text}" configurePresets ${_cai_preset_index}
+           cacheVariables CAI_TARGET_ID)
+    if(_cai_x86_target_id_error)
+      set(_cai_x86_release_target_id "")
+    endif()
+  endif()
+endforeach()
+
+if(NOT _cai_x86_release_target_id STREQUAL "")
+  message(FATAL_ERROR
+    "x86_64-linux-gnu-release preset should inherit the release preset target id")
+endif()
