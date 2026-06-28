@@ -594,6 +594,12 @@ if(CAI_BUILD_SHARED)
     OUTPUT_NAME cai
     VERSION ${PROJECT_VERSION}
     SOVERSION ${CAI_ABI_VERSION})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set_target_properties(cai_shared PROPERTIES
+      BUILD_WITH_INSTALL_RPATH ON
+      INSTALL_NAME_DIR "@rpath"
+      MACOSX_RPATH ON)
+  endif()
 endif()
 
 foreach(_cai_target IN ITEMS cai_static cai_shared)
@@ -1282,6 +1288,18 @@ if(CAI_BUILD_TESTS)
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/rpath_token_test.cmake")
     set_tests_properties(cai_rpath_token_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_target_tool_discovery_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/target_tool_discovery_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_target_tool_discovery_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_release_artifacts_darwin_metadata_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_artifacts_darwin_metadata_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_artifacts_darwin_metadata_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
     add_test(NAME cai_cmake_presets_test

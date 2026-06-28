@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
+if [[ "${1:-}" == "--self-test" ]]; then
+  repo_root=${CAI_REPO_ROOT:-$(pwd)}
+  version=${CAI_VERSION:-0.0.0}
+  self_test=1
+elif [[ $# -lt 1 || $# -gt 2 ]]; then
   printf 'usage: %s <repo-root> [version]\n' "$0" >&2
   exit 1
+else
+  repo_root=$1
+  version=${2:-}
+  self_test=0
 fi
-
-repo_root=$1
-version=${2:-}
 
 if [[ -z "$version" ]]; then
   version=$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' \
@@ -244,34 +249,89 @@ verify_linux_runpath() {
   done < <(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai.so*' -print)
 }
 
-find_otool() {
-  local tool
+diagnostic_fail() {
+  local surface=$1
+  local phase=$2
+  local class=$3
+  local reason=$4
+  local artifact=${5:-}
+  local next=${6:-}
 
-  for tool in llvm-otool-20 llvm-otool otool; do
-    if command -v "$tool" >/dev/null 2>&1; then
-      printf '%s\n' "$tool"
-      return 0
-    fi
-  done
+  {
+    printf 'PKT_DIAGNOSTIC_BEGIN\n'
+    printf 'surface=%s\n' "$surface"
+    printf 'phase=%s\n' "$phase"
+    printf 'status=failed\n'
+    printf 'class=%s\n' "$class"
+    printf 'reason=%s\n' "$reason"
+    [[ -z "$artifact" ]] || printf 'artifact=%s\n' "$artifact"
+    [[ -z "$next" ]] || printf 'next=%s\n' "$next"
+    printf 'PKT_DIAGNOSTIC_END\n'
+  } >&2
+  fail "$reason"
+}
+
+shell_value() {
+  local assignments=$1
+  local key=$2
+  local line
+
+  line=$(grep -E "^${key}=" <<<"$assignments" | tail -n 1 || true)
+  [[ -n "$line" ]] || return 1
+  printf '%s\n' "${line#*=}" | xargs printf '%s\n'
+}
+
+find_target_otool() {
+  local target_id=$1
+  local assignments
+  local otool
+
+  assignments=$("$repo_root/scripts/discover_target_tools.sh" \
+    "$repo_root/build/$target_id-release" "$target_id")
+  otool=$(shell_value "$assignments" OTOOL || true)
+  if [[ -n "$otool" && -x "$otool" ]]; then
+    printf '%s\n' "$otool"
+    return 0
+  fi
   return 1
 }
 
 verify_darwin_runpath() {
   local root_dir=$1
+  local target_id=$2
   local dylib
+  local install_name
+  local dependencies
   local load_commands
   local otool
 
-  otool=$(find_otool) || fail "llvm-otool or otool is required to verify Darwin runpaths"
+  otool=$(find_target_otool "$target_id") || diagnostic_fail \
+    package-verify darwin-loader-metadata external-tool-unavailable \
+    "target-correct otool is required to verify Darwin Mach-O metadata" \
+    "$root_dir" \
+    "configure $target_id-release or set CAI_OTOOL to a target-capable otool"
   while IFS= read -r dylib; do
     [[ -L "$dylib" ]] && continue
-    load_commands=$("$otool" -l "$dylib" 2>/dev/null || true)
+    install_name=$("$otool" -D "$dylib" 2>/dev/null | sed '1d' || true)
+    [[ -n "$install_name" ]] || fail "could not inspect Darwin install name: $dylib"
+    if ! grep -E '^@rpath/libcai\.[0-9]+\.dylib$' <<<"$install_name" >/dev/null; then
+      printf '%s\n' "$install_name" >&2
+      fail "Darwin shared library install name is not ABI-versioned @rpath: $dylib"
+    fi
+    dependencies=$("$otool" -L "$dylib" 2>/dev/null | sed '1d' || true)
+    [[ -n "$dependencies" ]] || fail "could not inspect Darwin dependencies: $dylib"
+    if grep -E '^[[:space:]]*/(home|Users|opt|tmp|var|lib|usr/local)/|\.cache/deps' \
+      <<<"$dependencies" >/dev/null; then
+      printf '%s\n' "$dependencies" >&2
+      fail "Darwin shared library has non-system absolute dependency path: $dylib"
+    fi
+    load_commands=$("$otool" -l "$dylib" 2>/dev/null | sed '1d' || true)
     [[ -n "$load_commands" ]] || fail "could not inspect Darwin shared library: $dylib"
     if ! grep -A2 'LC_RPATH' <<<"$load_commands" | grep -F 'path @loader_path' >/dev/null; then
       printf '%s\n' "$load_commands" >&2
       fail "Darwin shared library does not use @loader_path rpath: $dylib"
     fi
-    if grep -E '/home/|/Users/|/opt/|\.cache/deps' <<<"$load_commands" >/dev/null; then
+    if grep -E '/home/|/Users/|/opt/|/tmp/|/var/|\.cache/deps' <<<"$load_commands" >/dev/null; then
       printf '%s\n' "$load_commands" >&2
       fail "Darwin shared library has host-specific load command: $dylib"
     fi
@@ -304,7 +364,7 @@ verify_binary_archive() {
   if [[ "$root" == *-linux-* ]]; then
     verify_linux_runpath "$root_dir"
   elif [[ "$root" == *-apple-darwin ]]; then
-    verify_darwin_runpath "$root_dir"
+    verify_darwin_runpath "$root_dir" "${root#cai-$version-}"
   fi
 }
 
@@ -429,6 +489,10 @@ verify_archive() {
   rm -rf "$extract_root"
   trap - RETURN
 }
+
+if [[ "$self_test" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 verify_checksum_file
 
