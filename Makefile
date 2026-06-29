@@ -73,7 +73,7 @@ help:
 		'make example-smoke-live   Run curated live non-interactive example smoke checks.' \
 		'make finalize-slice Run format and debug tests before committing a slice.' \
 		'make prerelease   Run the standard local prerelease verification tier.' \
-		'make prerelease-live  Run live-provider verification; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
+		'make prerelease-live  Run required pre-release live-provider verification; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
 		'make prerelease-hardening Run the hardening tier: prerelease, live checks, long fuzz, and release matrix.' \
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
 		'make lua-env      Print shell exports for running local Lua examples.' \
@@ -328,7 +328,9 @@ release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC) $(RELEASE_LUA_SRC_ROCK)
 print-release-version:
 	@printf '%s\n' "$(RELEASE_VERSION)"
 
-package: build-release
+package:
+	$(MAKE) clean-dist
+	$(MAKE) build-release
 	bash ./scripts/package_release_matrix.sh
 
 package-source:
@@ -349,6 +351,7 @@ verify-release-archives: package-verify
 verify-release-privacy: package-verify
 
 release-matrix:
+	$(MAKE) clean-dist
 	$(MAKE) build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
 	bash ./scripts/package_release_matrix.sh
@@ -359,7 +362,6 @@ release-matrix:
 release:
 	$(MAKE) clean
 	$(MAKE) prerelease
-	CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) prerelease-live
 	$(MAKE) release-matrix
 
 compose-check:

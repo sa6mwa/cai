@@ -1315,6 +1315,12 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_release_artifacts_darwin_metadata_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_release_manifest_gate_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_manifest_gate_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_manifest_gate_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_cmake_presets_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
