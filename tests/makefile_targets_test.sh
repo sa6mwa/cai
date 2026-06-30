@@ -43,15 +43,16 @@ require_script() {
 for target in \
   deps-debug deps-release deps-cross build-host cross-build test-host \
   test-cross cross-test test-all test-e2e coverage test-coverage fuzz-long \
-  verify-release-archives verify-release-privacy dev-up dev-down dev-reset \
-  dev-ps dev-logs clean-dist; do
+  verify-release-archives verify-release-privacy require-prerelease-live \
+  dev-up dev-down dev-reset dev-ps dev-logs clean-dist; do
   require_target "$target"
 done
 
 for target in \
   deps-debug deps-release deps-cross build-host cross-build test-all test-e2e \
   test-cross coverage test-coverage fuzz-long verify-release-archives \
-  verify-release-privacy dev-up dev-down dev-reset dev-ps dev-logs clean-dist; do
+  verify-release-privacy require-prerelease-live dev-up dev-down dev-reset \
+  dev-ps dev-logs clean-dist; do
   require_help "$target"
 done
 
@@ -71,6 +72,57 @@ if ! grep -F '$(MAKE) test-e2e' "$makefile" >/dev/null; then
   printf 'prerelease must include deterministic compose-backed test-e2e\n' >&2
   exit 1
 fi
+
+prerelease_live_body=$(awk '
+  /^prerelease-live:/ {
+    in_target = 1
+    next
+  }
+  in_target && /^[^[:space:]].*:/ {
+    exit
+  }
+  in_target {
+    print
+  }
+' "$makefile")
+if ! printf '%s\n' "$prerelease_live_body" | grep -F 'CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) test-integration' >/dev/null; then
+  printf 'prerelease-live must enable and run full live integration tests\n' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$prerelease_live_body" | grep -F 'CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) example-smoke-live' >/dev/null; then
+  printf 'prerelease-live must enable and run live example smoke tests\n' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$prerelease_live_body" | grep -F '$(RELEASE_LIVE_GATE_STAMP)' >/dev/null; then
+  printf 'prerelease-live must write the release live gate stamp\n' >&2
+  exit 1
+fi
+
+release_line=$(awk '
+  /^release:/ {
+    print
+    found = 1
+    exit
+  }
+  END {
+    if (!found) {
+      exit 1
+    }
+  }
+' "$makefile") || {
+  printf 'release target is missing\n' >&2
+  exit 1
+}
+
+case " $release_line " in
+  *" require-prerelease-live "*)
+    ;;
+  *)
+    printf 'release must require a successful prerelease-live gate: %s\n' \
+      "$release_line" >&2
+    exit 1
+    ;;
+esac
 
 build_host_body=$(awk '
   /^build-host:/ {

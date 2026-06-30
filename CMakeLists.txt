@@ -1167,6 +1167,12 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_makefile_targets_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_release_live_gate_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_live_gate_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_release_live_gate_test PROPERTIES
+    LABELS "unit;local;packaging"
+    TIMEOUT 3)
   add_test(NAME cai_mcp_client_source_contract_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_source_contract_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")

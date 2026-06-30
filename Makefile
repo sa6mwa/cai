@@ -39,10 +39,11 @@ RELEASE_LUA_PACK_STAGE_DIR := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)
 RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar.gz
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
+RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test format clean clean-dist
+.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration asan test-asan tsan test-tsan msan test-msan fuzz fuzz-smoke fuzz-full fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice prerelease prerelease-live require-prerelease-live prerelease-hardening lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test format clean clean-dist
 
 help:
 	@printf '%s\n' \
@@ -73,7 +74,8 @@ help:
 		'make example-smoke-live   Run curated live non-interactive example smoke checks.' \
 		'make finalize-slice Run format and debug tests before committing a slice.' \
 		'make prerelease   Run the standard local prerelease verification tier.' \
-		'make prerelease-live  Run required pre-release live-provider verification; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
+		'make prerelease-live  Run required pre-release live-provider verification.' \
+		'make require-prerelease-live Verify prerelease-live passed for the current commit.' \
 		'make prerelease-hardening Run the hardening tier: prerelease, live checks, long fuzz, and release matrix.' \
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
 		'make lua-env      Print shell exports for running local Lua examples.' \
@@ -88,7 +90,7 @@ help:
 		'make verify-release-archives Alias for package-verify.' \
 		'make verify-release-privacy Alias for package-verify privacy/relocatability gate.' \
 		'make release-matrix Incrementally build, test, package, and checksum release artifacts.' \
-		'make release      Clean first, then run prerelease, live prerelease, and release matrix gates.' \
+		'make release      Require live prerelease, then run clean, prerelease, and release matrix gates.' \
 		'make dev-up       Start local compose-backed development services.' \
 		'make dev-down     Stop local compose-backed development services.' \
 		'make dev-reset    Stop services and remove generated local service state.' \
@@ -239,8 +241,32 @@ prerelease:
 	$(MAKE) example-smoke-local
 
 prerelease-live:
-	$(MAKE) test-integration
-	$(MAKE) example-smoke-live
+	CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) test-integration
+	CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) example-smoke-live
+	@mkdir -p "$$(dirname "$(RELEASE_LIVE_GATE_STAMP)")"
+	@head="$$(git rev-parse HEAD 2>/dev/null || printf unknown)"; \
+	{ \
+		printf 'status=passed\n'; \
+		printf 'head=%s\n' "$$head"; \
+		printf 'target=prerelease-live\n'; \
+		printf 'timestamp=%s\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	} >"$(RELEASE_LIVE_GATE_STAMP)"
+
+require-prerelease-live:
+	@head="$$(git rev-parse HEAD 2>/dev/null || printf unknown)"; \
+	if [[ ! -f "$(RELEASE_LIVE_GATE_STAMP)" ]]; then \
+		printf '%s\n' 'Refusing release: run make prerelease-live first.' >&2; \
+		exit 2; \
+	fi; \
+	if ! grep -qx 'status=passed' "$(RELEASE_LIVE_GATE_STAMP)"; then \
+		printf '%s\n' 'Refusing release: prerelease-live gate stamp is not successful.' >&2; \
+		exit 2; \
+	fi; \
+	stamp_head="$$(sed -n 's/^head=//p' "$(RELEASE_LIVE_GATE_STAMP)")"; \
+	if [[ "$$stamp_head" != "$$head" ]]; then \
+		printf 'Refusing release: prerelease-live passed for %s, not current HEAD %s.\n' "$$stamp_head" "$$head" >&2; \
+		exit 2; \
+	fi
 
 prerelease-hardening:
 	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
@@ -359,7 +385,7 @@ release-matrix:
 	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
 	bash ./scripts/verify_release_artifacts.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
-release:
+release: require-prerelease-live
 	$(MAKE) clean
 	$(MAKE) prerelease
 	$(MAKE) release-matrix
