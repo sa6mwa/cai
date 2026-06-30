@@ -38,9 +38,9 @@ case "$uname_s" in
     ;;
   Darwin)
     if [[ "$arch" == "aarch64" ]]; then
-      target=arm64-apple-darwin
+      target=arm64-apple-darwin-host
     else
-      target="${arch}-apple-darwin"
+      target="${arch}-apple-darwin-host"
     fi
     ;;
   *)

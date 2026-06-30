@@ -47,7 +47,7 @@ expect_preset armhf-linux-gnu-release \
   CAI_HOST_RELEASE_UNAME_M=armv7l \
   CAI_HOST_RELEASE_CC_MACHINE=arm-linux-gnueabihf
 
-expect_preset arm64-apple-darwin-release \
+expect_preset arm64-apple-darwin-host-release \
   CAI_HOST_RELEASE_UNAME_S=Darwin \
   CAI_HOST_RELEASE_UNAME_M=arm64 \
   CAI_HOST_RELEASE_CC_MACHINE=

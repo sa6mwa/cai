@@ -44,7 +44,8 @@ for target in \
   deps-debug deps-release deps-cross build-host cross-build test-host \
   test-cross cross-test test-all test-e2e coverage test-coverage fuzz-long \
   verify-release-archives verify-release-privacy require-prerelease-live \
-  dev-up dev-down dev-reset dev-ps dev-logs clean-dist; do
+  require-clean-worktree dev-up dev-down dev-reset dev-ps dev-logs \
+  clean-dist; do
   require_target "$target"
 done
 
@@ -52,7 +53,7 @@ for target in \
   deps-debug deps-release deps-cross build-host cross-build test-all test-e2e \
   test-cross coverage test-coverage fuzz-long verify-release-archives \
   verify-release-privacy require-prerelease-live dev-up dev-down dev-reset \
-  dev-ps dev-logs clean-dist; do
+  require-clean-worktree dev-ps dev-logs clean-dist; do
   require_help "$target"
 done
 
@@ -89,6 +90,10 @@ if ! printf '%s\n' "$prerelease_live_body" | grep -F 'CAI_ENABLE_INTEGRATION_TES
   printf 'prerelease-live must enable and run full live integration tests\n' >&2
   exit 1
 fi
+if ! printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) require-clean-worktree' >/dev/null; then
+  printf 'prerelease-live must require a clean worktree before stamping\n' >&2
+  exit 1
+fi
 if ! printf '%s\n' "$prerelease_live_body" | grep -F 'CAI_ENABLE_INTEGRATION_TESTS=1 $(MAKE) example-smoke-live' >/dev/null; then
   printf 'prerelease-live must enable and run live example smoke tests\n' >&2
   exit 1
@@ -123,6 +128,23 @@ case " $release_line " in
     exit 1
     ;;
 esac
+
+release_body=$(awk '
+  /^release:/ {
+    in_target = 1
+    next
+  }
+  in_target && /^[^[:space:]].*:/ {
+    exit
+  }
+  in_target {
+    print
+  }
+' "$makefile")
+if ! printf '%s\n' "$release_body" | grep -F '$(MAKE) require-clean-worktree' >/dev/null; then
+  printf 'release must re-check clean worktree before packaging artifacts\n' >&2
+  exit 1
+fi
 
 build_host_body=$(awk '
   /^build-host:/ {

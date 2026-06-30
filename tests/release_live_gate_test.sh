@@ -11,6 +11,7 @@ stamp_dir=$(mktemp -d)
 stamp=$stamp_dir/prerelease-live.stamp
 stdout=$stamp_dir/stdout
 stderr=$stamp_dir/stderr
+git_work_tree=$stamp_dir/worktree
 
 cleanup() {
   rm -rf "$stamp_dir"
@@ -18,7 +19,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 run_gate() {
-  (cd "$repo_root" && RELEASE_LIVE_GATE_STAMP=$stamp make --no-print-directory require-prerelease-live)
+  (
+    cd "$repo_root"
+    GIT_DIR=$git_work_tree/.git \
+      GIT_WORK_TREE=$git_work_tree \
+      RELEASE_LIVE_GATE_STAMP=$stamp \
+      make --no-print-directory require-prerelease-live
+  )
 }
 
 expect_failure() {
@@ -41,7 +48,21 @@ expect_success() {
   fi
 }
 
-head=$(cd "$repo_root" && git rev-parse HEAD 2>/dev/null || printf unknown)
+mkdir -p "$git_work_tree"
+git -C "$git_work_tree" init -q
+git -C "$git_work_tree" config user.email test@example.invalid
+git -C "$git_work_tree" config user.name 'Release Gate Test'
+printf '%s\n' test >"$git_work_tree/tracked.txt"
+git -C "$git_work_tree" add tracked.txt
+git -C "$git_work_tree" commit -q -m 'test fixture'
+
+head=$(GIT_DIR=$git_work_tree/.git GIT_WORK_TREE=$git_work_tree git rev-parse HEAD)
+clean_status_sha=$(
+  GIT_DIR=$git_work_tree/.git \
+    GIT_WORK_TREE=$git_work_tree \
+    git status --porcelain=v1 --untracked-files=all |
+    GIT_DIR=$git_work_tree/.git GIT_WORK_TREE=$git_work_tree git hash-object --stdin
+)
 
 expect_failure 'missing stamp'
 
@@ -54,13 +75,18 @@ expect_failure 'failed stamp status'
 cat >"$stamp" <<EOF
 status=passed
 head=0000000000000000000000000000000000000000
+worktree-status-sha=$clean_status_sha
 EOF
 expect_failure 'stale stamp head'
 
 cat >"$stamp" <<EOF
 status=passed
 head=$head
+worktree-status-sha=$clean_status_sha
 target=prerelease-live
 timestamp=1970-01-01T00:00:00Z
 EOF
 expect_success 'current successful stamp'
+
+printf '%s\n' dirty >"$git_work_tree/untracked.txt"
+expect_failure 'dirty worktree after stamp'
