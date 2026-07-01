@@ -62,6 +62,11 @@ expect_preset arm64-apple-darwin-host-release \
   CAI_HOST_RELEASE_UNAME_M=arm64 \
   CAI_HOST_RELEASE_CC_MACHINE=
 
+expect_preset x86_64-apple-darwin-host-release \
+  CAI_HOST_RELEASE_UNAME_S=Darwin \
+  CAI_HOST_RELEASE_UNAME_M=x86_64 \
+  CAI_HOST_RELEASE_CC_MACHINE=
+
 expect_failure unsupported-os \
   CAI_HOST_RELEASE_UNAME_S=FreeBSD \
   CAI_HOST_RELEASE_UNAME_M=x86_64 \
