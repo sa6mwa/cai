@@ -39,6 +39,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_MCP "cai.mcp_handler"
 #define CAI_LUA_CHATGPT_AUTH "cai.chatgpt_auth"
 #define CAI_LUA_CHATGPT_LOGIN "cai.chatgpt_login"
+#define CAI_LUA_PSLOG_LOGGER "pslog.logger"
 #define CAI_LUA_SCHEMA "cai.tool_schema"
 #define CAI_LUA_PARAMS "cai.response_params"
 #define CAI_LUA_CONVERSATION "cai.conversation"
@@ -64,6 +65,7 @@ struct cai_lua_tool_ref {
 typedef struct cai_lua_client {
   cai_client *ptr;
   cai_chatgpt_auth *chatgpt_auth;
+  int logger_ref;
 } cai_lua_client;
 
 typedef struct cai_lua_agent {
@@ -98,12 +100,18 @@ typedef struct cai_lua_mcp {
 
 typedef struct cai_lua_chatgpt_auth {
   cai_chatgpt_auth *ptr;
+  int logger_ref;
 } cai_lua_chatgpt_auth;
 
 typedef struct cai_lua_chatgpt_login {
   cai_chatgpt_login *ptr;
   char *authorize_url;
+  int logger_ref;
 } cai_lua_chatgpt_login;
+
+typedef struct cai_lua_pslog_logger {
+  struct pslog_logger *log;
+} cai_lua_pslog_logger;
 
 typedef struct cai_lua_mcp_session_ctx {
   lua_State *L;
@@ -408,6 +416,35 @@ static size_t cai_lua_opt_size_field(lua_State *L, int index, const char *name,
   return (size_t)n;
 }
 
+static struct pslog_logger *cai_lua_opt_logger_field(lua_State *L, int index,
+                                                     const char *name,
+                                                     int *ref_out) {
+  cai_lua_pslog_logger *ud;
+  struct pslog_logger *logger;
+
+  index = lua_absindex(L, index);
+  *ref_out = LUA_NOREF;
+  lua_getfield(L, index, name);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return NULL;
+  }
+  ud = (cai_lua_pslog_logger *)luaL_testudata(L, -1, CAI_LUA_PSLOG_LOGGER);
+  if (ud == NULL) {
+    lua_pop(L, 1);
+    luaL_error(L, "%s must be a pslog.logger", name);
+  }
+  if (ud->log == NULL) {
+    lua_pop(L, 1);
+    luaL_error(L, "%s is closed", name);
+  }
+  logger = ud->log;
+  lua_pushvalue(L, -1);
+  *ref_out = luaL_ref(L, LUA_REGISTRYINDEX);
+  lua_pop(L, 1);
+  return logger;
+}
+
 static size_t cai_lua_opt_mcp_tool_output_max_bytes(lua_State *L, int index,
                                                     size_t fallback) {
   lua_Integer n;
@@ -565,11 +602,13 @@ static void cai_lua_unref_tools(lua_State *L, cai_lua_tool_ref *tool) {
 }
 
 static void cai_lua_push_client(lua_State *L, cai_client *client,
-                                cai_chatgpt_auth *chatgpt_auth) {
+                                cai_chatgpt_auth *chatgpt_auth,
+                                int logger_ref) {
   cai_lua_client *ud;
   ud = (cai_lua_client *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = client;
   ud->chatgpt_auth = chatgpt_auth;
+  ud->logger_ref = logger_ref;
   luaL_getmetatable(L, CAI_LUA_CLIENT);
   lua_setmetatable(L, -2);
 }
@@ -1340,10 +1379,12 @@ static int cai_lua_open(lua_State *L) {
   const char *chatgpt_auth_json;
   cai_error error;
   int chatgpt_auth_enabled;
+  int logger_ref;
   int rc;
   chatgpt_auth = NULL;
   chatgpt_auth_json = NULL;
   chatgpt_auth_enabled = 0;
+  logger_ref = LUA_NOREF;
   cai_error_init(&error);
   cai_client_config_init(&config);
   cai_chatgpt_auth_config_init(&auth_config);
@@ -1373,6 +1414,9 @@ static int cai_lua_open(lua_State *L) {
     config.ca_path = cai_lua_opt_string_field(L, 1, "ca_path", config.ca_path);
     config.json_response_limit_bytes = cai_lua_opt_size_field(
         L, 1, "json_response_limit_bytes", config.json_response_limit_bytes);
+    config.logger = cai_lua_opt_logger_field(L, 1, "logger", &logger_ref);
+    config.logger_disabled =
+        cai_lua_opt_bool_field(L, 1, "logger_disabled", config.logger_disabled);
     lua_getfield(L, 1, "usage_limits");
     if (!lua_isnil(L, -1)) {
       cai_lua_usage_limits_from_table(L, -1, &config.usage_limits);
@@ -1398,6 +1442,8 @@ static int cai_lua_open(lua_State *L) {
         L, 1, "chatgpt_auth_ca_bundle_path", auth_config.ca_bundle_path);
     auth_config.ca_path = cai_lua_opt_string_field(L, 1, "chatgpt_auth_ca_path",
                                                    auth_config.ca_path);
+    auth_config.logger = config.logger;
+    auth_config.logger_disabled = config.logger_disabled;
   }
   if (chatgpt_auth_json != NULL && chatgpt_auth_json[0] != '\0') {
     chatgpt_auth_enabled = 1;
@@ -1406,6 +1452,9 @@ static int cai_lua_open(lua_State *L) {
     auth_config.auth_json_path = chatgpt_auth_json;
     rc = cai_chatgpt_auth_open(&auth_config, &chatgpt_auth, &error);
     if (rc != CAI_OK) {
+      if (logger_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, logger_ref);
+      }
       return cai_lua_fail(L, rc, &error);
     }
     config.chatgpt_auth = chatgpt_auth;
@@ -1415,9 +1464,12 @@ static int cai_lua_open(lua_State *L) {
     if (chatgpt_auth != NULL) {
       chatgpt_auth->close(chatgpt_auth);
     }
+    if (logger_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, logger_ref);
+    }
     return cai_lua_fail(L, rc, &error);
   }
-  cai_lua_push_client(L, client, chatgpt_auth);
+  cai_lua_push_client(L, client, chatgpt_auth, logger_ref);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -1464,9 +1516,11 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
   cai_chatgpt_auth *auth;
   cai_lua_chatgpt_auth *ud;
   cai_error error;
+  int logger_ref;
   int rc;
 
   auth = NULL;
+  logger_ref = LUA_NOREF;
   cai_error_init(&error);
   cai_chatgpt_auth_config_init(&config);
   if (lua_istable(L, 1)) {
@@ -1483,13 +1537,20 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
     config.ca_bundle_path =
         cai_lua_opt_string_field(L, 1, "ca_bundle_path", config.ca_bundle_path);
     config.ca_path = cai_lua_opt_string_field(L, 1, "ca_path", config.ca_path);
+    config.logger = cai_lua_opt_logger_field(L, 1, "logger", &logger_ref);
+    config.logger_disabled =
+        cai_lua_opt_bool_field(L, 1, "logger_disabled", config.logger_disabled);
   }
   rc = cai_chatgpt_auth_open(&config, &auth, &error);
   if (rc != CAI_OK) {
+    if (logger_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, logger_ref);
+    }
     return cai_lua_fail(L, rc, &error);
   }
   ud = (cai_lua_chatgpt_auth *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = auth;
+  ud->logger_ref = logger_ref;
   luaL_getmetatable(L, CAI_LUA_CHATGPT_AUTH);
   lua_setmetatable(L, -2);
   cai_lua_error_cleanup(&error);
@@ -1502,6 +1563,10 @@ static int cai_lua_chatgpt_auth_gc(lua_State *L) {
   if (self->ptr != NULL) {
     self->ptr->close(self->ptr);
     self->ptr = NULL;
+  }
+  if (self->logger_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->logger_ref);
+    self->logger_ref = LUA_NOREF;
   }
   return 0;
 }
@@ -1546,10 +1611,12 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
   cai_lua_chatgpt_login *ud;
   cai_error error;
   char *authorize_url;
+  int logger_ref;
   int rc;
 
   login = NULL;
   authorize_url = NULL;
+  logger_ref = LUA_NOREF;
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&config);
   if (lua_istable(L, 1)) {
@@ -1572,14 +1639,21 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
     config.ca_bundle_path =
         cai_lua_opt_string_field(L, 1, "ca_bundle_path", config.ca_bundle_path);
     config.ca_path = cai_lua_opt_string_field(L, 1, "ca_path", config.ca_path);
+    config.logger = cai_lua_opt_logger_field(L, 1, "logger", &logger_ref);
+    config.logger_disabled =
+        cai_lua_opt_bool_field(L, 1, "logger_disabled", config.logger_disabled);
   }
   rc = cai_chatgpt_login_start(&config, &login, &authorize_url, &error);
   if (rc != CAI_OK) {
+    if (logger_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, logger_ref);
+    }
     return cai_lua_fail(L, rc, &error);
   }
   ud = (cai_lua_chatgpt_login *)lua_newuserdata(L, sizeof(*ud));
   ud->ptr = login;
   ud->authorize_url = authorize_url;
+  ud->logger_ref = logger_ref;
   luaL_getmetatable(L, CAI_LUA_CHATGPT_LOGIN);
   lua_setmetatable(L, -2);
   lua_pushstring(L, authorize_url != NULL ? authorize_url : "");
@@ -1596,6 +1670,10 @@ static int cai_lua_chatgpt_login_gc(lua_State *L) {
   }
   cai_string_destroy(self->authorize_url);
   self->authorize_url = NULL;
+  if (self->logger_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->logger_ref);
+    self->logger_ref = LUA_NOREF;
+  }
   return 0;
 }
 
@@ -1695,6 +1773,10 @@ static int cai_lua_client_gc(lua_State *L) {
   if (self->chatgpt_auth != NULL) {
     self->chatgpt_auth->close(self->chatgpt_auth);
     self->chatgpt_auth = NULL;
+  }
+  if (self->logger_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->logger_ref);
+    self->logger_ref = LUA_NOREF;
   }
   return 0;
 }

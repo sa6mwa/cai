@@ -1,4 +1,5 @@
 local cai = require("cai")
+local have_pslog, pslog = pcall(require, "pslog")
 
 local function assert_eq(actual, expected, label)
   if actual ~= expected then
@@ -30,6 +31,21 @@ local function assert_throws(fn, label)
   end
   assert(err ~= nil, (label or "operation") .. ": expected Lua error detail")
   return err
+end
+
+local function new_test_logger()
+  local chunks = {}
+  local logger
+
+  if not have_pslog then
+    return nil, chunks
+  end
+  logger = assert(pslog.new_json(function(chunk)
+    chunks[#chunks + 1] = chunk
+  end, {
+    disable_timestamp = true,
+  }))
+  return logger, chunks
 end
 
 local function spool_text(text, chunk_size)
@@ -214,6 +230,38 @@ assert_eq(cai.model_can_estimate_usage_usd(
   cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE), true,
   "verified free OpenRouter model can enforce spend")
 
+if have_pslog then
+  do
+    local logger, chunks = new_test_logger()
+    local logged_client = assert_ok(cai.open({
+      api_key = "test-key",
+      timeout_ms = 1,
+      logger = logger,
+    }), nil, "Lua client open with pslog logger")
+    logged_client:close()
+    assert(table.concat(chunks):match("cai%.client%.opened"),
+      "Lua client open should log through pslog.logger")
+    logger:close()
+  end
+
+  assert_throws(function()
+    cai.open({ api_key = "test-key", logger = {} })
+  end, "Lua client rejects non-pslog logger")
+
+  do
+    local logger = assert(pslog.new(function() end))
+    local retained_client = assert_ok(cai.open({
+      api_key = "test-key",
+      timeout_ms = 1,
+      logger = logger,
+    }), nil, "Lua client retains pslog logger")
+    logger = nil
+    collectgarbage("collect")
+    collectgarbage("collect")
+    retained_client:close()
+  end
+end
+
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
 assert_not_ok(dummy_client:set_usage_limits({ max_total_tokens = -1 }),
@@ -342,6 +390,7 @@ dummy_agent:close()
 dummy_client:close()
 
 do
+  local auth_logger = nil
   local default_path = assert_ok(cai.chatgpt_auth_default_path(), nil,
     "Lua ChatGPT default auth path")
   assert(default_path:match("/cai/auth%.json$"),
@@ -355,6 +404,9 @@ do
     '","refresh_token":"refresh-lua","account_id":"acct_lua"},' ..
     '"last_refresh":"2026-01-01T00:00:00Z"}')
   fp:close()
+  if have_pslog then
+    auth_logger = assert(pslog.new(function() end))
+  end
   local standalone_auth = assert_ok(cai.chatgpt_auth({
     auth_json_path = auth_path,
     issuer = "http://127.0.0.1:1",
@@ -363,6 +415,7 @@ do
     insecure_skip_verify = 1,
     ca_bundle_path = "/tmp/cai-lua-ca.pem",
     ca_path = "/tmp/cai-lua-ca-dir",
+    logger = auth_logger,
   }), nil, "Lua standalone ChatGPT auth open")
   assert_eq(assert_ok(standalone_auth:access_token(), nil,
     "Lua standalone ChatGPT access token"), future_token,
@@ -382,8 +435,12 @@ do
     chatgpt_auth_insecure_skip_verify = 1,
     chatgpt_auth_ca_bundle_path = "/tmp/cai-lua-auth-ca.pem",
     chatgpt_auth_ca_path = "/tmp/cai-lua-auth-ca-dir",
+    logger = auth_logger,
   }), nil, "Lua ChatGPT auth client open")
   auth_client:close()
+  if auth_logger ~= nil then
+    auth_logger:close()
+  end
   os.remove(auth_path)
   local missing_client, missing_err = cai.open({
     chatgpt_auth_json = auth_path,
@@ -392,8 +449,12 @@ do
 end
 
 do
+  local login_logger = nil
   local auth_path = os.tmpname()
   os.remove(auth_path)
+  if have_pslog then
+    login_logger = assert(pslog.new(function() end))
+  end
   local login, authorize_url_or_err = cai.chatgpt_login({
     auth_json_path = auth_path,
     redirect_uri = "http://localhost:1455/auth/callback",
@@ -405,6 +466,7 @@ do
     insecure_skip_verify = 1,
     ca_bundle_path = "/tmp/cai-lua-login-ca.pem",
     ca_path = "/tmp/cai-lua-login-ca-dir",
+    logger = login_logger,
   })
   local authorize_url = authorize_url_or_err
   assert_ok(login, authorize_url_or_err, "Lua ChatGPT login start")
@@ -442,6 +504,9 @@ do
   assert_eq(bad_path.completed, false, "Lua ChatGPT path not terminal")
 
   login:close()
+  if login_logger ~= nil then
+    login_logger:close()
+  end
   assert_throws(function()
     login:completed()
   end, "closed Lua ChatGPT login handle must fail")

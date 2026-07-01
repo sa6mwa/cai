@@ -20,6 +20,7 @@ CAI_C_PKT_SYSTEMS_VERSION ?= 0.6.0
 CAI_LONEJSON_VERSION ?= 0.35.2
 CAI_PSLOG_VERSION ?= 0.5.0
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
+PSLOG_LUA_ROCK_URL ?= https://github.com/sa6mwa/libpslog/releases/download/v$(CAI_PSLOG_VERSION)/lua-pslog-$(CAI_PSLOG_VERSION)-1.src.rock
 CAI_C_PKT_SYSTEMS_PREFIX := $(CURDIR)/.cache/deps/c.pkt.systems-$(CAI_C_PKT_SYSTEMS_VERSION)-$(CAI_CPKT_TARGET)
 CAI_LONEJSON_PREFIX := $(CURDIR)/.cache/deps/liblonejson-$(CAI_LONEJSON_VERSION)-$(CAI_CPKT_TARGET)
 CAI_PSLOG_PREFIX := $(CURDIR)/.cache/deps/libpslog-$(CAI_PSLOG_VERSION)-$(CAI_CPKT_TARGET)
@@ -30,6 +31,7 @@ LUA_ROCK_BUILD_LOCK := $(LUA_ROCK_TREE)/.build.lock
 LUA_ROCK_EXTRA_CFLAGS ?= -O3 -DNDEBUG
 LUA_ROCK_PREFIX := $(LUA_ROCK_TREE)/cai-prefix
 LUA_LONEJSON_ROCK_STAMP := $(LUA_ROCK_TREE)/lib/luarocks/rocks-5.5/lonejson/$(CAI_LONEJSON_VERSION)-1/rock_manifest
+LUA_PSLOG_ROCK_STAMP := $(LUA_ROCK_TREE)/lib/luarocks/rocks-5.5/lua-pslog/$(CAI_PSLOG_VERSION)-1/rock_manifest
 RELEASE_LUA_ROCK_DIR := dist/lua-rock
 RELEASE_LUA_STAGE_DIR := $(RELEASE_LUA_ROCK_DIR)/cai-$(RELEASE_VERSION)
 RELEASE_LUA_SOURCE_TARBALL := dist/cai-lua-$(RELEASE_VERSION).tar.gz
@@ -315,7 +317,15 @@ $(LUA_LONEJSON_ROCK_STAMP):
 	LD_LIBRARY_PATH="$(CAI_LONEJSON_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	luarocks install --tree "$(LUA_ROCK_TREE)" "$(LONEJSON_LUA_ROCK_URL)"
 
-$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh $(LUA_ROCK_NATIVE_INPUTS)
+$(LUA_PSLOG_ROCK_STAMP):
+	mkdir -p "$(LUA_ROCK_TREE)"
+	PKG_CONFIG_PATH="$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}" \
+	CFLAGS="$${CFLAGS:+$$CFLAGS }-I$(CAI_PSLOG_PREFIX)/include" \
+	LDFLAGS="$${LDFLAGS:+$$LDFLAGS }-L$(CAI_PSLOG_PREFIX)/lib" \
+	LD_LIBRARY_PATH="$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
+	luarocks install --tree "$(LUA_ROCK_TREE)" "$(PSLOG_LUA_ROCK_URL)" LIBPSLOG_DIR="$(CAI_PSLOG_PREFIX)"
+
+$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) $(LUA_PSLOG_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh $(LUA_ROCK_NATIVE_INPUTS)
 	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
 	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
 
@@ -338,7 +348,7 @@ lua-test: lua-rock
 	asan_lib="$$(cc -print-file-name=libasan.so 2>/dev/null || true)"; \
 	if [[ ! -f "$$asan_lib" ]]; then asan_lib=""; fi; \
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
-	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
+	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	LD_PRELOAD="$${asan_lib}$${LD_PRELOAD:+:$$LD_PRELOAD}" \
 	lua tests/lua/test_lua.lua
 
