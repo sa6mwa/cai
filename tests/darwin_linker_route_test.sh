@@ -77,3 +77,16 @@ if ! grep -F 'set(_cai_darwin_linker_flag "-fuse-ld=${CMAKE_LINKER}")' \
   printf 'Darwin toolchain must inject absolute -fuse-ld=${CMAKE_LINKER}\n' >&2
   exit 1
 fi
+
+if OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST=x86_64-apple-darwin25 \
+  cmake -P "$repo_root/cmake/toolchains/arm64-apple-darwin.cmake" \
+  >"$tmpdir/mismatched-host.out" 2>"$tmpdir/mismatched-host.err"; then
+  printf 'expected arm64 Darwin toolchain to reject x86_64 osxcross host\n' >&2
+  exit 1
+fi
+if ! grep -F 'requires an arm64 osxcross host triple' \
+  "$tmpdir/mismatched-host.err" >/dev/null; then
+  printf 'expected mismatched osxcross host diagnostic, got:\n' >&2
+  cat "$tmpdir/mismatched-host.err" >&2
+  exit 1
+fi

@@ -17,6 +17,12 @@ else()
   set(CAI_OSXCROSS_HOST "arm64-apple-darwin25" CACHE STRING
       "osxcross target host triple")
 endif()
+if(NOT CAI_OSXCROSS_HOST MATCHES "^arm64-apple-darwin")
+  message(FATAL_ERROR
+    "arm64-apple-darwin-release requires an arm64 osxcross host triple; "
+    "got '${CAI_OSXCROSS_HOST}'. Use an arm64-apple-darwin* toolchain or a "
+    "matching target preset.")
+endif()
 set(CAI_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment target")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "${CAI_MACOS_DEPLOYMENT_TARGET}" CACHE STRING "" FORCE)
 
