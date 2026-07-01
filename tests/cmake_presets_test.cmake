@@ -25,8 +25,7 @@ set(_cai_host_release_presets
     aarch64-linux-musl-host-release
     armhf-linux-gnu-host-release
     armhf-linux-musl-host-release
-    arm64-apple-darwin-host-release
-    x86_64-apple-darwin-host-release)
+    arm64-apple-darwin-host-release)
 string(JSON _cai_configure_preset_count LENGTH "${_cai_presets_text}" configurePresets)
 math(EXPR _cai_configure_preset_last "${_cai_configure_preset_count} - 1")
 foreach(_cai_preset_index RANGE 0 ${_cai_configure_preset_last})

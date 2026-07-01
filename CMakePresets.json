@@ -143,13 +143,6 @@
       }
     },
     {
-      "name": "x86_64-apple-darwin-host-release",
-      "inherits": "release",
-      "cacheVariables": {
-        "CAI_TARGET_ID": "x86_64-apple-darwin"
-      }
-    },
-    {
       "name": "asan",
       "inherits": "debug",
       "cacheVariables": {
@@ -264,10 +257,6 @@
     {
       "name": "arm64-apple-darwin-host-release",
       "configurePreset": "arm64-apple-darwin-host-release"
-    },
-    {
-      "name": "x86_64-apple-darwin-host-release",
-      "configurePreset": "x86_64-apple-darwin-host-release"
     },
     {
       "name": "asan",

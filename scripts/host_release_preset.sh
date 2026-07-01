@@ -47,7 +47,8 @@ case "$uname_s" in
     if [[ "$arch" == "aarch64" ]]; then
       target=arm64-apple-darwin-host
     else
-      target="${arch}-apple-darwin-host"
+      printf 'unsupported host release preset for Darwin architecture without pinned dependencies: %s\n' "$uname_m" >&2
+      exit 1
     fi
     ;;
   *)
