@@ -39,7 +39,7 @@ set(CAI_ABI_VERSION "2" CACHE STRING "Shared library ABI/SOVERSION.")
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.35.2")
 set(CAI_LONEJSON_ABI_VERSION "19")
-set(CAI_PSLOG_VERSION "0.4.1")
+set(CAI_PSLOG_VERSION "0.5.0")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -155,19 +155,19 @@ endfunction()
 
 function(cai_pslog_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "91d2f93bc07bc66cf83d6a27a80cb6439c384d56bf84a2d11cd903215430d1d8")
+    set(_sha256 "6b11f175cf6a6726d85a9ac2eb5a6900d975a1c59d78f3f5272651eee898f261")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "b628d32f9207e5102c9a8ae3f7ad32ce36e61178c7db67e6aa4548eb9cae567d")
+    set(_sha256 "c67b5193473eb08a0831e0e8a45e82509c179473a7234100e9ee39c54c13bca3")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "d936ae9416f539c4f40aeaa023b9147cbd568bc87b7a3c3b091adfd217d935bb")
+    set(_sha256 "4b607d1c48d5473ef37a16c1911e3871816c95ec1ed6bacd4c4e0308aba65f80")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "638725174cf39f3c5337fc6f118bc88c2a41d385a01be98170ff4bef3d57fcae")
+    set(_sha256 "cd3645309ef158c6f5206c531e68612536a3d1faf2389ae2268bdc5d99e5ee36")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "bc8530a3773666deb6d551263c7dd59a64c92629fa56d1e89c278d637472f2dc")
+    set(_sha256 "2bdeeda2dc174c886fdda8d9b8d44377c599cd9116e561cac06b656c569f0813")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "503d2bd882c053dc8f34dbfe718a328303a4973789bbb8fb37261e4822b3babe")
+    set(_sha256 "bcf5fc63db355a3fde108718e7102406111e37e0fd2beceb59f2256445db46ef")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "f8f4e18810ecad7278eb341fbfe7e3f9d85eb654891c4d08149f425f3a4c9b3d")
+    set(_sha256 "d842ee22881eef69d10c02dccd8c31f7c98011ca962062c125b500cbfdb16aa0")
   else()
     message(FATAL_ERROR
       "No pinned libpslog package checksum for target ${target_id}")
@@ -716,9 +716,7 @@ if(CAI_BUILD_LUA)
   target_include_directories(cai_lua PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CAI_LONEJSON_INCLUDE_DIR}"
-    "${CAI_PSLOG_INCLUDE_DIR}"
     "${CAI_LUA_INCLUDE_DIR}")
   target_link_libraries(cai_lua PRIVATE ${_cai_lua_link_target}
     ${CAI_LONEJSON_LINK})
