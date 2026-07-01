@@ -35,6 +35,13 @@ case "$uname_s" in
       libc=musl
     fi
     target="${arch}-linux-${libc}"
+    case "$target" in
+      x86_64-linux-gnu)
+        ;;
+      *)
+        target="${target}-host"
+        ;;
+    esac
     ;;
   Darwin)
     if [[ "$arch" == "aarch64" ]]; then

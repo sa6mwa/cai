@@ -32,20 +32,30 @@ expect_preset x86_64-linux-gnu-release \
   CAI_HOST_RELEASE_UNAME_M=x86_64 \
   CAI_HOST_RELEASE_CC_MACHINE=x86_64-linux-gnu
 
-expect_preset x86_64-linux-musl-release \
+expect_preset x86_64-linux-musl-host-release \
   CAI_HOST_RELEASE_UNAME_S=Linux \
   CAI_HOST_RELEASE_UNAME_M=x86_64 \
   CAI_HOST_RELEASE_CC_MACHINE=x86_64-linux-musl
 
-expect_preset aarch64-linux-gnu-release \
+expect_preset aarch64-linux-gnu-host-release \
   CAI_HOST_RELEASE_UNAME_S=Linux \
   CAI_HOST_RELEASE_UNAME_M=aarch64 \
   CAI_HOST_RELEASE_CC_MACHINE=aarch64-linux-gnu
 
-expect_preset armhf-linux-gnu-release \
+expect_preset aarch64-linux-musl-host-release \
+  CAI_HOST_RELEASE_UNAME_S=Linux \
+  CAI_HOST_RELEASE_UNAME_M=aarch64 \
+  CAI_HOST_RELEASE_CC_MACHINE=aarch64-linux-musl
+
+expect_preset armhf-linux-gnu-host-release \
   CAI_HOST_RELEASE_UNAME_S=Linux \
   CAI_HOST_RELEASE_UNAME_M=armv7l \
   CAI_HOST_RELEASE_CC_MACHINE=arm-linux-gnueabihf
+
+expect_preset armhf-linux-musl-host-release \
+  CAI_HOST_RELEASE_UNAME_S=Linux \
+  CAI_HOST_RELEASE_UNAME_M=armv7l \
+  CAI_HOST_RELEASE_CC_MACHINE=arm-linux-musleabihf
 
 expect_preset arm64-apple-darwin-host-release \
   CAI_HOST_RELEASE_UNAME_S=Darwin \

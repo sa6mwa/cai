@@ -61,10 +61,24 @@
       }
     },
     {
+      "name": "x86_64-linux-musl-host-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CAI_TARGET_ID": "x86_64-linux-musl"
+      }
+    },
+    {
       "name": "aarch64-linux-gnu-release",
       "inherits": "release",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "aarch64-linux-gnu-gcc",
+        "CAI_TARGET_ID": "aarch64-linux-gnu"
+      }
+    },
+    {
+      "name": "aarch64-linux-gnu-host-release",
+      "inherits": "release",
+      "cacheVariables": {
         "CAI_TARGET_ID": "aarch64-linux-gnu"
       }
     },
@@ -77,6 +91,13 @@
       }
     },
     {
+      "name": "aarch64-linux-musl-host-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CAI_TARGET_ID": "aarch64-linux-musl"
+      }
+    },
+    {
       "name": "armhf-linux-gnu-release",
       "inherits": "release",
       "cacheVariables": {
@@ -85,10 +106,24 @@
       }
     },
     {
+      "name": "armhf-linux-gnu-host-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "CAI_TARGET_ID": "armhf-linux-gnu"
+      }
+    },
+    {
       "name": "armhf-linux-musl-release",
       "inherits": "release",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/arm-linux-musleabihf/bin/arm-linux-musleabihf-gcc",
+        "CAI_TARGET_ID": "armhf-linux-musl"
+      }
+    },
+    {
+      "name": "armhf-linux-musl-host-release",
+      "inherits": "release",
+      "cacheVariables": {
         "CAI_TARGET_ID": "armhf-linux-musl"
       }
     },
@@ -180,20 +215,40 @@
       "configurePreset": "x86_64-linux-musl-release"
     },
     {
+      "name": "x86_64-linux-musl-host-release",
+      "configurePreset": "x86_64-linux-musl-host-release"
+    },
+    {
       "name": "aarch64-linux-gnu-release",
       "configurePreset": "aarch64-linux-gnu-release"
+    },
+    {
+      "name": "aarch64-linux-gnu-host-release",
+      "configurePreset": "aarch64-linux-gnu-host-release"
     },
     {
       "name": "aarch64-linux-musl-release",
       "configurePreset": "aarch64-linux-musl-release"
     },
     {
+      "name": "aarch64-linux-musl-host-release",
+      "configurePreset": "aarch64-linux-musl-host-release"
+    },
+    {
       "name": "armhf-linux-gnu-release",
       "configurePreset": "armhf-linux-gnu-release"
     },
     {
+      "name": "armhf-linux-gnu-host-release",
+      "configurePreset": "armhf-linux-gnu-host-release"
+    },
+    {
       "name": "armhf-linux-musl-release",
       "configurePreset": "armhf-linux-musl-release"
+    },
+    {
+      "name": "armhf-linux-musl-host-release",
+      "configurePreset": "armhf-linux-musl-host-release"
     },
     {
       "name": "arm64-apple-darwin-release",
