@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__GNUC__)
@@ -91,6 +92,20 @@ typedef struct cai_mcp_streamable_http_client_impl {
   int insecure_skip_verify;
   char *ca_bundle_path;
   char *ca_path;
+  cai_mcp_client_auth_mode auth_mode;
+  char *api_key;
+  char *oidc_issuer;
+  char *oauth2_token_endpoint;
+  char *oauth2_client_id;
+  char *oauth2_client_secret;
+  char *oauth2_scope;
+  char *oauth2_audience;
+  char *oauth2_resource;
+  size_t oauth2_max_response_bytes;
+  long long oauth2_refresh_skew_seconds;
+  lonejson *auth_runtime;
+  lonejson_http_provider auth_http_provider;
+  lonejson_oauth2_token_flow oauth2_flow;
   cai_mcp_client_receiver receiver;
   struct pslog_logger *logger;
   int logger_disabled;
@@ -114,6 +129,25 @@ typedef struct cai_mcp_streamable_http_client_impl {
   size_t prompt_count;
   size_t prompt_capacity;
 } cai_mcp_streamable_http_client_impl;
+
+typedef struct cai_mcp_lonejson_http_write_context {
+  lonejson_http_response *response;
+  size_t max_response_bytes;
+  int too_large;
+} cai_mcp_lonejson_http_write_context;
+
+static lonejson_status cai_mcp_lonejson_error(lonejson_error *error,
+                                              lonejson_status status,
+                                              const char *message) {
+  if (error != NULL) {
+    lonejson_error_init(error);
+    error->code = status;
+    if (message != NULL) {
+      snprintf(error->message, sizeof(error->message), "%s", message);
+    }
+  }
+  return status;
+}
 
 static pslog_logger *
 cai_mcp_logger(const cai_mcp_streamable_http_client_impl *impl) {
@@ -1418,6 +1452,10 @@ static int cai_mcp_response_is_json(const cai_mcp_http_response_capture *res);
 static int cai_mcp_response_is_sse(const cai_mcp_http_response_capture *res);
 static int cai_mcp_response_is_streamed_result_media(
     const cai_mcp_http_response_capture *res);
+static int cai_mcp_append_prefixed_header(struct curl_slist **headers,
+                                          const char *prefix, const char *value,
+                                          const char *error_message,
+                                          cai_error *error);
 
 static size_t cai_mcp_response_write(char *ptr, size_t size, size_t nmemb,
                                      void *userdata) {
@@ -1479,6 +1517,356 @@ cai_mcp_configure_curl_common(CURL *curl,
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
   cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
                          impl->ca_path);
+}
+
+static size_t cai_mcp_lonejson_http_write(char *ptr, size_t size, size_t nmemb,
+                                          void *userdata) {
+  cai_mcp_lonejson_http_write_context *context;
+  lonejson_error json_error;
+  size_t len;
+
+  context = (cai_mcp_lonejson_http_write_context *)userdata;
+  len = size * nmemb;
+  if (len == 0U) {
+    return 0U;
+  }
+  if (context == NULL || context->response == NULL) {
+    return 0U;
+  }
+  if (context->max_response_bytes > 0U &&
+      (len > context->max_response_bytes ||
+       context->response->body.len > context->max_response_bytes - len)) {
+    context->too_large = 1;
+    return 0U;
+  }
+  lonejson_error_init(&json_error);
+  if (lonejson_owned_buffer_sink(&context->response->body, ptr, len,
+                                 &json_error) != LONEJSON_STATUS_OK) {
+    return 0U;
+  }
+  return len;
+}
+
+static lonejson_status cai_mcp_lonejson_http_request(
+    void *user_data, const lonejson_http_request *request,
+    lonejson_http_response *response, lonejson_error *error) {
+  cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_lonejson_http_write_context write_context;
+  struct curl_slist *headers;
+  CURL *curl;
+  CURLcode curl_rc;
+  int rc;
+
+  impl = (cai_mcp_streamable_http_client_impl *)user_data;
+  if (impl == NULL || request == NULL || response == NULL ||
+      request->url == NULL || request->method == NULL) {
+    return cai_mcp_lonejson_error(error, LONEJSON_STATUS_INVALID_ARGUMENT,
+                                  "OAuth HTTP request is required");
+  }
+  headers = NULL;
+  curl = curl_easy_init();
+  if (curl == NULL) {
+    return cai_mcp_lonejson_error(error, LONEJSON_STATUS_IO_ERROR,
+                                  "failed to initialize OAuth HTTP request");
+  }
+  rc = CAI_OK;
+  if (request->content_type != NULL) {
+    rc = cai_mcp_append_prefixed_header(
+        &headers, "Content-Type: ", request->content_type,
+        "failed to allocate OAuth header", NULL);
+  }
+  if (rc == CAI_OK && request->authorization != NULL) {
+    rc = cai_mcp_append_prefixed_header(
+        &headers, "Authorization: ", request->authorization,
+        "failed to allocate OAuth header", NULL);
+  }
+  if (rc == CAI_OK && request->user_agent != NULL) {
+    rc = cai_mcp_append_prefixed_header(
+        &headers, "User-Agent: ", request->user_agent,
+        "failed to allocate OAuth header", NULL);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_header(&headers, "Accept: application/json", NULL);
+  }
+  if (rc != CAI_OK) {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return cai_mcp_lonejson_error(error, LONEJSON_STATUS_ALLOCATION_FAILED,
+                                  "failed to allocate OAuth HTTP headers");
+  }
+
+  lonejson_http_response_init(response);
+  memset(&write_context, 0, sizeof(write_context));
+  write_context.response = response;
+  write_context.max_response_bytes = request->max_response_bytes;
+  curl_easy_setopt(curl, CURLOPT_URL, request->url);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  if (strcmp(request->method, "POST") == 0) {
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request->body);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                     (curl_off_t)request->body_len);
+  } else if (strcmp(request->method, "GET") == 0) {
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+  } else {
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    return cai_mcp_lonejson_error(error, LONEJSON_STATUS_INVALID_ARGUMENT,
+                                  "unsupported OAuth HTTP method");
+  }
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_mcp_lonejson_http_write);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_context);
+  cai_mcp_configure_curl_common(curl, impl);
+  curl_rc = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response->status_code);
+  curl_easy_cleanup(curl);
+  curl_slist_free_all(headers);
+  if (curl_rc != CURLE_OK) {
+    return cai_mcp_lonejson_error(error, LONEJSON_STATUS_IO_ERROR,
+                                  curl_easy_strerror(curl_rc));
+  }
+  if (write_context.too_large) {
+    return cai_mcp_lonejson_error(
+        error, LONEJSON_STATUS_OVERFLOW,
+        "OAuth HTTP response exceeded configured limit");
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static int
+cai_mcp_auth_mode_effective(const cai_mcp_streamable_http_client_config *config,
+                            cai_mcp_client_auth_mode *out, cai_error *error) {
+  cai_mcp_client_auth_mode mode;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP auth mode output is required");
+  }
+  mode = config != NULL ? config->auth_mode : CAI_MCP_CLIENT_AUTH_NONE;
+  if (mode == CAI_MCP_CLIENT_AUTH_NONE && config != NULL) {
+    if (config->api_key != NULL && config->api_key[0] != '\0') {
+      mode = CAI_MCP_CLIENT_AUTH_API_KEY;
+    } else if ((config->oauth2_token_endpoint != NULL &&
+                config->oauth2_token_endpoint[0] != '\0') ||
+               (config->oidc_issuer != NULL &&
+                config->oidc_issuer[0] != '\0') ||
+               (config->oauth2_client_id != NULL &&
+                config->oauth2_client_id[0] != '\0') ||
+               (config->oauth2_client_secret != NULL &&
+                config->oauth2_client_secret[0] != '\0')) {
+      mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+    }
+  }
+  if (mode != CAI_MCP_CLIENT_AUTH_NONE && mode != CAI_MCP_CLIENT_AUTH_API_KEY &&
+      mode != CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "unsupported MCP client auth mode");
+  }
+  *out = mode;
+  return CAI_OK;
+}
+
+static int cai_mcp_oauth2_setup(cai_mcp_streamable_http_client_impl *impl,
+                                cai_error *error) {
+  lonejson_error json_error;
+  lonejson_http_provider_config provider_config;
+
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  if (impl->oauth2_client_id == NULL || impl->oauth2_client_id[0] == '\0' ||
+      impl->oauth2_client_secret == NULL ||
+      impl->oauth2_client_secret[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP OAuth2 client id and client secret are required");
+  }
+  if ((impl->oauth2_token_endpoint == NULL ||
+       impl->oauth2_token_endpoint[0] == '\0') &&
+      (impl->oidc_issuer == NULL || impl->oidc_issuer[0] == '\0')) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP OAuth2 token endpoint or OIDC issuer is required");
+  }
+  lonejson_error_init(&json_error);
+  impl->auth_runtime = lonejson_new(NULL, &json_error);
+  if (impl->auth_runtime == NULL) {
+    return cai_set_error_detail(error, CAI_ERR_NOMEM,
+                                "failed to initialize MCP OAuth runtime",
+                                json_error.message);
+  }
+  memset(&provider_config, 0, sizeof(provider_config));
+  provider_config.user_data = impl;
+  provider_config.user_agent = "cai/" CAI_VERSION_STRING;
+  provider_config.request = cai_mcp_lonejson_http_request;
+  if (lonejson_http_provider_init(&impl->auth_http_provider, &provider_config,
+                                  &json_error) != LONEJSON_STATUS_OK ||
+      lonejson_set_http_provider(impl->auth_runtime, &impl->auth_http_provider,
+                                 &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to initialize MCP OAuth HTTP provider",
+                                json_error.message);
+  }
+  lonejson_oauth2_token_flow_init(&impl->oauth2_flow);
+  return CAI_OK;
+}
+
+static int cai_mcp_oauth2_discover_token_endpoint(
+    cai_mcp_streamable_http_client_impl *impl, cai_error *error) {
+  lonejson_oidc_discovery discovery;
+  lonejson_error json_error;
+  char *endpoint;
+
+  if (impl == NULL || impl->oauth2_token_endpoint != NULL) {
+    return CAI_OK;
+  }
+  if (impl->oidc_issuer == NULL || impl->oidc_issuer[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP OIDC issuer is required");
+  }
+  lonejson_oidc_discovery_init(&discovery);
+  lonejson_error_init(&json_error);
+  if (lonejson_oidc_fetch_discovery(impl->auth_runtime, impl->oidc_issuer,
+                                    impl->oauth2_max_response_bytes, &discovery,
+                                    &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to fetch MCP OIDC discovery metadata",
+                                json_error.message);
+  }
+  endpoint = cai_strdup(&impl->allocator, discovery.token_endpoint);
+  lonejson_oidc_discovery_cleanup(&discovery);
+  if (endpoint == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP OAuth2 token endpoint");
+  }
+  impl->oauth2_token_endpoint = endpoint;
+  return CAI_OK;
+}
+
+static int cai_mcp_oauth2_fetch_client_credentials(
+    cai_mcp_streamable_http_client_impl *impl, cai_error *error) {
+  lonejson_oauth2_client_credentials request;
+  lonejson_oauth2_token_response response;
+  lonejson_http_request http_request;
+  lonejson_http_response http_response;
+  lonejson_owned_buffer body;
+  lonejson_error json_error;
+  long long now;
+  time_t now_time;
+  lonejson_status status;
+
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  }
+  now_time = time(NULL);
+  now = now_time == (time_t)-1 ? 0LL : (long long)now_time;
+  if (impl->oauth2_flow.access_token != NULL &&
+      !lonejson_oauth2_token_flow_is_expired(
+          &impl->oauth2_flow, now,
+          impl->oauth2_refresh_skew_seconds > 0
+              ? impl->oauth2_refresh_skew_seconds
+              : 60LL)) {
+    return CAI_OK;
+  }
+  if (cai_mcp_oauth2_discover_token_endpoint(impl, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  memset(&request, 0, sizeof(request));
+  request.client_id = impl->oauth2_client_id;
+  request.client_secret = impl->oauth2_client_secret;
+  request.scope = impl->oauth2_scope;
+  request.audience = impl->oauth2_audience;
+  request.resource = impl->oauth2_resource;
+  request.max_body_bytes = 0U;
+  lonejson_owned_buffer_init(&body);
+  lonejson_http_response_init(&http_response);
+  lonejson_oauth2_token_response_init(&response);
+  lonejson_error_init(&json_error);
+  status =
+      lonejson_oauth2_client_credentials_body(&request, &body, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    lonejson_oauth2_token_response_cleanup(&response);
+    lonejson_owned_buffer_free(&body);
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to build MCP OAuth2 token request",
+                                json_error.message);
+  }
+  memset(&http_request, 0, sizeof(http_request));
+  http_request.method = "POST";
+  http_request.url = impl->oauth2_token_endpoint;
+  http_request.content_type = "application/x-www-form-urlencoded";
+  http_request.body = body.data;
+  http_request.body_len = body.len;
+  http_request.max_response_bytes = impl->oauth2_max_response_bytes;
+  status = cai_mcp_lonejson_http_request(impl, &http_request, &http_response,
+                                         &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    lonejson_oauth2_token_response_cleanup(&response);
+    lonejson_http_response_cleanup(&http_response);
+    lonejson_owned_buffer_free(&body);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "MCP OAuth2 token request failed",
+                                json_error.message);
+  }
+  if (http_response.status_code < 200L || http_response.status_code >= 300L) {
+    lonejson_oauth2_token_response_cleanup(&response);
+    lonejson_http_response_cleanup(&http_response);
+    lonejson_owned_buffer_free(&body);
+    return cai_set_error_http(error, CAI_ERR_SERVER, http_response.status_code,
+                              "MCP OAuth2 token endpoint returned HTTP error",
+                              NULL, NULL, NULL);
+  }
+  status = lonejson_oauth2_token_response_parse_json(
+      impl->auth_runtime, http_response.body.data, http_response.body.len,
+      impl->oauth2_max_response_bytes, &response, &json_error);
+  lonejson_http_response_cleanup(&http_response);
+  lonejson_owned_buffer_free(&body);
+  if (status != LONEJSON_STATUS_OK) {
+    lonejson_oauth2_token_response_cleanup(&response);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse MCP OAuth2 token response",
+                                json_error.message);
+  }
+  if (response.access_token == NULL || response.access_token[0] == '\0') {
+    lonejson_oauth2_token_response_cleanup(&response);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP OAuth2 token response missing access token");
+  }
+  status = lonejson_oauth2_token_flow_update_response(
+      &impl->oauth2_flow, &response, now, &json_error);
+  lonejson_oauth2_token_response_cleanup(&response);
+  if (status != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to cache MCP OAuth2 token",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int cai_mcp_append_auth_header(cai_mcp_streamable_http_client_impl *impl,
+                                      struct curl_slist **headers,
+                                      cai_error *error) {
+  const char *token;
+  int rc;
+
+  if (impl == NULL || impl->auth_mode == CAI_MCP_CLIENT_AUTH_NONE) {
+    return CAI_OK;
+  }
+  token = NULL;
+  if (impl->auth_mode == CAI_MCP_CLIENT_AUTH_API_KEY) {
+    token = impl->api_key;
+  } else if (impl->auth_mode == CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS) {
+    rc = cai_mcp_oauth2_fetch_client_credentials(impl, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    token = impl->oauth2_flow.access_token;
+  }
+  if (token == NULL || token[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP authorization token is required");
+  }
+  return cai_mcp_append_prefixed_header(
+      headers, "Authorization: Bearer ", token,
+      "failed to allocate MCP authorization header", error);
 }
 
 static lonejson_read_result
@@ -2529,6 +2917,9 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
   if (rc == CAI_OK) {
     rc = cai_mcp_append_session_headers(impl, &headers, error);
   }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_auth_header(impl, &headers, error);
+  }
   if (rc != CAI_OK) {
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
@@ -2656,6 +3047,9 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   if (rc == CAI_OK) {
     rc = cai_mcp_append_session_headers(context->impl, &headers, NULL);
   }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_auth_header(context->impl, &headers, NULL);
+  }
   if (rc == CAI_OK && context->last_event_id != NULL) {
     rc = cai_mcp_append_last_event_id_header(&headers, context->last_event_id,
                                              NULL);
@@ -2780,6 +3174,9 @@ static int cai_mcp_get_resume_response(
   rc = cai_append_header(&headers, "Accept: text/event-stream", error);
   if (rc == CAI_OK) {
     rc = cai_mcp_append_session_headers(impl, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_mcp_append_auth_header(impl, &headers, error);
   }
   if (rc == CAI_OK) {
     rc = cai_mcp_append_last_event_id_header(&headers, last_event_id, error);
@@ -9308,6 +9705,16 @@ static void cai_mcp_streamable_destroy(cai_mcp_client *client) {
   cai_free_mem(&allocator, impl->protocol_version);
   cai_free_mem(&allocator, impl->ca_bundle_path);
   cai_free_mem(&allocator, impl->ca_path);
+  cai_free_mem(&allocator, impl->api_key);
+  cai_free_mem(&allocator, impl->oidc_issuer);
+  cai_free_mem(&allocator, impl->oauth2_token_endpoint);
+  cai_free_mem(&allocator, impl->oauth2_client_id);
+  cai_free_mem(&allocator, impl->oauth2_client_secret);
+  cai_free_mem(&allocator, impl->oauth2_scope);
+  cai_free_mem(&allocator, impl->oauth2_audience);
+  cai_free_mem(&allocator, impl->oauth2_resource);
+  lonejson_oauth2_token_flow_cleanup(&impl->oauth2_flow);
+  cai_lonejson_runtime_close(&impl->auth_runtime);
   if (impl->receiver.cleanup != NULL) {
     impl->receiver.cleanup(impl->receiver.context);
   }
@@ -9329,12 +9736,15 @@ int cai_mcp_streamable_http_client_open(
   cai_mcp_streamable_http_client_config defaults;
   const cai_mcp_streamable_http_client_config *effective;
   cai_mcp_streamable_http_client_impl *impl;
+  cai_mcp_client_auth_mode auth_mode;
+  int rc;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client output pointer is required");
   }
   *out = NULL;
+  auth_mode = CAI_MCP_CLIENT_AUTH_NONE;
   cai_mcp_streamable_http_client_config_init(&defaults);
   effective = config != NULL ? config : &defaults;
   if (!cai_mcp_allocator_is_empty(&effective->allocator) &&
@@ -9345,6 +9755,15 @@ int cai_mcp_streamable_http_client_open(
   if (effective->url == NULL || effective->url[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP Streamable HTTP URL is required");
+  }
+  rc = cai_mcp_auth_mode_effective(effective, &auth_mode, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (auth_mode == CAI_MCP_CLIENT_AUTH_API_KEY &&
+      (effective->api_key == NULL || effective->api_key[0] == '\0')) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP API key auth requires api_key");
   }
   impl = (cai_mcp_streamable_http_client_impl *)cai_alloc(&effective->allocator,
                                                           sizeof(*impl));
@@ -9372,14 +9791,47 @@ int cai_mcp_streamable_http_client_open(
   impl->ca_bundle_path =
       cai_strdup(&impl->allocator, effective->ca_bundle_path);
   impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
+  impl->auth_mode = auth_mode;
+  impl->api_key = cai_strdup(&impl->allocator, effective->api_key);
+  impl->oidc_issuer = cai_strdup(&impl->allocator, effective->oidc_issuer);
+  impl->oauth2_token_endpoint =
+      cai_strdup(&impl->allocator, effective->oauth2_token_endpoint);
+  impl->oauth2_client_id =
+      cai_strdup(&impl->allocator, effective->oauth2_client_id);
+  impl->oauth2_client_secret =
+      cai_strdup(&impl->allocator, effective->oauth2_client_secret);
+  impl->oauth2_scope = cai_strdup(&impl->allocator, effective->oauth2_scope);
+  impl->oauth2_audience =
+      cai_strdup(&impl->allocator, effective->oauth2_audience);
+  impl->oauth2_resource =
+      cai_strdup(&impl->allocator, effective->oauth2_resource);
+  impl->oauth2_max_response_bytes = effective->oauth2_max_response_bytes;
+  impl->oauth2_refresh_skew_seconds = effective->oauth2_refresh_skew_seconds;
   impl->logger = effective->logger_disabled ? NULL : effective->logger;
   impl->logger_disabled = effective->logger_disabled;
   if (impl->url == NULL || impl->client_name == NULL ||
       impl->client_version == NULL || impl->protocol_version == NULL ||
       (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) ||
-      (effective->ca_path != NULL && impl->ca_path == NULL)) {
+      (effective->ca_path != NULL && impl->ca_path == NULL) ||
+      (effective->api_key != NULL && impl->api_key == NULL) ||
+      (effective->oidc_issuer != NULL && impl->oidc_issuer == NULL) ||
+      (effective->oauth2_token_endpoint != NULL &&
+       impl->oauth2_token_endpoint == NULL) ||
+      (effective->oauth2_client_id != NULL && impl->oauth2_client_id == NULL) ||
+      (effective->oauth2_client_secret != NULL &&
+       impl->oauth2_client_secret == NULL) ||
+      (effective->oauth2_scope != NULL && impl->oauth2_scope == NULL) ||
+      (effective->oauth2_audience != NULL && impl->oauth2_audience == NULL) ||
+      (effective->oauth2_resource != NULL && impl->oauth2_resource == NULL)) {
     cai_mcp_streamable_destroy(&impl->public_client);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to copy MCP config");
+  }
+  if (impl->auth_mode == CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS) {
+    rc = cai_mcp_oauth2_setup(impl, error);
+    if (rc != CAI_OK) {
+      cai_mcp_streamable_destroy(&impl->public_client);
+      return rc;
+    }
   }
   impl->receiver = effective->receiver;
   if (impl->receiver.notification == NULL && effective->notification != NULL) {

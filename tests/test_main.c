@@ -9735,6 +9735,90 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_client_oauth2_client_credentials(test_state *state) {
+  static const char token_body[] =
+      "{\"access_token\":\"mcp-oidc-token\",\"token_type\":\"Bearer\","
+      "\"expires_in\":3600,\"scope\":\"mcp.read\"}";
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char *token_required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "Content-Type: application/x-www-form-urlencoded",
+      "grant_type=client_credentials",
+      "client_id=mcp-client",
+      "client_secret=mcp-secret",
+      "scope=mcp.read",
+      "audience=mcp-server",
+      "resource=https%3A%2F%2Fmcp.example.test%2F"};
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-oidc-token", "\"id\":1",
+      "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-oidc-token",
+      "MCP-Session-Id: oauth-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-oidc-token",
+      "MCP-Session-Id: oauth-session", "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body},
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: oauth-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char token_url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_oauth2_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  config.oauth2_scope = "mcp.read";
+  config.oauth2_audience = "mcp-server";
+  config.oauth2_resource = "https://mcp.example.test/";
+  expect_int(state, "mcp_streamable_oauth2_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_oauth2_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_oauth2_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_client_custom_allocator_metadata(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -12120,16 +12204,19 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
       "id: resume-2\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "Authorization: Bearer mcp-api-key",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-resume-session",
+      "Authorization: Bearer mcp-api-key",
       "\"method\":\"notifications/initialized\""};
-  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
-                                        "MCP-Session-Id: sse-resume-session",
-                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-resume-session",
+      "Authorization: Bearer mcp-api-key", "\"id\":2", "\"method\":\"ping\""};
   static const char *resume_required[] = {
       "GET /v1/mcp HTTP/", "Accept: text/event-stream",
-      "MCP-Session-Id: sse-resume-session", "Last-Event-ID: resume-1"};
+      "MCP-Session-Id: sse-resume-session", "Authorization: Bearer mcp-api-key",
+      "Last-Event-ID: resume-1"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12163,6 +12250,7 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = url;
   config.timeout_ms = 500L;
+  config.api_key = "mcp-api-key";
   expect_int(state, "mcp_streamable_sse_resume_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
@@ -12335,17 +12423,23 @@ test_mcp_streamable_http_streaming_sse_resume_get(test_state *state) {
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
       "\"type\":\"text\",\"text\":\"resumed\"}],\"isError\":false}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "Authorization: Bearer mcp-api-key",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
+      "Authorization: Bearer mcp-api-key",
       "\"method\":\"notifications/initialized\""};
   static const char *call_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
-      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: streaming-resume-session",
+      "Authorization: Bearer mcp-api-key",
+      "\"id\":2",
+      "\"method\":\"tools/call\"",
+      "\"name\":\"stream\""};
   static const char *resume_required[] = {
       "GET /v1/mcp HTTP/", "Accept: text/event-stream",
       "MCP-Session-Id: streaming-resume-session",
-      "Last-Event-ID: stream-resume-1"};
+      "Authorization: Bearer mcp-api-key", "Last-Event-ID: stream-resume-1"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12385,6 +12479,7 @@ test_mcp_streamable_http_streaming_sse_resume_get(test_state *state) {
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = url;
   config.timeout_ms = 500L;
+  config.api_key = "mcp-api-key";
   expect_int(state, "mcp_streamable_stream_sse_resume_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
@@ -31336,6 +31431,8 @@ static const test_entry test_entries[] = {
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
+    {"mcp_streamable_http_client_oauth2_client_credentials",
+     test_mcp_streamable_http_client_oauth2_client_credentials},
     {"mcp_streamable_http_client_custom_allocator_metadata",
      test_mcp_streamable_http_client_custom_allocator_metadata},
     {"mcp_streamable_http_client_logging",
