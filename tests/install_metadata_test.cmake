@@ -16,6 +16,12 @@ endif()
 if(NOT DEFINED CAI_TARGET_ID)
   set(CAI_TARGET_ID "")
 endif()
+if(NOT DEFINED CAI_TOOLCHAIN_FILE)
+  set(CAI_TOOLCHAIN_FILE "")
+endif()
+if(NOT DEFINED CAI_CPKT_TARGET_ID)
+  set(CAI_CPKT_TARGET_ID "")
+endif()
 if(NOT DEFINED CAI_INSTALL_RPATH_TOKEN)
   set(CAI_INSTALL_RPATH_TOKEN "$ORIGIN")
 endif()
@@ -33,6 +39,10 @@ else()
 endif()
 if(NOT DEFINED CAI_C_COMPILER OR CAI_C_COMPILER STREQUAL "")
   message(FATAL_ERROR "CAI_C_COMPILER is required")
+endif()
+if(NOT CAI_TARGET_ID MATCHES "darwin" AND
+   (NOT DEFINED CAI_READELF OR CAI_READELF STREQUAL ""))
+  message(FATAL_ERROR "CAI_READELF is required for non-Darwin install metadata tests")
 endif()
 if(NOT DEFINED CAI_LONEJSON_ABI_VERSION OR CAI_LONEJSON_ABI_VERSION STREQUAL "")
   message(FATAL_ERROR "CAI_LONEJSON_ABI_VERSION is required")
@@ -60,7 +70,8 @@ set(required_files
   "${prefix}/lib/cmake/cai/cai-config.cmake"
   "${prefix}/lib/cmake/cai/cai-config-version.cmake"
   "${prefix}/lib/cmake/cai/cai-targets.cmake"
-  "${prefix}/lib/pkgconfig/cai.pc")
+  "${prefix}/lib/pkgconfig/cai.pc"
+  "${prefix}/share/cai/dependencies.json")
 foreach(path IN LISTS required_files)
   if(NOT EXISTS "${path}")
     message(FATAL_ERROR "missing installed file: ${path}")
@@ -103,10 +114,9 @@ if(installed_shared_library)
     endif()
   endif()
   if(NOT CAI_TARGET_ID MATCHES "darwin")
-    find_program(readelf_bin NAMES readelf)
-    if(readelf_bin)
+    if(EXISTS "${CAI_READELF}")
       execute_process(
-        COMMAND "${readelf_bin}" -d "${installed_shared_library}"
+        COMMAND "${CAI_READELF}" -d "${installed_shared_library}"
         RESULT_VARIABLE readelf_result
         OUTPUT_VARIABLE readelf_output
         ERROR_VARIABLE readelf_error)
@@ -127,6 +137,9 @@ if(installed_shared_library)
         message(FATAL_ERROR
           "release libcai links sanitizer runtime: ${readelf_output}")
       endif()
+    else()
+      message(FATAL_ERROR
+        "configured target readelf is not executable: ${CAI_READELF}")
     endif()
   endif()
 endif()
@@ -144,7 +157,7 @@ endif()
 file(READ "${prefix}/lib/cmake/cai/cai-config.cmake" config_text)
 string(FIND "${config_text}" "find_dependency(CURL 7.86.0)" curl_dep_pos)
 string(FIND "${config_text}" "find_dependency(Threads)" threads_dep_pos)
-string(FIND "${config_text}" "find_package(lonejson CONFIG QUIET)"
+string(FIND "${config_text}" "find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)"
        lonejson_dep_pos)
 string(FIND "${config_text}" "cai requires external liblonejson"
        lonejson_error_pos)
@@ -157,7 +170,7 @@ if(curl_dep_pos EQUAL -1 OR threads_dep_pos EQUAL -1 OR
 endif()
 
 string(FIND "${pc_text}" "Requires.private: libcurl >= 7.86.0" pc_curl_pos)
-string(FIND "${pc_text}" "Requires: lonejson" pc_public_deps_pos)
+string(FIND "${pc_text}" "Requires: lonejson lonejson-curl lonejson-oidc lonejson-openssl" pc_public_deps_pos)
 string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
 string(FIND "${pc_text}" "lonejson_url=" pc_lonejson_url_pos)
 string(FIND "${pc_text}" "lonejson_abi_version=" pc_lonejson_abi_pos)
@@ -165,6 +178,38 @@ if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
    pc_c_pkt_url_pos EQUAL -1 OR pc_lonejson_url_pos EQUAL -1 OR
    pc_lonejson_abi_pos EQUAL -1)
   message(FATAL_ERROR "cai.pc does not point at required dependencies")
+endif()
+
+file(READ "${prefix}/share/cai/dependencies.json" dependencies_text)
+string(FIND "${dependencies_text}" "\"name\": \"c.pkt.systems\""
+       deps_c_pkt_pos)
+string(FIND "${dependencies_text}" "\"name\": \"lonejson\""
+       deps_lonejson_pos)
+string(FIND "${dependencies_text}" "\"name\": \"libpslog\""
+       deps_pslog_pos)
+string(FIND "${dependencies_text}" "\"targetId\": \"${CAI_TARGET_ID}\""
+       deps_target_pos)
+string(FIND "${dependencies_text}"
+       "\"dependencyMode\": \"${CAI_RESOLVED_DEPENDENCY_MODE}\""
+       deps_mode_pos)
+string(FIND "${dependencies_text}" "\"installRole\": \"public-link-interface\""
+       deps_lonejson_role_pos)
+string(FIND "${dependencies_text}"
+       "\"installRole\": \"external-static-consumer-sdk\""
+       deps_c_pkt_role_pos)
+string(FIND "${dependencies_text}"
+       "\"installRole\": \"public-header-logger-api\""
+       deps_pslog_role_pos)
+if(deps_c_pkt_pos EQUAL -1 OR deps_lonejson_pos EQUAL -1 OR
+   deps_pslog_pos EQUAL -1 OR deps_target_pos EQUAL -1 OR
+   deps_mode_pos EQUAL -1 OR deps_lonejson_role_pos EQUAL -1 OR
+   deps_c_pkt_role_pos EQUAL -1 OR deps_pslog_role_pos EQUAL -1)
+  message(FATAL_ERROR
+    "dependencies.json does not record SDK dependency provenance")
+endif()
+if(dependencies_text MATCHES "/home/|/Users/|/opt/|\\.cache/deps|file://|\\.\\./")
+  message(FATAL_ERROR
+    "dependencies.json contains local or non-relocatable paths")
 endif()
 
 if(DEFINED CAI_SOURCE_DIR AND NOT CAI_SOURCE_DIR STREQUAL "")
@@ -549,6 +594,7 @@ int main(void) {
       -S "${shared_only_consumer_dir}"
       -B "${shared_only_consumer_dir}/build"
       "-Dcai_DIR=${prefix}/lib/cmake/cai"
+      "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX}"
       "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
     execute_process(
       COMMAND ${shared_only_consumer_configure_command}
@@ -574,7 +620,7 @@ project(cai_missing_lonejson_consumer LANGUAGES C)
 find_package(cai CONFIG REQUIRED)
 ")
   set(missing_dep_ignore_path
-      "${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${prefix};/usr;/usr/local;/lib;/lib64")
+      "${CAI_LONEJSON_PREFIX};${prefix};/usr;/usr/local;/lib;/lib64")
   string(REPLACE ";" "\\;" missing_dep_ignore_path_arg
          "${missing_dep_ignore_path}")
   set(missing_dep_consumer_configure_command
@@ -582,6 +628,7 @@ find_package(cai CONFIG REQUIRED)
     -S "${missing_dep_consumer_dir}"
     -B "${missing_dep_consumer_dir}/build"
     "-Dcai_DIR=${prefix}/lib/cmake/cai"
+    "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX}"
     "-DCMAKE_IGNORE_PATH=${missing_dep_ignore_path_arg}")
   execute_process(
     COMMAND ${missing_dep_consumer_configure_command}
@@ -634,11 +681,29 @@ int main(void) {
   return open_fn == 0 ? 1 : 0;
 }
 ")
+  set(build_tree_configure_command
+    "${CMAKE_COMMAND}"
+    -S "${build_tree_consumer_dir}"
+    -B "${build_tree_consumer_dir}/build"
+    "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
+    "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
+  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
+    list(APPEND build_tree_configure_command -G "${CAI_GENERATOR}")
+  endif()
+  if(NOT CAI_TOOLCHAIN_FILE STREQUAL "")
+    list(APPEND build_tree_configure_command
+      "-DCMAKE_TOOLCHAIN_FILE=${CAI_TOOLCHAIN_FILE}")
+  endif()
+  if(NOT CAI_CPKT_TARGET_ID STREQUAL "")
+    list(APPEND build_tree_configure_command
+      "-DCPKT_TARGET_ID=${CAI_CPKT_TARGET_ID}")
+  endif()
+  if(NOT CAI_TARGET_ID STREQUAL "")
+    list(APPEND build_tree_configure_command
+      "-DCAI_TARGET_ID=${CAI_TARGET_ID}")
+  endif()
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -S "${build_tree_consumer_dir}"
-            -B "${build_tree_consumer_dir}/build"
-            -G Ninja
-            "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
+    COMMAND ${build_tree_configure_command}
     RESULT_VARIABLE build_tree_configure_result
     OUTPUT_VARIABLE build_tree_configure_output
     ERROR_VARIABLE build_tree_configure_error)

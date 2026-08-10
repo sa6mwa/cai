@@ -1,7 +1,8 @@
+name: cai-e2e
+
 services:
   searxng:
-    image: docker.io/searxng/searxng:latest
-    container_name: cai-searxng
+    image: "${CAI_SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.6.24-e3126b89e}"
     restart: unless-stopped
     ports:
       - "${CAI_SEARXNG_PORT:-8888}:8080"
@@ -18,7 +19,6 @@ services:
       args:
         MCP_EVERYTHING_VERSION: "${CAI_MCP_EVERYTHING_VERSION:-2026.1.26}"
     image: "cai-mcp-everything:${CAI_MCP_EVERYTHING_VERSION:-2026.1.26}"
-    container_name: cai-mcp-everything
     restart: unless-stopped
     ports:
       - "${CAI_MCP_EVERYTHING_PORT:-3001}:3001"

@@ -16,8 +16,11 @@ endif()
 
 find_program(CAI_TAR_BIN NAMES tar REQUIRED)
 find_program(CAI_GZIP_BIN NAMES gzip REQUIRED)
-if(NOT DEFINED CAI_STRIP_BIN OR CAI_STRIP_BIN STREQUAL "")
-  find_program(CAI_STRIP_BIN NAMES strip)
+if((NOT DEFINED CAI_STRIP_BIN OR CAI_STRIP_BIN STREQUAL "") AND
+   NOT CAI_TARGET_ID STREQUAL "host")
+  message(FATAL_ERROR
+    "CAI_STRIP_BIN is required for target package archives; pass the "
+    "configured target strip tool instead of relying on PATH")
 endif()
 
 set(package_name "cai-${CAI_VERSION}-${CAI_TARGET_ID}")
@@ -61,10 +64,11 @@ file(GLOB package_libraries
   "${package_root}/lib/libcai.so*"
   "${package_root}/lib/libcai.*.dylib")
 foreach(package_library IN LISTS package_libraries)
+  if(CAI_TARGET_ID MATCHES "darwin")
+    continue()
+  endif()
   if(package_library MATCHES "\\.a$")
-    if(NOT CAI_TARGET_ID MATCHES "darwin")
-      cai_strip_file("${package_library}" "--strip-debug")
-    endif()
+    cai_strip_file("${package_library}" "--strip-debug")
   else()
     cai_strip_file("${package_library}" "--strip-unneeded")
   endif()

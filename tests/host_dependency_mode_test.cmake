@@ -45,6 +45,7 @@ set(configure_command
   -DCAI_BUILD_FUZZERS=OFF
   -DCAI_INSTALL=ON
   -DCAI_DEPENDENCY_MODE=host
+  "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
   -DCAI_TARGET_ID=unsupported-host-target)
 if(NOT prefix_path_arg STREQUAL "")
   list(APPEND configure_command "-DCMAKE_PREFIX_PATH=${prefix_path_arg}")
@@ -103,6 +104,8 @@ set(auto_configure_command
   -DCAI_BUILD_FUZZERS=OFF
   -DCAI_INSTALL=ON
   -DCAI_DEPENDENCY_MODE=auto
+  "-DCMAKE_TOOLCHAIN_FILE=${CAI_SOURCE_DIR}/cmake/toolchains/linux-bootlin.cmake"
+  -DCPKT_TARGET_ID=x86_64-linux-gnu
   -DCAI_TARGET_ID=x86_64-linux-gnu
   "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
   "-DCMAKE_INCLUDE_PATH=${fake_prefix}/include"
@@ -182,6 +185,7 @@ set(abi_configure_command
   -DCAI_BUILD_FUZZERS=OFF
   -DCAI_INSTALL=ON
   -DCAI_DEPENDENCY_MODE=host
+  "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
   "-DCAI_LONEJSON_INCLUDE_DIR=${fake_abi_prefix}/include"
   "-DCAI_LONEJSON_LIBRARY=${fake_abi_library}")
 set(abi_prefix_paths "")
@@ -282,6 +286,8 @@ set(auto_abi_configure_command
   -DCAI_BUILD_FUZZERS=OFF
   -DCAI_INSTALL=ON
   -DCAI_DEPENDENCY_MODE=auto
+  "-DCMAKE_TOOLCHAIN_FILE=${CAI_SOURCE_DIR}/cmake/toolchains/linux-bootlin.cmake"
+  -DCPKT_TARGET_ID=x86_64-linux-gnu
   -DCAI_TARGET_ID=x86_64-linux-gnu
   "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
   "-DCMAKE_INCLUDE_PATH=${auto_abi_prefix}/include"

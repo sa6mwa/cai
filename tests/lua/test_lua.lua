@@ -120,6 +120,7 @@ assert_eq(cai.TOOL_CHOICE_AUTO, "auto", "tool choice auto")
 assert_eq(cai.TOOL_CHOICE_NONE, "none", "tool choice none")
 assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
 assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
+assert_eq(cai.REASONING_EFFORT_MAX, "max", "reasoning effort max")
 assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
 assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
@@ -173,10 +174,16 @@ assert(type(cai.MODEL_CAP_RESPONSES) == "number")
 assert(type(cai.MODEL_META_PROVIDER_OPENROUTER) == "number")
 assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE) == "string")
 assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE) == "string")
+assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE) == "string")
+assert_eq(cai.OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA,
+  "openai/gpt-5.6-luna", "OpenRouter GPT-5.6 Luna constant")
 assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
-  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
+  cai.OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA,
   "OpenRouter default model")
 assert_eq(cai.MODEL_GPT_5_4_PRO, "gpt-5.4-pro", "GPT-5.4 pro constant")
+assert_eq(cai.MODEL_GPT_5_6_SOL, "gpt-5.6-sol", "GPT-5.6 Sol constant")
+assert_eq(cai.MODEL_GPT_5_6_TERRA, "gpt-5.6-terra", "GPT-5.6 Terra constant")
+assert_eq(cai.MODEL_GPT_5_6_LUNA, "gpt-5.6-luna", "GPT-5.6 Luna constant")
 assert_eq(cai.MODEL_GPT_5_3_CODEX, "gpt-5.3-codex",
   "GPT-5.3-Codex constant")
 assert_eq(cai.MODEL_CHAT_LATEST, "chat-latest", "Chat latest constant")
@@ -194,6 +201,27 @@ assert_eq(latest_model.long_context_threshold_tokens, 272000,
   "gpt-5.5 long context threshold")
 assert_eq(latest_model.long_input_usd_per_million, 10.0,
   "gpt-5.5 long input price")
+local gpt_5_6_luna = cai.model_info(cai.MODEL_GPT_5_6_LUNA)
+assert(type(gpt_5_6_luna) == "table")
+assert_eq(gpt_5_6_luna.input_usd_per_million, 0.2,
+  "gpt-5.6 Luna input price")
+assert_eq(gpt_5_6_luna.long_output_usd_per_million, 1.8,
+  "gpt-5.6 Luna long output price")
+assert((gpt_5_6_luna.capabilities & cai.MODEL_CAP_REASONING_PRO_MODE) ~= 0)
+local o1_mini = cai.model_info(cai.MODEL_O1_MINI)
+assert(type(o1_mini) == "table")
+assert((o1_mini.capabilities & cai.MODEL_CAP_REASONING) ~= 0)
+assert((o1_mini.capabilities & cai.MODEL_CAP_STREAMING) ~= 0)
+assert((o1_mini.capabilities & cai.MODEL_CAP_FUNCTION_CALLING) == 0)
+assert((o1_mini.capabilities & cai.MODEL_CAP_STRUCTURED_OUTPUTS) == 0)
+assert_eq(o1_mini.input_usd_per_million, 1.1, "o1-mini input price")
+assert_eq(o1_mini.cached_input_usd_per_million, 0.55,
+  "o1-mini cached input price")
+assert_eq(o1_mini.output_usd_per_million, 4.4, "o1-mini output price")
+local o1_mini_snapshot = cai.model_info(cai.MODEL_O1_MINI_2024_09_12)
+assert(type(o1_mini_snapshot) == "table")
+assert((o1_mini_snapshot.capabilities & cai.MODEL_CAP_REASONING) ~= 0)
+assert((o1_mini_snapshot.metadata_flags & cai.MODEL_META_DEPRECATED) ~= 0)
 assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_NANO), true,
   "priced model can enforce spend")
 assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5), true,
@@ -211,8 +239,20 @@ assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_4_TURBO), false,
 assert_eq(cai.model_can_estimate_usage_usd("future-model"), false,
   "unknown model cannot enforce spend")
 assert_eq(cai.model_can_estimate_usage_usd(
-  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE), true,
+  cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE), true,
   "verified free OpenRouter model can enforce spend")
+
+assert_throws(function()
+  cai.open({ api_key = "test-key", logger = {} })
+end, "Lua client rejects logger field")
+
+assert_throws(function()
+  cai.chatgpt_auth({ logger = {} })
+end, "Lua ChatGPT auth rejects logger field")
+
+assert_throws(function()
+  cai.chatgpt_login({ logger = {} })
+end, "Lua ChatGPT login rejects logger field")
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
@@ -508,6 +548,9 @@ assert_not_ok(params:set_previous_response_id(""),
 assert_ok(params:set_parallel_tool_calls(true))
 assert_ok(params:set_compact_threshold(320000))
 assert_ok(params:set_reasoning("minimal", "auto"))
+assert_ok(params:set_reasoning_mode(cai.REASONING_MODE_PRO))
+assert_not_ok(params:set_reasoning_mode("ultra"),
+  "invalid Lua reasoning mode must fail")
 assert_ok(params:set_text_format_json_object())
 assert_ok(params:set_text_format_json_schema("lua_test", "Lua schema test", '{"type":"object","properties":{"ok":{"type":"boolean"}},"additionalProperties":false}', true))
 assert_ok(params:set_text_verbosity(cai.TEXT_VERBOSITY_LOW))

@@ -75,6 +75,7 @@ typedef struct cai_response_doc {
 
 typedef struct cai_response_request_reasoning_doc {
   const char *effort;
+  const char *mode;
   const char *summary;
 } cai_response_request_reasoning_doc;
 
@@ -374,6 +375,8 @@ LONEJSON_MAP_DEFINE(cai_response_map, cai_response_doc, cai_response_fields);
 static const lonejson_field cai_response_request_reasoning_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_response_request_reasoning_doc,
                                           effort, "effort"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_response_request_reasoning_doc,
+                                          mode, "mode"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_response_request_reasoning_doc,
                                           summary, "summary")};
 LONEJSON_MAP_DEFINE(cai_response_request_reasoning_map,
@@ -1298,6 +1301,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
       cai_response_create_params_set_max_output_tokens;
   params->set_max_tool_calls = cai_response_create_params_set_max_tool_calls;
   params->set_reasoning = cai_response_create_params_set_reasoning;
+  params->set_reasoning_mode = cai_response_create_params_set_reasoning_mode;
   params->set_parallel_tool_calls =
       cai_response_create_params_set_parallel_tool_calls;
   params->set_compact_threshold =
@@ -1348,6 +1352,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->tool_choice = NULL;
   params->tool_choice_json = NULL;
   params->reasoning_effort = NULL;
+  params->reasoning_mode = NULL;
   params->reasoning_summary = NULL;
   params->text_format_type = NULL;
   params->text_format_name = NULL;
@@ -1392,6 +1397,7 @@ void cai_response_create_params_destroy(cai_response_create_params *params) {
   cai_free_mem(&params->allocator, params->tool_choice);
   cai_free_mem(&params->allocator, params->tool_choice_json);
   cai_free_mem(&params->allocator, params->reasoning_effort);
+  cai_free_mem(&params->allocator, params->reasoning_mode);
   cai_free_mem(&params->allocator, params->reasoning_summary);
   cai_free_mem(&params->allocator, params->text_format_type);
   cai_free_mem(&params->allocator, params->text_format_name);
@@ -1719,6 +1725,21 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
   }
   return cai_replace_string(&params->allocator, &params->reasoning_summary,
                             summary, error);
+}
+
+int cai_response_create_params_set_reasoning_mode(
+    cai_response_create_params *params, const char *mode, cai_error *error) {
+  if (params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response params are required");
+  }
+  if (mode != NULL && strcmp(mode, CAI_REASONING_MODE_STANDARD) != 0 &&
+      strcmp(mode, CAI_REASONING_MODE_PRO) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "reasoning mode must be standard or pro");
+  }
+  return cai_replace_string(&params->allocator, &params->reasoning_mode, mode,
+                            error);
 }
 
 int cai_response_create_params_set_parallel_tool_calls(
@@ -2711,6 +2732,10 @@ int cai_response_create_params_clone(const cai_response_create_params *params,
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_reasoning(
         clone, params->reasoning_effort, params->reasoning_summary, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_set_reasoning_mode(
+        clone, params->reasoning_mode, error);
   }
   if (rc == CAI_OK && params->text_format_type != NULL) {
     if (strcmp(params->text_format_type, "json_schema") == 0) {
@@ -3828,6 +3853,7 @@ static int cai_response_request_state_prepare(
     state->doc.has_store = 1;
   }
   state->doc.reasoning.effort = params->reasoning_effort;
+  state->doc.reasoning.mode = params->reasoning_mode;
   state->doc.reasoning.summary = params->reasoning_summary;
   state->doc.text.format.type = params->text_format_type;
   state->doc.text.format.name = params->text_format_name;

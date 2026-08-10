@@ -287,6 +287,16 @@ typedef struct cai_mcp_client_receiver {
   cai_mcp_client_notification_fn notification;
 } cai_mcp_client_receiver;
 
+/** Authentication mode for cai's built-in Streamable HTTP MCP client. */
+typedef enum cai_mcp_client_auth_mode {
+  /** No Authorization header is sent. */
+  CAI_MCP_CLIENT_AUTH_NONE = 0,
+  /** Send `Authorization: Bearer <api_key>`. */
+  CAI_MCP_CLIENT_AUTH_API_KEY,
+  /** Fetch and cache a Bearer token with OAuth2 client credentials. */
+  CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS
+} cai_mcp_client_auth_mode;
+
 /** Configuration for cai's built-in Streamable HTTP MCP client. */
 typedef struct cai_mcp_streamable_http_client_config {
   /** MCP endpoint URL, e.g. http://127.0.0.1:3001/mcp. */
@@ -319,6 +329,28 @@ typedef struct cai_mcp_streamable_http_client_config {
   int logger_disabled;
   /** Optional custom allocator callbacks. */
   cai_allocator allocator;
+  /** Authentication mode. Zero selects no auth unless auth fields are set. */
+  cai_mcp_client_auth_mode auth_mode;
+  /** Bearer API key for CAI_MCP_CLIENT_AUTH_API_KEY. */
+  const char *api_key;
+  /** OIDC issuer used to discover the OAuth2 token endpoint when set. */
+  const char *oidc_issuer;
+  /** OAuth2 token endpoint for client-credentials auth. */
+  const char *oauth2_token_endpoint;
+  /** OAuth2 client id for client-credentials auth. */
+  const char *oauth2_client_id;
+  /** OAuth2 client secret for client-credentials auth. */
+  const char *oauth2_client_secret;
+  /** Optional OAuth2 scope string. */
+  const char *oauth2_scope;
+  /** Optional provider-specific OAuth2 audience parameter. */
+  const char *oauth2_audience;
+  /** Optional RFC 8707 OAuth2 resource indicator. */
+  const char *oauth2_resource;
+  /** Maximum OAuth2 token response bytes; zero uses lonejson's default. */
+  size_t oauth2_max_response_bytes;
+  /** Refresh before token expiry by this many seconds; zero uses default. */
+  long long oauth2_refresh_skew_seconds;
 } cai_mcp_streamable_http_client_config;
 
 /** Options for registering remote MCP tools as local cai function tools. */

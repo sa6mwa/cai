@@ -44,8 +44,8 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
   package metadata, pkg-config metadata, docs, source tarball, checksums,
   sanitizer-free release builds, and relative runpaths.
 - Hardening gates for local unit tests, live integration tests, Lua tests,
-  deterministic examples, fuzzing, ASan/UBSan, TSan, MSan smoke, and release
-  artifact validation.
+  deterministic examples, AFL++ fuzzing, ASan/UBSan and Valgrind memory
+  checks, and release artifact validation.
 
 ## Release Scope
 
@@ -69,11 +69,15 @@ The verification tiers are split intentionally:
 - Before committing any implementation slice, run `make format` and the
   relevant tests. `make finalize-slice` is the default local pre-commit path
   for ordinary C changes: it runs clang-format and the debug test suite.
-- `make prerelease` runs the standard local gate: clang-format, debug tests,
-  TSan, MSan smoke, fuzz smoke, Lua tests, and deterministic local example
-  smoke.
-- `make prerelease-live` runs the live-provider gate: integration tests plus a
-  curated set of real non-interactive examples.
+- `make clangd-check` validates every native debug translation unit with the
+  host `clangd` against `build/debug/compile_commands.json`. It is an editor
+  gate only and is not part of cross-target or release verification.
+- `make prerelease` runs the complete deterministic local release proof:
+  clang-format, debug tests, native Valgrind checks, AFL++ corpus replay, Lua
+  tests, deterministic local e2e and examples, then the release matrix.
+- `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` runs the
+  live-provider gate: integration tests plus a curated set of real
+  non-interactive examples.
 - `make prerelease-hardening` runs both tiers, then long fuzz and the release
   matrix.
 
@@ -95,10 +99,10 @@ The verification tiers are split intentionally:
 - The deterministic local example smoke gate is intentionally narrow. It
   covers the examples Makefile and the MCP server example automatically. Live
   example execution is opt-in and limited to a curated non-interactive subset.
-- Release versions are detected from an exact `vX.Y.Z` git tag. Local release
-  candidates can use `CAI_VERSION_OVERRIDE=X.Y.Z-rc.N cmake ...` or the same
-  override through a custom CMake preset; untagged builds intentionally fall
-  back to `0.0.0`.
+- Release versions are detected from an exact lightweight `vX.Y.Z` git tag.
+  Local release candidates can use `CAI_VERSION_OVERRIDE=X.Y.Z-rc.N cmake ...`
+  or the same override through a custom CMake preset; untagged builds
+  intentionally fall back to `0.0.0`.
 - Binary SDK archives contain installed headers, CMake/pkg-config metadata,
   `libcai.a`, and the versioned shared library with compatibility symlinks for
   the target platform. They also include `README.md` and `LICENSE` under
@@ -116,7 +120,7 @@ The verification tiers are split intentionally:
   libcurl 7.86.0 or newer, OpenSSL crypto, `lonejson.h` plus `liblonejson`,
   and `pslog.h`. The libcurl minimum is required for Responses WebSocket
   support. The discovered `liblonejson` must match cai's required ABI
-  generation (`liblonejson.so.19` on Linux, `liblonejson.19.dylib` on Darwin).
+  generation (`liblonejson.so.25` on Linux, `liblonejson.25.dylib` on Darwin).
   `auto` chooses host only when all required host pieces are discoverable and
   the lonejson ABI matches, otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
@@ -207,9 +211,9 @@ make lua-test
 The LuaRock depends on the `lonejson` Lua rock and links against an installed
 `libcai` discovered through `pkg-config cai`; the local test target installs
 the current debug build into `build/luarocks/cai-prefix` first. `lonejson`
-0.35.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
+0.42.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
 from the official release source rock at
-`https://github.com/sa6mwa/lonejson/releases/download/v0.35.0/lonejson-0.35.0-1.src.rock`
+`https://github.com/sa6mwa/lonejson/releases/download/v0.42.0/lonejson-0.42.0-1.src.rock`
 when needed. Lua projects can use the rock as a facade over the C library,
 while Vectis can still call the C API directly where that fits its performance
 and integration needs better.
@@ -218,7 +222,7 @@ For manual LuaRock installation, install the matching lonejson source rock
 first because this version is served from the GitHub release, not LuaRocks.org:
 
 ```sh
-luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.35.0/lonejson-0.35.0-1.src.rock
+luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.42.0/lonejson-0.42.0-1.src.rock
 luarocks install cai-<version>-1.src.rock
 ```
 
@@ -291,13 +295,14 @@ handling, and session state save/restore. See
 - Examples and integration development tests default to `gpt-5-nano`.
 - OpenRouter development can use
   `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`, currently
-  `poolside/laguna-m.1:free`, because it passes cai's generic Responses
-  compatibility and client-side continuity integration regressions.
+  `openai/gpt-5.6-luna`, because it passes cai's generic Responses,
+  tool-calling, read-tool, streaming, and client-side continuity integration
+  regressions through OpenRouter. cai's bundled metadata gives this OpenRouter
+  route the same GPT-5.6 Luna context and pricing as the direct OpenAI model.
 - OpenRouter tool-calling integration uses
-  `CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE` by default. The
-  `openrouter/free` router advertises feature filtering for tool calls, but in
-  practice it may route to a free model that reasons about calling the tool
-  without emitting a function call.
+  `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` by default. Free OpenRouter models
+  and `openrouter/free` may still be useful for ad hoc development, but they are
+  not the release-pinned compatibility model.
 
 ## Consuming cai
 
@@ -323,7 +328,8 @@ The metadata records the dependency mode used to build cai. In the default
 `cpkt` mode it points at the matching official `c.pkt.systems` release URL and
 checksum for the native curl/OpenSSL stack and the matching official lonejson
 release URL/checksum. The CMake package models lonejson as an external
-dependency: `find_package(cai)` requires `liblonejson` to be discoverable and
+dependency: `find_package(cai)` requires `liblonejson` and its `curl`, `oidc`,
+and `openssl` component package surfaces to be discoverable and
 adds lonejson headers when they are available, but cai release archives do not
 vendor lonejson or curl runtime libraries. The discovered host `liblonejson`
 must also expose cai's expected ABI generation. Shared-only consumers that only
@@ -625,10 +631,10 @@ An opt-in MCP Inspector e2e test validates the same server through the official
 Inspector container image:
 
 ```sh
-CAI_MCP_INSPECTOR_E2E=1 ctest --preset debug -R cai_mcp_inspector_e2e --output-on-failure
+CAI_MCP_INSPECTOR_E2E=1 make mcp-inspector-e2e
 ```
 
-The test uses `ghcr.io/modelcontextprotocol/inspector:latest` through
+The test uses `ghcr.io/modelcontextprotocol/inspector:1.0.1` through
 `nerdctl run` or `docker run` and covers `tools/list` and `tools/call` over
 Streamable HTTP. It is skipped by default so normal local test runs do not
 depend on container image availability. Override the image with
@@ -685,12 +691,13 @@ pre-result envelopes and server errors do not write partial result JSON;
 invalid data after streamed result bytes can still make the call fail after
 the sink has observed those bytes.
 
-Security fuzzing is available as an opt-in Clang/libFuzzer build:
+Security fuzzing is available as opt-in pinned AFL++ instrumentation over the
+native Bootlin GCC collection:
 
 ```sh
 make fuzz
 make fuzz-smoke
-make fuzz-full
+make fuzz-long
 ```
 
 Dedicated fuzzers cover the most exposed cai surfaces:
@@ -708,13 +715,13 @@ Dedicated fuzzers cover the most exposed cai surfaces:
 - `cai_todo_fuzz`: todo/kanban rewrite, persistence, and structured operation
   churn
 
-The fuzz build also registers one-iteration smoke tests in CTest so every
+The fuzz build also registers corpus-replay smoke tests in CTest so every
 harness is built and executed in the standard gate for the `fuzz` preset.
 Checked-in corpora under `tests/fuzz-corpus/` seed the harnesses with realistic
 Responses SSE transcripts, response JSON, MCP JSON-RPC envelopes, session
-history/state documents, and todo tool operations. `make fuzz-full` replays
-those corpora through every harness for `CAI_FUZZ_RUNS` iterations per target
-(`10000` by default).
+history/state documents, and todo tool operations. `make fuzz-long` runs a
+longer bounded AFL++ campaign, controlled by `CAI_FUZZ_LONG_SECONDS` per
+target (120 seconds by default).
 
 Streaming callers that need function-call arguments can attach callbacks to
 `cai_stream_sinks.function_call_arguments_delta` and
@@ -753,24 +760,18 @@ WebSocket selector is `CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1`; simulated
 disconnect/reconnect fault injection is covered by the mock WebSocket server
 instead of trying to break the real OpenAI service connection.
 
-The ASAN preset is part of the local quality gate:
+The pinned Bootlin ASan preset is an optional developer check:
 
 ```sh
-cmake --build --preset asan --target cai_tests
-ctest --preset asan --output-on-failure
+make asan
 ```
 
-ThreadSanitizer and MemorySanitizer presets are also available. TSan runs the
-local suite minus packaging checks that intentionally link non-instrumented
-consumer smoke programs. MSan currently runs a curated smoke subset because
-the normal cai dependency flow links against upstream binary dependencies; full
-suite MSan is not meaningful across those uninstrumented library boundaries:
+The required native memory gate is Valgrind, run against a Bootlin-built debug
+subset. It is intentionally separate from normal debug testing; it does not
+claim to provide MemorySanitizer coverage.
 
 ```sh
-cmake --build --preset tsan --target cai_tests
-ctest --preset tsan --output-on-failure
-cmake --build --preset msan --target cai_tests
-ctest --preset msan --output-on-failure
+make valgrind
 ```
 
 One historical ASAN failure looked like a lonejson crash in
@@ -779,8 +780,8 @@ returning storage that was only aligned after a `size_t` header. lonejson wraps
 custom allocator results in its own owned-allocation header, which needs
 maximal C object alignment. cai's allocator header is now explicitly
 over-aligned with pointer, integer, floating, and `long double` members. See
-`stash/lonejson-custom-allocator-alignment-cr.md` for the matching lonejson
-contract/documentation request.
+`docs/lonejson-change-requests/lonejson-custom-allocator-alignment-cr.md` for
+the matching lonejson contract/documentation request.
 
 ## OpenAI API Caveats
 
@@ -906,7 +907,11 @@ server and asserts the expected tools, resources, resource templates, prompts,
 completions, and representative execution results. The service listens on
 `http://127.0.0.1:3001/mcp` by default. Override the host port with
 `CAI_MCP_EVERYTHING_PORT` and query a different running instance with
-`CAI_MCP_EVERYTHING_BASE_URL`.
+`CAI_MCP_EVERYTHING_BASE_URL`. The live MCP client-tool integration test used
+by `make test-integration`, `make prerelease-live`, and
+`make mcp-everything-live-test` starts the containerized Everything service
+automatically, waits for JSON-RPC readiness, and cleans up the service it
+started unless `CAI_E2E_KEEP_DEVSERVICES=1` is set.
 
 Agents or registries can register the opt-in SearXNG search preset by including
 `<cai/tools/searxng.h>` and calling `cai_agent_register_searxng_tool` or
@@ -1053,16 +1058,21 @@ of being serialized back through the model context.
 
 ## Integration Tests
 
-The default test suite is offline. Integration tests intentionally spend API tokens and
-must be run explicitly by configuring the integration build. Once integration
-tests are enabled, CTest enumerates the real API e2e cases; the environment
-variables below are internal selectors for running one scenario directly, not
-opt-in gates for the integration suite.
+The default test suite is offline. Integration tests intentionally spend API
+tokens and must be run explicitly through the lifecycle opt-in gate:
 
 ```sh
-cmake --preset debug -DCAI_BUILD_INTEGRATION_TESTS=ON
-cmake --build --preset debug
-ctest --test-dir build/debug -L integration --output-on-failure
+CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration
+CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live
+```
+
+Once integration tests are enabled, CTest enumerates the real API e2e cases.
+The environment variables below are internal selectors for running one
+scenario directly from an already-built integration preset, not opt-in gates
+for the integration suite.
+
+```sh
+bash ./scripts/build.sh integration
 
 CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
@@ -1106,7 +1116,7 @@ OpenAI Conversations or server-side compaction on OpenRouter.
 
 `CAI_INTEGRATION_OPENROUTER_TOOL=1` runs a typed lonejson tool-calling
 regression against OpenRouter using client-side history replay and
-`CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE` unless
+`CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` unless
 `CAI_OPENROUTER_TOOL_TEST_MODEL` overrides the model. It verifies that the model
 calls the registered tool, the callback result reaches the assistant answer,
 and the next turn can recall that tool result through local history.
@@ -1133,8 +1143,8 @@ working free tool-call model.
 OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
 mode. The test paces requests by `CAI_OPENROUTER_E2E_DELAY_SEC`, defaulting to
-4 seconds, because free OpenRouter models can have low per-minute request
-limits. The OpenAI API-key E2E remains the longer 20-turn eval.
+4 seconds, because OpenRouter routes can have provider-specific rate limits.
+The OpenAI API-key E2E remains the longer 20-turn eval.
 
 `CAI_INTEGRATION_SEARXNG_TOOL=1` runs a real OpenAI tool-calling regression
 against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the

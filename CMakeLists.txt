@@ -5,8 +5,16 @@ include(CaiVersion)
 include(CaiLonejsonAbi)
 include(cai-rpath)
 
-cai_detect_version(CAI_RESOLVED_VERSION)
-project(cai VERSION ${CAI_RESOLVED_VERSION} LANGUAGES C)
+cai_detect_version(CAI_RESOLVED_VERSION "${CMAKE_CURRENT_SOURCE_DIR}")
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" CAI_CMAKE_PROJECT_VERSION
+       "${CAI_RESOLVED_VERSION}")
+if(CAI_CMAKE_PROJECT_VERSION STREQUAL "")
+  message(FATAL_ERROR
+    "cai release version must begin with major.minor.patch: "
+    "${CAI_RESOLVED_VERSION}")
+endif()
+set(CAI_PACKAGE_VERSION "${CAI_RESOLVED_VERSION}")
+project(cai VERSION ${CAI_CMAKE_PROJECT_VERSION} LANGUAGES C)
 
 include(CMakePackageConfigHelpers)
 include(CTest)
@@ -22,47 +30,90 @@ option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_LUA "Build the Lua 5.5 binding and Lua tests." OFF)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
+option(CAI_ENABLE_VALGRIND_TESTS "Register native Valgrind memory-check tests." OFF)
 option(CAI_INSTALL "Enable install rules." ON)
-option(CAI_USE_LOCKDC_SDK "Deprecated alias for CAI_DEPENDENCY_MODE=cpkt." OFF)
 
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
 set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
-    CACHE PATH "Downloaded third-party dependency cache.")
+    CACHE PATH "Repo-local extracted third-party dependency roots.")
+set(_cai_previous_cpkt_dependency_cache "")
+set(_cai_previous_cai_dependency_cache "")
+if(EXISTS "${CMAKE_BINARY_DIR}/CMakeCache.txt")
+  file(STRINGS "${CMAKE_BINARY_DIR}/CMakeCache.txt"
+       _cai_previous_dependency_cache_entries
+       REGEX "^(CPKT_DEPENDENCY_CACHE|CAI_DEPENDENCY_CACHE):PATH=")
+  foreach(_cai_previous_dependency_cache_entry
+          IN LISTS _cai_previous_dependency_cache_entries)
+    if(_cai_previous_dependency_cache_entry MATCHES
+       "^CPKT_DEPENDENCY_CACHE:PATH=(.*)$")
+      set(_cai_previous_cpkt_dependency_cache "${CMAKE_MATCH_1}")
+    elseif(_cai_previous_dependency_cache_entry MATCHES
+           "^CAI_DEPENDENCY_CACHE:PATH=(.*)$")
+      set(_cai_previous_cai_dependency_cache "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+endif()
+set(_cai_cpkt_dependency_cache_changed FALSE)
+if(DEFINED CPKT_DEPENDENCY_CACHE AND
+   NOT "${CPKT_DEPENDENCY_CACHE}" STREQUAL
+       "${_cai_previous_cpkt_dependency_cache}")
+  set(_cai_cpkt_dependency_cache_changed TRUE)
+endif()
+set(_cai_cai_dependency_cache_changed FALSE)
+if(DEFINED CAI_DEPENDENCY_CACHE AND
+   NOT "${CAI_DEPENDENCY_CACHE}" STREQUAL
+       "${_cai_previous_cai_dependency_cache}")
+  set(_cai_cai_dependency_cache_changed TRUE)
+endif()
+set(_cai_ignore_legacy_dependency_cache FALSE)
+if(_cai_cpkt_dependency_cache_changed AND
+   "${CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+  set(_cai_ignore_legacy_dependency_cache TRUE)
+endif()
+if(_cai_cpkt_dependency_cache_changed AND
+   NOT "${CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+  set(_cai_dependency_cache_default "${CPKT_DEPENDENCY_CACHE}")
+elseif(_cai_cai_dependency_cache_changed AND
+       NOT "${CAI_DEPENDENCY_CACHE}" STREQUAL "" AND
+       NOT _cai_ignore_legacy_dependency_cache)
+  set(_cai_dependency_cache_default "${CAI_DEPENDENCY_CACHE}")
+elseif(DEFINED CPKT_DEPENDENCY_CACHE AND NOT "${CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+  set(_cai_dependency_cache_default "${CPKT_DEPENDENCY_CACHE}")
+elseif(DEFINED CAI_DEPENDENCY_CACHE AND NOT "${CAI_DEPENDENCY_CACHE}" STREQUAL "" AND
+       NOT _cai_ignore_legacy_dependency_cache)
+  set(_cai_dependency_cache_default "${CAI_DEPENDENCY_CACHE}")
+elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND NOT "$ENV{CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+  set(_cai_dependency_cache_default "$ENV{CPKT_DEPENDENCY_CACHE}")
+elseif(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
+  set(_cai_dependency_cache_default "$ENV{XDG_CACHE_HOME}/c.pkt.systems/deps")
+elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+  set(_cai_dependency_cache_default "$ENV{HOME}/.cache/c.pkt.systems/deps")
+else()
+  message(FATAL_ERROR
+    "HOME, XDG_CACHE_HOME, or CPKT_DEPENDENCY_CACHE is required for the "
+    "shared c.pkt.systems dependency archive cache")
+endif()
+set(CPKT_DEPENDENCY_CACHE "${_cai_dependency_cache_default}" CACHE PATH
+    "Shared checksum-pinned external archive cache." FORCE)
+set(CAI_DEPENDENCY_CACHE "${CPKT_DEPENDENCY_CACHE}" CACHE PATH
+    "Compatibility alias for CPKT_DEPENDENCY_CACHE." FORCE)
 set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
     "Dependency mode: cpkt, host, or auto.")
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
-set(CAI_C_PKT_SYSTEMS_VERSION "0.5.0" CACHE STRING
+set(CAI_C_PKT_SYSTEMS_VERSION "0.9.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_ABI_VERSION "2" CACHE STRING "Shared library ABI/SOVERSION.")
+set(CAI_ABI_VERSION "3" CACHE STRING "Shared library ABI/SOVERSION.")
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
-set(CAI_LONEJSON_VERSION "0.35.0")
-set(CAI_LONEJSON_ABI_VERSION "19")
-set(CAI_PSLOG_VERSION "0.4.1")
+set(CAI_LONEJSON_VERSION "0.42.0")
+set(CAI_LONEJSON_ABI_VERSION "25")
+set(CAI_PSLOG_VERSION "0.9.0")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
 endif()
 
-if(CAI_USE_LOCKDC_SDK)
-  message(WARNING
-    "CAI_USE_LOCKDC_SDK is deprecated; using CAI_DEPENDENCY_MODE=cpkt.")
-  set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
-      "Dependency mode: cpkt, host, or auto." FORCE)
-endif()
-if(CAI_DEPENDENCY_MODE STREQUAL "lockdc")
-  message(WARNING
-    "CAI_DEPENDENCY_MODE=lockdc is deprecated; use cpkt. Treating it as cpkt.")
-  set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
-      "Dependency mode: cpkt, host, or auto." FORCE)
-endif()
-if(CAI_DEPENDENCY_MODE STREQUAL "pkt")
-  message(WARNING
-    "CAI_DEPENDENCY_MODE=pkt is deprecated; use cpkt. Treating it as cpkt.")
-  set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
-      "Dependency mode: cpkt, host, or auto." FORCE)
-endif()
 if(NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt" AND
    NOT CAI_DEPENDENCY_MODE STREQUAL "host" AND
    NOT CAI_DEPENDENCY_MODE STREQUAL "auto")
@@ -108,22 +159,23 @@ if(CAI_TARGET_ID STREQUAL "")
     set(CAI_TARGET_ID "${_cai_processor_lower}-${_cai_system_name_lower}")
   endif()
 endif()
+set(CAI_TARGET_ID "${CAI_TARGET_ID}" CACHE STRING "Release archive target id." FORCE)
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "737e1bc3992f00e9d4c71c6cae87db8dce669ce795b42ba769e686ff263cfaea")
+    set(_sha256 "0bbb1cbaf60b0a94fb5a6b3756123088b45e2bef9e38079038f22e3c07febb2e")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "435c25dfa05e831c5183ed0628730749625aa68804e21a3615937d36d11b7384")
+    set(_sha256 "e867e7d8649bba6d6c4bed254f3a666faa090f8ccb31a3eb10b1323b694f2f21")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "e7163bea53ec8b72bd88b6387289eddc6d11383e8903ae756b06aea03853ee9d")
+    set(_sha256 "3fb1fdeb83bfd58da48a3319dfc2c6d35384265b2db2074b63216240bf0fe2ad")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "ee19c298dffe5b9b3d304d416de95a897c547f9489eb52493500576c0d36830f")
+    set(_sha256 "a915993c294e96c9a84b072bed45384c23f0058c9e18cd5caeba344aaa9b5d39")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "b6f12112207232ef16123d19535d36d73c9a0c75fdd9c1566684f2f36b384d94")
+    set(_sha256 "18738e2d8e9661ebdcc0b54f4f292f0571d04218fceb1f281e051a50928d1694")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "2de19d4fb76379a7585382ac6b77d3d9a70c505f8ef9334a5ff531336c84b368")
+    set(_sha256 "7f5365014ef2222cb95c08525c0b123afb30b4f220f4edcd669f354a9af4ccab")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "ebf1caf096df8c17067df2bd02efe65793ad98f65dafb5f29384ce6a6269a829")
+    set(_sha256 "8bc25d47d30cb40b24eb5d07c2aad7850150fdea680eccadd1c819ce945901af")
   else()
     message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
   endif()
@@ -132,19 +184,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "f328684b58c89a3c04d76af919e59ae9b31ee56e0d14d01eaa59fb8126aaec85")
+    set(_sha256 "e04f80b907d92f7e38f825fbd339297e85372fc1ce110abb9a93715ee450ece3")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "5216796e1192cc7aa18b59f809380ee2631e270fce6d1149b6fa5d2e9c95ad7d")
+    set(_sha256 "ca0811bd920f6cf59f82d45e04525b562bba238564e5c5b9a00aa18331b5a5ca")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "f69a39fc80ac9d0d40c6b0d6c2eec46d5c00aeff1696f983526cbba7d0e6f6db")
+    set(_sha256 "d7f9c700be6f9af7e46b18d59a0be14a42bd19644a30684b5a1135f96ee2daed")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "dd16709052eeff1797e775907db554e7805c9d1bed655a07e44094108d6b68c2")
+    set(_sha256 "813950b50620cfa48e01ae0c5b30ae338b79066e750c45cefeb9a86076466903")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "6eb99f6683283b872245608488125f9ac2b05673e9416791fb2ff89d5319601a")
+    set(_sha256 "3aeff1901078917a4430dc945c253cf4cec193311f35245b4ef1c62056d181c1")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "4ac1e5d844de02548d6e23f06dacc8be44eded0a8f686c7600cc8ee718f648e2")
+    set(_sha256 "37ba738c675b41c563b1b03ea322ad1e65dbe76749ebfd294809b50abafb2d32")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "6cbee12c36e43eda14ae5a96265067a99a2a3dd36fe1baffd5fd35e3a8583370")
+    set(_sha256 "b351df4221e16d62b7b86940a6a6a6a4d38fffb850b2d118fca2f9f5a9bb5488")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -154,19 +206,19 @@ endfunction()
 
 function(cai_pslog_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "91d2f93bc07bc66cf83d6a27a80cb6439c384d56bf84a2d11cd903215430d1d8")
+    set(_sha256 "7981ce7e60f6f1e144042e7a9192bb661472756ae34336fb0c2ed8316b31945f")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "b628d32f9207e5102c9a8ae3f7ad32ce36e61178c7db67e6aa4548eb9cae567d")
+    set(_sha256 "d05e59e8d88018a2e78e0941d2db211f3c08e4fd7539065ed2de79ce7e371055")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "d936ae9416f539c4f40aeaa023b9147cbd568bc87b7a3c3b091adfd217d935bb")
+    set(_sha256 "38bb08ca6646cf186925a724b61fb534fa49ec0d5e77ca95953dd7a5b18f76e1")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "638725174cf39f3c5337fc6f118bc88c2a41d385a01be98170ff4bef3d57fcae")
+    set(_sha256 "fce3c4f95b317563427437313ef2eb1987dc43973b0b0bf5169763d0a2705f69")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "bc8530a3773666deb6d551263c7dd59a64c92629fa56d1e89c278d637472f2dc")
+    set(_sha256 "eff69fe9223cd2ad56572ad6acd768b560ac3e863e379c65367ad6338dbfffef")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "503d2bd882c053dc8f34dbfe718a328303a4973789bbb8fb37261e4822b3babe")
+    set(_sha256 "19eeadacfb82b7eba4187b1fc405225bf85a8866ea81939e2eaa841a23d3785c")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "f8f4e18810ecad7278eb341fbfe7e3f9d85eb654891c4d08149f425f3a4c9b3d")
+    set(_sha256 "ff5d2106bcbc5ea5bce8dfdbca54d21650f350e50fd214a4b52ac65b4f834073")
   else()
     message(FATAL_ERROR
       "No pinned libpslog package checksum for target ${target_id}")
@@ -236,17 +288,34 @@ endif()
 
 cai_install_rpath_token("${CAI_TARGET_ID}" CAI_INSTALL_RPATH_TOKEN)
 
+function(cai_dependency_archive_path archive_name sha256 out_var)
+  set(_cai_archive
+      "${CPKT_DEPENDENCY_CACHE}/archives/sha256/${sha256}/${archive_name}")
+  set(${out_var} "${_cai_archive}" PARENT_SCOPE)
+endfunction()
+
 function(cai_download_tarball name url archive prefix sha256 stamp_file)
-  file(MAKE_DIRECTORY "${CAI_DEPS_DIR}")
+  get_filename_component(_cai_archive_dir "${archive}" DIRECTORY)
+  file(MAKE_DIRECTORY "${_cai_archive_dir}" "${CAI_DEPS_DIR}")
+  file(MAKE_DIRECTORY "${CPKT_DEPENDENCY_CACHE}/locks")
+  file(LOCK "${CPKT_DEPENDENCY_CACHE}/locks/${sha256}.lock" GUARD FUNCTION
+       TIMEOUT 600)
   set(_cai_download 1)
   if(EXISTS "${archive}")
     file(SHA256 "${archive}" _cai_actual_sha256)
     if(_cai_actual_sha256 STREQUAL "${sha256}")
       set(_cai_download 0)
+    else()
+      message(WARNING
+        "Discarding corrupt cached ${name} archive: expected ${sha256}, got "
+        "${_cai_actual_sha256}")
+      file(REMOVE "${archive}")
     endif()
   endif()
   if(_cai_download)
     message(STATUS "Downloading ${name} from ${url}")
+    set(_cai_tmp_archive "${archive}.tmp.${CMAKE_HOST_SYSTEM_PROCESSOR}.$ENV{USER}")
+    file(REMOVE "${_cai_tmp_archive}")
     set(_cai_download_ok FALSE)
     set(_cai_download_status_code 1)
     set(_cai_download_status_text "not attempted")
@@ -254,14 +323,14 @@ function(cai_download_tarball name url archive prefix sha256 stamp_file)
       file(REMOVE "${archive}")
       file(DOWNLOAD
         "${url}"
-        "${archive}"
+        "${_cai_tmp_archive}"
         TLS_VERIFY ON
         SHOW_PROGRESS
         STATUS _cai_download_status)
       list(GET _cai_download_status 0 _cai_download_status_code)
       list(GET _cai_download_status 1 _cai_download_status_text)
       if(_cai_download_status_code EQUAL 0)
-        file(SHA256 "${archive}" _cai_download_actual_sha256)
+        file(SHA256 "${_cai_tmp_archive}" _cai_download_actual_sha256)
         if(_cai_download_actual_sha256 STREQUAL "${sha256}")
           set(_cai_download_ok TRUE)
           break()
@@ -277,10 +346,12 @@ function(cai_download_tarball name url archive prefix sha256 stamp_file)
       endif()
     endforeach()
     if(NOT _cai_download_ok)
+      file(REMOVE "${_cai_tmp_archive}")
       message(FATAL_ERROR
         "Failed to download ${name} after 5 attempts: "
         "${_cai_download_status_text}")
     endif()
+    file(RENAME "${_cai_tmp_archive}" "${archive}")
   endif()
   if(NOT EXISTS "${stamp_file}")
     file(REMOVE_RECURSE "${prefix}")
@@ -339,8 +410,9 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       "c.pkt.systems-${CAI_C_PKT_SYSTEMS_VERSION}-${CAI_TARGET_ID}")
   set(CAI_C_PKT_SYSTEMS_URL
       "https://github.com/sa6mwa/c.pkt.systems/releases/download/v${CAI_C_PKT_SYSTEMS_VERSION}/${CAI_C_PKT_SYSTEMS_NAME}.tar.gz")
-  set(CAI_C_PKT_SYSTEMS_ARCHIVE
-      "${CAI_DEPS_DIR}/${CAI_C_PKT_SYSTEMS_NAME}.tar.gz")
+  cai_dependency_archive_path(
+    "${CAI_C_PKT_SYSTEMS_NAME}.tar.gz" "${CAI_C_PKT_SYSTEMS_SHA256}"
+    CAI_C_PKT_SYSTEMS_ARCHIVE)
   set(CAI_C_PKT_SYSTEMS_PREFIX
       "${CAI_DEPS_DIR}/${CAI_C_PKT_SYSTEMS_NAME}")
   cai_download_tarball(
@@ -356,8 +428,9 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       "liblonejson-${CAI_LONEJSON_VERSION}-${CAI_TARGET_ID}")
   set(CAI_LONEJSON_PKG_URL
       "https://github.com/sa6mwa/lonejson/releases/download/v${CAI_LONEJSON_VERSION}/${CAI_LONEJSON_PKG_NAME}.tar.gz")
-  set(CAI_LONEJSON_PKG_ARCHIVE
-      "${CAI_DEPS_DIR}/${CAI_LONEJSON_PKG_NAME}.tar.gz")
+  cai_dependency_archive_path(
+    "${CAI_LONEJSON_PKG_NAME}.tar.gz" "${CAI_LONEJSON_PKG_SHA256}"
+    CAI_LONEJSON_PKG_ARCHIVE)
   set(CAI_LONEJSON_PREFIX "${CAI_DEPS_DIR}/${CAI_LONEJSON_PKG_NAME}")
   cai_download_tarball(
     "liblonejson ${CAI_LONEJSON_VERSION} ${CAI_TARGET_ID}"
@@ -371,7 +444,9 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   set(CAI_PSLOG_PKG_NAME "libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}")
   set(CAI_PSLOG_PKG_URL
       "https://github.com/sa6mwa/libpslog/releases/download/v${CAI_PSLOG_VERSION}/${CAI_PSLOG_PKG_NAME}.tar.gz")
-  set(CAI_PSLOG_PKG_ARCHIVE "${CAI_DEPS_DIR}/${CAI_PSLOG_PKG_NAME}.tar.gz")
+  cai_dependency_archive_path(
+    "${CAI_PSLOG_PKG_NAME}.tar.gz" "${CAI_PSLOG_PKG_SHA256}"
+    CAI_PSLOG_PKG_ARCHIVE)
   set(CAI_PSLOG_PREFIX "${CAI_DEPS_DIR}/${CAI_PSLOG_PKG_NAME}")
   cai_download_tarball(
     "libpslog ${CAI_PSLOG_VERSION} ${CAI_TARGET_ID}"
@@ -396,7 +471,7 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       CACHE PATH "curl package directory" FORCE)
   set(OpenSSL_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/cmake/OpenSSL"
       CACHE PATH "OpenSSL package directory" FORCE)
-  find_package(lonejson CONFIG REQUIRED)
+  find_package(lonejson CONFIG REQUIRED COMPONENTS curl oidc openssl)
   find_package(pslog CONFIG REQUIRED)
   cai_set_lonejson_from_target()
   cai_set_pslog_from_target()
@@ -408,8 +483,10 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
 endif()
 
 set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "")
+set(CAI_PSLOG_PKG_SHA256_FOR_PACKAGE "")
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_SHA256}")
+  set(CAI_PSLOG_PKG_SHA256_FOR_PACKAGE "${CAI_PSLOG_PKG_SHA256}")
 endif()
 
 find_package(CURL ${CAI_MINIMUM_CURL_VERSION} REQUIRED)
@@ -465,9 +542,6 @@ endif()
 function(cai_configure_c_target target)
   get_target_property(_cai_target_type ${target} TYPE)
   set_target_properties(${target} PROPERTIES
-    C_STANDARD 90
-    C_STANDARD_REQUIRED ON
-    C_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON)
   if(UNIX OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
     target_compile_definitions(${target} PRIVATE _POSIX_C_SOURCE=200809L)
@@ -506,7 +580,7 @@ configure_file(
   @ONLY)
 
 if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
-  find_package(lonejson CONFIG QUIET)
+  find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)
   find_package(pslog CONFIG QUIET)
   cai_set_lonejson_from_target()
   cai_set_pslog_from_target()
@@ -594,6 +668,12 @@ if(CAI_BUILD_SHARED)
     OUTPUT_NAME cai
     VERSION ${PROJECT_VERSION}
     SOVERSION ${CAI_ABI_VERSION})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set_target_properties(cai_shared PROPERTIES
+      BUILD_WITH_INSTALL_RPATH ON
+      INSTALL_NAME_DIR "@rpath"
+      MACOSX_RPATH ON)
+  endif()
 endif()
 
 foreach(_cai_target IN ITEMS cai_static cai_shared)
@@ -608,7 +688,9 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CAI_PSLOG_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS})
-    target_compile_definitions(${_cai_target} PRIVATE LONEJSON_WITH_CURL)
+    target_compile_definitions(${_cai_target} PRIVATE
+      LONEJSON_WITH_CURL LONEJSON_WITH_JWT LONEJSON_WITH_OIDC
+      LONEJSON_WITH_OPENSSL)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()
@@ -709,9 +791,7 @@ if(CAI_BUILD_LUA)
   target_include_directories(cai_lua PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CAI_LONEJSON_INCLUDE_DIR}"
-    "${CAI_PSLOG_INCLUDE_DIR}"
     "${CAI_LUA_INCLUDE_DIR}")
   target_link_libraries(cai_lua PRIVATE ${_cai_lua_link_target}
     ${CAI_LONEJSON_LINK})
@@ -754,6 +834,20 @@ if(CAI_BUILD_TESTS)
     mcp_client_receiver_surface
     mcp_client_registry_adapter
     mcp_streamable_http_client_roundtrip
+    mcp_streamable_http_client_api_key_rejects_unsafe_token
+    mcp_streamable_http_client_api_key_rejects_remote_http
+    mcp_streamable_http_client_api_key_rejects_127_hostname
+    mcp_streamable_http_client_api_key_rejects_userinfo_loopback
+    mcp_streamable_http_client_api_key_rejects_short_url
+    mcp_streamable_http_client_oauth2_client_credentials
+    mcp_streamable_http_client_oauth2_rejects_remote_http_token
+    mcp_streamable_http_client_oauth2_rejects_discovered_remote_http_token
+    mcp_streamable_http_client_oauth2_rejects_loopback_http_oidc_discovery
+    mcp_streamable_http_client_oauth2_rejects_non_bearer_token
+    mcp_streamable_http_client_oauth2_rejects_unsafe_token
+    mcp_streamable_http_client_oauth2_token_http_error
+    mcp_streamable_http_client_oauth2_token_response_limit
+    mcp_streamable_http_client_streaming_oauth2_error
     mcp_streamable_http_client_custom_allocator_metadata
     mcp_streamable_http_client_logging
     mcp_streamable_http_call_result_must_be_object
@@ -1108,7 +1202,7 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endforeach()
   set_tests_properties(cai_tests.lonejson_selected_array_rewrite PROPERTIES
-    LABELS "unit;local;msan-external-boundary"
+    LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)
   set_tests_properties(
     cai_tests.model_capabilities
@@ -1118,22 +1212,22 @@ if(CAI_BUILD_TESTS)
     cai_tests.client_open
     cai_tests.mike_mind_prompt_contract
     PROPERTIES
-      LABELS "unit;local;msan-smoke"
+      LABELS "unit;local;valgrind-smoke"
       TIMEOUT 3)
   set_tests_properties(cai_tests.mcp_handler PROPERTIES
-    LABELS "unit;local;msan-external-boundary"
+    LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.response_json PROPERTIES
-    LABELS "unit;local;msan-external-boundary"
+    LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.response_spooled_request_arrays PROPERTIES
-    LABELS "unit;local;msan-external-boundary"
+    LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.response_array_serialization_invariants PROPERTIES
-    LABELS "unit;local;msan-external-boundary"
+    LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)
   set_tests_properties(cai_tests.tool_registry PROPERTIES
-    LABELS "unit;local;msan-external-boundary"
+    LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)
   add_test(NAME cai_tests.registration
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_test_registration_test.sh"
@@ -1148,6 +1242,20 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_tests.registration_script PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  if(CAI_ENABLE_VALGRIND_TESTS)
+    add_test(NAME cai_tests.valgrind
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_valgrind.sh"
+        $<TARGET_FILE:cai_tests>
+        model_capabilities
+        env_precedence
+        source_sink
+        lonejson_nested_mapped_array_stream
+        client_open
+        mike_mind_prompt_contract)
+    set_tests_properties(cai_tests.valgrind PROPERTIES
+      LABELS "valgrind;local;memory-check"
+      TIMEOUT 180)
+  endif()
   add_test(NAME cai_receiver_usage_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/receiver_usage_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1159,6 +1267,24 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(cai_makefile_targets_test PROPERTIES
     LABELS "unit;local"
+    TIMEOUT 3)
+  add_test(NAME cai_e2e_service_ownership_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e_service_ownership_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_e2e_service_ownership_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
+  add_test(NAME cai_mcp_everything_live_wrapper_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_everything_live_wrapper_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_mcp_everything_live_wrapper_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
+  add_test(NAME cai_release_live_gate_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_live_gate_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_release_live_gate_test PROPERTIES
+    LABELS "unit;local;packaging"
     TIMEOUT 3)
   add_test(NAME cai_mcp_client_source_contract_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_source_contract_test.sh"
@@ -1227,14 +1353,14 @@ if(CAI_BUILD_TESTS)
       $<TARGET_FILE:cai_mcp_http_server>)
   set_tests_properties(cai_mcp_inspector_e2e PROPERTIES
     LABELS "smoke;local"
-    TIMEOUT 3)
+    TIMEOUT 180)
 
   if(CAI_INSTALL)
     add_test(NAME cai_install_metadata_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-        "-DCAI_VERSION=${PROJECT_VERSION}"
+        "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
         "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
         "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
         "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
@@ -1249,6 +1375,9 @@ if(CAI_BUILD_TESTS)
         "-DCAI_PARENT_CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
+        "-DCAI_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+        "-DCAI_CPKT_TARGET_ID=${CPKT_TARGET_ID}"
+        "-DCAI_READELF=${CMAKE_READELF}"
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
         "-DCAI_INSTALL_RPATH_TOKEN=${CAI_INSTALL_RPATH_TOKEN}"
@@ -1256,7 +1385,7 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 10)
+      TIMEOUT 30)
     add_test(NAME cai_host_dependency_mode_unsupported_target
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -1284,13 +1413,44 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_rpath_token_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_target_tool_discovery_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/target_tool_discovery_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_target_tool_discovery_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_darwin_linker_route_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/darwin_linker_route_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_darwin_linker_route_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_release_artifacts_darwin_metadata_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_artifacts_darwin_metadata_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_artifacts_darwin_metadata_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_release_manifest_gate_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_manifest_gate_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_manifest_gate_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
+    add_test(NAME cai_release_staging_safety_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_staging_safety_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_staging_safety_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_cmake_presets_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake_presets_test.cmake")
     set_tests_properties(cai_cmake_presets_test PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 3)
+      TIMEOUT 15)
     if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
        CMAKE_GENERATOR MATCHES "Ninja")
       add_test(NAME cai_cpkt_link_targets_test
@@ -1307,11 +1467,26 @@ if(CAI_BUILD_TESTS)
         LABELS "packaging;local"
         TIMEOUT 3)
     endif()
+    set(CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS "")
+    if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
+      list(APPEND CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS
+        "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}")
+    endif()
+    if(DEFINED CPKT_TARGET_ID AND NOT CPKT_TARGET_ID STREQUAL "")
+      list(APPEND CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS
+        "-DCPKT_TARGET_ID=${CPKT_TARGET_ID}")
+    endif()
+    if(DEFINED CAI_TARGET_ID AND NOT CAI_TARGET_ID STREQUAL "")
+      list(APPEND CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS
+        "-DCAI_TARGET_ID=${CAI_TARGET_ID}")
+    endif()
+
     add_test(NAME cai_c_integration_config_without_lua
       COMMAND "${CMAKE_COMMAND}"
         -S "${CMAKE_CURRENT_SOURCE_DIR}"
         -B "${CMAKE_CURRENT_BINARY_DIR}/c-integration-without-lua"
         "-G${CMAKE_GENERATOR}"
+        ${CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS}
         "-DCAI_BUILD_INTEGRATION_TESTS=ON"
         "-DCAI_BUILD_LUA=OFF"
         "-DCAI_BUILD_EXAMPLES=OFF"
@@ -1339,7 +1514,7 @@ if(CAI_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(cai_release_lua_version_test PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 3)
+      TIMEOUT 10)
   endif()
 
   if(CAI_BUILD_LUA)
@@ -1464,8 +1639,7 @@ if(CAI_BUILD_TESTS)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_mcp_client_tool
-      COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_MCP_CLIENT_TOOL=1"
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mcp_everything_live_test.sh"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_mcp_client_tool PROPERTIES
       LABELS integration
@@ -1622,11 +1796,8 @@ if(CAI_BUILD_FUZZERS)
   if(NOT TARGET cai_static)
     message(FATAL_ERROR "CAI_BUILD_FUZZERS requires CAI_BUILD_STATIC=ON.")
   endif()
-  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
-    message(FATAL_ERROR "CAI_BUILD_FUZZERS currently requires Clang/libFuzzer.")
-  endif()
   function(cai_add_fuzzer target source corpus_relpath)
-    add_executable(${target} ${source})
+    add_executable(${target} ${source} tests/fuzz_driver.c)
     target_include_directories(${target} PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"
@@ -1636,11 +1807,9 @@ if(CAI_BUILD_FUZZERS)
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(${target} PRIVATE cai_static)
     cai_configure_c_target(${target})
-    target_compile_options(${target} PRIVATE -fsanitize=address,undefined)
-    target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)
     set(corpus_dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz-corpus/${corpus_relpath}")
     add_test(NAME ${target}.smoke
-      COMMAND $<TARGET_FILE:${target}> "${corpus_dir}" -runs=1)
+      COMMAND $<TARGET_FILE:${target}> "${corpus_dir}")
     set_tests_properties(${target}.smoke PROPERTIES
       LABELS "fuzz;local"
       TIMEOUT 3)
@@ -1677,7 +1846,29 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
-  set(CAI_PACKAGE_REQUIRES "lonejson")
+  set(CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE "host")
+  set(CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE "host")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+    set(CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_URL}")
+    get_filename_component(CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE
+      "${CAI_C_PKT_SYSTEMS_URL}" NAME)
+  endif()
+  set(CAI_LONEJSON_PKG_URL_FOR_PACKAGE "host")
+  set(CAI_LONEJSON_ARCHIVE_NAME_FOR_PACKAGE "host")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+    set(CAI_LONEJSON_PKG_URL_FOR_PACKAGE "${CAI_LONEJSON_PKG_URL}")
+    get_filename_component(CAI_LONEJSON_ARCHIVE_NAME_FOR_PACKAGE
+      "${CAI_LONEJSON_PKG_URL}" NAME)
+  endif()
+  set(CAI_PSLOG_PKG_URL_FOR_PACKAGE "host")
+  set(CAI_PSLOG_ARCHIVE_NAME_FOR_PACKAGE "host")
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+    set(CAI_PSLOG_PKG_URL_FOR_PACKAGE "${CAI_PSLOG_PKG_URL}")
+    get_filename_component(CAI_PSLOG_ARCHIVE_NAME_FOR_PACKAGE
+      "${CAI_PSLOG_PKG_URL}" NAME)
+  endif()
+  set(CAI_PACKAGE_REQUIRES
+      "lonejson lonejson-curl lonejson-oidc lonejson-openssl")
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     set(CAI_PACKAGE_REQUIRES_PRIVATE
         "libcurl >= ${CAI_MINIMUM_CURL_VERSION}, openssl")
@@ -1701,14 +1892,18 @@ if(CAI_INSTALL)
      CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE STREQUAL "")
     set(CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE "host")
   endif()
+  if(NOT DEFINED CAI_PSLOG_PKG_SHA256_FOR_PACKAGE OR
+     CAI_PSLOG_PKG_SHA256_FOR_PACKAGE STREQUAL "")
+    set(CAI_PSLOG_PKG_SHA256_FOR_PACKAGE "host")
+  endif()
   configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-config.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config.cmake"
     INSTALL_DESTINATION "${CAI_INSTALL_CMAKEDIR}")
-  write_basic_package_version_file(
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-config-version.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config-version.cmake"
-    VERSION "${PROJECT_VERSION}"
-    COMPATIBILITY SameMajorVersion)
+    @ONLY)
   set(CAI_PC_PREFIX_FROM_PKGCONFIG "..")
   string(REPLACE "/" ";" _cai_pc_libdir_parts "${CMAKE_INSTALL_LIBDIR}")
   foreach(_cai_pc_libdir_part IN LISTS _cai_pc_libdir_parts)
@@ -1719,6 +1914,10 @@ if(CAI_INSTALL)
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai.pc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"
+    @ONLY)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-dependencies.json.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     @ONLY)
 
   install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
@@ -1753,6 +1952,8 @@ if(CAI_INSTALL)
   install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")
 
   set(_cai_package_deps "")
   if(TARGET cai_static)
@@ -1766,7 +1967,7 @@ if(CAI_INSTALL)
       "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
-      "-DCAI_VERSION=${PROJECT_VERSION}"
+      "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
       "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
       "-DCAI_STRIP_BIN=${CMAKE_STRIP}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_archive.cmake"
@@ -1776,13 +1977,13 @@ if(CAI_INSTALL)
     COMMAND "${CMAKE_COMMAND}"
       "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
-      "-DCAI_VERSION=${PROJECT_VERSION}"
+      "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_source.cmake"
     VERBATIM)
   add_custom_target(cai_package_checksums
     COMMAND "${CMAKE_COMMAND}"
       "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
-      "-DCAI_VERSION=${PROJECT_VERSION}"
+      "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_checksums.cmake"
     DEPENDS cai_package_archive cai_package_source
     VERBATIM)

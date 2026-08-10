@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "project": "cai",
+  "version": "@CAI_PACKAGE_VERSION@",
+  "targetId": "@CAI_TARGET_ID@",
+  "dependencyMode": "@CAI_RESOLVED_DEPENDENCY_MODE@",
+  "dependencies": [
+    {
+      "name": "c.pkt.systems",
+      "version": "@CAI_C_PKT_SYSTEMS_VERSION@",
+      "targetId": "@CAI_TARGET_ID@",
+      "sourceSystem": "github-release",
+      "sourceUrl": "@CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE@",
+      "sha256": "@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@",
+      "archiveName": "@CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE@",
+      "licenseIdentifier": "NOASSERTION",
+      "bundled": false,
+      "installRole": "external-static-consumer-sdk"
+    },
+    {
+      "name": "lonejson",
+      "version": "@CAI_LONEJSON_VERSION@",
+      "targetId": "@CAI_TARGET_ID@",
+      "sourceSystem": "github-release",
+      "sourceUrl": "@CAI_LONEJSON_PKG_URL_FOR_PACKAGE@",
+      "sha256": "@CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE@",
+      "archiveName": "@CAI_LONEJSON_ARCHIVE_NAME_FOR_PACKAGE@",
+      "licenseIdentifier": "NOASSERTION",
+      "bundled": false,
+      "installRole": "public-link-interface"
+    },
+    {
+      "name": "libpslog",
+      "version": "@CAI_PSLOG_VERSION@",
+      "targetId": "@CAI_TARGET_ID@",
+      "sourceSystem": "github-release",
+      "sourceUrl": "@CAI_PSLOG_PKG_URL_FOR_PACKAGE@",
+      "sha256": "@CAI_PSLOG_PKG_SHA256_FOR_PACKAGE@",
+      "archiveName": "@CAI_PSLOG_ARCHIVE_NAME_FOR_PACKAGE@",
+      "licenseIdentifier": "NOASSERTION",
+      "bundled": false,
+      "installRole": "public-header-logger-api"
+    }
+  ]
+}

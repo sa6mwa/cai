@@ -400,6 +400,12 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "max tool calls must not be negative");
   }
+  if (config->reasoning_mode != NULL &&
+      strcmp(config->reasoning_mode, CAI_REASONING_MODE_STANDARD) != 0 &&
+      strcmp(config->reasoning_mode, CAI_REASONING_MODE_PRO) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "reasoning mode must be standard or pro");
+  }
   rc = cai_usage_limits_validate(&config->session_usage_limits, error);
   if (rc != CAI_OK) {
     return rc;
@@ -434,6 +440,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       cai_strdup(&client_impl->allocator, config->tool_choice_json);
   impl->reasoning_effort =
       cai_strdup(&client_impl->allocator, config->reasoning_effort);
+  impl->reasoning_mode =
+      cai_strdup(&client_impl->allocator, config->reasoning_mode);
   impl->reasoning_summary =
       cai_strdup(&client_impl->allocator, config->reasoning_summary);
   impl->text_format_name =
@@ -512,6 +520,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       (config->tool_choice != NULL && impl->tool_choice == NULL) ||
       (config->tool_choice_json != NULL && impl->tool_choice_json == NULL) ||
       (config->reasoning_effort != NULL && impl->reasoning_effort == NULL) ||
+      (config->reasoning_mode != NULL && impl->reasoning_mode == NULL) ||
       (config->reasoning_summary != NULL && impl->reasoning_summary == NULL) ||
       (config->text_format_name != NULL && impl->text_format_name == NULL) ||
       (config->text_format_description != NULL &&
@@ -582,6 +591,7 @@ void cai_agent_destroy(cai_agent *agent) {
   cai_free_mem(allocator, impl->tool_choice);
   cai_free_mem(allocator, impl->tool_choice_json);
   cai_free_mem(allocator, impl->reasoning_effort);
+  cai_free_mem(allocator, impl->reasoning_mode);
   cai_free_mem(allocator, impl->reasoning_summary);
   cai_free_mem(allocator, impl->text_format_name);
   cai_free_mem(allocator, impl->text_format_description);
@@ -3201,6 +3211,10 @@ static int cai_session_init_response_params(cai_session *session,
     rc = params->set_reasoning(
         params, CAI_SESSION_AGENT_IMPL(session)->reasoning_effort,
         CAI_SESSION_AGENT_IMPL(session)->reasoning_summary, error);
+  }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->reasoning_mode != NULL) {
+    rc = params->set_reasoning_mode(
+        params, CAI_SESSION_AGENT_IMPL(session)->reasoning_mode, error);
   }
   if (rc == CAI_OK &&
       CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json != NULL) {

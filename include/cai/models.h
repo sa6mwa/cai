@@ -6,6 +6,10 @@ extern "C" {
 #endif
 
 /** OpenAI Responses model id constants. */
+#define CAI_MODEL_GPT_5_6 "gpt-5.6"
+#define CAI_MODEL_GPT_5_6_SOL "gpt-5.6-sol"
+#define CAI_MODEL_GPT_5_6_TERRA "gpt-5.6-terra"
+#define CAI_MODEL_GPT_5_6_LUNA "gpt-5.6-luna"
 #define CAI_MODEL_GPT_5_5 "gpt-5.5"
 #define CAI_MODEL_GPT_5_5_2026_04_23 "gpt-5.5-2026-04-23"
 #define CAI_MODEL_GPT_5_5_PRO "gpt-5.5-pro"
@@ -121,11 +125,14 @@ extern "C" {
 #define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE                         \
   "poolside/laguna-xs.2:free"
 #define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE "poolside/laguna-m.1:free"
+#define CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE                        \
+  "poolside/laguna-s-2.1:free"
+#define CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA "openai/gpt-5.6-luna"
 /** Default OpenAI Responses model used by examples and tests. */
 #define CAI_MODEL_DEFAULT_RESPONSES CAI_MODEL_GPT_5_NANO
 /** Default OpenRouter Responses-compatible model used by examples/tests. */
 #define CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES                                 \
-  CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE
+  CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA
 
 /** Model capability flags returned by cai_model_info and cai_model_supports. */
 #define CAI_MODEL_CAP_RESPONSES 0x0001u
@@ -136,6 +143,10 @@ extern "C" {
 #define CAI_MODEL_CAP_IMAGE_INPUT 0x0020u
 #define CAI_MODEL_CAP_AUDIO_INPUT 0x0040u
 #define CAI_MODEL_CAP_AUDIO_OUTPUT 0x0080u
+/** Model supports Responses reasoning controls. */
+#define CAI_MODEL_CAP_REASONING 0x0100u
+/** Model supports the GPT-5.6 Responses reasoning.mode="pro" setting. */
+#define CAI_MODEL_CAP_REASONING_PRO_MODE 0x0200u
 /** Model metadata flags describing bundled model metadata confidence. */
 #define CAI_MODEL_META_VERIFIED 0x0001u
 #define CAI_MODEL_META_INCOMPLETE 0x0002u

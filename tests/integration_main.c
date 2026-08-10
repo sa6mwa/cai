@@ -90,7 +90,7 @@ static const char *openrouter_tool_integration_model(void) {
 
   model = getenv("CAI_OPENROUTER_TOOL_TEST_MODEL");
   if (model == NULL || model[0] == '\0') {
-    model = CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE;
+    model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
   }
   return model;
 }
@@ -1562,9 +1562,12 @@ static int run_openrouter_tool_regression(void) {
   cai_client_config client_config;
   cai_client *client;
   cai_agent *agent;
+  cai_agent *recall_agent;
   cai_session *session;
+  cai_session *recall_session;
   cai_output *output;
   cai_response *response;
+  cai_source *history_source;
   cai_error error;
   integration_lookup_state tool_state;
   const char *answer;
@@ -1577,9 +1580,12 @@ static int run_openrouter_tool_regression(void) {
   cai_run_options_init(&run_options);
   client = NULL;
   agent = NULL;
+  recall_agent = NULL;
   session = NULL;
+  recall_session = NULL;
   output = NULL;
   response = NULL;
+  history_source = NULL;
   answer = NULL;
   memset(&tool_state, 0, sizeof(tool_state));
 
@@ -1640,8 +1646,32 @@ static int run_openrouter_tool_regression(void) {
   cai_output_destroy(output);
   output = NULL;
 
+  rc = cai_session_export_history_source(session, &history_source, &error);
+  if (rc == CAI_OK) {
+    agent_config.tool_choice = NULL;
+    agent_config.tool_choice_json = NULL;
+    rc = cai_client_new_agent(client, &agent_config, &recall_agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_tool(
+        recall_agent, "integration_lookup",
+        "Return a deterministic integration-test marker for a city and code.",
+        &integration_lookup_arg_map, &integration_lookup_result_map,
+        integration_lookup_tool, &tool_state, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(recall_agent, &recall_session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_import_history_source(recall_session, history_source,
+                                           &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter tool history transfer", rc, &error);
+    goto done;
+  }
   rc = integration_provider_send_text(
-      session,
+      recall_session,
       "Recall the exact code value from the previous integration lookup.", 1,
       &response, &error);
   if (rc != CAI_OK) {
@@ -1659,7 +1689,10 @@ static int run_openrouter_tool_regression(void) {
 done:
   cai_response_destroy(response);
   cai_output_destroy(output);
+  cai_source_close(history_source);
+  cai_session_destroy(recall_session);
   cai_session_destroy(session);
+  cai_agent_destroy(recall_agent);
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
@@ -1674,9 +1707,12 @@ static int run_openrouter_stream_tool_regression(void) {
   cai_sink_callbacks sink_callbacks;
   cai_client *client;
   cai_agent *agent;
+  cai_agent *recall_agent;
   cai_session *session;
+  cai_session *recall_session;
   cai_sink *sink;
   cai_response *response;
+  cai_source *history_source;
   cai_error error;
   integration_lookup_state tool_state;
   integration_tool_event_state event_state;
@@ -1693,9 +1729,12 @@ static int run_openrouter_stream_tool_regression(void) {
   cai_stream_sinks_init(&stream_sinks);
   client = NULL;
   agent = NULL;
+  recall_agent = NULL;
   session = NULL;
+  recall_session = NULL;
   sink = NULL;
   response = NULL;
+  history_source = NULL;
   answer = NULL;
   memset(&tool_state, 0, sizeof(tool_state));
   memset(&event_state, 0, sizeof(event_state));
@@ -1784,8 +1823,32 @@ static int run_openrouter_stream_tool_regression(void) {
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
+  rc = cai_session_export_history_source(session, &history_source, &error);
+  if (rc == CAI_OK) {
+    agent_config.tool_choice = NULL;
+    agent_config.tool_choice_json = NULL;
+    rc = cai_client_new_agent(client, &agent_config, &recall_agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_tool(
+        recall_agent, "integration_lookup",
+        "Return a deterministic integration-test marker for a city and code.",
+        &integration_lookup_arg_map, &integration_lookup_result_map,
+        integration_lookup_tool, &tool_state, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(recall_agent, &recall_session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_import_history_source(recall_session, history_source,
+                                           &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("openrouter stream tool history transfer", rc, &error);
+    goto done;
+  }
   rc = integration_provider_send_text(
-      session,
+      recall_session,
       "Recall only the exact code value and report marker value from the "
       "previous integration_lookup tool result.",
       1, &response, &error);
@@ -1812,8 +1875,11 @@ static int run_openrouter_stream_tool_regression(void) {
 
 done:
   cai_response_destroy(response);
+  cai_source_close(history_source);
   cai_sink_close(sink);
+  cai_session_destroy(recall_session);
   cai_session_destroy(session);
+  cai_agent_destroy(recall_agent);
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);

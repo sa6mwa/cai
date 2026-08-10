@@ -24,11 +24,38 @@
       }
     },
     {
-      "name": "debug",
+      "name": "release-base",
+      "hidden": true,
       "inherits": "base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CAI_BUILD_LUA": "OFF",
+        "CAI_DIST_DIR": "${sourceDir}/dist"
+      }
+    },
+    {
+      "name": "bootlin-native",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "x86_64-linux-gnu",
+        "CAI_TARGET_ID": "x86_64-linux-gnu"
+      }
+    },
+    {
+      "name": "native-lifecycle",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/native-lifecycle.cmake"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "native-lifecycle",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
@@ -40,7 +67,7 @@
     },
     {
       "name": "release",
-      "inherits": "base",
+      "inherits": "bootlin-native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CAI_BUILD_LUA": "OFF",
@@ -50,13 +77,18 @@
     },
     {
       "name": "x86_64-linux-gnu-release",
-      "inherits": "release"
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "x86_64-linux-gnu"
+      }
     },
     {
       "name": "x86_64-linux-musl-release",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "x86_64-linux-musl",
         "CAI_TARGET_ID": "x86_64-linux-musl"
       }
     },
@@ -64,7 +96,8 @@
       "name": "aarch64-linux-gnu-release",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "aarch64-linux-gnu-gcc",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "aarch64-linux-gnu",
         "CAI_TARGET_ID": "aarch64-linux-gnu"
       }
     },
@@ -72,7 +105,8 @@
       "name": "aarch64-linux-musl-release",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/aarch64-linux-musl/bin/aarch64-linux-musl-gcc",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "aarch64-linux-musl",
         "CAI_TARGET_ID": "aarch64-linux-musl"
       }
     },
@@ -80,7 +114,8 @@
       "name": "armhf-linux-gnu-release",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "arm-linux-gnueabihf-gcc",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "armhf-linux-gnu",
         "CAI_TARGET_ID": "armhf-linux-gnu"
       }
     },
@@ -88,13 +123,14 @@
       "name": "armhf-linux-musl-release",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "$env{HOME}/.local/cross/arm-linux-musleabihf/bin/arm-linux-musleabihf-gcc",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
+        "CPKT_TARGET_ID": "armhf-linux-musl",
         "CAI_TARGET_ID": "armhf-linux-musl"
       }
     },
     {
       "name": "arm64-apple-darwin-release",
-      "inherits": "release",
+      "inherits": "release-base",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/arm64-apple-darwin.cmake",
         "CAI_TARGET_ID": "arm64-apple-darwin"
@@ -102,37 +138,29 @@
     },
     {
       "name": "asan",
-      "inherits": "debug",
+      "inherits": "bootlin-native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
       }
     },
     {
-      "name": "tsan",
-      "inherits": "base",
+      "name": "valgrind",
+      "inherits": "bootlin-native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=thread -fno-omit-frame-pointer"
-      }
-    },
-    {
-      "name": "msan",
-      "inherits": "base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer"
+        "CAI_ENABLE_VALGRIND_TESTS": "ON"
       }
     },
     {
       "name": "fuzz",
-      "inherits": "debug",
+      "inherits": "base",
       "cacheVariables": {
-        "CAI_BUILD_FUZZERS": "ON",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_C_FLAGS_DEBUG": "-O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-aflpp.cmake",
+        "CPKT_TARGET_ID": "x86_64-linux-gnu",
+        "CAI_TARGET_ID": "x86_64-linux-gnu",
+        "CAI_BUILD_FUZZERS": "ON"
       }
     },
     {
@@ -197,12 +225,8 @@
       "configurePreset": "asan"
     },
     {
-      "name": "tsan",
-      "configurePreset": "tsan"
-    },
-    {
-      "name": "msan",
-      "configurePreset": "msan"
+      "name": "valgrind",
+      "configurePreset": "valgrind"
     },
     {
       "name": "fuzz",
@@ -259,26 +283,11 @@
       }
     },
     {
-      "name": "tsan",
-      "configurePreset": "tsan",
-      "filter": {
-        "exclude": {
-          "label": "packaging"
-        }
-      },
-      "execution": {
-        "stopOnFailure": true
-      },
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "msan",
-      "configurePreset": "msan",
+      "name": "valgrind",
+      "configurePreset": "valgrind",
       "filter": {
         "include": {
-          "label": "msan-smoke"
+          "label": "^valgrind$"
         }
       },
       "execution": {

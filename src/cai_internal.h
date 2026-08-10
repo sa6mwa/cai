@@ -52,6 +52,7 @@ typedef struct cai_agent_impl {
   char *service_tier;
   char *truncation;
   char *reasoning_effort;
+  char *reasoning_mode;
   char *reasoning_summary;
   char *text_format_name;
   char *text_format_description;
@@ -319,6 +320,8 @@ int cai_client_stream_response_websocket_test(
     cai_client *client, const cai_response_create_params *params,
     const cai_stream_sinks *sinks, char **out_response_id,
     cai_token_usage *out_usage, cai_error *error);
+int cai_mcp_test_authenticated_url_status(const char *url, const char *field,
+                                          char *detail, size_t detail_len);
 #endif
 int cai_stream_fuzz_sse(const unsigned char *data, size_t size);
 int cai_tool_registry_register_lonejson_owned(

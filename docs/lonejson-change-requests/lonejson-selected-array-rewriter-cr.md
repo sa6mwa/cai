@@ -7,7 +7,8 @@ todo-store migration.
 
 Original CR written after cai upgraded to lonejson 0.15.0.
 
-This replaces the older `stash/lonejson-array-item-streaming-cr.md` direction
+This replaces the older
+`docs/lonejson-change-requests/lonejson-array-item-streaming-cr.md` direction
 where the proposed fix was to replace the read cursor entirely. In 0.15.0 the
 read side has become useful and should stay:
 

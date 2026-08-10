@@ -47,7 +47,14 @@ function(cai_probe_lonejson_library_abi library_path abi_version out_var reason_
   cai_lonejson_expected_soname("${abi_version}" _cai_expected_soname)
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    find_program(_cai_otool NAMES otool llvm-otool)
+    set(_cai_otool "")
+    if(DEFINED CPKT_OTOOL AND EXISTS "${CPKT_OTOOL}")
+      set(_cai_otool "${CPKT_OTOOL}")
+    elseif(DEFINED CMAKE_OTOOL AND EXISTS "${CMAKE_OTOOL}")
+      set(_cai_otool "${CMAKE_OTOOL}")
+    else()
+      find_program(_cai_otool NAMES otool llvm-otool)
+    endif()
     if(NOT _cai_otool)
       set(_cai_reason
           "unable to validate lonejson ABI because neither otool nor "
@@ -81,8 +88,18 @@ function(cai_probe_lonejson_library_abi library_path abi_version out_var reason_
       return()
     endif()
   else()
-    find_program(_cai_readelf NAMES readelf llvm-readelf eu-readelf)
-    find_program(_cai_objdump NAMES objdump llvm-objdump)
+    set(_cai_readelf "")
+    set(_cai_objdump "")
+    if(DEFINED CMAKE_READELF AND EXISTS "${CMAKE_READELF}")
+      set(_cai_readelf "${CMAKE_READELF}")
+    else()
+      find_program(_cai_readelf NAMES readelf llvm-readelf eu-readelf)
+    endif()
+    if(DEFINED CMAKE_OBJDUMP AND EXISTS "${CMAKE_OBJDUMP}")
+      set(_cai_objdump "${CMAKE_OBJDUMP}")
+    else()
+      find_program(_cai_objdump NAMES objdump llvm-objdump)
+    endif()
     if(_cai_readelf)
       execute_process(
         COMMAND "${_cai_readelf}" -d "${library_path}"

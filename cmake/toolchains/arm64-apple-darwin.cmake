@@ -10,7 +10,19 @@ else()
   message(FATAL_ERROR "OSXCROSS_ROOT is not set and HOME is unavailable")
 endif()
 
-set(CAI_OSXCROSS_HOST "arm64-apple-darwin25" CACHE STRING "osxcross target host triple")
+if(DEFINED ENV{CPKT_OSXCROSS_HOST} AND NOT "$ENV{CPKT_OSXCROSS_HOST}" STREQUAL "")
+  set(CAI_OSXCROSS_HOST "$ENV{CPKT_OSXCROSS_HOST}" CACHE STRING
+      "osxcross target host triple")
+else()
+  set(CAI_OSXCROSS_HOST "arm64-apple-darwin25" CACHE STRING
+      "osxcross target host triple")
+endif()
+if(NOT CAI_OSXCROSS_HOST MATCHES "^arm64-apple-darwin")
+  message(FATAL_ERROR
+    "arm64-apple-darwin-release requires an arm64 osxcross host triple; "
+    "got '${CAI_OSXCROSS_HOST}'. Use an arm64-apple-darwin* toolchain or a "
+    "matching target preset.")
+endif()
 set(CAI_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment target")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "${CAI_MACOS_DEPLOYMENT_TARGET}" CACHE STRING "" FORCE)
 
@@ -21,14 +33,16 @@ set(CMAKE_CXX_COMPILER "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-clang++" CA
 set(CMAKE_AR "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-ar" CACHE FILEPATH "")
 set(CMAKE_RANLIB "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-ranlib" CACHE FILEPATH "")
 set(CMAKE_LINKER "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-ld" CACHE FILEPATH "")
+set(CMAKE_STRIP "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-strip" CACHE FILEPATH "")
 set(CMAKE_INSTALL_NAME_TOOL "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-install_name_tool" CACHE FILEPATH "")
+set(CPKT_OTOOL "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-otool" CACHE FILEPATH "")
 
 foreach(_cai_required_tool
         CMAKE_C_COMPILER
         CMAKE_AR
         CMAKE_RANLIB
         CMAKE_LINKER
-        CMAKE_INSTALL_NAME_TOOL)
+        CPKT_OTOOL)
   if(NOT EXISTS "${${_cai_required_tool}}")
     message(FATAL_ERROR
       "The arm64 Apple Darwin osxcross toolchain is missing ${_cai_required_tool}: "
@@ -36,12 +50,12 @@ foreach(_cai_required_tool
   endif()
 endforeach()
 
-set(_cai_darwin_linker_flag "-fuse-ld=${CMAKE_LINKER}")
+set(_cai_darwin_linker_flag "--ld-path=${CMAKE_LINKER}")
 foreach(_cai_linker_flags
         CMAKE_EXE_LINKER_FLAGS
         CMAKE_SHARED_LINKER_FLAGS
         CMAKE_MODULE_LINKER_FLAGS)
-  if(NOT "${${_cai_linker_flags}}" MATCHES "(^| )-fuse-ld=")
+  if(NOT "${${_cai_linker_flags}}" MATCHES "(^| )--ld-path=")
     set(${_cai_linker_flags} "${_cai_darwin_linker_flag} ${${_cai_linker_flags}}" CACHE STRING "" FORCE)
   endif()
 endforeach()

@@ -6,9 +6,52 @@ if [[ $# -ne 3 ]]; then
   exit 1
 fi
 
-repo_root=$1
+repo_root=$(cd "$1" && pwd -P)
 stage_dir=$2
 release_version=$3
+
+die() {
+  printf 'stage_lua_rock_sources.sh: %s\n' "$1" >&2
+  exit 1
+}
+
+normalize_stage_dir() {
+  local input=$1
+  local base parent parent_abs candidate
+
+  if [[ -z "$input" ]]; then
+    die 'stage directory is required'
+  fi
+
+  case "$input" in
+    /*) candidate=$input ;;
+    *) candidate="$repo_root/$input" ;;
+  esac
+
+  parent=$(dirname "$candidate")
+  base=$(basename "$candidate")
+  if [[ ! -d "$parent" ]]; then
+    die "stage directory parent does not exist: $parent"
+  fi
+  parent_abs=$(cd "$parent" && pwd -P)
+  candidate="$parent_abs/$base"
+
+  case "$candidate" in
+    "$repo_root"/build/*|"$repo_root"/dist/*|"$repo_root"/.cache/*) ;;
+    *)
+      die "refusing stage directory outside generated state: $candidate"
+      ;;
+  esac
+  case "$candidate" in
+    "$repo_root"|"$repo_root"/build|"$repo_root"/dist|"$repo_root"/.cache|/|"${HOME:-__no_home__}")
+      die "refusing unsafe stage directory: $candidate"
+      ;;
+  esac
+
+  printf '%s\n' "$candidate"
+}
+
+stage_dir=$(normalize_stage_dir "$stage_dir")
 
 files=(
   LICENSE

@@ -77,7 +77,7 @@ TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOO
 
 define run_c_example
 	cd "$(ROOT)" && \
-	$(CMAKE) --preset debug && \
+	$(MAKE) build-debug && \
 	$(CMAKE) --build --preset debug --target $(1) && \
 	./build/debug/$(1) $(2)
 endef

@@ -18,7 +18,7 @@ list_out=$tmpdir/tools-list.json
 call_out=$tmpdir/tools-call.json
 server_pid=
 runtime=
-image=${CAI_MCP_INSPECTOR_IMAGE:-ghcr.io/modelcontextprotocol/inspector:latest}
+image=${CAI_MCP_INSPECTOR_IMAGE:-ghcr.io/modelcontextprotocol/inspector:1.0.1}
 
 cleanup() {
   if [ -n "$server_pid" ]; then

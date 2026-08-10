@@ -268,6 +268,8 @@ typedef struct cai_agent_config {
   const char *history_spool_dir;
   /** Optional usage and USD spend limits inherited by new sessions. */
   cai_usage_limits session_usage_limits;
+  /** Reasoning mode string such as CAI_REASONING_MODE_PRO. */
+  const char *reasoning_mode;
 } cai_agent_config;
 
 /** Low text verbosity setting for supported models. */
@@ -318,6 +320,13 @@ typedef struct cai_agent_config {
 #define CAI_REASONING_EFFORT_HIGH "high"
 /** Extra-high reasoning effort. */
 #define CAI_REASONING_EFFORT_XHIGH "xhigh"
+/** Maximum reasoning effort. */
+#define CAI_REASONING_EFFORT_MAX "max"
+
+/** Default GPT-5.6 reasoning execution mode. */
+#define CAI_REASONING_MODE_STANDARD "standard"
+/** Higher-compute GPT-5.6 reasoning execution mode. */
+#define CAI_REASONING_MODE_PRO "pro"
 
 /** Let the API decide whether to stream reasoning summaries. */
 #define CAI_REASONING_SUMMARY_AUTO "auto"
@@ -1240,6 +1249,9 @@ struct cai_response_create_params {
   /** Set reasoning effort and summary mode. */
   int (*set_reasoning)(cai_response_create_params *params, const char *effort,
                        const char *summary, cai_error *error);
+  /** Set a model-specific reasoning execution mode. */
+  int (*set_reasoning_mode)(cai_response_create_params *params,
+                            const char *mode, cai_error *error);
   /** Enable or disable parallel tool calls. */
   int (*set_parallel_tool_calls)(cai_response_create_params *params,
                                  int enabled, cai_error *error);
@@ -1336,6 +1348,7 @@ struct cai_response_create_params {
   char *tool_choice;
   char *tool_choice_json;
   char *reasoning_effort;
+  char *reasoning_mode;
   char *reasoning_summary;
   char *text_format_type;
   char *text_format_name;
@@ -1869,6 +1882,9 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
                                              const char *effort,
                                              const char *summary,
                                              cai_error *error);
+/** Set a model-specific reasoning execution mode. */
+int cai_response_create_params_set_reasoning_mode(
+    cai_response_create_params *params, const char *mode, cai_error *error);
 /** Enable or disable parallel tool calls. */
 int cai_response_create_params_set_parallel_tool_calls(
     cai_response_create_params *params, int enabled, cai_error *error);

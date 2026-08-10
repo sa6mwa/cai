@@ -6,7 +6,7 @@ integration infrastructure, not a daemon.
 Build and run:
 
 ```sh
-cmake --build --preset debug --target cai_example_mcp_server
+make build-debug
 ./build/debug/cai_example_mcp_server --port 18766
 ```
 
@@ -73,7 +73,7 @@ curl -s http://127.0.0.1:18766/mcp \
 The MCP Inspector e2e test uses the official container image and is opt-in:
 
 ```sh
-CAI_MCP_INSPECTOR_E2E=1 ctest --preset debug -R cai_mcp_inspector_e2e --output-on-failure
+CAI_MCP_INSPECTOR_E2E=1 make mcp-inspector-e2e
 ```
 
 ## Testing From Agent Clients
@@ -82,7 +82,7 @@ The example server is a Streamable HTTP MCP server. Run it in one terminal with
 isolated storage:
 
 ```sh
-cmake --build --preset debug --target cai_example_mcp_server
+make build-debug
 tmpdir=$(mktemp -d)
 CAI_MCP_EXAMPLE_TODO_STORE="$tmpdir/todo.json" \
 CAI_MCP_EXAMPLE_TODO_LOCK="$tmpdir/todo.lock" \

@@ -91,7 +91,7 @@ Reuse an existing OpenAI conversation ID without threading IDs through every
 call:
 
 ```sh
-cmake --build --preset debug --target cai_example_conversation_handles
+make build-debug
 ./build/debug/cai_example_conversation_handles conv_abc123
 ```
 

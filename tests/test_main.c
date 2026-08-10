@@ -90,9 +90,13 @@ typedef struct alloc_count_state {
 
 typedef struct tracking_alloc_state {
   void *ptrs[64];
+  size_t sizes[64];
   size_t allocs;
   size_t frees;
   size_t foreign_frees;
+  const char *secret;
+  size_t secret_len;
+  size_t secret_free_hits;
 } tracking_alloc_state;
 
 typedef struct fail_alloc_state {
@@ -897,6 +901,34 @@ static void test_model_capabilities(test_state *state) {
       0L);
   expect_int(state, "model_gpt_5_5_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
+  expect_int(state, "model_gpt_5_6_context",
+             cai_model_context_window_tokens(CAI_MODEL_GPT_5_6), 1050000L);
+  info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_TERRA);
+  if (info == NULL) {
+    test_fail(state, "model_gpt_5_6_terra_metadata", "model missing");
+    return;
+  }
+  expect_int(state, "model_gpt_5_6_terra_short_input_cents",
+             (long)(info->input_usd_per_million * 100.0 + 0.5), 200L);
+  expect_int(state, "model_gpt_5_6_terra_long_output_cents",
+             (long)(info->long_output_usd_per_million * 100.0 + 0.5), 1800L);
+  expect_int(state, "model_gpt_5_6_terra_reasoning_mode",
+             cai_model_supports(CAI_MODEL_GPT_5_6_TERRA,
+                                CAI_MODEL_CAP_REASONING_PRO_MODE),
+             1L);
+  info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_LUNA);
+  if (info == NULL) {
+    test_fail(state, "model_gpt_5_6_luna_metadata", "model missing");
+    return;
+  }
+  expect_int(state, "model_gpt_5_6_luna_short_input_cents",
+             (long)(info->input_usd_per_million * 100.0 + 0.5), 20L);
+  expect_int(state, "model_gpt_5_6_luna_long_output_cents",
+             (long)(info->long_output_usd_per_million * 100.0 + 0.5), 180L);
+  expect_int(state, "model_gpt_5_6_luna_structured",
+             cai_model_supports(CAI_MODEL_GPT_5_6_LUNA,
+                                CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
+             1L);
   expect_int(state, "model_gpt_5_5_pro_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5_PRO), 1050000L);
   expect_int(state, "model_gpt_5_5_pro_not_streaming",
@@ -906,6 +938,54 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports(CAI_MODEL_GPT_5_4_PRO,
                                 CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
              0L);
+  expect_int(state, "model_gpt_5_4_reasoning",
+             cai_model_supports(CAI_MODEL_GPT_5_4, CAI_MODEL_CAP_REASONING),
+             1L);
+  expect_int(state, "model_gpt_5_2_reasoning",
+             cai_model_supports(CAI_MODEL_GPT_5_2, CAI_MODEL_CAP_REASONING),
+             1L);
+  expect_int(state, "model_o4_mini_reasoning",
+             cai_model_supports(CAI_MODEL_O4_MINI, CAI_MODEL_CAP_REASONING),
+             1L);
+  expect_int(state, "model_o3_reasoning",
+             cai_model_supports(CAI_MODEL_O3, CAI_MODEL_CAP_REASONING), 1L);
+  expect_int(state, "model_o1_mini_reasoning",
+             cai_model_supports(CAI_MODEL_O1_MINI, CAI_MODEL_CAP_REASONING),
+             1L);
+  expect_int(
+      state, "model_o1_mini_snapshot_reasoning",
+      cai_model_supports(CAI_MODEL_O1_MINI_2024_09_12, CAI_MODEL_CAP_REASONING),
+      1L);
+  expect_int(state, "model_o1_mini_streaming",
+             cai_model_supports(CAI_MODEL_O1_MINI, CAI_MODEL_CAP_STREAMING),
+             1L);
+  expect_int(
+      state, "model_o1_mini_not_function_calling",
+      cai_model_supports(CAI_MODEL_O1_MINI, CAI_MODEL_CAP_FUNCTION_CALLING),
+      0L);
+  expect_int(
+      state, "model_o1_mini_not_structured",
+      cai_model_supports(CAI_MODEL_O1_MINI, CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
+      0L);
+  expect_int(state, "model_o1_mini_snapshot_deprecated",
+             (long)(cai_model_metadata_flags(CAI_MODEL_O1_MINI_2024_09_12) &
+                    CAI_MODEL_META_DEPRECATED),
+             CAI_MODEL_META_DEPRECATED);
+  info = cai_model_info_by_id(CAI_MODEL_O1_MINI);
+  if (info == NULL) {
+    test_fail(state, "model_o1_mini_lookup_missing", "model missing");
+  } else {
+    expect_int(state, "model_o1_mini_input_cents",
+               (long)(info->input_usd_per_million * 100.0 + 0.5), 110L);
+    expect_int(state, "model_o1_mini_cached_input_cents",
+               (long)(info->cached_input_usd_per_million * 100.0 + 0.5), 55L);
+    expect_int(state, "model_o1_mini_output_cents",
+               (long)(info->output_usd_per_million * 100.0 + 0.5), 440L);
+  }
+  expect_int(
+      state, "model_gpt_5_chat_latest_no_reasoning",
+      cai_model_supports(CAI_MODEL_GPT_5_CHAT_LATEST, CAI_MODEL_CAP_REASONING),
+      0L);
   expect_int(state, "model_gpt_5_3_codex_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_3_CODEX), 400000L);
   expect_int(state, "model_chat_latest_context",
@@ -914,7 +994,7 @@ static void test_model_capabilities(test_state *state) {
              cai_model_auto_compact_token_limit(CAI_MODEL_GPT_5_4), 840000L);
   expect_str(state, "openrouter_model_default",
              CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES,
-             CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE);
+             CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA);
   expect_int(
       state, "openrouter_nemotron_context",
       cai_model_context_window_tokens(
@@ -950,6 +1030,11 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE,
                                 CAI_MODEL_CAP_STRUCTURED_OUTPUTS),
              0L);
+  expect_int(state, "openrouter_poolside_deprecated",
+             (long)(cai_model_metadata_flags(
+                        CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE) &
+                    CAI_MODEL_META_DEPRECATED),
+             CAI_MODEL_META_DEPRECATED);
   expect_int(state, "openrouter_poolside_m_context",
              cai_model_context_window_tokens(
                  CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE),
@@ -957,6 +1042,46 @@ static void test_model_capabilities(test_state *state) {
   expect_int(state, "openrouter_poolside_m_streaming",
              cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE,
                                 CAI_MODEL_CAP_STREAMING),
+             1L);
+  expect_int(state, "openrouter_poolside_m_deprecated",
+             (long)(cai_model_metadata_flags(
+                        CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE) &
+                    CAI_MODEL_META_DEPRECATED),
+             CAI_MODEL_META_DEPRECATED);
+  expect_int(state, "openrouter_poolside_s_context",
+             cai_model_context_window_tokens(
+                 CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE),
+             262144L);
+  expect_int(state, "openrouter_poolside_s_provider",
+             (long)(cai_model_metadata_flags(
+                        CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE) &
+                    CAI_MODEL_META_PROVIDER_OPENROUTER),
+             CAI_MODEL_META_PROVIDER_OPENROUTER);
+  expect_int(state, "openrouter_poolside_s_verified",
+             (long)(cai_model_metadata_flags(
+                        CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE) &
+                    CAI_MODEL_META_VERIFIED),
+             CAI_MODEL_META_VERIFIED);
+  expect_int(state, "openrouter_poolside_s_streaming",
+             cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE,
+                                CAI_MODEL_CAP_STREAMING),
+             1L);
+  expect_int(state, "openrouter_poolside_s_tools",
+             cai_model_supports(CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE,
+                                CAI_MODEL_CAP_FUNCTION_CALLING),
+             1L);
+  expect_int(
+      state, "openrouter_gpt_5_6_luna_context",
+      cai_model_context_window_tokens(CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA),
+      1050000L);
+  expect_int(state, "openrouter_gpt_5_6_luna_provider",
+             (long)(cai_model_metadata_flags(
+                        CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA) &
+                    CAI_MODEL_META_PROVIDER_OPENROUTER),
+             CAI_MODEL_META_PROVIDER_OPENROUTER);
+  expect_int(state, "openrouter_gpt_5_6_luna_reasoning_mode",
+             cai_model_supports(CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA,
+                                CAI_MODEL_CAP_REASONING_PRO_MODE),
              1L);
   if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_NANO, 1000000LL, 200000LL,
                                    1000000LL) < 0.44 ||
@@ -971,10 +1096,19 @@ static void test_model_capabilities(test_state *state) {
     test_fail(state, "model_usage_usd_long",
               "unexpected gpt-5.5 long-context cost estimate");
   }
+  if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_6_LUNA, 300000LL, 100000LL,
+                                   100000LL) < 0.26 ||
+      cai_model_estimate_usage_usd(CAI_MODEL_GPT_5_6_LUNA, 300000LL, 100000LL,
+                                   100000LL) > 0.27) {
+    test_fail(state, "model_gpt_5_6_luna_usage_usd_long",
+              "unexpected gpt-5.6-luna long-context cost estimate");
+  }
   expect_int(state, "model_usage_usd_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_NANO), 1L);
   expect_int(state, "model_usage_usd_latest_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_5), 1L);
+  expect_int(state, "model_usage_usd_gpt_5_6_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_6_SOL), 1L);
   expect_int(state, "model_usage_usd_latest_pro_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_5_PRO), 1L);
   expect_int(state, "model_usage_usd_5_4_nano_priced",
@@ -989,10 +1123,14 @@ static void test_model_capabilities(test_state *state) {
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_4_TURBO), 0L);
   expect_int(state, "model_usage_usd_verified_free",
              cai_model_can_estimate_usage_usd(
-                 CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE),
+                 CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE),
+             1L);
+  expect_int(state, "model_usage_usd_openrouter_gpt_5_6_luna_priced",
+             cai_model_can_estimate_usage_usd(
+                 CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA),
              1L);
   if (cai_model_estimate_usage_usd(
-          CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE, 1000000LL, 0LL,
+          CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE, 1000000LL, 0LL,
           1000000LL) != 0.0) {
     test_fail(state, "model_usage_usd_free",
               "verified free model should estimate zero spend");
@@ -1277,7 +1415,8 @@ static int tracking_allocator_find(const tracking_alloc_state *state,
   return -1;
 }
 
-static int tracking_allocator_insert(tracking_alloc_state *state, void *ptr) {
+static int tracking_allocator_insert(tracking_alloc_state *state, void *ptr,
+                                     size_t size) {
   size_t i;
 
   if (state == NULL || ptr == NULL) {
@@ -1286,10 +1425,30 @@ static int tracking_allocator_insert(tracking_alloc_state *state, void *ptr) {
   for (i = 0U; i < sizeof(state->ptrs) / sizeof(state->ptrs[0]); i++) {
     if (state->ptrs[i] == NULL) {
       state->ptrs[i] = ptr;
+      state->sizes[i] = size;
       return 0;
     }
   }
   return -1;
+}
+
+static int tracking_allocator_contains_secret(const tracking_alloc_state *state,
+                                              int index) {
+  const unsigned char *bytes;
+  size_t i;
+
+  if (state == NULL || index < 0 || state->secret == NULL ||
+      state->secret_len == 0U || state->ptrs[index] == NULL ||
+      state->sizes[index] < state->secret_len) {
+    return 0;
+  }
+  bytes = (const unsigned char *)state->ptrs[index];
+  for (i = 0U; i + state->secret_len <= state->sizes[index]; i++) {
+    if (memcmp(bytes + i, state->secret, state->secret_len) == 0) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 static void *tracking_allocator_malloc(void *context, size_t size) {
@@ -1299,7 +1458,7 @@ static void *tracking_allocator_malloc(void *context, size_t size) {
   state = (tracking_alloc_state *)context;
   ptr = malloc(size);
   if (ptr != NULL && state != NULL) {
-    if (tracking_allocator_insert(state, ptr) != 0) {
+    if (tracking_allocator_insert(state, ptr, size) != 0) {
       free(ptr);
       return NULL;
     }
@@ -1327,6 +1486,7 @@ static void *tracking_allocator_realloc(void *context, void *ptr, size_t size) {
   new_ptr = realloc(ptr, size);
   if (new_ptr != NULL && state != NULL) {
     state->ptrs[index] = new_ptr;
+    state->sizes[index] = size;
   }
   return new_ptr;
 }
@@ -1346,7 +1506,11 @@ static void tracking_allocator_free(void *context, void *ptr) {
     }
     return;
   }
+  if (tracking_allocator_contains_secret(state, index)) {
+    state->secret_free_hits++;
+  }
   state->ptrs[index] = NULL;
+  state->sizes[index] = 0U;
   state->frees++;
   free(ptr);
 }
@@ -5370,6 +5534,15 @@ static void test_client_open(test_state *state) {
                CAI_ERR_INVALID);
     cai_error_cleanup(&error);
     cai_error_init(&error);
+    agent_config.max_tool_calls = 0;
+    agent_config.reasoning_mode = "ultra";
+    expect_int(state, "agent_reject_invalid_reasoning_mode",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_ERR_INVALID);
+    expect_str(state, "agent_reject_invalid_reasoning_mode_message",
+               error.message, "reasoning mode must be standard or pro");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
   }
   cai_client_close(client);
   client = NULL;
@@ -5704,6 +5877,14 @@ static void test_response_json(test_state *state) {
              params->set_reasoning(params, CAI_REASONING_EFFORT_LOW,
                                    CAI_REASONING_SUMMARY_AUTO, &error),
              CAI_OK);
+  expect_int(state, "params_set_reasoning_mode",
+             params->set_reasoning_mode(params, CAI_REASONING_MODE_PRO, &error),
+             CAI_OK);
+  expect_int(state, "params_set_bad_reasoning_mode",
+             params->set_reasoning_mode(params, "ultra", &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "params_set_parallel_tools",
              params->set_parallel_tool_calls(params, 0, &error), CAI_OK);
   expect_int(state, "params_set_bad_parallel_tools",
@@ -5897,9 +6078,8 @@ static void test_response_json(test_state *state) {
     if (strstr(json, "\"max_tool_calls\":3") == NULL) {
       test_fail(state, "params_serialize", "max tool calls missing from JSON");
     }
-    if (strstr(json,
-               "\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"}") ==
-        NULL) {
+    if (strstr(json, "\"reasoning\":{\"effort\":\"low\",\"mode\":\"pro\","
+                     "\"summary\":\"auto\"}") == NULL) {
       test_fail(state, "params_serialize", "reasoning missing from JSON");
     }
     if (strstr(json, "\"parallel_tool_calls\":false") == NULL) {
@@ -6455,6 +6635,9 @@ static void test_response_spooled_request_arrays(test_state *state) {
              cai_response_create_params_new(&params, &error), CAI_OK);
   expect_int(state, "spooled_params_model",
              params->set_model(params, CAI_MODEL_GPT_5_NANO, &error), CAI_OK);
+  expect_int(state, "spooled_params_reasoning_mode",
+             params->set_reasoning_mode(params, CAI_REASONING_MODE_PRO, &error),
+             CAI_OK);
   expect_int(state, "spooled_bad_raw_set",
              cai_response_create_params_set_raw_input_json(
                  params, "{\"type\":\"message\"", &error),
@@ -6608,6 +6791,7 @@ static void test_response_spooled_request_arrays(test_state *state) {
             NULL ||
         strstr(json, "\"filename\":\"tool.txt\"") == NULL ||
         strstr(json, "\"file_data\":\"tool file text\"") == NULL ||
+        strstr(json, "\"reasoning\":{\"mode\":\"pro\"}") == NULL ||
         strstr(json, "\"text\":\"remembered\"") >
             strstr(json, "\"text\":\"next\"")) {
       test_fail(state, "spooled_request_json",
@@ -9735,6 +9919,574 @@ static void test_mcp_streamable_http_client_roundtrip(test_state *state) {
 }
 
 static void
+test_mcp_streamable_http_client_oauth2_client_credentials(test_state *state) {
+  static const char token_body[] =
+      "{\"access_token\":\"mcp-oidc-token\",\"token_type\":\"Bearer\","
+      "\"expires_in\":3600,\"scope\":\"mcp.read\"}";
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char ping_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
+  static const char *token_required[] = {
+      "POST /v1/oauth/token HTTP/",
+      "Content-Type: application/x-www-form-urlencoded",
+      "grant_type=client_credentials",
+      "client_id=mcp-client",
+      "client_secret=mcp-secret",
+      "scope=mcp.read",
+      "audience=mcp-server",
+      "resource=https%3A%2F%2Fmcp.example.test%2F"};
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-oidc-token", "\"id\":1",
+      "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-oidc-token",
+      "MCP-Session-Id: oauth-session",
+      "\"method\":\"notifications/initialized\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-oidc-token",
+      "MCP-Session-Id: oauth-session", "\"id\":2", "\"method\":\"ping\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body},
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json", "req-init\r\nMCP-Session-Id: oauth-session",
+       initialize_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", ping_required,
+       sizeof(ping_required) / sizeof(ping_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, ping_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  tracking_alloc_state alloc_state;
+  size_t allocs_after_open;
+  char url[192];
+  char token_url[192];
+
+  client = NULL;
+  allocs_after_open = 0U;
+  memset(&server, 0, sizeof(server));
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  alloc_state.secret = "mcp-oidc-token";
+  alloc_state.secret_len = strlen(alloc_state.secret);
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_oauth2_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  config.oauth2_scope = "mcp.read";
+  config.oauth2_audience = "mcp-server";
+  config.oauth2_resource = "https://mcp.example.test/";
+  config.allocator.malloc_fn = tracking_allocator_malloc;
+  config.allocator.realloc_fn = tracking_allocator_realloc;
+  config.allocator.free_fn = tracking_allocator_free;
+  config.allocator.context = &alloc_state;
+  expect_int(state, "mcp_streamable_oauth2_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  allocs_after_open = alloc_state.allocs;
+  expect_int(state, "mcp_streamable_oauth2_ping",
+             cai_mcp_client_ping(client, &error), CAI_OK);
+  cai_mcp_client_destroy(client);
+  client = NULL;
+  expect_int(state, "mcp_streamable_oauth2_allocator_used_after_open",
+             alloc_state.allocs > allocs_after_open, 1L);
+  expect_int(state, "mcp_streamable_oauth2_foreign_free",
+             alloc_state.foreign_frees, 0L);
+  expect_int(state, "mcp_streamable_oauth2_secret_scrubbed",
+             alloc_state.secret_free_hits, 0L);
+  expect_int(state, "mcp_streamable_oauth2_alloc_balance",
+             (long)(alloc_state.allocs - alloc_state.frees), 0L);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_oauth2_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_streamable_http_client_api_key_rejects_unsafe_token(
+    test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.timeout_ms = 500L;
+  config.api_key = "mcp-api-key\r\nInjected: nope";
+  expect_int(state, "mcp_streamable_api_key_unsafe_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_api_key_unsafe_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_api_key_unsafe_message", error.message,
+             "MCP authorization token must be HTTP header safe");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_mcp_streamable_http_client_api_key_rejects_remote_http(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://mcp.example.test/mcp";
+  config.api_key = "mcp-api-key";
+  expect_int(state, "mcp_streamable_api_key_remote_http_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_api_key_remote_http_message", error.message,
+             "authenticated MCP URLs must use HTTPS or loopback HTTP");
+  expect_str(state, "mcp_streamable_api_key_remote_http_detail", error.detail,
+             "url");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_streamable_http_client_api_key_rejects_127_hostname(
+    test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.attacker.example/mcp";
+  config.api_key = "mcp-api-key";
+  expect_int(state, "mcp_streamable_api_key_127_hostname_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_api_key_127_hostname_message",
+             error.message,
+             "authenticated MCP URLs must use HTTPS or loopback HTTP");
+  expect_str(state, "mcp_streamable_api_key_127_hostname_detail", error.detail,
+             "url");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_streamable_http_client_api_key_rejects_userinfo_loopback(
+    test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:80@attacker.example/mcp";
+  config.api_key = "mcp-api-key";
+  expect_int(state, "mcp_streamable_api_key_userinfo_loopback_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_api_key_userinfo_loopback_message",
+             error.message,
+             "authenticated MCP URLs must use HTTPS or loopback HTTP");
+  expect_str(state, "mcp_streamable_api_key_userinfo_loopback_detail",
+             error.detail, "url");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_mcp_streamable_http_client_api_key_rejects_short_url(test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "x";
+  config.api_key = "mcp-api-key";
+  expect_int(state, "mcp_streamable_api_key_short_url_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_api_key_short_url_message", error.message,
+             "authenticated MCP URLs must use HTTPS or loopback HTTP");
+  expect_str(state, "mcp_streamable_api_key_short_url_detail", error.detail,
+             "url");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_streamable_http_client_oauth2_rejects_remote_http_token(
+    test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "https://mcp.example.test/mcp";
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = "http://auth.example.test/oauth/token";
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  expect_int(state, "mcp_streamable_oauth2_remote_token_http_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_oauth2_remote_token_http_message",
+             error.message,
+             "authenticated MCP URLs must use HTTPS or loopback HTTP");
+  expect_str(state, "mcp_streamable_oauth2_remote_token_http_detail",
+             error.detail, "oauth2_token_endpoint");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_mcp_streamable_http_client_oauth2_rejects_discovered_remote_http_token(
+    test_state *state) {
+  char detail[64];
+
+  detail[0] = '\0';
+  expect_int(state, "mcp_streamable_oauth2_discovered_http_token_status",
+             cai_mcp_test_authenticated_url_status(
+                 "http://auth.example.test/oauth/token",
+                 "discovered_token_endpoint", detail, sizeof(detail)),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_oauth2_discovered_http_token_detail",
+             detail, "discovered_token_endpoint");
+}
+
+static void
+test_mcp_streamable_http_client_oauth2_rejects_loopback_http_oidc_discovery(
+    test_state *state) {
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+
+  client = NULL;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = "http://127.0.0.1:1/mcp";
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = "";
+  config.oidc_issuer = "http://127.0.0.1:1/issuer";
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  expect_int(state, "mcp_streamable_oauth2_loopback_oidc_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "mcp_streamable_oauth2_loopback_oidc_message",
+             error.message, "MCP OIDC discovery issuer must use HTTPS");
+  expect_str(state, "mcp_streamable_oauth2_loopback_oidc_detail", error.detail,
+             "oidc_issuer");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_streamable_http_client_oauth2_rejects_non_bearer_token(
+    test_state *state) {
+  static const char token_body[] =
+      "{\"access_token\":\"mcp-dpop-token\",\"token_type\":\"DPoP\","
+      "\"expires_in\":3600}";
+  static const char *token_required[] = {"POST /v1/oauth/token HTTP/"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char token_url[192];
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_oauth2_dpop_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  expect_int(state, "mcp_streamable_oauth2_dpop_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_oauth2_dpop_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_oauth2_dpop_message", error.message,
+             "failed to parse MCP OAuth2 token response");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_oauth2_dpop_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_client_oauth2_rejects_unsafe_token(test_state *state) {
+  static const char token_body[] =
+      "{\"access_token\":\"mcp-oidc-token\\r\\nInjected: nope\","
+      "\"token_type\":\"Bearer\",\"expires_in\":3600}";
+  static const char *token_required[] = {"POST /v1/oauth/token HTTP/"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char token_url[192];
+  char url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_oauth2_unsafe_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  expect_int(state, "mcp_streamable_oauth2_unsafe_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_oauth2_unsafe_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_PROTOCOL);
+  expect_str(state, "mcp_streamable_oauth2_unsafe_message", error.message,
+             "MCP authorization token must be HTTP header safe");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_oauth2_unsafe_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_client_oauth2_token_http_error(test_state *state) {
+  static const char *token_required[] = {"POST /v1/oauth/token HTTP/"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 429,
+       "Too Many Requests", "application/json", NULL, "{}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char token_url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_oauth2_error_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  expect_int(state, "mcp_streamable_oauth2_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_oauth2_error_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_SERVER);
+  expect_int(state, "mcp_streamable_oauth2_error_status", error.http_status,
+             429L);
+  expect_str(state, "mcp_streamable_oauth2_error_message", error.message,
+             "MCP OAuth2 token endpoint returned HTTP error");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_oauth2_error_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_client_oauth2_token_response_limit(test_state *state) {
+  static const char token_body[] =
+      "{\"access_token\":\"mcp-oidc-token\",\"token_type\":\"Bearer\","
+      "\"expires_in\":3600,\"scope\":\"mcp.read\"}";
+  static const char *token_required[] = {"POST /v1/oauth/token HTTP/"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_error error;
+  char url[192];
+  char token_url[192];
+
+  client = NULL;
+  memset(&server, 0, sizeof(server));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streamable_oauth2_limit_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  config.oauth2_max_response_bytes = 48U;
+  expect_int(state, "mcp_streamable_oauth2_limit_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "mcp_streamable_oauth2_limit_ping",
+             cai_mcp_client_ping(client, &error), CAI_ERR_TRANSPORT);
+  expect_str(state, "mcp_streamable_oauth2_limit_message", error.message,
+             "MCP OAuth2 token request failed");
+  expect_str(state, "mcp_streamable_oauth2_limit_detail", error.detail,
+             "OAuth HTTP response exceeded configured limit");
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streamable_oauth2_limit_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
+test_mcp_streamable_http_client_streaming_oauth2_error(test_state *state) {
+  static const char token_body[] =
+      "{\"access_token\":\"mcp-short-token\",\"token_type\":\"Bearer\","
+      "\"expires_in\":1}";
+  static const char initialize_body[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock-mcp\","
+      "\"version\":\"1\"}}}";
+  static const char *token_required[] = {"POST /v1/oauth/token HTTP/"};
+  static const char *init_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-short-token", "\"id\":1",
+      "\"method\":\"initialize\""};
+  static const char *initialized_required[] = {
+      "POST /v1/mcp HTTP/", "Authorization: Bearer mcp-short-token",
+      "MCP-Session-Id: streaming-oauth-session",
+      "\"method\":\"notifications/initialized\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body},
+      {"POST /v1/mcp HTTP/", init_required,
+       sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
+       "application/json",
+       "req-init\r\nMCP-Session-Id: streaming-oauth-session", initialize_body},
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, token_body},
+      {"POST /v1/mcp HTTP/", initialized_required,
+       sizeof(initialized_required) / sizeof(initialized_required[0]), NULL, 0U,
+       202, "Accepted", "application/json", NULL, ""},
+      {"POST /v1/oauth/token HTTP/", token_required,
+       sizeof(token_required) / sizeof(token_required[0]), NULL, 0U, 429,
+       "Too Many Requests", "application/json", NULL, "{}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  char url[192];
+  char token_url[192];
+
+  client = NULL;
+  sink = NULL;
+  memset(&server, 0, sizeof(server));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "mcp_streaming_oauth2_error_mock",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  snprintf(token_url, sizeof(token_url), "%s/oauth/token", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 500L;
+  config.auth_mode = CAI_MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS;
+  config.oauth2_token_endpoint = token_url;
+  config.oauth2_client_id = "mcp-client";
+  config.oauth2_client_secret = "mcp-secret";
+  expect_int(state, "mcp_streaming_oauth2_error_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+  expect_int(state, "mcp_streaming_oauth2_error_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "mcp_streaming_oauth2_error_call",
+             cai_mcp_client_call_tool(client, "stream", NULL, sink, &error),
+             CAI_ERR_SERVER);
+  expect_int(state, "mcp_streaming_oauth2_error_status", error.http_status,
+             429L);
+  expect_str(state, "mcp_streaming_oauth2_error_message", error.message,
+             "MCP OAuth2 token endpoint returned HTTP error");
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "mcp_streaming_oauth2_error_mock", server.pid,
+                    &server.child_status);
+}
+
+static void
 test_mcp_streamable_http_client_custom_allocator_metadata(test_state *state) {
   static const char initialize_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -12120,16 +12872,19 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
       "id: resume-2\n"
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "Authorization: Bearer mcp-api-key",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-resume-session",
+      "Authorization: Bearer mcp-api-key",
       "\"method\":\"notifications/initialized\""};
-  static const char *ping_required[] = {"POST /v1/mcp HTTP/",
-                                        "MCP-Session-Id: sse-resume-session",
-                                        "\"id\":2", "\"method\":\"ping\""};
+  static const char *ping_required[] = {
+      "POST /v1/mcp HTTP/", "MCP-Session-Id: sse-resume-session",
+      "Authorization: Bearer mcp-api-key", "\"id\":2", "\"method\":\"ping\""};
   static const char *resume_required[] = {
       "GET /v1/mcp HTTP/", "Accept: text/event-stream",
-      "MCP-Session-Id: sse-resume-session", "Last-Event-ID: resume-1"};
+      "MCP-Session-Id: sse-resume-session", "Authorization: Bearer mcp-api-key",
+      "Last-Event-ID: resume-1"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12163,6 +12918,7 @@ static void test_mcp_streamable_http_sse_resume_get(test_state *state) {
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = url;
   config.timeout_ms = 500L;
+  config.api_key = "mcp-api-key";
   expect_int(state, "mcp_streamable_sse_resume_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
@@ -12335,17 +13091,23 @@ test_mcp_streamable_http_streaming_sse_resume_get(test_state *state) {
       "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{"
       "\"type\":\"text\",\"text\":\"resumed\"}],\"isError\":false}}\n\n";
   static const char *init_required[] = {"POST /v1/mcp HTTP/", "\"id\":1",
+                                        "Authorization: Bearer mcp-api-key",
                                         "\"method\":\"initialize\""};
   static const char *initialized_required[] = {
       "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
+      "Authorization: Bearer mcp-api-key",
       "\"method\":\"notifications/initialized\""};
   static const char *call_required[] = {
-      "POST /v1/mcp HTTP/", "MCP-Session-Id: streaming-resume-session",
-      "\"id\":2", "\"method\":\"tools/call\"", "\"name\":\"stream\""};
+      "POST /v1/mcp HTTP/",
+      "MCP-Session-Id: streaming-resume-session",
+      "Authorization: Bearer mcp-api-key",
+      "\"id\":2",
+      "\"method\":\"tools/call\"",
+      "\"name\":\"stream\""};
   static const char *resume_required[] = {
       "GET /v1/mcp HTTP/", "Accept: text/event-stream",
       "MCP-Session-Id: streaming-resume-session",
-      "Last-Event-ID: stream-resume-1"};
+      "Authorization: Bearer mcp-api-key", "Last-Event-ID: stream-resume-1"};
   static const mock_http_expectation script[] = {
       {"POST /v1/mcp HTTP/", init_required,
        sizeof(init_required) / sizeof(init_required[0]), NULL, 0U, 200, "OK",
@@ -12385,6 +13147,7 @@ test_mcp_streamable_http_streaming_sse_resume_get(test_state *state) {
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = url;
   config.timeout_ms = 500L;
+  config.api_key = "mcp-api-key";
   expect_int(state, "mcp_streamable_stream_sse_resume_open",
              cai_mcp_streamable_http_client_open(&config, &client, &error),
              CAI_OK);
@@ -31336,6 +32099,34 @@ static const test_entry test_entries[] = {
     {"mcp_client_registry_adapter", test_mcp_client_registry_adapter},
     {"mcp_streamable_http_client_roundtrip",
      test_mcp_streamable_http_client_roundtrip},
+    {"mcp_streamable_http_client_api_key_rejects_unsafe_token",
+     test_mcp_streamable_http_client_api_key_rejects_unsafe_token},
+    {"mcp_streamable_http_client_api_key_rejects_remote_http",
+     test_mcp_streamable_http_client_api_key_rejects_remote_http},
+    {"mcp_streamable_http_client_api_key_rejects_127_hostname",
+     test_mcp_streamable_http_client_api_key_rejects_127_hostname},
+    {"mcp_streamable_http_client_api_key_rejects_userinfo_loopback",
+     test_mcp_streamable_http_client_api_key_rejects_userinfo_loopback},
+    {"mcp_streamable_http_client_api_key_rejects_short_url",
+     test_mcp_streamable_http_client_api_key_rejects_short_url},
+    {"mcp_streamable_http_client_oauth2_client_credentials",
+     test_mcp_streamable_http_client_oauth2_client_credentials},
+    {"mcp_streamable_http_client_oauth2_rejects_remote_http_token",
+     test_mcp_streamable_http_client_oauth2_rejects_remote_http_token},
+    {"mcp_streamable_http_client_oauth2_rejects_discovered_remote_http_token",
+     test_mcp_streamable_http_client_oauth2_rejects_discovered_remote_http_token},
+    {"mcp_streamable_http_client_oauth2_rejects_loopback_http_oidc_discovery",
+     test_mcp_streamable_http_client_oauth2_rejects_loopback_http_oidc_discovery},
+    {"mcp_streamable_http_client_oauth2_rejects_non_bearer_token",
+     test_mcp_streamable_http_client_oauth2_rejects_non_bearer_token},
+    {"mcp_streamable_http_client_oauth2_rejects_unsafe_token",
+     test_mcp_streamable_http_client_oauth2_rejects_unsafe_token},
+    {"mcp_streamable_http_client_oauth2_token_http_error",
+     test_mcp_streamable_http_client_oauth2_token_http_error},
+    {"mcp_streamable_http_client_oauth2_token_response_limit",
+     test_mcp_streamable_http_client_oauth2_token_response_limit},
+    {"mcp_streamable_http_client_streaming_oauth2_error",
+     test_mcp_streamable_http_client_streaming_oauth2_error},
     {"mcp_streamable_http_client_custom_allocator_metadata",
      test_mcp_streamable_http_client_custom_allocator_metadata},
     {"mcp_streamable_http_client_logging",

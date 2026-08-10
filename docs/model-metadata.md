@@ -36,6 +36,7 @@ For every newly added or changed OpenAI model:
    - Structured output support.
    - Image/audio input and output support.
    - Realtime support, when CAI supports that surface.
+   - Reasoning support and any model-specific reasoning modes.
 4. Set context-window metadata from the per-model page.
 5. Set pricing metadata from the Standard API pricing table.
 6. Add long-context pricing fields when OpenAI documents a specific threshold.
@@ -91,7 +92,7 @@ Run the focused checks while editing:
 
 ```sh
 make format
-cmake --build --preset debug --target cai_tests
+make build-debug
 build/debug/cai_tests --filter model_capabilities
 build/debug/cai_tests --filter usage_
 make lua-rock
@@ -102,7 +103,7 @@ Before committing a model/pricing update, run formatting and the local suite:
 
 ```sh
 make format
-ctest --preset debug --output-on-failure
+make test-debug CTEST_FLAGS='--output-on-failure'
 ```
 
 For ordinary implementation slices outside model metadata, `make

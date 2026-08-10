@@ -408,6 +408,17 @@ static size_t cai_lua_opt_size_field(lua_State *L, int index, const char *name,
   return (size_t)n;
 }
 
+static void cai_lua_reject_logger_field(lua_State *L, int index,
+                                        const char *name) {
+  index = lua_absindex(L, index);
+  lua_getfield(L, index, name);
+  if (!lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    luaL_error(L, "%s is not supported by cai Lua", name);
+  }
+  lua_pop(L, 1);
+}
+
 static size_t cai_lua_opt_mcp_tool_output_max_bytes(lua_State *L, int index,
                                                     size_t fallback) {
   lua_Integer n;
@@ -1260,6 +1271,8 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
       L, index, "tool_choice_json", config->tool_choice_json);
   config->reasoning_effort = cai_lua_opt_string_field(
       L, index, "reasoning_effort", config->reasoning_effort);
+  config->reasoning_mode = cai_lua_opt_string_field(L, index, "reasoning_mode",
+                                                    config->reasoning_mode);
   config->reasoning_summary = cai_lua_opt_string_field(
       L, index, "reasoning_summary", config->reasoning_summary);
   config->max_output_tokens = cai_lua_opt_int_field(
@@ -1373,6 +1386,9 @@ static int cai_lua_open(lua_State *L) {
     config.ca_path = cai_lua_opt_string_field(L, 1, "ca_path", config.ca_path);
     config.json_response_limit_bytes = cai_lua_opt_size_field(
         L, 1, "json_response_limit_bytes", config.json_response_limit_bytes);
+    cai_lua_reject_logger_field(L, 1, "logger");
+    config.logger_disabled =
+        cai_lua_opt_bool_field(L, 1, "logger_disabled", config.logger_disabled);
     lua_getfield(L, 1, "usage_limits");
     if (!lua_isnil(L, -1)) {
       cai_lua_usage_limits_from_table(L, -1, &config.usage_limits);
@@ -1398,6 +1414,7 @@ static int cai_lua_open(lua_State *L) {
         L, 1, "chatgpt_auth_ca_bundle_path", auth_config.ca_bundle_path);
     auth_config.ca_path = cai_lua_opt_string_field(L, 1, "chatgpt_auth_ca_path",
                                                    auth_config.ca_path);
+    auth_config.logger_disabled = config.logger_disabled;
   }
   if (chatgpt_auth_json != NULL && chatgpt_auth_json[0] != '\0') {
     chatgpt_auth_enabled = 1;
@@ -1483,6 +1500,9 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
     config.ca_bundle_path =
         cai_lua_opt_string_field(L, 1, "ca_bundle_path", config.ca_bundle_path);
     config.ca_path = cai_lua_opt_string_field(L, 1, "ca_path", config.ca_path);
+    cai_lua_reject_logger_field(L, 1, "logger");
+    config.logger_disabled =
+        cai_lua_opt_bool_field(L, 1, "logger_disabled", config.logger_disabled);
   }
   rc = cai_chatgpt_auth_open(&config, &auth, &error);
   if (rc != CAI_OK) {
@@ -1572,6 +1592,9 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
     config.ca_bundle_path =
         cai_lua_opt_string_field(L, 1, "ca_bundle_path", config.ca_bundle_path);
     config.ca_path = cai_lua_opt_string_field(L, 1, "ca_path", config.ca_path);
+    cai_lua_reject_logger_field(L, 1, "logger");
+    config.logger_disabled =
+        cai_lua_opt_bool_field(L, 1, "logger_disabled", config.logger_disabled);
   }
   rc = cai_chatgpt_login_start(&config, &login, &authorize_url, &error);
   if (rc != CAI_OK) {
@@ -5484,6 +5507,17 @@ static int cai_lua_params_set_reasoning(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_params_set_reasoning_mode(lua_State *L) {
+  cai_lua_params *self;
+  cai_error error;
+  int rc;
+  self = cai_lua_check_params(L, 1);
+  cai_error_init(&error);
+  rc = self->ptr->set_reasoning_mode(self->ptr, luaL_optstring(L, 2, NULL),
+                                     &error);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_params_set_text_format_json_object(lua_State *L) {
   cai_lua_params *self;
   cai_error error;
@@ -6169,6 +6203,7 @@ static const luaL_Reg cai_lua_params_methods[] = {
     {"set_parallel_tool_calls", cai_lua_params_set_parallel_tool_calls},
     {"set_compact_threshold", cai_lua_params_set_compact_threshold},
     {"set_reasoning", cai_lua_params_set_reasoning},
+    {"set_reasoning_mode", cai_lua_params_set_reasoning_mode},
     {"set_text_format_json_object", cai_lua_params_set_text_format_json_object},
     {"set_text_format_json_schema", cai_lua_params_set_text_format_json_schema},
     {"set_text_verbosity", cai_lua_params_set_text_verbosity},
@@ -6360,6 +6395,9 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("REASONING_EFFORT_MEDIUM", CAI_REASONING_EFFORT_MEDIUM);
   CAI_LUA_SET_STRING("REASONING_EFFORT_HIGH", CAI_REASONING_EFFORT_HIGH);
   CAI_LUA_SET_STRING("REASONING_EFFORT_XHIGH", CAI_REASONING_EFFORT_XHIGH);
+  CAI_LUA_SET_STRING("REASONING_EFFORT_MAX", CAI_REASONING_EFFORT_MAX);
+  CAI_LUA_SET_STRING("REASONING_MODE_STANDARD", CAI_REASONING_MODE_STANDARD);
+  CAI_LUA_SET_STRING("REASONING_MODE_PRO", CAI_REASONING_MODE_PRO);
   CAI_LUA_SET_STRING("REASONING_SUMMARY_AUTO", CAI_REASONING_SUMMARY_AUTO);
   CAI_LUA_SET_STRING("REASONING_SUMMARY_CONCISE",
                      CAI_REASONING_SUMMARY_CONCISE);
@@ -6375,6 +6413,9 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("MODEL_CAP_IMAGE_INPUT", CAI_MODEL_CAP_IMAGE_INPUT);
   CAI_LUA_SET_INTEGER("MODEL_CAP_AUDIO_INPUT", CAI_MODEL_CAP_AUDIO_INPUT);
   CAI_LUA_SET_INTEGER("MODEL_CAP_AUDIO_OUTPUT", CAI_MODEL_CAP_AUDIO_OUTPUT);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_REASONING", CAI_MODEL_CAP_REASONING);
+  CAI_LUA_SET_INTEGER("MODEL_CAP_REASONING_PRO_MODE",
+                      CAI_MODEL_CAP_REASONING_PRO_MODE);
   CAI_LUA_SET_INTEGER("MODEL_META_VERIFIED", CAI_MODEL_META_VERIFIED);
   CAI_LUA_SET_INTEGER("MODEL_META_INCOMPLETE", CAI_MODEL_META_INCOMPLETE);
   CAI_LUA_SET_INTEGER("MODEL_META_INFERRED", CAI_MODEL_META_INFERRED);
@@ -6382,6 +6423,10 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("MODEL_META_PROVIDER_OPENROUTER",
                       CAI_MODEL_META_PROVIDER_OPENROUTER);
   CAI_LUA_SET_STRING("MODEL_DEFAULT_RESPONSES", CAI_MODEL_DEFAULT_RESPONSES);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_6", CAI_MODEL_GPT_5_6);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_6_SOL", CAI_MODEL_GPT_5_6_SOL);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_6_TERRA", CAI_MODEL_GPT_5_6_TERRA);
+  CAI_LUA_SET_STRING("MODEL_GPT_5_6_LUNA", CAI_MODEL_GPT_5_6_LUNA);
   CAI_LUA_SET_STRING("MODEL_GPT_5_5", CAI_MODEL_GPT_5_5);
   CAI_LUA_SET_STRING("MODEL_GPT_5_5_2026_04_23", CAI_MODEL_GPT_5_5_2026_04_23);
   CAI_LUA_SET_STRING("MODEL_GPT_5_5_PRO", CAI_MODEL_GPT_5_5_PRO);
@@ -6525,6 +6570,10 @@ int luaopen_cai(lua_State *L) {
                      CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE);
   CAI_LUA_SET_STRING("OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE",
                      CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE);
+  CAI_LUA_SET_STRING("OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE",
+                     CAI_OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE);
+  CAI_LUA_SET_STRING("OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA",
+                     CAI_OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA);
   CAI_LUA_SET_STRING("OPENROUTER_MODEL_DEFAULT_RESPONSES",
                      CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES);
   CAI_LUA_SET_STRING("MCP_PROTOCOL_VERSION", CAI_MCP_PROTOCOL_VERSION);
