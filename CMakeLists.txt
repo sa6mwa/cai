@@ -524,8 +524,11 @@ if(CAI_BUILD_LUA)
       "CAI_BUILD_LUA requires Lua 5.5 headers and library. Set "
       "CAI_BUILD_LUA=OFF to skip the binding.")
   endif()
+  set(CAI_LUA_ROCK_SHARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/share/lua/5.5")
+  set(CAI_LUA_ROCK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/lib/lua/5.5")
   set(CAI_LUA_TEST_ENV
-      "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua/?.so;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib;;")
+      "LUA_PATH=${CAI_LUA_ROCK_SHARE_DIR}/?.lua\;${CAI_LUA_ROCK_SHARE_DIR}/?/init.lua\;\;"
+      "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib\;${CAI_LUA_ROCK_LIB_DIR}/?.so\;\;")
   if(CMAKE_C_FLAGS_DEBUG MATCHES "fsanitize=address" AND
      CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -779,6 +782,35 @@ if(CAI_BUILD_EXAMPLES)
 endif()
 
 if(CAI_BUILD_LUA)
+  set(_cai_pslog_lua_include_hints
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/share/lua/5.5"
+    "${CMAKE_CURRENT_BINARY_DIR}/luarocks/share/lua/5.5")
+  find_program(CAI_LUAROCKS_EXECUTABLE NAMES luarocks)
+  if(CAI_LUAROCKS_EXECUTABLE)
+    execute_process(
+      COMMAND "${CAI_LUAROCKS_EXECUTABLE}" config deploy_lua_dir
+      RESULT_VARIABLE _cai_luarocks_deploy_lua_dir_result
+      OUTPUT_VARIABLE _cai_luarocks_deploy_lua_dir
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_cai_luarocks_deploy_lua_dir_result EQUAL 0 AND
+       NOT _cai_luarocks_deploy_lua_dir STREQUAL "")
+      list(APPEND _cai_pslog_lua_include_hints
+        "${_cai_luarocks_deploy_lua_dir}")
+    endif()
+  endif()
+  list(APPEND _cai_pslog_lua_include_hints
+    "/usr/local/share/lua/5.5"
+    "/usr/share/lua/5.5"
+    "/opt/homebrew/share/lua/5.5")
+  find_path(CAI_PSLOG_LUA_INCLUDE_DIR pslog_lua.h
+    HINTS ${_cai_pslog_lua_include_hints}
+    NO_CMAKE_FIND_ROOT_PATH)
+  if(NOT CAI_PSLOG_LUA_INCLUDE_DIR)
+    message(FATAL_ERROR
+      "CAI_BUILD_LUA requires pslog_lua.h from lua-pslog. Install lua-pslog "
+      "or set CAI_PSLOG_LUA_INCLUDE_DIR.")
+  endif()
   set(_cai_lua_link_target "${_cai_internal_link_target}")
   if(TARGET cai_shared)
     set(_cai_lua_link_target cai_shared)
@@ -792,6 +824,8 @@ if(CAI_BUILD_LUA)
     "${CAI_PUBLIC_INCLUDE_DIR}"
     "${CAI_GENERATED_INCLUDE_DIR}"
     "${CAI_LONEJSON_INCLUDE_DIR}"
+    "${CAI_PSLOG_LUA_INCLUDE_DIR}"
+    "${CAI_PSLOG_INCLUDE_DIR}"
     "${CAI_LUA_INCLUDE_DIR}")
   target_link_libraries(cai_lua PRIVATE ${_cai_lua_link_target}
     ${CAI_LONEJSON_LINK})
@@ -799,6 +833,7 @@ if(CAI_BUILD_LUA)
     target_link_options(cai_lua PRIVATE "-undefined" "dynamic_lookup")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(cai_lua PRIVATE "-Wl,--allow-shlib-undefined")
+    target_link_libraries(cai_lua PRIVATE ${CMAKE_DL_LIBS})
   else()
     target_link_libraries(cai_lua PRIVATE "${CAI_LUA_LIBRARY}")
   endif()
@@ -1534,6 +1569,17 @@ if(CAI_BUILD_TESTS)
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT 3)
+    add_test(NAME cai_lua_mcp_client_e2e
+      COMMAND /bin/sh
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_mcp_client_e2e.sh"
+        $<TARGET_FILE:cai_mcp_http_server>
+        "${CAI_LUA_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_mcp_client.lua")
+    set_tests_properties(cai_lua_mcp_client_e2e PROPERTIES
+      LABELS "smoke;local"
+      ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT 5)
   endif()
 
   if(CAI_BUILD_INTEGRATION_TESTS)

@@ -4473,6 +4473,7 @@ static void test_mcp_client_registry_adapter(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   write_state writer;
+  raw_tool_state raw_state;
   lonejson_spooled args;
   lonejson_error json_error;
   cai_error error;
@@ -4483,6 +4484,7 @@ static void test_mcp_client_registry_adapter(test_state *state) {
   agent = NULL;
   sink = NULL;
   memset(&writer, 0, sizeof(writer));
+  memset(&raw_state, 0, sizeof(raw_state));
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
   memset(&config, 0, sizeof(config));
   cai_error_init(&error);
@@ -4530,6 +4532,34 @@ static void test_mcp_client_registry_adapter(test_state *state) {
   cai_tool_registry_destroy(registry);
   registry = NULL;
 
+  test_mcp_fake_client_init(&fake);
+  fake.tools[1].input_schema = NULL;
+  expect_int(state, "mcp_client_rollback_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "mcp_client_rollback_preexisting_tool",
+             registry->register_raw(registry, "local_only", "Local only",
+                                    "{\"type\":\"object\"}", 1, test_raw_tool,
+                                    &raw_state, &error),
+             CAI_OK);
+  config.name_prefix = "bad__";
+  expect_int(state, "mcp_client_rollback_bad_metadata",
+             cai_mcp_client_register_tools(&fake.public_client, registry,
+                                           &config, &error),
+             CAI_ERR_PROTOCOL);
+  expect_int(state, "mcp_client_rollback_count",
+             (long)cai_tool_registry_count(registry), 1L);
+  expect_str(state, "mcp_client_rollback_name",
+             cai_tool_registry_name_at(registry, 0), "local_only");
+  if (cai_tool_registry_name_at(registry, 1) != NULL) {
+    test_fail(state, "mcp_client_rollback_no_remote",
+              "remote tool survived failed registration");
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+
+  test_mcp_fake_client_init(&fake);
   memset(&writer, 0, sizeof(writer));
   cai_client_config_init(&client_config);
   cai_agent_config_init(&agent_config);
@@ -4554,7 +4584,7 @@ static void test_mcp_client_registry_adapter(test_state *state) {
              cai_agent_register_mcp_client_tools(agent, &fake.public_client,
                                                  &config, &error),
              CAI_OK);
-  expect_int(state, "mcp_client_agent_refresh_count", fake.refresh_count, 2L);
+  expect_int(state, "mcp_client_agent_refresh_count", fake.refresh_count, 1L);
   sink_callbacks.context = &writer;
   expect_int(state, "mcp_client_agent_sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
@@ -4567,7 +4597,7 @@ static void test_mcp_client_registry_adapter(test_state *state) {
              cai_tool_registry_run_spooled(CAI_AGENT_IMPL(agent)->tools,
                                            "agent__echo", &args, sink, &error),
              CAI_OK);
-  expect_int(state, "mcp_client_agent_call_count", fake.call_count, 2L);
+  expect_int(state, "mcp_client_agent_call_count", fake.call_count, 1L);
   expect_str(state, "mcp_client_agent_output", writer.buffer,
              "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],"
              "\"isError\":false}");

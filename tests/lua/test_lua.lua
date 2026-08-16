@@ -1,4 +1,5 @@
 local cai = require("cai")
+local pslog = require("pslog")
 
 local function assert_eq(actual, expected, label)
   if actual ~= expected then
@@ -89,6 +90,7 @@ end
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.mcp_handler) == "function")
+assert(type(cai.mcp_client) == "function")
 assert(type(cai.chatgpt_auth) == "function")
 assert(type(cai.chatgpt_login) == "function")
 assert(type(cai.chatgpt_login_browser_command) == "function")
@@ -98,6 +100,14 @@ assert(type(cai.chatgpt_login_browser_command()) == "string")
 assert(cai.chatgpt_login_browser_command() ~= "")
 assert(cai.MCP_DEFAULT_TOOL_OUTPUT_MAX_BYTES > 0)
 assert_eq(cai.MCP_TOOL_OUTPUT_UNLIMITED, -1, "mcp unlimited sentinel")
+assert_eq(cai.MCP_CLIENT_AUTH_NONE, 0, "mcp client no auth")
+assert(type(cai.MCP_CLIENT_AUTH_API_KEY) == "number")
+assert(type(cai.MCP_CLIENT_AUTH_OAUTH2_CLIENT_CREDENTIALS) == "number")
+assert_eq(cai.MCP_CLIENT_TOOL_TASK_SUPPORT_UNSPECIFIED, 0,
+  "mcp client task support unspecified")
+assert(type(cai.MCP_CLIENT_TOOL_TASK_SUPPORT_FORBIDDEN) == "number")
+assert(type(cai.MCP_CLIENT_TOOL_TASK_SUPPORT_OPTIONAL) == "number")
+assert(type(cai.MCP_CLIENT_TOOL_TASK_SUPPORT_REQUIRED) == "number")
 assert(type(cai.tool_schema) == "function")
 assert(type(cai.load_dotenv_api_key) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
@@ -113,6 +123,93 @@ assert_eq(cai.CHATGPT_AUTH_FALLBACK_CALLBACK_PORT, 1457,
 assert_eq(cai.OPENAI_API_KEY_ENV, "OPENAI_API_KEY", "OpenAI env name")
 assert_eq(cai.OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY", "OpenRouter env name")
 assert_eq(cai.TEXT_VERBOSITY_LOW, "low", "text verbosity low")
+
+local mcp_client_meta = debug.getregistry()["cai.mcp_client"]
+assert(type(mcp_client_meta) == "table")
+for _, method in ipairs({
+  "initialize",
+  "ping",
+  "refresh_tools",
+  "tool_count",
+  "tool_at",
+  "tools",
+  "call_tool",
+  "refresh_resources",
+  "resource_count",
+  "resource_at",
+  "resources",
+  "read_resource",
+  "refresh_resource_templates",
+  "resource_template_count",
+  "resource_template_at",
+  "resource_templates",
+  "refresh_prompts",
+  "prompt_count",
+  "prompt_at",
+  "prompts",
+  "get_prompt",
+  "complete",
+  "send_request",
+  "send_notification",
+  "register_tools",
+  "close",
+}) do
+  assert(type(mcp_client_meta.__index[method]) == "function",
+    "missing mcp client method " .. method)
+end
+
+assert_not_ok(cai.mcp_client({}))
+assert_not_ok(cai.mcp_client({
+  url = "http://example.test/mcp",
+  auth_mode = cai.MCP_CLIENT_AUTH_API_KEY,
+  api_key = "secret",
+}))
+local inert_mcp_client = assert_ok(cai.mcp_client({
+  url = "http://127.0.0.1:1/mcp",
+  client_name = "cai-lua-test",
+}))
+assert_eq(inert_mcp_client:tool_count(), 0, "empty mcp client tool cache")
+assert(inert_mcp_client:tool_at(1) == nil)
+assert_eq(#inert_mcp_client:tools(), 0, "empty mcp client tools")
+local function assert_mcp_rejects_source(label, fn)
+  local value, failure = fn()
+  local err = assert_not_ok(value, failure, label)
+  assert(tostring(err.message or ""):find("buffered", 1, true),
+    label .. " returned wrong error")
+end
+assert_mcp_rejects_source("MCP call_tool callback params", function()
+  return inert_mcp_client:call_tool("echo", function()
+    return "{}"
+  end)
+end)
+assert_mcp_rejects_source("MCP call_tool reader params", function()
+  return inert_mcp_client:call_tool("echo", spool_text("{}", 1))
+end)
+assert_mcp_rejects_source("MCP get_prompt callback arguments", function()
+  return inert_mcp_client:get_prompt("demo", function()
+    return "{}"
+  end)
+end)
+assert_mcp_rejects_source("MCP complete callback context", function()
+  return inert_mcp_client:complete("prompt", "demo", "name", "value", function()
+    return "{}"
+  end)
+end)
+assert_mcp_rejects_source("MCP send_request callback params", function()
+  return inert_mcp_client:send_request("ping", function()
+    return "{}"
+  end)
+end)
+assert_mcp_rejects_source("MCP send_notification callback params", function()
+  return inert_mcp_client:send_notification("notifications/initialized",
+    function()
+      return "{}"
+    end)
+end)
+inert_mcp_client:close()
+assert_throws(function()
+  inert_mcp_client:tool_count()
+end, "closed mcp client rejects method calls")
 assert_eq(cai.RESPONSE_TRUNCATION_AUTO, "auto", "response truncation auto")
 assert_eq(cai.SERVICE_TIER_FLEX, "flex", "service tier flex")
 assert_eq(cai.HOSTED_TOOL_WEB_SEARCH, "web_search", "hosted web search")
@@ -141,16 +238,30 @@ do
     "Lua client set_usage_limits method missing")
   assert(type(client_methods.usage) == "function",
     "Lua client usage method missing")
+  assert(type(client_methods.open_response_text_source) == "function",
+    "Lua client open_response_text_source method missing")
   assert(type(agent_methods.set_session_usage_limits) == "function",
     "Lua agent set_session_usage_limits method missing")
   assert(type(agent_methods.usage) == "function",
     "Lua agent usage method missing")
+  assert(type(agent_methods.run_auto_output) == "function",
+    "Lua agent run_auto_output method missing")
+  assert(type(agent_methods.add_user_file_source) == "function",
+    "Lua agent add_user_file_source method missing")
+  assert(type(agent_methods.open_text_source) == "function",
+    "Lua agent open_text_source method missing")
   assert(type(session_methods.set_usage_limits) == "function",
     "Lua session set_usage_limits method missing")
   assert(type(session_methods.usage) == "function",
     "Lua session usage method missing")
   assert(type(session_methods.close_with_usage) == "function",
     "Lua session close_with_usage method missing")
+  assert(type(session_methods.add_user_file_source) == "function",
+    "Lua session add_user_file_source method missing")
+  assert(type(session_methods.open_text_source) == "function",
+    "Lua session open_text_source method missing")
+  assert(type(session_methods.compact_experimental) == "function",
+    "Lua session compact_experimental method missing")
   for _, name in ipairs({
     "conversation_id",
     "created_at",
@@ -242,17 +353,497 @@ assert_eq(cai.model_can_estimate_usage_usd(
   cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE), true,
   "verified free OpenRouter model can enforce spend")
 
-assert_throws(function()
-  cai.open({ api_key = "test-key", logger = {} })
-end, "Lua client rejects logger field")
+assert_not_ok(cai.open({ api_key = "test-key", logger = {} }))
+assert_not_ok(cai.chatgpt_auth({ logger = {} }))
+assert_not_ok(cai.chatgpt_login({ logger = {} }))
+assert_not_ok(cai.mcp_client({ url = "http://127.0.0.1:1/mcp", logger = {} }))
 
+local logger_chunks = {}
+local base_logger = pslog.new_json({
+  output = function(chunk)
+    logger_chunks[#logger_chunks + 1] = chunk
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+local derived_logger = base_logger:with("component", "lua-cai-test")
+local logged_client = assert_ok(cai.open({
+  api_key = "test-key",
+  logger = derived_logger,
+  timeout_ms = 1,
+}))
+logged_client:close()
+local client_log_text = table.concat(logger_chunks)
+assert(client_log_text:find("cai.client.opened", 1, true))
+assert(client_log_text:find("lua-cai-test", 1, true))
+logger_chunks = {}
+local logged_mcp_client = assert_ok(cai.mcp_client({
+  url = "http://127.0.0.1:1/mcp",
+  logger = derived_logger,
+  timeout_ms = 1,
+}))
+logged_mcp_client:close()
+local mcp_log_text = table.concat(logger_chunks)
+assert(mcp_log_text:find("cai.mcp.client.opened", 1, true))
+assert(mcp_log_text:find("lua-cai-test", 1, true))
 assert_throws(function()
-  cai.chatgpt_auth({ logger = {} })
-end, "Lua ChatGPT auth rejects logger field")
+  cai.open({
+    api_key = "test-key",
+    logger = derived_logger,
+    usage_limits = "bad",
+  })
+end, "client logger with malformed usage limits")
+assert_throws(function()
+  cai.open({
+    api_key = "test-key",
+    logger = derived_logger,
+    chatgpt_auth_http_timeout_ms = {},
+  })
+end, "client logger with malformed ChatGPT auth field")
+assert_throws(function()
+  cai.mcp_client({
+    url = "http://127.0.0.1:1/mcp",
+    logger = derived_logger,
+    allocator = {},
+  })
+end, "mcp logger with unsupported allocator")
+do
+  local co_client
+  local co = coroutine.create(function()
+    return cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      logger = derived_logger,
+      timeout_ms = 1,
+    })
+  end)
+  local resumed, value_or_err, err = coroutine.resume(co)
+  assert(resumed, "logger coroutine client creation coroutine failed")
+  co_client = assert_ok(value_or_err, err, "logger coroutine client creation")
+  co = nil
+  collectgarbage()
+  collectgarbage()
+  co_client:close()
+end
+derived_logger:close()
 
-assert_throws(function()
-  cai.chatgpt_login({ logger = {} })
-end, "Lua ChatGPT login rejects logger field")
+local reentrant_client
+local reentrant_close_seen = false
+local reentrant_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if reentrant_client ~= nil and not reentrant_close_seen then
+      ok, err = reentrant_client:close()
+      assert_not_ok(ok, err, "active client close from logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active client close returned wrong error")
+      reentrant_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+reentrant_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  logger = reentrant_logger,
+  timeout_ms = 1,
+}))
+assert_not_ok(reentrant_client:retrieve_response("resp_lua_reentrant_close"),
+  "reentrant logger request must fail normally")
+assert(reentrant_close_seen, "logger did not exercise reentrant client close")
+reentrant_client:close()
+reentrant_logger:close()
+
+local child_close_client
+local child_close_armed = false
+local child_close_seen = false
+local child_close_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if child_close_client ~= nil and child_close_armed and not child_close_seen then
+      ok, err = child_close_client:close()
+      assert_not_ok(ok, err, "active parent client close from agent logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active parent client close returned wrong error")
+      child_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+child_close_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  logger = child_close_logger,
+  timeout_ms = 1,
+}))
+local child_close_agent = assert_ok(child_close_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+}))
+assert_ok(child_close_agent:add_user_text("hello"))
+child_close_armed = true
+assert_not_ok(child_close_agent:run(),
+  "agent logger parent close request must fail normally")
+child_close_armed = false
+assert(child_close_seen, "agent logger did not exercise parent client close")
+child_close_agent:close()
+child_close_client:close()
+child_close_logger:close()
+
+local active_agent_client
+local active_agent_agent
+local active_agent_armed = false
+local active_agent_close_seen = false
+local active_agent_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if active_agent_agent ~= nil and active_agent_armed and
+        not active_agent_close_seen then
+      ok, err = active_agent_agent:close()
+      assert_not_ok(ok, err, "active agent self close from logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active agent self close returned wrong error")
+      active_agent_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+active_agent_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  logger = active_agent_logger,
+  timeout_ms = 1,
+}))
+active_agent_agent = assert_ok(active_agent_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+}))
+assert_ok(active_agent_agent:add_user_text("hello"))
+active_agent_armed = true
+assert_not_ok(active_agent_agent:run(),
+  "agent logger self close request must fail normally")
+active_agent_armed = false
+assert(active_agent_close_seen, "agent logger did not exercise self close")
+active_agent_agent:close()
+active_agent_client:close()
+active_agent_logger:close()
+
+local session_close_client
+local session_close_armed = false
+local session_close_seen = false
+local session_close_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if session_close_client ~= nil and session_close_armed and
+        not session_close_seen then
+      ok, err = session_close_client:close()
+      assert_not_ok(ok, err, "active parent client close from session logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active session parent client close returned wrong error")
+      session_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+session_close_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  logger = session_close_logger,
+  timeout_ms = 1,
+}))
+local session_close_agent = assert_ok(session_close_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+}))
+local session_close_session = assert_ok(session_close_agent:new_session())
+assert_ok(session_close_session:add_user_text("hello"))
+session_close_armed = true
+assert_not_ok(session_close_session:run(),
+  "session logger parent close request must fail normally")
+session_close_armed = false
+assert(session_close_seen, "session logger did not exercise parent client close")
+session_close_session:close()
+session_close_agent:close()
+session_close_client:close()
+session_close_logger:close()
+
+local active_session_client
+local active_session_agent
+local active_session_session
+local active_session_armed = false
+local active_session_close_seen = false
+local active_session_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if active_session_session ~= nil and active_session_armed and
+        not active_session_close_seen then
+      ok, err = active_session_session:close()
+      assert_not_ok(ok, err, "active session self close from logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active session self close returned wrong error")
+      active_session_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+active_session_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  logger = active_session_logger,
+  timeout_ms = 1,
+}))
+active_session_agent = assert_ok(active_session_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+}))
+active_session_session = assert_ok(active_session_agent:new_session())
+assert_ok(active_session_session:add_user_text("hello"))
+active_session_armed = true
+assert_not_ok(active_session_session:run(),
+  "session logger self close request must fail normally")
+active_session_armed = false
+assert(active_session_close_seen, "session logger did not exercise self close")
+active_session_session:close()
+active_session_agent:close()
+active_session_client:close()
+active_session_logger:close()
+
+do
+  local lifetime_client = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }))
+  local lifetime_agent = assert_ok(lifetime_client:new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua test",
+  }))
+  local lifetime_session = assert_ok(lifetime_agent:new_session())
+  assert_not_ok(lifetime_agent:close(),
+    "agent close with a live session must fail")
+  lifetime_client = nil
+  lifetime_agent = nil
+  collectgarbage()
+  collectgarbage()
+  assert_ok(lifetime_session:add_user_text("still alive"),
+    nil, "session must retain parent client after agent close")
+  lifetime_session:close()
+end
+
+do
+  local close_usage_client = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }))
+  local close_usage_agent = assert_ok(close_usage_client:new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua test",
+  }))
+  local close_usage_session = assert_ok(close_usage_agent:new_session())
+  assert_ok(close_usage_session:close_with_usage(),
+    nil, "session close_with_usage")
+  local _, close_err = close_usage_agent:close()
+  assert(close_err == nil,
+    "close_with_usage must release parent session bookkeeping")
+  close_usage_client:close()
+end
+
+local registration_registry
+local registration_registry_client
+local registration_registry_armed = false
+local registration_registry_close_seen = false
+local registration_registry_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if registration_registry ~= nil and registration_registry_armed and
+        not registration_registry_close_seen then
+      ok, err = registration_registry:close()
+      assert_not_ok(ok, err, "active registry close from registration logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active registry close returned wrong error")
+      registration_registry_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+registration_registry = assert_ok(cai.tool_registry())
+registration_registry_client = assert_ok(cai.mcp_client({
+  url = "http://127.0.0.1:1/mcp",
+  logger = registration_registry_logger,
+  timeout_ms = 1,
+}))
+registration_registry_armed = true
+assert_not_ok(registration_registry:register_mcp_client_tools(
+  registration_registry_client), "registry MCP registration must fail normally")
+registration_registry_armed = false
+assert(registration_registry_close_seen,
+  "registry registration logger did not exercise close")
+registration_registry:close()
+registration_registry_client:close()
+registration_registry_logger:close()
+
+do
+  local failed_registry = assert_ok(cai.tool_registry())
+  local failed_mcp = assert_ok(cai.mcp_client({
+    url = "http://127.0.0.1:1/mcp",
+    timeout_ms = 1,
+  }))
+  assert_not_ok(failed_registry:register_mcp_client_tools(failed_mcp),
+    "failed registry MCP registration")
+  assert_ok(failed_mcp:close(),
+    nil, "failed registry MCP registration must release MCP client")
+  failed_registry:close()
+end
+
+local client_registry
+local client_registry_client
+local client_registry_armed = false
+local client_registry_close_seen = false
+local client_registry_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if client_registry ~= nil and client_registry_armed and
+        not client_registry_close_seen then
+      ok, err = client_registry:close()
+      assert_not_ok(ok, err, "active registry close from client registration")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active client registration registry close returned wrong error")
+      client_registry_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+client_registry = assert_ok(cai.tool_registry())
+client_registry_client = assert_ok(cai.mcp_client({
+  url = "http://127.0.0.1:1/mcp",
+  logger = client_registry_logger,
+  timeout_ms = 1,
+}))
+client_registry_armed = true
+assert_not_ok(client_registry_client:register_tools(client_registry),
+  "client registry registration must fail normally")
+client_registry_armed = false
+assert(client_registry_close_seen,
+  "client registry logger did not exercise close")
+client_registry:close()
+client_registry_client:close()
+client_registry_logger:close()
+
+do
+  local failed_registry = assert_ok(cai.tool_registry())
+  local failed_mcp = assert_ok(cai.mcp_client({
+    url = "http://127.0.0.1:1/mcp",
+    timeout_ms = 1,
+  }))
+  assert_not_ok(failed_mcp:register_tools(failed_registry),
+    "failed client registry MCP registration")
+  assert_ok(failed_mcp:close(),
+    nil, "failed client registry MCP registration must release MCP client")
+  failed_registry:close()
+end
+
+local registration_agent_client
+local registration_agent
+local registration_agent_mcp
+local registration_agent_armed = false
+local registration_agent_close_seen = false
+local registration_agent_logger = pslog.new_json({
+  output = function()
+    local ok
+    local err
+    if registration_agent ~= nil and registration_agent_armed and
+        not registration_agent_close_seen then
+      ok, err = registration_agent:close()
+      assert_not_ok(ok, err, "active agent close from registration logger")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active registration agent close returned wrong error")
+      registration_agent_close_seen = true
+    end
+  end,
+  no_color = true,
+  disable_timestamp = true,
+})
+registration_agent_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  timeout_ms = 1,
+}))
+registration_agent = assert_ok(registration_agent_client:new_agent({
+  model = cai.MODEL_GPT_5_NANO,
+  instructions = "offline lua test",
+}))
+registration_agent_mcp = assert_ok(cai.mcp_client({
+  url = "http://127.0.0.1:1/mcp",
+  logger = registration_agent_logger,
+  timeout_ms = 1,
+}))
+registration_agent_armed = true
+assert_not_ok(registration_agent:register_mcp_client_tools(registration_agent_mcp),
+  "agent MCP registration must fail normally")
+registration_agent_armed = false
+assert(registration_agent_close_seen,
+  "agent registration logger did not exercise close")
+registration_agent:close()
+registration_agent_client:close()
+registration_agent_mcp:close()
+registration_agent_logger:close()
+
+do
+  local failed_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local failed_agent = assert_ok(failed_client:new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua test",
+  }))
+  local failed_mcp = assert_ok(cai.mcp_client({
+    url = "http://127.0.0.1:1/mcp",
+    timeout_ms = 1,
+  }))
+  assert_not_ok(failed_agent:register_mcp_client_tools(failed_mcp),
+    "failed agent MCP registration")
+  assert_ok(failed_mcp:close(),
+    nil, "failed agent MCP registration must release MCP client")
+  failed_agent:close()
+  failed_client:close()
+end
+
+do
+  local failed_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local failed_agent = assert_ok(failed_client:new_agent({
+    model = cai.MODEL_GPT_5_NANO,
+    instructions = "offline lua test",
+  }))
+  local failed_mcp = assert_ok(cai.mcp_client({
+    url = "http://127.0.0.1:1/mcp",
+    timeout_ms = 1,
+  }))
+  assert_not_ok(failed_mcp:register_tools(failed_agent),
+    "failed client agent MCP registration")
+  assert_ok(failed_mcp:close(),
+    nil, "failed client agent MCP registration must release MCP client")
+  failed_agent:close()
+  failed_client:close()
+end
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
@@ -347,6 +938,18 @@ assert_ok(dummy_session:add_user_text("hello"))
 assert_ok(dummy_session:add_user_text_spooled(spool_text("spooled hello", 3)))
 assert_ok(dummy_session:add_user_file_data_spooled(
   "notes.txt", spool_text("spooled file data", 4)))
+local file_source_part = 0
+assert_ok(dummy_session:add_user_file_source("source.txt", function()
+  file_source_part = file_source_part + 1
+  return ({ "streamed ", "file", nil })[file_source_part]
+end, "auto"))
+assert_not_ok(dummy_session:add_user_file_source("bad-source.txt", function()
+  error("file source exploded")
+end), "Lua file source callback failure must fail")
+assert_ok(dummy_agent:add_user_file_source("agent-source.txt", "agent file source"))
+assert_not_ok(dummy_agent:add_user_file_source("agent-bad-source.txt", function()
+  return {}
+end), "Lua agent file source callback non-string result must fail")
 local source_part = 0
 assert_ok(dummy_session:add_user_text_source(function()
   source_part = source_part + 1
@@ -395,15 +998,16 @@ do
     '","refresh_token":"refresh-lua","account_id":"acct_lua"},' ..
     '"last_refresh":"2026-01-01T00:00:00Z"}')
   fp:close()
-  local standalone_auth = assert_ok(cai.chatgpt_auth({
-    auth_json_path = auth_path,
-    issuer = "http://127.0.0.1:1",
-    refresh_window_seconds = 300,
-    http_timeout_ms = 250,
-    insecure_skip_verify = 1,
-    ca_bundle_path = "/tmp/cai-lua-ca.pem",
-    ca_path = "/tmp/cai-lua-ca-dir",
-  }), nil, "Lua standalone ChatGPT auth open")
+	  local standalone_auth = assert_ok(cai.chatgpt_auth({
+	    auth_json_path = auth_path,
+	    issuer = "http://127.0.0.1:1",
+	    refresh_window_seconds = 300,
+	    http_timeout_ms = 250,
+	    insecure_skip_verify = 1,
+	    ca_bundle_path = "/tmp/cai-lua-ca.pem",
+	    ca_path = "/tmp/cai-lua-ca-dir",
+	    logger = base_logger,
+	  }), nil, "Lua standalone ChatGPT auth open")
   assert_eq(assert_ok(standalone_auth:access_token(), nil,
     "Lua standalone ChatGPT access token"), future_token,
     "Lua standalone ChatGPT token")
@@ -411,18 +1015,19 @@ do
   assert_throws(function()
     standalone_auth:access_token()
   end, "Lua standalone ChatGPT closed auth")
-  local auth_client = assert_ok(cai.open({
-    chatgpt_auth_json = auth_path,
-    base_url = "http://127.0.0.1:1/v1",
+	  local auth_client = assert_ok(cai.open({
+	    chatgpt_auth_json = auth_path,
+	    base_url = "http://127.0.0.1:1/v1",
     http_2_disabled = 1,
     ca_bundle_path = "/tmp/cai-lua-client-ca.pem",
     ca_path = "/tmp/cai-lua-client-ca-dir",
     timeout_ms = 1,
     chatgpt_auth_http_timeout_ms = 250,
-    chatgpt_auth_insecure_skip_verify = 1,
-    chatgpt_auth_ca_bundle_path = "/tmp/cai-lua-auth-ca.pem",
-    chatgpt_auth_ca_path = "/tmp/cai-lua-auth-ca-dir",
-  }), nil, "Lua ChatGPT auth client open")
+	    chatgpt_auth_insecure_skip_verify = 1,
+	    chatgpt_auth_ca_bundle_path = "/tmp/cai-lua-auth-ca.pem",
+	    chatgpt_auth_ca_path = "/tmp/cai-lua-auth-ca-dir",
+	    logger = base_logger,
+	  }), nil, "Lua ChatGPT auth client open")
   auth_client:close()
   os.remove(auth_path)
   local missing_client, missing_err = cai.open({
@@ -434,18 +1039,19 @@ end
 do
   local auth_path = os.tmpname()
   os.remove(auth_path)
-  local login, authorize_url_or_err = cai.chatgpt_login({
-    auth_json_path = auth_path,
-    redirect_uri = "http://localhost:1455/auth/callback",
+	  local login, authorize_url_or_err = cai.chatgpt_login({
+	    auth_json_path = auth_path,
+	    redirect_uri = "http://localhost:1455/auth/callback",
     issuer = "https://auth.example.test/",
     state = "state-fixed",
     code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789",
     originator = "cai-lua-test",
     http_timeout_ms = 250,
-    insecure_skip_verify = 1,
-    ca_bundle_path = "/tmp/cai-lua-login-ca.pem",
-    ca_path = "/tmp/cai-lua-login-ca-dir",
-  })
+	    insecure_skip_verify = 1,
+	    ca_bundle_path = "/tmp/cai-lua-login-ca.pem",
+	    ca_path = "/tmp/cai-lua-login-ca-dir",
+	    logger = base_logger,
+	  })
   local authorize_url = authorize_url_or_err
   assert_ok(login, authorize_url_or_err, "Lua ChatGPT login start")
   assert(authorize_url:match("^https://auth%.example%.test/oauth/authorize%?"),
@@ -655,6 +1261,25 @@ local registry = assert_ok(cai.tool_registry())
 local weather_schema = [[
 {"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}
 ]]
+do
+  local run_close_seen = false
+  local run_close_registry = assert_ok(cai.tool_registry())
+  assert_ok(run_close_registry:register_raw_tool(
+    "close_during_run", "Lua reentrant registry close test", weather_schema,
+    function()
+      local ok, err = run_close_registry:close()
+      assert_not_ok(ok, err, "active registry close from run")
+      assert(tostring(err.message or ""):find("active operation", 1, true),
+        "active registry run close returned wrong error")
+      run_close_seen = true
+      return '{"ok":true}'
+    end, true))
+  assert_ok(run_close_registry:run("close_during_run",
+    '{"city":"Gothenburg"}', function()
+    end), nil, "registry run reentrant close")
+  assert(run_close_seen, "registry run did not exercise reentrant close")
+  run_close_registry:close()
+end
 assert_ok(registry:register_raw_tool("lua_weather", "Lua weather test tool", weather_schema, function(args_json)
   assert(args_json:match("Gothenburg"))
   return '{"ok":true,"summary":"dry enough"}'

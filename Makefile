@@ -46,7 +46,7 @@ RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VER
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
-LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
+LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE docs/model-metadata.md include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
 .PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
@@ -148,7 +148,7 @@ build-host:
 cross-build:
 	bash ./scripts/cross_build.sh
 
-integration-build:
+integration-build: $(LUA_PSLOG_ROCK_STAMP)
 	bash ./scripts/build.sh integration
 
 test:
@@ -355,7 +355,7 @@ $(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | build-debu
 	mkdir -p "$(LUA_ROCK_TREE)"
 	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(LUA_ROCKSPEC)" "git+file://$(CURDIR)" "" "$$lib_ext" ""
 
-$(LUA_LONEJSON_ROCK_STAMP):
+$(LUA_LONEJSON_ROCK_STAMP): deps-debug
 	mkdir -p "$(LUA_ROCK_TREE)"
 	PKG_CONFIG_PATH="$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}" \
 	CFLAGS="$${CFLAGS:+$$CFLAGS }-I$(CAI_LONEJSON_PREFIX)/include" \
@@ -363,7 +363,7 @@ $(LUA_LONEJSON_ROCK_STAMP):
 	LD_LIBRARY_PATH="$(CAI_LONEJSON_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	luarocks install --tree "$(LUA_ROCK_TREE)" "$(LONEJSON_LUA_ROCK_URL)"
 
-$(LUA_PSLOG_ROCK_STAMP):
+$(LUA_PSLOG_ROCK_STAMP): deps-debug
 	mkdir -p "$(LUA_ROCK_TREE)"
 	PKG_CONFIG_PATH="$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}" \
 	CFLAGS="$${CFLAGS:+$$CFLAGS }-fPIC -I$(CAI_PSLOG_PREFIX)/include" \
@@ -373,7 +373,7 @@ $(LUA_PSLOG_ROCK_STAMP):
 
 $(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) $(LUA_PSLOG_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh $(LUA_ROCK_NATIVE_INPUTS)
 	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
-	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
+	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; export PSLOG_LUA_INCLUDE_DIR="$(ROOT)/$(LUA_ROCK_TREE)/share/lua/5.5"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
 
 lua-rock: $(LUA_ROCK_STAMP)
 
@@ -389,6 +389,10 @@ lua-test: lua-rock
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
 	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	lua tests/lua/test_lua.lua
+	$(CMAKE) --build build/debug --target cai_mcp_http_server
+	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
+	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
+	/bin/sh tests/lua_mcp_client_e2e.sh build/debug/cai_mcp_http_server lua tests/lua/e2e_mcp_client.lua
 
 $(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS)
 	rm -rf "$(RELEASE_LUA_ROCK_DIR)" "$(RELEASE_LUA_SOURCE_TARBALL)"

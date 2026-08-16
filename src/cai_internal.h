@@ -342,6 +342,7 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
                                   lonejson_spooled *arguments_json,
                                   cai_sink *output, cai_error *error);
 size_t cai_tool_registry_count(const cai_tool_registry *registry);
+void cai_tool_registry_truncate(cai_tool_registry *registry, size_t count);
 const char *cai_tool_registry_name_at(const cai_tool_registry *registry,
                                       size_t index);
 const char *cai_tool_registry_description_at(const cai_tool_registry *registry,

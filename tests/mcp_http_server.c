@@ -486,6 +486,7 @@ int main(int argc, char **argv) {
   long request_limit;
   long handled;
   int print_port;
+  int no_tools;
   int listener;
   int client;
   int i;
@@ -498,6 +499,7 @@ int main(int argc, char **argv) {
   request_limit = 0L;
   handled = 0L;
   print_port = 0;
+  no_tools = 0;
   cai_error_init(&error);
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -505,6 +507,8 @@ int main(int argc, char **argv) {
       port = (unsigned short)strtoul(argv[i], NULL, 10);
     } else if (strcmp(argv[i], "--print-port") == 0) {
       print_port = 1;
+    } else if (strcmp(argv[i], "--no-tools") == 0) {
+      no_tools = 1;
     } else if (strcmp(argv[i], "--requests") == 0 && i + 1 < argc) {
       i++;
       request_limit = strtol(argv[i], NULL, 10);
@@ -514,7 +518,7 @@ int main(int argc, char **argv) {
     }
   }
   rc = cai_tool_registry_new(&registry, &error);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && !no_tools) {
     rc = cai_tool_registry_register_lonejson(
         registry, "echo_message", "Echo a message through the MCP test server",
         &test_echo_arg_map, &test_echo_result_map, test_echo_tool, NULL,

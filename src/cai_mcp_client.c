@@ -10554,6 +10554,7 @@ int cai_mcp_client_register_tools(
   cai_buffer_builder name_builder;
   const char *schema_json;
   char *generated_schema_json;
+  size_t initial_tool_count;
   size_t i;
   int rc;
 
@@ -10561,6 +10562,7 @@ int cai_mcp_client_register_tools(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client and tool registry are required");
   }
+  initial_tool_count = cai_tool_registry_count(registry);
   memset(&defaults, 0, sizeof(defaults));
   effective = config != NULL ? config : &defaults;
   rc = cai_mcp_client_refresh_tools(client, error);
@@ -10570,8 +10572,9 @@ int cai_mcp_client_register_tools(
   for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
     tool = cai_mcp_client_tool_at(client, i);
     if (tool == NULL || tool->name == NULL || tool->input_schema == NULL) {
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "MCP tool metadata is incomplete");
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "MCP tool metadata is incomplete");
+      goto fail;
     }
     schema_json = cai_mcp_streamable_tool_schema_json(client, tool);
     generated_schema_json = NULL;
@@ -10579,8 +10582,9 @@ int cai_mcp_client_register_tools(
       generated_schema_json =
           cai_mcp_generate_registry_schema_json(tool->input_schema, error);
       if (generated_schema_json == NULL) {
-        return error != NULL && error->code != CAI_OK ? error->code
-                                                      : CAI_ERR_NOMEM;
+        rc = error != NULL && error->code != CAI_OK ? error->code
+                                                    : CAI_ERR_NOMEM;
+        goto fail;
       }
       schema_json = generated_schema_json;
     }
@@ -10590,7 +10594,7 @@ int cai_mcp_client_register_tools(
       if (rc != CAI_OK) {
         cai_free_mem(NULL, generated_schema_json);
         cai_free_mem(NULL, name_builder.data);
-        return rc;
+        goto fail;
       }
     }
     rc = cai_buffer_append_cstr(&name_builder, tool->name, error);
@@ -10600,15 +10604,16 @@ int cai_mcp_client_register_tools(
     if (rc != CAI_OK) {
       cai_free_mem(NULL, generated_schema_json);
       cai_free_mem(NULL, name_builder.data);
-      return rc;
+      goto fail;
     }
     context =
         (cai_mcp_registry_tool_context *)cai_alloc(NULL, sizeof(*context));
     if (context == NULL) {
       cai_free_mem(NULL, generated_schema_json);
       cai_free_mem(NULL, name_builder.data);
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to allocate MCP tool context");
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP tool context");
+      goto fail;
     }
     memset(context, 0, sizeof(*context));
     context->client = client;
@@ -10617,8 +10622,9 @@ int cai_mcp_client_register_tools(
       cai_free_mem(NULL, context);
       cai_free_mem(NULL, generated_schema_json);
       cai_free_mem(NULL, name_builder.data);
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to allocate MCP tool name");
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate MCP tool name");
+      goto fail;
     }
     rc = cai_tool_registry_register_raw_spooled_owned(
         registry, name_builder.data, tool->description, schema_json,
@@ -10628,10 +10634,14 @@ int cai_mcp_client_register_tools(
     cai_free_mem(NULL, generated_schema_json);
     if (rc != CAI_OK) {
       cai_mcp_registered_tool_context_cleanup(context);
-      return rc;
+      goto fail;
     }
   }
   return CAI_OK;
+
+fail:
+  cai_tool_registry_truncate(registry, initial_tool_count);
+  return rc;
 }
 
 int cai_agent_register_mcp_client_tools(

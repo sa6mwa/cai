@@ -200,7 +200,7 @@ The verification tiers are split intentionally:
 The Lua binding targets Lua 5.5 and is exposed as `require("cai")`. It wraps
 the public C workflow facade: clients, agents, sessions, responses/outputs,
 streaming sinks, tool registries, tool presets, ChatGPT auth/login helpers, and
-the MCP Streamable HTTP handler.
+the MCP Streamable HTTP handler and client.
 
 Build and run the local LuaRock test:
 

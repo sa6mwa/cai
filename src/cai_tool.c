@@ -1554,6 +1554,19 @@ size_t cai_tool_registry_count(const cai_tool_registry *registry) {
   return impl != NULL ? impl->count : 0U;
 }
 
+void cai_tool_registry_truncate(cai_tool_registry *registry, size_t count) {
+  cai_tool_registry_impl *impl;
+
+  impl = cai_tool_registry_impl_from_public(registry);
+  if (impl == NULL || count >= impl->count) {
+    return;
+  }
+  while (impl->count > count) {
+    impl->count--;
+    cai_tool_entry_cleanup(&impl->entries[impl->count]);
+  }
+}
+
 const char *cai_tool_registry_name_at(const cai_tool_registry *registry,
                                       size_t index) {
   const cai_tool_registry_impl *impl;

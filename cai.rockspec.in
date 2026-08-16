@@ -10,7 +10,7 @@ description = {
   detailed = [[
 Lua 5.5 binding for cai. It wraps the public C SDK facade: clients, agents,
 sessions, response/output handles, tool registries, tool presets, and the
-transport-neutral MCP Streamable HTTP handler.
+transport-neutral MCP Streamable HTTP handler and client.
 ]],
   homepage = "https://github.com/sa6mwa/cai",
   license = "MIT",
@@ -18,10 +18,11 @@ transport-neutral MCP Streamable HTTP handler.
 dependencies = {
   "lua >= 5.5, < 5.6",
   "lonejson >= 0.42.0",
+  "lua-pslog >= 0.9.0",
 }
 build = {
   type = "command",
-  build_command = "sh scripts/build_lua_rock.sh \"$(CC)\" \"$(CFLAGS)\" \"$(LIBFLAG)\" \"$(OBJ_EXTENSION)\" \"$(LIB_EXTENSION)\" \"$(LUA_INCDIR)\"",
+  build_command = "sh scripts/build_lua_rock.sh \"$(CC)\" \"$(CFLAGS)\" \"$(LIBFLAG)\" \"$(OBJ_EXTENSION)\" \"$(LIB_EXTENSION)\" \"$(LUA_INCDIR)\" \"$(ROCKS_TREE)\"",
   install = {
     lib = {
       ["cai"] = ".luarocks-build/cai.@LIB_EXTENSION@",
