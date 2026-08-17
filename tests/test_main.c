@@ -1,3 +1,4 @@
+#include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
@@ -21,6 +22,7 @@
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <pslog.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -112,6 +114,13 @@ typedef struct write_state {
   size_t length;
   int closed;
 } write_state;
+
+typedef struct runtime_event_state {
+  pthread_t owner;
+  int calls;
+  int saw_started;
+  int wrong_thread;
+} runtime_event_state;
 
 typedef struct fail_write_state {
   int writes;
@@ -1629,6 +1638,23 @@ static void test_write_close(void *context) {
 
   state = (write_state *)context;
   state->closed = 1;
+}
+
+static int test_runtime_event(void *context,
+                              const cai_agent_runtime_event *event,
+                              cai_error *error) {
+  runtime_event_state *state;
+
+  (void)error;
+  state = (runtime_event_state *)context;
+  state->calls++;
+  if (!pthread_equal(state->owner, pthread_self())) {
+    state->wrong_thread = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
+    state->saw_started = 1;
+  }
+  return CAI_OK;
 }
 
 static int test_fail_write(void *context, const void *bytes, size_t count,
@@ -23534,6 +23560,63 @@ static void test_smith_profile(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_lifecycle(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_idle_state",
+               cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    expect_int(state, "runtime_idle_value", run_state, CAI_AGENT_IDLE);
+    expect_int(state, "runtime_reject_idle_steering",
+               cai_agent_runtime_submit_steering(runtime, "steer", &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_submit",
+               cai_agent_runtime_submit(runtime, "offline turn", &error),
+               CAI_OK);
+    expect_int(state, "runtime_reject_second_turn",
+               cai_agent_runtime_submit(runtime, "second turn", &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    expect_int(state, "runtime_event_started", events.saw_started, 1L);
+    expect_int(state, "runtime_events_owner_thread", events.wrong_thread, 0L);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
 static void test_patch_tool(test_state *state) {
   static const char update_and_add[] = "*** Begin Patch\n"
                                        "*** Update File: alpha.txt\n"
@@ -32877,6 +32960,7 @@ static const test_entry test_entries[] = {
      test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
+    {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"patch_tool", test_patch_tool},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
