@@ -5,6 +5,7 @@
 #define CAI_AGENT_RUNTIME_H
 
 #include <cai/cai.h>
+#include <cai/session_store.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,7 +34,8 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_STEERING_QUEUED = 7,
   CAI_AGENT_EVENT_STEERING_DELIVERED = 8,
   CAI_AGENT_EVENT_RUN_COMPLETED = 9,
-  CAI_AGENT_EVENT_RUN_FAILED = 10
+  CAI_AGENT_EVENT_RUN_FAILED = 10,
+  CAI_AGENT_EVENT_SESSION_CHECKPOINTED = 11
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */
@@ -71,6 +73,19 @@ typedef struct cai_agent_runtime_config {
   const char *reasoning_effort;
   /** Optional host developer-instruction extension. */
   const char *developer_instructions_extension;
+  /**
+   * Optional callback-backed session store. NULL selects CAI's local JSONL
+   * store unless disable_default_session_store is non-zero.
+   */
+  const cai_agent_session_store *session_store;
+  /** Optional storage scope; NULL uses the canonical workspace directory. */
+  const char *session_scope;
+  /** Optional new session identifier; NULL generates one. */
+  const char *session_id;
+  /** Resume the newest checkpoint for the configured session scope. */
+  int resume_latest;
+  /** Disable CAI's default local JSONL store when session_store is NULL. */
+  int disable_default_session_store;
   /** Maximum queued runtime events; zero selects the bounded default. */
   size_t event_queue_limit;
   /** Maximum queued steering inputs; zero selects the bounded default. */
@@ -103,6 +118,8 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
 /** Read the currently observable runtime state. */
 int cai_agent_runtime_state(cai_agent_runtime *runtime,
                             cai_agent_run_state *out, cai_error *error);
+/** Return the runtime's stable session identifier, borrowed until close. */
+const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
 /** Close the runtime after stopping and joining its worker. */
 void cai_agent_runtime_close(cai_agent_runtime *runtime);
 

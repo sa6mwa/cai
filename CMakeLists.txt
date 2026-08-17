@@ -631,6 +631,7 @@ endif()
 set(CAI_SOURCES
   src/cai_agent.c
   src/cai_agent_runtime.c
+  src/cai_session_store.c
   src/cai_allocator.c
   src/cai_auth.c
   src/cai_client.c
@@ -1170,6 +1171,8 @@ if(CAI_BUILD_TESTS)
     agent_client_history_continuity
     smith_profile
     agent_runtime_lifecycle
+    agent_local_session_store
+    agent_runtime_resume
     patch_tool
     agent_tool_declarations
     agent_tool_manual_step

@@ -4,8 +4,13 @@
 #include "cai_internal.h"
 
 #include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
@@ -32,6 +37,11 @@ struct cai_agent_runtime {
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_agent_session_store local_store;
+  const cai_agent_session_store *session_store;
+  int owns_local_store;
+  char *session_scope;
+  char *session_id;
   cai_agent_run_state state;
   unsigned long long next_sequence;
   size_t event_limit;
@@ -47,6 +57,9 @@ struct cai_agent_runtime {
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
 };
+
+static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned long long cai_runtime_session_id_counter = 0U;
 
 static int cai_runtime_owner(const cai_agent_runtime *runtime,
                              cai_error *error) {
@@ -141,6 +154,70 @@ static void cai_runtime_set_state(cai_agent_runtime *runtime,
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
   cai_error_cleanup(&ignored);
+}
+
+static int cai_runtime_copy_string(const char *value, char **out,
+                                   cai_error *error) {
+  *out = NULL;
+  if (value == NULL || value[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime string is required");
+  }
+  *out = cai_strdup(NULL, value);
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy agent runtime string");
+  }
+  return CAI_OK;
+}
+
+static int
+cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
+                                cai_error *error) {
+  struct timespec now;
+  unsigned long long counter;
+  int length;
+
+  if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to generate agent session identifier");
+  }
+  pthread_mutex_lock(&cai_runtime_session_id_lock);
+  counter = ++cai_runtime_session_id_counter;
+  pthread_mutex_unlock(&cai_runtime_session_id_lock);
+  length = snprintf(output, CAI_AGENT_SESSION_ID_MAX, "smith-%lld-%ld-%llu",
+                    (long long)now.tv_sec, now.tv_nsec, counter);
+  if (length < 0 || (size_t)length >= CAI_AGENT_SESSION_ID_MAX) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to format agent session identifier");
+  }
+  return CAI_OK;
+}
+
+static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
+                                  cai_error *error) {
+  cai_source *state;
+  int rc;
+
+  if (runtime->session_store == NULL) {
+    return CAI_OK;
+  }
+  state = NULL;
+  rc = cai_session_export_state_source(runtime->session, &state, error);
+  if (rc == CAI_OK) {
+    rc = runtime->session_store->checkpoint(runtime->session_store->context,
+                                            runtime->session_scope,
+                                            runtime->session_id, state, error);
+  }
+  cai_source_close(state);
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    rc = cai_runtime_enqueue_locked(
+        runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
+        strlen(runtime->session_id), NULL, runtime->state, error);
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  return rc;
 }
 
 static int cai_runtime_spooled_copy(const lonejson_spooled *spool, char **out,
@@ -308,6 +385,9 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
       cai_runtime_input_node_free(input);
     }
+    if (rc == CAI_OK) {
+      rc = cai_runtime_checkpoint(runtime, &error);
+    }
     pthread_mutex_lock(&runtime->lock);
     if (rc == CAI_OK) {
       runtime->state = CAI_AGENT_COMPLETED;
@@ -391,6 +471,65 @@ int cai_agent_runtime_open(cai_client *client,
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
   }
+  if (rc == CAI_OK) {
+    const char *scope;
+    char session_id[CAI_AGENT_SESSION_ID_MAX];
+    char workspace[4096];
+
+    if (realpath(config->workspace_directory, workspace) == NULL) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "agent workspace directory must exist");
+    }
+    scope = config->session_scope != NULL ? config->session_scope : workspace;
+    if (rc == CAI_OK) {
+      rc = cai_runtime_copy_string(scope, &runtime->session_scope, error);
+    }
+    if (rc == CAI_OK && config->session_store != NULL) {
+      if (config->session_store->checkpoint == NULL ||
+          config->session_store->load_latest == NULL) {
+        rc = cai_set_error(error, CAI_ERR_INVALID,
+                           "session store callbacks are required");
+      } else {
+        runtime->session_store = config->session_store;
+      }
+    }
+    if (rc == CAI_OK && config->session_store == NULL &&
+        !config->disable_default_session_store) {
+      rc = cai_agent_local_session_store_open(NULL, &runtime->local_store,
+                                              error);
+      if (rc == CAI_OK) {
+        runtime->session_store = &runtime->local_store;
+        runtime->owns_local_store = 1;
+      }
+    }
+    if (rc == CAI_OK && config->resume_latest &&
+        runtime->session_store != NULL) {
+      cai_source *state;
+
+      state = NULL;
+      rc = runtime->session_store->load_latest(
+          runtime->session_store->context, runtime->session_scope, session_id,
+          sizeof(session_id), &state, error);
+      if (rc == CAI_OK && state != NULL) {
+        rc = cai_session_import_state_source(runtime->session, state, error);
+        if (rc == CAI_OK) {
+          rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
+        }
+      }
+      cai_source_close(state);
+    }
+    if (rc == CAI_OK && runtime->session_id == NULL) {
+      if (config->session_id != NULL) {
+        rc = cai_runtime_copy_string(config->session_id, &runtime->session_id,
+                                     error);
+      } else {
+        rc = cai_runtime_generate_session_id(session_id, error);
+        if (rc == CAI_OK) {
+          rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
+        }
+      }
+    }
+  }
   if (rc == CAI_OK && pthread_create(&runtime->worker_thread, NULL,
                                      cai_runtime_worker, runtime) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -403,6 +542,11 @@ int cai_agent_runtime_open(cai_client *client,
     if (runtime->agent != NULL) {
       cai_agent_destroy(runtime->agent);
     }
+    if (runtime->owns_local_store) {
+      cai_agent_local_session_store_close(&runtime->local_store);
+    }
+    cai_free_mem(NULL, runtime->session_scope);
+    cai_free_mem(NULL, runtime->session_id);
     pthread_cond_destroy(&runtime->condition);
     pthread_mutex_destroy(&runtime->lock);
     cai_free_mem(NULL, runtime);
@@ -598,6 +742,10 @@ int cai_agent_runtime_state(cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
+const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime) {
+  return runtime != NULL ? runtime->session_id : NULL;
+}
+
 void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   cai_runtime_event_node *event;
   cai_runtime_input_node *input;
@@ -630,6 +778,11 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   if (runtime->agent != NULL) {
     cai_agent_destroy(runtime->agent);
   }
+  if (runtime->owns_local_store) {
+    cai_agent_local_session_store_close(&runtime->local_store);
+  }
+  cai_free_mem(NULL, runtime->session_scope);
+  cai_free_mem(NULL, runtime->session_id);
   pthread_cond_destroy(&runtime->condition);
   pthread_mutex_destroy(&runtime->lock);
   cai_free_mem(NULL, runtime);

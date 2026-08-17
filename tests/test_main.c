@@ -2,6 +2,7 @@
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/session_store.h>
 #include <cai/smith.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/patch.h>
@@ -121,6 +122,15 @@ typedef struct runtime_event_state {
   int saw_started;
   int wrong_thread;
 } runtime_event_state;
+
+typedef struct runtime_session_store_state {
+  const char *checkpoint_json;
+  read_state reader;
+  int loads;
+  int checkpoints;
+  char scope[128];
+  char session_id[CAI_AGENT_SESSION_ID_MAX];
+} runtime_session_store_state;
 
 typedef struct fail_write_state {
   int writes;
@@ -1655,6 +1665,50 @@ static int test_runtime_event(void *context,
     state->saw_started = 1;
   }
   return CAI_OK;
+}
+
+static int test_runtime_session_store_checkpoint(void *context,
+                                                 const char *scope,
+                                                 const char *session_id,
+                                                 cai_source *state,
+                                                 cai_error *error) {
+  runtime_session_store_state *store;
+
+  (void)state;
+  (void)error;
+  store = (runtime_session_store_state *)context;
+  store->checkpoints++;
+  (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
+  (void)snprintf(store->session_id, sizeof(store->session_id), "%s",
+                 session_id);
+  return CAI_OK;
+}
+
+static int test_runtime_session_store_load(void *context, const char *scope,
+                                           char *session_id,
+                                           size_t session_id_capacity,
+                                           cai_source **out, cai_error *error) {
+  cai_source_callbacks callbacks;
+  runtime_session_store_state *store;
+
+  if (out == NULL || session_id == NULL ||
+      session_id_capacity < strlen("resumed_session") + 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid runtime test session store outputs");
+  }
+  store = (runtime_session_store_state *)context;
+  store->loads++;
+  (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
+  (void)snprintf(session_id, session_id_capacity, "%s", "resumed_session");
+  store->reader.text = store->checkpoint_json;
+  store->reader.offset = 0U;
+  store->reader.closed = 0;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &store->reader;
+  return cai_source_from_callbacks(&callbacks, out, error);
 }
 
 static int test_fail_write(void *context, const void *bytes, size_t count,
@@ -23583,6 +23637,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
+  runtime_config.disable_default_session_store = 1;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
   expect_int(state, "runtime_open",
@@ -23609,6 +23664,176 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
     expect_int(state, "runtime_event_started", events.saw_started, 1L);
     expect_int(state, "runtime_events_owner_thread", events.wrong_thread, 0L);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_local_session_store(test_state *state) {
+  char template_directory[] = "/tmp/cai-session-store-XXXXXX";
+  char session_id[CAI_AGENT_SESSION_ID_MAX];
+  char buffer[128];
+  char scope_path[PATH_MAX];
+  char file_path[PATH_MAX];
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  cai_source *loaded;
+  read_state reader;
+  cai_error error;
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  static const char hex[] = "0123456789abcdef";
+  FILE *fp;
+  size_t i;
+
+  cai_error_init(&error);
+  source = NULL;
+  loaded = NULL;
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(template_directory) == NULL) {
+    test_fail(state, "local_session_store_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = template_directory;
+  expect_int(state, "local_session_store_open",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_OK);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &reader;
+  reader.text = "{\"version\":1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_first_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_first_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", source, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  reader.text = "{\"version\":2}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_second_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_second_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", source, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  (void)SHA256((const unsigned char *)"/tmp/cai-session-store-scope",
+               strlen("/tmp/cai-session-store-scope"), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    scope_path[i * 2U] = hex[digest[i] >> 4U];
+    scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  scope_path[64] = '\0';
+  (void)snprintf(file_path, sizeof(file_path), "%s/%s/session_one.jsonl",
+                 template_directory, scope_path);
+  fp = fopen(file_path, "ab");
+  if (fp == NULL || fwrite("{\"partial\"", 1U, strlen("{\"partial\""), fp) !=
+                        strlen("{\"partial\"")) {
+    test_fail(state, "local_session_store_partial_write",
+              "failed to append interrupted checkpoint");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  reader.text = "{\"version\":3}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_repair_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_repair_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", source, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_load",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded, &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_id", session_id, "session_one");
+  if (loaded == NULL) {
+    test_fail(state, "local_session_store_load", "latest checkpoint missing");
+  } else {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\"version\":3}\n"));
+    expect_str(state, "local_session_store_latest_value", buffer,
+               "{\"version\":3}\n");
+    expect_int(state, "local_session_store_reset",
+               cai_source_reset(loaded, &error), CAI_OK);
+  }
+  cai_source_close(loaded);
+  cai_agent_local_session_store_close(&store);
+  unlink(file_path);
+  (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
+                 scope_path);
+  rmdir(file_path);
+  rmdir(template_directory);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_resume(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5.6-terra\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_resume_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_resume_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  expect_int(state, "runtime_resume_load_count", store_state.loads, 1L);
+  expect_str(state, "runtime_resume_scope", store_state.scope, "/tmp");
+  if (runtime != NULL) {
+    expect_str(state, "runtime_resume_session_id",
+               cai_agent_runtime_session_id(runtime), "resumed_session");
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -32961,6 +33186,8 @@ static const test_entry test_entries[] = {
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_local_session_store", test_agent_local_session_store},
+    {"agent_runtime_resume", test_agent_runtime_resume},
     {"patch_tool", test_patch_tool},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
