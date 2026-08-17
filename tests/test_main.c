@@ -348,6 +348,11 @@ typedef struct failing_callback_state {
   int calls;
 } failing_callback_state;
 
+typedef struct tool_round_inject_state {
+  const char *text;
+  int calls;
+} tool_round_inject_state;
+
 typedef struct counting_tool_state {
   int called;
 } counting_tool_state;
@@ -2819,6 +2824,19 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     return CAI_OK;
   }
   return CAI_OK;
+}
+
+static int test_tool_round_inject(void *context, cai_session *session,
+                                  cai_error *error) {
+  tool_round_inject_state *state;
+
+  state = (tool_round_inject_state *)context;
+  if (state == NULL || state->text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test tool-round injection state is required");
+  }
+  state->calls++;
+  return cai_session_add_user_text(session, state->text, error);
 }
 
 static int test_failing_stream_tool_done(void *context, const char *item_id,
@@ -8038,6 +8056,8 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
           strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
+          (strstr(request, "steering-boundary-marker") == NULL ||
+           strstr(request, "after-next-tool") != NULL) &&
           strstr(request, "\"tool_choice\"") == NULL) {
         return stream_tool_done_body;
       }
@@ -30350,6 +30370,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   write_state writer;
   stream_tool_state tool_stream;
   tool_event_state event_state;
+  tool_round_inject_state inject_state;
   spooled_raw_tool_state spooled_tool_state;
   cai_token_usage usage;
   cai_error error;
@@ -30392,6 +30413,8 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   run_options.max_tool_rounds = 2;
   run_options.tool_event = test_tool_event;
   run_options.tool_event_context = &event_state;
+  run_options.tool_round_completed = test_tool_round_inject;
+  run_options.tool_round_completed_context = &inject_state;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -30399,6 +30422,8 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   memset(&writer, 0, sizeof(writer));
   memset(&tool_stream, 0, sizeof(tool_stream));
   memset(&event_state, 0, sizeof(event_state));
+  memset(&inject_state, 0, sizeof(inject_state));
+  inject_state.text = "after-next-tool";
   memset(&spooled_tool_state, 0, sizeof(spooled_tool_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
@@ -30427,7 +30452,9 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   stream_sinks.function_call_context = &tool_stream;
   expect_int(state, "stream_auto_tool_add",
              cai_session_add_user_text(
-                 session, "stream malformed delta tool turn", &error),
+                 session,
+                 "stream malformed delta tool turn steering-boundary-marker",
+                 &error),
              CAI_OK);
   expect_int(
       state, "stream_auto_tool_run",
@@ -30457,6 +30484,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
              spooled_tool_state.chunks, 5L);
   expect_str(state, "stream_auto_tool_event_output", event_state.output,
              "{\"summary\":\"Gothenburg:0\"}");
+  expect_int(state, "stream_auto_tool_round_callback", inject_state.calls, 1L);
 
   cai_sink_close(sink);
   cai_session_destroy(session);

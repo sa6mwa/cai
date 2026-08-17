@@ -3434,6 +3434,12 @@ static int cai_session_run_tool_round(cai_session *session,
     }
   }
   if (rc == CAI_OK) {
+    if (options->tool_round_completed != NULL) {
+      rc = options->tool_round_completed(options->tool_round_completed_context,
+                                         session, error);
+    }
+  }
+  if (rc == CAI_OK) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
   }
@@ -3472,11 +3478,22 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "max tool rounds cannot be negative");
   }
+  if (effective->max_tool_calls_per_round < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max tool calls per round cannot be negative");
+  }
   current = NULL;
   rc = cai_session_run(session, &current, error);
   rounds = 0;
   while (rc == CAI_OK && cai_response_tool_call_count(current) > 0U &&
          rounds < cai_run_options_effective_max_tool_rounds(effective)) {
+    if (effective->max_tool_calls_per_round > 0 &&
+        cai_response_tool_call_count(current) >
+            (size_t)effective->max_tool_calls_per_round) {
+      cai_response_destroy(current);
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "tool response exceeded calls-per-round limit");
+    }
     next = NULL;
     rc = cai_session_run_tool_round(session, current, effective, &next, error);
     cai_response_destroy(current);
@@ -3785,6 +3802,10 @@ static int cai_session_stream_tool_round(
     rc = cai_session_add_stream_tool_outputs(session, params, input_calls,
                                              options, error);
   }
+  if (rc == CAI_OK && options->tool_round_completed != NULL) {
+    rc = options->tool_round_completed(options->tool_round_completed_context,
+                                       session, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
@@ -3860,12 +3881,22 @@ int cai_session_stream_auto(cai_session *session,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "max tool rounds cannot be negative");
   }
+  if (effective->max_tool_calls_per_round < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "max tool calls per round cannot be negative");
+  }
   memset(&current_calls, 0, sizeof(current_calls));
   memset(&next_calls, 0, sizeof(next_calls));
   rc = cai_session_stream_once(session, sinks, &current_calls, error);
   rounds = 0;
   while (rc == CAI_OK && current_calls.count > 0U &&
          rounds < cai_run_options_effective_max_tool_rounds(effective)) {
+    if (effective->max_tool_calls_per_round > 0 &&
+        current_calls.count > (size_t)effective->max_tool_calls_per_round) {
+      rc = cai_set_error(error, CAI_ERR_CANCELLED,
+                         "tool response exceeded calls-per-round limit");
+      break;
+    }
     cai_stream_tool_call_list_cleanup(&next_calls);
     memset(&next_calls, 0, sizeof(next_calls));
     rc = cai_session_stream_tool_round(session, effective, sinks,

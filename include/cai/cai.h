@@ -397,6 +397,9 @@ typedef struct cai_tool_event {
 /** Callback invoked for tool start/output/error events. */
 typedef int (*cai_tool_event_fn)(void *context, const cai_tool_event *event,
                                  cai_error *error);
+/** Callback invoked after a completed local tool round, before continuation. */
+typedef int (*cai_tool_round_completed_fn)(void *context, cai_session *session,
+                                           cai_error *error);
 
 /** Common cursor pagination parameters. */
 typedef struct cai_list_params {
@@ -412,6 +415,8 @@ typedef struct cai_list_params {
 typedef struct cai_run_options {
   /** Maximum auto-run tool rounds; zero uses default. */
   int max_tool_rounds;
+  /** Maximum calls in one tool round; zero leaves the count unrestricted. */
+  int max_tool_calls_per_round;
   /** Non-zero disables local tool auto-run. */
   int disable_tool_auto_run;
   /** In-memory tool output spool limit before spilling. */
@@ -424,6 +429,10 @@ typedef struct cai_run_options {
   cai_tool_event_fn tool_event;
   /** Context passed to tool_event. */
   void *tool_event_context;
+  /** Optional safe boundary after tools complete and before continuation. */
+  cai_tool_round_completed_fn tool_round_completed;
+  /** Context passed to tool_round_completed. */
+  void *tool_round_completed_context;
 } cai_run_options;
 
 /** Source read callback. Returns bytes read, 0 for EOF or error. */

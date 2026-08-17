@@ -44,6 +44,7 @@ struct cai_agent_runtime {
   char *session_scope;
   char *session_id;
   int resume_compaction_pending;
+  int accepting_steering;
   cai_agent_run_state state;
   unsigned long long next_sequence;
   size_t event_limit;
@@ -362,6 +363,39 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   return rc;
 }
 
+static int cai_runtime_deliver_steering_after_tool_round(void *context,
+                                                         cai_session *session,
+                                                         cai_error *error) {
+  cai_agent_runtime *runtime;
+  cai_runtime_input_node *input;
+  int rc;
+
+  runtime = (cai_agent_runtime *)context;
+  if (runtime == NULL || session != runtime->session) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid Smith steering tool-round boundary");
+  }
+  rc = CAI_OK;
+  pthread_mutex_lock(&runtime->lock);
+  while (rc == CAI_OK && runtime->steering_head != NULL) {
+    input = runtime->steering_head;
+    rc = cai_session_add_user_text(session, input->text, error);
+    if (rc == CAI_OK) {
+      runtime->steering_head = input->next;
+      if (runtime->steering_head == NULL) {
+        runtime->steering_tail = NULL;
+      }
+      runtime->steering_count--;
+      rc = cai_runtime_enqueue_locked(
+          runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
+          strlen(input->text), NULL, CAI_AGENT_SAMPLING, error);
+      cai_runtime_input_node_free(input);
+    }
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
 static cai_runtime_input_node *
 cai_runtime_take_input_locked(cai_runtime_input_node **head,
                               cai_runtime_input_node **tail) {
@@ -391,8 +425,11 @@ static void *cai_runtime_worker(void *context) {
   sinks.output_text_delta = cai_runtime_output_text_delta;
   sinks.output_text_context = runtime;
   cai_run_options_init(&options);
+  options.max_tool_calls_per_round = 1;
   options.tool_event = cai_runtime_tool_event;
   options.tool_event_context = runtime;
+  options.tool_round_completed = cai_runtime_deliver_steering_after_tool_round;
+  options.tool_round_completed_context = runtime;
   for (;;) {
     pthread_mutex_lock(&runtime->lock);
     while (!runtime->stopping && runtime->turn_head == NULL) {
@@ -428,6 +465,8 @@ static void *cai_runtime_worker(void *context) {
         (void)cai_runtime_enqueue_locked(
             runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
             strlen(input->text), NULL, CAI_AGENT_SAMPLING, &error);
+      } else {
+        runtime->accepting_steering = 0;
       }
       pthread_mutex_unlock(&runtime->lock);
       if (input == NULL) {
@@ -441,6 +480,7 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_checkpoint(runtime, &error);
     }
     pthread_mutex_lock(&runtime->lock);
+    runtime->accepting_steering = 0;
     if (rc == CAI_OK) {
       runtime->state = CAI_AGENT_COMPLETED;
       (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
@@ -636,6 +676,12 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to copy agent input");
   }
   pthread_mutex_lock(&runtime->lock);
+  if (steering && !runtime->accepting_steering) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "steering safe boundary has already passed");
+  }
   if (steering && runtime->steering_count >= runtime->steering_limit) {
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
@@ -691,12 +737,14 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
   }
   previous_state = runtime->state;
   runtime->state = CAI_AGENT_SAMPLING;
+  runtime->accepting_steering = 1;
   pthread_mutex_unlock(&runtime->lock);
   rc = cai_runtime_enqueue_input(runtime, text, 0, error);
   if (rc != CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     if (runtime->turn_head == NULL && runtime->state == CAI_AGENT_SAMPLING) {
       runtime->state = previous_state;
+      runtime->accepting_steering = 0;
     }
     pthread_mutex_unlock(&runtime->lock);
   }
@@ -710,8 +758,9 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
   }
   pthread_mutex_lock(&runtime->lock);
-  if (runtime->state != CAI_AGENT_SAMPLING &&
-      runtime->state != CAI_AGENT_DISPATCHING_TOOL) {
+  if ((runtime->state != CAI_AGENT_SAMPLING &&
+       runtime->state != CAI_AGENT_DISPATCHING_TOOL) ||
+      !runtime->accepting_steering) {
     pthread_mutex_unlock(&runtime->lock);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "steering requires an active agent turn");
