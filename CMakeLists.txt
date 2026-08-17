@@ -649,6 +649,7 @@ set(CAI_SOURCES
   src/cai_stream.c
   src/cai_tool.c
   src/tools/exec.c
+  src/tools/patch.c
   src/tools/read.c
   src/tools/revgeo.c
   src/tools/searxng.c
@@ -1167,6 +1168,7 @@ if(CAI_BUILD_TESTS)
     session_spooled_input_failure_ownership
     agent_client_history_continuity
     smith_profile
+    patch_tool
     agent_tool_declarations
     agent_tool_manual_step
     agent_auto_compaction

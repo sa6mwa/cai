@@ -3,6 +3,7 @@
 #include <cai/mcp.h>
 #include <cai/smith.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/patch.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
@@ -23473,7 +23474,7 @@ static void test_smith_profile(test_state *state) {
       "POST /v1/responses HTTP/",      "\"model\":\"gpt-5.6-luna\"",
       "You are Vectis Agent Smith",    "\"effort\":\"medium\"",
       "\"parallel_tool_calls\":false", "\"name\":\"read_file\"",
-      "\"name\":\"list_files\""};
+      "\"name\":\"list_files\"",       "\"name\":\"apply_patch\""};
   static const char *forbidden[] = {"\"name\":\"exec_command\"",
                                     "\"name\":\"write_stdin\""};
   static const mock_http_expectation script[] = {
@@ -23530,6 +23531,119 @@ static void test_smith_profile(test_state *state) {
     cai_agent_destroy(agent);
   }
   http_mock_client_close(state, "smith_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_patch_tool(test_state *state) {
+  static const char update_and_add[] = "*** Begin Patch\n"
+                                       "*** Update File: alpha.txt\n"
+                                       "@@\n"
+                                       " one\n"
+                                       "-two\n"
+                                       "+second\n"
+                                       "@@\n"
+                                       " three\n"
+                                       "-four\n"
+                                       "+fourth\n"
+                                       "*** Add File: beta.txt\n"
+                                       "+beta\n"
+                                       "*** End Patch";
+  static const char failing_patch[] = "*** Begin Patch\n"
+                                      "*** Update File: alpha.txt\n"
+                                      "@@\n"
+                                      "-missing\n"
+                                      "+replacement\n"
+                                      "*** Delete File: beta.txt\n"
+                                      "*** End Patch";
+  static const char move_patch[] = "*** Begin Patch\n"
+                                   "*** Update File: alpha.txt\n"
+                                   "*** Move to: renamed.txt\n"
+                                   "@@\n"
+                                   " one\n"
+                                   " second\n"
+                                   " three\n"
+                                   " fourth\n"
+                                   "*** Delete File: beta.txt\n"
+                                   "*** End Patch";
+  static const char escape_patch[] = "*** Begin Patch\n"
+                                     "*** Add File: ../outside.txt\n"
+                                     "+outside\n"
+                                     "*** End Patch";
+  char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
+  char alpha_path[PATH_MAX];
+  char beta_path[PATH_MAX];
+  char renamed_path[PATH_MAX];
+  char *contents;
+  cai_patch_tool_config config;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "patch_tempdir", "mkdtemp failed");
+    return;
+  }
+  snprintf(alpha_path, sizeof(alpha_path), "%s/alpha.txt", dir_template);
+  snprintf(beta_path, sizeof(beta_path), "%s/beta.txt", dir_template);
+  snprintf(renamed_path, sizeof(renamed_path), "%s/renamed.txt", dir_template);
+  write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  memset(&writer, 0, sizeof(writer));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  cai_error_init(&error);
+  sink = NULL;
+  expect_int(state, "patch_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "patch_update_add",
+             cai_apply_patch(&config, update_and_add, sink, &error), CAI_OK);
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  expect_substr(state, "patch_result_applied", writer.buffer,
+                "\"applied\":true");
+  expect_substr(state, "patch_result_alpha", writer.buffer, "alpha.txt");
+  expect_substr(state, "patch_result_beta", writer.buffer, "beta.txt");
+  contents = read_file_or_die(alpha_path);
+  expect_str(state, "patch_updated_content", contents,
+             "one\nsecond\nthree\nfourth\n");
+  free(contents);
+  contents = read_file_or_die(beta_path);
+  expect_str(state, "patch_added_content", contents, "beta\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_preflight_failure",
+             cai_apply_patch(&config, failing_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  contents = read_file_or_die(alpha_path);
+  expect_str(state, "patch_preflight_preserves_update", contents,
+             "one\nsecond\nthree\nfourth\n");
+  free(contents);
+  contents = read_file_or_die(beta_path);
+  expect_str(state, "patch_preflight_preserves_delete", contents, "beta\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_move_delete",
+             cai_apply_patch(&config, move_patch, NULL, &error), CAI_OK);
+  if (access(alpha_path, F_OK) == 0 || access(beta_path, F_OK) == 0) {
+    test_fail(state, "patch_move_delete_removed", "old patch files remain");
+  }
+  contents = read_file_or_die(renamed_path);
+  expect_str(state, "patch_move_content", contents,
+             "one\nsecond\nthree\nfourth\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_reject_escape",
+             cai_apply_patch(&config, escape_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  unlink(renamed_path);
+  rmdir(dir_template);
   cai_error_cleanup(&error);
 }
 
@@ -32763,6 +32877,7 @@ static const test_entry test_entries[] = {
      test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
+    {"patch_tool", test_patch_tool},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
     {"agent_auto_compaction", test_agent_auto_compaction},

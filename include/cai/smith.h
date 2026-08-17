@@ -47,7 +47,7 @@ const char *cai_smith_prompt_version(void);
  * Construct an ordinary cai agent configured as Smith.
  *
  * Smith always uses client-side history, retains local history, serializes
- * tool calls, and registers only read_file and list_files at this stage. It
+ * tool calls, and registers read_file, list_files, and apply_patch. It
  * intentionally does not register exec_command or another command runner.
  */
 int cai_client_new_smith_agent(cai_client *client,

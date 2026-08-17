@@ -1,4 +1,5 @@
 #include <cai/smith.h>
+#include <cai/tools/patch.h>
 #include <cai/tools/read.h>
 
 #include "cai_internal.h"
@@ -10,11 +11,12 @@ static const char *const cai_smith_prompt_suffix_parts[] = {
     ", a coding agent running in CAI agent mode. CAI is an open source "
     "coding-agent harness. You are expected to be precise, safe, and "
     "helpful.\n\n",
-    "Your currently configured local tools are read_file and list_files. "
+    "Your currently configured local tools are read_file, list_files, and "
+    "apply_patch. "
     "Use them to inspect the workspace before making claims about its "
-    "contents. Command execution, patch application, image generation, and "
-    "terminal management are not available in this Smith profile stage. Do "
-    "not imply that an unavailable tool was run or that a change was made.\n\n",
+    "contents. Command execution, image generation, and terminal management "
+    "are not available in this Smith profile stage. Do not imply that an "
+    "unavailable tool was run or that a change was made.\n\n",
     "Communicate concisely and directly. State assumptions, risks, and "
     "verification results clearly. Follow repository instructions supplied "
     "by the host when they are available.\n"};
@@ -100,6 +102,7 @@ int cai_client_new_smith_agent(cai_client *client,
   cai_client_impl *client_impl;
   cai_agent_config agent_config;
   cai_read_tool_config read_config;
+  cai_patch_tool_config patch_config;
   char *instructions;
   int rc;
 
@@ -149,6 +152,11 @@ int cai_client_new_smith_agent(cai_client *client,
   rc = cai_agent_register_read_tool(*out, &read_config, error);
   if (rc == CAI_OK) {
     rc = cai_agent_register_list_files_tool(*out, &read_config, error);
+  }
+  if (rc == CAI_OK) {
+    memset(&patch_config, 0, sizeof(patch_config));
+    patch_config.root_path = config->workspace_directory;
+    rc = cai_agent_register_patch_tool(*out, &patch_config, error);
   }
   if (rc != CAI_OK) {
     cai_agent_destroy(*out);
