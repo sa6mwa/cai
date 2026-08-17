@@ -79,6 +79,8 @@ typedef struct cai_agent_runtime_config {
   size_t mcp_client_count;
   /** Optional common registration policy for the configured MCP clients. */
   const cai_mcp_tool_registration_config *mcp_tool_config;
+  /** Enable OpenAI's hosted image_generation tool for this Smith runtime. */
+  int enable_image_generation;
   /**
    * Optional callback-backed session store. NULL selects CAI's local JSONL
    * store unless disable_default_session_store is non-zero.

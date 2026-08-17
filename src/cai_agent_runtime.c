@@ -577,6 +577,10 @@ int cai_agent_runtime_open(cai_client *client,
                                                config->mcp_tool_config, error);
     }
   }
+  if (rc == CAI_OK && config->enable_image_generation) {
+    rc = cai_agent_add_simple_hosted_tool(
+        runtime->agent, CAI_HOSTED_TOOL_IMAGE_GENERATION, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
   }

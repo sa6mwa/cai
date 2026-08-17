@@ -23689,6 +23689,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime_config.mcp_clients = mcp_clients;
   runtime_config.mcp_client_count = 1U;
   runtime_config.mcp_tool_config = &mcp_config;
+  runtime_config.enable_image_generation = 1;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
   expect_int(state, "runtime_open",
