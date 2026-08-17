@@ -253,6 +253,7 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   const char *current_model;
   const char *previous_hash;
   const char *current_hash;
+  int rc;
 
   if (!runtime->resume_compaction_pending) {
     return CAI_OK;
@@ -261,12 +262,17 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   current_model = CAI_SESSION_AGENT_IMPL(runtime->session)->model;
   previous_hash = cai_model_compaction_compatibility_hash(previous_model);
   current_hash = cai_model_compaction_compatibility_hash(current_model);
-  runtime->resume_compaction_pending = 0;
   if (previous_hash == NULL || current_hash == NULL ||
       strcmp(previous_hash, current_hash) == 0) {
+    runtime->resume_compaction_pending = 0;
     return CAI_OK;
   }
-  return cai_session_compact_experimental(runtime->session, error);
+  rc = cai_session_compact_experimental(runtime->session, error);
+  if (rc == CAI_OK) {
+    runtime->resume_compaction_pending = 0;
+    return CAI_OK;
+  }
+  return rc;
 }
 
 static int cai_runtime_spooled_copy(const lonejson_spooled *spool, char **out,
