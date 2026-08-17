@@ -888,6 +888,19 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
   expect_int(state, "model_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_NANO), 400000L);
+  expect_str(state, "model_5_6_compaction_hash",
+             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_TERRA),
+             "3000");
+  expect_str(state, "model_5_6_luna_compaction_hash",
+             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_LUNA),
+             "3000");
+  expect_str(state, "model_5_5_compaction_hash",
+             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_5),
+             "2911");
+  if (cai_model_compaction_compatibility_hash("future-model") != NULL) {
+    test_fail(state, "model_unknown_compaction_hash",
+              "unknown model unexpectedly has a compaction hash");
+  }
   expect_int(state, "model_metadata_verified",
              (long)(cai_model_metadata_flags(CAI_MODEL_GPT_5_NANO) &
                     CAI_MODEL_META_VERIFIED),

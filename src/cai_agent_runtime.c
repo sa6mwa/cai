@@ -42,6 +42,7 @@ struct cai_agent_runtime {
   int owns_local_store;
   char *session_scope;
   char *session_id;
+  int resume_compaction_pending;
   cai_agent_run_state state;
   unsigned long long next_sequence;
   size_t event_limit;
@@ -197,12 +198,22 @@ cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
 static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
                                   cai_error *error) {
   cai_source *state;
+  char *model;
   int rc;
 
   if (runtime->session_store == NULL) {
     return CAI_OK;
   }
   state = NULL;
+  model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                     CAI_SESSION_AGENT_IMPL(runtime->session)->model);
+  if (model == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve session model for checkpoint");
+  }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+               CAI_SESSION_IMPL(runtime->session)->state_model);
+  CAI_SESSION_IMPL(runtime->session)->state_model = model;
   rc = cai_session_export_state_source(runtime->session, &state, error);
   if (rc == CAI_OK) {
     rc = runtime->session_store->checkpoint(runtime->session_store->context,
@@ -218,6 +229,28 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
     pthread_mutex_unlock(&runtime->lock);
   }
   return rc;
+}
+
+static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
+                                               cai_error *error) {
+  const char *previous_model;
+  const char *current_model;
+  const char *previous_hash;
+  const char *current_hash;
+
+  if (!runtime->resume_compaction_pending) {
+    return CAI_OK;
+  }
+  previous_model = CAI_SESSION_IMPL(runtime->session)->state_model;
+  current_model = CAI_SESSION_AGENT_IMPL(runtime->session)->model;
+  previous_hash = cai_model_compaction_compatibility_hash(previous_model);
+  current_hash = cai_model_compaction_compatibility_hash(current_model);
+  runtime->resume_compaction_pending = 0;
+  if (previous_hash == NULL || current_hash == NULL ||
+      strcmp(previous_hash, current_hash) == 0) {
+    return CAI_OK;
+  }
+  return cai_session_compact_experimental(runtime->session, error);
 }
 
 static int cai_runtime_spooled_copy(const lonejson_spooled *spool, char **out,
@@ -361,7 +394,10 @@ static void *cai_runtime_worker(void *context) {
       continue;
     }
     cai_error_init(&error);
-    rc = cai_session_add_user_text(runtime->session, input->text, &error);
+    rc = cai_runtime_compact_resumed_history(runtime, &error);
+    if (rc == CAI_OK) {
+      rc = cai_session_add_user_text(runtime->session, input->text, &error);
+    }
     cai_runtime_input_node_free(input);
     while (rc == CAI_OK) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
@@ -514,6 +550,7 @@ int cai_agent_runtime_open(cai_client *client,
         rc = cai_session_import_state_source(runtime->session, state, error);
         if (rc == CAI_OK) {
           rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
+          runtime->resume_compaction_pending = 1;
         }
       }
       cai_source_close(state);

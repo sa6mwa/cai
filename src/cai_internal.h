@@ -94,6 +94,8 @@ typedef struct cai_session_impl {
   cai_agent *agent;
   char *previous_response_id;
   char *conversation_id;
+  /** Model recorded in the imported/exported portable session state. */
+  char *state_model;
   cai_token_usage last_usage;
   int has_last_usage;
   cai_usage_limits usage_limits;

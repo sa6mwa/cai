@@ -829,6 +829,7 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->agent = agent;
   impl->previous_response_id = NULL;
   impl->conversation_id = NULL;
+  impl->state_model = NULL;
   memset(&impl->last_usage, 0, sizeof(impl->last_usage));
   impl->has_last_usage = 0;
   impl->usage_limits = agent_impl->session_usage_limits;
@@ -1780,6 +1781,7 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->inputs);
   cai_free_mem(allocator, impl->previous_response_id);
   cai_free_mem(allocator, impl->conversation_id);
+  cai_free_mem(allocator, impl->state_model);
   cai_free_mem(allocator, impl);
   session->impl = NULL;
   cai_free_mem(allocator, session);
@@ -4436,7 +4438,9 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   include_history = 0;
   rc = CAI_OK;
   doc.version = 1LL;
-  doc.model = CAI_SESSION_AGENT_IMPL(session)->model;
+  doc.model = CAI_SESSION_IMPL(session)->state_model != NULL
+                  ? CAI_SESSION_IMPL(session)->state_model
+                  : CAI_SESSION_AGENT_IMPL(session)->model;
   if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
     doc.conversation_id = CAI_SESSION_IMPL(session)->conversation_id;
   } else {
@@ -4512,6 +4516,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   cai_source_reader_context reader_context;
   int has_history_json;
   int has_next_history;
+  char *next_state_model;
   int rc;
 
   if (session == NULL || source == NULL) {
@@ -4523,6 +4528,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   memset(&next_history, 0, sizeof(next_history));
   has_history_json = 0;
   has_next_history = 0;
+  next_state_model = NULL;
   rc = CAI_OK;
   cai_history_init_spooled(session, &history_json);
   has_history_json = 1;
@@ -4559,6 +4565,15 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                        "session state has multiple continuation handles");
     goto done;
   }
+  if (doc.model != NULL) {
+    next_state_model =
+        cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.model);
+    if (next_state_model == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve imported session model");
+      goto done;
+    }
+  }
   if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
       history_json.size_fn(&history_json) > 0U) {
     rc = cai_spooled_json_is_array(&history_json, error);
@@ -4585,6 +4600,12 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     cai_history_replace(session, &next_history);
     has_next_history = 0;
   }
+  if (rc == CAI_OK) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_model);
+    CAI_SESSION_IMPL(session)->state_model = next_state_model;
+    next_state_model = NULL;
+  }
 
 done:
   CAI_LJ->cleanup(CAI_LJ, &cai_session_state_map, &doc);
@@ -4594,6 +4615,7 @@ done:
   if (has_next_history) {
     next_history.cleanup(&next_history);
   }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_state_model);
   return rc;
 }
 
