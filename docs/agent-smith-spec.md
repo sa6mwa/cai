@@ -33,9 +33,8 @@ surface in Smith is its single managed terminal.
 
 ## 2. Evidence and upstream reference
 
-The design is based on the Codex CLI checkout at
-`/home/mike/github/codex`, inspected on 2026-08-17, and on
-`stash/cai-agent-vectis-integration.md` in this repository.
+The design is based on the Codex CLI checkout inspected on 2026-08-17 and on
+the project-provided “CAI Agent And Vectis Integration” design note.
 
 Important upstream observations:
 
