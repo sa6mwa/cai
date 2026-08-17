@@ -1,5 +1,6 @@
 #include <cai/agent_runtime.h>
 #include <cai/smith.h>
+#include <cai/tools/goal.h>
 
 #include "cai_internal.h"
 
@@ -231,6 +232,20 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
   return rc;
 }
 
+static void cai_runtime_account_goal(cai_agent_runtime *runtime) {
+  cai_session_impl *session;
+
+  session = CAI_SESSION_IMPL(runtime->session);
+  if (session->goal_status != NULL) {
+    session->goal_tokens_used =
+        session->usage.usage.total_tokens - session->goal_token_usage_baseline;
+    if (session->goal_tokens_used < 0LL) {
+      session->goal_tokens_used = 0LL;
+    }
+    session->goal_updated_at = (long long)time(NULL);
+  }
+}
+
 static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
                                                cai_error *error) {
   const char *previous_model;
@@ -422,6 +437,7 @@ static void *cai_runtime_worker(void *context) {
       cai_runtime_input_node_free(input);
     }
     if (rc == CAI_OK) {
+      cai_runtime_account_goal(runtime);
       rc = cai_runtime_checkpoint(runtime, &error);
     }
     pthread_mutex_lock(&runtime->lock);
@@ -506,6 +522,9 @@ int cai_agent_runtime_open(cai_client *client,
   rc = cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_goal_tools(runtime->agent, runtime->session, error);
   }
   if (rc == CAI_OK) {
     const char *scope;

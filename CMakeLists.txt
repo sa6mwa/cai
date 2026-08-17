@@ -651,6 +651,7 @@ set(CAI_SOURCES
   src/cai_stream.c
   src/cai_tool.c
   src/tools/exec.c
+  src/tools/goal.c
   src/tools/patch.c
   src/tools/read.c
   src/tools/revgeo.c
@@ -1173,6 +1174,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_lifecycle
     agent_local_session_store
     agent_runtime_resume
+    goal_tools
     patch_tool
     agent_tool_declarations
     agent_tool_manual_step

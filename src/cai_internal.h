@@ -96,6 +96,15 @@ typedef struct cai_session_impl {
   char *conversation_id;
   /** Model recorded in the imported/exported portable session state. */
   char *state_model;
+  char *goal_objective;
+  char *goal_status;
+  long long goal_token_budget;
+  int goal_has_token_budget;
+  /** Cumulative session usage at goal creation; not user-visible accounting. */
+  long long goal_token_usage_baseline;
+  long long goal_tokens_used;
+  long long goal_created_at;
+  long long goal_updated_at;
   cai_token_usage last_usage;
   int has_last_usage;
   cai_usage_limits usage_limits;

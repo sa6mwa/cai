@@ -580,6 +580,9 @@ contract:
 - `create_goal` requires an explicit user/system/developer request and fails
   while a non-terminal goal exists;
 - `update_goal` accepts only `complete` or `blocked` from the model;
+- `clear_goal` is Smith's idempotent equivalent of Codex's `/goal clear`:
+  it removes the current goal without asserting completion, so a subsequent
+  `create_goal` starts fresh;
 - `blocked` is allowed only after the same external blocking condition has
   occurred across three consecutive goal turns; hard work, uncertainty, or a
   desire for clarification is not enough;

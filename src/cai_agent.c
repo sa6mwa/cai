@@ -71,6 +71,14 @@ typedef struct cai_session_state_doc {
   char *model;
   char *previous_response_id;
   char *conversation_id;
+  char *goal_objective;
+  char *goal_status;
+  long long goal_token_budget;
+  int has_goal_token_budget;
+  long long goal_token_usage_baseline;
+  long long goal_tokens_used;
+  long long goal_created_at;
+  long long goal_updated_at;
   lonejson_json_value history;
 } cai_session_state_doc;
 
@@ -82,6 +90,20 @@ static const lonejson_field cai_session_state_fields[] = {
         cai_session_state_doc, previous_response_id, "previous_response_id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc,
                                           conversation_id, "conversation_id"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, goal_objective,
+                                          "goal_objective"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, goal_status,
+                                          "goal_status"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, goal_token_budget,
+                               has_goal_token_budget, "goal_token_budget"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, goal_token_usage_baseline,
+                       "goal_token_usage_baseline"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, goal_tokens_used,
+                       "goal_tokens_used"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, goal_created_at,
+                       "goal_created_at"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, goal_updated_at,
+                       "goal_updated_at"),
     LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_session_state_doc, history,
                                         "history")};
 LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
@@ -830,6 +852,14 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->previous_response_id = NULL;
   impl->conversation_id = NULL;
   impl->state_model = NULL;
+  impl->goal_objective = NULL;
+  impl->goal_status = NULL;
+  impl->goal_token_budget = 0LL;
+  impl->goal_has_token_budget = 0;
+  impl->goal_token_usage_baseline = 0LL;
+  impl->goal_tokens_used = 0LL;
+  impl->goal_created_at = 0LL;
+  impl->goal_updated_at = 0LL;
   memset(&impl->last_usage, 0, sizeof(impl->last_usage));
   impl->has_last_usage = 0;
   impl->usage_limits = agent_impl->session_usage_limits;
@@ -1782,6 +1812,8 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->previous_response_id);
   cai_free_mem(allocator, impl->conversation_id);
   cai_free_mem(allocator, impl->state_model);
+  cai_free_mem(allocator, impl->goal_objective);
+  cai_free_mem(allocator, impl->goal_status);
   cai_free_mem(allocator, impl);
   session->impl = NULL;
   cai_free_mem(allocator, session);
@@ -4441,6 +4473,15 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.model = CAI_SESSION_IMPL(session)->state_model != NULL
                   ? CAI_SESSION_IMPL(session)->state_model
                   : CAI_SESSION_AGENT_IMPL(session)->model;
+  doc.goal_objective = CAI_SESSION_IMPL(session)->goal_objective;
+  doc.goal_status = CAI_SESSION_IMPL(session)->goal_status;
+  doc.goal_token_budget = CAI_SESSION_IMPL(session)->goal_token_budget;
+  doc.has_goal_token_budget = CAI_SESSION_IMPL(session)->goal_has_token_budget;
+  doc.goal_token_usage_baseline =
+      CAI_SESSION_IMPL(session)->goal_token_usage_baseline;
+  doc.goal_tokens_used = CAI_SESSION_IMPL(session)->goal_tokens_used;
+  doc.goal_created_at = CAI_SESSION_IMPL(session)->goal_created_at;
+  doc.goal_updated_at = CAI_SESSION_IMPL(session)->goal_updated_at;
   if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
     doc.conversation_id = CAI_SESSION_IMPL(session)->conversation_id;
   } else {
@@ -4517,6 +4558,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   int has_history_json;
   int has_next_history;
   char *next_state_model;
+  char *next_goal_objective;
+  char *next_goal_status;
   int rc;
 
   if (session == NULL || source == NULL) {
@@ -4529,6 +4572,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   has_history_json = 0;
   has_next_history = 0;
   next_state_model = NULL;
+  next_goal_objective = NULL;
+  next_goal_status = NULL;
   rc = CAI_OK;
   cai_history_init_spooled(session, &history_json);
   has_history_json = 1;
@@ -4574,6 +4619,22 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
       goto done;
     }
   }
+  if ((doc.goal_objective == NULL) != (doc.goal_status == NULL)) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has incomplete goal data");
+    goto done;
+  }
+  if (doc.goal_objective != NULL) {
+    next_goal_objective = cai_strdup(
+        &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.goal_objective);
+    next_goal_status = cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                                  doc.goal_status);
+    if (next_goal_objective == NULL || next_goal_status == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve imported session goal");
+      goto done;
+    }
+  }
   if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
       history_json.size_fn(&history_json) > 0U) {
     rc = cai_spooled_json_is_array(&history_json, error);
@@ -4606,6 +4667,24 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     CAI_SESSION_IMPL(session)->state_model = next_state_model;
     next_state_model = NULL;
   }
+  if (rc == CAI_OK) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->goal_objective);
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->goal_status);
+    CAI_SESSION_IMPL(session)->goal_objective = next_goal_objective;
+    CAI_SESSION_IMPL(session)->goal_status = next_goal_status;
+    CAI_SESSION_IMPL(session)->goal_token_budget = doc.goal_token_budget;
+    CAI_SESSION_IMPL(session)->goal_has_token_budget =
+        doc.has_goal_token_budget;
+    CAI_SESSION_IMPL(session)->goal_token_usage_baseline =
+        doc.goal_token_usage_baseline;
+    CAI_SESSION_IMPL(session)->goal_tokens_used = doc.goal_tokens_used;
+    CAI_SESSION_IMPL(session)->goal_created_at = doc.goal_created_at;
+    CAI_SESSION_IMPL(session)->goal_updated_at = doc.goal_updated_at;
+    next_goal_objective = NULL;
+    next_goal_status = NULL;
+  }
 
 done:
   CAI_LJ->cleanup(CAI_LJ, &cai_session_state_map, &doc);
@@ -4616,6 +4695,9 @@ done:
     next_history.cleanup(&next_history);
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_state_model);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_goal_objective);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_goal_status);
   return rc;
 }
 

@@ -5,6 +5,7 @@
 #include <cai/session_store.h>
 #include <cai/smith.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/goal.h>
 #include <cai/tools/patch.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
@@ -23855,6 +23856,119 @@ static void test_agent_runtime_resume(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_goal_tools(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_source *state_source;
+  write_state writer;
+  char state_json[2048];
+  cai_error error;
+
+  cai_error_init(&error);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  state_source = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_6_TERRA;
+  agent_config.enable_local_history = 1;
+  expect_int(state, "goal_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "goal_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "goal_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "goal_register",
+             cai_agent_register_goal_tools(agent, session, &error), CAI_OK);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "goal_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "goal_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\" ship Smith \",\"token_budget\":1000}", sink,
+                 &error),
+             CAI_OK);
+  expect_substr(state, "goal_create_result", writer.buffer,
+                "\"objective\":\"ship Smith\"");
+  expect_substr(state, "goal_create_status", writer.buffer,
+                "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_duplicate_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"replace\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_get",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_GET_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_get_status", writer.buffer,
+                "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_complete",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"complete\"}", sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_complete_status", writer.buffer,
+                "\"status\":\"complete\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_clear",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"status\"") != NULL) {
+    test_fail(state, "goal_clear_result", "cleared goal remains visible");
+  }
+  expect_substr(state, "goal_clear_confirmed", writer.buffer,
+                "\"cleared\":true");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_clear_idempotent",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_clear_idempotent_confirmed", writer.buffer,
+                "\"cleared\":true");
+  expect_int(state, "goal_state_export",
+             cai_session_export_state_source(session, &state_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "goal_state_read", state_source, state_json,
+                       sizeof(state_json), &error)) {
+    if (strstr(state_json, "goal_objective") != NULL ||
+        strstr(state_json, "goal_status") != NULL) {
+      test_fail(state, "goal_state_cleared", "cleared goal was persisted");
+    }
+  }
+  cai_source_close(state_source);
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_patch_tool(test_state *state) {
   static const char update_and_add[] = "*** Begin Patch\n"
                                        "*** Update File: alpha.txt\n"
@@ -33201,6 +33315,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_runtime_resume", test_agent_runtime_resume},
+    {"goal_tools", test_goal_tools},
     {"patch_tool", test_patch_tool},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
