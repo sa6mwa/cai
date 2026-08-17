@@ -23565,10 +23565,17 @@ static void test_smith_profile(test_state *state) {
       "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"smith "
       "ok\"}]}]}";
   static const char *required[] = {
-      "POST /v1/responses HTTP/",      "\"model\":\"gpt-5.6-luna\"",
-      "You are Vectis Agent Smith",    "\"effort\":\"medium\"",
-      "\"parallel_tool_calls\":false", "\"name\":\"read_file\"",
-      "\"name\":\"list_files\"",       "\"name\":\"apply_patch\""};
+      "POST /v1/responses HTTP/",
+      "\"model\":\"gpt-5.6-luna\"",
+      "You are Vectis Agent Smith",
+      "\"effort\":\"medium\"",
+      "\"parallel_tool_calls\":false",
+      "\"name\":\"read_file\"",
+      "\"name\":\"list_files\"",
+      "\"name\":\"apply_patch\"",
+      "Make workspace edits only with apply_patch.",
+      "Command execution, terminal management, image generation,",
+      "Create a goal only when the user or system/developer instructions"};
   static const char *forbidden[] = {"\"name\":\"exec_command\"",
                                     "\"name\":\"write_stdin\""};
   static const mock_http_expectation script[] = {

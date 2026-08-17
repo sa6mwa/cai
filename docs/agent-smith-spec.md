@@ -273,7 +273,7 @@ CAI stores prompt sources under `prompts/smith/`, with a manifest containing:
     "revision": "<full git SHA>",
     "assets": ["<source path and SHA-256>"]
   },
-  "rendered_asset_version": "smith-1",
+  "rendered_asset_version": "smith-2",
   "identity_placeholder": "{{agent_identity}}"
 }
 ```

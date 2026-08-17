@@ -17,7 +17,7 @@ extern "C" {
 /** Smith's default visible identity. */
 #define CAI_SMITH_DEFAULT_IDENTITY "Cai Smith"
 /** Version of the developer-instruction asset rendered by this preset. */
-#define CAI_SMITH_PROMPT_VERSION "smith-1"
+#define CAI_SMITH_PROMPT_VERSION "smith-2"
 
 /** Configuration for a Smith agent profile. */
 typedef struct cai_smith_config {
