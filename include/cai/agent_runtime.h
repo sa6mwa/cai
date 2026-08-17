@@ -73,6 +73,12 @@ typedef struct cai_agent_runtime_config {
   const char *reasoning_effort;
   /** Optional host developer-instruction extension. */
   const char *developer_instructions_extension;
+  /** Host-owned local MCP clients whose discovered tools Smith registers. */
+  cai_mcp_client *const *mcp_clients;
+  /** Number of entries in mcp_clients. */
+  size_t mcp_client_count;
+  /** Optional common registration policy for the configured MCP clients. */
+  const cai_mcp_tool_registration_config *mcp_tool_config;
   /**
    * Optional callback-backed session store. NULL selects CAI's local JSONL
    * store unless disable_default_session_store is non-zero.

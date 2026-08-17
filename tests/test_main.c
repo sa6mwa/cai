@@ -23662,12 +23662,19 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
   runtime_event_state events;
+  test_mcp_client_impl mcp_fake;
+  cai_mcp_client *mcp_clients[1];
+  cai_mcp_tool_registration_config mcp_config;
   cai_error error;
 
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
   memset(&events, 0, sizeof(events));
+  memset(&mcp_config, 0, sizeof(mcp_config));
+  test_mcp_fake_client_init(&mcp_fake);
+  mcp_clients[0] = &mcp_fake.public_client;
+  mcp_config.name_prefix = "mcp__";
   events.owner = pthread_self();
   cai_client_config_init(&client_config);
   client_config.api_key = "test-key";
@@ -23679,11 +23686,15 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
   runtime_config.disable_default_session_store = 1;
+  runtime_config.mcp_clients = mcp_clients;
+  runtime_config.mcp_client_count = 1U;
+  runtime_config.mcp_tool_config = &mcp_config;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
   expect_int(state, "runtime_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
+  expect_int(state, "runtime_mcp_refresh", mcp_fake.refresh_count, 1L);
   if (runtime != NULL) {
     expect_int(state, "runtime_idle_state",
                cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);

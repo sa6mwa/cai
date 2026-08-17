@@ -513,6 +513,7 @@ int cai_agent_runtime_open(cai_client *client,
                            cai_agent_runtime **out, cai_error *error) {
   cai_agent_runtime *runtime;
   cai_smith_config smith;
+  size_t i;
   int rc;
 
   if (out == NULL) {
@@ -560,6 +561,22 @@ int cai_agent_runtime_open(cai_client *client,
   smith.developer_instructions_extension =
       config->developer_instructions_extension;
   rc = cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
+  if (rc == CAI_OK && config->mcp_client_count > 0U &&
+      config->mcp_clients == NULL) {
+    rc = cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP client array is required when MCP clients are configured");
+  }
+  for (i = 0U; rc == CAI_OK && i < config->mcp_client_count; i++) {
+    if (config->mcp_clients[i] == NULL) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "configured MCP client must not be null");
+    } else {
+      rc = cai_agent_register_mcp_client_tools(runtime->agent,
+                                               config->mcp_clients[i],
+                                               config->mcp_tool_config, error);
+    }
+  }
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
   }
