@@ -399,6 +399,13 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
     }
   }
   pthread_mutex_unlock(&runtime->lock);
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_inputs(runtime->session, error);
+  }
+  if (rc == CAI_OK) {
+    cai_runtime_account_goal(runtime);
+    rc = cai_runtime_checkpoint(runtime, error);
+  }
   return rc;
 }
 
@@ -457,6 +464,13 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
     }
     cai_runtime_input_node_free(input);
+    if (rc == CAI_OK) {
+      rc = cai_session_commit_pending_inputs(runtime->session, &error);
+    }
+    if (rc == CAI_OK) {
+      cai_runtime_account_goal(runtime);
+      rc = cai_runtime_checkpoint(runtime, &error);
+    }
     while (rc == CAI_OK) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
       rc = cai_session_stream_auto(runtime->session, &options, &sinks, &error);
@@ -480,6 +494,13 @@ static void *cai_runtime_worker(void *context) {
       }
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
       cai_runtime_input_node_free(input);
+      if (rc == CAI_OK) {
+        rc = cai_session_commit_pending_inputs(runtime->session, &error);
+      }
+      if (rc == CAI_OK) {
+        cai_runtime_account_goal(runtime);
+        rc = cai_runtime_checkpoint(runtime, &error);
+      }
     }
     if (rc == CAI_OK) {
       cai_runtime_account_goal(runtime);

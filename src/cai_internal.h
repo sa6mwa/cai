@@ -366,5 +366,6 @@ void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
                             const char *ca_bundle_path, const char *ca_path);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
+int cai_session_commit_pending_inputs(cai_session *session, cai_error *error);
 
 #endif

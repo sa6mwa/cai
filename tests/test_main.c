@@ -131,6 +131,7 @@ typedef struct runtime_session_store_state {
   int checkpoints;
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
+  char saved_checkpoint[8192];
 } runtime_session_store_state;
 
 typedef struct fail_write_state {
@@ -352,6 +353,11 @@ typedef struct tool_round_inject_state {
   const char *text;
   int calls;
 } tool_round_inject_state;
+
+typedef struct tool_round_history_state {
+  int calls;
+  char history[4096];
+} tool_round_history_state;
 
 typedef struct counting_tool_state {
   int called;
@@ -1692,14 +1698,34 @@ static int test_runtime_session_store_checkpoint(void *context,
                                                  cai_source *state,
                                                  cai_error *error) {
   runtime_session_store_state *store;
+  size_t offset;
 
-  (void)state;
-  (void)error;
   store = (runtime_session_store_state *)context;
+  if (store == NULL || state == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime test checkpoint state is required");
+  }
   store->checkpoints++;
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
   (void)snprintf(store->session_id, sizeof(store->session_id), "%s",
                  session_id);
+  offset = 0U;
+  while (offset + 1U < sizeof(store->saved_checkpoint)) {
+    size_t count;
+
+    count =
+        cai_source_read(state, store->saved_checkpoint + offset,
+                        sizeof(store->saved_checkpoint) - offset - 1U, error);
+    if (count == 0U) {
+      break;
+    }
+    offset += count;
+  }
+  if (offset + 1U == sizeof(store->saved_checkpoint)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "runtime test checkpoint buffer is too small");
+  }
+  store->saved_checkpoint[offset] = '\0';
   return CAI_OK;
 }
 
@@ -2837,6 +2863,41 @@ static int test_tool_round_inject(void *context, cai_session *session,
   }
   state->calls++;
   return cai_session_add_user_text(session, state->text, error);
+}
+
+static int test_tool_round_capture_history(void *context, cai_session *session,
+                                           cai_error *error) {
+  tool_round_history_state *state;
+  cai_source *source;
+  size_t offset;
+  int rc;
+
+  state = (tool_round_history_state *)context;
+  if (state == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test tool-round history state is required");
+  }
+  state->calls++;
+  source = NULL;
+  offset = 0U;
+  rc = cai_session_export_history_source(session, &source, error);
+  while (rc == CAI_OK && offset + 1U < sizeof(state->history)) {
+    size_t count;
+
+    count = cai_source_read(source, state->history + offset,
+                            sizeof(state->history) - offset - 1U, error);
+    if (count == 0U) {
+      break;
+    }
+    offset += count;
+  }
+  if (rc == CAI_OK && offset + 1U == sizeof(state->history)) {
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "test tool-round history buffer is too small");
+  }
+  state->history[offset] = '\0';
+  cai_source_close(source);
+  return rc;
 }
 
 static int test_failing_stream_tool_done(void *context, const char *item_id,
@@ -23662,6 +23723,8 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
   runtime_event_state events;
+  runtime_session_store_state store_state;
+  cai_agent_session_store store;
   test_mcp_client_impl mcp_fake;
   cai_mcp_client *mcp_clients[1];
   cai_mcp_tool_registration_config mcp_config;
@@ -23671,6 +23734,11 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   client = NULL;
   runtime = NULL;
   memset(&events, 0, sizeof(events));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&store, 0, sizeof(store));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.context = &store_state;
   memset(&mcp_config, 0, sizeof(mcp_config));
   test_mcp_fake_client_init(&mcp_fake);
   mcp_clients[0] = &mcp_fake.public_client;
@@ -23685,7 +23753,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
-  runtime_config.disable_default_session_store = 1;
+  runtime_config.session_store = &store;
   runtime_config.mcp_clients = mcp_clients;
   runtime_config.mcp_client_count = 1U;
   runtime_config.mcp_tool_config = &mcp_config;
@@ -23715,8 +23783,15 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     cai_error_init(&error);
     expect_int(state, "runtime_pump",
                cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    expect_int(state, "runtime_checkpoint_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
     expect_int(state, "runtime_event_started", events.saw_started, 1L);
     expect_int(state, "runtime_events_owner_thread", events.wrong_thread, 0L);
+    expect_int(state, "runtime_input_checkpoint", store_state.checkpoints, 1L);
+    expect_str(state, "runtime_input_checkpoint_scope", store_state.scope,
+               "/tmp");
+    expect_substr(state, "runtime_input_checkpoint_turn",
+                  store_state.saved_checkpoint, "offline turn");
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -32044,6 +32119,7 @@ static void test_stream_client_history_tool_order(test_state *state) {
   cai_stream_sinks stream_sinks;
   write_state writer;
   tool_event_state event_state;
+  tool_round_history_state history_state;
   cai_error error;
   char history_json[4096];
   char *user_pos;
@@ -32097,6 +32173,7 @@ static void test_stream_client_history_tool_order(test_state *state) {
   history_source = NULL;
   memset(&writer, 0, sizeof(writer));
   memset(&event_state, 0, sizeof(event_state));
+  memset(&history_state, 0, sizeof(history_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -32121,6 +32198,8 @@ static void test_stream_client_history_tool_order(test_state *state) {
       CAI_OK);
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.output_text = sink;
+  run_options.tool_round_completed = test_tool_round_capture_history;
+  run_options.tool_round_completed_context = &history_state;
   expect_int(
       state, "stream_client_history_tool_run",
       cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
@@ -32131,6 +32210,10 @@ static void test_stream_client_history_tool_order(test_state *state) {
              event_state.starts, 1L);
   expect_int(state, "stream_client_history_tool_event_outputs",
              event_state.outputs, 1L);
+  expect_int(state, "stream_client_history_tool_history_callback",
+             history_state.calls, 1L);
+  expect_substr(state, "stream_client_history_tool_durable_output",
+                history_state.history, "\"type\":\"function_call_output\"");
   expect_int(
       state, "stream_client_history_tool_export",
       cai_session_export_history_source(session, &history_source, &error),
@@ -32150,6 +32233,11 @@ static void test_stream_client_history_tool_order(test_state *state) {
     if (test_count_substrings(history_json, "\"type\":\"function_call\"") !=
         1U) {
       test_fail(state, "stream_client_history_tool_call_once",
+                "client history duplicated streamed function call output");
+    }
+    if (test_count_substrings(history_json,
+                              "\"type\":\"function_call_output\"") != 1U) {
+      test_fail(state, "stream_client_history_tool_output_once",
                 "client history duplicated streamed function call output");
     }
   }

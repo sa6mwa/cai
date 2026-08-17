@@ -225,6 +225,9 @@ static int cai_stream_tool_call_list_append(
 static void cai_stream_tool_call_list_cleanup(cai_stream_tool_call_list *list);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out, cai_error *error);
+static int cai_history_append_array_record_spooled(cai_session *session,
+                                                   const lonejson_spooled *json,
+                                                   cai_error *error);
 static int cai_client_base_url_is_openrouter(const cai_client_impl *client);
 static int
 cai_client_uses_client_history_continuity(const cai_client_impl *client);
@@ -2606,6 +2609,80 @@ static int cai_session_replay_history_with_params_input(
   return rc;
 }
 
+/*
+ * Make locally executed tool outputs part of client-side history before a
+ * continuation request begins.  This is deliberately separate from response
+ * recording: a tool may have changed the workspace even if the next model
+ * request fails or the process stops.  Once committed, the pending items must
+ * not be appended again by the response-finalization path.
+ */
+static int cai_session_commit_pending_history(cai_session *session,
+                                              lonejson_spooled *pending_items,
+                                              int *has_pending_items,
+                                              cai_error *error) {
+  int rc;
+
+  if (pending_items == NULL || has_pending_items == NULL ||
+      !*has_pending_items) {
+    return CAI_OK;
+  }
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return CAI_OK;
+  }
+  rc = cai_history_append_array_record_spooled(session, pending_items, error);
+  if (rc == CAI_OK) {
+    pending_items->cleanup(pending_items);
+    memset(pending_items, 0, sizeof(*pending_items));
+    *has_pending_items = 0;
+  }
+  return rc;
+}
+
+/*
+ * Smith checkpoints must be able to survive after accepting a user turn but
+ * before sending its first request.  Session inputs normally remain pending
+ * until a response succeeds, so fold them into the local history explicitly
+ * at that durable boundary.  This is intentionally an internal primitive:
+ * normal session callers keep the existing request/response semantics.
+ */
+int cai_session_commit_pending_inputs(cai_session *session, cai_error *error) {
+  cai_response_create_params *params;
+  lonejson_spooled pending_items;
+  int has_pending_items;
+  int rc;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (CAI_SESSION_IMPL(session)->input_count == 0U) {
+    return CAI_OK;
+  }
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "durable inputs require local history capture");
+  }
+  params = NULL;
+  memset(&pending_items, 0, sizeof(pending_items));
+  has_pending_items = 0;
+  rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_prepare_history_params(session, params, &pending_items,
+                                            &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_history(session, &pending_items,
+                                            &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    cai_session_clear_inputs(session);
+  }
+  cai_response_create_params_destroy(params);
+  if (has_pending_items) {
+    pending_items.cleanup(&pending_items);
+  }
+  return rc;
+}
+
 static int cai_session_remember_response(cai_session *session,
                                          const cai_response *response,
                                          cai_error *error) {
@@ -3434,10 +3511,20 @@ static int cai_session_run_tool_round(cai_session *session,
     }
   }
   if (rc == CAI_OK) {
-    if (options->tool_round_completed != NULL) {
-      rc = options->tool_round_completed(options->tool_round_completed_context,
-                                         session, error);
-    }
+    rc = cai_session_replay_history_with_params_input(
+        session, params, &pending_items, &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_history(session, &pending_items,
+                                            &has_pending_items, error);
+  }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    cai_response_create_params_clear_input(params);
+  }
+  if (rc == CAI_OK && options->tool_round_completed != NULL) {
+    rc = options->tool_round_completed(options->tool_round_completed_context,
+                                       session, error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_replay_history_with_params_input(
@@ -3801,6 +3888,18 @@ static int cai_session_stream_tool_round(
   if (rc == CAI_OK) {
     rc = cai_session_add_stream_tool_outputs(session, params, input_calls,
                                              options, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_replay_history_with_params_input(
+        session, params, &pending_items, &has_pending_items, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_history(session, &pending_items,
+                                            &has_pending_items, error);
+  }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    cai_response_create_params_clear_input(params);
   }
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
     rc = options->tool_round_completed(options->tool_round_completed_context,
