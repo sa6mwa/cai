@@ -574,8 +574,13 @@ int cai_agent_runtime_open(cai_client *client,
                                 : CAI_RUNTIME_DEFAULT_STEERING_LIMIT;
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
-  if (pthread_mutex_init(&runtime->lock, NULL) != 0 ||
-      pthread_cond_init(&runtime->condition, NULL) != 0) {
+  if (pthread_mutex_init(&runtime->lock, NULL) != 0) {
+    cai_free_mem(NULL, runtime);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize agent runtime synchronization");
+  }
+  if (pthread_cond_init(&runtime->condition, NULL) != 0) {
+    pthread_mutex_destroy(&runtime->lock);
     cai_free_mem(NULL, runtime);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize agent runtime synchronization");
