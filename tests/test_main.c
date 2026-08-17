@@ -1,6 +1,7 @@
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/smith.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
@@ -23463,6 +23464,75 @@ static void test_agent_client_history_continuity(test_state *state) {
   }
 }
 
+static void test_smith_profile(test_state *state) {
+  static const char response_body[] =
+      "{\"id\":\"resp_smith\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"smith "
+      "ok\"}]}]}";
+  static const char *required[] = {
+      "POST /v1/responses HTTP/",      "\"model\":\"gpt-5.6-luna\"",
+      "You are Vectis Agent Smith",    "\"effort\":\"medium\"",
+      "\"parallel_tool_calls\":false", "\"name\":\"read_file\"",
+      "\"name\":\"list_files\""};
+  static const char *forbidden[] = {"\"name\":\"exec_command\"",
+                                    "\"name\":\"write_stdin\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), forbidden,
+       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
+       NULL, response_body}};
+  http_mock_client mock;
+  cai_smith_config config;
+  cai_agent *agent;
+  cai_response *response;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  response = NULL;
+  cai_smith_config_init(&config);
+  expect_str(state, "smith_prompt_version", cai_smith_prompt_version(),
+             CAI_SMITH_PROMPT_VERSION);
+  expect_int(state, "smith_reject_missing_client",
+             cai_client_new_smith_agent(NULL, &config, &agent, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (http_mock_client_open_script(state, "smith_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  config.workspace_directory = "/tmp";
+  config.agent_identity = "Vectis Agent Smith";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  expect_int(state, "smith_open",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "smith_client_history",
+               CAI_AGENT_IMPL(agent)->session_continuity,
+               CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
+    expect_int(state, "smith_local_history",
+               CAI_AGENT_IMPL(agent)->local_history_enabled, 1L);
+    expect_int(state, "smith_serial_tools",
+               CAI_AGENT_IMPL(agent)->parallel_tool_calls, 0L);
+    expect_int(state, "smith_auto_compaction_disabled",
+               CAI_AGENT_IMPL(agent)->auto_compact, 0L);
+    expect_int(state, "smith_send",
+               agent->send_text(agent, "inspect", &response, &error), CAI_OK);
+    if (response != NULL) {
+      expect_str(state, "smith_response", cai_response_output_text(response),
+                 "smith ok");
+      cai_response_destroy(response);
+    }
+    cai_agent_destroy(agent);
+  }
+  http_mock_client_close(state, "smith_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_tool_declarations(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   int pipe_fds[2];
@@ -32692,6 +32762,7 @@ static const test_entry test_entries[] = {
     {"session_spooled_input_failure_ownership",
      test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
+    {"smith_profile", test_smith_profile},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
     {"agent_auto_compaction", test_agent_auto_compaction},

@@ -644,6 +644,7 @@ set(CAI_SOURCES
   src/cai_mcp_client.c
   src/cai_models.c
   src/cai_response.c
+  src/cai_smith.c
   src/cai_source.c
   src/cai_stream.c
   src/cai_tool.c
@@ -1165,6 +1166,7 @@ if(CAI_BUILD_TESTS)
     agent_session
     session_spooled_input_failure_ownership
     agent_client_history_continuity
+    smith_profile
     agent_tool_declarations
     agent_tool_manual_step
     agent_auto_compaction
