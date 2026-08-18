@@ -461,6 +461,9 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
 static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
                                   cai_error *error) {
   cai_agent_runtime *runtime;
+  char *data;
+  size_t data_length;
+  const char *message;
   int type;
   int rc;
 
@@ -472,14 +475,34 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
          : event->type == CAI_TOOL_EVENT_OUTPUT
              ? CAI_AGENT_EVENT_TOOL_CALL_COMPLETED
              : CAI_AGENT_EVENT_TOOL_CALL_FAILED;
+  data = NULL;
+  data_length = 0U;
+  if (event->type == CAI_TOOL_EVENT_OUTPUT && event->output_json != NULL) {
+    rc = cai_runtime_spooled_copy(event->output_json, &data, &data_length,
+                                  error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  } else if (event->type == CAI_TOOL_EVENT_ERROR) {
+    message = event->tool_error != NULL && event->tool_error->message != NULL
+                  ? event->tool_error->message
+                  : "tool execution failed";
+    data = cai_strdup(NULL, message);
+    if (data == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy tool failure event");
+    }
+    data_length = strlen(data);
+  }
   pthread_mutex_lock(&runtime->lock);
   runtime->state = CAI_AGENT_DISPATCHING_TOOL;
-  rc = cai_runtime_enqueue_locked(runtime, type, NULL, 0U, event->name,
+  rc = cai_runtime_enqueue_locked(runtime, type, data, data_length, event->name,
                                   runtime->state, error);
   if (event->type != CAI_TOOL_EVENT_START) {
     runtime->state = CAI_AGENT_SAMPLING;
   }
   pthread_mutex_unlock(&runtime->lock);
+  cai_free_mem(NULL, data);
   return rc;
 }
 
@@ -644,33 +667,14 @@ static void *cai_runtime_worker(void *context) {
         break;
       }
       pthread_mutex_lock(&runtime->lock);
-      input = cai_runtime_take_input_locked(&runtime->steering_head,
-                                            &runtime->steering_tail);
-      if (input != NULL) {
-        runtime->steering_count--;
-        (void)cai_runtime_enqueue_locked(
-            runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
-            strlen(input->text), NULL, CAI_AGENT_SAMPLING, &error);
-      } else {
+      if (runtime->steering_head == NULL) {
         runtime->accepting_steering = 0;
-      }
-      pthread_mutex_unlock(&runtime->lock);
-      if (input == NULL) {
+        pthread_mutex_unlock(&runtime->lock);
         break;
       }
-      rc = cai_session_add_user_text(runtime->session, input->text, &error);
-      if (rc == CAI_OK &&
-          input->journal_sequence > runtime->applied_event_sequence) {
-        runtime->applied_event_sequence = input->journal_sequence;
-      }
-      cai_runtime_input_node_free(input);
-      if (rc == CAI_OK) {
-        rc = cai_session_commit_pending_inputs(runtime->session, &error);
-      }
-      if (rc == CAI_OK) {
-        cai_runtime_account_goal(runtime);
-        rc = cai_runtime_checkpoint(runtime, &error);
-      }
+      pthread_mutex_unlock(&runtime->lock);
+      rc = cai_runtime_deliver_steering_after_tool_round(
+          runtime, runtime->session, &error);
     }
     if (rc == CAI_OK) {
       cai_runtime_account_goal(runtime);

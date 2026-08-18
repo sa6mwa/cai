@@ -105,6 +105,7 @@ typedef struct cai_session_impl {
   long long goal_tokens_used;
   long long goal_created_at;
   long long goal_updated_at;
+  int goal_blocked_attempts;
   cai_token_usage last_usage;
   int has_last_usage;
   cai_usage_limits usage_limits;

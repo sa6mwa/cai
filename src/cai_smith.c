@@ -5,7 +5,11 @@
 
 #include "cai_internal.h"
 
+#include <errno.h>
+#include <stdio.h>
 #include <string.h>
+
+#define CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS (128U * 1024U)
 
 static const char cai_smith_prompt_prefix[] = "You are ";
 static const char *const cai_smith_prompt_suffix_parts[] = {
@@ -74,6 +78,7 @@ const char *cai_smith_prompt_version(void) { return CAI_SMITH_PROMPT_VERSION; }
 
 static int cai_smith_render_instructions(const cai_allocator *allocator,
                                          const cai_smith_config *config,
+                                         const char *repository_instructions,
                                          char **out, cai_error *error) {
   const char *identity;
   const char *extension;
@@ -81,6 +86,7 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
   size_t identity_length;
   size_t suffix_length;
   size_t extension_length;
+  size_t repository_length;
   size_t total_length;
   size_t offset;
   size_t i;
@@ -107,7 +113,12 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
     suffix_length += strlen(cai_smith_prompt_suffix_parts[i]);
   }
   extension_length = extension != NULL ? strlen(extension) : 0U;
+  repository_length =
+      repository_instructions != NULL ? strlen(repository_instructions) : 0U;
   total_length = prefix_length + identity_length + suffix_length;
+  if (repository_length > 0U) {
+    total_length += 2U + repository_length;
+  }
   if (extension_length > 0U) {
     total_length += 2U + extension_length;
   }
@@ -129,12 +140,65 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
            part_length);
     offset += part_length;
   }
+  if (repository_length > 0U) {
+    memcpy(instructions + offset, "\n\n", 2U);
+    memcpy(instructions + offset + 2U, repository_instructions,
+           repository_length);
+    offset += 2U + repository_length;
+  }
   if (extension_length > 0U) {
     memcpy(instructions + offset, "\n\n", 2U);
     memcpy(instructions + offset + 2U, extension, extension_length);
   }
   instructions[total_length] = '\0';
   *out = instructions;
+  return CAI_OK;
+}
+
+static int
+cai_smith_load_repository_instructions(const cai_allocator *allocator,
+                                       const char *workspace, char **out,
+                                       cai_error *error) {
+  char path[4096];
+  FILE *fp;
+  long length;
+  size_t nread;
+
+  *out = NULL;
+  if (snprintf(path, sizeof(path), "%s/AGENTS.md", workspace) >=
+      (int)sizeof(path)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith workspace path is too long");
+  }
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return errno == ENOENT
+               ? CAI_OK
+               : cai_set_error(error, CAI_ERR_INVALID,
+                               "failed to read repository instructions");
+  }
+  if (fseek(fp, 0L, SEEK_END) != 0 || (length = ftell(fp)) < 0L ||
+      (unsigned long)length > CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS ||
+      fseek(fp, 0L, SEEK_SET) != 0) {
+    fclose(fp);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "repository instructions exceed Smith limit");
+  }
+  *out = (char *)cai_alloc(allocator, (size_t)length + 1U);
+  if (*out == NULL) {
+    fclose(fp);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate repository instructions");
+  }
+  nread = fread(*out, 1U, (size_t)length, fp);
+  fclose(fp);
+  if (nread != (size_t)length) {
+    cai_free_mem(allocator, *out);
+    *out = NULL;
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to read repository instructions");
+  }
+  (*out)[length] = '\0';
   return CAI_OK;
 }
 
@@ -147,6 +211,7 @@ int cai_client_new_smith_agent(cai_client *client,
   cai_patch_tool_config patch_config;
   cai_view_image_tool_config view_image_config;
   char *instructions;
+  char *repository_instructions;
   int rc;
 
   if (out == NULL) {
@@ -164,8 +229,16 @@ int cai_client_new_smith_agent(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
   }
   instructions = NULL;
-  rc = cai_smith_render_instructions(&client_impl->allocator, config,
-                                     &instructions, error);
+  repository_instructions = NULL;
+  rc = cai_smith_load_repository_instructions(&client_impl->allocator,
+                                              config->workspace_directory,
+                                              &repository_instructions, error);
+  if (rc == CAI_OK) {
+    rc = cai_smith_render_instructions(&client_impl->allocator, config,
+                                       repository_instructions, &instructions,
+                                       error);
+  }
+  cai_free_mem(&client_impl->allocator, repository_instructions);
   if (rc != CAI_OK) {
     return rc;
   }

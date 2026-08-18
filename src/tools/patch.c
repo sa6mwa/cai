@@ -649,6 +649,34 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
   return CAI_OK;
 }
 
+static int cai_patch_validate_destinations(const cai_patch_plan *plan,
+                                           size_t index, cai_error *error) {
+  const cai_patch_change *change;
+  const char *target;
+  size_t j;
+
+  change = &plan->items[index];
+  target = change->resolved_move_path != NULL ? change->resolved_move_path
+                                              : change->resolved_path;
+  for (j = 0U; j < index; j++) {
+    const cai_patch_change *previous;
+    const char *previous_target;
+
+    previous = &plan->items[j];
+    previous_target = previous->resolved_move_path != NULL
+                          ? previous->resolved_move_path
+                          : previous->resolved_path;
+    if (strcmp(target, previous_target) == 0 ||
+        strcmp(target, previous->resolved_path) == 0 ||
+        (change->resolved_move_path != NULL &&
+         strcmp(change->resolved_path, previous_target) == 0)) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch has colliding destination paths");
+    }
+  }
+  return CAI_OK;
+}
+
 static int cai_patch_preflight(const cai_patch_context *ctx,
                                cai_patch_plan *plan, cai_error *error) {
   size_t i;
@@ -676,6 +704,10 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
                             : cai_set_error(error, CAI_ERR_INVALID,
                                             "added file exceeds size limit");
       }
+      rc = cai_patch_validate_destinations(plan, i, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
       continue;
     }
     rc = cai_patch_resolve_existing(ctx, change->path, &change->resolved_path,
@@ -689,6 +721,10 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
       return rc;
     }
     if (change->kind == CAI_PATCH_DELETE) {
+      rc = cai_patch_validate_destinations(plan, i, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
       continue;
     }
     if (change->move_path != NULL) {
@@ -713,6 +749,10 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
       return rc != CAI_OK ? rc
                           : cai_set_error(error, CAI_ERR_INVALID,
                                           "patched file exceeds size limit");
+    }
+    rc = cai_patch_validate_destinations(plan, i, error);
+    if (rc != CAI_OK) {
+      return rc;
     }
   }
   return CAI_OK;
@@ -787,7 +827,7 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     rc = cai_patch_write_atomic(target, change->after, change->after_length,
                                 error);
     if (rc != CAI_OK) {
-      return rc;
+      goto rollback;
     }
   }
   for (i = 0U; i < plan->count; i++) {
@@ -797,13 +837,37 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     if (change->kind == CAI_PATCH_DELETE ||
         change->resolved_move_path != NULL) {
       if (unlink(change->resolved_path) != 0) {
-        return cai_set_error_detail(error, CAI_ERR_INVALID,
-                                    "failed to remove patched file",
-                                    strerror(errno));
+        rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to remove patched file",
+                                  strerror(errno));
+        goto rollback;
       }
     }
   }
   return CAI_OK;
+
+rollback:
+  for (i = 0U; i < plan->count; i++) {
+    cai_patch_change *change;
+
+    change = &plan->items[i];
+    if (change->kind == CAI_PATCH_ADD) {
+      (void)unlink(change->resolved_path);
+      continue;
+    }
+    if (change->before != NULL) {
+      cai_error ignored;
+
+      cai_error_init(&ignored);
+      (void)cai_patch_write_atomic(change->resolved_path, change->before,
+                                   change->before_length, &ignored);
+      cai_error_cleanup(&ignored);
+    }
+    if (change->resolved_move_path != NULL) {
+      (void)unlink(change->resolved_move_path);
+    }
+  }
+  return rc;
 }
 
 static int cai_patch_write_result(cai_sink *result, const cai_patch_plan *plan,

@@ -24229,6 +24229,33 @@ static void test_goal_tools(test_state *state) {
                 "\"status\":\"complete\"");
   writer.length = 0U;
   writer.buffer[0] = '\0';
+  expect_int(state, "goal_blocked_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"wait for external dependency\"}", sink,
+                 &error),
+             CAI_OK);
+  expect_int(state, "goal_blocked_first",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_blocked_second",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_blocked_third",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_OK);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
   expect_int(state, "goal_clear",
              CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
                                                CAI_GOAL_CLEAR_TOOL_NAME, "{}",
@@ -24301,6 +24328,17 @@ static void test_patch_tool(test_state *state) {
                                      "*** Add File: ../outside.txt\n"
                                      "+outside\n"
                                      "*** End Patch";
+  static const char collision_patch[] = "*** Begin Patch\n"
+                                        "*** Update File: alpha.txt\n"
+                                        "*** Move to: beta.txt\n"
+                                        "@@\n"
+                                        " one\n"
+                                        " second\n"
+                                        " three\n"
+                                        " fourth\n"
+                                        "*** Add File: beta.txt\n"
+                                        "+collision\n"
+                                        "*** End Patch";
   char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
   char alpha_path[PATH_MAX];
   char beta_path[PATH_MAX];
@@ -24355,6 +24393,11 @@ static void test_patch_tool(test_state *state) {
   expect_str(state, "patch_preflight_preserves_update", contents,
              "one\nsecond\nthree\nfourth\n");
   free(contents);
+  expect_int(state, "patch_reject_collision",
+             cai_apply_patch(&config, collision_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   contents = read_file_or_die(beta_path);
   expect_str(state, "patch_preflight_preserves_delete", contents, "beta\n");
   free(contents);

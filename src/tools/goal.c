@@ -194,6 +194,7 @@ static int cai_goal_create(void *value, const void *params, void *out,
   session->goal_tokens_used = 0LL;
   session->goal_created_at = now;
   session->goal_updated_at = now;
+  session->goal_blocked_attempts = 0;
   return cai_goal_fill_result(context, (cai_goal_result *)out, error);
 }
 
@@ -218,6 +219,11 @@ static int cai_goal_update(void *value, const void *params, void *out,
   session = CAI_SESSION_IMPL(context->session);
   if (session->goal_status == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "no active goal exists");
+  }
+  if (strcmp(args->status, "blocked") == 0 &&
+      ++session->goal_blocked_attempts < 3) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "blocked requires three consecutive goal turns");
   }
   status = cai_strdup(&CAI_SESSION_CLIENT_IMPL(context->session)->allocator,
                       args->status);
@@ -256,6 +262,7 @@ static int cai_goal_clear(void *value, const void *params, void *out,
   session->goal_tokens_used = 0LL;
   session->goal_created_at = 0LL;
   session->goal_updated_at = 0LL;
+  session->goal_blocked_attempts = 0;
   if (cai_goal_fill_result(context, (cai_goal_result *)out, error) != CAI_OK) {
     return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
