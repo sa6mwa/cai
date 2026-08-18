@@ -36,7 +36,12 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_STEERING_DELIVERED = 8,
   CAI_AGENT_EVENT_RUN_COMPLETED = 9,
   CAI_AGENT_EVENT_RUN_FAILED = 10,
-  CAI_AGENT_EVENT_SESSION_CHECKPOINTED = 11
+  CAI_AGENT_EVENT_SESSION_CHECKPOINTED = 11,
+  CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED = 12,
+  CAI_AGENT_EVENT_TERMINAL_OUTPUT = 13,
+  CAI_AGENT_EVENT_TERMINAL_WAITING = 14,
+  CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED = 15,
+  CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED = 16
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */
@@ -55,6 +60,10 @@ typedef struct cai_agent_runtime_event {
   const char *tool_name;
   /** Provider-issued stable invocation identifier for tool events, otherwise NULL. */
   const char *tool_call_id;
+  /** Stable terminal ID for terminal events, otherwise NULL. */
+  const char *terminal_id;
+  /** Monotonic command ID within terminal_id for terminal events. */
+  unsigned long long terminal_command_id;
 } cai_agent_runtime_event;
 
 /** Owner-thread callback that receives queued runtime events. */

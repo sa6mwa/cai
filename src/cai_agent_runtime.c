@@ -68,6 +68,8 @@ struct cai_agent_runtime {
   cai_runtime_input_node *steering_tail;
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
+  cai_terminal_event_fn terminal_event_callback;
+  void *terminal_event_context;
 };
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -257,6 +259,29 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
   }
   cai_runtime_append_event_node_locked(runtime, node);
   return CAI_OK;
+}
+
+static int cai_runtime_enqueue_terminal_locked(cai_agent_runtime *runtime,
+                                               int type,
+                                               const cai_terminal_event *event,
+                                               cai_error *error) {
+  cai_runtime_event_node *node;
+  int rc;
+
+  rc = cai_runtime_wait_event_capacity_locked(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_runtime_event_node_new(type, event->output, event->output_length,
+                                  event->terminal_id, NULL, runtime->state,
+                                  &node, error);
+  if (rc == CAI_OK) {
+    node->event.terminal_id = node->tool_name;
+    node->event.terminal_command_id = event->command_id;
+    node->event.tool_name = NULL;
+    cai_runtime_append_event_node_locked(runtime, node);
+  }
+  return rc;
 }
 
 static void cai_runtime_set_state(cai_agent_runtime *runtime,
@@ -564,6 +589,39 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   return rc;
 }
 
+static int cai_runtime_terminal_event(void *context,
+                                      const cai_terminal_event *event,
+                                      cai_error *error) {
+  cai_agent_runtime *runtime;
+  int type;
+  int rc;
+
+  runtime = (cai_agent_runtime *)context;
+  if (runtime == NULL || event == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "invalid runtime terminal event");
+  }
+  if (runtime->terminal_event_callback != NULL) {
+    rc = runtime->terminal_event_callback(runtime->terminal_event_context,
+                                          event, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  type = event->type == CAI_TERMINAL_EVENT_COMMAND_STARTED
+             ? CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED
+         : event->type == CAI_TERMINAL_EVENT_OUTPUT
+             ? CAI_AGENT_EVENT_TERMINAL_OUTPUT
+         : event->type == CAI_TERMINAL_EVENT_WAITING
+             ? CAI_AGENT_EVENT_TERMINAL_WAITING
+         : event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED
+             ? CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
+             : CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_enqueue_terminal_locked(runtime, type, event, error);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
 static int cai_runtime_deliver_steering_after_tool_round(void *context,
                                                          cai_session *session,
                                                          cai_error *error) {
@@ -773,6 +831,7 @@ int cai_agent_runtime_open(cai_client *client,
                            cai_agent_runtime **out, cai_error *error) {
   cai_agent_runtime *runtime;
   cai_smith_config smith;
+  cai_terminal_tool_config terminal_config;
   size_t i;
   int rc;
 
@@ -834,7 +893,15 @@ int cai_agent_runtime_open(cai_client *client,
   smith.reasoning_effort = config->reasoning_effort;
   smith.developer_instructions_extension =
       config->developer_instructions_extension;
-  smith.terminal_tool_config = config->terminal_tool_config;
+  memset(&terminal_config, 0, sizeof(terminal_config));
+  if (config->terminal_tool_config != NULL) {
+    terminal_config = *config->terminal_tool_config;
+    runtime->terminal_event_callback = terminal_config.event_callback;
+    runtime->terminal_event_context = terminal_config.event_context;
+  }
+  terminal_config.event_callback = cai_runtime_terminal_event;
+  terminal_config.event_context = runtime;
+  smith.terminal_tool_config = &terminal_config;
   smith.disable_terminal = config->disable_terminal;
   rc = cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
   if (rc == CAI_OK && config->mcp_client_count > 0U &&
