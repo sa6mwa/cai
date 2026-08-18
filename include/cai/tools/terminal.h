@@ -13,6 +13,31 @@ extern "C" {
 #define CAI_TERMINAL_EXEC_TOOL_NAME "exec_command"
 #define CAI_TERMINAL_WRITE_TOOL_NAME "write_stdin"
 
+#define CAI_TERMINAL_EVENT_COMMAND_STARTED 1
+#define CAI_TERMINAL_EVENT_OUTPUT 2
+#define CAI_TERMINAL_EVENT_WAITING 3
+#define CAI_TERMINAL_EVENT_COMMAND_COMPLETED 4
+#define CAI_TERMINAL_EVENT_COMMAND_CANCELLED 5
+
+/** Borrowed terminal lifecycle fact emitted on the agent tool-dispatch thread. */
+typedef struct cai_terminal_event {
+  int type;
+  const char *terminal_id;
+  unsigned long long command_id;
+  const char *command;
+  const char *workdir;
+  const char *output;
+  size_t output_length;
+  int has_exit_code;
+  long long exit_code;
+  int has_signal;
+  long long signal;
+} cai_terminal_event;
+
+typedef int (*cai_terminal_event_fn)(void *context,
+                                     const cai_terminal_event *event,
+                                     cai_error *error);
+
 /** Host decision for a requested terminal command. */
 typedef int (*cai_terminal_policy_fn)(void *context, const char *command,
                                       const char *workspace,
@@ -37,6 +62,10 @@ typedef struct cai_terminal_tool_config {
   cai_terminal_policy_fn policy;
   /** Context passed to policy. */
   void *policy_context;
+  /** Optional lifecycle observer; never called on the PTY reader thread. */
+  cai_terminal_event_fn event_callback;
+  /** Context passed to event_callback. */
+  void *event_context;
 } cai_terminal_tool_config;
 
 /** Register the coupled one-slot exec_command and write_stdin tools. */

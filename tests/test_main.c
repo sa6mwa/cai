@@ -363,6 +363,14 @@ typedef struct tool_event_state {
   char error[128];
 } tool_event_state;
 
+typedef struct terminal_event_state {
+  int started;
+  int output;
+  int waiting;
+  int completed;
+  char terminal_id[48];
+} terminal_event_state;
+
 typedef struct failing_callback_state {
   int calls;
 } failing_callback_state;
@@ -2935,6 +2943,29 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     }
     return CAI_OK;
   }
+  return CAI_OK;
+}
+
+static int test_terminal_event(void *context, const cai_terminal_event *event,
+                               cai_error *error) {
+  terminal_event_state *state;
+
+  (void)error;
+  state = (terminal_event_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_TERMINAL_EVENT_COMMAND_STARTED) {
+    state->started++;
+  } else if (event->type == CAI_TERMINAL_EVENT_OUTPUT) {
+    state->output++;
+  } else if (event->type == CAI_TERMINAL_EVENT_WAITING) {
+    state->waiting++;
+  } else if (event->type == CAI_TERMINAL_EVENT_COMMAND_COMPLETED) {
+    state->completed++;
+  }
+  snprintf(state->terminal_id, sizeof(state->terminal_id), "%s",
+           event->terminal_id != NULL ? event->terminal_id : "");
   return CAI_OK;
 }
 
@@ -27150,6 +27181,7 @@ static void test_terminal_tools(test_state *state) {
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   write_state writer;
+  terminal_event_state events;
   cai_error error;
   int rc;
 
@@ -27158,11 +27190,14 @@ static void test_terminal_tools(test_state *state) {
     return;
   }
   memset(&config, 0, sizeof(config));
+  memset(&events, 0, sizeof(events));
   config.root_path = dir_template;
   config.default_workdir = dir_template;
   config.default_yield_time_ms = 20L;
   config.max_yield_time_ms = 100L;
   config.output_max_bytes = 4096U;
+  config.event_callback = test_terminal_event;
+  config.event_context = &events;
   registry = NULL;
   sink = NULL;
   memset(&writer, 0, sizeof(writer));
@@ -27259,6 +27294,9 @@ static void test_terminal_tools(test_state *state) {
                CAI_OK);
     expect_substr(state, "terminal_write_interactive_finished", writer.buffer,
                   "\"completed\":true");
+    expect_int(state, "terminal_event_started", events.started, 2L);
+    expect_int(state, "terminal_event_completed", events.completed, 2L);
+    expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");
   }
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
