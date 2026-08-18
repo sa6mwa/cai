@@ -1,6 +1,7 @@
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/smith.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
@@ -4058,6 +4059,7 @@ done:
 static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
                                                  cai_error *error) {
   cai_chatgpt_auth_config auth_config;
+  const char *configured_path;
   char *auth_path;
   int rc;
 
@@ -4066,10 +4068,19 @@ static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
                                  "ChatGPT auth output is required");
   }
   *out = NULL;
-  auth_path = NULL;
-  rc = cai_chatgpt_auth_default_path(&auth_path, error);
-  if (rc != CAI_OK) {
-    return rc;
+  configured_path = getenv("CAI_CHATGPT_AUTH_JSON");
+  if (configured_path != NULL && configured_path[0] != '\0') {
+    auth_path = strdup(configured_path);
+    if (auth_path == NULL) {
+      return integration_set_error(error, CAI_ERR_NOMEM,
+                                   "failed to copy ChatGPT auth path");
+    }
+  } else {
+    auth_path = NULL;
+    rc = cai_chatgpt_auth_default_path(&auth_path, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   }
   if (access(auth_path, R_OK) != 0) {
     rc = integration_set_error(
@@ -4089,6 +4100,114 @@ static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
   rc = cai_chatgpt_auth_open(&auth_config, out, error);
   cai_string_destroy(auth_path);
   return rc;
+}
+
+static int run_chatgpt_smith_regression(void) {
+  cai_client_config client_config;
+  cai_smith_config smith_config;
+  cai_run_options run_options;
+  cai_stream_sinks stream_sinks;
+  cai_sink_callbacks sink_callbacks;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  integration_write_state writer;
+  char workspace[PATH_MAX];
+  const char *model;
+  const char *answer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_smith_config_init(&smith_config);
+  cai_run_options_init(&run_options);
+  cai_stream_sinks_init(&stream_sinks);
+  memset(&writer, 0, sizeof(writer));
+  memset(&sink_callbacks, 0, sizeof(sink_callbacks));
+  auth = NULL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  model = chatgpt_integration_model();
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc == 77) {
+    cai_error_cleanup(&error);
+    return 77;
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith ChatGPT auth open", rc, &error);
+    goto done;
+  }
+  if (getcwd(workspace, sizeof(workspace)) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to resolve Smith E2E workspace");
+    goto done;
+  }
+  client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith ChatGPT client open", rc, &error);
+    goto done;
+  }
+  smith_config.workspace_directory = workspace;
+  smith_config.model = model;
+  smith_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  run_options.max_tool_rounds = 4;
+  rc = cai_client_new_smith_agent(client, &smith_config, &agent, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith agent open", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_new_session(agent, &session, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith session open", rc, &error);
+    goto done;
+  }
+  sink_callbacks.write = integration_write;
+  sink_callbacks.context = &writer;
+  rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith output sink", rc, &error);
+    goto done;
+  }
+  stream_sinks.output_text = sink;
+  rc = cai_session_add_user_text(
+      session,
+      "Read the first 40 lines of CMakeLists.txt and report this project's "
+      "CMake project name in exactly one short sentence. Do not modify files.",
+      &error);
+  if (rc == CAI_OK) {
+    rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
+                                          0, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith safe-file E2E turn", rc, &error);
+    goto done;
+  }
+  answer = writer.buffer;
+  fprintf(stderr, "[integration-chatgpt-smith] model=%s answer=%s\n", model,
+          answer != NULL ? answer : "");
+  if (!integration_text_contains(answer, "cai")) {
+    fprintf(stderr,
+            "Smith safe-file E2E did not identify the CMake project name\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  rc = CAI_OK;
+
+done:
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
 }
 
 static int run_chatgpt_subscription_session_regression(void) {
@@ -4712,6 +4831,7 @@ done:
 int main(void) {
   const char *compaction;
   const char *chatgpt_subscription;
+  const char *chatgpt_smith;
   const char *chatgpt_defaults;
   const char *e2e;
   const char *exec_tool;
@@ -4751,6 +4871,10 @@ int main(void) {
     return run_provider_retry_classifier_regression();
   }
   chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
+  chatgpt_smith = getenv("CAI_INTEGRATION_CHATGPT_SMITH_E2E");
+  if (integration_flag_enabled(chatgpt_smith)) {
+    return run_chatgpt_smith_regression();
+  }
   if (integration_flag_enabled(chatgpt_subscription)) {
     return run_chatgpt_subscription_session_regression();
   }
