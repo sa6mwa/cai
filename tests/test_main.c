@@ -122,6 +122,7 @@ typedef struct runtime_event_state {
   pthread_t owner;
   int calls;
   int saw_started;
+  int saw_failed;
   int wrong_thread;
 } runtime_event_state;
 
@@ -130,10 +131,23 @@ typedef struct runtime_session_store_state {
   read_state reader;
   int loads;
   int checkpoints;
+  int appended_events;
+  unsigned long long load_applied_event_sequence;
+  unsigned long long saved_applied_event_sequence;
+  unsigned long long replay_event_sequence;
+  char replay_event_type[64];
+  char replay_event_data[256];
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char saved_checkpoint[8192];
 } runtime_session_store_state;
+
+typedef struct session_event_capture_state {
+  int count;
+  unsigned long long sequence;
+  char type[64];
+  char data[256];
+} session_event_capture_state;
 
 typedef struct fail_write_state {
   int writes;
@@ -1690,14 +1704,15 @@ static int test_runtime_event(void *context,
   if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
     state->saw_started = 1;
   }
+  if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
+    state->saw_failed = 1;
+  }
   return CAI_OK;
 }
 
-static int test_runtime_session_store_checkpoint(void *context,
-                                                 const char *scope,
-                                                 const char *session_id,
-                                                 cai_source *state,
-                                                 cai_error *error) {
+static int test_runtime_session_store_checkpoint(
+    void *context, const char *scope, const char *session_id, cai_source *state,
+    unsigned long long applied_event_sequence, cai_error *error) {
   runtime_session_store_state *store;
   size_t offset;
 
@@ -1707,6 +1722,7 @@ static int test_runtime_session_store_checkpoint(void *context,
                          "runtime test checkpoint state is required");
   }
   store->checkpoints++;
+  store->saved_applied_event_sequence = applied_event_sequence;
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
   (void)snprintf(store->session_id, sizeof(store->session_id), "%s",
                  session_id);
@@ -1730,19 +1746,20 @@ static int test_runtime_session_store_checkpoint(void *context,
   return CAI_OK;
 }
 
-static int test_runtime_session_store_load(void *context, const char *scope,
-                                           char *session_id,
-                                           size_t session_id_capacity,
-                                           cai_source **out, cai_error *error) {
+static int test_runtime_session_store_load(
+    void *context, const char *scope, char *session_id,
+    size_t session_id_capacity, cai_source **out,
+    unsigned long long *out_applied_event_sequence, cai_error *error) {
   cai_source_callbacks callbacks;
   runtime_session_store_state *store;
 
-  if (out == NULL || session_id == NULL ||
+  if (out == NULL || out_applied_event_sequence == NULL || session_id == NULL ||
       session_id_capacity < strlen("resumed_session") + 1U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid runtime test session store outputs");
   }
   store = (runtime_session_store_state *)context;
+  *out_applied_event_sequence = store->load_applied_event_sequence;
   store->loads++;
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
   (void)snprintf(session_id, session_id_capacity, "%s", "resumed_session");
@@ -1755,6 +1772,69 @@ static int test_runtime_session_store_load(void *context, const char *scope,
   callbacks.close = test_read_close;
   callbacks.context = &store->reader;
   return cai_source_from_callbacks(&callbacks, out, error);
+}
+
+static int test_runtime_session_store_append_event(
+    void *context, const char *scope, const char *session_id,
+    const cai_agent_session_event *event, cai_error *error) {
+  runtime_session_store_state *store;
+
+  store = (runtime_session_store_state *)context;
+  if (store == NULL || event == NULL || event->type == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime test event is required");
+  }
+  store->appended_events++;
+  store->replay_event_sequence = event->sequence;
+  (void)snprintf(store->replay_event_type, sizeof(store->replay_event_type),
+                 "%s", event->type);
+  (void)snprintf(store->replay_event_data, sizeof(store->replay_event_data),
+                 "%s", event->data != NULL ? event->data : "");
+  (void)scope;
+  (void)session_id;
+  return CAI_OK;
+}
+
+static int test_runtime_session_store_load_events_after(
+    void *context, const char *scope, const char *session_id,
+    unsigned long long after_sequence, cai_agent_session_event_fn callback,
+    void *callback_context, cai_error *error) {
+  runtime_session_store_state *store;
+  cai_agent_session_event event;
+
+  store = (runtime_session_store_state *)context;
+  if (store == NULL || callback == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime test replay callback is required");
+  }
+  if (store->replay_event_sequence > after_sequence) {
+    event.sequence = store->replay_event_sequence;
+    event.type = store->replay_event_type;
+    event.data = store->replay_event_data;
+    return callback(callback_context, &event, error);
+  }
+  (void)scope;
+  (void)session_id;
+  return CAI_OK;
+}
+
+static int test_session_event_capture(void *context,
+                                      const cai_agent_session_event *event,
+                                      cai_error *error) {
+  session_event_capture_state *state;
+
+  (void)error;
+  state = (session_event_capture_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  state->count++;
+  state->sequence = event->sequence;
+  (void)snprintf(state->type, sizeof(state->type), "%s",
+                 event->type != NULL ? event->type : "");
+  (void)snprintf(state->data, sizeof(state->data), "%s",
+                 event->data != NULL ? event->data : "");
+  return CAI_OK;
 }
 
 static int test_fail_write(void *context, const void *bytes, size_t count,
@@ -23768,6 +23848,8 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   memset(&store, 0, sizeof(store));
   store.checkpoint = test_runtime_session_store_checkpoint;
   store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
   store.context = &store_state;
   memset(&mcp_config, 0, sizeof(mcp_config));
   test_mcp_fake_client_init(&mcp_fake);
@@ -23842,15 +23924,20 @@ static void test_agent_local_session_store(test_state *state) {
   cai_source *source;
   cai_source *loaded;
   read_state reader;
+  cai_agent_session_event event;
+  session_event_capture_state event_capture;
   cai_error error;
   unsigned char digest[SHA256_DIGEST_LENGTH];
   static const char hex[] = "0123456789abcdef";
   FILE *fp;
   size_t i;
+  unsigned long long loaded_sequence;
 
   cai_error_init(&error);
   source = NULL;
   loaded = NULL;
+  loaded_sequence = 0U;
+  memset(&event_capture, 0, sizeof(event_capture));
   memset(&store, 0, sizeof(store));
   if (mkdtemp(template_directory) == NULL) {
     test_fail(state, "local_session_store_tmpdir", "mkdtemp failed");
@@ -23875,7 +23962,7 @@ static void test_agent_local_session_store(test_state *state) {
   if (source != NULL) {
     expect_int(state, "local_session_store_first_checkpoint",
                store.checkpoint(store.context, "/tmp/cai-session-store-scope",
-                                "session_one", source, &error),
+                                "session_one", source, 0U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -23888,7 +23975,7 @@ static void test_agent_local_session_store(test_state *state) {
   if (source != NULL) {
     expect_int(state, "local_session_store_second_checkpoint",
                store.checkpoint(store.context, "/tmp/cai-session-store-scope",
-                                "session_one", source, &error),
+                                "session_one", source, 7U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -23919,17 +24006,26 @@ static void test_agent_local_session_store(test_state *state) {
   if (source != NULL) {
     expect_int(state, "local_session_store_repair_checkpoint",
                store.checkpoint(store.context, "/tmp/cai-session-store-scope",
-                                "session_one", source, &error),
+                                "session_one", source, 7U, &error),
                CAI_OK);
   }
   cai_source_close(source);
   source = NULL;
+  event.sequence = 8U;
+  event.type = "steering_queued";
+  event.data = "resume this steering input";
+  expect_int(state, "local_session_store_append_event",
+             store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", &event, &error),
+             CAI_OK);
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_load",
              store.load_latest(store.context, "/tmp/cai-session-store-scope",
-                               session_id, sizeof(session_id), &loaded, &error),
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
              CAI_OK);
   expect_str(state, "local_session_store_id", session_id, "session_one");
+  expect_int(state, "local_session_store_watermark", (long)loaded_sequence, 7L);
   if (loaded == NULL) {
     test_fail(state, "local_session_store_load", "latest checkpoint missing");
   } else {
@@ -23937,12 +24033,26 @@ static void test_agent_local_session_store(test_state *state) {
     expect_int(
         state, "local_session_store_read",
         (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
-        (long)strlen("{\"version\":3}\n"));
+        (long)strlen("{\"version\":3}"));
     expect_str(state, "local_session_store_latest_value", buffer,
-               "{\"version\":3}\n");
+               "{\"version\":3}");
     expect_int(state, "local_session_store_reset",
                cai_source_reset(loaded, &error), CAI_OK);
   }
+  expect_int(state, "local_session_store_replay_events",
+             store.load_events_after(
+                 store.context, "/tmp/cai-session-store-scope", "session_one",
+                 loaded_sequence, test_session_event_capture, &event_capture,
+                 &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_replay_count", event_capture.count,
+             1L);
+  expect_int(state, "local_session_store_replay_sequence",
+             (long)event_capture.sequence, 8L);
+  expect_str(state, "local_session_store_replay_type", event_capture.type,
+             "steering_queued");
+  expect_str(state, "local_session_store_replay_data", event_capture.data,
+             "resume this steering input");
   cai_source_close(loaded);
   cai_agent_local_session_store_close(&store);
   unlink(file_path);
@@ -23960,18 +24070,33 @@ static void test_agent_runtime_resume(test_state *state) {
   runtime_session_store_state store_state;
   cai_client *client;
   cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
   cai_error error;
+  int i;
 
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
   store_state.checkpoint_json =
       "{\"version\":1,\"model\":\"gpt-5.6-terra\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 8U;
+  store_state.replay_event_sequence = 9U;
+  (void)snprintf(store_state.replay_event_type,
+                 sizeof(store_state.replay_event_type), "%s",
+                 "steering_queued");
+  (void)snprintf(store_state.replay_event_data,
+                 sizeof(store_state.replay_event_data), "%s",
+                 "resume durable steering");
   store.checkpoint = test_runtime_session_store_checkpoint;
   store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
   store.context = &store_state;
   cai_client_config_init(&client_config);
   client_config.api_key = "test-key";
@@ -23984,6 +24109,8 @@ static void test_agent_runtime_resume(test_state *state) {
   runtime_config.workspace_directory = "/tmp";
   runtime_config.session_store = &store;
   runtime_config.resume_latest = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
   expect_int(state, "runtime_resume_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
@@ -23992,6 +24119,22 @@ static void test_agent_runtime_resume(test_state *state) {
   if (runtime != NULL) {
     expect_str(state, "runtime_resume_session_id",
                cai_agent_runtime_session_id(runtime), "resumed_session");
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 10 && run_state != CAI_AGENT_FAILED; i++) {
+      expect_int(state, "runtime_resume_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_replayed_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "runtime_resume_replayed_event", events.saw_failed, 1L);
+    expect_int(state, "runtime_resume_replayed_checkpoint",
+               store_state.checkpoints > 0, 1L);
+    expect_int(state, "runtime_resume_replayed_watermark",
+               (long)store_state.saved_applied_event_sequence, 9L);
+    expect_substr(state, "runtime_resume_replayed_text",
+                  store_state.saved_checkpoint, "resume durable steering");
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {

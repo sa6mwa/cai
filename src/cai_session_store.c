@@ -28,6 +28,22 @@ typedef struct cai_local_checkpoint_source {
   long end;
 } cai_local_checkpoint_source;
 
+typedef struct cai_local_event_doc {
+  char *record_type;
+  unsigned long long sequence;
+  char *type;
+  char *data;
+} cai_local_event_doc;
+
+static const lonejson_field cai_local_event_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_local_event_doc, record_type,
+                                    "record_type"),
+    LONEJSON_FIELD_U64_REQ(cai_local_event_doc, sequence, "sequence"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_local_event_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_local_event_doc, data, "data")};
+LONEJSON_MAP_DEFINE(cai_local_event_map, cai_local_event_doc,
+                    cai_local_event_fields);
+
 static int cai_store_make_directory(const char *path, cai_error *error) {
   char buffer[PATH_MAX];
   char *cursor;
@@ -228,13 +244,14 @@ static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
   return CAI_OK;
 }
 
-static int cai_local_session_checkpoint(void *context, const char *scope,
-                                        const char *session_id,
-                                        cai_source *state, cai_error *error) {
+static int cai_local_session_checkpoint(
+    void *context, const char *scope, const char *session_id, cai_source *state,
+    unsigned long long applied_event_sequence, cai_error *error) {
   cai_local_session_store *store;
   char hash[65];
   char filename[160];
   char buffer[8192];
+  char record_prefix[128];
   int scope_fd;
   int fd;
   int rc;
@@ -278,6 +295,17 @@ static int cai_local_session_checkpoint(void *context, const char *scope,
   if (rc == CAI_OK) {
     rc = cai_store_repair_incomplete_tail(fd, error);
   }
+  if (rc == CAI_OK &&
+      snprintf(record_prefix, sizeof(record_prefix),
+               "{\"record_type\":\"checkpoint\","
+               "\"applied_event_sequence\":%llu,\"state\":",
+               applied_event_sequence) >= (int)sizeof(record_prefix)) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to format session checkpoint record");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_store_write_all(fd, record_prefix, strlen(record_prefix), error);
+  }
   while (rc == CAI_OK) {
     size_t nread;
 
@@ -291,7 +319,7 @@ static int cai_local_session_checkpoint(void *context, const char *scope,
     rc = error->code;
   }
   if (rc == CAI_OK) {
-    rc = cai_store_write_all(fd, "\n", 1U, error);
+    rc = cai_store_write_all(fd, "}\n", 2U, error);
   }
   if (rc == CAI_OK && fsync(fd) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -300,6 +328,210 @@ static int cai_local_session_checkpoint(void *context, const char *scope,
   if (rc == CAI_OK && fsync(scope_fd) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to sync session checkpoint directory");
+  }
+  if (fd >= 0) {
+    (void)flock(fd, LOCK_UN);
+    close(fd);
+  }
+  if (scope_fd >= 0) {
+    close(scope_fd);
+  }
+  return rc;
+}
+
+static int cai_local_session_append_event(void *context, const char *scope,
+                                          const char *session_id,
+                                          const cai_agent_session_event *event,
+                                          cai_error *error) {
+  cai_local_session_store *store;
+  cai_buffer_builder builder;
+  char hash[65];
+  char filename[160];
+  int scope_fd;
+  int fd;
+  int rc;
+
+  if (context == NULL || event == NULL || event->sequence == 0U ||
+      event->type == NULL || event->type[0] == '\0' ||
+      !cai_store_session_id_valid(session_id)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "valid session event arguments are required");
+  }
+  store = (cai_local_session_store *)context;
+  memset(&builder, 0, sizeof(builder));
+  scope_fd = -1;
+  fd = -1;
+  rc = cai_buffer_append_cstr(&builder,
+                              "{\"record_type\":\"event\","
+                              "\"sequence\":",
+                              error);
+  if (rc == CAI_OK) {
+    char number[32];
+
+    (void)snprintf(number, sizeof(number), "%llu", event->sequence);
+    rc = cai_buffer_append_cstr(&builder, number, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, ",\"type\":", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_json_string(&builder, event->type, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, ",\"data\":", error);
+  }
+  if (rc == CAI_OK && event->data != NULL) {
+    rc = cai_buffer_append_json_string(&builder, event->data, error);
+  }
+  if (rc == CAI_OK && event->data == NULL) {
+    rc = cai_buffer_append_cstr(&builder, "null", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_buffer_append_cstr(&builder, "}\n", error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
+  }
+  if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
+                               session_id) >= (int)sizeof(filename)) {
+    rc =
+        cai_set_error(error, CAI_ERR_INVALID, "session identifier is too long");
+  }
+  if (rc == CAI_OK) {
+    fd = openat(scope_fd, filename,
+                O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open session event log");
+    }
+  }
+  if (rc == CAI_OK && flock(fd, LOCK_EX) != 0) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to lock session event log");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_store_repair_incomplete_tail(fd, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_store_write_all(fd, builder.data, builder.length, error);
+  }
+  if (rc == CAI_OK && fsync(fd) != 0) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to sync session event log");
+  }
+  if (rc == CAI_OK && fsync(scope_fd) != 0) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to sync session event directory");
+  }
+  if (fd >= 0) {
+    (void)flock(fd, LOCK_UN);
+    close(fd);
+  }
+  if (scope_fd >= 0) {
+    close(scope_fd);
+  }
+  cai_free_mem(NULL, builder.data);
+  return rc;
+}
+
+static int cai_local_session_load_events_after(
+    void *context, const char *scope, const char *session_id,
+    unsigned long long after_sequence, cai_agent_session_event_fn callback,
+    void *callback_context, cai_error *error) {
+  cai_local_session_store *store;
+  char hash[65];
+  char filename[160];
+  char *line;
+  size_t line_capacity;
+  ssize_t line_length;
+  int scope_fd;
+  int fd;
+  FILE *fp;
+  int rc;
+
+  if (context == NULL || callback == NULL ||
+      !cai_store_session_id_valid(session_id)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "valid session event replay arguments are required");
+  }
+  store = (cai_local_session_store *)context;
+  line = NULL;
+  line_capacity = 0U;
+  scope_fd = -1;
+  fd = -1;
+  fp = NULL;
+  rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
+  if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
+                               session_id) >= (int)sizeof(filename)) {
+    rc =
+        cai_set_error(error, CAI_ERR_INVALID, "session identifier is too long");
+  }
+  if (rc == CAI_OK) {
+    fd = openat(scope_fd, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0 && errno == ENOENT) {
+      rc = CAI_OK;
+      goto done;
+    }
+    if (fd < 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open session event log");
+    }
+  }
+  if (rc == CAI_OK && flock(fd, LOCK_SH) != 0) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to lock session event log");
+  }
+  if (rc == CAI_OK) {
+    fp = fdopen(fd, "rb");
+    if (fp == NULL) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read session event log");
+    } else {
+      fd = -1;
+    }
+  }
+  while (rc == CAI_OK && fp != NULL &&
+         (line_length = getline(&line, &line_capacity, fp)) >= 0) {
+    cai_local_event_doc doc;
+    cai_agent_session_event event;
+    lonejson_error json_error;
+    lonejson_status status;
+
+    if (line_length == 0 || line[line_length - 1] != '\n') {
+      break;
+    }
+    if (strncmp(line, "{\"record_type\":\"event\",", 23U) != 0) {
+      continue;
+    }
+    memset(&doc, 0, sizeof(doc));
+    CAI_LJ->init(CAI_LJ, &cai_local_event_map, &doc);
+    lonejson_error_init(&json_error);
+    status = CAI_LJ->parse_buffer(CAI_LJ, &cai_local_event_map, &doc, line,
+                                  (size_t)line_length, &json_error);
+    if (status != LONEJSON_STATUS_OK || strcmp(doc.record_type, "event") != 0) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
+      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "invalid session event record",
+                                json_error.message);
+      break;
+    }
+    if (doc.sequence > after_sequence) {
+      event.sequence = doc.sequence;
+      event.type = doc.type;
+      event.data = doc.data;
+      rc = callback(callback_context, &event, error);
+    }
+    CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
+  }
+  if (rc == CAI_OK && fp != NULL && ferror(fp)) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to read session event log");
+  }
+done:
+  free(line);
+  if (fp != NULL) {
+    (void)flock(fileno(fp), LOCK_UN);
+    fclose(fp);
   }
   if (fd >= 0) {
     (void)flock(fd, LOCK_UN);
@@ -401,14 +633,15 @@ static int cai_local_checkpoint_source_open(int fd, long start, long end,
   return CAI_OK;
 }
 
-static int cai_local_find_last_line(int fd, long *out_start, long *out_end,
-                                    cai_error *error) {
+static int cai_local_find_last_line_before(int fd, long before_end,
+                                           long *out_start, long *out_end,
+                                           cai_error *error) {
   char buffer[4096];
   off_t end;
   off_t cursor;
   off_t record_end;
 
-  end = lseek(fd, 0, SEEK_END);
+  end = before_end > 0L ? (off_t)before_end : lseek(fd, 0, SEEK_END);
   if (end <= 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session checkpoint log is empty");
@@ -450,10 +683,53 @@ static int cai_local_find_last_line(int fd, long *out_start, long *out_end,
   return CAI_OK;
 }
 
-static int cai_local_session_load_latest(void *context, const char *scope,
-                                         char *session_id,
-                                         size_t session_id_capacity,
-                                         cai_source **out, cai_error *error) {
+static int cai_local_checkpoint_record_bounds(
+    int fd, long record_start, long record_end, long *out_state_start,
+    long *out_state_end, unsigned long long *out_applied_event_sequence,
+    cai_error *error) {
+  static const char prefix[] = "{\"record_type\":\"checkpoint\","
+                               "\"applied_event_sequence\":";
+  char header[192];
+  char *cursor;
+  char *end;
+  ssize_t nread;
+  unsigned long long sequence;
+
+  if (out_state_start == NULL || out_state_end == NULL ||
+      out_applied_event_sequence == NULL || record_end <= record_start) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session checkpoint record bounds are required");
+  }
+  nread = pread(fd, header, sizeof(header) - 1U, (off_t)record_start);
+  if (nread <= 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to read session checkpoint record");
+  }
+  header[nread] = '\0';
+  if (strncmp(header, prefix, sizeof(prefix) - 1U) != 0) {
+    *out_state_start = record_start;
+    *out_state_end = record_end - 1L;
+    *out_applied_event_sequence = 0U;
+    return CAI_OK;
+  }
+  cursor = header + sizeof(prefix) - 1U;
+  errno = 0;
+  sequence = strtoull(cursor, &end, 10);
+  if (errno != 0 || end == cursor || strncmp(end, ",\"state\":", 9U) != 0 ||
+      record_end - record_start < (long)(end - header) + 11L) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid session checkpoint record");
+  }
+  *out_state_start = record_start + (long)(end - header) + 9L;
+  *out_state_end = record_end - 2L;
+  *out_applied_event_sequence = sequence;
+  return CAI_OK;
+}
+
+static int cai_local_session_load_latest(
+    void *context, const char *scope, char *session_id,
+    size_t session_id_capacity, cai_source **out,
+    unsigned long long *out_applied_event_sequence, cai_error *error) {
   cai_local_session_store *store;
   char hash[65];
   DIR *directory;
@@ -464,11 +740,13 @@ static int cai_local_session_load_latest(void *context, const char *scope,
   int fd;
   int rc;
 
-  if (out == NULL || session_id == NULL || session_id_capacity == 0U) {
+  if (out == NULL || session_id == NULL || session_id_capacity == 0U ||
+      out_applied_event_sequence == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session checkpoint outputs are required");
   }
   *out = NULL;
+  *out_applied_event_sequence = 0U;
   session_id[0] = '\0';
   if (context == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session store is required");
@@ -537,12 +815,39 @@ static int cai_local_session_load_latest(void *context, const char *scope,
                          "failed to lock latest session checkpoint log");
   }
   {
+    static const char event_prefix[] = "{\"record_type\":\"event\",";
+    char record_prefix[sizeof(event_prefix)];
     long start;
     long end;
+    long state_start;
+    long state_end;
+    long before_end;
+    ssize_t nread;
 
-    rc = cai_local_find_last_line(fd, &start, &end, error);
+    before_end = 0L;
+    for (;;) {
+      rc = cai_local_find_last_line_before(fd, before_end, &start, &end, error);
+      if (rc != CAI_OK) {
+        break;
+      }
+      nread =
+          pread(fd, record_prefix, sizeof(record_prefix) - 1U, (off_t)start);
+      if (nread > 0) {
+        record_prefix[nread] = '\0';
+      }
+      if (nread > 0 && strncmp(record_prefix, event_prefix,
+                               sizeof(event_prefix) - 1U) == 0) {
+        before_end = start;
+        continue;
+      }
+      rc = cai_local_checkpoint_record_bounds(
+          fd, start, end, &state_start, &state_end, out_applied_event_sequence,
+          error);
+      break;
+    }
     if (rc == CAI_OK) {
-      rc = cai_local_checkpoint_source_open(fd, start, end, out, error);
+      rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
+                                            error);
       fd = -1;
     }
   }
@@ -624,6 +929,8 @@ int cai_agent_local_session_store_open(
   }
   out->checkpoint = cai_local_session_checkpoint;
   out->load_latest = cai_local_session_load_latest;
+  out->append_event = cai_local_session_append_event;
+  out->load_events_after = cai_local_session_load_events_after;
   out->context = store;
   return CAI_OK;
 }
@@ -633,7 +940,9 @@ void cai_agent_local_session_store_close(cai_agent_session_store *store) {
     return;
   }
   if (store->checkpoint == cai_local_session_checkpoint &&
-      store->load_latest == cai_local_session_load_latest) {
+      store->load_latest == cai_local_session_load_latest &&
+      store->append_event == cai_local_session_append_event &&
+      store->load_events_after == cai_local_session_load_events_after) {
     cai_local_session_store_destroy(store->context);
   }
   memset(store, 0, sizeof(*store));

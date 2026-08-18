@@ -10,18 +10,37 @@
 extern "C" {
 #endif
 
+/** A durable event in the runtime-owned session journal. */
+typedef struct cai_agent_session_event {
+  /** Monotonic identifier assigned by CAI for this session. */
+  unsigned long long sequence;
+  /** Stable event type, for example steering_queued. */
+  const char *type;
+  /** Optional UTF-8 payload; borrowed for the callback duration. */
+  const char *data;
+} cai_agent_session_event;
+
+/** Consume one journal event during synchronous replay. */
+typedef int (*cai_agent_session_event_fn)(void *context,
+                                          const cai_agent_session_event *event,
+                                          cai_error *error);
+
 /**
  * Callback-backed store for complete agent-session checkpoints.
  *
  * checkpoint receives a source owned by CAI. It must consume it synchronously
- * if needed and must not close or retain the source. load_latest returns a new
- * source owned by the caller, or sets *out to NULL when no checkpoint exists.
- * Callbacks may run on the agent runtime worker thread and must be thread-safe
- * when one store is shared by multiple runtimes.
+ * if needed and must not close or retain the source. Its watermark declares
+ * every state-changing journal event incorporated into that checkpoint.
+ * load_latest returns a new source owned by the caller, or sets *out to NULL
+ * when no checkpoint exists. Callbacks may run on the agent runtime worker
+ * thread and must be thread-safe when one store is shared by multiple
+ * runtimes.
  */
 typedef struct cai_agent_session_store {
   int (*checkpoint)(void *context, const char *scope, const char *session_id,
-                    cai_source *state, cai_error *error);
+                    cai_source *state,
+                    unsigned long long applied_event_sequence,
+                    cai_error *error);
   /**
    * Load the newest checkpoint for scope. On success with a checkpoint,
    * session_id receives its NUL-terminated stable identifier and *out receives
@@ -29,7 +48,18 @@ typedef struct cai_agent_session_store {
    */
   int (*load_latest)(void *context, const char *scope, char *session_id,
                      size_t session_id_capacity, cai_source **out,
+                     unsigned long long *out_applied_event_sequence,
                      cai_error *error);
+  /** Append and durably acknowledge a journal event before returning success.
+   */
+  int (*append_event)(void *context, const char *scope, const char *session_id,
+                      const cai_agent_session_event *event, cai_error *error);
+  /** Replay journal events strictly after the supplied checkpoint watermark. */
+  int (*load_events_after)(void *context, const char *scope,
+                           const char *session_id,
+                           unsigned long long after_sequence,
+                           cai_agent_session_event_fn callback,
+                           void *callback_context, cai_error *error);
   void *context;
 } cai_agent_session_store;
 
