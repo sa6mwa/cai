@@ -10,6 +10,7 @@
 
 #include <lonejson.h>
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -395,6 +396,18 @@ typedef struct integration_exec_tool_event_state {
   integration_write_state output;
 } integration_exec_tool_event_state;
 
+typedef struct integration_smith_tool_event_state {
+  int read_file_starts;
+  int read_file_outputs;
+  int apply_patch_starts;
+  int apply_patch_outputs;
+  int output_sequence;
+  int first_read_file_output_sequence;
+  int first_apply_patch_output_sequence;
+  int last_read_file_output_sequence;
+  int last_apply_patch_output_sequence;
+} integration_smith_tool_event_state;
+
 typedef struct integration_stream_debug_state {
   char deltas[4096];
   size_t deltas_length;
@@ -644,6 +657,42 @@ static int integration_exec_tool_event(void *context,
   return rc;
 }
 
+static int integration_smith_tool_event(void *context,
+                                        const cai_tool_event *event,
+                                        cai_error *error) {
+  integration_smith_tool_event_state *state;
+
+  (void)error;
+  state = (integration_smith_tool_event_state *)context;
+  if (state == NULL || event == NULL || event->name == NULL) {
+    return CAI_OK;
+  }
+  if (strcmp(event->name, "read_file") == 0) {
+    if (event->type == CAI_TOOL_EVENT_START) {
+      state->read_file_starts++;
+    } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+      state->read_file_outputs++;
+      state->output_sequence++;
+      if (state->first_read_file_output_sequence == 0) {
+        state->first_read_file_output_sequence = state->output_sequence;
+      }
+      state->last_read_file_output_sequence = state->output_sequence;
+    }
+  } else if (strcmp(event->name, "apply_patch") == 0) {
+    if (event->type == CAI_TOOL_EVENT_START) {
+      state->apply_patch_starts++;
+    } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+      state->apply_patch_outputs++;
+      state->output_sequence++;
+      if (state->first_apply_patch_output_sequence == 0) {
+        state->first_apply_patch_output_sequence = state->output_sequence;
+      }
+      state->last_apply_patch_output_sequence = state->output_sequence;
+    }
+  }
+  return CAI_OK;
+}
+
 static int integration_stream_delta_debug(void *context, const char *item_id,
                                           int output_index,
                                           const lonejson_spooled *delta,
@@ -851,6 +900,116 @@ static int integration_read_file(const char *path, char *buffer,
   buffer[nread] = '\0';
   fclose(fp);
   return 1;
+}
+
+static int integration_file_equals(const char *path, const char *expected) {
+  FILE *fp;
+  char buffer[256];
+  size_t expected_length;
+  size_t offset;
+
+  if (path == NULL || expected == NULL) {
+    return 0;
+  }
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return 0;
+  }
+  expected_length = strlen(expected);
+  offset = 0U;
+  while (offset < expected_length) {
+    size_t remaining;
+    size_t chunk_size;
+    size_t nread;
+
+    remaining = expected_length - offset;
+    chunk_size = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+    nread = fread(buffer, 1U, chunk_size, fp);
+    if (nread != chunk_size || memcmp(buffer, expected + offset, nread) != 0) {
+      fclose(fp);
+      return 0;
+    }
+    offset += nread;
+  }
+  if (fgetc(fp) != EOF || ferror(fp)) {
+    fclose(fp);
+    return 0;
+  }
+  fclose(fp);
+  return 1;
+}
+
+static int integration_directory_contains_only(const char *path,
+                                               const char *allowed_name) {
+  DIR *directory;
+  struct dirent *entry;
+  int valid;
+
+  if (path == NULL || allowed_name == NULL) {
+    return 0;
+  }
+  directory = opendir(path);
+  if (directory == NULL) {
+    return 0;
+  }
+  valid = 1;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    if (strcmp(entry->d_name, allowed_name) != 0) {
+      valid = 0;
+      break;
+    }
+  }
+  if (errno != 0 || closedir(directory) != 0) {
+    valid = 0;
+  }
+  return valid;
+}
+
+static int integration_remove_directory_tree(const char *path) {
+  DIR *directory;
+  struct dirent *entry;
+  struct stat st;
+  int valid;
+
+  if (path == NULL) {
+    return 0;
+  }
+  if (lstat(path, &st) != 0) {
+    return errno == ENOENT;
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    return unlink(path) == 0 || errno == ENOENT;
+  }
+  directory = opendir(path);
+  if (directory == NULL) {
+    return 0;
+  }
+  valid = 1;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    char child_path[PATH_MAX];
+
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    if (snprintf(child_path, sizeof(child_path), "%s/%s", path,
+                 entry->d_name) >= (int)sizeof(child_path) ||
+        !integration_remove_directory_tree(child_path)) {
+      valid = 0;
+      break;
+    }
+  }
+  if (errno != 0 || closedir(directory) != 0) {
+    valid = 0;
+  }
+  if (valid && rmdir(path) != 0 && errno != ENOENT) {
+    valid = 0;
+  }
+  return valid;
 }
 
 static int run_basic_response(void) {
@@ -4103,6 +4262,12 @@ static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
 }
 
 static int run_chatgpt_smith_regression(void) {
+  static const char initial_contents[] = "title: Smith live E2E\n"
+                                         "state: pending\n"
+                                         "verification: read-back-required\n";
+  static const char expected_contents[] = "title: Smith live E2E\n"
+                                          "state: complete\n"
+                                          "verification: read-back-required\n";
   cai_client_config client_config;
   cai_smith_config smith_config;
   cai_run_options run_options;
@@ -4115,10 +4280,16 @@ static int run_chatgpt_smith_regression(void) {
   cai_sink *sink;
   cai_error error;
   integration_write_state writer;
-  char workspace[PATH_MAX];
+  integration_smith_tool_event_state tool_events;
+  char workspace[] = "/tmp/cai-smith-e2e-XXXXXX";
+  char fixture_path[PATH_MAX];
   const char *model;
   const char *answer;
+  FILE *fixture;
+  int cleanup_failed;
   int rc;
+  int skipped;
+  int workspace_created;
 
   cai_error_init(&error);
   cai_client_config_init(&client_config);
@@ -4126,25 +4297,59 @@ static int run_chatgpt_smith_regression(void) {
   cai_run_options_init(&run_options);
   cai_stream_sinks_init(&stream_sinks);
   memset(&writer, 0, sizeof(writer));
+  memset(&tool_events, 0, sizeof(tool_events));
   memset(&sink_callbacks, 0, sizeof(sink_callbacks));
   auth = NULL;
   client = NULL;
   agent = NULL;
   session = NULL;
   sink = NULL;
+  fixture = NULL;
+  fixture_path[0] = '\0';
+  cleanup_failed = 0;
+  skipped = 0;
+  workspace_created = 0;
   model = chatgpt_integration_model();
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith E2E workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  if (snprintf(fixture_path, sizeof(fixture_path), "%s/task.txt", workspace) >=
+      (int)sizeof(fixture_path)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith E2E fixture path is too long");
+    goto done;
+  }
+  fixture = fopen(fixture_path, "wb");
+  if (fixture == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith E2E fixture");
+    goto done;
+  }
+  if (fwrite(initial_contents, 1U, strlen(initial_contents), fixture) !=
+      strlen(initial_contents)) {
+    fclose(fixture);
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith E2E fixture");
+    goto done;
+  }
+  if (fclose(fixture) != 0) {
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to close Smith E2E fixture");
+    goto done;
+  }
+  fixture = NULL;
   rc = integration_open_default_chatgpt_auth(&auth, &error);
   if (rc == 77) {
-    cai_error_cleanup(&error);
-    return 77;
+    skipped = 1;
+    goto done;
   }
   if (rc != CAI_OK) {
     print_error("Smith ChatGPT auth open", rc, &error);
-    goto done;
-  }
-  if (getcwd(workspace, sizeof(workspace)) == NULL) {
-    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
-                               "failed to resolve Smith E2E workspace");
     goto done;
   }
   client_config.chatgpt_auth = auth;
@@ -4157,7 +4362,9 @@ static int run_chatgpt_smith_regression(void) {
   smith_config.workspace_directory = workspace;
   smith_config.model = model;
   smith_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
-  run_options.max_tool_rounds = 4;
+  run_options.max_tool_rounds = 6;
+  run_options.tool_event = integration_smith_tool_event;
+  run_options.tool_event_context = &tool_events;
   rc = cai_client_new_smith_agent(client, &smith_config, &agent, &error);
   if (rc != CAI_OK) {
     print_error("Smith agent open", rc, &error);
@@ -4178,35 +4385,94 @@ static int run_chatgpt_smith_regression(void) {
   stream_sinks.output_text = sink;
   rc = cai_session_add_user_text(
       session,
-      "Read the first 40 lines of CMakeLists.txt and report this project's "
-      "CMake project name in exactly one short sentence. Do not modify files.",
+      "Work only in task.txt. First use read_file to read task.txt. Then use "
+      "apply_patch to replace the exact line `state: pending` with "
+      "`state: complete`. Finally use read_file to verify task.txt contains "
+      "`state: complete`. Do not create or modify any other file. In your "
+      "final response, state that task.txt was verified with state: complete.",
       &error);
   if (rc == CAI_OK) {
     rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
                                           0, &error);
   }
   if (rc != CAI_OK) {
-    print_error("Smith safe-file E2E turn", rc, &error);
+    print_error("Smith coding E2E turn", rc, &error);
     goto done;
   }
   answer = writer.buffer;
-  fprintf(stderr, "[integration-chatgpt-smith] model=%s answer=%s\n", model,
-          answer != NULL ? answer : "");
-  if (!integration_text_contains(answer, "cai")) {
+  if (!integration_file_equals(fixture_path, expected_contents)) {
     fprintf(stderr,
-            "Smith safe-file E2E did not identify the CMake project name\n");
+            "Smith coding E2E did not leave the expected task.txt contents\n");
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
+  if (!integration_directory_contains_only(workspace, "task.txt")) {
+    fprintf(stderr, "Smith coding E2E created an unexpected workspace file\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (tool_events.read_file_starts < 2 || tool_events.read_file_outputs < 2 ||
+      tool_events.apply_patch_starts < 1 ||
+      tool_events.apply_patch_outputs < 1) {
+    fprintf(
+        stderr,
+        "Smith coding E2E missing completed read/patch/read-back tool "
+        "sequence (read starts=%d outputs=%d; patch starts=%d outputs=%d)\n",
+        tool_events.read_file_starts, tool_events.read_file_outputs,
+        tool_events.apply_patch_starts, tool_events.apply_patch_outputs);
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (tool_events.first_read_file_output_sequence >=
+      tool_events.first_apply_patch_output_sequence) {
+    fprintf(stderr,
+            "Smith coding E2E did not complete read_file before its first "
+            "apply_patch\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (tool_events.last_read_file_output_sequence <=
+      tool_events.last_apply_patch_output_sequence) {
+    fprintf(stderr,
+            "Smith coding E2E did not complete read_file after its final "
+            "apply_patch\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (!integration_text_contains(answer, "state: complete")) {
+    fprintf(stderr,
+            "Smith coding E2E final response did not report verified state\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  fprintf(stderr,
+          "[integration-chatgpt-smith] model=%s read_starts=%d "
+          "read_outputs=%d patch_starts=%d patch_outputs=%d answer=%s\n",
+          model, tool_events.read_file_starts, tool_events.read_file_outputs,
+          tool_events.apply_patch_starts, tool_events.apply_patch_outputs,
+          answer != NULL ? answer : "");
   rc = CAI_OK;
 
 done:
+  if (fixture != NULL) {
+    fclose(fixture);
+  }
   cai_sink_close(sink);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace)) {
+    cleanup_failed = 1;
+  }
+  if (cleanup_failed) {
+    fprintf(stderr, "Smith coding E2E failed to clean up its workspace\n");
+    return 1;
+  }
+  if (skipped) {
+    return 77;
+  }
   return rc == CAI_OK ? 0 : 1;
 }
 
