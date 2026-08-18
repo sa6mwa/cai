@@ -23,6 +23,7 @@ typedef struct cai_runtime_event_node {
   cai_agent_runtime_event event;
   char *data;
   char *tool_name;
+  char *tool_call_id;
   struct cai_runtime_event_node *next;
 } cai_runtime_event_node;
 
@@ -134,6 +135,7 @@ static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
   }
   cai_free_mem(NULL, node->data);
   cai_free_mem(NULL, node->tool_name);
+  cai_free_mem(NULL, node->tool_call_id);
   cai_free_mem(NULL, node);
 }
 
@@ -170,6 +172,7 @@ static int cai_runtime_require_event_capacity_locked(cai_agent_runtime *runtime,
 
 static int cai_runtime_event_node_new(int type, const char *data,
                                       size_t data_length, const char *tool_name,
+                                      const char *tool_call_id,
                                       cai_agent_run_state state,
                                       cai_runtime_event_node **out,
                                       cai_error *error) {
@@ -202,11 +205,20 @@ static int cai_runtime_event_node_new(int type, const char *data,
                            "failed to copy agent runtime tool name");
     }
   }
+  if (tool_call_id != NULL) {
+    node->tool_call_id = cai_strdup(NULL, tool_call_id);
+    if (node->tool_call_id == NULL) {
+      cai_runtime_event_node_free(node);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy agent runtime tool call id");
+    }
+  }
   node->event.type = type;
   node->event.state = state;
   node->event.data = node->data;
   node->event.data_length = data_length;
   node->event.tool_name = node->tool_name;
+  node->event.tool_call_id = node->tool_call_id;
   *out = node;
   return CAI_OK;
 }
@@ -228,6 +240,7 @@ static void cai_runtime_append_event_node_locked(cai_agent_runtime *runtime,
 static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
                                       const char *data, size_t data_length,
                                       const char *tool_name,
+                                      const char *tool_call_id,
                                       cai_agent_run_state state,
                                       cai_error *error) {
   cai_runtime_event_node *node;
@@ -237,8 +250,8 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_runtime_event_node_new(type, data, data_length, tool_name, state,
-                                  &node, error);
+  rc = cai_runtime_event_node_new(type, data, data_length, tool_name,
+                                  tool_call_id, state, &node, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -254,7 +267,7 @@ static void cai_runtime_set_state(cai_agent_runtime *runtime,
   pthread_mutex_lock(&runtime->lock);
   runtime->state = state;
   (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_STATE_CHANGED,
-                                   NULL, 0U, NULL, state, &ignored);
+                                   NULL, 0U, NULL, NULL, state, &ignored);
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
   cai_error_cleanup(&ignored);
@@ -354,7 +367,7 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
     pthread_mutex_lock(&runtime->lock);
     rc = cai_runtime_enqueue_locked(
         runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
-        strlen(runtime->session_id), NULL, runtime->state, error);
+        strlen(runtime->session_id), NULL, NULL, runtime->state, error);
     pthread_mutex_unlock(&runtime->lock);
   }
   return rc;
@@ -495,7 +508,7 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
   if (rc == CAI_OK && length > 0U) {
     pthread_mutex_lock(&runtime->lock);
     rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_TEXT_DELTA, data,
-                                    length, NULL, runtime->state, error);
+                                    length, NULL, NULL, runtime->state, error);
     pthread_mutex_unlock(&runtime->lock);
   }
   cai_free_mem(NULL, data);
@@ -540,8 +553,9 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   }
   pthread_mutex_lock(&runtime->lock);
   runtime->state = CAI_AGENT_DISPATCHING_TOOL;
-  rc = cai_runtime_enqueue_locked(runtime, type, data, data_length, event->name,
-                                  runtime->state, error);
+  rc = cai_runtime_enqueue_locked(runtime, type, data, data_length,
+                                  event->name, event->call_id, runtime->state,
+                                  error);
   if (event->type != CAI_TOOL_EVENT_START) {
     runtime->state = CAI_AGENT_SAMPLING;
   }
@@ -580,7 +594,7 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
       }
       rc = cai_runtime_enqueue_locked(
           runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
-          strlen(input->text), NULL, CAI_AGENT_SAMPLING, error);
+          strlen(input->text), NULL, NULL, CAI_AGENT_SAMPLING, error);
       cai_runtime_input_node_free(input);
     }
   }
@@ -729,7 +743,8 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       runtime->state = CAI_AGENT_COMPLETED;
       (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
-                                       NULL, 0U, NULL, runtime->state, &error);
+                                       NULL, 0U, NULL, NULL, runtime->state,
+                                       &error);
     } else {
       const char *message;
 
@@ -738,7 +753,7 @@ static void *cai_runtime_worker(void *context) {
       message = error.message != NULL ? error.message : "agent run failed";
       (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
                                        message, strlen(message), NULL,
-                                       runtime->state, &error);
+                                       NULL, runtime->state, &error);
     }
     pthread_cond_broadcast(&runtime->condition);
     pthread_mutex_unlock(&runtime->lock);
@@ -989,7 +1004,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     rc = cai_runtime_require_event_capacity_locked(runtime, error);
     if (rc == CAI_OK) {
       rc = cai_runtime_event_node_new(CAI_AGENT_EVENT_STEERING_QUEUED, text,
-                                      strlen(text), NULL, runtime->state,
+                                      strlen(text), NULL, NULL, runtime->state,
                                       &event_node, error);
     }
     if (rc != CAI_OK) {
@@ -1012,7 +1027,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     rc = CAI_OK;
   } else {
     rc = cai_runtime_enqueue_locked(runtime, type, text, strlen(text), NULL,
-                                    runtime->state, error);
+                                    NULL, runtime->state, error);
   }
   if (rc != CAI_OK) {
     pthread_mutex_unlock(&runtime->lock);

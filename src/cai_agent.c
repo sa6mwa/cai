@@ -3571,6 +3571,7 @@ static int cai_session_run_tool_round(cai_session *session,
     tool_invoked = 0;
     output_delivered = 0;
     event.name = cai_response_tool_call_name(response, i);
+    event.call_id = cai_response_tool_call_id(response, i);
     event.arguments_json = cai_response_tool_call_arguments(response, i);
     event.arguments_json_spooled =
         cai_response_tool_call_arguments_spooled(response, i);
@@ -3933,6 +3934,7 @@ static int cai_session_add_stream_tool_outputs(
     tool_invoked = 0;
     output_delivered = 0;
     event.name = calls->items[i].name;
+    event.call_id = calls->items[i].call_id;
     event.arguments_json = calls->items[i].arguments;
     event.arguments_json_spooled = calls->items[i].has_arguments_spooled
                                        ? &calls->items[i].arguments_spooled

@@ -355,6 +355,7 @@ typedef struct tool_event_state {
   int errors;
   int missing_methods;
   char name[32];
+  char call_id[64];
   char arguments[64];
   size_t arguments_spooled_size;
   char output[256];
@@ -2879,6 +2880,8 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     state->starts++;
     snprintf(state->name, sizeof(state->name), "%s",
              event->name != NULL ? event->name : "");
+    snprintf(state->call_id, sizeof(state->call_id), "%s",
+             event->call_id != NULL ? event->call_id : "");
     writer.buffer[0] = '\0';
     writer.length = 0U;
     writer.closed = 0;
@@ -24831,6 +24834,8 @@ static void test_agent_tool_auto_run(test_state *state) {
   expect_int(state, "agent_auto_tool_event_methods",
              event_state.missing_methods, 0L);
   expect_str(state, "agent_auto_tool_event_name", event_state.name, "raw_echo");
+  expect_str(state, "agent_auto_tool_event_call_id", event_state.call_id,
+             "call_auto_1");
   expect_str(state, "agent_auto_tool_event_arguments", event_state.arguments,
              "{\"x\":1}");
   expect_str(state, "agent_auto_tool_event_output", event_state.output,

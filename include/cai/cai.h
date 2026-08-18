@@ -384,6 +384,8 @@ typedef struct cai_tool_event {
   int type;
   /** Tool name. */
   const char *name;
+  /** Provider-issued stable identifier for this invocation. */
+  const char *call_id;
   /** Tool arguments as JSON when available as a string. */
   const char *arguments_json;
   /** Tool arguments as a spooled JSON value when large. */

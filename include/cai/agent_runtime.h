@@ -52,6 +52,8 @@ typedef struct cai_agent_runtime_event {
   size_t data_length;
   /** Tool name for tool events, otherwise NULL. */
   const char *tool_name;
+  /** Provider-issued stable invocation identifier for tool events, otherwise NULL. */
+  const char *tool_call_id;
 } cai_agent_runtime_event;
 
 /** Owner-thread callback that receives queued runtime events. */
