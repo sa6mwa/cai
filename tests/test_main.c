@@ -125,6 +125,10 @@ typedef struct runtime_event_state {
   int calls;
   int saw_started;
   int saw_failed;
+  int saw_list_tool;
+  int tool_action;
+  char tool_path[PATH_MAX];
+  char failure_message[256];
   int wrong_thread;
 } runtime_event_state;
 
@@ -1718,6 +1722,20 @@ static int test_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
     state->saw_failed = 1;
+    if (event->data != NULL) {
+      snprintf(state->failure_message, sizeof(state->failure_message), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
+  if ((event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED ||
+       event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) &&
+      event->tool_action == CAI_AGENT_TOOL_ACTION_LIST) {
+    state->saw_list_tool = 1;
+    state->tool_action = event->tool_action;
+    if (event->tool_path != NULL) {
+      snprintf(state->tool_path, sizeof(state->tool_path), "%s",
+               event->tool_path);
+    }
   }
   return CAI_OK;
 }
@@ -8479,6 +8497,12 @@ static const char *mock_response_for_request(const char *request) {
           strstr(request, "\"previous_response_id\":"
                           "\"resp_stream_large_tool_1\"") != NULL) {
         return stream_large_tool_done_body;
+      }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_list_error_1\"") !=
+              NULL &&
+          strstr(request, "stream list error tool turn") != NULL) {
+        return stream_list_error_tool_done_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_list_error_1\"") != NULL &&
@@ -24023,11 +24047,139 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_substr(state, "runtime_input_checkpoint_turn",
                   store_state.saved_checkpoint, "offline turn");
     cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.preset = CAI_SMITH_REVIEW_PRESET;
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.disable_default_session_store = 1;
+  expect_int(state, "runtime_review_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
   }
   if (client != NULL) {
     cai_client_close(client);
   }
   cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_semantic_events(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-semantic-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  struct pollfd poll_fd;
+  runtime_event_state events;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_semantic_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_semantic_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_semantic_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_semantic_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  expect_int(state, "runtime_semantic_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_semantic_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_semantic_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(state, "runtime_semantic_submit",
+               cai_agent_runtime_submit(runtime, "stream list error tool turn",
+                                        &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_semantic_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_semantic_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_semantic_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_str(state, "runtime_semantic_failure", events.failure_message, "");
+    expect_int(state, "runtime_semantic_list_seen", events.saw_list_tool, 1L);
+    expect_int(state, "runtime_semantic_action", events.tool_action,
+               CAI_AGENT_TOOL_ACTION_LIST);
+    expect_str(state, "runtime_semantic_path", events.tool_path, "/tmp");
+    expect_int(state, "runtime_semantic_owner_thread", events.wrong_thread,
+               0L);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_semantic_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_semantic_mock", "mock child failed");
+  }
 }
 
 static void test_agent_local_session_store(test_state *state) {
@@ -34761,6 +34913,7 @@ static const test_entry test_entries[] = {
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_runtime_resume", test_agent_runtime_resume},
     {"goal_tools", test_goal_tools},

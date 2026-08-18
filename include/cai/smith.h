@@ -13,6 +13,8 @@ extern "C" {
 
 /** Stable name of the first CAI coding-agent preset. */
 #define CAI_SMITH_PRESET "smith"
+/** Stable name of the isolated read-only Smith review preset. */
+#define CAI_SMITH_REVIEW_PRESET "smith-review"
 /** Smith's default model. */
 #define CAI_SMITH_DEFAULT_MODEL CAI_MODEL_GPT_5_6_TERRA
 /** Smith's default visible identity. */

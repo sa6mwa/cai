@@ -1,6 +1,9 @@
 #include <cai/agent_runtime.h>
 #include <cai/smith.h>
 #include <cai/tools/goal.h>
+#include <cai/tools/patch.h>
+#include <cai/tools/read.h>
+#include <cai/tools/view_image.h>
 
 #include "cai_internal.h"
 
@@ -23,10 +26,20 @@ typedef struct cai_runtime_event_node {
   cai_agent_runtime_event event;
   char *data;
   char *tool_name;
+  char *tool_path;
   char *tool_call_id;
   char *terminal_id;
   struct cai_runtime_event_node *next;
 } cai_runtime_event_node;
+
+typedef struct cai_runtime_path_doc {
+  char *path;
+} cai_runtime_path_doc;
+
+static const lonejson_field cai_runtime_path_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, path, "path")};
+LONEJSON_MAP_DEFINE(cai_runtime_path_map, cai_runtime_path_doc,
+                    cai_runtime_path_fields);
 
 typedef struct cai_runtime_input_node {
   char *text;
@@ -72,6 +85,7 @@ struct cai_agent_runtime {
   cai_terminal_event_fn terminal_event_callback;
   void *terminal_event_context;
   char *terminal_origin_tool_call_id;
+  int review_mode;
 };
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -139,6 +153,7 @@ static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
   }
   cai_free_mem(NULL, node->data);
   cai_free_mem(NULL, node->tool_name);
+  cai_free_mem(NULL, node->tool_path);
   cai_free_mem(NULL, node->tool_call_id);
   cai_free_mem(NULL, node->terminal_id);
   cai_free_mem(NULL, node);
@@ -259,6 +274,42 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
                                   tool_call_id, state, &node, error);
   if (rc != CAI_OK) {
     return rc;
+  }
+  cai_runtime_append_event_node_locked(runtime, node);
+  return CAI_OK;
+}
+
+static int cai_runtime_enqueue_tool_locked(cai_agent_runtime *runtime, int type,
+                                           const char *data, size_t data_length,
+                                           const char *tool_name,
+                                           const char *tool_call_id,
+                                           int tool_action,
+                                           const char *tool_path,
+                                           size_t tool_path_count,
+                                           cai_agent_run_state state,
+                                           cai_error *error) {
+  cai_runtime_event_node *node;
+  int rc;
+
+  rc = cai_runtime_wait_event_capacity_locked(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_runtime_event_node_new(type, data, data_length, tool_name,
+                                  tool_call_id, state, &node, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  node->event.tool_action = tool_action;
+  node->event.tool_path_count = tool_path_count;
+  if (tool_path != NULL) {
+    node->tool_path = cai_strdup(NULL, tool_path);
+    if (node->tool_path == NULL) {
+      cai_runtime_event_node_free(node);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy agent runtime tool path");
+    }
+    node->event.tool_path = node->tool_path;
   }
   cai_runtime_append_event_node_locked(runtime, node);
   return CAI_OK;
@@ -562,12 +613,147 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
   return rc;
 }
 
+static int cai_runtime_tool_action(const char *name) {
+  if (name == NULL) {
+    return CAI_AGENT_TOOL_ACTION_EXTERNAL;
+  }
+  if (strcmp(name, CAI_READ_DEFAULT_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_READ;
+  }
+  if (strcmp(name, CAI_LIST_FILES_DEFAULT_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_LIST;
+  }
+  if (strcmp(name, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_VIEW;
+  }
+  if (strcmp(name, CAI_PATCH_DEFAULT_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_PATCH;
+  }
+  if (strcmp(name, CAI_TERMINAL_EXEC_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_EXECUTE;
+  }
+  if (strcmp(name, CAI_TERMINAL_WRITE_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_WRITE_STDIN;
+  }
+  if (strcmp(name, CAI_GOAL_GET_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_GET_GOAL;
+  }
+  if (strcmp(name, CAI_GOAL_CREATE_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_CREATE_GOAL;
+  }
+  if (strcmp(name, CAI_GOAL_UPDATE_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_UPDATE_GOAL;
+  }
+  if (strcmp(name, CAI_GOAL_CLEAR_TOOL_NAME) == 0) {
+    return CAI_AGENT_TOOL_ACTION_CLEAR_GOAL;
+  }
+  if (strcmp(name, "image_generation") == 0) {
+    return CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION;
+  }
+  return CAI_AGENT_TOOL_ACTION_EXTERNAL;
+}
+
+static char *cai_runtime_tool_path_from_arguments(const cai_tool_event *event) {
+  cai_runtime_path_doc doc;
+  cai_error error;
+  lonejson_error json_error;
+  lonejson_status status;
+  const char *arguments;
+  char *arguments_copy;
+  char *path;
+  size_t arguments_length;
+
+  if (event == NULL) {
+    return NULL;
+  }
+  arguments_copy = NULL;
+  arguments_length = 0U;
+  arguments = event->arguments_json;
+  if (arguments == NULL && event->arguments_json_spooled != NULL &&
+      event->arguments_json_spooled->size_fn(event->arguments_json_spooled) >
+          0U &&
+      event->arguments_json_spooled->size_fn(event->arguments_json_spooled) <=
+          64U * 1024U) {
+    cai_error_init(&error);
+    if (cai_runtime_spooled_copy(event->arguments_json_spooled, &arguments_copy,
+                                 &arguments_length, &error) == CAI_OK) {
+      arguments = arguments_copy;
+    }
+    cai_error_cleanup(&error);
+  }
+  if (arguments == NULL || arguments[0] == '\0') {
+    cai_free_mem(NULL, arguments_copy);
+    return NULL;
+  }
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_runtime_path_map, &doc,
+                              arguments, &json_error);
+  if (status != LONEJSON_STATUS_OK || doc.path == NULL || doc.path[0] == '\0') {
+    CAI_LJ->cleanup(CAI_LJ, &cai_runtime_path_map, &doc);
+    cai_free_mem(NULL, arguments_copy);
+    return NULL;
+  }
+  path = cai_strdup(NULL, doc.path);
+  CAI_LJ->cleanup(CAI_LJ, &cai_runtime_path_map, &doc);
+  cai_free_mem(NULL, arguments_copy);
+  return path;
+}
+
+static char *cai_runtime_patch_path_from_output(const char *data,
+                                                size_t data_length,
+                                                size_t *out_count) {
+  static const char prefix[] = "Success. Updated the following files:\n";
+  const char *cursor;
+  const char *end;
+  const char *line_end;
+  char *path;
+  size_t count;
+
+  if (out_count != NULL) {
+    *out_count = 0U;
+  }
+  if (data == NULL || data_length < sizeof(prefix) - 1U ||
+      memcmp(data, prefix, sizeof(prefix) - 1U) != 0) {
+    return NULL;
+  }
+  cursor = data + sizeof(prefix) - 1U;
+  end = data + data_length;
+  path = NULL;
+  count = 0U;
+  while (cursor < end) {
+    line_end = memchr(cursor, '\n', (size_t)(end - cursor));
+    if (line_end == NULL) {
+      line_end = end;
+    }
+    if (line_end - cursor > 2 &&
+        (cursor[0] == 'A' || cursor[0] == 'M' || cursor[0] == 'D') &&
+        cursor[1] == ' ') {
+      count++;
+      if (path == NULL) {
+        path = cai_strndup(NULL, cursor + 2, (size_t)(line_end - cursor - 2));
+      }
+    }
+    if (line_end == end) {
+      break;
+    }
+    cursor = line_end + 1;
+  }
+  if (out_count != NULL) {
+    *out_count = count;
+  }
+  return path;
+}
+
 static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
                                   cai_error *error) {
   cai_agent_runtime *runtime;
   char *data;
   size_t data_length;
   const char *message;
+  char *tool_path;
+  int tool_action;
+  size_t tool_path_count;
   int type;
   int rc;
 
@@ -579,6 +765,9 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
          : event->type == CAI_TOOL_EVENT_OUTPUT
              ? CAI_AGENT_EVENT_TOOL_CALL_COMPLETED
              : CAI_AGENT_EVENT_TOOL_CALL_FAILED;
+  tool_action = cai_runtime_tool_action(event->name);
+  tool_path = cai_runtime_tool_path_from_arguments(event);
+  tool_path_count = 0U;
   data = NULL;
   data_length = 0U;
   if (event->type == CAI_TOOL_EVENT_OUTPUT && event->output_json != NULL) {
@@ -598,6 +787,12 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
     }
     data_length = strlen(data);
   }
+  if (event->type == CAI_TOOL_EVENT_OUTPUT &&
+      tool_action == CAI_AGENT_TOOL_ACTION_PATCH) {
+    cai_free_mem(NULL, tool_path);
+    tool_path = cai_runtime_patch_path_from_output(data, data_length,
+                                                   &tool_path_count);
+  }
   pthread_mutex_lock(&runtime->lock);
   runtime->state = CAI_AGENT_DISPATCHING_TOOL;
   if (event->type == CAI_TOOL_EVENT_START && event->name != NULL &&
@@ -608,20 +803,22 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
     if (event->call_id != NULL && origin == NULL) {
       pthread_mutex_unlock(&runtime->lock);
       cai_free_mem(NULL, data);
+      cai_free_mem(NULL, tool_path);
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to copy terminal tool call id");
     }
     cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
     runtime->terminal_origin_tool_call_id = origin;
   }
-  rc = cai_runtime_enqueue_locked(runtime, type, data, data_length,
-                                  event->name, event->call_id, runtime->state,
-                                  error);
+  rc = cai_runtime_enqueue_tool_locked(
+      runtime, type, data, data_length, event->name, event->call_id,
+      tool_action, tool_path, tool_path_count, runtime->state, error);
   if (event->type != CAI_TOOL_EVENT_START) {
     runtime->state = CAI_AGENT_SAMPLING;
   }
   pthread_mutex_unlock(&runtime->lock);
   cai_free_mem(NULL, data);
+  cai_free_mem(NULL, tool_path);
   return rc;
 }
 
@@ -876,6 +1073,7 @@ int cai_agent_runtime_open(cai_client *client,
   cai_agent_runtime *runtime;
   cai_smith_config smith;
   cai_terminal_tool_config terminal_config;
+  int review_mode;
   size_t i;
   int rc;
 
@@ -890,7 +1088,10 @@ int cai_agent_runtime_open(cai_client *client,
         error, CAI_ERR_INVALID,
         "agent runtime client and workspace directory are required");
   }
-  if (config->preset != NULL && strcmp(config->preset, CAI_SMITH_PRESET) != 0) {
+  review_mode = config->preset != NULL &&
+                strcmp(config->preset, CAI_SMITH_REVIEW_PRESET) == 0;
+  if (config->preset != NULL && strcmp(config->preset, CAI_SMITH_PRESET) != 0 &&
+      !review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID, "unsupported agent preset");
   }
   runtime = (cai_agent_runtime *)cai_alloc(NULL, sizeof(*runtime));
@@ -912,6 +1113,7 @@ int cai_agent_runtime_open(cai_client *client,
                                 : CAI_RUNTIME_DEFAULT_STEERING_LIMIT;
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
+  runtime->review_mode = review_mode;
   if (pthread_mutex_init(&runtime->lock, NULL) != 0) {
     cai_free_mem(NULL, runtime);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -946,8 +1148,16 @@ int cai_agent_runtime_open(cai_client *client,
   terminal_config.event_callback = cai_runtime_terminal_event;
   terminal_config.event_context = runtime;
   smith.terminal_tool_config = &terminal_config;
-  smith.disable_terminal = config->disable_terminal;
-  rc = cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
+  smith.disable_terminal = review_mode || config->disable_terminal;
+  rc = review_mode
+           ? cai_client_new_smith_review_agent(client, &smith, &runtime->agent,
+                                               error)
+           : cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
+  if (rc == CAI_OK && review_mode &&
+      (config->mcp_client_count > 0U || config->enable_image_generation)) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "Smith review runtime does not support MCP or image generation tools");
+  }
   if (rc == CAI_OK && config->mcp_client_count > 0U &&
       config->mcp_clients == NULL) {
     rc = cai_set_error(
@@ -971,7 +1181,7 @@ int cai_agent_runtime_open(cai_client *client,
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && !review_mode) {
     rc = cai_agent_register_goal_tools(runtime->agent, runtime->session, error);
   }
   if (rc == CAI_OK) {

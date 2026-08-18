@@ -24,6 +24,23 @@ typedef enum cai_agent_run_state {
   CAI_AGENT_CANCELLED = 5
 } cai_agent_run_state;
 
+/** Stable semantic outcome classification for a runtime tool event. */
+typedef enum cai_agent_tool_action {
+  CAI_AGENT_TOOL_ACTION_NONE = 0,
+  CAI_AGENT_TOOL_ACTION_READ = 1,
+  CAI_AGENT_TOOL_ACTION_LIST = 2,
+  CAI_AGENT_TOOL_ACTION_VIEW = 3,
+  CAI_AGENT_TOOL_ACTION_PATCH = 4,
+  CAI_AGENT_TOOL_ACTION_EXECUTE = 5,
+  CAI_AGENT_TOOL_ACTION_WRITE_STDIN = 6,
+  CAI_AGENT_TOOL_ACTION_GET_GOAL = 7,
+  CAI_AGENT_TOOL_ACTION_CREATE_GOAL = 8,
+  CAI_AGENT_TOOL_ACTION_UPDATE_GOAL = 9,
+  CAI_AGENT_TOOL_ACTION_CLEAR_GOAL = 10,
+  CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION = 11,
+  CAI_AGENT_TOOL_ACTION_EXTERNAL = 12
+} cai_agent_tool_action;
+
 /** Event emitted by an agent runtime. */
 typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_RUN_STARTED = 1,
@@ -58,6 +75,15 @@ typedef struct cai_agent_runtime_event {
   size_t data_length;
   /** Tool name for tool events, otherwise NULL. */
   const char *tool_name;
+  /** CAI_AGENT_TOOL_ACTION_* derived from a known tool name. */
+  int tool_action;
+  /**
+   * Best-effort primary workspace-relative target for a known local tool.
+   * NULL when the invocation has no single target or CAI cannot derive one.
+   */
+  const char *tool_path;
+  /** Number of file targets confirmed by an apply_patch completion event. */
+  size_t tool_path_count;
   /**
    * Provider-issued stable invocation identifier for tool events and the
    * originating exec_command call for terminal events, otherwise NULL.
@@ -90,7 +116,10 @@ typedef int (*cai_agent_runtime_event_fn)(void *context,
 
 /** Configuration for a host-neutral CAI agent runtime. */
 typedef struct cai_agent_runtime_config {
-  /** Preset name; NULL selects smith. Only smith is currently supported. */
+  /**
+   * Preset name; NULL selects smith. Supported values are smith and
+   * smith-review. The review preset is isolated and read-only.
+   */
   const char *preset;
   /** Canonical workspace root. Required by smith file tools. */
   const char *workspace_directory;

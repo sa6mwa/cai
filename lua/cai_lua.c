@@ -2437,6 +2437,14 @@ static int cai_lua_agent_runtime_event(
     lua_pushstring(L, event->tool_name);
     lua_setfield(L, -2, "tool_name");
   }
+  lua_pushinteger(L, (lua_Integer)event->tool_action);
+  lua_setfield(L, -2, "tool_action");
+  if (event->tool_path != NULL) {
+    lua_pushstring(L, event->tool_path);
+    lua_setfield(L, -2, "tool_path");
+  }
+  lua_pushinteger(L, (lua_Integer)event->tool_path_count);
+  lua_setfield(L, -2, "tool_path_count");
   if (event->tool_call_id != NULL) {
     lua_pushstring(L, event->tool_call_id);
     lua_setfield(L, -2, "tool_call_id");
@@ -2476,7 +2484,8 @@ static int cai_lua_agent_runtime_event(
   return CAI_OK;
 }
 
-static int cai_lua_client_new_smith_runtime(lua_State *L) {
+static int cai_lua_client_new_smith_runtime_common(lua_State *L,
+                                                   int review_mode) {
   cai_lua_client *client;
   cai_lua_agent_runtime *runtime;
   cai_agent_runtime_config config;
@@ -2485,7 +2494,9 @@ static int cai_lua_client_new_smith_runtime(lua_State *L) {
 
   client = cai_lua_check_client(L, 1);
   if (!lua_istable(L, 2)) {
-    return luaL_error(L, "new_smith_runtime requires a configuration table");
+    return luaL_error(L, "%s requires a configuration table",
+                      review_mode ? "new_smith_review_runtime"
+                                  : "new_smith_runtime");
   }
   runtime = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*runtime));
   memset(runtime, 0, sizeof(*runtime));
@@ -2501,7 +2512,7 @@ static int cai_lua_client_new_smith_runtime(lua_State *L) {
     lua_pop(L, 1);
   }
   cai_agent_runtime_config_init(&config);
-  config.preset = CAI_SMITH_PRESET;
+  config.preset = review_mode ? CAI_SMITH_REVIEW_PRESET : CAI_SMITH_PRESET;
   config.workspace_directory =
       cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
   config.workspace_directory = cai_lua_opt_string_field(
@@ -2531,7 +2542,9 @@ static int cai_lua_client_new_smith_runtime(lua_State *L) {
     if (runtime->parent_ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
     }
-    return luaL_error(L, "new_smith_runtime requires workspace_directory");
+    return luaL_error(L, "%s requires workspace_directory",
+                      review_mode ? "new_smith_review_runtime"
+                                  : "new_smith_runtime");
   }
   cai_error_init(&error);
   cai_lua_client_enter(client);
@@ -2554,6 +2567,14 @@ static int cai_lua_client_new_smith_runtime(lua_State *L) {
   lua_setmetatable(L, -2);
   cai_lua_error_cleanup(&error);
   return 1;
+}
+
+static int cai_lua_client_new_smith_runtime(lua_State *L) {
+  return cai_lua_client_new_smith_runtime_common(L, 0);
+}
+
+static int cai_lua_client_new_smith_review_runtime(lua_State *L) {
+  return cai_lua_client_new_smith_runtime_common(L, 1);
 }
 
 static int cai_lua_client_create_conversation(lua_State *L) {
@@ -8465,6 +8486,7 @@ static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
     {"new_smith_agent", cai_lua_client_new_smith_agent},
     {"new_smith_runtime", cai_lua_client_new_smith_runtime},
+    {"new_smith_review_runtime", cai_lua_client_new_smith_review_runtime},
     {"create_response", cai_lua_client_create_response},
     {"count_response_input_tokens", cai_lua_client_count_response_input_tokens},
     {"stream_response_text", cai_lua_client_stream_response_text},
@@ -8872,6 +8894,14 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TEXT_DELTA", CAI_AGENT_EVENT_TEXT_DELTA);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_COMPLETED",
                       CAI_AGENT_EVENT_TOOL_CALL_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_READ", CAI_AGENT_TOOL_ACTION_READ);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_LIST", CAI_AGENT_TOOL_ACTION_LIST);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_VIEW", CAI_AGENT_TOOL_ACTION_VIEW);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_PATCH", CAI_AGENT_TOOL_ACTION_PATCH);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_EXECUTE",
+                      CAI_AGENT_TOOL_ACTION_EXECUTE);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_WRITE_STDIN",
+                      CAI_AGENT_TOOL_ACTION_WRITE_STDIN);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_STARTED",
                       CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_OUTPUT",

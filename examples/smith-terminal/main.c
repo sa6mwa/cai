@@ -83,6 +83,48 @@ static void render_terminal_finish(const cai_agent_runtime_event *event,
   }
 }
 
+static const char *tool_action_verb(int action) {
+  switch (action) {
+  case CAI_AGENT_TOOL_ACTION_READ:
+    return "Read";
+  case CAI_AGENT_TOOL_ACTION_LIST:
+    return "Listed";
+  case CAI_AGENT_TOOL_ACTION_VIEW:
+    return "Viewed";
+  case CAI_AGENT_TOOL_ACTION_PATCH:
+    return "Patched";
+  case CAI_AGENT_TOOL_ACTION_GET_GOAL:
+    return "Read goal";
+  case CAI_AGENT_TOOL_ACTION_CREATE_GOAL:
+    return "Created goal";
+  case CAI_AGENT_TOOL_ACTION_UPDATE_GOAL:
+    return "Updated goal";
+  case CAI_AGENT_TOOL_ACTION_CLEAR_GOAL:
+    return "Cleared goal";
+  case CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION:
+    return "Generated image";
+  default:
+    return NULL;
+  }
+}
+
+static void render_tool_completion(const cai_agent_runtime_event *event) {
+  const char *verb;
+
+  verb = tool_action_verb(event->tool_action);
+  if (verb != NULL && event->tool_path != NULL) {
+    fprintf(stdout, GRAY "%s %s" RESET "\n", verb, event->tool_path);
+  } else if (verb != NULL && event->tool_path_count > 1U) {
+    fprintf(stdout, GRAY "%s %lu files" RESET "\n", verb,
+            (unsigned long)event->tool_path_count);
+  } else if (verb != NULL) {
+    fprintf(stdout, GRAY "%s" RESET "\n", verb);
+  } else {
+    fprintf(stdout, GRAY "Completed %s" RESET "\n",
+            event->tool_name != NULL ? event->tool_name : "tool");
+  }
+}
+
 static int render_event(void *context, const cai_agent_runtime_event *event,
                         cai_error *error) {
   render_state *state;
@@ -109,7 +151,7 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
              event->tool_name != NULL &&
              strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
              strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0) {
-    fprintf(stdout, GRAY "Completed %s" RESET "\n", event->tool_name);
+    render_tool_completion(event);
   }
   return CAI_OK;
 }

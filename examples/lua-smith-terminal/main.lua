@@ -111,7 +111,22 @@ local function render_event(event)
       status, (event.terminal_duration_ms or 0) / 1000))
   elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED and
       event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" then
-    io.write(gray, "Completed ", event.tool_name or "tool", "\n", reset)
+    local verbs = {
+      [cai.AGENT_TOOL_ACTION_READ] = "Read",
+      [cai.AGENT_TOOL_ACTION_LIST] = "Listed",
+      [cai.AGENT_TOOL_ACTION_VIEW] = "Viewed",
+      [cai.AGENT_TOOL_ACTION_PATCH] = "Patched",
+    }
+    local verb = verbs[event.tool_action]
+    if verb and event.tool_path then
+      io.write(gray, verb, " ", event.tool_path, "\n", reset)
+    elseif verb and (event.tool_path_count or 0) > 1 then
+      io.write(gray, verb, " ", tostring(event.tool_path_count), " files\n", reset)
+    elseif verb then
+      io.write(gray, verb, "\n", reset)
+    else
+      io.write(gray, "Completed ", event.tool_name or "tool", "\n", reset)
+    end
   end
 end
 
