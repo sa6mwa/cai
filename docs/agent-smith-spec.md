@@ -234,6 +234,51 @@ CAI retains event storage only until the callback returns or the consumer
 releases the event. A host feeding libmdf copies the text in its callback and
 does its rendering on its own chosen thread.
 
+### 5.2 Generic agent-mode presentation boundary
+
+This is CAI agent-mode infrastructure, not Smith-specific UI behavior. Every
+agent-mode preset uses the same event and presentation contract; Smith is the
+first preset to require the terminal extensions below. Presets select prompt,
+tools, and policy, while hosts own all rendering.
+
+Agent-mode events are a UI-ready *fact* stream, never a CAI UI policy. The
+runtime does not emit ANSI sequences, choose colors, abbreviate commands,
+impose a line-display limit, or print a synthetic transcript. A TUI, GUI, log
+adapter, or test recorder consumes the same events and makes those choices
+locally. This keeps terminal/safety correctness independent from a particular
+renderer while making a good renderer straightforward to write.
+
+The generic terminal-manager extension adds `TERMINAL_COMMAND_STARTED`,
+`TERMINAL_OUTPUT`, `TERMINAL_WAITING`, `TERMINAL_COMMAND_COMPLETED`,
+`TERMINAL_COMMAND_FAILED`, and `TERMINAL_COMMAND_CANCELLED`. Every terminal
+event carries the stable runtime terminal ID, command ID, originating tool-call
+ID, state transition, and monotonic sequence. Start events carry the submitted
+command and resolved working directory; output events carry exact byte spans
+and an explicit length; final events carry exit/termination status, duration,
+and total captured/omitted byte counts. `TERMINAL_WAITING` is emitted at most
+once for one model `write_stdin`/poll operation when that operation produces no
+new terminal output. It is not a periodic heartbeat.
+
+Generic tool lifecycle events carry stable tool-call IDs, tool names, outcome,
+and an optional structured outcome summary: action (`read`, `list`, `create`,
+`update`, `delete`, `move`, `view`, or provider-defined), affected workspace
+paths, and source/destination paths for a move. CAI records this metadata from
+the local tool operation itself; hosts must not need to parse model-visible
+tool output to render "Patched src/file.c". Arbitrary tool/MCP output remains
+opaque bytes, and tools without a structured summary still have their normal
+name and lifecycle events.
+
+The C and Lua `smith-terminal` examples are compact reference presentations
+over this generic contract: render `$ <command>` on start, dim only the first
+ten physical output lines across the command's full lifetime, emit one omission
+summary when appropriate, show a waiting line only under the rule above, and
+report an abbreviated completed command with exit status and duration. Their
+display cap affects presentation only: CAI still drains the PTY and preserves
+its separate bounded model-visible terminal result. The examples also render
+semantic local-tool receipts such as `Read <path>` and `Patched <path>`.
+Snapshot tests cover these examples' rendering policy; core runtime tests cover
+the underlying facts.
+
 ## 6. Smith preset and prompt assets
 
 Smith must expose a named preset descriptor, not force callers to assemble a
@@ -497,6 +542,11 @@ result, and inserts an explicit omitted-byte marker. It never blocks pty
 draining on renderer speed. Interactive input is accepted only while `Running`;
 writing after final collection returns a stale/finished result rather than
 silently opening a new shell command.
+
+The stream-to-host and model-visible-result limits are execution limits, not
+presentation limits. A host may display a smaller head (for example, ten
+lines) without changing terminal draining, event delivery, command completion,
+or the bounded result delivered to the model.
 
 ### 8.4 Security and policy
 
@@ -790,7 +840,9 @@ tested public surface.
    renderer, GPT-5.6 terra/luna profile metadata, request snapshots, and
    `smith` preset construction.
 4. **Local coding tools.** Add validated file/list/image/patch tools and the
-   one-slot terminal manager. Turn off parallel calls in Smith.
+   one-slot terminal manager. Turn off parallel calls in Smith. Define generic
+   terminal and semantic local-tool outcome events, then add matching C and Lua
+   `smith-terminal` examples as presentation-only adapters.
 5. **Steering and goals.** Add durable queued steering, safe-boundary
    delivery, goal tools/state/accounting, and continuation policy.
 6. **MCP/image generation/review.** Adapt current MCP client into runtime
@@ -820,6 +872,11 @@ use observable model/tool/store behavior rather than private fields.
   stale writes, cancellation escalation, shell death, output truncation, and
   no second concurrent command. A test must assert that a command is not
   reported complete until wrapper exit and pty drain are observed.
+- Renderer snapshot tests prove the C and Lua Smith terminal examples produce
+  the same semantic receipts, one `$` command-start line, at most ten dimmed
+  physical output lines per command, a single omission summary, and no
+  repeated waiting lines. They must also prove that display truncation does
+  not alter the model-visible terminal result.
 - Patch tests cover valid add/update/delete/move, invalid grammar, path escape,
   mismatched context, and all-or-nothing failure.
 - Session tests cover JSONL recovery after an incomplete trailing write, CAS
