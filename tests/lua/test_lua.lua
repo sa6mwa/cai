@@ -120,6 +120,8 @@ assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) == "number",
   "agent terminal completion event")
 assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) == "number",
   "agent terminal cancellation event")
+assert(type(cai.AGENT_TOOL_ACTION_READ) == "number", "agent read action")
+assert(type(cai.AGENT_TOOL_ACTION_PATCH) == "number", "agent patch action")
 assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
 assert_eq(cai.CHATGPT_AUTH_DEFAULT_ISSUER, "https://auth.openai.com",
   "ChatGPT auth issuer")
@@ -249,6 +251,10 @@ do
     "Lua client usage method missing")
   assert(type(client_methods.open_response_text_source) == "function",
     "Lua client open_response_text_source method missing")
+  assert(type(client_methods.new_smith_runtime) == "function",
+    "Lua client new_smith_runtime method missing")
+  assert(type(client_methods.new_smith_review_runtime) == "function",
+    "Lua client new_smith_review_runtime method missing")
   assert(type(agent_methods.set_session_usage_limits) == "function",
     "Lua agent set_session_usage_limits method missing")
   assert(type(agent_methods.usage) == "function",
@@ -877,6 +883,13 @@ do
     assert_not_ok(value, err, "client close must reject a live Lua agent runtime")
   end
   runtime:close()
+  local review_runtime = assert_ok(dummy_client:new_smith_review_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+    event_callback = function() end,
+  }))
+  assert_eq(review_runtime:state(), "idle", "Lua Smith review runtime initial state")
+  review_runtime:close()
 end
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
 assert_not_ok(dummy_client:set_usage_limits({ max_total_tokens = -1 }),

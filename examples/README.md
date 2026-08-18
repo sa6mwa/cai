@@ -113,8 +113,10 @@ The C and Lua Smith terminal examples are reference renderers for the generic
 agent-runtime event stream. They run the `smith` preset in the current
 directory, stream model text, print each terminal command as `$ <command>`,
 show the first ten terminal output lines in dim gray, and report terminal
-completion from the runtime's structured lifecycle facts. They do not own a
-second agent loop or terminal implementation.
+completion from the runtime's structured lifecycle facts. Local tool outcomes
+arrive as semantic facts, so the examples can show receipts such as `Read
+src/main.c` and `Patched 2 files` without parsing raw tool output. They do not
+own a second agent loop or terminal implementation.
 
 ```sh
 make -C examples run-smith-terminal
@@ -124,6 +126,12 @@ make -C examples run-lua-smith-terminal CAI_CHATGPT_AUTH=1 \
 
 The Lua example also accepts `CAI_CHATGPT_AUTH_JSON=/path/auth.json`. Exit
 either example with Ctrl-D or `/exit`.
+
+For an isolated review run, C hosts set
+`cai_agent_runtime_config.preset = CAI_SMITH_REVIEW_PRESET`; Lua hosts use
+`client:new_smith_review_runtime(config)`. The review preset has a fresh
+session and only read/list/view tools, so it cannot patch files or invoke a
+terminal.
 
 ## History Export
 

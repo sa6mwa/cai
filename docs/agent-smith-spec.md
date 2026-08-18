@@ -1,12 +1,19 @@
 # CAI Agent Mode and the Smith Preset
 
-**Status:** implementation specification
+**Status:** implementation specification with delivery-status notes
 
 **Branch:** `feat/agent-smith`
 
 **Scope:** CAI agent-mode foundation and the first `smith` preset. This is a
 design and delivery specification, not an implementation change. “MUST”,
 “SHOULD”, and “MAY” are normative.
+
+The first implementation is intentionally smaller than the full target design
+in this document. The delivered surface is the owner-thread runtime, local or
+callback-backed checkpoints, steering, goals, Smith and Smith-review presets,
+the local file/patch/image tools, one managed terminal slot, and C/Lua
+reference renderers. Sections explicitly labelled **Target** describe the
+next compatible increments; they are not claims about the released ABI.
 
 ## 1. Product decision
 
@@ -147,11 +154,11 @@ remain supported. Smith is additive. New public declarations belong in
 `include/cai/agent_runtime.h`; common opaque declarations may be re-exported
 from `include/cai/cai.h` only when that reduces include friction.
 
-The following is the delivered pre-terminal-manager API. Terminal-specific
-states, cancellation of a live terminal process, output-limit fields, and
-terminal tool configuration remain a later extension; they are not silently
-present in Smith today. Exact field ordering may evolve before the first CAI
-release, but the semantic contracts and zero-defaultable configuration cannot.
+The delivered API is declared in `include/cai/agent_runtime.h`. It includes
+the one-slot terminal configuration and lifecycle facts, semantic local-tool
+outcomes, and the `smith` and `smith-review` presets. Exact field ordering is
+ABI and must evolve only through CAI’s normal ABI-version process; this section
+summarises the contract rather than duplicating the header verbatim.
 
 ```c
 typedef struct cai_agent_runtime cai_agent_runtime;
@@ -167,7 +174,7 @@ typedef enum cai_agent_run_state {
 } cai_agent_run_state;
 
 typedef struct cai_agent_runtime_config {
-  const char *preset;              /* NULL or "smith" */
+  const char *preset;              /* NULL/"smith"/"smith-review" */
   const char *workspace_directory; /* required canonical workspace root */
   const char *agent_identity;      /* default: "Cai Smith" */
   const char *model;               /* Smith default: gpt-5.6-terra */
@@ -220,15 +227,17 @@ implemented as a pump loop and retain their present synchronous behavior.
 
 ### 5.1 Events
 
-Events are explicit objects delivered through a registration callback or a
-bounded queue. The delivered pre-terminal set is `RUN_STARTED`,
-`RUN_STATE_CHANGED`, `RUN_COMPLETED`, `RUN_FAILED`, `TEXT_DELTA`,
-`TOOL_CALL_STARTED`, `TOOL_CALL_COMPLETED`, `TOOL_CALL_FAILED`,
-`STEERING_QUEUED`, `STEERING_DELIVERED`, and `SESSION_CHECKPOINTED`.
-Each carries a monotonic sequence and state snapshot; text data is bytes plus
-an explicit length, not a NUL-terminated string. Future terminal-manager work
-adds terminal lifecycle events and a cancellation acknowledgement; future
-provider event mapping may add reasoning/refusal/model-completion events.
+Events are explicit objects delivered through a registration callback and a
+bounded queue. The delivered set includes `RUN_STARTED`, `RUN_STATE_CHANGED`,
+`RUN_COMPLETED`, `RUN_FAILED`, `TEXT_DELTA`, `TOOL_CALL_STARTED`,
+`TOOL_CALL_COMPLETED`, `TOOL_CALL_FAILED`, `STEERING_QUEUED`,
+`STEERING_DELIVERED`, `SESSION_CHECKPOINTED`, and the terminal lifecycle
+events `TERMINAL_COMMAND_STARTED`, `TERMINAL_OUTPUT`, `TERMINAL_WAITING`,
+`TERMINAL_COMMAND_COMPLETED`, and `TERMINAL_COMMAND_CANCELLED`. Each carries
+a monotonic sequence and state snapshot; text data is bytes plus an explicit
+length, not a NUL-terminated string. Final terminal events carry the observed
+exit/signal status, duration, total observed bytes, output truncation, and the
+truthful `detached_processes_possible` flag.
 
 CAI retains event storage only until the callback returns or the consumer
 releases the event. A host feeding libmdf copies the text in its callback and
@@ -248,9 +257,10 @@ adapter, or test recorder consumes the same events and makes those choices
 locally. This keeps terminal/safety correctness independent from a particular
 renderer while making a good renderer straightforward to write.
 
-The generic terminal-manager extension adds `TERMINAL_COMMAND_STARTED`,
-`TERMINAL_OUTPUT`, `TERMINAL_WAITING`, `TERMINAL_COMMAND_COMPLETED`,
-`TERMINAL_COMMAND_FAILED`, and `TERMINAL_COMMAND_CANCELLED`. Every terminal
+The generic terminal-manager contract provides `TERMINAL_COMMAND_STARTED`,
+`TERMINAL_OUTPUT`, `TERMINAL_WAITING`, `TERMINAL_COMMAND_COMPLETED`, and
+`TERMINAL_COMMAND_CANCELLED`. A non-zero exit is a completed command with its
+observed status, not a synthetic terminal failure event. Every terminal
 event carries the stable runtime terminal ID, command ID, originating tool-call
 ID, state transition, and monotonic sequence. Start events carry the submitted
 command and resolved working directory; output events carry exact byte spans
@@ -259,14 +269,13 @@ and total captured/omitted byte counts. `TERMINAL_WAITING` is emitted at most
 once for one model `write_stdin`/poll operation when that operation produces no
 new terminal output. It is not a periodic heartbeat.
 
-Generic tool lifecycle events carry stable tool-call IDs, tool names, outcome,
-and an optional structured outcome summary: action (`read`, `list`, `create`,
-`update`, `delete`, `move`, `view`, or provider-defined), affected workspace
-paths, and source/destination paths for a move. CAI records this metadata from
-the local tool operation itself; hosts must not need to parse model-visible
-tool output to render "Patched src/file.c". Arbitrary tool/MCP output remains
-opaque bytes, and tools without a structured summary still have their normal
-name and lifecycle events.
+Generic tool lifecycle events carry stable tool-call IDs, tool names, a stable
+`CAI_AGENT_TOOL_ACTION_*` classification, an optional best-effort primary
+target, and a confirmed target count for completed patches. CAI derives these
+facts from validated local-tool arguments and the native `apply_patch` result;
+hosts do not need to parse model-visible output to render `Read <path>` or
+`Patched <path>`. Arbitrary tool/MCP output remains opaque bytes and is
+classified as `EXTERNAL` unless a future tool contract provides richer facts.
 
 The C and Lua `smith-terminal` examples are compact reference presentations
 over this generic contract: render `$ <command>` on start, dim only the first
@@ -292,7 +301,7 @@ fragile group of flags. Its initial defaults are:
 | Local history | required |
 | Parallel tool calls | disabled |
 | Workspace scope | canonical absolute start directory |
-| Terminal | deferred to the single-terminal-manager slice |
+| Terminal | enabled: one policy-gated managed command at a time |
 | Goals | enabled |
 | MCP | enabled when configured |
 | Image generation | enabled only when backend/capability exists |
@@ -349,20 +358,21 @@ compaction compatibility check.
 
 ### 6.2 Review
 
-Smith supports a `/review` operation as a **separate ephemeral agent run**,
-not as a multi-agent service. It forks a read-only snapshot of the current
-session context, uses the imported Codex review rubric with identity-safe
-rendering, exposes read-only tools (`read_file`, `list_files`,
-`exec_command` subject to read-only policy, `view_image`, and configured
-read-only MCP tools), and disables `apply_patch`, image generation, goals, and
-steering inheritance.
+The delivered `smith-review` preset is an **isolated, read-only agent run**,
+not a multi-agent service. Hosts select it with `preset =
+CAI_SMITH_REVIEW_PRESET` (or Lua `client:new_smith_review_runtime`). It has a
+fresh session identifier and registers only `read_file`, `list_files`, and,
+for image-capable models, `view_image`. It deliberately exposes neither a
+terminal nor MCP: CAI does not yet have an enforceable read-only command/MCP
+policy, so registering either would turn “review” into a claim rather than a
+guarantee. It also excludes `apply_patch`, image generation, goals, and any
+shared terminal state.
 
-Its result is delivered as a review report event and persisted as a child run
-linked to the parent session. It does not add review prompt text to the normal
-user-visible conversation transcript. A review cannot modify the parent
-session, workspace, terminal, or goal. Initial `/review` targets are `current`,
-`base`, `commit`, and `custom`; comparison discovery happens through Git
-commands under the read-only execution policy.
+**Target:** a host-level `/review` convenience may create this preset with an
+explicit review request and a linked child-session record. Git/base/commit
+targets, copied parent-context snapshots, a rendered report event, and
+read-only terminal/MCP capabilities require an enforceable policy before they
+can be enabled. None is silently inferred by the current preset.
 
 ## 7. Tool surface
 
@@ -479,50 +489,44 @@ error. `exec_command` while the terminal command is running fails instead of
 queueing or replacing it. The model must use `write_stdin` to poll, send input,
 or terminate.
 
-### 8.2 State machine
+### 8.2 Delivered state machine
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Absent
-  Absent --> ShellReady: create slot
-  ShellReady --> Running: exec_command accepted
+  [*] --> Idle
+  Idle --> Running: exec_command accepted
   Running --> Running: write_stdin / output
   Running --> Draining: command supervisor exited
-  Draining --> ShellReady: EOF drained + status recorded
+  Draining --> Idle: EOF drained + status recorded
   Running --> Terminating: terminate=true or runtime cancellation
   Terminating --> Draining: process group reaped
-  ShellReady --> Dead: shell/pty failure
+  Idle --> Dead: shell/pty failure
   Running --> Dead: supervisor/pty failure
-  Dead --> ShellReady: recreate same slot after reap
+  Dead --> Idle: accept a fresh command after reap
   Dead --> [*]: runtime close
 ```
 
-Only the transition from `Draining` to `ShellReady` produces a completed
-command result. `Running` output does not imply process liveness, and a child
-exit does not imply completion until EOF is drained and the supervisor’s exit
-status has been collected. If the pty or supervising shell dies before a
-completion record, the result is an error stating that completion could not be
-verified; it must never be fabricated as exit code zero.
+The delivered manager launches one supervised `/bin/sh -c` command in a fresh
+PTY/process group; it does not maintain a reusable shell daemon. Only the
+transition from `Draining` to `Idle` produces a completed command result.
+`Running` output does not imply process liveness. CAI observes the supervising
+shell with `waitpid`, drains remaining PTY output, and reports the actual
+exit/signal result. A process that deliberately detaches can leave the PTY
+open; after the shell exits CAI returns a bounded result with
+`detached_processes_possible: true` rather than claiming all descendants
+completed.
 
-### 8.3 Execution protocol
+### 8.3 Delivered execution protocol
 
-The terminal manager uses `forkpty` (or an equivalent POSIX pty primitive),
-sets a controlling session/process group, places pty read/write fds in
-nonblocking mode, and starts the configured shell. It owns all pty I/O and
-uses a bounded head/tail output buffer plus a streaming event channel. The
-default shell is the user’s configured shell or `/bin/sh`; it is selected at
-runtime creation and not from model input.
+The terminal manager uses `openpty`, starts one `/bin/sh -c` command in a
+dedicated process group, and owns all PTY I/O. The model cannot choose a shell,
+terminal count, or process identity. Output is streamed to host lifecycle
+events and a bounded tool result while the manager independently waits for the
+supervised shell.
 
-To identify completion correctly, CAI writes a private, nonce-framed command
-wrapper to the terminal. The wrapper gives the submitted command a new process
-group, captures its exit code, waits for its non-detached children, and emits a
-machine-only completion record containing the runtime nonce, command ID, and
-exit status. The parser accepts a completion record only when all fields match
-the active slot and command. User output that resembles a marker is ordinary
-output unless it includes the unguessable active nonce and valid framing.
-
-The terminal manager tracks the wrapper’s process group and reaps it with
-`waitpid`, not prompt detection or an arbitrary timeout. `terminate=true` sends
+The terminal manager tracks the command process group and reaps the supervised
+shell with `waitpid`, not prompt detection or an arbitrary timeout.
+`terminate=true` sends
 SIGINT to the foreground command group, waits a bounded grace period, then
 sends SIGTERM and SIGKILL only as necessary; it reports which signal achieved
 termination. Terminal cancellation follows the same sequence. After every
@@ -536,17 +540,21 @@ active or successfully awaited terminal command. This is the only portable
 boundary; it is preferable to the false “running”/“complete” states that this
 design is intended to avoid.
 
-Terminal output has a byte and approximate-token limit. CAI streams every
-available byte to host events, retains a head/tail representation for the tool
-result, and inserts an explicit omitted-byte marker. It never blocks pty
-draining on renderer speed. Interactive input is accepted only while `Running`;
-writing after final collection returns a stale/finished result rather than
-silently opening a new shell command.
+Terminal output has a byte limit. CAI streams available bytes to bounded host
+events and returns a bounded model-visible result with explicit truncation
+facts. It never blocks PTY draining on renderer speed. Interactive input is
+accepted only while `Running`; writing after final collection returns a
+stale/finished result rather than silently opening a new shell command.
 
 The stream-to-host and model-visible-result limits are execution limits, not
 presentation limits. A host may display a smaller head (for example, ten
 lines) without changing terminal draining, event delivery, command completion,
 or the bounded result delivered to the model.
+
+**Target:** a persistent-shell/nonce-wrapper design may be added only if it
+preserves the same one-slot API and comes with adversarial PTY/parser tests.
+It is not required for the current simple manager and must not replace
+supervised completion with marker or prompt heuristics.
 
 ### 8.4 Security and policy
 

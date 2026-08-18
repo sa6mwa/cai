@@ -323,17 +323,21 @@ int cai_client_new_smith_review_agent(cai_client *client,
   cai_read_tool_config read_config;
   cai_view_image_tool_config view_image_config;
   const char *identity;
-  static const char review_suffix[] =
+  static const char review_suffix_first[] =
       ", a read-only code reviewer running in CAI agent mode. Review the "
-      "proposed change independently. Report only discrete, actionable bugs "
-      "that materially affect correctness, performance, security, or "
-      "maintainability and that the author would fix. Do not modify files, "
-      "run commands, create goals, or claim verification you did not perform. "
-      "Inspect relevant files before making a finding. Return a concise review "
-      "report with all qualifying findings, or clearly state that none were "
-      "found.\n";
+      "changes or workspace described by the user independently. Report only "
+      "actionable defects with material correctness, performance, security, "
+      "or maintainability impact. Do not report style preferences or "
+      "unsupported speculation. Inspect relevant files before making a "
+      "finding. Do not modify files, run commands, create goals, or claim "
+      "verification you did not perform.\n\n";
+  static const char review_suffix_second[] =
+      "Use one bullet per finding: - [P1|P2|P3] short title — path:line, "
+      "then impact and cause. Include qualifying findings only. If none, "
+      "reply exactly `No findings.`\n";
   char *instructions;
   size_t length;
+  size_t offset;
   int rc;
 
   if (out == NULL) {
@@ -352,18 +356,30 @@ int cai_client_new_smith_review_agent(cai_client *client,
   }
   identity = config->agent_identity != NULL ? config->agent_identity
                                             : CAI_SMITH_DEFAULT_IDENTITY;
-  if (identity[0] == '\0' || strlen(identity) > SIZE_MAX - strlen("You are ") -
-                                                 strlen(review_suffix) - 1U) {
+  if (identity[0] == '\0' ||
+      strlen(identity) > SIZE_MAX - strlen("You are ") -
+                             strlen(review_suffix_first) -
+                             strlen(review_suffix_second) - 1U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "Smith review agent identity is invalid");
   }
-  length = strlen("You are ") + strlen(identity) + strlen(review_suffix);
+  length = strlen("You are ") + strlen(identity) + strlen(review_suffix_first) +
+           strlen(review_suffix_second);
   instructions = (char *)cai_alloc(&client_impl->allocator, length + 1U);
   if (instructions == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate Smith review instructions");
   }
-  snprintf(instructions, length + 1U, "You are %s%s", identity, review_suffix);
+  memcpy(instructions, "You are ", strlen("You are "));
+  offset = strlen("You are ");
+  memcpy(instructions + offset, identity, strlen(identity));
+  offset += strlen(identity);
+  memcpy(instructions + offset, review_suffix_first,
+         strlen(review_suffix_first));
+  offset += strlen(review_suffix_first);
+  memcpy(instructions + offset, review_suffix_second,
+         strlen(review_suffix_second));
+  instructions[length] = '\0';
   cai_agent_config_init(&agent_config);
   agent_config.model = config->model != NULL ? config->model : CAI_SMITH_DEFAULT_MODEL;
   agent_config.developer_instructions = instructions;
