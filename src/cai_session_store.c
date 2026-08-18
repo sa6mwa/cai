@@ -713,9 +713,20 @@ static int cai_local_checkpoint_record_bounds(
     return CAI_OK;
   }
   cursor = header + sizeof(prefix) - 1U;
-  errno = 0;
-  sequence = strtoull(cursor, &end, 10);
-  if (errno != 0 || end == cursor || strncmp(end, ",\"state\":", 9U) != 0 ||
+  sequence = 0U;
+  end = cursor;
+  while (*end >= '0' && *end <= '9') {
+    unsigned long long digit;
+
+    digit = (unsigned long long)(*end - '0');
+    if (sequence > ((unsigned long long)-1 - digit) / 10U) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "invalid session checkpoint record");
+    }
+    sequence = sequence * 10U + digit;
+    end++;
+  }
+  if (end == cursor || strncmp(end, ",\"state\":", 9U) != 0 ||
       record_end - record_start < (long)(end - header) + 11L) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid session checkpoint record");
@@ -724,6 +735,21 @@ static int cai_local_checkpoint_record_bounds(
   *out_state_end = record_end - 2L;
   *out_applied_event_sequence = sequence;
   return CAI_OK;
+}
+
+static int cai_store_mtime_is_newer(const struct stat *candidate,
+                                    const struct stat *current) {
+#ifdef __APPLE__
+  if (candidate->st_mtimespec.tv_sec != current->st_mtimespec.tv_sec) {
+    return candidate->st_mtimespec.tv_sec > current->st_mtimespec.tv_sec;
+  }
+  return candidate->st_mtimespec.tv_nsec > current->st_mtimespec.tv_nsec;
+#else
+  if (candidate->st_mtim.tv_sec != current->st_mtim.tv_sec) {
+    return candidate->st_mtim.tv_sec > current->st_mtim.tv_sec;
+  }
+  return candidate->st_mtim.tv_nsec > current->st_mtim.tv_nsec;
+#endif
 }
 
 static int cai_local_session_load_latest(
@@ -776,9 +802,7 @@ static int cai_local_session_load_latest(
       continue;
     }
     if (candidate[0] == '\0' ||
-        st.st_mtim.tv_sec > candidate_stat.st_mtim.tv_sec ||
-        (st.st_mtim.tv_sec == candidate_stat.st_mtim.tv_sec &&
-         st.st_mtim.tv_nsec > candidate_stat.st_mtim.tv_nsec)) {
+        cai_store_mtime_is_newer(&st, &candidate_stat)) {
       if (length >= sizeof(candidate)) {
         continue;
       }
@@ -824,6 +848,10 @@ static int cai_local_session_load_latest(
     long before_end;
     ssize_t nread;
 
+    start = 0L;
+    end = 0L;
+    state_start = 0L;
+    state_end = 0L;
     before_end = 0L;
     for (;;) {
       rc = cai_local_find_last_line_before(fd, before_end, &start, &end, error);

@@ -77,6 +77,7 @@ typedef struct cai_session_state_doc {
   int has_goal_token_budget;
   long long goal_token_usage_baseline;
   long long goal_tokens_used;
+  long long goal_blocked_attempts;
   long long goal_created_at;
   long long goal_updated_at;
   lonejson_json_value history;
@@ -100,6 +101,8 @@ static const lonejson_field cai_session_state_fields[] = {
                        "goal_token_usage_baseline"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_tokens_used,
                        "goal_tokens_used"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, goal_blocked_attempts,
+                       "goal_blocked_attempts"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_created_at,
                        "goal_created_at"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_updated_at,
@@ -861,6 +864,7 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->goal_has_token_budget = 0;
   impl->goal_token_usage_baseline = 0LL;
   impl->goal_tokens_used = 0LL;
+  impl->goal_blocked_attempts = 0;
   impl->goal_created_at = 0LL;
   impl->goal_updated_at = 0LL;
   memset(&impl->last_usage, 0, sizeof(impl->last_usage));
@@ -4692,6 +4696,8 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.goal_token_usage_baseline =
       CAI_SESSION_IMPL(session)->goal_token_usage_baseline;
   doc.goal_tokens_used = CAI_SESSION_IMPL(session)->goal_tokens_used;
+  doc.goal_blocked_attempts =
+      (long long)CAI_SESSION_IMPL(session)->goal_blocked_attempts;
   doc.goal_created_at = CAI_SESSION_IMPL(session)->goal_created_at;
   doc.goal_updated_at = CAI_SESSION_IMPL(session)->goal_updated_at;
   if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
@@ -4892,6 +4898,10 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     CAI_SESSION_IMPL(session)->goal_token_usage_baseline =
         doc.goal_token_usage_baseline;
     CAI_SESSION_IMPL(session)->goal_tokens_used = doc.goal_tokens_used;
+    CAI_SESSION_IMPL(session)->goal_blocked_attempts =
+        doc.goal_blocked_attempts < 0LL || doc.goal_blocked_attempts > 2LL
+            ? 0
+            : (int)doc.goal_blocked_attempts;
     CAI_SESSION_IMPL(session)->goal_created_at = doc.goal_created_at;
     CAI_SESSION_IMPL(session)->goal_updated_at = doc.goal_updated_at;
     next_goal_objective = NULL;

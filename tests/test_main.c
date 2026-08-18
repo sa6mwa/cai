@@ -23872,6 +23872,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime_config.mcp_client_count = 1U;
   runtime_config.mcp_tool_config = &mcp_config;
   runtime_config.enable_image_generation = 1;
+  runtime_config.event_queue_limit = 1U;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
   expect_int(state, "runtime_open",
@@ -23898,6 +23899,11 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                cai_agent_runtime_submit(runtime, "offline turn", &error),
                CAI_OK);
     expect_int(state, "runtime_wakeup_started", poll(&poll_fd, 1U, 0), 1L);
+    expect_int(state, "runtime_reject_full_queue_steering",
+               cai_agent_runtime_submit_steering(runtime, "steer", &error),
+               CAI_ERR_LIMIT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
     expect_int(state, "runtime_reject_second_turn",
                cai_agent_runtime_submit(runtime, "second turn", &error),
                CAI_ERR_INVALID);
@@ -24064,6 +24070,34 @@ static void test_agent_local_session_store(test_state *state) {
   expect_str(state, "local_session_store_replay_data", event_capture.data,
              "resume this steering input");
   cai_source_close(loaded);
+  loaded = NULL;
+  fp = fopen(file_path, "ab");
+  if (fp == NULL ||
+      fwrite("{\"record_type\":\"checkpoint\","
+             "\"applied_event_sequence\":18446744073709551616,"
+             "\"state\":{}}\n",
+             1U,
+             strlen("{\"record_type\":\"checkpoint\","
+                    "\"applied_event_sequence\":18446744073709551616,"
+                    "\"state\":{}}\n"),
+             fp) != strlen("{\"record_type\":\"checkpoint\","
+                           "\"applied_event_sequence\":18446744073709551616,"
+                           "\"state\":{}}\n")) {
+    test_fail(state, "local_session_store_overflow_write",
+              "failed to append overflowing checkpoint");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_overflow_rejected",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(loaded);
   cai_agent_local_session_store_close(&store);
   unlink(file_path);
   (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
@@ -24093,7 +24127,7 @@ static void test_agent_runtime_resume(test_state *state) {
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   store_state.checkpoint_json =
-      "{\"version\":1,\"model\":\"gpt-5.6-terra\","
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
   store_state.load_applied_event_sequence = 8U;
   store_state.replay_event_sequence = 9U;
@@ -24117,6 +24151,7 @@ static void test_agent_runtime_resume(test_state *state) {
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = "custom-resumed-model";
   runtime_config.session_store = &store;
   runtime_config.resume_latest = 1;
   runtime_config.event_callback = test_runtime_event;
@@ -24158,10 +24193,15 @@ static void test_goal_tools(test_state *state) {
   cai_agent_config agent_config;
   cai_client *client;
   cai_agent *agent;
+  cai_agent *resumed_agent;
   cai_session *session;
+  cai_session *resumed_session;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   cai_source *state_source;
+  cai_source *resumed_state_source;
+  cai_source_callbacks source_callbacks;
+  read_state state_reader;
   write_state writer;
   char state_json[2048];
   cai_error error;
@@ -24169,9 +24209,12 @@ static void test_goal_tools(test_state *state) {
   cai_error_init(&error);
   client = NULL;
   agent = NULL;
+  resumed_agent = NULL;
   session = NULL;
+  resumed_session = NULL;
   sink = NULL;
   state_source = NULL;
+  resumed_state_source = NULL;
   memset(&writer, 0, sizeof(writer));
   cai_client_config_init(&client_config);
   client_config.api_key = "test-key";
@@ -24249,6 +24292,58 @@ static void test_goal_tools(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  CAI_SESSION_IMPL(session)->goal_tokens_used = 19LL;
+  CAI_SESSION_IMPL(session)->goal_token_usage_baseline = 7LL;
+  expect_int(state, "goal_blocked_state_export",
+             cai_session_export_state_source(session, &state_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "goal_blocked_state_read", state_source,
+                       state_json, sizeof(state_json), &error)) {
+    expect_substr(state, "goal_blocked_state_attempts", state_json,
+                  "\"goal_blocked_attempts\":2");
+    memset(&source_callbacks, 0, sizeof(source_callbacks));
+    memset(&state_reader, 0, sizeof(state_reader));
+    state_reader.text = state_json;
+    source_callbacks.read = test_read;
+    source_callbacks.reset = test_reset;
+    source_callbacks.close = test_read_close;
+    source_callbacks.context = &state_reader;
+    expect_int(state, "goal_blocked_resume_source",
+               cai_source_from_callbacks(&source_callbacks,
+                                         &resumed_state_source, &error),
+               CAI_OK);
+    expect_int(
+        state, "goal_blocked_resume_agent",
+        cai_client_new_agent(client, &agent_config, &resumed_agent, &error),
+        CAI_OK);
+    if (resumed_agent != NULL) {
+      expect_int(state, "goal_blocked_resume_session",
+                 cai_agent_new_session(resumed_agent, &resumed_session, &error),
+                 CAI_OK);
+    }
+    if (resumed_session != NULL && resumed_state_source != NULL) {
+      expect_int(state, "goal_blocked_resume_import",
+                 cai_session_import_state_source(resumed_session,
+                                                 resumed_state_source, &error),
+                 CAI_OK);
+      expect_int(
+          state, "goal_blocked_resume_register",
+          cai_agent_register_goal_tools(resumed_agent, resumed_session, &error),
+          CAI_OK);
+      expect_int(state, "goal_blocked_resume_third",
+                 CAI_AGENT_IMPL(resumed_agent)
+                     ->tools->run(CAI_AGENT_IMPL(resumed_agent)->tools,
+                                  CAI_GOAL_UPDATE_TOOL_NAME,
+                                  "{\"status\":\"blocked\"}", sink, &error),
+                 CAI_OK);
+      expect_substr(state, "goal_blocked_resume_usage", writer.buffer,
+                    "\"tokens_used\":19");
+    }
+  }
+  cai_source_close(state_source);
+  state_source = NULL;
+  cai_source_close(resumed_state_source);
+  resumed_state_source = NULL;
   expect_int(state, "goal_blocked_third",
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
@@ -24287,6 +24382,8 @@ static void test_goal_tools(test_state *state) {
   }
   cai_source_close(state_source);
   cai_sink_close(sink);
+  cai_session_destroy(resumed_session);
+  cai_agent_destroy(resumed_agent);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);

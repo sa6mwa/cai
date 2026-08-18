@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -151,6 +152,18 @@ static int cai_runtime_wait_event_capacity_locked(cai_agent_runtime *runtime,
   }
   if (runtime->stopping) {
     return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
+  return CAI_OK;
+}
+
+static int cai_runtime_require_event_capacity_locked(cai_agent_runtime *runtime,
+                                                     cai_error *error) {
+  if (runtime->stopping) {
+    return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
+  if (runtime->event_count >= runtime->event_limit) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "agent runtime event queue is full");
   }
   return CAI_OK;
 }
@@ -349,16 +362,39 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
 
 static void cai_runtime_account_goal(cai_agent_runtime *runtime) {
   cai_session_impl *session;
+  long long total_tokens;
+  long long delta;
 
   session = CAI_SESSION_IMPL(runtime->session);
   if (session->goal_status != NULL) {
-    session->goal_tokens_used =
-        session->usage.usage.total_tokens - session->goal_token_usage_baseline;
-    if (session->goal_tokens_used < 0LL) {
-      session->goal_tokens_used = 0LL;
+    total_tokens = session->usage.usage.total_tokens;
+    if (total_tokens >= session->goal_token_usage_baseline) {
+      delta = total_tokens - session->goal_token_usage_baseline;
+      if (delta > 0LL) {
+        if (session->goal_tokens_used > LLONG_MAX - delta) {
+          session->goal_tokens_used = LLONG_MAX;
+        } else {
+          session->goal_tokens_used += delta;
+        }
+      }
     }
+    session->goal_token_usage_baseline = total_tokens;
     session->goal_updated_at = (long long)time(NULL);
   }
+}
+
+static int
+cai_runtime_history_fits_context_window(const cai_agent_runtime *runtime,
+                                        long long context_window) {
+  size_t history_bytes;
+
+  if (runtime == NULL || runtime->session == NULL || context_window <= 0LL) {
+    return 0;
+  }
+  history_bytes =
+      CAI_SESSION_IMPL(runtime->session)
+          ->history.size_fn(&CAI_SESSION_IMPL(runtime->session)->history);
+  return history_bytes <= (size_t)context_window;
 }
 
 static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
@@ -367,6 +403,8 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   const char *current_model;
   const char *previous_hash;
   const char *current_hash;
+  long long previous_window;
+  long long current_window;
   int rc;
 
   if (!runtime->resume_compaction_pending) {
@@ -376,8 +414,14 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   current_model = CAI_SESSION_AGENT_IMPL(runtime->session)->model;
   previous_hash = cai_model_compaction_compatibility_hash(previous_model);
   current_hash = cai_model_compaction_compatibility_hash(current_model);
-  if (previous_hash == NULL || current_hash == NULL ||
-      strcmp(previous_hash, current_hash) == 0) {
+  previous_window = cai_model_context_window_tokens(previous_model);
+  current_window = cai_model_context_window_tokens(current_model);
+  if ((previous_model != NULL && current_model != NULL &&
+       strcmp(previous_model, current_model) == 0) ||
+      (previous_hash != NULL && current_hash != NULL &&
+       strcmp(previous_hash, current_hash) == 0 && previous_window > 0LL &&
+       (current_window >= previous_window ||
+        cai_runtime_history_fits_context_window(runtime, current_window)))) {
     runtime->resume_compaction_pending = 0;
     return CAI_OK;
   }
@@ -846,6 +890,10 @@ int cai_agent_runtime_open(cai_client *client,
       if (rc == CAI_OK && state != NULL) {
         rc = cai_session_import_state_source(runtime->session, state, error);
         if (rc == CAI_OK) {
+          if (CAI_SESSION_IMPL(runtime->session)->goal_status != NULL) {
+            CAI_SESSION_IMPL(runtime->session)->goal_token_usage_baseline =
+                CAI_SESSION_IMPL(runtime->session)->usage.usage.total_tokens;
+          }
           rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
           runtime->resume_compaction_pending = 1;
         }
@@ -938,7 +986,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_LIMIT, "agent steering queue is full");
   }
   if (steering) {
-    rc = cai_runtime_wait_event_capacity_locked(runtime, error);
+    rc = cai_runtime_require_event_capacity_locked(runtime, error);
     if (rc == CAI_OK) {
       rc = cai_runtime_event_node_new(CAI_AGENT_EVENT_STEERING_QUEUED, text,
                                       strlen(text), NULL, runtime->state,
