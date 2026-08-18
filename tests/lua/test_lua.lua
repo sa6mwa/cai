@@ -111,6 +111,15 @@ assert(type(cai.MCP_CLIENT_TOOL_TASK_SUPPORT_REQUIRED) == "number")
 assert(type(cai.tool_schema) == "function")
 assert(type(cai.load_dotenv_api_key) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
+assert(type(cai.AGENT_EVENT_TEXT_DELTA) == "number", "agent text event")
+assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_STARTED) == "number",
+  "agent terminal start event")
+assert(type(cai.AGENT_EVENT_TERMINAL_OUTPUT) == "number", "agent terminal output event")
+assert(type(cai.AGENT_EVENT_TERMINAL_WAITING) == "number", "agent terminal wait event")
+assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) == "number",
+  "agent terminal completion event")
+assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) == "number",
+  "agent terminal cancellation event")
 assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
 assert_eq(cai.CHATGPT_AUTH_DEFAULT_ISSUER, "https://auth.openai.com",
   "ChatGPT auth issuer")
@@ -846,6 +855,29 @@ do
 end
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+do
+  local runtime_meta = debug.getregistry()["cai.agent_runtime"]
+  assert(type(runtime_meta) == "table", "missing agent runtime metatable")
+  for _, method in ipairs({ "submit", "submit_steering", "pump", "state",
+    "session_id", "wakeup_fd", "close" }) do
+    assert(type(runtime_meta.__index[method]) == "function",
+      "missing agent runtime method " .. method)
+  end
+  local runtime = assert_ok(dummy_client:new_smith_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+    disable_terminal = true,
+    event_callback = function() end,
+  }))
+  assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
+  assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")
+  assert(type(runtime:wakeup_fd()) == "number", "Lua Smith runtime wakeup fd")
+  do
+    local value, err = dummy_client:close()
+    assert_not_ok(value, err, "client close must reject a live Lua agent runtime")
+  end
+  runtime:close()
+end
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
 assert_not_ok(dummy_client:set_usage_limits({ max_total_tokens = -1 }),
   "negative Lua client usage limit must fail")

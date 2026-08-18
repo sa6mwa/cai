@@ -151,6 +151,12 @@ int main(void) {
   while (rc == CAI_OK && fputs("smith> ", stdout) >= 0 &&
          fflush(stdout) == 0 && fgets(line, sizeof(line), stdin) != NULL) {
     line[strcspn(line, "\r\n")] = '\0';
+    if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0) {
+      break;
+    }
+    if (line[0] == '\0') {
+      continue;
+    }
     rc = cai_agent_runtime_submit(runtime, line, &error);
     while (rc == CAI_OK) {
       rc = cai_agent_runtime_pump(runtime, 100L, &error);

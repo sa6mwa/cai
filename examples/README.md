@@ -107,6 +107,24 @@ still being generated:
 make -C examples run-streaming-text
 ```
 
+## Smith Terminal
+
+The C and Lua Smith terminal examples are reference renderers for the generic
+agent-runtime event stream. They run the `smith` preset in the current
+directory, stream model text, print each terminal command as `$ <command>`,
+show the first ten terminal output lines in dim gray, and report terminal
+completion from the runtime's structured lifecycle facts. They do not own a
+second agent loop or terminal implementation.
+
+```sh
+make -C examples run-smith-terminal
+make -C examples run-lua-smith-terminal CAI_CHATGPT_AUTH=1 \
+  CAI_TERMINAL_CHAT_MODEL=gpt-5.6-luna
+```
+
+The Lua example also accepts `CAI_CHATGPT_AUTH_JSON=/path/auth.json`. Exit
+either example with Ctrl-D or `/exit`.
+
 ## History Export
 
 Run one non-streamed agent turn with opt-in local history capture, then stream

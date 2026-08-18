@@ -12,6 +12,8 @@ grep -F 'make run-chatgpt-login' <<<"$output" >/dev/null
 grep -F 'make run-terminal-chat' <<<"$output" >/dev/null
 grep -F 'make run-lua-chatgpt-login' <<<"$output" >/dev/null
 grep -F 'make run-lua-terminal-chat' <<<"$output" >/dev/null
+grep -F 'make run-smith-terminal' <<<"$output" >/dev/null
+grep -F 'make run-lua-smith-terminal' <<<"$output" >/dev/null
 
 if [[ -n "$terminal_chat" ]]; then
   terminal_output=$("$terminal_chat" --help 2>&1)

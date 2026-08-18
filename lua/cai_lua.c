@@ -1,4 +1,5 @@
 #include <cai/auth.h>
+#include <cai/agent_runtime.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/smith.h>
@@ -54,6 +55,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_CONVERSATION_ITEM "cai.conversation_item"
 #define CAI_LUA_CONVERSATION_PARAMS "cai.conversation_items_params"
 #define CAI_LUA_SPOOL_READER "cai.spooled_reader"
+#define CAI_LUA_AGENT_RUNTIME "cai.agent_runtime"
 
 int luaopen_cai(lua_State *L);
 static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
@@ -75,6 +77,7 @@ typedef struct cai_lua_client {
   cai_chatgpt_auth *chatgpt_auth;
   pslog_lua_logger_ref logger_ref;
   size_t active_calls;
+  size_t child_runtimes;
   int has_logger_ref;
 } cai_lua_client;
 
@@ -96,6 +99,15 @@ typedef struct cai_lua_session {
   int parent_ref;
   int agent_ref;
 } cai_lua_session;
+
+typedef struct cai_lua_agent_runtime {
+  cai_agent_runtime *ptr;
+  lua_State *L;
+  cai_lua_client *parent_client;
+  int parent_ref;
+  int callback_ref;
+  size_t active_calls;
+} cai_lua_agent_runtime;
 
 typedef struct cai_lua_response {
   cai_response *ptr;
@@ -753,6 +765,16 @@ static cai_lua_session *cai_lua_check_session(lua_State *L, int index) {
   return self;
 }
 
+static cai_lua_agent_runtime *cai_lua_check_agent_runtime(lua_State *L,
+                                                           int index) {
+  cai_lua_agent_runtime *self;
+
+  self = (cai_lua_agent_runtime *)luaL_checkudata(
+      L, index, CAI_LUA_AGENT_RUNTIME);
+  luaL_argcheck(L, self->ptr != NULL, index, "closed cai agent runtime");
+  return self;
+}
+
 static cai_lua_client *cai_lua_parent_client_at(lua_State *L,
                                                 int parent_index) {
   cai_lua_client *client;
@@ -786,6 +808,20 @@ static void cai_lua_agent_enter(cai_lua_agent *self) {
 }
 
 static void cai_lua_agent_leave(cai_lua_agent *self) {
+  if (self->parent_client != NULL) {
+    cai_lua_client_leave(self->parent_client);
+  }
+  self->active_calls--;
+}
+
+static void cai_lua_agent_runtime_enter(cai_lua_agent_runtime *self) {
+  self->active_calls++;
+  if (self->parent_client != NULL) {
+    cai_lua_client_enter(self->parent_client);
+  }
+}
+
+static void cai_lua_agent_runtime_leave(cai_lua_agent_runtime *self) {
   if (self->parent_client != NULL) {
     cai_lua_client_leave(self->parent_client);
   }
@@ -2272,7 +2308,7 @@ static int cai_lua_chatgpt_login_handle_callback(lua_State *L) {
 static int cai_lua_client_gc(lua_State *L) {
   cai_lua_client *self;
   self = (cai_lua_client *)luaL_checkudata(L, 1, CAI_LUA_CLIENT);
-  if (self->active_calls != 0U) {
+  if (self->active_calls != 0U || self->child_runtimes != 0U) {
     return 0;
   }
   if (self->ptr != NULL) {
@@ -2298,6 +2334,13 @@ static int cai_lua_client_close(lua_State *L) {
                         cai_lua_set_error(&error, CAI_ERR_INVALID,
                                           "cai client has an active operation"),
                         &error);
+  }
+  if (self->child_runtimes != 0U) {
+    cai_error_init(&error);
+    return cai_lua_fail(
+        L, cai_lua_set_error(&error, CAI_ERR_INVALID,
+                             "cai client has live agent runtimes; close them first"),
+        &error);
   }
   return cai_lua_client_gc(L);
 }
@@ -2358,6 +2401,157 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_agent_ref(L, agent, 1);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_event(
+    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+  cai_lua_agent_runtime *self;
+  lua_State *L;
+  int top;
+
+  self = (cai_lua_agent_runtime *)context;
+  if (self == NULL || event == NULL || self->callback_ref == LUA_NOREF) {
+    return CAI_OK;
+  }
+  L = self->L;
+  if (L == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua agent runtime callback has no Lua state");
+  }
+  top = lua_gettop(L);
+  lua_rawgeti(L, LUA_REGISTRYINDEX, self->callback_ref);
+  lua_newtable(L);
+  lua_pushinteger(L, (lua_Integer)event->type);
+  lua_setfield(L, -2, "type");
+  lua_pushinteger(L, (lua_Integer)event->state);
+  lua_setfield(L, -2, "state");
+  lua_pushinteger(L, (lua_Integer)event->sequence);
+  lua_setfield(L, -2, "sequence");
+  if (event->data != NULL) {
+    lua_pushlstring(L, event->data, event->data_length);
+    lua_setfield(L, -2, "data");
+  }
+  if (event->tool_name != NULL) {
+    lua_pushstring(L, event->tool_name);
+    lua_setfield(L, -2, "tool_name");
+  }
+  if (event->tool_call_id != NULL) {
+    lua_pushstring(L, event->tool_call_id);
+    lua_setfield(L, -2, "tool_call_id");
+  }
+  if (event->terminal_id != NULL) {
+    lua_pushstring(L, event->terminal_id);
+    lua_setfield(L, -2, "terminal_id");
+  }
+  lua_pushinteger(L, (lua_Integer)event->terminal_command_id);
+  lua_setfield(L, -2, "terminal_command_id");
+  if (event->terminal_has_exit_code) {
+    lua_pushinteger(L, (lua_Integer)event->terminal_exit_code);
+    lua_setfield(L, -2, "terminal_exit_code");
+  }
+  if (event->terminal_has_signal) {
+    lua_pushinteger(L, (lua_Integer)event->terminal_signal);
+    lua_setfield(L, -2, "terminal_signal");
+  }
+  lua_pushinteger(L, (lua_Integer)event->terminal_duration_ms);
+  lua_setfield(L, -2, "terminal_duration_ms");
+  lua_pushinteger(L, (lua_Integer)event->terminal_total_output_bytes);
+  lua_setfield(L, -2, "terminal_total_output_bytes");
+  lua_pushboolean(L, event->terminal_output_truncated != 0);
+  lua_setfield(L, -2, "terminal_output_truncated");
+  lua_pushboolean(L, event->terminal_detached_processes_possible != 0);
+  lua_setfield(L, -2, "terminal_detached_processes_possible");
+  if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+    const char *message;
+
+    message = lua_tostring(L, -1);
+    lua_settop(L, top);
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             message != NULL ? message
+                                             : "Lua agent runtime callback failed");
+  }
+  lua_settop(L, top);
+  return CAI_OK;
+}
+
+static int cai_lua_client_new_smith_runtime(lua_State *L) {
+  cai_lua_client *client;
+  cai_lua_agent_runtime *runtime;
+  cai_agent_runtime_config config;
+  cai_error error;
+  int rc;
+
+  client = cai_lua_check_client(L, 1);
+  if (!lua_istable(L, 2)) {
+    return luaL_error(L, "new_smith_runtime requires a configuration table");
+  }
+  runtime = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*runtime));
+  memset(runtime, 0, sizeof(*runtime));
+  runtime->L = L;
+  runtime->parent_client = client;
+  runtime->parent_ref = cai_lua_ref_parent(L, 1);
+  runtime->callback_ref = LUA_NOREF;
+  lua_getfield(L, 2, "event_callback");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+    runtime->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  } else {
+    lua_pop(L, 1);
+  }
+  cai_agent_runtime_config_init(&config);
+  config.preset = CAI_SMITH_PRESET;
+  config.workspace_directory =
+      cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
+  config.workspace_directory = cai_lua_opt_string_field(
+      L, 2, "workspace", config.workspace_directory);
+  config.agent_identity =
+      cai_lua_opt_string_field(L, 2, "agent_identity", NULL);
+  config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
+  config.reasoning_effort =
+      cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
+  config.developer_instructions_extension = cai_lua_opt_string_field(
+      L, 2, "developer_instructions_extension", NULL);
+  config.enable_image_generation =
+      cai_lua_opt_bool_field(L, 2, "enable_image_generation", 0);
+  config.disable_terminal =
+      cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
+  config.session_scope = cai_lua_opt_string_field(L, 2, "session_scope", NULL);
+  config.session_id = cai_lua_opt_string_field(L, 2, "session_id", NULL);
+  config.resume_latest = cai_lua_opt_bool_field(L, 2, "resume_latest", 0);
+  config.disable_default_session_store = cai_lua_opt_bool_field(
+      L, 2, "disable_default_session_store", 0);
+  config.event_callback = cai_lua_agent_runtime_event;
+  config.event_context = runtime;
+  if (config.workspace_directory == NULL || config.workspace_directory[0] == '\0') {
+    if (runtime->callback_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
+    }
+    if (runtime->parent_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
+    }
+    return luaL_error(L, "new_smith_runtime requires workspace_directory");
+  }
+  cai_error_init(&error);
+  cai_lua_client_enter(client);
+  rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
+  cai_lua_client_leave(client);
+  if (rc != CAI_OK) {
+    if (runtime->callback_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
+    }
+    if (runtime->parent_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
+    }
+    runtime->callback_ref = LUA_NOREF;
+    runtime->parent_ref = LUA_NOREF;
+    lua_pop(L, 1);
+    return cai_lua_fail(L, rc, &error);
+  }
+  client->child_runtimes++;
+  luaL_getmetatable(L, CAI_LUA_AGENT_RUNTIME);
+  lua_setmetatable(L, -2);
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -2821,6 +3015,171 @@ static int cai_lua_agent_close(lua_State *L) {
         &error);
   }
   return cai_lua_agent_gc(L);
+}
+
+static const char *cai_lua_agent_runtime_state_name(cai_agent_run_state state) {
+  switch (state) {
+  case CAI_AGENT_IDLE:
+    return "idle";
+  case CAI_AGENT_SAMPLING:
+    return "sampling";
+  case CAI_AGENT_DISPATCHING_TOOL:
+    return "dispatching_tool";
+  case CAI_AGENT_COMPLETED:
+    return "completed";
+  case CAI_AGENT_FAILED:
+    return "failed";
+  case CAI_AGENT_CANCELLED:
+    return "cancelled";
+  }
+  return "unknown";
+}
+
+static int cai_lua_agent_runtime_gc(lua_State *L) {
+  cai_lua_agent_runtime *self;
+
+  self = (cai_lua_agent_runtime *)luaL_checkudata(
+      L, 1, CAI_LUA_AGENT_RUNTIME);
+  if (self->active_calls != 0U) {
+    return 0;
+  }
+  if (self->ptr != NULL) {
+    cai_lua_agent_runtime_enter(self);
+    cai_agent_runtime_close(self->ptr);
+    cai_lua_agent_runtime_leave(self);
+    self->ptr = NULL;
+  }
+  if (self->callback_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->callback_ref);
+    self->callback_ref = LUA_NOREF;
+  }
+  if (self->parent_client != NULL && self->parent_client->child_runtimes > 0U) {
+    self->parent_client->child_runtimes--;
+  }
+  if (self->parent_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->parent_ref);
+    self->parent_ref = LUA_NOREF;
+  }
+  self->parent_client = NULL;
+  return 0;
+}
+
+static int cai_lua_agent_runtime_close(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+
+  self = (cai_lua_agent_runtime *)luaL_checkudata(
+      L, 1, CAI_LUA_AGENT_RUNTIME);
+  if (self->active_calls != 0U) {
+    cai_error_init(&error);
+    return cai_lua_fail(L,
+                        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                                          "cai agent runtime has an active operation"),
+                        &error);
+  }
+  return cai_lua_agent_runtime_gc(L);
+}
+
+static int cai_lua_agent_runtime_submit(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_submit(self->ptr, luaL_checkstring(L, 2), &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_submit_steering(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_submit_steering(self->ptr, luaL_checkstring(L, 2),
+                                         &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_pump(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_agent_run_state state;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_pump(self->ptr, (long)luaL_optinteger(L, 2, 0),
+                              &error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_runtime_state(self->ptr, &state, &error);
+  }
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, cai_lua_agent_runtime_state_name(state));
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_state(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_agent_run_state state;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_state(self->ptr, &state, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, cai_lua_agent_runtime_state_name(state));
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_session_id(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  const char *session_id;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  session_id = cai_agent_runtime_session_id(self->ptr);
+  if (session_id != NULL) {
+    lua_pushstring(L, session_id);
+  } else {
+    lua_pushnil(L);
+  }
+  return 1;
+}
+
+static int cai_lua_agent_runtime_wakeup_fd(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  int fd;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_wakeup_fd(self->ptr, &fd, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushinteger(L, (lua_Integer)fd);
+  cai_lua_error_cleanup(&error);
+  return 1;
 }
 
 static int cai_lua_agent_new_session(lua_State *L) {
@@ -8105,6 +8464,7 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
     {"new_smith_agent", cai_lua_client_new_smith_agent},
+    {"new_smith_runtime", cai_lua_client_new_smith_runtime},
     {"create_response", cai_lua_client_create_response},
     {"count_response_input_tokens", cai_lua_client_count_response_input_tokens},
     {"stream_response_text", cai_lua_client_stream_response_text},
@@ -8125,6 +8485,16 @@ static const luaL_Reg cai_lua_client_methods[] = {
     {"set_usage_limits", cai_lua_client_set_usage_limits},
     {"usage", cai_lua_client_usage},
     {"close", cai_lua_client_close},
+    {NULL, NULL}};
+
+static const luaL_Reg cai_lua_agent_runtime_methods[] = {
+    {"submit", cai_lua_agent_runtime_submit},
+    {"submit_steering", cai_lua_agent_runtime_submit_steering},
+    {"pump", cai_lua_agent_runtime_pump},
+    {"state", cai_lua_agent_runtime_state},
+    {"session_id", cai_lua_agent_runtime_session_id},
+    {"wakeup_fd", cai_lua_agent_runtime_wakeup_fd},
+    {"close", cai_lua_agent_runtime_close},
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_agent_methods[] = {
@@ -8427,6 +8797,8 @@ int luaopen_cai(lua_State *L) {
   cai_lua_metatable(L, CAI_LUA_CLIENT, cai_lua_client_methods,
                     cai_lua_client_gc);
   cai_lua_metatable(L, CAI_LUA_AGENT, cai_lua_agent_methods, cai_lua_agent_gc);
+  cai_lua_metatable(L, CAI_LUA_AGENT_RUNTIME, cai_lua_agent_runtime_methods,
+                    cai_lua_agent_runtime_gc);
   cai_lua_metatable(L, CAI_LUA_SESSION, cai_lua_session_methods,
                     cai_lua_session_gc);
   cai_lua_metatable(L, CAI_LUA_RESPONSE, cai_lua_response_methods,
@@ -8497,6 +8869,19 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("CONTINUITY_CLIENT_HISTORY",
                       CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TEXT_DELTA", CAI_AGENT_EVENT_TEXT_DELTA);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_COMPLETED",
+                      CAI_AGENT_EVENT_TOOL_CALL_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_STARTED",
+                      CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_OUTPUT",
+                      CAI_AGENT_EVENT_TERMINAL_OUTPUT);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_WAITING",
+                      CAI_AGENT_EVENT_TERMINAL_WAITING);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_COMPLETED",
+                      CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_CANCELLED",
+                      CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
