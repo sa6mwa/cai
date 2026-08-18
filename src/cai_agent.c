@@ -3232,6 +3232,38 @@ static void cai_capture_cleanup(cai_tool_output_capture *capture) {
   capture->output.cleanup(&capture->output);
 }
 
+/* Keep durable history on the tool's safe JSON result, not a typed payload
+ * (such as a data-URL image) needed only by the in-flight continuation. */
+static int cai_session_capture_tool_history_output(
+    cai_session *session, cai_response_create_params *history_params,
+    const char *call_id, const lonejson_spooled *output_json,
+    cai_error *error) {
+  lonejson_spooled output_copy;
+  int rc;
+
+  if (history_params == NULL) {
+    return CAI_OK;
+  }
+  if (session == NULL || call_id == NULL || call_id[0] == '\0' ||
+      output_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool history output arguments are required");
+  }
+  memset(&output_copy, 0, sizeof(output_copy));
+  rc = cai_agent_clone_spooled(session, output_json, &output_copy, error);
+  if (rc == CAI_OK) {
+    rc = cai_response_create_params_add_function_call_output_spooled(
+        history_params, call_id, &output_copy, error);
+    if (rc == CAI_OK) {
+      memset(&output_copy, 0, sizeof(output_copy));
+    }
+  }
+  if (output_copy.cleanup != NULL) {
+    output_copy.cleanup(&output_copy);
+  }
+  return rc;
+}
+
 static int cai_capture_tool_error_output(cai_tool_output_capture *capture,
                                          int tool_rc,
                                          const cai_error *tool_error,
@@ -3394,6 +3426,7 @@ static int cai_session_run_tool_round(cai_session *session,
                                       const cai_run_options *options,
                                       cai_response **out, cai_error *error) {
   cai_response_create_params *params;
+  cai_response_create_params *history_params;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   cai_tool_output_capture capture;
@@ -3407,6 +3440,7 @@ static int cai_session_run_tool_round(cai_session *session,
   int rc;
 
   params = NULL;
+  history_params = NULL;
   memset(&pending_items, 0, sizeof(pending_items));
   has_pending_items = 0;
   tool_output_runtime = NULL;
@@ -3421,9 +3455,14 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_run_options_open_tool_output_runtime(options, &tool_output_runtime,
                                                   error);
   }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    rc = cai_response_create_params_new(&history_params, error);
+  }
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
        i++) {
     cai_tool_event event;
+    int output_delivered;
     int tool_failed;
     int tool_invoked;
 
@@ -3434,6 +3473,7 @@ static int cai_session_run_tool_round(cai_session *session,
     capture_output_owned = 1;
     tool_failed = 0;
     tool_invoked = 0;
+    output_delivered = 0;
     event.name = cai_response_tool_call_name(response, i);
     event.arguments_json = cai_response_tool_call_arguments(response, i);
     event.arguments_json_spooled =
@@ -3498,12 +3538,24 @@ static int cai_session_run_tool_round(cai_session *session,
       }
     }
     if (rc == CAI_OK) {
-      rc = cai_response_create_params_add_function_call_output_spooled(
-          params, cai_response_tool_call_id(response, i), &capture.output,
-          error);
-      if (rc == CAI_OK) {
-        memset(&capture.output, 0, sizeof(capture.output));
-        capture_output_owned = 0;
+      rc = cai_session_capture_tool_history_output(
+          session, history_params, cai_response_tool_call_id(response, i),
+          &capture.output, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_tool_registry_deliver_result(
+          CAI_SESSION_AGENT_IMPL(session)->tools,
+          cai_response_tool_call_name(response, i),
+          cai_response_tool_call_id(response, i), params, &capture.output,
+          &output_delivered, error);
+      if (rc == CAI_OK && !output_delivered) {
+        rc = cai_response_create_params_add_function_call_output_spooled(
+            params, cai_response_tool_call_id(response, i), &capture.output,
+            error);
+        if (rc == CAI_OK) {
+          memset(&capture.output, 0, sizeof(capture.output));
+          capture_output_owned = 0;
+        }
       }
     }
     if (capture_output_owned) {
@@ -3514,27 +3566,32 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
   }
+  if (rc == CAI_OK && history_params != NULL) {
+    if (has_pending_items) {
+      pending_items.cleanup(&pending_items);
+      memset(&pending_items, 0, sizeof(pending_items));
+      has_pending_items = 0;
+    }
+    rc = cai_response_params_input_items_spool(history_params, &pending_items,
+                                               NULL, error);
+    if (rc == CAI_OK) {
+      has_pending_items = 1;
+    }
+  }
   if (rc == CAI_OK) {
     rc = cai_session_commit_pending_history(session, &pending_items,
                                             &has_pending_items, error);
-  }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
-    cai_response_create_params_clear_input(params);
   }
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
     rc = options->tool_round_completed(options->tool_round_completed_context,
                                        session, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_replay_history_with_params_input(
-        session, params, &pending_items, &has_pending_items, error);
-  }
-  if (rc == CAI_OK) {
     rc = cai_session_create_response_from_params(
         session, params, &pending_items, has_pending_items, out, error);
   }
   cai_response_create_params_destroy(params);
+  cai_response_create_params_destroy(history_params);
   cai_lonejson_runtime_close(&tool_output_runtime);
   if (has_pending_items) {
     pending_items.cleanup(&pending_items);
@@ -3735,6 +3792,7 @@ int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
 
 static int cai_session_add_stream_tool_outputs(
     cai_session *session, cai_response_create_params *params,
+    cai_response_create_params *history_params,
     const cai_stream_tool_call_list *calls, const cai_run_options *options,
     cai_error *error) {
   cai_sink_callbacks callbacks;
@@ -3753,6 +3811,7 @@ static int cai_session_add_stream_tool_outputs(
                                                 error);
   for (i = 0U; rc == CAI_OK && i < calls->count; i++) {
     cai_tool_event event;
+    int output_delivered;
     int tool_failed;
     int tool_invoked;
 
@@ -3763,6 +3822,7 @@ static int cai_session_add_stream_tool_outputs(
     capture_output_owned = 1;
     tool_failed = 0;
     tool_invoked = 0;
+    output_delivered = 0;
     event.name = calls->items[i].name;
     event.arguments_json = calls->items[i].arguments;
     event.arguments_json_spooled = calls->items[i].has_arguments_spooled
@@ -3824,11 +3884,22 @@ static int cai_session_add_stream_tool_outputs(
       }
     }
     if (rc == CAI_OK) {
-      rc = cai_response_create_params_add_function_call_output_spooled(
-          params, calls->items[i].call_id, &capture.output, error);
-      if (rc == CAI_OK) {
-        memset(&capture.output, 0, sizeof(capture.output));
-        capture_output_owned = 0;
+      rc = cai_session_capture_tool_history_output(session, history_params,
+                                                   calls->items[i].call_id,
+                                                   &capture.output, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_tool_registry_deliver_result(
+          CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
+          calls->items[i].call_id, params, &capture.output, &output_delivered,
+          error);
+      if (rc == CAI_OK && !output_delivered) {
+        rc = cai_response_create_params_add_function_call_output_spooled(
+            params, calls->items[i].call_id, &capture.output, error);
+        if (rc == CAI_OK) {
+          memset(&capture.output, 0, sizeof(capture.output));
+          capture_output_owned = 0;
+        }
       }
     }
     if (capture_output_owned) {
@@ -3844,6 +3915,7 @@ static int cai_session_stream_tool_round(
     const cai_stream_sinks *sinks, const cai_stream_tool_call_list *input_calls,
     cai_stream_tool_call_list *output_calls, cai_error *error) {
   cai_response_create_params *params;
+  cai_response_create_params *history_params;
   cai_stream_tool_capture capture;
   cai_stream_sinks effective_sinks;
   char *response_id;
@@ -3855,6 +3927,7 @@ static int cai_session_stream_tool_round(
   int rc;
 
   params = NULL;
+  history_params = NULL;
   response_id = NULL;
   memset(&pending_items, 0, sizeof(pending_items));
   has_pending_items = 0;
@@ -3882,32 +3955,40 @@ static int cai_session_stream_tool_round(
   if (rc == CAI_OK) {
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
   }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    rc = cai_response_create_params_new(&history_params, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_session_add_stream_tool_outputs(session, params, input_calls,
-                                             options, error);
+    rc = cai_session_add_stream_tool_outputs(session, params, history_params,
+                                             input_calls, options, error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
+  }
+  if (rc == CAI_OK && history_params != NULL) {
+    if (has_pending_items) {
+      pending_items.cleanup(&pending_items);
+      memset(&pending_items, 0, sizeof(pending_items));
+      has_pending_items = 0;
+    }
+    rc = cai_response_params_input_items_spool(history_params, &pending_items,
+                                               NULL, error);
+    if (rc == CAI_OK) {
+      has_pending_items = 1;
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_session_commit_pending_history(session, &pending_items,
                                             &has_pending_items, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
-    cai_response_create_params_clear_input(params);
-  }
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
     rc = options->tool_round_completed(options->tool_round_completed_context,
                                        session, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_session_replay_history_with_params_input(
-        session, params, &pending_items, &has_pending_items, error);
   }
   if (rc == CAI_OK) {
     rc = cai_session_check_usage_available(session, error);
@@ -3947,6 +4028,7 @@ static int cai_session_stream_tool_round(
     }
   }
   cai_response_create_params_destroy(params);
+  cai_response_create_params_destroy(history_params);
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
     pending_items.cleanup(&pending_items);

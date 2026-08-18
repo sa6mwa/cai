@@ -21,6 +21,7 @@ typedef struct cai_tool_entry {
   cai_tool_fn lonejson_callback;
   cai_tool_raw_fn raw_callback;
   cai_tool_raw_spooled_fn raw_spooled_callback;
+  cai_tool_result_delivery_fn result_delivery;
   void *context;
   void (*context_cleanup)(void *context);
 } cai_tool_entry;
@@ -1519,6 +1520,57 @@ int cai_tool_registry_register_raw_spooled_owned(
   return cai_tool_registry_register_common(
       registry, name, description, schema_json, strict, CAI_TOOL_RAW_SPOOLED,
       NULL, NULL, NULL, NULL, callback, context, context_cleanup, error);
+}
+
+int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
+                                          const char *name,
+                                          cai_tool_result_delivery_fn callback,
+                                          cai_error *error) {
+  cai_tool_entry *entry;
+
+  if (registry == NULL || name == NULL || name[0] == '\0' || callback == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool registry, name, and result delivery callback "
+                         "are required");
+  }
+  entry = cai_tool_registry_find(registry, name);
+  if (entry == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
+  }
+  if (entry->result_delivery != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result delivery is already registered");
+  }
+  entry->result_delivery = callback;
+  return CAI_OK;
+}
+
+int cai_tool_registry_deliver_result(cai_tool_registry *registry,
+                                     const char *name, const char *call_id,
+                                     cai_response_create_params *params,
+                                     const lonejson_spooled *output_json,
+                                     int *out_delivered, cai_error *error) {
+  cai_tool_entry *entry;
+
+  if (out_delivered == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result delivery output is required");
+  }
+  *out_delivered = 0;
+  if (registry == NULL || name == NULL || name[0] == '\0' || call_id == NULL ||
+      call_id[0] == '\0' || params == NULL || output_json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result delivery arguments are required");
+  }
+  entry = cai_tool_registry_find(registry, name);
+  if (entry == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
+  }
+  if (entry->result_delivery == NULL) {
+    return CAI_OK;
+  }
+  return entry->result_delivery(entry->context, call_id, params, output_json,
+                                out_delivered, error);
 }
 
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,

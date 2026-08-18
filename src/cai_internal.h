@@ -349,6 +349,25 @@ int cai_tool_registry_register_raw_spooled_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
     void *context, void (*context_cleanup)(void *context), cai_error *error);
+/*
+ * A local tool may replace its ordinary JSON function-call output with typed
+ * response content.  This is intentionally internal until the public tool
+ * result ABI grows a stable typed-output representation.
+ */
+typedef int (*cai_tool_result_delivery_fn)(void *context, const char *call_id,
+                                           cai_response_create_params *params,
+                                           const lonejson_spooled *output_json,
+                                           int *out_delivered,
+                                           cai_error *error);
+int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
+                                          const char *name,
+                                          cai_tool_result_delivery_fn callback,
+                                          cai_error *error);
+int cai_tool_registry_deliver_result(cai_tool_registry *registry,
+                                     const char *name, const char *call_id,
+                                     cai_response_create_params *params,
+                                     const lonejson_spooled *output_json,
+                                     int *out_delivered, cai_error *error);
 int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
                                   lonejson_spooled *arguments_json,
                                   cai_sink *output, cai_error *error);

@@ -656,7 +656,8 @@ set(CAI_SOURCES
   src/tools/read.c
   src/tools/revgeo.c
   src/tools/searxng.c
-  src/tools/todo.c)
+  src/tools/todo.c
+  src/tools/view_image.c)
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
@@ -1182,6 +1183,7 @@ if(CAI_BUILD_TESTS)
     http_response_limit
     agent_tool_auto_run
     agent_client_history_tool_auto_run
+    agent_view_image_auto_run
     revgeo_tool
     todo_file_store_initializes_under_lock
     todo_tool
@@ -1189,6 +1191,7 @@ if(CAI_BUILD_TESTS)
     searxng_registry_tool
     exec_tool
     read_tool
+    view_image_tool
     agent_searxng_tool_auto_run
     agent_multi_tool_auto_run
     agent_tool_auto_round_limit

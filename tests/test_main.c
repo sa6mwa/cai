@@ -11,6 +11,7 @@
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
+#include <cai/tools/view_image.h>
 
 #include "../examples/mike-mind/mike_mind_prompt.h"
 #include "cai_internal.h"
@@ -7773,6 +7774,15 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_auto_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"auto done\"}]}]}";
+  static const char view_image_tool_call_body[] =
+      "{\"id\":\"resp_view_image_tool_1\",\"status\":\"completed\","
+      "\"output\":[{\"id\":\"fc_view_image_1\",\"type\":\"function_call\","
+      "\"call_id\":\"call_view_image_1\",\"name\":\"view_image\","
+      "\"arguments\":\"{\\\"path\\\":\\\"pixel.png\\\"}\"}]}";
+  static const char view_image_tool_done_body[] =
+      "{\"id\":\"resp_view_image_tool_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"view image done\"}]}]}";
   static const char multi_tool_call_body[] =
       "{\"id\":\"resp_multi_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_multi_1\",\"type\":\"function_call\",\"call_id\":"
@@ -8351,6 +8361,19 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "manual tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return manual_tool_call_body;
+    }
+    if (strstr(request, "view image tool turn") != NULL &&
+        strstr(request, "\"name\":\"view_image\"") != NULL &&
+        strstr(request, "\"type\":\"function_call_output\"") == NULL) {
+      return view_image_tool_call_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL &&
+        strstr(request, "\"type\":\"input_image\"") != NULL &&
+        strstr(request, "data:image/png;base64,iVBORw0KGgo") != NULL &&
+        strstr(request, "\"previous_response_id\"") == NULL &&
+        strstr(request, "view image tool turn") != NULL) {
+      return view_image_tool_done_body;
     }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_manual_1\"") != NULL &&
@@ -23655,7 +23678,6 @@ static void test_smith_profile(test_state *state) {
       "\"name\":\"list_files\"",
       "\"name\":\"apply_patch\"",
       "Make workspace edits only with apply_patch.",
-      "Command execution, terminal management, image generation,",
       "Create a goal only when the user or system/developer instructions"};
   static const char *forbidden[] = {"\"name\":\"exec_command\"",
                                     "\"name\":\"write_stdin\""};
@@ -23703,6 +23725,14 @@ static void test_smith_profile(test_state *state) {
                CAI_AGENT_IMPL(agent)->parallel_tool_calls, 0L);
     expect_int(state, "smith_auto_compaction_disabled",
                CAI_AGENT_IMPL(agent)->auto_compact, 0L);
+    expect_int(state, "smith_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 4L);
+    if (cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 3U) == NULL ||
+        strcmp(cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 3U),
+               CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME) != 0) {
+      test_fail(state, "smith_view_image_tool",
+                "Smith did not register the image viewer for an image model");
+    }
     expect_int(state, "smith_send",
                agent->send_text(agent, "inspect", &response, &error), CAI_OK);
     if (response != NULL) {
@@ -24541,6 +24571,138 @@ static void test_agent_client_history_tool_auto_run(test_state *state) {
     test_fail(state, "agent_client_history_tool_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_client_history_tool_mock", "mock child failed");
+  }
+}
+
+static void test_agent_view_image_auto_run(test_state *state) {
+  static const unsigned char png_bytes[] = {
+      0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
+      0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
+      0x00U, 0x00U, 0x00U, 0x01U, 0x08U, 0x06U, 0x00U, 0x00U, 0x00U, 0x1fU,
+      0x15U, 0xc4U, 0x89U, 0x00U, 0x00U, 0x00U, 0x0dU, 0x49U, 0x44U, 0x41U,
+      0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
+      0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
+      0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
+  char workspace[] = "/tmp/cai-agent-view-image-XXXXXX";
+  char image_path[PATH_MAX];
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char history_json[4096];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_view_image_tool_config view_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_source *history_source;
+  cai_error error;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "agent_view_image_workspace", "mkdtemp failed");
+    return;
+  }
+  snprintf(image_path, sizeof(image_path), "%s/pixel.png", workspace);
+  write_bytes_or_die(image_path, png_bytes, sizeof(png_bytes));
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_view_image_mock", "pipe failed");
+    unlink(image_path);
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_view_image_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    unlink(image_path);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_view_image_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    unlink(image_path);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  cai_run_options_init(&run_options);
+  memset(&view_config, 0, sizeof(view_config));
+  view_config.root_path = workspace;
+  view_config.default_workdir = workspace;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+
+  expect_int(state, "agent_view_image_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_view_image_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_view_image_register",
+             cai_agent_register_view_image_tool(agent, &view_config, &error),
+             CAI_OK);
+  expect_int(state, "agent_view_image_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_view_image_add",
+             cai_session_add_user_text(session, "view image tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_view_image_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_view_image_response",
+             cai_response_output_text(response), "view image done");
+  expect_int(
+      state, "agent_view_image_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "agent_view_image_history", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    expect_substr(state, "agent_view_image_history_metadata", history_json,
+                  "mime_type");
+    if (strstr(history_json, "data:image/png;base64,") != NULL) {
+      test_fail(state, "agent_view_image_history_no_payload",
+                "client history retained the image data URL");
+    }
+  }
+
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  unlink(image_path);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_view_image_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_view_image_mock", "mock child failed");
   }
 }
 
@@ -25455,6 +25617,167 @@ static void test_read_tool(test_state *state) {
   unlink(file_path);
   rmdir(nested_dir);
   rmdir(sub_dir);
+  rmdir(dir_template);
+}
+
+static void test_view_image_tool(test_state *state) {
+  static const unsigned char png_bytes[] = {
+      0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
+      0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
+      0x00U, 0x00U, 0x00U, 0x01U, 0x08U, 0x06U, 0x00U, 0x00U, 0x00U, 0x1fU,
+      0x15U, 0xc4U, 0x89U, 0x00U, 0x00U, 0x00U, 0x0dU, 0x49U, 0x44U, 0x41U,
+      0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
+      0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
+      0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
+  char dir_template[] = "/tmp/cai-view-image-test-XXXXXX";
+  char image_path[PATH_MAX];
+  char invalid_path[PATH_MAX];
+  char alias_path[PATH_MAX];
+  char *request_json;
+  cai_view_image_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_response_create_params *params;
+  lonejson_spooled output_json;
+  lonejson_error json_error;
+  write_state writer;
+  cai_error error;
+  int delivered;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "view_image_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  snprintf(image_path, sizeof(image_path), "%s/pixel.png", dir_template);
+  snprintf(invalid_path, sizeof(invalid_path), "%s/not-image.bin",
+           dir_template);
+  snprintf(alias_path, sizeof(alias_path), "%s/pixel-alias.png", dir_template);
+  write_bytes_or_die(image_path, png_bytes, sizeof(png_bytes));
+  write_file_or_die(invalid_path, "not an image");
+
+  cai_error_init(&error);
+  lonejson_error_init(&json_error);
+  CAI_LJ->spooled_init(CAI_LJ, &output_json);
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  registry = NULL;
+  sink = NULL;
+  params = NULL;
+  request_json = NULL;
+  memset(&writer, 0, sizeof(writer));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+
+  expect_int(state, "view_image_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(
+      state, "view_image_register",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_OK);
+  expect_int(state, "view_image_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "view_image_run",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"pixel.png\","
+                                   "\"detail\":\"original\"}",
+                                   sink, &error),
+             CAI_OK);
+  expect_substr(state, "view_image_metadata_path", writer.buffer,
+                "\"path\":\"pixel.png\"");
+  expect_substr(state, "view_image_metadata_mime", writer.buffer,
+                "\"mime_type\":\"image/png\"");
+  expect_substr(state, "view_image_metadata_detail", writer.buffer,
+                "\"detail\":\"original\"");
+  expect_substr(state, "view_image_metadata_hash", writer.buffer,
+                "\"content_hash\":\"");
+  if (strstr(writer.buffer, "data:image") != NULL) {
+    test_fail(state, "view_image_metadata_no_payload",
+              "tool event exposed a base64 image payload");
+  }
+  expect_valid_json(state, "view_image_metadata_json", writer.buffer);
+  if (output_json.append(&output_json, writer.buffer, writer.length,
+                         &json_error) != LONEJSON_STATUS_OK) {
+    test_fail(state, "view_image_capture_output", "failed to spool metadata");
+  }
+  expect_int(state, "view_image_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "view_image_params_model",
+             params->set_model(params, CAI_MODEL_GPT_5_6_LUNA, &error), CAI_OK);
+  delivered = 0;
+  expect_int(state, "view_image_typed_delivery",
+             cai_tool_registry_deliver_result(
+                 registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME, "call_view_1",
+                 params, &output_json, &delivered, &error),
+             CAI_OK);
+  expect_int(state, "view_image_typed_delivery_flag", delivered, 1L);
+  expect_int(state, "view_image_request_json",
+             cai_response_create_params_serialize_json(params, &request_json,
+                                                       NULL, &error),
+             CAI_OK);
+  if (request_json != NULL) {
+    expect_substr(state, "view_image_request_type", request_json,
+                  "\"type\":\"input_image\"");
+    expect_substr(state, "view_image_request_data_url", request_json,
+                  "data:image/png;base64,iVBORw0KGgo");
+    expect_substr(state, "view_image_request_detail", request_json,
+                  "\"detail\":\"original\"");
+    if (strstr(request_json, "resolved_path") != NULL) {
+      test_fail(state, "view_image_request_metadata_omitted",
+                "typed image output included JSON metadata content");
+    }
+  }
+  free(request_json);
+  request_json = NULL;
+  cai_response_create_params_destroy(params);
+  params = NULL;
+  output_json.cleanup(&output_json);
+  CAI_LJ->spooled_init(CAI_LJ, &output_json);
+
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "view_image_invalid_data",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"not-image.bin\"}", sink,
+                                   &error),
+             CAI_ERR_INVALID);
+  expect_substr(state, "view_image_invalid_data_message", error.message,
+                "invalid or unsupported");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  expect_int(state, "view_image_escape",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"/etc/passwd\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_substr(state, "view_image_escape_message", error.message,
+                "escapes configured root");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  unlink(alias_path);
+  if (link(image_path, alias_path) != 0) {
+    test_fail(state, "view_image_hardlink_fixture", "link failed");
+  } else {
+    expect_int(state, "view_image_hardlink",
+               cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                     "{\"path\":\"pixel.png\"}", sink, &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "view_image_hardlink_message", error.message,
+                  "private regular file");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+
+  output_json.cleanup(&output_json);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  unlink(alias_path);
+  unlink(invalid_path);
+  unlink(image_path);
   rmdir(dir_template);
 }
 
@@ -33459,6 +33782,7 @@ static const test_entry test_entries[] = {
     {"agent_tool_auto_run", test_agent_tool_auto_run},
     {"agent_client_history_tool_auto_run",
      test_agent_client_history_tool_auto_run},
+    {"agent_view_image_auto_run", test_agent_view_image_auto_run},
     {"revgeo_tool", test_revgeo_tool},
     {"todo_file_store_initializes_under_lock",
      test_todo_file_store_initializes_under_lock},
@@ -33467,6 +33791,7 @@ static const test_entry test_entries[] = {
     {"searxng_registry_tool", test_searxng_registry_tool},
     {"exec_tool", test_exec_tool},
     {"read_tool", test_read_tool},
+    {"view_image_tool", test_view_image_tool},
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},
     {"agent_multi_tool_auto_run", test_agent_multi_tool_auto_run},
     {"agent_tool_auto_round_limit", test_agent_tool_auto_round_limit},

@@ -1,6 +1,7 @@
 #include <cai/smith.h>
 #include <cai/tools/patch.h>
 #include <cai/tools/read.h>
+#include <cai/tools/view_image.h>
 
 #include "cai_internal.h"
 
@@ -27,13 +28,15 @@ static const char *const cai_smith_prompt_suffix_parts[] = {
     "precedence. Inspect applicable instructions before changing files.\n\n",
     "# Available tools\n\n"
     "This pre-terminal Smith profile exposes read_file, list_files, and "
-    "apply_patch. A session may additionally attach get_goal, create_goal, "
-    "update_goal, clear_goal, and explicitly configured MCP tools.\n\n",
+    "apply_patch. Image-capable models also receive view_image. A session may "
+    "additionally attach get_goal, create_goal, update_goal, clear_goal, and "
+    "explicitly configured MCP tools.\n\n",
     "Inspect files with read_file or "
     "list_files before asserting their contents. Make workspace edits only "
-    "with "
-    "apply_patch. Command execution, terminal management, image generation, "
-    "and image viewing are unavailable until the host advertises their tools. "
+    "with apply_patch. When advertised, use view_image to inspect local "
+    "images. Command execution, "
+    "terminal management, and image generation are unavailable until the host "
+    "advertises their tools. "
     "Never invent an unavailable tool, emulate command output, or imply that a "
     "change or verification was performed when it was not. Tool calls are "
     "serial: complete and assess one call before issuing another.\n\n",
@@ -142,6 +145,7 @@ int cai_client_new_smith_agent(cai_client *client,
   cai_agent_config agent_config;
   cai_read_tool_config read_config;
   cai_patch_tool_config patch_config;
+  cai_view_image_tool_config view_image_config;
   char *instructions;
   int rc;
 
@@ -196,6 +200,13 @@ int cai_client_new_smith_agent(cai_client *client,
     memset(&patch_config, 0, sizeof(patch_config));
     patch_config.root_path = config->workspace_directory;
     rc = cai_agent_register_patch_tool(*out, &patch_config, error);
+  }
+  if (rc == CAI_OK &&
+      cai_model_supports(agent_config.model, CAI_MODEL_CAP_IMAGE_INPUT)) {
+    memset(&view_image_config, 0, sizeof(view_image_config));
+    view_image_config.root_path = config->workspace_directory;
+    view_image_config.default_workdir = config->workspace_directory;
+    rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
   }
   if (rc != CAI_OK) {
     cai_agent_destroy(*out);
