@@ -58,7 +58,10 @@ typedef struct cai_agent_runtime_event {
   size_t data_length;
   /** Tool name for tool events, otherwise NULL. */
   const char *tool_name;
-  /** Provider-issued stable invocation identifier for tool events, otherwise NULL. */
+  /**
+   * Provider-issued stable invocation identifier for tool events and the
+   * originating exec_command call for terminal events, otherwise NULL.
+   */
   const char *tool_call_id;
   /** Stable terminal ID for terminal events, otherwise NULL. */
   const char *terminal_id;

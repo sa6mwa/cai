@@ -24,6 +24,7 @@ typedef struct cai_runtime_event_node {
   char *data;
   char *tool_name;
   char *tool_call_id;
+  char *terminal_id;
   struct cai_runtime_event_node *next;
 } cai_runtime_event_node;
 
@@ -70,6 +71,7 @@ struct cai_agent_runtime {
   void *event_context;
   cai_terminal_event_fn terminal_event_callback;
   void *terminal_event_context;
+  char *terminal_origin_tool_call_id;
 };
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -138,6 +140,7 @@ static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
   cai_free_mem(NULL, node->data);
   cai_free_mem(NULL, node->tool_name);
   cai_free_mem(NULL, node->tool_call_id);
+  cai_free_mem(NULL, node->terminal_id);
   cai_free_mem(NULL, node);
 }
 
@@ -268,15 +271,26 @@ static int cai_runtime_enqueue_terminal_locked(cai_agent_runtime *runtime,
   cai_runtime_event_node *node;
   int rc;
 
+  if (event->terminal_id == NULL || event->terminal_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "terminal lifecycle event has no terminal id");
+  }
   rc = cai_runtime_wait_event_capacity_locked(runtime, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_runtime_event_node_new(type, event->output, event->output_length,
-                                  event->terminal_id, NULL, runtime->state,
+                                  NULL, runtime->terminal_origin_tool_call_id,
+                                  runtime->state,
                                   &node, error);
   if (rc == CAI_OK) {
-    node->event.terminal_id = node->tool_name;
+    node->terminal_id = cai_strdup(NULL, event->terminal_id);
+    if (node->terminal_id == NULL) {
+      cai_runtime_event_node_free(node);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy agent runtime terminal id");
+    }
+    node->event.terminal_id = node->terminal_id;
     node->event.terminal_command_id = event->command_id;
     node->event.terminal_has_exit_code = event->has_exit_code;
     node->event.terminal_exit_code = event->exit_code;
@@ -287,7 +301,6 @@ static int cai_runtime_enqueue_terminal_locked(cai_agent_runtime *runtime,
     node->event.terminal_output_truncated = event->output_truncated;
     node->event.terminal_detached_processes_possible =
         event->detached_processes_possible;
-    node->event.tool_name = NULL;
     cai_runtime_append_event_node_locked(runtime, node);
   }
   return rc;
@@ -587,6 +600,20 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   }
   pthread_mutex_lock(&runtime->lock);
   runtime->state = CAI_AGENT_DISPATCHING_TOOL;
+  if (event->type == CAI_TOOL_EVENT_START && event->name != NULL &&
+      strcmp(event->name, CAI_TERMINAL_EXEC_TOOL_NAME) == 0) {
+    char *origin;
+
+    origin = event->call_id != NULL ? cai_strdup(NULL, event->call_id) : NULL;
+    if (event->call_id != NULL && origin == NULL) {
+      pthread_mutex_unlock(&runtime->lock);
+      cai_free_mem(NULL, data);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy terminal tool call id");
+    }
+    cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
+    runtime->terminal_origin_tool_call_id = origin;
+  }
   rc = cai_runtime_enqueue_locked(runtime, type, data, data_length,
                                   event->name, event->call_id, runtime->state,
                                   error);
@@ -1328,6 +1355,7 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   }
   cai_free_mem(NULL, runtime->session_scope);
   cai_free_mem(NULL, runtime->session_id);
+  cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
   close(runtime->wakeup_read_fd);
   close(runtime->wakeup_write_fd);
   pthread_cond_destroy(&runtime->condition);
