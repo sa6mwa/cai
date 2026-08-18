@@ -684,6 +684,29 @@ function calls and outputs, internal context inputs, model/preset information,
 goal state, and pending steering. It also stores a display transcript projection
 so hosts can resume UI history without re-parsing provider wire events.
 
+### 11.3.1 Journal/checkpoint atomicity
+
+Steering is accepted from a non-owner thread while the worker may be streaming,
+so accepting it cannot read or snapshot mutable session state. The storage ABI
+therefore has two coordinated operations: an append-only event write and a
+checkpoint write with an `applied_event_sequence` high-watermark. A successful
+`steering_queued` append is fsync-visible before CAI reports acceptance to the
+caller. At a safe boundary, the owner thread injects queued steering into the
+session, creates a replacement checkpoint, and atomically records the highest
+journal sequence incorporated in that checkpoint. On resume, CAI imports the
+latest complete checkpoint and replays only state-changing journal records with
+sequence greater than that high-watermark.
+
+This is deliberately not a separate `steering_delivered` acknowledgement used
+for recovery: recording delivery before the checkpoint can lose accepted input
+after a crash, while recording it after the checkpoint can replay it twice.
+`steering_delivered` remains an observational event, but recovery is defined
+solely by the checkpoint watermark. The same rule applies to any future
+cross-thread durable input or terminal-state transition. A callback backend
+must provide the two operations with this ordering contract; CAI must reject a
+backend that advertises durable steering but cannot atomically associate a
+checkpoint with its applied-event watermark.
+
 ### 11.4 Vectis adapter
 
 Vectis implements the store callbacks using liblockdc and pouch. Default Vectis
