@@ -6,6 +6,7 @@
 
 #include <cai/cai.h>
 #include <cai/session_store.h>
+#include <cai/tools/terminal.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,6 +84,10 @@ typedef struct cai_agent_runtime_config {
   const cai_mcp_tool_registration_config *mcp_tool_config;
   /** Enable OpenAI's hosted image_generation tool for this Smith runtime. */
   int enable_image_generation;
+  /** Optional policy/limit override for Smith's one-slot terminal tools. */
+  const cai_terminal_tool_config *terminal_tool_config;
+  /** Non-zero disables Smith's one-slot terminal tools. */
+  int disable_terminal;
   /**
    * Optional callback-backed session store. NULL selects CAI's local JSONL
    * store unless disable_default_session_store is non-zero.

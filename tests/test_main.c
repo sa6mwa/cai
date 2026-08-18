@@ -10,6 +10,7 @@
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
+#include <cai/tools/terminal.h>
 #include <cai/tools/todo.h>
 #include <cai/tools/view_image.h>
 
@@ -23783,13 +23784,14 @@ static void test_smith_profile(test_state *state) {
       "\"name\":\"read_file\"",
       "\"name\":\"list_files\"",
       "\"name\":\"apply_patch\"",
+      "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\"",
       "\"type\":\"custom\"",
       "\"syntax\":\"lark\"",
       "This is a FREEFORM tool, so do not wrap the patch in JSON.",
       "Make workspace edits only with apply_patch.",
       "Create a goal only when the user or system/developer instructions"};
-  static const char *forbidden[] = {"\"name\":\"exec_command\"",
-                                    "\"name\":\"write_stdin\""};
+  static const char *forbidden[] = {"\"name\":\"shell_command\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", required,
        sizeof(required) / sizeof(required[0]), forbidden,
@@ -23835,9 +23837,9 @@ static void test_smith_profile(test_state *state) {
     expect_int(state, "smith_auto_compaction_disabled",
                CAI_AGENT_IMPL(agent)->auto_compact, 0L);
     expect_int(state, "smith_tool_count",
-               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 4L);
-    if (cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 3U) == NULL ||
-        strcmp(cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 3U),
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 6L);
+    if (cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 5U) == NULL ||
+        strcmp(cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 5U),
                CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME) != 0) {
       test_fail(state, "smith_view_image_tool",
                 "Smith did not register the image viewer for an image model");
@@ -27139,6 +27141,129 @@ static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
     test_fail(state, name, "mock child failed");
   }
   return rc;
+}
+
+static void test_terminal_tools(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-test-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int rc;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 20L;
+  config.max_yield_time_ms = 100L;
+  config.output_max_bytes = 4096U;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(state, "terminal_register",
+               cai_tool_registry_register_terminal_tools(registry, &config,
+                                                        &error),
+               CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_sink", cai_sink_from_callbacks(&callbacks,
+                                                                 &sink, &error),
+               CAI_OK);
+  }
+  if (registry != NULL && sink != NULL) {
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                               "{\"cmd\":\"printf ready; sleep 5\","
+                               "\"yield_time_ms\":10}",
+                               sink, &error);
+    expect_int(state, "terminal_exec_background", rc, CAI_OK);
+    expect_substr(state, "terminal_exec_session", writer.buffer,
+                  "\"session_id\":\"terminal-1\"");
+    expect_substr(state, "terminal_exec_running", writer.buffer,
+                  "\"running\":true");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_reject_parallel_exec",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"true\"}", sink, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_reject_wrong_id",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"wrong\"}", sink,
+                                     &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_poll",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":50}",
+                                     sink, &error),
+               CAI_OK);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_terminate_finished", writer.buffer,
+                  "\"completed\":true");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_exec_interactive",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"IFS= read line; printf got:$line\","
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_write_interactive",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"chars\":\"alpha\\n\","
+                   "\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_write_interactive_output", writer.buffer,
+                  "got:alpha");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_finalize_interactive",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_write_interactive_finished", writer.buffer,
+                  "\"completed\":true");
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
 }
 
 static void test_revgeo_tool_decimal_locale(test_state *state,
@@ -34552,6 +34677,7 @@ static const test_entry test_entries[] = {
     {"todo_callback_store", test_todo_callback_store},
     {"searxng_registry_tool", test_searxng_registry_tool},
     {"exec_tool", test_exec_tool},
+    {"terminal_tools", test_terminal_tools},
     {"read_tool", test_read_tool},
     {"view_image_tool", test_view_image_tool},
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},

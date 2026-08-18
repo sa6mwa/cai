@@ -1,6 +1,7 @@
 #include <cai/smith.h>
 #include <cai/tools/patch.h>
 #include <cai/tools/read.h>
+#include <cai/tools/terminal.h>
 #include <cai/tools/view_image.h>
 
 #include "cai_internal.h"
@@ -31,16 +32,18 @@ static const char *const cai_smith_prompt_suffix_parts[] = {
     "take "
     "precedence. Inspect applicable instructions before changing files.\n\n",
     "# Available tools\n\n"
-    "This pre-terminal Smith profile exposes read_file, list_files, and "
-    "apply_patch. Image-capable models also receive view_image. A session may "
+    "Smith exposes read_file, list_files, apply_patch, exec_command, and "
+    "write_stdin. Image-capable models also receive view_image. A session may "
     "additionally attach get_goal, create_goal, update_goal, clear_goal, and "
     "explicitly configured MCP tools.\n\n",
     "Inspect files with read_file or "
     "list_files before asserting their contents. Make workspace edits only "
     "with apply_patch. When advertised, use view_image to inspect local "
-    "images. Command execution, "
-    "terminal management, and image generation are unavailable until the host "
-    "advertises their tools. "
+    "images. Use exec_command for one managed terminal command and "
+    "write_stdin only with its returned session ID to supply input, wait, or "
+    "terminate that command. Image generation is unavailable until the host "
+    "advertises it. \n\n",
+    "# Tool execution\n\n"
     "Never invent an unavailable tool, emulate command output, or imply that a "
     "change or verification was performed when it was not. Tool calls are "
     "serial: complete and assess one call before issuing another.\n\n",
@@ -209,6 +212,7 @@ int cai_client_new_smith_agent(cai_client *client,
   cai_agent_config agent_config;
   cai_read_tool_config read_config;
   cai_patch_tool_config patch_config;
+  cai_terminal_tool_config terminal_config;
   cai_view_image_tool_config view_image_config;
   char *instructions;
   char *repository_instructions;
@@ -258,6 +262,29 @@ int cai_client_new_smith_agent(cai_client *client,
   cai_free_mem(&client_impl->allocator, instructions);
   if (rc != CAI_OK) {
     return rc;
+  }
+  if (!config->disable_terminal) {
+    memset(&terminal_config, 0, sizeof(terminal_config));
+    if (config->terminal_tool_config != NULL) {
+      terminal_config = *config->terminal_tool_config;
+    }
+    if (terminal_config.root_path != NULL &&
+        strcmp(terminal_config.root_path, config->workspace_directory) != 0) {
+      cai_agent_destroy(*out);
+      *out = NULL;
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "Smith terminal root must equal workspace directory");
+    }
+    terminal_config.root_path = config->workspace_directory;
+    if (terminal_config.default_workdir == NULL) {
+      terminal_config.default_workdir = config->workspace_directory;
+    }
+    rc = cai_agent_register_terminal_tools(*out, &terminal_config, error);
+    if (rc != CAI_OK) {
+      cai_agent_destroy(*out);
+      *out = NULL;
+      return rc;
+    }
   }
   memset(&read_config, 0, sizeof(read_config));
   read_config.root_path = config->workspace_directory;

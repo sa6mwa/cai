@@ -656,6 +656,7 @@ set(CAI_SOURCES
   src/tools/read.c
   src/tools/revgeo.c
   src/tools/searxng.c
+  src/tools/terminal.c
   src/tools/todo.c
   src/tools/view_image.c)
 

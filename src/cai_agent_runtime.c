@@ -834,6 +834,8 @@ int cai_agent_runtime_open(cai_client *client,
   smith.reasoning_effort = config->reasoning_effort;
   smith.developer_instructions_extension =
       config->developer_instructions_extension;
+  smith.terminal_tool_config = config->terminal_tool_config;
+  smith.disable_terminal = config->disable_terminal;
   rc = cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
   if (rc == CAI_OK && config->mcp_client_count > 0U &&
       config->mcp_clients == NULL) {

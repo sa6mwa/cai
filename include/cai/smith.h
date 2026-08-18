@@ -5,6 +5,7 @@
 #define CAI_SMITH_H
 
 #include <cai/cai.h>
+#include <cai/tools/terminal.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,10 @@ typedef struct cai_smith_config {
   size_t file_content_max_bytes;
   /** Optional spill directory for file-reader content. */
   const char *file_content_spool_dir;
+  /** Optional terminal policy/limit override; root remains the workspace. */
+  const cai_terminal_tool_config *terminal_tool_config;
+  /** Non-zero disables Smith's one-slot exec_command/write_stdin tools. */
+  int disable_terminal;
 } cai_smith_config;
 
 /** Initialize a zero-defaultable Smith configuration. */
@@ -47,9 +52,9 @@ const char *cai_smith_prompt_version(void);
  * Construct an ordinary cai agent configured as Smith.
  *
  * Smith always uses client-side history, retains local history, serializes
- * tool calls, and registers read_file, list_files, and apply_patch. Models
- * with image-input capability also receive view_image. It intentionally does
- * not register exec_command or another command runner.
+ * tool calls, and registers read_file, list_files, apply_patch, exec_command,
+ * and write_stdin. Models with image-input capability also receive view_image.
+ * Smith never registers the legacy synchronous command runner.
  */
 int cai_client_new_smith_agent(cai_client *client,
                                const cai_smith_config *config, cai_agent **out,
