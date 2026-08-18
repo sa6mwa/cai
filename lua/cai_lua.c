@@ -1,6 +1,7 @@
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/smith.h>
 #include <cai/tools/exec.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
@@ -2312,6 +2313,46 @@ static int cai_lua_client_new_agent(lua_State *L) {
   cai_lua_agent_config_from_table(L, 2, &config);
   cai_lua_client_enter(self);
   rc = self->ptr->new_agent(self->ptr, &config, &agent, &error);
+  cai_lua_client_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_push_agent_ref(L, agent, 1);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_client_new_smith_agent(lua_State *L) {
+  cai_lua_client *self;
+  cai_smith_config config;
+  cai_agent *agent;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_client(L, 1);
+  cai_smith_config_init(&config);
+  if (!lua_istable(L, 2)) {
+    return luaL_error(L, "new_smith_agent requires a configuration table");
+  }
+  config.workspace_directory =
+      cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
+  config.workspace_directory = cai_lua_opt_string_field(
+      L, 2, "workspace", config.workspace_directory);
+  config.agent_identity =
+      cai_lua_opt_string_field(L, 2, "agent_identity", NULL);
+  config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
+  config.reasoning_effort =
+      cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
+  config.developer_instructions_extension = cai_lua_opt_string_field(
+      L, 2, "developer_instructions_extension", NULL);
+  config.disable_terminal =
+      cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
+  if (config.workspace_directory == NULL || config.workspace_directory[0] == '\0') {
+    return luaL_error(L, "new_smith_agent requires workspace_directory");
+  }
+  cai_error_init(&error);
+  cai_lua_client_enter(self);
+  rc = cai_client_new_smith_agent(self->ptr, &config, &agent, &error);
   cai_lua_client_leave(self);
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
@@ -8063,6 +8104,7 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
 
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
+    {"new_smith_agent", cai_lua_client_new_smith_agent},
     {"create_response", cai_lua_client_create_response},
     {"count_response_input_tokens", cai_lua_client_count_response_input_tokens},
     {"stream_response_text", cai_lua_client_stream_response_text},
