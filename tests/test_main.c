@@ -24,6 +24,7 @@
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <poll.h>
 #include <pslog.h>
 #include <pthread.h>
 #include <signal.h>
@@ -23832,6 +23833,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
+  struct pollfd poll_fd;
   runtime_event_state events;
   runtime_session_store_state store_state;
   cai_agent_session_store store;
@@ -23880,6 +23882,13 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_int(state, "runtime_idle_state",
                cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     expect_int(state, "runtime_idle_value", run_state, CAI_AGENT_IDLE);
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(state, "runtime_wakeup_idle", poll(&poll_fd, 1U, 0), 0L);
     expect_int(state, "runtime_reject_idle_steering",
                cai_agent_runtime_submit_steering(runtime, "steer", &error),
                CAI_ERR_INVALID);
@@ -23888,6 +23897,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_int(state, "runtime_submit",
                cai_agent_runtime_submit(runtime, "offline turn", &error),
                CAI_OK);
+    expect_int(state, "runtime_wakeup_started", poll(&poll_fd, 1U, 0), 1L);
     expect_int(state, "runtime_reject_second_turn",
                cai_agent_runtime_submit(runtime, "second turn", &error),
                CAI_ERR_INVALID);

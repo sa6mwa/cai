@@ -4,6 +4,8 @@
 
 #include "cai_internal.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +36,8 @@ struct cai_agent_runtime {
   pthread_t worker_thread;
   pthread_mutex_t lock;
   pthread_cond_t condition;
+  int wakeup_read_fd;
+  int wakeup_write_fd;
   int worker_started;
   int stopping;
   cai_client *client;
@@ -66,6 +70,50 @@ struct cai_agent_runtime {
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned long long cai_runtime_session_id_counter = 0U;
+
+static int cai_runtime_wakeup_open(cai_agent_runtime *runtime,
+                                   cai_error *error) {
+  int fds[2] = {-1, -1};
+
+  if (pipe(fds) != 0 || fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0 ||
+      fcntl(fds[1], F_SETFL, O_NONBLOCK) != 0 ||
+      fcntl(fds[0], F_SETFD, FD_CLOEXEC) != 0 ||
+      fcntl(fds[1], F_SETFD, FD_CLOEXEC) != 0) {
+    if (fds[0] >= 0) {
+      close(fds[0]);
+    }
+    if (fds[1] >= 0) {
+      close(fds[1]);
+    }
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to initialize agent runtime wakeup pipe");
+  }
+  runtime->wakeup_read_fd = fds[0];
+  runtime->wakeup_write_fd = fds[1];
+  return CAI_OK;
+}
+
+static void cai_runtime_wakeup_notify_locked(cai_agent_runtime *runtime) {
+  unsigned char byte;
+
+  if (runtime->wakeup_write_fd < 0) {
+    return;
+  }
+  byte = 1U;
+  while (write(runtime->wakeup_write_fd, &byte, sizeof(byte)) < 0 &&
+         errno == EINTR) {
+  }
+}
+
+static void cai_runtime_wakeup_drain_locked(cai_agent_runtime *runtime) {
+  unsigned char buffer[128];
+
+  if (runtime->wakeup_read_fd < 0) {
+    return;
+  }
+  while (read(runtime->wakeup_read_fd, buffer, sizeof(buffer)) > 0) {
+  }
+}
 
 static int cai_runtime_owner(const cai_agent_runtime *runtime,
                              cai_error *error) {
@@ -160,6 +208,7 @@ static void cai_runtime_append_event_node_locked(cai_agent_runtime *runtime,
   }
   runtime->event_tail = node;
   runtime->event_count++;
+  cai_runtime_wakeup_notify_locked(runtime);
   pthread_cond_broadcast(&runtime->condition);
 }
 
@@ -684,6 +733,8 @@ int cai_agent_runtime_open(cai_client *client,
                          "failed to allocate agent runtime");
   }
   memset(runtime, 0, sizeof(*runtime));
+  runtime->wakeup_read_fd = -1;
+  runtime->wakeup_write_fd = -1;
   runtime->owner_thread = pthread_self();
   runtime->client = client;
   runtime->state = CAI_AGENT_IDLE;
@@ -705,6 +756,13 @@ int cai_agent_runtime_open(cai_client *client,
     cai_free_mem(NULL, runtime);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize agent runtime synchronization");
+  }
+  rc = cai_runtime_wakeup_open(runtime, error);
+  if (rc != CAI_OK) {
+    pthread_cond_destroy(&runtime->condition);
+    pthread_mutex_destroy(&runtime->lock);
+    cai_free_mem(NULL, runtime);
+    return rc;
   }
   cai_smith_config_init(&smith);
   smith.workspace_directory = config->workspace_directory;
@@ -827,6 +885,8 @@ int cai_agent_runtime_open(cai_client *client,
     }
     cai_free_mem(NULL, runtime->session_scope);
     cai_free_mem(NULL, runtime->session_id);
+    close(runtime->wakeup_read_fd);
+    close(runtime->wakeup_write_fd);
     pthread_cond_destroy(&runtime->condition);
     pthread_mutex_destroy(&runtime->lock);
     cai_free_mem(NULL, runtime);
@@ -1005,6 +1065,9 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                          "pump timeout must not be negative");
   }
   pthread_mutex_lock(&runtime->lock);
+  if (runtime->event_head == NULL) {
+    cai_runtime_wakeup_drain_locked(runtime);
+  }
   if (runtime->event_head == NULL && timeout_ms > 0L && !runtime->stopping) {
     struct timespec deadline;
 
@@ -1036,7 +1099,20 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
     cai_runtime_event_node_free(node);
     pthread_mutex_lock(&runtime->lock);
   }
+  if (runtime->event_head == NULL) {
+    cai_runtime_wakeup_drain_locked(runtime);
+  }
   pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
+}
+
+int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime, int *out_fd,
+                                cai_error *error) {
+  if (runtime == NULL || out_fd == NULL || runtime->wakeup_read_fd < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime wakeup descriptor is required");
+  }
+  *out_fd = runtime->wakeup_read_fd;
   return CAI_OK;
 }
 
@@ -1099,6 +1175,8 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   }
   cai_free_mem(NULL, runtime->session_scope);
   cai_free_mem(NULL, runtime->session_id);
+  close(runtime->wakeup_read_fd);
+  close(runtime->wakeup_write_fd);
   pthread_cond_destroy(&runtime->condition);
   pthread_mutex_destroy(&runtime->lock);
   cai_free_mem(NULL, runtime);

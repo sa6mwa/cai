@@ -121,11 +121,13 @@ flowchart LR
   Store --> Lockd["Vectis lockdc/pouch adapter"]
 ```
 
-The runtime has exactly one owner thread. All model-stream and agent lifecycle
-callbacks execute on that thread, only while the host calls `pump`. CAI does
-not call host UI, libmdf, softline, Lua, or renderer callbacks from a worker
-thread. A host may put the runtime on its own worker thread, but it must move
-events across its own mailbox before rendering them on a UI/Lua thread.
+The runtime has exactly one owner thread. CAI may perform blocking model I/O
+and tool orchestration on an internal worker, but it never invokes a host UI,
+libmdf, softline, Lua, or renderer callback there. Instead it queues immutable
+runtime events; the owner thread receives them only through `pump`. A pollable
+wakeup descriptor becomes readable whenever such an event is queued, allowing
+a host to integrate CAI directly into a softline/libmdf event loop without
+timer polling.
 
 CAI MAY use an internal reader thread only for a blocking POSIX terminal or
 network transport. Such a thread may append bytes to CAI-owned bounded buffers
@@ -145,44 +147,45 @@ remain supported. Smith is additive. New public declarations belong in
 `include/cai/agent_runtime.h`; common opaque declarations may be re-exported
 from `include/cai/cai.h` only when that reduces include friction.
 
-Names below are the required API direction. Exact field ordering may evolve
-before the first CAI release, but the semantic contracts and zero-defaultable
-configuration cannot.
+The following is the delivered pre-terminal-manager API. Terminal-specific
+states, cancellation of a live terminal process, output-limit fields, and
+terminal tool configuration remain a later extension; they are not silently
+present in Smith today. Exact field ordering may evolve before the first CAI
+release, but the semantic contracts and zero-defaultable configuration cannot.
 
 ```c
 typedef struct cai_agent_runtime cai_agent_runtime;
-typedef struct cai_agent_preset cai_agent_preset;
 typedef struct cai_agent_session_store cai_agent_session_store;
 
 typedef enum cai_agent_run_state {
   CAI_AGENT_IDLE,
   CAI_AGENT_SAMPLING,
   CAI_AGENT_DISPATCHING_TOOL,
-  CAI_AGENT_WAITING_TERMINAL,
-  CAI_AGENT_COMPACTING,
   CAI_AGENT_COMPLETED,
   CAI_AGENT_FAILED,
   CAI_AGENT_CANCELLED
 } cai_agent_run_state;
 
 typedef struct cai_agent_runtime_config {
-  const char *preset;              /* "smith" */
+  const char *preset;              /* NULL or "smith" */
+  const char *workspace_directory; /* required canonical workspace root */
   const char *agent_identity;      /* default: "Cai Smith" */
-  const char *workspace_directory; /* absolute directory, or cwd resolved once */
   const char *model;               /* Smith default: gpt-5.6-terra */
   const char *reasoning_effort;    /* Smith default: medium */
-  cai_agent_session_store *store;  /* NULL selects local JSONL store */
+  const char *developer_instructions_extension;
+  cai_mcp_client *const *mcp_clients;
+  size_t mcp_client_count;
+  const cai_mcp_tool_registration_config *mcp_tool_config;
+  int enable_image_generation;
+  const cai_agent_session_store *session_store; /* NULL selects local JSONL */
   const char *session_scope;       /* NULL selects canonical workspace path */
+  const char *session_id;          /* NULL generates a new identifier */
   int resume_latest;               /* nonzero: select latest matching session */
-  int enable_goal;
-  int enable_imagegen;
-  int enable_mcp;
-  int enable_terminal;
-  int enable_local_history;        /* Smith default: true; cannot be false */
+  int disable_default_session_store;
   size_t event_queue_limit;
   size_t steering_queue_limit;
-  size_t terminal_output_limit;
-  void *context;
+  cai_agent_runtime_event_fn event_callback;
+  void *event_context;
 } cai_agent_runtime_config;
 
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config);
@@ -195,20 +198,20 @@ int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error);
-int cai_agent_runtime_cancel(cai_agent_runtime *runtime, cai_error *error);
-int cai_agent_runtime_state(const cai_agent_runtime *runtime,
-                            cai_agent_run_state *out, cai_error *error);
 int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime,
                                 int *out_fd, cai_error *error);
+int cai_agent_runtime_state(cai_agent_runtime *runtime,
+                            cai_agent_run_state *out, cai_error *error);
 void cai_agent_runtime_close(cai_agent_runtime *runtime);
 ```
 
 `submit` is permitted only in `IDLE`, `COMPLETED`, or a terminal error state
-after that state has been observed. `submit_steering` is permitted during any
-active state and is bounded, durable, FIFO, and non-blocking with respect to
-network/model progress. Hosts that call it off-owner-thread use
-`cai_agent_runtime_submit_steering_threadsafe`; it only copies an input item
-under a short mutex and writes the wakeup fd. It never emits an event itself.
+after that state has been observed. `submit_steering` is permitted during an
+active sampling or tool-dispatch state and is bounded, durable, FIFO, and
+non-blocking with respect to network/model progress. Hosts that call it
+off-owner-thread use `cai_agent_runtime_submit_steering_threadsafe`; it only
+copies an input item under a short mutex, appends the durable journal event,
+and signals the wakeup descriptor. It never calls the host event callback.
 
 `pump` advances one or more currently-ready operations until the timeout or a
 state boundary. It returns `CAI_OK` for “no event before timeout”; callers
@@ -218,22 +221,15 @@ implemented as a pump loop and retain their present synchronous behavior.
 ### 5.1 Events
 
 Events are explicit objects delivered through a registration callback or a
-bounded pull queue. They carry a monotonic session sequence number, turn ID,
-and UTC timestamp. At minimum Smith emits:
+bounded queue. The delivered pre-terminal set is `RUN_STARTED`,
+`RUN_STATE_CHANGED`, `RUN_COMPLETED`, `RUN_FAILED`, `TEXT_DELTA`,
+`TOOL_CALL_STARTED`, `TOOL_CALL_COMPLETED`, `TOOL_CALL_FAILED`,
+`STEERING_QUEUED`, `STEERING_DELIVERED`, and `SESSION_CHECKPOINTED`.
+Each carries a monotonic sequence and state snapshot; text data is bytes plus
+an explicit length, not a NUL-terminated string. Future terminal-manager work
+adds terminal lifecycle events and a cancellation acknowledgement; future
+provider event mapping may add reasoning/refusal/model-completion events.
 
-- `RUN_STARTED`, `RUN_STATE_CHANGED`, `RUN_COMPLETED`, `RUN_FAILED`,
-  `RUN_CANCELLED`;
-- `TEXT_DELTA`, `REASONING_DELTA` when the provider makes one available,
-  `REFUSAL_DELTA`, and `MODEL_RESPONSE_COMPLETED`;
-- `TOOL_CALL_STARTED`, `TOOL_CALL_PROGRESS`, `TOOL_CALL_COMPLETED`, and
-  `TOOL_CALL_FAILED`;
-- `TERMINAL_OUTPUT`, `TERMINAL_STATE_CHANGED`, and `TERMINAL_EXITED`;
-- `STEERING_QUEUED`, `STEERING_DELIVERED`, and `STEERING_DEFERRED`;
-- `SESSION_CREATED`, `SESSION_CHECKPOINTED`, `SESSION_COMPACTED`, and
-  `SESSION_CONFLICT`;
-- `GOAL_CREATED`, `GOAL_UPDATED`, and `GOAL_LIMIT_REACHED`.
-
-Text deltas are bytes plus explicit byte length, not NUL-terminated strings.
 CAI retains event storage only until the callback returns or the consumer
 releases the event. A host feeding libmdf copies the text in its callback and
 does its rendering on its own chosen thread.
@@ -251,7 +247,7 @@ fragile group of flags. Its initial defaults are:
 | Local history | required |
 | Parallel tool calls | disabled |
 | Workspace scope | canonical absolute start directory |
-| Terminal | enabled, one slot |
+| Terminal | deferred to the single-terminal-manager slice |
 | Goals | enabled |
 | MCP | enabled when configured |
 | Image generation | enabled only when backend/capability exists |

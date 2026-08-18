@@ -123,6 +123,13 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
 /** Drain ready events on the owner thread; timeout is currently advisory. */
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error);
+/**
+ * Return a borrowed pollable descriptor that becomes readable when CAI queues
+ * host-visible runtime events. The descriptor remains owned by runtime and is
+ * closed by cai_agent_runtime_close. Call pump after readiness to drain it.
+ */
+int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime, int *out_fd,
+                                cai_error *error);
 /** Read the currently observable runtime state. */
 int cai_agent_runtime_state(cai_agent_runtime *runtime,
                             cai_agent_run_state *out, cai_error *error);
