@@ -7,13 +7,16 @@
 typedef enum cai_tool_kind {
   CAI_TOOL_LONEJSON = 1,
   CAI_TOOL_RAW = 2,
-  CAI_TOOL_RAW_SPOOLED = 3
+  CAI_TOOL_RAW_SPOOLED = 3,
+  CAI_TOOL_CUSTOM = 4
 } cai_tool_kind;
 
 typedef struct cai_tool_entry {
   char *name;
   char *description;
   char *schema_json;
+  char *custom_format_type;
+  char *custom_format_syntax;
   int strict;
   cai_tool_kind kind;
   const lonejson_map *params_map;
@@ -21,6 +24,8 @@ typedef struct cai_tool_entry {
   cai_tool_fn lonejson_callback;
   cai_tool_raw_fn raw_callback;
   cai_tool_raw_spooled_fn raw_spooled_callback;
+  cai_tool_custom_fn custom_callback;
+  cai_tool_custom_spooled_fn custom_spooled_callback;
   cai_tool_result_delivery_fn result_delivery;
   void *context;
   void (*context_cleanup)(void *context);
@@ -356,6 +361,8 @@ static void cai_tool_entry_cleanup(cai_tool_entry *entry) {
   cai_free_mem(NULL, entry->name);
   cai_free_mem(NULL, entry->description);
   cai_free_mem(NULL, entry->schema_json);
+  cai_free_mem(NULL, entry->custom_format_type);
+  cai_free_mem(NULL, entry->custom_format_syntax);
   if (entry->context_cleanup != NULL) {
     entry->context_cleanup(entry->context);
   }
@@ -1416,6 +1423,8 @@ int cai_tool_registry_new(cai_tool_registry **out, cai_error *error) {
   registry->register_lonejson = cai_tool_registry_register_lonejson;
   registry->register_raw = cai_tool_registry_register_raw;
   registry->register_raw_spooled = cai_tool_registry_register_raw_spooled;
+  registry->register_custom = cai_tool_registry_register_custom;
+  registry->register_custom_spooled = cai_tool_registry_register_custom_spooled;
   registry->add_to_response_params = cai_tool_registry_add_to_response_params;
   registry->run = cai_tool_registry_run;
   registry->run_spooled = cai_tool_registry_run_spooled;
@@ -1522,6 +1531,93 @@ int cai_tool_registry_register_raw_spooled_owned(
       NULL, NULL, NULL, NULL, callback, context, context_cleanup, error);
 }
 
+int cai_tool_registry_register_custom(cai_tool_registry *registry,
+                                      const char *name, const char *description,
+                                      const cai_custom_tool_format *format,
+                                      cai_tool_custom_fn callback,
+                                      void *context, cai_error *error) {
+  return cai_tool_registry_register_custom_owned(
+      registry, name, description, format, callback, context, NULL, error);
+}
+
+static int cai_tool_registry_register_custom_impl(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_fn callback,
+    cai_tool_custom_spooled_fn spooled_callback, void *context,
+    void (*context_cleanup)(void *context), cai_error *error) {
+  cai_tool_registry_impl *impl;
+  cai_tool_entry *entry;
+  int rc;
+
+  if (registry == NULL || name == NULL || name[0] == '\0' || format == NULL ||
+      format->type == NULL || format->type[0] == '\0' ||
+      format->syntax == NULL || format->syntax[0] == '\0' ||
+      format->definition == NULL || format->definition[0] == '\0' ||
+      (callback == NULL && spooled_callback == NULL)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom tool name, format, and callback are required");
+  }
+  impl = cai_tool_registry_impl_from_public(registry);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
+  }
+  if (cai_tool_registry_find(registry, name) != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "tool is already registered");
+  }
+  rc = cai_tool_registry_grow(registry, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  entry = &impl->entries[impl->count];
+  memset(entry, 0, sizeof(*entry));
+  entry->name = cai_strdup(NULL, name);
+  entry->description = cai_strdup(NULL, description);
+  entry->schema_json = cai_strdup(NULL, format->definition);
+  entry->custom_format_type = cai_strdup(NULL, format->type);
+  entry->custom_format_syntax = cai_strdup(NULL, format->syntax);
+  entry->kind = CAI_TOOL_CUSTOM;
+  entry->custom_callback = callback;
+  entry->custom_spooled_callback = spooled_callback;
+  if (entry->name == NULL ||
+      (description != NULL && entry->description == NULL) ||
+      entry->schema_json == NULL || entry->custom_format_type == NULL ||
+      entry->custom_format_syntax == NULL) {
+    cai_tool_entry_cleanup(entry);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate custom tool registration");
+  }
+  entry->context = context;
+  entry->context_cleanup = context_cleanup;
+  impl->count++;
+  return CAI_OK;
+}
+
+int cai_tool_registry_register_custom_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error) {
+  return cai_tool_registry_register_custom_impl(registry, name, description,
+                                                format, callback, NULL, context,
+                                                context_cleanup, error);
+}
+
+int cai_tool_registry_register_custom_spooled(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
+    void *context, cai_error *error) {
+  return cai_tool_registry_register_custom_spooled_owned(
+      registry, name, description, format, callback, context, NULL, error);
+}
+
+int cai_tool_registry_register_custom_spooled_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error) {
+  return cai_tool_registry_register_custom_impl(registry, name, description,
+                                                format, NULL, callback, context,
+                                                context_cleanup, error);
+}
+
 int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
                                           const char *name,
                                           cai_tool_result_delivery_fn callback,
@@ -1589,9 +1685,20 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
     return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
   }
   for (i = 0U; i < impl->count; i++) {
-    rc = params->add_function_tool(
-        params, impl->entries[i].name, impl->entries[i].description,
-        impl->entries[i].schema_json, impl->entries[i].strict, error);
+    if (impl->entries[i].kind == CAI_TOOL_CUSTOM) {
+      cai_custom_tool_format format;
+
+      format.type = impl->entries[i].custom_format_type;
+      format.syntax = impl->entries[i].custom_format_syntax;
+      format.definition = impl->entries[i].schema_json;
+      rc =
+          params->add_custom_tool(params, impl->entries[i].name,
+                                  impl->entries[i].description, &format, error);
+    } else {
+      rc = params->add_function_tool(
+          params, impl->entries[i].name, impl->entries[i].description,
+          impl->entries[i].schema_json, impl->entries[i].strict, error);
+    }
     if (rc != CAI_OK) {
       return rc;
     }
@@ -1677,6 +1784,28 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
       return rc;
     }
     return entry->raw_callback(entry->context, arguments_json, output, error);
+  }
+  if (entry->kind == CAI_TOOL_CUSTOM) {
+    if (entry->custom_spooled_callback != NULL) {
+      lonejson_spooled spooled;
+      lonejson_error spool_error;
+
+      CAI_LJ->spooled_init(CAI_LJ, &spooled);
+      lonejson_error_init(&spool_error);
+      if (spooled.append(&spooled, arguments_json, strlen(arguments_json),
+                         &spool_error) != LONEJSON_STATUS_OK) {
+        spooled.cleanup(&spooled);
+        return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to spool custom tool input",
+                                    spool_error.message);
+      }
+      rc = entry->custom_spooled_callback(entry->context, &spooled, output,
+                                          error);
+      spooled.cleanup(&spooled);
+      return rc;
+    }
+    return entry->custom_callback(entry->context, arguments_json, output,
+                                  error);
   }
   if (entry->kind == CAI_TOOL_RAW_SPOOLED) {
     lonejson_spooled spooled;
@@ -1809,6 +1938,50 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
       raw_json[offset] = '\0';
     }
     rc = cai_tool_registry_run(registry, name, raw_json, output, error);
+    cai_free_mem(NULL, raw_json);
+    return rc;
+  }
+  if (entry->kind == CAI_TOOL_CUSTOM) {
+    if (entry->custom_spooled_callback != NULL) {
+      return entry->custom_spooled_callback(entry->context, arguments_json,
+                                            output, error);
+    }
+    raw_len = arguments_json->size_fn(arguments_json);
+    raw_json = (char *)cai_alloc(NULL, raw_len + 1U);
+    if (raw_json == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate custom tool input");
+    }
+    reader.cursor = *arguments_json;
+    lonejson_error_init(&json_error);
+    if (reader.cursor.rewind(&reader.cursor, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      cai_free_mem(NULL, raw_json);
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "failed to rewind custom tool input",
+                                  json_error.message);
+    }
+    {
+      lonejson_read_result chunk;
+      size_t offset;
+
+      offset = 0U;
+      while (offset < raw_len) {
+        chunk = cai_tool_spooled_read(
+            &reader, (unsigned char *)raw_json + offset, raw_len - offset);
+        if (chunk.error_code != 0) {
+          cai_free_mem(NULL, raw_json);
+          return cai_set_error(error, CAI_ERR_PROTOCOL,
+                               "failed to read custom tool input");
+        }
+        if (chunk.bytes_read == 0U) {
+          break;
+        }
+        offset += chunk.bytes_read;
+      }
+      raw_json[offset] = '\0';
+    }
+    rc = entry->custom_callback(entry->context, raw_json, output, error);
     cai_free_mem(NULL, raw_json);
     return rc;
   }

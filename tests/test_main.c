@@ -8076,6 +8076,20 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_tool_2\",\"usage\":{\"input_tokens\":19,"
       "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
+  static const char stream_custom_empty_tool_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"ctc_stream_empty_1\",\"type\":"
+      "\"custom_tool_call\",\"call_id\":\"call_stream_custom_empty_1\","
+      "\"name\":\"custom_echo\",\"input\":\"\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_custom_empty_1\",\"usage\":{\"input_tokens\":9,"
+      "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_custom_empty_tool_done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"custom empty done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_custom_empty_2\",\"usage\":{\"input_tokens\":19,"
+      "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
   static const char stream_history_first_retrieve_body[] =
       "{\n"
       "  \"id\": \"resp_stream_history_1\",\n"
@@ -8204,6 +8218,14 @@ static const char *mock_response_for_request(const char *request) {
       }
       if (strstr(request, "stream output segments") != NULL) {
         return stream_output_segments_body;
+      }
+      if (strstr(request, "\"type\":\"custom_tool_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_custom_empty_1\"") !=
+              NULL) {
+        return stream_custom_empty_tool_done_body;
+      }
+      if (strstr(request, "custom stream empty tool turn") != NULL) {
+        return stream_custom_empty_tool_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
@@ -23758,6 +23780,9 @@ static void test_smith_profile(test_state *state) {
       "\"name\":\"read_file\"",
       "\"name\":\"list_files\"",
       "\"name\":\"apply_patch\"",
+      "\"type\":\"custom\"",
+      "\"syntax\":\"lark\"",
+      "This is a FREEFORM tool, so do not wrap the patch in JSON.",
       "Make workspace edits only with apply_patch.",
       "Create a goal only when the user or system/developer instructions"};
   static const char *forbidden[] = {"\"name\":\"exec_command\"",
@@ -24436,12 +24461,29 @@ static void test_patch_tool(test_state *state) {
                                         "*** Add File: beta.txt\n"
                                         "+collision\n"
                                         "*** End Patch";
+  static const char context_patch[] = "*** Begin Patch\n"
+                                      "*** Update File: sections.txt\n"
+                                      "@@   second   \n"
+                                      "-value: old\n"
+                                      "+value: new\n"
+                                      "*** End Patch";
+  static const char invalid_eof_patch[] = "*** Begin Patch\n"
+                                          "*** Update File: eof.txt\n"
+                                          "@@ target\n"
+                                          "-target\n"
+                                          "+updated\n"
+                                          "*** End of File\n"
+                                          "*** End Patch";
   char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
   char alpha_path[PATH_MAX];
   char beta_path[PATH_MAX];
   char renamed_path[PATH_MAX];
+  char sections_path[PATH_MAX];
+  char eof_path[PATH_MAX];
   char *contents;
   cai_patch_tool_config config;
+  cai_tool_registry *registry;
+  lonejson_spooled spooled_patch;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   write_state writer;
@@ -24454,6 +24496,9 @@ static void test_patch_tool(test_state *state) {
   snprintf(alpha_path, sizeof(alpha_path), "%s/alpha.txt", dir_template);
   snprintf(beta_path, sizeof(beta_path), "%s/beta.txt", dir_template);
   snprintf(renamed_path, sizeof(renamed_path), "%s/renamed.txt", dir_template);
+  snprintf(sections_path, sizeof(sections_path), "%s/sections.txt",
+           dir_template);
+  snprintf(eof_path, sizeof(eof_path), "%s/eof.txt", dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -24463,6 +24508,8 @@ static void test_patch_tool(test_state *state) {
   callbacks.context = &writer;
   cai_error_init(&error);
   sink = NULL;
+  registry = NULL;
+  memset(&spooled_patch, 0, sizeof(spooled_patch));
   expect_int(state, "patch_sink",
              cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
   expect_int(state, "patch_update_add",
@@ -24470,10 +24517,9 @@ static void test_patch_tool(test_state *state) {
   if (sink != NULL) {
     cai_sink_close(sink);
   }
-  expect_substr(state, "patch_result_applied", writer.buffer,
-                "\"applied\":true");
-  expect_substr(state, "patch_result_alpha", writer.buffer, "alpha.txt");
-  expect_substr(state, "patch_result_beta", writer.buffer, "beta.txt");
+  expect_str(
+      state, "patch_result_summary", writer.buffer,
+      "Success. Updated the following files:\nA beta.txt\nM alpha.txt\n");
   contents = read_file_or_die(alpha_path);
   expect_str(state, "patch_updated_content", contents,
              "one\nsecond\nthree\nfourth\n");
@@ -24495,6 +24541,43 @@ static void test_patch_tool(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  write_file_or_die(sections_path, "first\nvalue: old\n  second\nvalue: old\n");
+  expect_int(state, "patch_context_disambiguates",
+             cai_apply_patch(&config, context_patch, NULL, &error), CAI_OK);
+  contents = read_file_or_die(sections_path);
+  expect_str(state, "patch_context_result", contents,
+             "first\nvalue: old\n  second\nvalue: new\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  write_file_or_die(eof_path, "target\ntrailing\n");
+  expect_int(state, "patch_reject_stale_eof_marker",
+             cai_apply_patch(&config, invalid_eof_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  contents = read_file_or_die(eof_path);
+  expect_str(state, "patch_stale_eof_preserves_file", contents,
+             "target\ntrailing\n");
+  free(contents);
+  expect_int(state, "patch_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "patch_registry_register_custom",
+             cai_tool_registry_register_patch_tool(registry, &config, &error),
+             CAI_OK);
+  expect_int(state, "patch_spooled_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  test_init_spooled_text(state, "patch_spooled_input", &spooled_patch,
+                         invalid_eof_patch);
+  expect_int(state, "patch_spooled_reject_stale_eof_marker",
+             registry->run_spooled(registry, "apply_patch", &spooled_patch,
+                                   sink, &error),
+             CAI_ERR_INVALID);
+  spooled_patch.cleanup(&spooled_patch);
+  cai_sink_close(sink);
+  sink = NULL;
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   contents = read_file_or_die(beta_path);
   expect_str(state, "patch_preflight_preserves_delete", contents, "beta\n");
   free(contents);
@@ -24514,6 +24597,8 @@ static void test_patch_tool(test_state *state) {
   expect_int(state, "patch_reject_escape",
              cai_apply_patch(&config, escape_patch, NULL, &error),
              CAI_ERR_INVALID);
+  unlink(eof_path);
+  unlink(sections_path);
   unlink(renamed_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
@@ -24743,6 +24828,177 @@ static void test_agent_tool_auto_run(test_state *state) {
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_auto_mock", "mock child failed");
   }
+}
+
+static void test_agent_custom_tool_auto_run(test_state *state) {
+  static const cai_custom_tool_format format = {
+      "grammar", "lark", "start: \"raw freeform input\""};
+  static const char custom_response[] =
+      "{\"id\":\"resp_custom_1\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"custom_tool_call\",\"id\":\"ctc_1\",\"call_id\":"
+      "\"call_custom_1\",\"name\":\"custom_echo\",\"input\":"
+      "\"raw freeform input\"}]}";
+  static const char final_response[] =
+      "{\"id\":\"resp_custom_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"custom done\"}]}]}";
+  static const char *first_required[] = {
+      "\"type\":\"custom\"", "\"name\":\"custom_echo\"", "\"syntax\":\"lark\""};
+  static const char *second_required[] = {
+      "\"type\":\"custom_tool_call_output\"", "\"call_id\":\"call_custom_1\"",
+      "\"output\":\"raw freeform input\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, custom_response},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, final_response}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_run_options run_options;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  raw_state.seen[0] = '\0';
+  if (http_mock_client_open_script(state, "agent_custom_tool", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  expect_int(state, "agent_custom_tool_new",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_tool_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &format, test_raw_tool, &raw_state,
+                                            &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_tool_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_custom_tool_input",
+             cai_session_add_user_text(session, "run custom tool", &error),
+             CAI_OK);
+  cai_run_options_init(&run_options);
+  expect_int(state, "agent_custom_tool_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_custom_tool_result",
+             cai_response_output_text(response), "custom done");
+  expect_str(state, "agent_custom_tool_input_seen", raw_state.seen,
+             "raw freeform input");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "agent_custom_tool", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_custom_tool_client_history_auto_run(test_state *state) {
+  static const cai_custom_tool_format format = {
+      "grammar", "lark", "start: \"raw freeform input\""};
+  static const char custom_response[] =
+      "{\"id\":\"resp_custom_history_1\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"custom_tool_call\",\"id\":\"ctc_history_1\",\"call_id\":"
+      "\"call_custom_history_1\",\"name\":\"custom_echo\",\"input\":"
+      "\"\"}]}";
+  static const char final_response[] =
+      "{\"id\":\"resp_custom_history_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"custom history done\"}]}]}";
+  static const char *first_required[] = {"\"type\":\"custom\"",
+                                         "\"name\":\"custom_echo\"",
+                                         "custom history tool turn"};
+  static const char *second_required[] = {
+      "\"type\":\"custom_tool_call\"",
+      "\"call_id\":\"call_custom_history_1\"",
+      "\"input\":\"\"",
+      "\"type\":\"custom_tool_call_output\"",
+      "\"output\":\"\"",
+      "custom history tool turn"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, custom_response},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, final_response}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_run_options run_options;
+  cai_source *history_source;
+  raw_tool_state raw_state;
+  cai_error error;
+  char history_json[4096];
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+  raw_state.seen[0] = '\0';
+  if (http_mock_client_open_script(state, "agent_custom_history", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  expect_int(state, "agent_custom_history_new",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_history_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &format, test_raw_tool, &raw_state,
+                                            &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_history_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(
+      state, "agent_custom_history_input",
+      cai_session_add_user_text(session, "custom history tool turn", &error),
+      CAI_OK);
+  cai_run_options_init(&run_options);
+  expect_int(state, "agent_custom_history_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_custom_history_result",
+             cai_response_output_text(response), "custom history done");
+  expect_str(state, "agent_custom_history_input_seen", raw_state.seen, "");
+  expect_int(
+      state, "agent_custom_history_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "agent_custom_history_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    expect_substr(state, "agent_custom_history_call", history_json,
+                  "\"type\":\"custom_tool_call\"");
+    expect_substr(state, "agent_custom_history_input", history_json,
+                  "\"input\":\"\"");
+    expect_substr(state, "agent_custom_history_output", history_json,
+                  "\"type\":\"custom_tool_call_output\"");
+  }
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "agent_custom_history", &mock);
+  cai_error_cleanup(&error);
 }
 
 static void test_agent_client_history_tool_auto_run(test_state *state) {
@@ -28945,6 +29201,7 @@ static void test_stream_response_text(test_state *state) {
   cai_client_config config;
   cai_agent_config agent_config;
   cai_response_create_params *params;
+  cai_response_create_params *custom_params;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
@@ -28975,7 +29232,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 13);
+    mock_openai_child(pipe_fds[1], 14);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -29011,6 +29268,7 @@ static void test_stream_response_text(test_state *state) {
   agent = NULL;
   session = NULL;
   params = NULL;
+  custom_params = NULL;
   sink = NULL;
   reasoning_sink = NULL;
   source = NULL;
@@ -29075,6 +29333,33 @@ static void test_stream_response_text(test_state *state) {
              "hello");
   expect_int(state, "stream_output_delta_only_count", output_stream.delta_count,
              2L);
+
+  memset(&tool_stream, 0, sizeof(tool_stream));
+  expect_int(state, "stream_custom_only_params",
+             cai_response_create_params_new(&custom_params, &error), CAI_OK);
+  expect_int(
+      state, "stream_custom_only_model",
+      custom_params->set_model(custom_params, CAI_MODEL_GPT_5_NANO, &error),
+      CAI_OK);
+  expect_int(state, "stream_custom_only_text",
+             custom_params->add_text(custom_params, "user",
+                                     "custom stream empty tool turn", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.custom_tool_call_input_done = test_stream_tool_done;
+  stream_sinks.custom_tool_call_context = &tool_stream;
+  expect_int(state, "stream_custom_only_callback_run",
+             cai_client_stream_response_with_id(
+                 client, custom_params, &stream_sinks, NULL, &usage, &error),
+             CAI_OK);
+  expect_int(state, "stream_custom_only_callback_count", tool_stream.done_count,
+             1L);
+  expect_str(state, "stream_custom_only_callback_name", tool_stream.name,
+             "custom_echo");
+  expect_str(state, "stream_custom_only_callback_input", tool_stream.arguments,
+             "");
+  cai_response_create_params_destroy(custom_params);
+  custom_params = NULL;
 
   expect_int(
       state, "stream_source_open",
@@ -29241,6 +29526,7 @@ static void test_stream_response_text(test_state *state) {
       state, "stream_session_tool_add",
       cai_session_add_user_text(session, "stream tool call turn", &error),
       CAI_OK);
+  memset(&tool_stream, 0, sizeof(tool_stream));
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.function_call_arguments_delta = test_stream_tool_delta;
   stream_sinks.function_call_arguments_done = test_stream_tool_done;
@@ -29299,12 +29585,13 @@ static void test_stream_response_text(test_state *state) {
 
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 14L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 12L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 15L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 13L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
   expect_int(state, "stream_log_error_count", g_test_errorf_count, 2L);
 
   cai_response_create_params_destroy(params);
+  cai_response_create_params_destroy(custom_params);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -31202,6 +31489,129 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   }
 }
 
+static void test_session_stream_auto_custom_empty_tool_run(test_state *state) {
+  static const cai_custom_tool_format format = {"grammar", "lark",
+                                                "start: /(.|\\n)*/"};
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  stream_tool_state tool_stream;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_auto_custom_empty_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_auto_custom_empty_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_auto_custom_empty_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 2;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&tool_stream, 0, sizeof(tool_stream));
+  memset(&raw_state, 0, sizeof(raw_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_auto_custom_empty_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &format, test_raw_tool, &raw_state,
+                                            &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.custom_tool_call_input_delta = test_stream_tool_delta;
+  stream_sinks.custom_tool_call_input_done = test_stream_tool_done;
+  stream_sinks.custom_tool_call_context = &tool_stream;
+  expect_int(state, "stream_auto_custom_empty_add",
+             cai_session_add_user_text(session, "custom stream empty tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(
+      state, "stream_auto_custom_empty_run",
+      cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+      CAI_OK);
+  expect_str(state, "stream_auto_custom_empty_output", writer.buffer,
+             "custom empty done");
+  expect_str(state, "stream_auto_custom_empty_tool_input", raw_state.seen, "");
+  expect_int(state, "stream_auto_custom_empty_delta_count",
+             tool_stream.delta_count, 0L);
+  expect_int(state, "stream_auto_custom_empty_done_count",
+             tool_stream.done_count, 1L);
+  expect_str(state, "stream_auto_custom_empty_call", tool_stream.call_id,
+             "call_stream_custom_empty_1");
+  expect_str(state, "stream_auto_custom_empty_name", tool_stream.name,
+             "custom_echo");
+  expect_str(state, "stream_auto_custom_empty_arguments", tool_stream.arguments,
+             "");
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_auto_custom_empty_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_auto_custom_empty_mock", "mock child failed");
+  }
+}
+
 static void
 test_session_stream_auto_tool_error_output_continues(test_state *state) {
   int pipe_fds[2];
@@ -32717,6 +33127,8 @@ static void test_stream_client_history_captures_output(test_state *state) {
 }
 
 static void test_stream_client_history_tool_order(test_state *state) {
+  static const cai_custom_tool_format custom_format = {"grammar", "lark",
+                                                       "start: /(.|\\n)*/"};
   int pipe_fds[2];
   pid_t pid;
   int port;
@@ -32736,8 +33148,9 @@ static void test_stream_client_history_tool_order(test_state *state) {
   write_state writer;
   tool_event_state event_state;
   tool_round_history_state history_state;
+  raw_tool_state raw_state;
   cai_error error;
-  char history_json[4096];
+  char history_json[8192];
   char *user_pos;
   char *call_pos;
   char *output_pos;
@@ -32756,7 +33169,7 @@ static void test_stream_client_history_tool_order(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 4);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -32790,6 +33203,7 @@ static void test_stream_client_history_tool_order(test_state *state) {
   memset(&writer, 0, sizeof(writer));
   memset(&event_state, 0, sizeof(event_state));
   memset(&history_state, 0, sizeof(history_state));
+  memset(&raw_state, 0, sizeof(raw_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -32803,6 +33217,11 @@ static void test_stream_client_history_tool_order(test_state *state) {
              cai_agent_register_tool(
                  agent, "weather", "Get weather", &tool_weather_map,
                  &tool_weather_result_map, test_weather_tool, NULL, &error),
+             CAI_OK);
+  expect_int(state, "stream_client_history_custom_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &custom_format, test_raw_tool,
+                                            &raw_state, &error),
              CAI_OK);
   expect_int(state, "stream_client_history_tool_session_new",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
@@ -32830,6 +33249,20 @@ static void test_stream_client_history_tool_order(test_state *state) {
              history_state.calls, 1L);
   expect_substr(state, "stream_client_history_tool_durable_output",
                 history_state.history, "\"type\":\"function_call_output\"");
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_client_history_custom_add",
+             cai_session_add_user_text(session, "custom stream empty tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(
+      state, "stream_client_history_custom_run",
+      cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+      CAI_OK);
+  expect_str(state, "stream_client_history_custom_answer", writer.buffer,
+             "custom empty done");
+  expect_str(state, "stream_client_history_custom_input", raw_state.seen, "");
   expect_int(
       state, "stream_client_history_tool_export",
       cai_session_export_history_source(session, &history_source, &error),
@@ -32855,6 +33288,13 @@ static void test_stream_client_history_tool_order(test_state *state) {
                               "\"type\":\"function_call_output\"") != 1U) {
       test_fail(state, "stream_client_history_tool_output_once",
                 "client history duplicated streamed function call output");
+    }
+    if (test_count_substrings(history_json, "\"type\":\"custom_tool_call\"") !=
+            1U ||
+        test_count_substrings(history_json,
+                              "\"type\":\"custom_tool_call_output\"") != 1U) {
+      test_fail(state, "stream_client_history_custom_call_once",
+                "client history duplicated streamed custom tool output");
     }
   }
 
@@ -34073,6 +34513,9 @@ static const test_entry test_entries[] = {
     {"agent_auto_compaction", test_agent_auto_compaction},
     {"http_response_limit", test_http_response_limit},
     {"agent_tool_auto_run", test_agent_tool_auto_run},
+    {"agent_custom_tool_auto_run", test_agent_custom_tool_auto_run},
+    {"agent_custom_tool_client_history_auto_run",
+     test_agent_custom_tool_client_history_auto_run},
     {"agent_client_history_tool_auto_run",
      test_agent_client_history_tool_auto_run},
     {"agent_view_image_auto_run", test_agent_view_image_auto_run},
@@ -34130,6 +34573,8 @@ static const test_entry test_entries[] = {
     {"stream_openrouter_metadata_events",
      test_stream_openrouter_metadata_events},
     {"session_stream_auto_tool_run", test_session_stream_auto_tool_run},
+    {"session_stream_auto_custom_empty_tool_run",
+     test_session_stream_auto_custom_empty_tool_run},
     {"session_stream_auto_tool_error_output_continues",
      test_session_stream_auto_tool_error_output_continues},
     {"session_stream_auto_source_tool_run",

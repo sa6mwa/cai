@@ -360,12 +360,16 @@ Truncation reports original byte size, emitted byte size, and the exact omitted
 range. `list_files` accepts `path`, optional glob, depth and result limits;
 sorts bytewise by relative path; returns a truncation marker when bounded.
 
-`apply_patch` uses the established Codex patch grammar and supports add,
-update, delete, and move. It validates all paths and all expected update
-contexts before publishing success. On a failure it returns a precise parser,
+`apply_patch` is a Responses `custom` (freeform) tool, not a JSON function:
+the model sends its patch in the raw `custom_tool_call.input` field and CAI
+returns plain text through `custom_tool_call_output`. Its description and Lark
+grammar are derived from the Codex tool contract, including the instruction not
+to wrap the patch in JSON. It supports add, update, delete, and move; validates
+all paths and expected update contexts before publishing success; and returns
+the Codex-style changed-file summary. On a failure it returns a precise parser,
 path-policy, or context-mismatch error and must not claim a partial patch was
-applied. Its implementation is CAI-native; it must not invoke a shell or
-depend on a `patch` executable.
+applied. Its implementation is CAI-native: it must not invoke a shell or
+depend on `diff` or `patch` executables.
 
 `view_image` validates the source is a supported regular image before bytes
 enter model context. The function output intentionally has no large base64

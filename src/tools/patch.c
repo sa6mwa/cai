@@ -29,20 +29,13 @@ typedef struct cai_patch_context {
   size_t max_file_bytes;
 } cai_patch_context;
 
-typedef struct cai_patch_args {
-  char *patch;
-} cai_patch_args;
-
-typedef struct cai_patch_result {
-  int applied;
-  char *summary;
-} cai_patch_result;
-
 typedef struct cai_patch_hunk {
   char *old_text;
   size_t old_length;
   char *new_text;
   size_t new_length;
+  char *context;
+  int end_of_file;
 } cai_patch_hunk;
 
 typedef struct cai_patch_change {
@@ -60,6 +53,7 @@ typedef struct cai_patch_change {
   size_t before_length;
   char *after;
   size_t after_length;
+  size_t search_offset;
 } cai_patch_change;
 
 typedef struct cai_patch_plan {
@@ -68,28 +62,38 @@ typedef struct cai_patch_plan {
   size_t capacity;
 } cai_patch_plan;
 
-static const lonejson_field cai_patch_arg_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_patch_args, patch, "patch")};
-LONEJSON_MAP_DEFINE(cai_patch_args_map, cai_patch_args, cai_patch_arg_fields);
-
-static const lonejson_field cai_patch_result_fields[] = {
-    LONEJSON_FIELD_BOOL_REQ(cai_patch_result, applied, "applied"),
-    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_patch_result, summary, "summary")};
-LONEJSON_MAP_DEFINE(cai_patch_result_map, cai_patch_result,
-                    cai_patch_result_fields);
-
-static const char cai_patch_schema_json[] =
-    "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
-    "\"description\":\"Codex apply_patch body beginning with *** Begin Patch "
-    "and ending with *** End Patch.\"}},\"required\":[\"patch\"],"
-    "\"additionalProperties\":false}";
+typedef struct cai_patch_spooled_reader {
+  lonejson_spooled cursor;
+  unsigned char buffer[4096];
+  size_t offset;
+  size_t length;
+  char *line;
+  size_t line_length;
+  size_t line_capacity;
+} cai_patch_spooled_reader;
 
 static const char cai_patch_default_description[] =
-    "Applies a Codex-style patch inside the configured workspace. The patch "
-    "must begin with *** Begin Patch and end with *** End Patch. It supports "
-    "*** Add File, *** Delete File, and *** Update File with exact @@ "
-    "hunks and optional *** Move to. All paths are validated before writes; "
-    "this tool never invokes a shell.";
+    "The `apply_patch` tool can be used to edit files. This is a FREEFORM "
+    "tool, so do not wrap the patch in JSON.";
+
+static const char cai_patch_lark_grammar_first[] =
+    "start: begin_patch hunk+ end_patch\n"
+    "begin_patch: \"*** Begin Patch\" LF\n"
+    "end_patch: \"*** End Patch\" LF?\n\n"
+    "hunk: add_hunk | delete_hunk | update_hunk\n"
+    "add_hunk: \"*** Add File: \" filename LF add_line+\n"
+    "delete_hunk: \"*** Delete File: \" filename LF\n"
+    "update_hunk: \"*** Update File: \" filename LF change_move? change?\n\n"
+    "filename: /(.+)/\n";
+
+static const char cai_patch_lark_grammar_second[] =
+    "add_line: \"+\" /(.*)/ LF -> line\n\n"
+    "change_move: \"*** Move to: \" filename LF\n"
+    "change: (change_context | change_line)+ eof_line?\n"
+    "change_context: (\"@@\" | \"@@ \" /(.+)/) LF\n"
+    "change_line: (\"+\" | \"-\" | \" \") /(.*)/ LF\n"
+    "eof_line: \"*** End of File\" LF\n\n"
+    "%import common.LF\n";
 
 static int cai_patch_copy(char **out, const char *value, size_t length,
                           cai_error *error) {
@@ -121,6 +125,7 @@ static void cai_patch_change_cleanup(cai_patch_change *change) {
     for (i = 0U; i < change->hunk_count; i++) {
       cai_free_mem(NULL, change->hunks[i].old_text);
       cai_free_mem(NULL, change->hunks[i].new_text);
+      cai_free_mem(NULL, change->hunks[i].context);
     }
   }
   cai_free_mem(NULL, change->hunks);
@@ -417,6 +422,102 @@ static int cai_patch_append_line(cai_buffer_builder *builder, const char *line,
   return rc;
 }
 
+static void cai_patch_spooled_reader_cleanup(cai_patch_spooled_reader *reader) {
+  if (reader != NULL) {
+    cai_free_mem(NULL, reader->line);
+    memset(reader, 0, sizeof(*reader));
+  }
+}
+
+static int cai_patch_spooled_reader_append(cai_patch_spooled_reader *reader,
+                                           const unsigned char *data,
+                                           size_t length, cai_error *error) {
+  char *line;
+  size_t capacity;
+
+  if (reader->line_length + length + 1U > reader->line_capacity) {
+    capacity = reader->line_capacity == 0U ? 128U : reader->line_capacity;
+    while (capacity < reader->line_length + length + 1U) {
+      capacity *= 2U;
+    }
+    line = (char *)cai_alloc(NULL, capacity);
+    if (line == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate patch line");
+    }
+    if (reader->line_length > 0U) {
+      memcpy(line, reader->line, reader->line_length);
+    }
+    cai_free_mem(NULL, reader->line);
+    reader->line = line;
+    reader->line_capacity = capacity;
+  }
+  if (length > 0U) {
+    memcpy(reader->line + reader->line_length, data, length);
+    reader->line_length += length;
+  }
+  reader->line[reader->line_length] = '\0';
+  return CAI_OK;
+}
+
+/* Returns 1 with one complete final-or-newline-terminated line, 0 at EOF. */
+static int cai_patch_spooled_reader_next(cai_patch_spooled_reader *reader,
+                                         char **out, cai_error *error) {
+  lonejson_read_result chunk;
+  size_t start;
+  size_t i;
+  int rc;
+
+  *out = NULL;
+  reader->line_length = 0U;
+  if (reader->line != NULL) {
+    reader->line[0] = '\0';
+  }
+  for (;;) {
+    if (reader->offset == reader->length) {
+      chunk = reader->cursor.read(&reader->cursor, reader->buffer,
+                                  sizeof(reader->buffer));
+      if (chunk.error_code != 0) {
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "failed to read streamed patch input");
+      }
+      if (chunk.bytes_read == 0U) {
+        if (reader->line_length == 0U) {
+          return CAI_OK;
+        }
+        break;
+      }
+      reader->offset = 0U;
+      reader->length = chunk.bytes_read;
+    }
+    start = reader->offset;
+    for (i = start; i < reader->length && reader->buffer[i] != '\n'; i++) {
+    }
+    rc = cai_patch_spooled_reader_append(reader, reader->buffer + start,
+                                         i - start, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    reader->offset = i;
+    if (i < reader->length) {
+      reader->offset++;
+      break;
+    }
+  }
+  if (reader->line_length > 0U &&
+      reader->line[reader->line_length - 1U] == '\r') {
+    reader->line[--reader->line_length] = '\0';
+  }
+  if (reader->line == NULL) {
+    rc = cai_patch_spooled_reader_append(reader, NULL, 0U, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
+  *out = reader->line;
+  return 1;
+}
+
 static int cai_patch_parse_change(cai_patch_plan *plan, char **cursor,
                                   cai_error *error) {
   cai_patch_change *change;
@@ -504,7 +605,7 @@ static int cai_patch_parse_change(cai_patch_plan *plan, char **cursor,
       }
       continue;
     }
-    if (strcmp(line, "@@") == 0) {
+    if (strncmp(line, "@@", 2U) == 0 && (line[2] == '\0' || line[2] == ' ')) {
       if (hunk != NULL) {
         hunk->old_text = old_text.data;
         hunk->old_length = old_text.length;
@@ -519,8 +620,22 @@ static int cai_patch_parse_change(cai_patch_plan *plan, char **cursor,
         cai_free_mem(NULL, new_text.data);
         return rc;
       }
+      if (line[2] == ' ') {
+        rc =
+            cai_patch_copy(&hunk->context, line + 3U, strlen(line + 3U), error);
+        if (rc != CAI_OK) {
+          cai_free_mem(NULL, old_text.data);
+          cai_free_mem(NULL, new_text.data);
+          return rc;
+        }
+      }
       seen_hunk = 1;
       continue;
+    }
+    if (change->kind == CAI_PATCH_UPDATE && seen_hunk &&
+        strcmp(line, "*** End of File") == 0) {
+      hunk->end_of_file = 1;
+      break;
     }
     if (!seen_hunk || (line[0] != ' ' && line[0] != '+' && line[0] != '-')) {
       cai_free_mem(NULL, old_text.data);
@@ -614,9 +729,274 @@ static int cai_patch_parse(const cai_patch_context *ctx, const char *patch,
                        "patch must end with *** End Patch");
 }
 
+static int cai_patch_parse_change_spooled(cai_patch_plan *plan,
+                                          cai_patch_spooled_reader *reader,
+                                          char **line_io, cai_error *error) {
+  cai_patch_change *change;
+  cai_buffer_builder old_text;
+  cai_buffer_builder new_text;
+  cai_patch_hunk *hunk;
+  char *line;
+  char *path;
+  int seen_hunk;
+  int end_of_file_seen;
+  int line_rc;
+  int rc;
+
+  line = *line_io;
+  if (line == NULL || strncmp(line, "*** ", 4U) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID, "expected patch file header");
+  }
+  rc = cai_patch_plan_append(plan, &change, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  path = NULL;
+  if (strncmp(line, "*** Add File: ", 14U) == 0) {
+    change->kind = CAI_PATCH_ADD;
+    path = line + 14U;
+  } else if (strncmp(line, "*** Delete File: ", 17U) == 0) {
+    change->kind = CAI_PATCH_DELETE;
+    path = line + 17U;
+  } else if (strncmp(line, "*** Update File: ", 17U) == 0) {
+    change->kind = CAI_PATCH_UPDATE;
+    path = line + 17U;
+  } else {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "unsupported patch file header");
+  }
+  rc = cai_patch_copy(&change->path, path, strlen(path), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&old_text, 0, sizeof(old_text));
+  memset(&new_text, 0, sizeof(new_text));
+  hunk = NULL;
+  seen_hunk = 0;
+  end_of_file_seen = 0;
+  *line_io = NULL;
+  for (;;) {
+    line_rc = cai_patch_spooled_reader_next(reader, &line, error);
+    if (line_rc != 0 && line_rc != 1) {
+      rc = line_rc;
+      goto fail;
+    }
+    if (line_rc == 0) {
+      break;
+    }
+    if (strncmp(line, "*** End Patch", 13U) == 0 ||
+        strncmp(line, "*** Add File: ", 14U) == 0 ||
+        strncmp(line, "*** Delete File: ", 17U) == 0 ||
+        strncmp(line, "*** Update File: ", 17U) == 0) {
+      *line_io = line;
+      break;
+    }
+    if (end_of_file_seen) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "end-of-file marker must end the update hunk");
+      goto fail;
+    }
+    if (change->kind == CAI_PATCH_DELETE) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "delete patch must not contain hunk content");
+      goto fail;
+    }
+    if (change->kind == CAI_PATCH_UPDATE &&
+        strncmp(line, "*** Move to: ", 13U) == 0) {
+      if (change->move_path != NULL || seen_hunk) {
+        rc = cai_set_error(error, CAI_ERR_INVALID, "invalid patch move header");
+        goto fail;
+      }
+      rc = cai_patch_copy(&change->move_path, line + 13U, strlen(line + 13U),
+                          error);
+      if (rc != CAI_OK) {
+        goto fail;
+      }
+      continue;
+    }
+    if (change->kind == CAI_PATCH_ADD) {
+      if (line[0] != '+') {
+        rc = cai_set_error(error, CAI_ERR_INVALID,
+                           "add patch content must begin with +");
+        goto fail;
+      }
+      rc = cai_patch_append_line(&new_text, line + 1U, error);
+      if (rc != CAI_OK) {
+        goto fail;
+      }
+      continue;
+    }
+    if (strncmp(line, "@@", 2U) == 0 && (line[2] == '\0' || line[2] == ' ')) {
+      if (hunk != NULL) {
+        hunk->old_text = old_text.data;
+        hunk->old_length = old_text.length;
+        hunk->new_text = new_text.data;
+        hunk->new_length = new_text.length;
+        memset(&old_text, 0, sizeof(old_text));
+        memset(&new_text, 0, sizeof(new_text));
+      }
+      rc = cai_patch_change_append_hunk(change, &hunk, error);
+      if (rc != CAI_OK) {
+        goto fail;
+      }
+      if (line[2] == ' ') {
+        rc =
+            cai_patch_copy(&hunk->context, line + 3U, strlen(line + 3U), error);
+        if (rc != CAI_OK) {
+          goto fail;
+        }
+      }
+      seen_hunk = 1;
+      continue;
+    }
+    if (change->kind == CAI_PATCH_UPDATE && seen_hunk &&
+        strcmp(line, "*** End of File") == 0) {
+      hunk->end_of_file = 1;
+      end_of_file_seen = 1;
+      continue;
+    }
+    if (!seen_hunk || (line[0] != ' ' && line[0] != '+' && line[0] != '-')) {
+      rc = cai_set_error(error, CAI_ERR_INVALID, "invalid update hunk line");
+      goto fail;
+    }
+    rc = line[0] != '+' ? cai_patch_append_line(&old_text, line + 1U, error)
+                        : CAI_OK;
+    if (rc == CAI_OK && line[0] != '-') {
+      rc = cai_patch_append_line(&new_text, line + 1U, error);
+    }
+    if (rc != CAI_OK) {
+      goto fail;
+    }
+  }
+  if (change->kind == CAI_PATCH_UPDATE && !seen_hunk &&
+      change->move_path == NULL) {
+    rc = cai_set_error(error, CAI_ERR_INVALID, "update patch requires a hunk");
+    goto fail;
+  }
+  if (hunk != NULL) {
+    hunk->old_text = old_text.data;
+    hunk->old_length = old_text.length;
+    hunk->new_text = new_text.data;
+    hunk->new_length = new_text.length;
+  } else if (change->kind == CAI_PATCH_ADD) {
+    change->new_text = new_text.data;
+    change->new_length = new_text.length;
+  } else {
+    cai_free_mem(NULL, old_text.data);
+    cai_free_mem(NULL, new_text.data);
+  }
+  return CAI_OK;
+
+fail:
+  cai_free_mem(NULL, old_text.data);
+  cai_free_mem(NULL, new_text.data);
+  return rc;
+}
+
+static int cai_patch_parse_spooled(const cai_patch_context *ctx,
+                                   lonejson_spooled *input,
+                                   cai_patch_plan *plan, cai_error *error) {
+  cai_patch_spooled_reader reader;
+  lonejson_error json_error;
+  char *line;
+  int rc;
+
+  if (input == NULL || input->size_fn(input) == 0U ||
+      input->size_fn(input) > ctx->max_patch_bytes) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch is empty or exceeds the configured size limit");
+  }
+  memset(&reader, 0, sizeof(reader));
+  reader.cursor = *input;
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to rewind streamed patch input",
+                                json_error.message);
+  }
+  rc = cai_patch_spooled_reader_next(&reader, &line, error);
+  if (rc == 1 && strcmp(line, "*** Begin Patch") == 0) {
+    rc = cai_patch_spooled_reader_next(&reader, &line, error);
+    if (rc == 1) {
+      rc = CAI_OK;
+    }
+    while (rc == CAI_OK && line != NULL && strcmp(line, "*** End Patch") != 0) {
+      rc = cai_patch_parse_change_spooled(plan, &reader, &line, error);
+    }
+    if (rc == CAI_OK) {
+      if (line == NULL || strcmp(line, "*** End Patch") != 0) {
+        rc = cai_set_error(error, CAI_ERR_INVALID, "invalid patch ending");
+      } else {
+        rc = cai_patch_spooled_reader_next(&reader, &line, error);
+        if (rc == 1) {
+          rc = cai_set_error(error, CAI_ERR_INVALID, "invalid patch ending");
+        } else if (rc == CAI_OK && plan->count == 0U) {
+          rc = cai_set_error(error, CAI_ERR_INVALID,
+                             "patch has no file changes");
+        }
+      }
+    }
+  } else if (rc == CAI_OK) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "patch must begin with *** Begin Patch");
+  } else if (rc == 1) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "patch must begin with *** Begin Patch");
+  }
+  cai_patch_spooled_reader_cleanup(&reader);
+  return rc;
+}
+
+static int cai_patch_context_line_matches(const char *line,
+                                          const char *line_end,
+                                          const char *context) {
+  const char *context_end;
+
+  while (line < line_end && (*line == ' ' || *line == '\t' || *line == '\r')) {
+    line++;
+  }
+  while (line_end > line && (line_end[-1] == ' ' || line_end[-1] == '\t' ||
+                             line_end[-1] == '\r')) {
+    line_end--;
+  }
+  context_end = context + strlen(context);
+  while (*context == ' ' || *context == '\t' || *context == '\r') {
+    context++;
+  }
+  while (context_end > context &&
+         (context_end[-1] == ' ' || context_end[-1] == '\t' ||
+          context_end[-1] == '\r')) {
+    context_end--;
+  }
+  return (size_t)(line_end - line) == (size_t)(context_end - context) &&
+         memcmp(line, context, (size_t)(context_end - context)) == 0;
+}
+
+static char *cai_patch_find_context_line(char *text, size_t offset,
+                                         const char *context) {
+  char *line;
+  char *line_end;
+
+  line = text + offset;
+  for (;;) {
+    line_end = strchr(line, '\n');
+    if (line_end == NULL) {
+      return cai_patch_context_line_matches(line, line + strlen(line), context)
+                 ? line
+                 : NULL;
+    }
+    if (cai_patch_context_line_matches(line, line_end, context)) {
+      return line;
+    }
+    line = line_end + 1U;
+  }
+}
+
 static int cai_patch_apply_hunk(cai_patch_change *change,
                                 const cai_patch_hunk *hunk, cai_error *error) {
   char *match;
+  char *anchor;
+  char *anchor_end;
   char *replacement;
   size_t prefix;
   size_t length;
@@ -625,8 +1005,26 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "update hunk must include existing context");
   }
-  match = strstr(change->after, hunk->old_text);
-  if (match == NULL || strstr(match + 1U, hunk->old_text) != NULL) {
+  if (hunk->context != NULL && hunk->context[0] != '\0') {
+    anchor = cai_patch_find_context_line(change->after, change->search_offset,
+                                         hunk->context);
+    if (anchor == NULL) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "update hunk context was not found");
+    }
+    anchor_end = strchr(anchor, '\n');
+    match =
+        strstr(anchor_end != NULL ? anchor_end + 1U : anchor + strlen(anchor),
+               hunk->old_text);
+  } else if (hunk->end_of_file && change->after_length >= hunk->old_length) {
+    match = change->after + change->after_length - hunk->old_length;
+  } else {
+    match = strstr(change->after + change->search_offset, hunk->old_text);
+  }
+  if (match == NULL || memcmp(match, hunk->old_text, hunk->old_length) != 0 ||
+      (hunk->end_of_file &&
+       (size_t)(match - change->after) + hunk->old_length !=
+           change->after_length)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "update patch context does not match exactly once");
   }
@@ -646,6 +1044,7 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
   cai_free_mem(NULL, change->after);
   change->after = replacement;
   change->after_length = length;
+  change->search_offset = prefix + hunk->new_length;
   return CAI_OK;
 }
 
@@ -880,17 +1279,44 @@ static int cai_patch_write_result(cai_sink *result, const cai_patch_plan *plan,
     return CAI_OK;
   }
   memset(&builder, 0, sizeof(builder));
-  rc = cai_buffer_append_cstr(&builder, "{\"applied\":true,\"files\":[", error);
+  rc = cai_buffer_append_cstr(&builder,
+                              "Success. Updated the following files:\n", error);
   for (i = 0U; rc == CAI_OK && i < plan->count; i++) {
-    if (i > 0U) {
-      rc = cai_buffer_append_cstr(&builder, ",", error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_buffer_append_json_string(&builder, plan->items[i].path, error);
+    if (plan->items[i].kind == CAI_PATCH_ADD) {
+      rc = cai_buffer_append_cstr(&builder, "A ", error);
+      if (rc == CAI_OK) {
+        rc = cai_buffer_append_cstr(&builder, plan->items[i].path, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_buffer_append_cstr(&builder, "\n", error);
+      }
     }
   }
-  if (rc == CAI_OK) {
-    rc = cai_buffer_append_cstr(&builder, "]}", error);
+  for (i = 0U; rc == CAI_OK && i < plan->count; i++) {
+    if (plan->items[i].kind == CAI_PATCH_UPDATE) {
+      rc = cai_buffer_append_cstr(&builder, "M ", error);
+      if (rc == CAI_OK) {
+        rc = cai_buffer_append_cstr(&builder,
+                                    plan->items[i].move_path != NULL
+                                        ? plan->items[i].move_path
+                                        : plan->items[i].path,
+                                    error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_buffer_append_cstr(&builder, "\n", error);
+      }
+    }
+  }
+  for (i = 0U; rc == CAI_OK && i < plan->count; i++) {
+    if (plan->items[i].kind == CAI_PATCH_DELETE) {
+      rc = cai_buffer_append_cstr(&builder, "D ", error);
+      if (rc == CAI_OK) {
+        rc = cai_buffer_append_cstr(&builder, plan->items[i].path, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_buffer_append_cstr(&builder, "\n", error);
+      }
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_sink_write(result, builder.data, builder.length, error);
@@ -980,23 +1406,20 @@ int cai_apply_patch(const cai_patch_tool_config *config, const char *patch,
   return rc;
 }
 
-static int cai_patch_tool_callback(void *context, const void *params,
-                                   void *result, cai_error *error) {
-  const cai_patch_args *args;
-  cai_patch_result *out;
+static int cai_patch_tool_spooled_callback(void *context,
+                                           lonejson_spooled *input,
+                                           cai_sink *result, cai_error *error) {
   cai_patch_context *ctx;
   cai_patch_plan plan;
   int rc;
 
   ctx = (cai_patch_context *)context;
-  args = (const cai_patch_args *)params;
-  out = (cai_patch_result *)result;
-  if (ctx == NULL || args == NULL || out == NULL) {
+  if (ctx == NULL || input == NULL || result == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "apply_patch received invalid state");
   }
   memset(&plan, 0, sizeof(plan));
-  rc = cai_patch_parse(ctx, args->patch, &plan, error);
+  rc = cai_patch_parse_spooled(ctx, input, &plan, error);
   if (rc == CAI_OK) {
     rc = cai_patch_preflight(ctx, &plan, error);
   }
@@ -1004,17 +1427,7 @@ static int cai_patch_tool_callback(void *context, const void *params,
     rc = cai_patch_commit(&plan, error);
   }
   if (rc == CAI_OK) {
-    char summary[128];
-
-    snprintf(summary, sizeof(summary), "Applied patch to %lu file(s)",
-             (unsigned long)plan.count);
-    out->summary = cai_strdup(NULL, summary);
-    if (out->summary == NULL) {
-      rc = cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate patch summary");
-    } else {
-      out->applied = 1;
-    }
+    rc = cai_patch_write_result(result, &plan, error);
   }
   cai_patch_plan_cleanup(&plan);
   return rc;
@@ -1024,6 +1437,9 @@ int cai_tool_registry_register_patch_tool(cai_tool_registry *registry,
                                           const cai_patch_tool_config *config,
                                           cai_error *error) {
   cai_patch_context *ctx;
+  cai_custom_tool_format format;
+  char *grammar;
+  size_t grammar_length;
   const char *name;
   const char *description;
   int rc;
@@ -1039,10 +1455,26 @@ int cai_tool_registry_register_patch_tool(cai_tool_registry *registry,
   description = config->description != NULL && config->description[0] != '\0'
                     ? config->description
                     : cai_patch_default_description;
-  rc = cai_tool_registry_register_lonejson_schema_owned(
-      registry, name, description, cai_patch_schema_json, 0,
-      &cai_patch_args_map, &cai_patch_result_map, cai_patch_tool_callback, ctx,
-      cai_patch_context_cleanup, error);
+  format.type = "grammar";
+  format.syntax = "lark";
+  grammar_length = strlen(cai_patch_lark_grammar_first) +
+                   strlen(cai_patch_lark_grammar_second);
+  grammar = (char *)cai_alloc(NULL, grammar_length + 1U);
+  if (grammar == NULL) {
+    cai_patch_context_cleanup(ctx);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate apply_patch grammar");
+  }
+  memcpy(grammar, cai_patch_lark_grammar_first,
+         strlen(cai_patch_lark_grammar_first));
+  memcpy(grammar + strlen(cai_patch_lark_grammar_first),
+         cai_patch_lark_grammar_second, strlen(cai_patch_lark_grammar_second));
+  grammar[grammar_length] = '\0';
+  format.definition = grammar;
+  rc = cai_tool_registry_register_custom_spooled_owned(
+      registry, name, description, &format, cai_patch_tool_spooled_callback,
+      ctx, cai_patch_context_cleanup, error);
+  cai_free_mem(NULL, grammar);
   if (rc != CAI_OK) {
     cai_patch_context_cleanup(ctx);
   }

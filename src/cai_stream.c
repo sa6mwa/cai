@@ -42,6 +42,7 @@ static const char *const cai_stream_json_event_names[] = {
     "response.reasoning_text.done",
     "response.function_call_arguments.delta",
     "response.function_call_arguments.done",
+    "response.custom_tool_call_input.delta",
     "response.output_item.done"};
 
 typedef struct cai_stream_input_tokens_details_doc {
@@ -90,6 +91,7 @@ typedef struct cai_stream_output_item_doc {
   char *call_id;
   char *name;
   lonejson_spooled arguments;
+  lonejson_spooled input;
 } cai_stream_output_item_doc;
 
 typedef struct cai_stream_delta_event_doc {
@@ -137,6 +139,9 @@ static const lonejson_field cai_stream_output_item_fields[] = {
                                           "name"),
     LONEJSON_FIELD_STRING_STREAM_CLASS(cai_stream_output_item_doc, arguments,
                                        "arguments",
+                                       LONEJSON_SPOOL_CLASS_LARGE_TEXT),
+    LONEJSON_FIELD_STRING_STREAM_CLASS(cai_stream_output_item_doc, input,
+                                       "input",
                                        LONEJSON_SPOOL_CLASS_LARGE_TEXT)};
 LONEJSON_MAP_DEFINE(cai_stream_output_item_map, cai_stream_output_item_doc,
                     cai_stream_output_item_fields);
@@ -1505,17 +1510,25 @@ cai_sse_emit_output_text_delta(cai_sse_state *state,
 
 static int
 cai_sse_emit_function_call_delta(cai_sse_state *state,
-                                 const cai_stream_delta_event_doc *doc) {
+                                 const cai_stream_delta_event_doc *doc,
+                                 int is_custom) {
   int rc;
 
-  if (state->sinks.function_call_arguments_delta == NULL ||
+  if ((is_custom ? state->sinks.custom_tool_call_input_delta
+                 : state->sinks.function_call_arguments_delta) == NULL ||
       cai_stream_spooled_empty(&doc->delta)) {
     return CAI_OK;
   }
   state->caller_output_attempted = 1;
-  rc = state->sinks.function_call_arguments_delta(
-      state->sinks.function_call_context, doc->item_id, (int)doc->output_index,
-      &doc->delta, state->error);
+  if (is_custom) {
+    rc = state->sinks.custom_tool_call_input_delta(
+        state->sinks.custom_tool_call_context, doc->item_id,
+        (int)doc->output_index, &doc->delta, state->error);
+  } else {
+    rc = state->sinks.function_call_arguments_delta(
+        state->sinks.function_call_context, doc->item_id,
+        (int)doc->output_index, &doc->delta, state->error);
+  }
   if (rc == CAI_OK) {
     state->caller_output_seen = 1;
   }
@@ -1524,16 +1537,24 @@ cai_sse_emit_function_call_delta(cai_sse_state *state,
 
 static int cai_sse_emit_function_call_done_values(
     cai_sse_state *state, const char *item_id, int output_index,
-    const char *call_id, const char *name, const lonejson_spooled *arguments) {
+    const char *call_id, const char *name, const lonejson_spooled *arguments,
+    int is_custom) {
   int rc;
 
-  if (state->sinks.function_call_arguments_done == NULL) {
+  if ((is_custom ? state->sinks.custom_tool_call_input_done
+                 : state->sinks.function_call_arguments_done) == NULL) {
     return CAI_OK;
   }
   state->caller_output_attempted = 1;
-  rc = state->sinks.function_call_arguments_done(
-      state->sinks.function_call_context, item_id, output_index, call_id, name,
-      arguments, state->error);
+  if (is_custom) {
+    rc = state->sinks.custom_tool_call_input_done(
+        state->sinks.custom_tool_call_context, item_id, output_index, call_id,
+        name, arguments, state->error);
+  } else {
+    rc = state->sinks.function_call_arguments_done(
+        state->sinks.function_call_context, item_id, output_index, call_id,
+        name, arguments, state->error);
+  }
   if (rc == CAI_OK) {
     state->caller_output_seen = 1;
   }
@@ -1546,7 +1567,7 @@ static int cai_sse_emit_function_call_done(
 
   rc = cai_sse_emit_function_call_done_values(
       state, doc->item_id, (int)doc->output_index, doc->call_id, doc->name,
-      &doc->arguments);
+      &doc->arguments, 0);
   if (rc == CAI_OK) {
     rc = cai_sse_record_call_id(state, doc->call_id);
   }
@@ -1652,7 +1673,8 @@ static int cai_sse_emit_event(cai_sse_state *state,
       strcmp(event_name, "response.reasoning_summary_text.delta") == 0 ||
       strcmp(event_name, "response.reasoning_summary.delta") == 0 ||
       strcmp(event_name, "response.reasoning_text.delta") == 0 ||
-      strcmp(event_name, "response.function_call_arguments.delta") == 0) {
+      strcmp(event_name, "response.function_call_arguments.delta") == 0 ||
+      strcmp(event_name, "response.custom_tool_call_input.delta") == 0) {
     CAI_LJ_STREAM->init(CAI_LJ_STREAM, &cai_stream_delta_event_map, &delta_doc);
     delta_initialized = 1;
     rc = cai_stream_parse_spooled(&cai_stream_delta_event_map, &delta_doc,
@@ -1666,7 +1688,11 @@ static int cai_sse_emit_event(cai_sse_state *state,
     } else if (strcmp(event_name, "response.function_call_arguments.delta") ==
                    0 &&
                !cai_stream_spooled_empty(&delta_doc.delta)) {
-      rc = cai_sse_emit_function_call_delta(state, &delta_doc);
+      rc = cai_sse_emit_function_call_delta(state, &delta_doc, 0);
+    } else if (strcmp(event_name, "response.custom_tool_call_input.delta") ==
+                   0 &&
+               !cai_stream_spooled_empty(&delta_doc.delta)) {
+      rc = cai_sse_emit_function_call_delta(state, &delta_doc, 1);
     } else if (!cai_stream_spooled_empty(&delta_doc.delta)) {
       rc = cai_sse_write_reasoning_delta(state, &delta_doc.delta);
     }
@@ -1713,7 +1739,9 @@ static int cai_sse_emit_event(cai_sse_state *state,
       goto done;
     }
     item_doc_initialized = 1;
-    if (item_doc.type != NULL && strcmp(item_doc.type, "function_call") == 0 &&
+    if (item_doc.type != NULL &&
+        (strcmp(item_doc.type, "function_call") == 0 ||
+         strcmp(item_doc.type, "custom_tool_call") == 0) &&
         cai_stream_parse_output_item_spooled(&item_event.item_storage,
                                              &function_item_doc) == CAI_OK) {
       function_item_doc_initialized = 1;
@@ -1723,12 +1751,16 @@ static int cai_sse_emit_event(cai_sse_state *state,
                                        item_doc.type, &item_event.item_storage);
     if (rc == CAI_OK && function_item_doc_initialized &&
         function_item_doc.call_id != NULL && function_item_doc.name != NULL &&
-        !cai_stream_spooled_empty(&function_item_doc.arguments) &&
+        (strcmp(item_doc.type, "custom_tool_call") == 0 ||
+         !cai_stream_spooled_empty(&function_item_doc.arguments)) &&
         !cai_sse_has_emitted_call_id(state, function_item_doc.call_id)) {
       rc = cai_sse_emit_function_call_done_values(
           state, function_item_doc.id, (int)item_event.output_index,
           function_item_doc.call_id, function_item_doc.name,
-          &function_item_doc.arguments);
+          strcmp(item_doc.type, "custom_tool_call") == 0
+              ? &function_item_doc.input
+              : &function_item_doc.arguments,
+          strcmp(item_doc.type, "custom_tool_call") == 0 ? 1 : 0);
       if (rc == CAI_OK) {
         rc = cai_sse_record_call_id(state, function_item_doc.call_id);
       }
@@ -2889,7 +2921,9 @@ static int cai_client_stream_response_params_with_id(
       (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
        sinks->output_text_delta == NULL && sinks->output_item_done == NULL &&
        sinks->function_call_arguments_delta == NULL &&
-       sinks->function_call_arguments_done == NULL)) {
+       sinks->function_call_arguments_done == NULL &&
+       sinks->custom_tool_call_input_delta == NULL &&
+       sinks->custom_tool_call_input_done == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client, params, and at least one stream sink or "
                          "callback are required");

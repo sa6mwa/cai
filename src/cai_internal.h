@@ -193,8 +193,12 @@ struct cai_function_tool {
   char *description;
   char *parameters_json;
   char *raw_json;
+  char *custom_format_type;
+  char *custom_format_syntax;
+  char *custom_format_definition;
   int strict;
   int is_raw;
+  int is_custom;
 };
 
 typedef struct cai_buffer_builder {
@@ -250,6 +254,9 @@ int cai_response_create_params_set_raw_input_spooled(
 void cai_response_create_params_clear_input(cai_response_create_params *params);
 void cai_response_create_params_clear_input(cai_response_create_params *params);
 int cai_response_create_params_add_function_call_output_spooled(
+    cai_response_create_params *params, const char *call_id,
+    lonejson_spooled *output, cai_error *error);
+int cai_response_create_params_add_custom_tool_call_output_spooled(
     cai_response_create_params *params, const char *call_id,
     lonejson_spooled *output, cai_error *error);
 int cai_response_params_input_items_json(
@@ -349,6 +356,14 @@ int cai_tool_registry_register_lonejson_schema_owned(
 int cai_tool_registry_register_raw_spooled_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error);
+int cai_tool_registry_register_custom_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error);
+int cai_tool_registry_register_custom_spooled_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
     void *context, void (*context_cleanup)(void *context), cai_error *error);
 /*
  * A local tool may replace its ordinary JSON function-call output with typed

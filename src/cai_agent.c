@@ -224,7 +224,7 @@ static void cai_session_init_methods(cai_session *session);
 static int cai_stream_tool_call_list_append(
     cai_stream_tool_call_list *list, const char *item_id, int output_index,
     const char *call_id, const char *name, const lonejson_spooled *arguments,
-    cai_error *error);
+    int is_custom, cai_error *error);
 static void cai_stream_tool_call_list_cleanup(cai_stream_tool_call_list *list);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out, cai_error *error);
@@ -711,6 +711,42 @@ int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
                                            context, error);
 }
 
+int cai_agent_register_custom_tool(cai_agent *agent, const char *name,
+                                   const char *description,
+                                   const cai_custom_tool_format *format,
+                                   cai_tool_custom_fn callback, void *context,
+                                   cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return impl->tools->register_custom(impl->tools, name, description, format,
+                                      callback, context, error);
+}
+
+int cai_agent_register_custom_spooled_tool(cai_agent *agent, const char *name,
+                                           const char *description,
+                                           const cai_custom_tool_format *format,
+                                           cai_tool_custom_spooled_fn callback,
+                                           void *context, cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return impl->tools->register_custom_spooled(impl->tools, name, description,
+                                              format, callback, context, error);
+}
+
 static int cai_agent_hosted_tools_grow(cai_agent_impl *impl, cai_error *error) {
   cai_client_impl *client_impl;
   size_t new_capacity;
@@ -1096,7 +1132,7 @@ static int cai_stream_tool_call_list_grow(cai_stream_tool_call_list *list) {
 
 static int cai_stream_tool_call_list_append_delta(
     cai_stream_tool_call_list *list, const char *item_id, int output_index,
-    const lonejson_spooled *delta, cai_error *error) {
+    const lonejson_spooled *delta, int is_custom, cai_error *error) {
   cai_response_tool_call *call;
   cai_history_sink_context sink_context;
   lonejson_error json_error;
@@ -1121,6 +1157,7 @@ static int cai_stream_tool_call_list_append_delta(
                            "failed to allocate stream tool call id");
     }
     call->output_index = output_index;
+    call->is_custom = is_custom;
     CAI_LJ->spooled_init(CAI_LJ, &call->arguments_spooled);
     call->has_arguments_spooled = 1;
     list->count++;
@@ -1189,7 +1226,7 @@ cai_stream_tool_call_set_final_arguments(cai_response_tool_call *call,
 static int cai_stream_tool_call_list_append(
     cai_stream_tool_call_list *list, const char *item_id, int output_index,
     const char *call_id, const char *name, const lonejson_spooled *arguments,
-    cai_error *error) {
+    int is_custom, cai_error *error) {
   cai_response_tool_call *call;
   int rc;
   int appended;
@@ -1223,6 +1260,7 @@ static int cai_stream_tool_call_list_append(
   }
   call->call_id = cai_strdup(NULL, call_id);
   call->name = cai_strdup(NULL, name);
+  call->is_custom = is_custom;
   if (call->id == NULL || call->call_id == NULL || call->name == NULL) {
     cai_stream_tool_call_cleanup(call);
     if (appended) {
@@ -1278,7 +1316,10 @@ static int cai_stream_tool_calls_spool(cai_session *session,
       status = writer.key(&writer, "type", 4U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = writer.string(&writer, "function_call", 13U, &json_error);
+      status = writer.string(
+          &writer,
+          calls->items[i].is_custom ? "custom_tool_call" : "function_call",
+          calls->items[i].is_custom ? 16U : 13U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
       status = writer.key(&writer, "call_id", 7U, &json_error);
@@ -1301,7 +1342,9 @@ static int cai_stream_tool_calls_spool(cai_session *session,
           &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
-      status = writer.key(&writer, "arguments", 9U, &json_error);
+      status =
+          writer.key(&writer, calls->items[i].is_custom ? "input" : "arguments",
+                     calls->items[i].is_custom ? 5U : 9U, &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
       if (calls->items[i].has_arguments_spooled) {
@@ -1549,7 +1592,7 @@ static int cai_stream_capture_tool_delta(void *context, const char *item_id,
   rc = CAI_OK;
   if (capture != NULL && capture->tool_calls != NULL) {
     rc = cai_stream_tool_call_list_append_delta(capture->tool_calls, item_id,
-                                                output_index, delta, error);
+                                                output_index, delta, 0, error);
   }
   if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
       capture->user_sinks->function_call_arguments_delta != NULL) {
@@ -1573,13 +1616,58 @@ static int cai_stream_capture_tool_done(void *context, const char *item_id,
   if (capture != NULL && capture->tool_calls != NULL) {
     rc = cai_stream_tool_call_list_append(capture->tool_calls, item_id,
                                           output_index, call_id, name,
-                                          arguments, error);
+                                          arguments, 0, error);
   }
   if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
       capture->user_sinks->function_call_arguments_done != NULL) {
     rc = capture->user_sinks->function_call_arguments_done(
         capture->user_sinks->function_call_context, item_id, output_index,
         call_id, name, arguments, error);
+  }
+  return rc;
+}
+
+static int cai_stream_capture_custom_tool_delta(void *context,
+                                                const char *item_id,
+                                                int output_index,
+                                                const lonejson_spooled *delta,
+                                                cai_error *error) {
+  cai_stream_tool_capture *capture;
+  int rc;
+
+  capture = (cai_stream_tool_capture *)context;
+  rc = CAI_OK;
+  if (capture != NULL && capture->tool_calls != NULL) {
+    rc = cai_stream_tool_call_list_append_delta(capture->tool_calls, item_id,
+                                                output_index, delta, 1, error);
+  }
+  if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
+      capture->user_sinks->custom_tool_call_input_delta != NULL) {
+    rc = capture->user_sinks->custom_tool_call_input_delta(
+        capture->user_sinks->custom_tool_call_context, item_id, output_index,
+        delta, error);
+  }
+  return rc;
+}
+
+static int cai_stream_capture_custom_tool_done(
+    void *context, const char *item_id, int output_index, const char *call_id,
+    const char *name, const lonejson_spooled *input, cai_error *error) {
+  cai_stream_tool_capture *capture;
+  int rc;
+
+  capture = (cai_stream_tool_capture *)context;
+  rc = CAI_OK;
+  if (capture != NULL && capture->tool_calls != NULL) {
+    rc = cai_stream_tool_call_list_append(capture->tool_calls, item_id,
+                                          output_index, call_id, name, input, 1,
+                                          error);
+  }
+  if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
+      capture->user_sinks->custom_tool_call_input_done != NULL) {
+    rc = capture->user_sinks->custom_tool_call_input_done(
+        capture->user_sinks->custom_tool_call_context, item_id, output_index,
+        call_id, name, input, error);
   }
   return rc;
 }
@@ -1595,7 +1683,8 @@ static int cai_stream_capture_output_item_done(
   if (capture != NULL &&
       CAI_SESSION_AGENT_IMPL(capture->session)->session_continuity ==
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
-      (type == NULL || strcmp(type, "function_call") != 0)) {
+      (type == NULL || (strcmp(type, "function_call") != 0 &&
+                        strcmp(type, "custom_tool_call") != 0))) {
     rc = cai_stream_capture_sanitized_output_item(capture, item_json, error);
   }
   if (rc == CAI_OK && capture != NULL && capture->user_sinks != NULL &&
@@ -3240,7 +3329,7 @@ static void cai_capture_cleanup(cai_tool_output_capture *capture) {
  * (such as a data-URL image) needed only by the in-flight continuation. */
 static int cai_session_capture_tool_history_output(
     cai_session *session, cai_response_create_params *history_params,
-    const char *call_id, const lonejson_spooled *output_json,
+    const char *call_id, int is_custom, const lonejson_spooled *output_json,
     cai_error *error) {
   lonejson_spooled output_copy;
   int rc;
@@ -3256,8 +3345,11 @@ static int cai_session_capture_tool_history_output(
   memset(&output_copy, 0, sizeof(output_copy));
   rc = cai_agent_clone_spooled(session, output_json, &output_copy, error);
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_add_function_call_output_spooled(
-        history_params, call_id, &output_copy, error);
+    rc = is_custom
+             ? cai_response_create_params_add_custom_tool_call_output_spooled(
+                   history_params, call_id, &output_copy, error)
+             : cai_response_create_params_add_function_call_output_spooled(
+                   history_params, call_id, &output_copy, error);
     if (rc == CAI_OK) {
       memset(&output_copy, 0, sizeof(output_copy));
     }
@@ -3544,7 +3636,8 @@ static int cai_session_run_tool_round(cai_session *session,
     if (rc == CAI_OK) {
       rc = cai_session_capture_tool_history_output(
           session, history_params, cai_response_tool_call_id(response, i),
-          &capture.output, error);
+          cai_response_tool_call_is_custom(response, i), &capture.output,
+          error);
     }
     if (rc == CAI_OK) {
       rc = cai_tool_registry_deliver_result(
@@ -3553,9 +3646,14 @@ static int cai_session_run_tool_round(cai_session *session,
           cai_response_tool_call_id(response, i), params, &capture.output,
           &output_delivered, error);
       if (rc == CAI_OK && !output_delivered) {
-        rc = cai_response_create_params_add_function_call_output_spooled(
-            params, cai_response_tool_call_id(response, i), &capture.output,
-            error);
+        rc =
+            cai_response_tool_call_is_custom(response, i)
+                ? cai_response_create_params_add_custom_tool_call_output_spooled(
+                      params, cai_response_tool_call_id(response, i),
+                      &capture.output, error)
+                : cai_response_create_params_add_function_call_output_spooled(
+                      params, cai_response_tool_call_id(response, i),
+                      &capture.output, error);
         if (rc == CAI_OK) {
           memset(&capture.output, 0, sizeof(capture.output));
           capture_output_owned = 0;
@@ -3703,7 +3801,9 @@ static int cai_session_stream_once(cai_session *session,
       (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
        sinks->output_item_done == NULL && sinks->output_text_delta == NULL &&
        sinks->function_call_arguments_delta == NULL &&
-       sinks->function_call_arguments_done == NULL && tool_calls == NULL)) {
+       sinks->function_call_arguments_done == NULL &&
+       sinks->custom_tool_call_input_delta == NULL &&
+       sinks->custom_tool_call_input_done == NULL && tool_calls == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and at least one stream sink or callback are "
                          "required");
@@ -3734,6 +3834,11 @@ static int cai_session_stream_once(cai_session *session,
       effective_sinks.function_call_arguments_done =
           cai_stream_capture_tool_done;
       effective_sinks.function_call_context = &capture;
+      effective_sinks.custom_tool_call_input_delta =
+          cai_stream_capture_custom_tool_delta;
+      effective_sinks.custom_tool_call_input_done =
+          cai_stream_capture_custom_tool_done;
+      effective_sinks.custom_tool_call_context = &capture;
     }
   }
   params = NULL;
@@ -3888,9 +3993,9 @@ static int cai_session_add_stream_tool_outputs(
       }
     }
     if (rc == CAI_OK) {
-      rc = cai_session_capture_tool_history_output(session, history_params,
-                                                   calls->items[i].call_id,
-                                                   &capture.output, error);
+      rc = cai_session_capture_tool_history_output(
+          session, history_params, calls->items[i].call_id,
+          calls->items[i].is_custom, &capture.output, error);
     }
     if (rc == CAI_OK) {
       rc = cai_tool_registry_deliver_result(
@@ -3898,8 +4003,12 @@ static int cai_session_add_stream_tool_outputs(
           calls->items[i].call_id, params, &capture.output, &output_delivered,
           error);
       if (rc == CAI_OK && !output_delivered) {
-        rc = cai_response_create_params_add_function_call_output_spooled(
-            params, calls->items[i].call_id, &capture.output, error);
+        rc =
+            calls->items[i].is_custom
+                ? cai_response_create_params_add_custom_tool_call_output_spooled(
+                      params, calls->items[i].call_id, &capture.output, error)
+                : cai_response_create_params_add_function_call_output_spooled(
+                      params, calls->items[i].call_id, &capture.output, error);
         if (rc == CAI_OK) {
           memset(&capture.output, 0, sizeof(capture.output));
           capture_output_owned = 0;
@@ -3955,6 +4064,11 @@ static int cai_session_stream_tool_round(
   effective_sinks.function_call_arguments_delta = cai_stream_capture_tool_delta;
   effective_sinks.function_call_arguments_done = cai_stream_capture_tool_done;
   effective_sinks.function_call_context = &capture;
+  effective_sinks.custom_tool_call_input_delta =
+      cai_stream_capture_custom_tool_delta;
+  effective_sinks.custom_tool_call_input_done =
+      cai_stream_capture_custom_tool_done;
+  effective_sinks.custom_tool_call_context = &capture;
   rc = cai_session_init_response_params(session, &params, error);
   if (rc == CAI_OK) {
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
@@ -4994,6 +5108,8 @@ static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
   agent->register_raw_tool = cai_agent_register_raw_tool;
   agent->register_raw_spooled_tool = cai_agent_register_raw_spooled_tool;
+  agent->register_custom_tool = cai_agent_register_custom_tool;
+  agent->register_custom_spooled_tool = cai_agent_register_custom_spooled_tool;
   agent->register_mcp_client_tools = cai_agent_register_mcp_client_tools;
   agent->add_hosted_tool_json = cai_agent_add_hosted_tool_json;
   agent->add_simple_hosted_tool = cai_agent_add_simple_hosted_tool;

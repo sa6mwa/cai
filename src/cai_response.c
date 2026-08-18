@@ -5,7 +5,11 @@
 #include <string.h>
 
 enum { CAI_INLINE_TOOL_ARGUMENTS_LIMIT = 64 * 1024 };
-enum { CAI_INPUT_MESSAGE = 0, CAI_INPUT_FUNCTION_CALL_OUTPUT = 1 };
+enum {
+  CAI_INPUT_MESSAGE = 0,
+  CAI_INPUT_FUNCTION_CALL_OUTPUT = 1,
+  CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT = 2
+};
 
 typedef struct cai_response_content_doc {
   char *type;
@@ -21,6 +25,7 @@ typedef struct cai_response_output_doc {
   char *call_id;
   char *name;
   lonejson_spooled arguments;
+  lonejson_spooled input;
   char *created_by;
   lonejson_spooled encrypted_content;
   lonejson_object_array summary;
@@ -138,6 +143,7 @@ typedef struct cai_history_output_doc {
   const char *call_id;
   const char *name;
   lonejson_spooled arguments;
+  lonejson_spooled input;
   const char *created_by;
   lonejson_spooled encrypted_content;
   lonejson_json_value summary;
@@ -255,6 +261,8 @@ static const lonejson_field cai_response_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, name, "name"),
     LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_response_output_doc, arguments,
                                             "arguments"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_response_output_doc, input,
+                                            "input"),
     LONEJSON_FIELD_STRING_ALLOC(cai_response_output_doc, created_by,
                                 "created_by"),
     LONEJSON_FIELD_STRING_STREAM(cai_response_output_doc, encrypted_content,
@@ -289,6 +297,8 @@ static const lonejson_field cai_history_output_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, name, "name"),
     LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_history_output_doc, arguments,
                                             "arguments"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_history_output_doc, input,
+                                            "input"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, created_by,
                                           "created_by"),
     LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(
@@ -300,6 +310,30 @@ static const lonejson_field cai_history_output_fields[] = {
         &cai_history_content_map, LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_history_output_map, cai_history_output_doc,
                     cai_history_output_fields);
+
+static const lonejson_field cai_history_custom_output_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, status,
+                                          "status"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, role, "role"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, call_id,
+                                          "call_id"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, name, "name"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_history_output_doc, arguments,
+                                            "arguments"),
+    LONEJSON_FIELD_STRING_STREAM(cai_history_output_doc, input, "input"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_history_output_doc, created_by,
+                                          "created_by"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(
+        cai_history_output_doc, encrypted_content, "encrypted_content"),
+    LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_history_output_doc, summary,
+                                        "summary"),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_history_output_doc, content, "content", cai_response_content_doc,
+        &cai_history_content_map, LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_history_custom_output_map, cai_history_output_doc,
+                    cai_history_custom_output_fields);
 
 static const lonejson_field cai_response_input_tokens_details_fields[] = {
     LONEJSON_FIELD_I64(cai_response_input_tokens_details_doc, cached_tokens,
@@ -583,6 +617,9 @@ static void cai_function_tool_cleanup(const cai_allocator *allocator,
   cai_free_mem(allocator, tool->description);
   cai_free_mem(allocator, tool->parameters_json);
   cai_free_mem(allocator, tool->raw_json);
+  cai_free_mem(allocator, tool->custom_format_type);
+  cai_free_mem(allocator, tool->custom_format_syntax);
+  cai_free_mem(allocator, tool->custom_format_definition);
 }
 
 static void cai_object_array_init(lonejson_object_array *array,
@@ -1211,6 +1248,7 @@ static int cai_build_history_output_docs(cai_response_doc *response_doc,
     docs[i].call_id = items[i].call_id;
     docs[i].name = items[i].name;
     docs[i].arguments = items[i].arguments;
+    docs[i].input = items[i].input;
     docs[i].created_by = items[i].created_by;
     docs[i].encrypted_content = items[i].encrypted_content;
     docs[i].content = items[i].content;
@@ -1249,6 +1287,11 @@ static int cai_capture_response_output_json(cai_response_doc *response_doc,
                                             cai_error *error) {
   cai_history_output_doc *docs;
   size_t count;
+  lonejson_writer writer;
+  lonejson_error json_error;
+  lonejson_status status;
+  size_t i;
+  int writer_initialized;
   int rc;
 
   docs = NULL;
@@ -1257,9 +1300,43 @@ static int cai_capture_response_output_json(cai_response_doc *response_doc,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_spool_mapped_object_array(
-      &cai_history_output_map, docs, count, sizeof(*docs), out, NULL,
-      "failed to serialize history output JSON", error);
+  memset(&writer, 0, sizeof(writer));
+  lonejson_error_init(&json_error);
+  CAI_LJ->spooled_init(CAI_LJ, out);
+  writer_initialized = 0;
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_spooled_lonejson_sink,
+                                    out, &json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    writer_initialized = 1;
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.begin_array(&writer, &json_error);
+  }
+  for (i = 0U; status == LONEJSON_STATUS_OK && i < count; i++) {
+    status = writer.mapped(&writer,
+                           docs[i].type != NULL &&
+                                   strcmp(docs[i].type, "custom_tool_call") == 0
+                               ? &cai_history_custom_output_map
+                               : &cai_history_output_map,
+                           &docs[i], &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.end_array(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.finish(&writer, &json_error);
+  }
+  if (writer_initialized) {
+    writer.cleanup(&writer);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    rc = CAI_OK;
+  } else {
+    out->cleanup(out);
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to serialize history output JSON",
+                              json_error.message);
+  }
   cai_history_output_docs_cleanup(docs, count);
   return rc;
 }
@@ -1320,6 +1397,7 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->add_file_data_spooled =
       cai_response_create_params_add_file_data_spooled;
   params->add_function_tool = cai_response_create_params_add_function_tool;
+  params->add_custom_tool = cai_response_create_params_add_custom_tool;
   params->add_hosted_tool_json =
       cai_response_create_params_add_hosted_tool_json;
   params->add_simple_hosted_tool =
@@ -1327,6 +1405,8 @@ int cai_response_create_params_new(cai_response_create_params **out,
   params->add_hosted_mcp_tool = cai_response_create_params_add_hosted_mcp_tool;
   params->add_function_call_output =
       cai_response_create_params_add_function_call_output;
+  params->add_custom_tool_call_output =
+      cai_response_create_params_add_custom_tool_call_output;
   params->add_function_call_output_text =
       cai_response_create_params_add_function_call_output_text;
   params->add_function_call_output_image_url =
@@ -2178,6 +2258,48 @@ int cai_response_create_params_add_function_tool(
   return CAI_OK;
 }
 
+int cai_response_create_params_add_custom_tool(
+    cai_response_create_params *params, const char *name,
+    const char *description, const cai_custom_tool_format *format,
+    cai_error *error) {
+  struct cai_function_tool *tools;
+  struct cai_function_tool *tool;
+  int rc;
+
+  if (params == NULL || name == NULL || name[0] == '\0' || format == NULL ||
+      format->type == NULL || format->type[0] == '\0' ||
+      format->syntax == NULL || format->syntax[0] == '\0' ||
+      format->definition == NULL || format->definition[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom tool name and grammar format are required");
+  }
+  rc = cai_object_array_grow(&params->allocator, &params->tools,
+                             sizeof(struct cai_function_tool), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  tools = (struct cai_function_tool *)params->tools.items;
+  tool = &tools[params->tools.count];
+  memset(tool, 0, sizeof(*tool));
+  tool->name = cai_strdup(&params->allocator, name);
+  tool->description = cai_strdup(&params->allocator, description);
+  tool->custom_format_type = cai_strdup(&params->allocator, format->type);
+  tool->custom_format_syntax = cai_strdup(&params->allocator, format->syntax);
+  tool->custom_format_definition =
+      cai_strdup(&params->allocator, format->definition);
+  tool->is_custom = 1;
+  if (tool->name == NULL ||
+      (description != NULL && tool->description == NULL) ||
+      tool->custom_format_type == NULL || tool->custom_format_syntax == NULL ||
+      tool->custom_format_definition == NULL) {
+    cai_function_tool_cleanup(&params->allocator, tool);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate custom tool");
+  }
+  params->tools.count++;
+  return CAI_OK;
+}
+
 int cai_response_create_params_add_hosted_tool_json(
     cai_response_create_params *params, const char *tool_json,
     cai_error *error) {
@@ -2647,12 +2769,22 @@ static int cai_response_function_tool_clone(const cai_allocator *allocator,
   dst->description = cai_strdup(allocator, src->description);
   dst->parameters_json = cai_strdup(allocator, src->parameters_json);
   dst->raw_json = cai_strdup(allocator, src->raw_json);
+  dst->custom_format_type = cai_strdup(allocator, src->custom_format_type);
+  dst->custom_format_syntax = cai_strdup(allocator, src->custom_format_syntax);
+  dst->custom_format_definition =
+      cai_strdup(allocator, src->custom_format_definition);
   dst->strict = src->strict;
   dst->is_raw = src->is_raw;
+  dst->is_custom = src->is_custom;
   if ((src->name != NULL && dst->name == NULL) ||
       (src->description != NULL && dst->description == NULL) ||
       (src->parameters_json != NULL && dst->parameters_json == NULL) ||
-      (src->raw_json != NULL && dst->raw_json == NULL)) {
+      (src->raw_json != NULL && dst->raw_json == NULL) ||
+      (src->custom_format_type != NULL && dst->custom_format_type == NULL) ||
+      (src->custom_format_syntax != NULL &&
+       dst->custom_format_syntax == NULL) ||
+      (src->custom_format_definition != NULL &&
+       dst->custom_format_definition == NULL)) {
     cai_function_tool_cleanup(allocator, dst);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to clone function tool");
   }
@@ -2870,6 +3002,69 @@ int cai_response_create_params_add_function_call_output_spooled(
   memset(output, 0, sizeof(*output));
   params->input.count++;
   return CAI_OK;
+}
+
+int cai_response_create_params_add_custom_tool_call_output_spooled(
+    cai_response_create_params *params, const char *call_id,
+    lonejson_spooled *output, cai_error *error) {
+  struct cai_input_message *messages;
+  struct cai_input_message *message;
+  int rc;
+
+  if (params == NULL || call_id == NULL || call_id[0] == '\0' ||
+      output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom tool call id and output are required");
+  }
+  rc = cai_object_array_grow(&params->allocator, &params->input,
+                             sizeof(struct cai_input_message), error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  messages = (struct cai_input_message *)params->input.items;
+  message = &messages[params->input.count];
+  memset(message, 0, sizeof(*message));
+  message->kind = CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT;
+  cai_object_array_init(&message->content, sizeof(struct cai_content_part));
+  message->call_id = cai_strdup(&params->allocator, call_id);
+  if (message->call_id == NULL) {
+    cai_input_message_cleanup(&params->allocator, message);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate custom tool call output");
+  }
+  message->output_spooled = *output;
+  message->has_output_spooled = 1;
+  memset(output, 0, sizeof(*output));
+  params->input.count++;
+  return CAI_OK;
+}
+
+int cai_response_create_params_add_custom_tool_call_output(
+    cai_response_create_params *params, const char *call_id, const char *output,
+    cai_error *error) {
+  lonejson_spooled spooled;
+  lonejson_error json_error;
+  int rc;
+
+  if (output == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "custom tool output is required");
+  }
+  lonejson_error_init(&json_error);
+  CAI_LJ->spooled_init(CAI_LJ, &spooled);
+  if (spooled.append(&spooled, output, strlen(output), &json_error) !=
+      LONEJSON_STATUS_OK) {
+    spooled.cleanup(&spooled);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to spool custom tool output",
+                                json_error.message);
+  }
+  rc = cai_response_create_params_add_custom_tool_call_output_spooled(
+      params, call_id, &spooled, error);
+  if (rc != CAI_OK) {
+    spooled.cleanup(&spooled);
+  }
+  return rc;
 }
 
 static int cai_response_params_add_function_output_part(
@@ -3272,8 +3467,11 @@ static int cai_build_request_input_item_docs(const lonejson_object_array *input,
     int rc;
 
     CAI_LJ->json_value_init(CAI_LJ, &docs[i].output);
-    if (messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT) {
-      docs[i].type = "function_call_output";
+    if (messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT ||
+        messages[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT) {
+      docs[i].type = messages[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT
+                         ? "custom_tool_call_output"
+                         : "function_call_output";
       docs[i].call_id = messages[i].call_id;
       if (messages[i].content.count > 0U) {
         rc = cai_spool_request_content_parts(&messages[i].content,
@@ -3569,6 +3767,64 @@ static int cai_response_create_params_build_tools_json(
     if (tools[i].is_raw) {
       status = writer.json_value_buffer(&writer, tools[i].raw_json,
                                         strlen(tools[i].raw_json), &json_error);
+    } else if (tools[i].is_custom) {
+      status = writer.begin_object(&writer, &json_error);
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.key(&writer, "type", 4U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.string(&writer, "custom", 6U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.key(&writer, "name", 4U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.string(&writer, tools[i].name, strlen(tools[i].name),
+                               &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK && tools[i].description != NULL) {
+        status = writer.key(&writer, "description", 11U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK && tools[i].description != NULL) {
+        status = writer.string(&writer, tools[i].description,
+                               strlen(tools[i].description), &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.key(&writer, "format", 6U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.begin_object(&writer, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.key(&writer, "type", 4U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status =
+            writer.string(&writer, tools[i].custom_format_type,
+                          strlen(tools[i].custom_format_type), &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.key(&writer, "syntax", 6U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status =
+            writer.string(&writer, tools[i].custom_format_syntax,
+                          strlen(tools[i].custom_format_syntax), &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.key(&writer, "definition", 10U, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.string(&writer, tools[i].custom_format_definition,
+                               strlen(tools[i].custom_format_definition),
+                               &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.end_object(&writer, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer.end_object(&writer, &json_error);
+      }
     } else {
       status = writer.begin_object(&writer, &json_error);
       if (status == LONEJSON_STATUS_OK) {
@@ -4217,7 +4473,8 @@ static size_t cai_response_count_tool_calls(cai_response_doc *doc) {
   outputs = (cai_response_output_doc *)doc->output.items;
   for (i = 0U; i < doc->output.count; i++) {
     if (outputs[i].type != NULL &&
-        strcmp(outputs[i].type, "function_call") == 0) {
+        (strcmp(outputs[i].type, "function_call") == 0 ||
+         strcmp(outputs[i].type, "custom_tool_call") == 0)) {
       count++;
     }
   }
@@ -4249,7 +4506,8 @@ static int cai_response_copy_tool_calls(cai_response *response,
   index = 0U;
   for (i = 0U; i < doc->output.count; i++) {
     if (outputs[i].type == NULL ||
-        strcmp(outputs[i].type, "function_call") != 0) {
+        (strcmp(outputs[i].type, "function_call") != 0 &&
+         strcmp(outputs[i].type, "custom_tool_call") != 0)) {
       continue;
     }
     response->tool_calls[index].id =
@@ -4258,22 +4516,30 @@ static int cai_response_copy_tool_calls(cai_response *response,
         cai_strdup(&response->allocator, outputs[i].call_id);
     response->tool_calls[index].name =
         cai_strdup(&response->allocator, outputs[i].name);
-    if (outputs[i].arguments.size_fn(&outputs[i].arguments) > 0U) {
+    response->tool_calls[index].is_custom =
+        strcmp(outputs[i].type, "custom_tool_call") == 0 ? 1 : 0;
+    if (response->tool_calls[index].is_custom ||
+        outputs[i].arguments.size_fn(&outputs[i].arguments) > 0U) {
       int clone_rc;
 
       clone_rc = cai_response_spooled_clone(
-          &outputs[i].arguments, &response->tool_calls[index].arguments_spooled,
-          error);
+          response->tool_calls[index].is_custom ? &outputs[i].input
+                                                : &outputs[i].arguments,
+          &response->tool_calls[index].arguments_spooled, error);
       if (clone_rc != CAI_OK) {
         return clone_rc;
       }
       response->tool_calls[index].has_arguments_spooled = 1;
-      if (outputs[i].arguments.size_fn(&outputs[i].arguments) <=
+      if ((response->tool_calls[index].is_custom
+               ? outputs[i].input.size_fn(&outputs[i].input)
+               : outputs[i].arguments.size_fn(&outputs[i].arguments)) <=
           CAI_INLINE_TOOL_ARGUMENTS_LIMIT) {
         int copy_rc;
 
         copy_rc = cai_spooled_copy_to_cstr(
-            &response->allocator, &outputs[i].arguments,
+            &response->allocator,
+            response->tool_calls[index].is_custom ? &outputs[i].input
+                                                  : &outputs[i].arguments,
             &response->tool_calls[index].arguments, error);
         if (copy_rc != CAI_OK) {
           return copy_rc;
@@ -4751,6 +5017,14 @@ const char *cai_response_tool_call_arguments(const cai_response *response,
     return NULL;
   }
   return response->tool_calls[index].arguments;
+}
+
+int cai_response_tool_call_is_custom(const cai_response *response,
+                                     size_t index) {
+  if (response == NULL || index >= response->tool_call_count_value) {
+    return 0;
+  }
+  return response->tool_calls[index].is_custom;
 }
 
 const struct lonejson_spooled *

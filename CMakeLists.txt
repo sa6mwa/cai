@@ -104,7 +104,7 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.9.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_ABI_VERSION "3" CACHE STRING "Shared library ABI/SOVERSION.")
+set(CAI_ABI_VERSION "4" CACHE STRING "Shared library ABI/SOVERSION.")
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.42.0")
 set(CAI_LONEJSON_ABI_VERSION "25")
@@ -1182,6 +1182,8 @@ if(CAI_BUILD_TESTS)
     agent_auto_compaction
     http_response_limit
     agent_tool_auto_run
+    agent_custom_tool_auto_run
+    agent_custom_tool_client_history_auto_run
     agent_client_history_tool_auto_run
     agent_view_image_auto_run
     revgeo_tool
@@ -1221,6 +1223,7 @@ if(CAI_BUILD_TESTS)
     stream_source_error_preserves_openai_error
     stream_openrouter_metadata_events
     session_stream_auto_tool_run
+    session_stream_auto_custom_empty_tool_run
     session_stream_auto_tool_error_output_continues
     session_stream_auto_source_tool_run
     session_stream_auto_reasoning_tool_response
