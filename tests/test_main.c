@@ -368,6 +368,7 @@ typedef struct terminal_event_state {
   int output;
   int waiting;
   int completed;
+  int cancelled;
   char terminal_id[48];
 } terminal_event_state;
 
@@ -2963,9 +2964,30 @@ static int test_terminal_event(void *context, const cai_terminal_event *event,
     state->waiting++;
   } else if (event->type == CAI_TERMINAL_EVENT_COMMAND_COMPLETED) {
     state->completed++;
+  } else if (event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED) {
+    state->cancelled++;
   }
   snprintf(state->terminal_id, sizeof(state->terminal_id), "%s",
            event->terminal_id != NULL ? event->terminal_id : "");
+  return CAI_OK;
+}
+
+static int test_terminal_policy(void *context, const char *command,
+                                const char *workspace, const char *workdir,
+                                int tty, cai_error *error) {
+  int *calls;
+
+  (void)workspace;
+  (void)workdir;
+  (void)tty;
+  calls = (int *)context;
+  if (calls != NULL) {
+    (*calls)++;
+  }
+  if (strcmp(command, "forbidden") == 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test terminal policy rejected command");
+  }
   return CAI_OK;
 }
 
@@ -27183,6 +27205,7 @@ static void test_terminal_tools(test_state *state) {
   write_state writer;
   terminal_event_state events;
   cai_error error;
+  int policy_calls;
   int rc;
 
   if (mkdtemp(dir_template) == NULL) {
@@ -27191,6 +27214,7 @@ static void test_terminal_tools(test_state *state) {
   }
   memset(&config, 0, sizeof(config));
   memset(&events, 0, sizeof(events));
+  policy_calls = 0;
   config.root_path = dir_template;
   config.default_workdir = dir_template;
   config.default_yield_time_ms = 20L;
@@ -27198,6 +27222,8 @@ static void test_terminal_tools(test_state *state) {
   config.output_max_bytes = 4096U;
   config.event_callback = test_terminal_event;
   config.event_context = &events;
+  config.policy = test_terminal_policy;
+  config.policy_context = &policy_calls;
   registry = NULL;
   sink = NULL;
   memset(&writer, 0, sizeof(writer));
@@ -27219,6 +27245,14 @@ static void test_terminal_tools(test_state *state) {
                CAI_OK);
   }
   if (registry != NULL && sink != NULL) {
+    expect_int(state, "terminal_policy_reject",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"forbidden\"}", sink,
+                                     &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "terminal_policy_called", policy_calls, 1L);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
     rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                                "{\"cmd\":\"printf ready; sleep 5\","
                                "\"yield_time_ms\":10}",
@@ -27264,6 +27298,7 @@ static void test_terminal_tools(test_state *state) {
                CAI_OK);
     expect_substr(state, "terminal_terminate_finished", writer.buffer,
                   "\"completed\":true");
+    expect_int(state, "terminal_event_cancelled", events.cancelled, 1L);
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_exec_interactive",
@@ -27294,7 +27329,19 @@ static void test_terminal_tools(test_state *state) {
                CAI_OK);
     expect_substr(state, "terminal_write_interactive_finished", writer.buffer,
                   "\"completed\":true");
-    expect_int(state, "terminal_event_started", events.started, 2L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_exec_detached_child",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"sleep 0.2 &\",\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_detached_shell_completed", writer.buffer,
+                  "\"completed\":true");
+    expect_substr(state, "terminal_detached_truthful", writer.buffer,
+                  "\"detached_processes_possible\":true");
+    expect_int(state, "terminal_event_started", events.started, 3L);
     expect_int(state, "terminal_event_completed", events.completed, 2L);
     expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");
   }

@@ -57,6 +57,8 @@ typedef struct cai_terminal_manager {
   int completed;
   int child_reaped;
   int pty_eof;
+  int termination_requested;
+  int completion_event_emitted;
   int child_status;
   char *output;
   size_t output_length;
@@ -104,6 +106,7 @@ typedef struct cai_terminal_result {
   long long command_id;
   long long original_byte_count;
   int output_truncated;
+  int detached_processes_possible;
 } cai_terminal_result;
 
 static const lonejson_field cai_terminal_exec_arg_fields[] = {
@@ -147,7 +150,9 @@ static const lonejson_field cai_terminal_result_fields[] = {
     LONEJSON_FIELD_I64_REQ(cai_terminal_result, original_byte_count,
                            "original_byte_count"),
     LONEJSON_FIELD_BOOL_REQ(cai_terminal_result, output_truncated,
-                            "output_truncated")};
+                            "output_truncated"),
+    LONEJSON_FIELD_BOOL_REQ(cai_terminal_result, detached_processes_possible,
+                            "detached_processes_possible")};
 LONEJSON_MAP_DEFINE(cai_terminal_result_map, cai_terminal_result,
                     cai_terminal_result_fields);
 
@@ -254,7 +259,11 @@ static int cai_terminal_output_append(cai_terminal_manager *manager,
   char *grown;
   size_t i;
 
-  manager->total_output_bytes += length;
+  if (length > SIZE_MAX - manager->total_output_bytes) {
+    manager->total_output_bytes = SIZE_MAX;
+  } else {
+    manager->total_output_bytes += length;
+  }
   if (manager->output_length >= manager->output_max_bytes) {
     manager->output_truncated = 1;
     return CAI_OK;
@@ -323,7 +332,15 @@ static void *cai_terminal_reader(void *value) {
       pthread_mutex_unlock(&manager->lock);
     }
     pthread_mutex_lock(&manager->lock);
-    if (manager->child_reaped && manager->pty_eof) {
+    /*
+     * The supervised shell is the command completion authority.  A command
+     * may intentionally daemonize a descendant which retains the slave PTY;
+     * waiting for EOF in that case would report a completed command as
+     * perpetually running.  Close the master once the shell has been reaped,
+     * after draining bytes already available in this iteration.  The result
+     * explicitly reports that detached descendants may remain.
+     */
+    if (manager->child_reaped) {
       manager->running = 0;
       manager->completed = 1;
       cai_terminal_close_fd(&manager->pty_fd);
@@ -569,6 +586,8 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   manager->child_reaped = 0;
   manager->pty_eof = 0;
   manager->child_status = 0;
+  manager->termination_requested = 0;
+  manager->completion_event_emitted = 0;
   manager->output_length = 0U;
   manager->delivered_offset = 0U;
   manager->total_output_bytes = 0U;
@@ -621,6 +640,9 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
   result->command_id = (long long)manager->command_id;
   result->original_byte_count = (long long)manager->total_output_bytes;
   result->output_truncated = manager->output_truncated || count < available;
+  /* CAI supervises the shell process, not arbitrary descendants that may
+   * have escaped its process group.  Never promise those descendants exited. */
+  result->detached_processes_possible = manager->completed;
   if (manager->completed && WIFEXITED(manager->child_status)) {
     result->exit_code = WEXITSTATUS(manager->child_status);
     result->has_exit_code = 1;
@@ -662,6 +684,26 @@ static int cai_terminal_emit(cai_terminal_manager *manager, int type,
     event.signal = result->signal;
   }
   return manager->event_callback(manager->event_context, &event, error);
+}
+
+static int cai_terminal_emit_completion_once(cai_terminal_manager *manager,
+                                             const cai_terminal_result *result,
+                                             cai_error *error) {
+  int type;
+  int emit;
+
+  emit = 0;
+  type = CAI_TERMINAL_EVENT_COMMAND_COMPLETED;
+  pthread_mutex_lock(&manager->lock);
+  if (manager->completed && !manager->completion_event_emitted) {
+    manager->completion_event_emitted = 1;
+    emit = 1;
+    if (manager->termination_requested) {
+      type = CAI_TERMINAL_EVENT_COMMAND_CANCELLED;
+    }
+  }
+  pthread_mutex_unlock(&manager->lock);
+  return emit ? cai_terminal_emit(manager, type, result, error) : CAI_OK;
 }
 
 static int cai_terminal_exec_callback(void *value, const void *params,
@@ -711,12 +753,13 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   (void)cai_terminal_wait(binding->manager, 0U, wait_ms);
   rc = cai_terminal_fill_result(binding->manager, output_limit, result, error);
   if (rc == CAI_OK) {
-    rc = cai_terminal_emit(binding->manager,
-                           result->completed
-                               ? CAI_TERMINAL_EVENT_COMMAND_COMPLETED
-                               : result->output[0] != '\0' ? CAI_TERMINAL_EVENT_OUTPUT
-                                                            : CAI_TERMINAL_EVENT_WAITING,
-                           result, error);
+    rc = result->completed
+             ? cai_terminal_emit_completion_once(binding->manager, result, error)
+             : cai_terminal_emit(binding->manager,
+                                 result->output[0] != '\0'
+                                     ? CAI_TERMINAL_EVENT_OUTPUT
+                                     : CAI_TERMINAL_EVENT_WAITING,
+                                 result, error);
   }
   return rc;
 }
@@ -790,9 +833,7 @@ static int cai_terminal_write_callback(void *value, const void *params,
       rc = cai_terminal_fill_result(binding->manager, output_limit, result,
                                     error);
       if (rc == CAI_OK) {
-        rc = cai_terminal_emit(binding->manager,
-                               CAI_TERMINAL_EVENT_COMMAND_COMPLETED, result,
-                               error);
+        rc = cai_terminal_emit_completion_once(binding->manager, result, error);
       }
       return rc;
     }
@@ -811,6 +852,9 @@ static int cai_terminal_write_callback(void *value, const void *params,
   wait_ms = cai_terminal_clamp_yield(binding->manager, args->yield_time_ms,
                                      args->has_yield_time_ms);
   if (args->has_terminate && args->terminate) {
+    pthread_mutex_lock(&binding->manager->lock);
+    binding->manager->termination_requested = 1;
+    pthread_mutex_unlock(&binding->manager->lock);
     cai_terminal_send_signal(binding->manager, SIGINT);
   }
   (void)cai_terminal_wait(binding->manager, initial, wait_ms);
@@ -837,12 +881,13 @@ static int cai_terminal_write_callback(void *value, const void *params,
                      : 0U;
   rc = cai_terminal_fill_result(binding->manager, output_limit, result, error);
   if (rc == CAI_OK) {
-    rc = cai_terminal_emit(binding->manager,
-                           result->completed
-                               ? CAI_TERMINAL_EVENT_COMMAND_COMPLETED
-                               : result->output[0] != '\0' ? CAI_TERMINAL_EVENT_OUTPUT
-                                                            : CAI_TERMINAL_EVENT_WAITING,
-                           result, error);
+    rc = result->completed
+             ? cai_terminal_emit_completion_once(binding->manager, result, error)
+             : cai_terminal_emit(binding->manager,
+                                 result->output[0] != '\0'
+                                     ? CAI_TERMINAL_EVENT_OUTPUT
+                                     : CAI_TERMINAL_EVENT_WAITING,
+                                 result, error);
   }
   return rc;
 }
