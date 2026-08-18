@@ -27341,6 +27341,8 @@ static void test_terminal_tools(test_state *state) {
                   "\"completed\":true");
     expect_substr(state, "terminal_detached_truthful", writer.buffer,
                   "\"detached_processes_possible\":true");
+    expect_substr(state, "terminal_detached_duration", writer.buffer,
+                  "\"duration_ms\":");
     expect_int(state, "terminal_event_started", events.started, 3L);
     expect_int(state, "terminal_event_completed", events.completed, 2L);
     expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");

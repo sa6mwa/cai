@@ -278,6 +278,15 @@ static int cai_runtime_enqueue_terminal_locked(cai_agent_runtime *runtime,
   if (rc == CAI_OK) {
     node->event.terminal_id = node->tool_name;
     node->event.terminal_command_id = event->command_id;
+    node->event.terminal_has_exit_code = event->has_exit_code;
+    node->event.terminal_exit_code = event->exit_code;
+    node->event.terminal_has_signal = event->has_signal;
+    node->event.terminal_signal = event->signal;
+    node->event.terminal_duration_ms = event->duration_ms;
+    node->event.terminal_total_output_bytes = event->total_output_bytes;
+    node->event.terminal_output_truncated = event->output_truncated;
+    node->event.terminal_detached_processes_possible =
+        event->detached_processes_possible;
     node->event.tool_name = NULL;
     cai_runtime_append_event_node_locked(runtime, node);
   }

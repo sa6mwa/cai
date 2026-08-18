@@ -32,6 +32,17 @@ typedef struct cai_terminal_event {
   long long exit_code;
   int has_signal;
   long long signal;
+  /** Elapsed wall-clock time for the supervised shell command. */
+  unsigned long long duration_ms;
+  /** Total PTY bytes observed for this command, including omitted bytes. */
+  unsigned long long total_output_bytes;
+  /** Non-zero when CAI omitted terminal bytes from its bounded retention. */
+  int output_truncated;
+  /**
+   * Non-zero when descendants may have escaped the supervised shell. CAI
+   * never claims arbitrary detached processes have exited.
+   */
+  int detached_processes_possible;
 } cai_terminal_event;
 
 typedef int (*cai_terminal_event_fn)(void *context,

@@ -13,7 +13,25 @@
 typedef struct render_state {
   int terminal_lines;
   int terminal_omitted;
+  char command[161];
 } render_state;
+
+static void remember_command(render_state *state, const char *data,
+                             size_t length) {
+  size_t count;
+
+  count = length < sizeof(state->command) - 1U ? length
+                                                : sizeof(state->command) - 1U;
+  if (count > 3U && count < length) {
+    count -= 3U;
+    memcpy(state->command, data, count);
+    memcpy(state->command + count, "...", 3U);
+    count += 3U;
+  } else if (count > 0U) {
+    memcpy(state->command, data, count);
+  }
+  state->command[count] = '\0';
+}
 
 static void render_terminal_output(render_state *state, const char *data,
                                    size_t length) {
@@ -21,18 +39,47 @@ static void render_terminal_output(render_state *state, const char *data,
   size_t start;
 
   start = 0U;
-  for (i = 0U; i <= length; i++) {
-    if (i != length && data[i] != '\n') {
-      continue;
+  while (start < length) {
+    for (i = start; i < length && data[i] != '\n'; i++) {
     }
     if (state->terminal_lines < 10) {
-      fprintf(stdout, GRAY "%.*s" RESET "\n", (int)(i - start), data + start);
-      state->terminal_lines++;
+      fwrite(GRAY, 1U, strlen(GRAY), stdout);
+      fwrite(data + start, 1U, i - start, stdout);
+      if (i < length) {
+        fputc('\n', stdout);
+        state->terminal_lines++;
+      }
+      fwrite(RESET, 1U, strlen(RESET), stdout);
     } else if (!state->terminal_omitted) {
       fputs(GRAY "… more output omitted" RESET "\n", stdout);
       state->terminal_omitted = 1;
     }
+    if (i == length) {
+      break;
+    }
     start = i + 1U;
+  }
+}
+
+static void render_terminal_finish(const cai_agent_runtime_event *event,
+                                   const char *verb,
+                                   const render_state *state) {
+  const char *status;
+
+  if (event->terminal_has_exit_code) {
+    fprintf(stdout, "%s %s (exit %lld, %.1fs)\n", verb, state->command,
+            event->terminal_exit_code,
+            (double)event->terminal_duration_ms / 1000.0);
+    return;
+  }
+  status = event->terminal_has_signal ? "signal" : "status unavailable";
+  if (event->terminal_has_signal) {
+    fprintf(stdout, "%s %s (%s %lld, %.1fs)\n", verb, state->command, status,
+            event->terminal_signal,
+            (double)event->terminal_duration_ms / 1000.0);
+  } else {
+    fprintf(stdout, "%s %s (%s, %.1fs)\n", verb, state->command, status,
+            (double)event->terminal_duration_ms / 1000.0);
   }
 }
 
@@ -48,15 +95,20 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
     state->terminal_lines = 0;
     state->terminal_omitted = 0;
+    remember_command(state, event->data, event->data_length);
     fprintf(stdout, "$ %.*s\n", (int)event->data_length, event->data);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_OUTPUT) {
     render_terminal_output(state, event->data, event->data_length);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_WAITING) {
     fputs(GRAY "Waiting for terminal progress…" RESET "\n", stdout);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) {
-    fputs("Ran terminal command\n", stdout);
+    render_terminal_finish(event, "Ran", state);
+  } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) {
+    render_terminal_finish(event, "Cancelled", state);
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
-             event->tool_name != NULL) {
+             event->tool_name != NULL &&
+             strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
+             strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0) {
     fprintf(stdout, GRAY "Completed %s" RESET "\n", event->tool_name);
   }
   return CAI_OK;

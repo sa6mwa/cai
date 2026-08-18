@@ -64,6 +64,20 @@ typedef struct cai_agent_runtime_event {
   const char *terminal_id;
   /** Monotonic command ID within terminal_id for terminal events. */
   unsigned long long terminal_command_id;
+  /** Exit status supplied only by final terminal events. */
+  int terminal_has_exit_code;
+  long long terminal_exit_code;
+  /** Signal status supplied only by final terminal events. */
+  int terminal_has_signal;
+  long long terminal_signal;
+  /** Elapsed wall-clock time supplied by terminal lifecycle events. */
+  unsigned long long terminal_duration_ms;
+  /** Total observed bytes supplied by terminal lifecycle events. */
+  unsigned long long terminal_total_output_bytes;
+  /** Non-zero when CAI omitted bounded terminal output. */
+  int terminal_output_truncated;
+  /** Non-zero when detached descendants may remain after shell completion. */
+  int terminal_detached_processes_possible;
 } cai_agent_runtime_event;
 
 /** Owner-thread callback that receives queued runtime events. */

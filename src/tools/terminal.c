@@ -66,6 +66,7 @@ typedef struct cai_terminal_manager {
   size_t delivered_offset;
   size_t total_output_bytes;
   int output_truncated;
+  struct timespec command_started_at;
 } cai_terminal_manager;
 
 typedef struct cai_terminal_binding {
@@ -107,6 +108,7 @@ typedef struct cai_terminal_result {
   long long original_byte_count;
   int output_truncated;
   int detached_processes_possible;
+  long long duration_ms;
 } cai_terminal_result;
 
 static const lonejson_field cai_terminal_exec_arg_fields[] = {
@@ -152,7 +154,8 @@ static const lonejson_field cai_terminal_result_fields[] = {
     LONEJSON_FIELD_BOOL_REQ(cai_terminal_result, output_truncated,
                             "output_truncated"),
     LONEJSON_FIELD_BOOL_REQ(cai_terminal_result, detached_processes_possible,
-                            "detached_processes_possible")};
+                            "detached_processes_possible"),
+    LONEJSON_FIELD_I64_REQ(cai_terminal_result, duration_ms, "duration_ms")};
 LONEJSON_MAP_DEFINE(cai_terminal_result_map, cai_terminal_result,
                     cai_terminal_result_fields);
 
@@ -190,6 +193,33 @@ static void cai_terminal_deadline(struct timespec *deadline, long wait_ms) {
     deadline->tv_sec++;
     deadline->tv_nsec -= 1000000000L;
   }
+}
+
+static unsigned long long
+cai_terminal_elapsed_ms(const struct timespec *started,
+                        const struct timespec *finished) {
+  time_t seconds;
+  long nanoseconds;
+
+  if (started == NULL || finished == NULL ||
+      (finished->tv_sec < started->tv_sec) ||
+      (finished->tv_sec == started->tv_sec &&
+       finished->tv_nsec < started->tv_nsec)) {
+    return 0U;
+  }
+  seconds = finished->tv_sec - started->tv_sec;
+  nanoseconds = finished->tv_nsec - started->tv_nsec;
+  if (nanoseconds < 0L) {
+    seconds--;
+    nanoseconds += 1000000000L;
+  }
+  if ((unsigned long long)seconds > ULLONG_MAX / 1000U ||
+      (unsigned long long)seconds * 1000U >
+          ULLONG_MAX - (unsigned long long)(nanoseconds / 1000000L)) {
+    return ULLONG_MAX;
+  }
+  return (unsigned long long)seconds * 1000U +
+         (unsigned long long)(nanoseconds / 1000000L);
 }
 
 static void cai_terminal_close_fd(int *fd) {
@@ -592,6 +622,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   manager->delivered_offset = 0U;
   manager->total_output_bytes = 0U;
   manager->output_truncated = 0;
+  (void)clock_gettime(CLOCK_MONOTONIC, &manager->command_started_at);
   if (manager->output != NULL) {
     manager->output[0] = '\0';
   }
@@ -617,6 +648,7 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
   size_t available;
   size_t count;
   char *output;
+  struct timespec now;
 
   memset(result, 0, sizeof(*result));
   pthread_mutex_lock(&manager->lock);
@@ -638,11 +670,23 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
   result->running = manager->running;
   result->completed = manager->completed;
   result->command_id = (long long)manager->command_id;
-  result->original_byte_count = (long long)manager->total_output_bytes;
+  result->original_byte_count = manager->total_output_bytes > (size_t)LLONG_MAX
+                                    ? LLONG_MAX
+                                    : (long long)manager->total_output_bytes;
   result->output_truncated = manager->output_truncated || count < available;
   /* CAI supervises the shell process, not arbitrary descendants that may
    * have escaped its process group.  Never promise those descendants exited. */
   result->detached_processes_possible = manager->completed;
+  (void)clock_gettime(CLOCK_MONOTONIC, &now);
+  {
+    unsigned long long duration;
+
+    duration =
+        cai_terminal_elapsed_ms(&manager->command_started_at, &now);
+    result->duration_ms = duration > (unsigned long long)LLONG_MAX
+                              ? LLONG_MAX
+                              : (long long)duration;
+  }
   if (manager->completed && WIFEXITED(manager->child_status)) {
     result->exit_code = WEXITSTATUS(manager->child_status);
     result->has_exit_code = 1;
@@ -682,6 +726,10 @@ static int cai_terminal_emit(cai_terminal_manager *manager, int type,
     event.exit_code = result->exit_code;
     event.has_signal = result->has_signal;
     event.signal = result->signal;
+    event.duration_ms = (unsigned long long)result->duration_ms;
+    event.total_output_bytes = (unsigned long long)result->original_byte_count;
+    event.output_truncated = result->output_truncated;
+    event.detached_processes_possible = result->detached_processes_possible;
   }
   return manager->event_callback(manager->event_context, &event, error);
 }
