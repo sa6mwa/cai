@@ -217,7 +217,9 @@ int main(void) {
     fprintf(stderr, "smith-terminal: %s\n", error.message);
   }
   cai_agent_runtime_close(runtime);
-  cai_client_close(client);
+  if (client != NULL) {
+    client->close(client);
+  }
   cai_string_destroy(dotenv_api_key);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;

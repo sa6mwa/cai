@@ -1175,6 +1175,7 @@ if(CAI_BUILD_TESTS)
     agent_client_history_continuity
     smith_profile
     agent_runtime_lifecycle
+    agent_runtime_semantic_events
     agent_local_session_store
     agent_runtime_resume
     goal_tools
@@ -1193,6 +1194,7 @@ if(CAI_BUILD_TESTS)
     todo_tool
     todo_callback_store
     searxng_registry_tool
+    terminal_tools
     exec_tool
     read_tool
     view_image_tool
