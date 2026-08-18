@@ -24474,6 +24474,10 @@ static void test_patch_tool(test_state *state) {
                                           "+updated\n"
                                           "*** End of File\n"
                                           "*** End Patch";
+  static const char nul_stream_patch[] = "*** Begin Patch\n\0"
+                                         "*** Add File: hidden.txt\n"
+                                         "+hidden\n"
+                                         "*** End Patch";
   char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
   char alpha_path[PATH_MAX];
   char beta_path[PATH_MAX];
@@ -24568,6 +24572,23 @@ static void test_patch_tool(test_state *state) {
   test_init_spooled_text(state, "patch_spooled_input", &spooled_patch,
                          invalid_eof_patch);
   expect_int(state, "patch_spooled_reject_stale_eof_marker",
+             registry->run_spooled(registry, "apply_patch", &spooled_patch,
+                                   sink, &error),
+             CAI_ERR_INVALID);
+  spooled_patch.cleanup(&spooled_patch);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  CAI_LJ->spooled_init(CAI_LJ, &spooled_patch);
+  {
+    lonejson_error json_error;
+
+    lonejson_error_init(&json_error);
+    expect_int(state, "patch_spooled_nul_input",
+               spooled_patch.append(&spooled_patch, nul_stream_patch,
+                                    sizeof(nul_stream_patch) - 1U, &json_error),
+               LONEJSON_STATUS_OK);
+  }
+  expect_int(state, "patch_spooled_reject_nul",
              registry->run_spooled(registry, "apply_patch", &spooled_patch,
                                    sink, &error),
              CAI_ERR_INVALID);

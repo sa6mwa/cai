@@ -1,5 +1,6 @@
 #include "cai_internal.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -684,13 +685,26 @@ int cai_buffer_append(cai_buffer_builder *builder, const char *text,
           error, CAI_ERR_TRANSPORT, "failed to write buffer sink",
           builder->sink_error != NULL ? builder->sink_error->message : NULL);
     }
+    if (builder->length > SIZE_MAX - length) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "buffer length exceeds addressable size");
+    }
     builder->length += length;
     return CAI_OK;
+  }
+  if (builder->length > SIZE_MAX - length ||
+      builder->length + length > SIZE_MAX - 1U) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "buffer length exceeds addressable size");
   }
   needed = builder->length + length + 1U;
   if (needed > builder->capacity) {
     new_capacity = builder->capacity == 0U ? 256U : builder->capacity;
     while (new_capacity < needed) {
+      if (new_capacity > SIZE_MAX / 2U) {
+        new_capacity = needed;
+        break;
+      }
       new_capacity *= 2U;
     }
     grown = (char *)cai_realloc_mem(builder->allocator, builder->data,

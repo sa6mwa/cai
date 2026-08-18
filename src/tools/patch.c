@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -95,12 +96,48 @@ static const char cai_patch_lark_grammar_second[] =
     "eof_line: \"*** End of File\" LF\n\n"
     "%import common.LF\n";
 
+static int cai_patch_size_add(size_t left, size_t right, size_t *out) {
+  if (left > SIZE_MAX - right) {
+    return 0;
+  }
+  *out = left + right;
+  return 1;
+}
+
+static int cai_patch_size_multiply(size_t left, size_t right, size_t *out) {
+  if (left != 0U && right > SIZE_MAX / left) {
+    return 0;
+  }
+  *out = left * right;
+  return 1;
+}
+
+static void cai_patch_grow_capacity(size_t current, size_t required,
+                                    size_t initial, size_t *out) {
+  size_t capacity;
+
+  capacity = current == 0U ? initial : current;
+  while (capacity < required) {
+    if (capacity > SIZE_MAX / 2U) {
+      capacity = required;
+      break;
+    }
+    capacity *= 2U;
+  }
+  *out = capacity;
+}
+
 static int cai_patch_copy(char **out, const char *value, size_t length,
                           cai_error *error) {
   char *copy;
+  size_t allocation_size;
 
   *out = NULL;
-  copy = (char *)cai_alloc(NULL, length + 1U);
+  if (!cai_patch_size_add(length, 1U, &allocation_size)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "patch data exceeds addressable size");
+  }
+  copy = (char *)cai_alloc(NULL, allocation_size);
   if (copy == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate patch data");
   }
@@ -141,10 +178,20 @@ static int cai_patch_change_append_hunk(cai_patch_change *change,
                                         cai_error *error) {
   cai_patch_hunk *hunks;
   size_t capacity;
+  size_t allocation_size;
+  size_t required;
 
   if (change->hunk_count == change->hunk_capacity) {
-    capacity = change->hunk_capacity == 0U ? 2U : change->hunk_capacity * 2U;
-    hunks = (cai_patch_hunk *)cai_alloc(NULL, capacity * sizeof(*hunks));
+    if (!cai_patch_size_add(change->hunk_count, 1U, &required)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "patch hunk count exceeds addressable size");
+    }
+    cai_patch_grow_capacity(change->hunk_capacity, required, 2U, &capacity);
+    if (!cai_patch_size_multiply(capacity, sizeof(*hunks), &allocation_size)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "patch hunk allocation exceeds addressable size");
+    }
+    hunks = (cai_patch_hunk *)cai_alloc(NULL, allocation_size);
     if (hunks == NULL) {
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to allocate patch hunk");
@@ -179,10 +226,20 @@ static int cai_patch_plan_append(cai_patch_plan *plan, cai_patch_change **out,
                                  cai_error *error) {
   cai_patch_change *items;
   size_t capacity;
+  size_t allocation_size;
+  size_t required;
 
   if (plan->count == plan->capacity) {
-    capacity = plan->capacity == 0U ? 4U : plan->capacity * 2U;
-    items = (cai_patch_change *)cai_alloc(NULL, capacity * sizeof(*items));
+    if (!cai_patch_size_add(plan->count, 1U, &required)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "patch change count exceeds addressable size");
+    }
+    cai_patch_grow_capacity(plan->capacity, required, 4U, &capacity);
+    if (!cai_patch_size_multiply(capacity, sizeof(*items), &allocation_size)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "patch plan allocation exceeds addressable size");
+    }
+    items = (cai_patch_change *)cai_alloc(NULL, allocation_size);
     if (items == NULL) {
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to allocate patch plan");
@@ -352,6 +409,7 @@ static int cai_patch_read_file(const char *path, size_t maximum, char **out,
   struct stat st;
   char *data;
   size_t offset;
+  size_t allocation_size;
   ssize_t nread;
   int fd;
 
@@ -362,7 +420,11 @@ static int cai_patch_read_file(const char *path, size_t maximum, char **out,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "patch file is not a permitted size regular file");
   }
-  data = (char *)cai_alloc(NULL, (size_t)st.st_size + 1U);
+  if (!cai_patch_size_add((size_t)st.st_size, 1U, &allocation_size)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "patch file exceeds addressable size");
+  }
+  data = (char *)cai_alloc(NULL, allocation_size);
   if (data == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate patch file");
   }
@@ -434,11 +496,22 @@ static int cai_patch_spooled_reader_append(cai_patch_spooled_reader *reader,
                                            size_t length, cai_error *error) {
   char *line;
   size_t capacity;
+  size_t needed;
 
-  if (reader->line_length + length + 1U > reader->line_capacity) {
-    capacity = reader->line_capacity == 0U ? 128U : reader->line_capacity;
-    while (capacity < reader->line_length + length + 1U) {
-      capacity *= 2U;
+  if (length > 0U && memchr(data, '\0', length) != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "streamed patch input contains a NUL byte");
+  }
+  if (!cai_patch_size_add(reader->line_length, length, &needed) ||
+      !cai_patch_size_add(needed, 1U, &needed)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "patch line exceeds addressable size");
+  }
+  if (needed > reader->line_capacity) {
+    cai_patch_grow_capacity(reader->line_capacity, needed, 128U, &capacity);
+    if (capacity < needed) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "patch line exceeds addressable size");
     }
     line = (char *)cai_alloc(NULL, capacity);
     if (line == NULL) {
@@ -460,7 +533,7 @@ static int cai_patch_spooled_reader_append(cai_patch_spooled_reader *reader,
   return CAI_OK;
 }
 
-/* Returns 1 with one complete final-or-newline-terminated line, 0 at EOF. */
+/* Returns 1 with one complete line, 0 at EOF, or -CAI_ERR_* on failure. */
 static int cai_patch_spooled_reader_next(cai_patch_spooled_reader *reader,
                                          char **out, cai_error *error) {
   lonejson_read_result chunk;
@@ -478,8 +551,8 @@ static int cai_patch_spooled_reader_next(cai_patch_spooled_reader *reader,
       chunk = reader->cursor.read(&reader->cursor, reader->buffer,
                                   sizeof(reader->buffer));
       if (chunk.error_code != 0) {
-        return cai_set_error(error, CAI_ERR_PROTOCOL,
-                             "failed to read streamed patch input");
+        return -cai_set_error(error, CAI_ERR_PROTOCOL,
+                              "failed to read streamed patch input");
       }
       if (chunk.bytes_read == 0U) {
         if (reader->line_length == 0U) {
@@ -496,7 +569,7 @@ static int cai_patch_spooled_reader_next(cai_patch_spooled_reader *reader,
     rc = cai_patch_spooled_reader_append(reader, reader->buffer + start,
                                          i - start, error);
     if (rc != CAI_OK) {
-      return rc;
+      return -rc;
     }
     reader->offset = i;
     if (i < reader->length) {
@@ -511,7 +584,7 @@ static int cai_patch_spooled_reader_next(cai_patch_spooled_reader *reader,
   if (reader->line == NULL) {
     rc = cai_patch_spooled_reader_append(reader, NULL, 0U, error);
     if (rc != CAI_OK) {
-      return rc;
+      return -rc;
     }
   }
   *out = reader->line;
@@ -777,8 +850,8 @@ static int cai_patch_parse_change_spooled(cai_patch_plan *plan,
   *line_io = NULL;
   for (;;) {
     line_rc = cai_patch_spooled_reader_next(reader, &line, error);
-    if (line_rc != 0 && line_rc != 1) {
-      rc = line_rc;
+    if (line_rc < 0) {
+      rc = -line_rc;
       goto fail;
     }
     if (line_rc == 0) {
@@ -915,9 +988,13 @@ static int cai_patch_parse_spooled(const cai_patch_context *ctx,
                                 json_error.message);
   }
   rc = cai_patch_spooled_reader_next(&reader, &line, error);
-  if (rc == 1 && strcmp(line, "*** Begin Patch") == 0) {
+  if (rc < 0) {
+    rc = -rc;
+  } else if (rc == 1 && strcmp(line, "*** Begin Patch") == 0) {
     rc = cai_patch_spooled_reader_next(&reader, &line, error);
-    if (rc == 1) {
+    if (rc < 0) {
+      rc = -rc;
+    } else if (rc == 1) {
       rc = CAI_OK;
     }
     while (rc == CAI_OK && line != NULL && strcmp(line, "*** End Patch") != 0) {
@@ -928,7 +1005,9 @@ static int cai_patch_parse_spooled(const cai_patch_context *ctx,
         rc = cai_set_error(error, CAI_ERR_INVALID, "invalid patch ending");
       } else {
         rc = cai_patch_spooled_reader_next(&reader, &line, error);
-        if (rc == 1) {
+        if (rc < 0) {
+          rc = -rc;
+        } else if (rc == 1) {
           rc = cai_set_error(error, CAI_ERR_INVALID, "invalid patch ending");
         } else if (rc == CAI_OK && plan->count == 0U) {
           rc = cai_set_error(error, CAI_ERR_INVALID,
@@ -999,7 +1078,9 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
   char *anchor_end;
   char *replacement;
   size_t prefix;
+  size_t suffix;
   size_t length;
+  size_t allocation_size;
 
   if (hunk->old_length == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -1029,9 +1110,14 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
                          "update patch context does not match exactly once");
   }
   prefix = (size_t)(match - change->after);
-  length = prefix + hunk->new_length +
-           (change->after_length - prefix - hunk->old_length);
-  replacement = (char *)cai_alloc(NULL, length + 1U);
+  suffix = change->after_length - prefix - hunk->old_length;
+  if (!cai_patch_size_add(prefix, hunk->new_length, &length) ||
+      !cai_patch_size_add(length, suffix, &length) ||
+      !cai_patch_size_add(length, 1U, &allocation_size)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "patched file exceeds addressable size");
+  }
+  replacement = (char *)cai_alloc(NULL, allocation_size);
   if (replacement == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate patched file");

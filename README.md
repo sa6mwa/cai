@@ -714,12 +714,16 @@ Dedicated fuzzers cover the most exposed cai surfaces:
   to disk
 - `cai_todo_fuzz`: todo/kanban rewrite, persistence, and structured operation
   churn
+- `cai_patch_fuzz`: native `apply_patch` parsing and application through both
+  the direct API and the model-facing spooled custom-tool path, including
+  short raw-read boundaries and isolated workspace fixtures
 
 The fuzz build also registers corpus-replay smoke tests in CTest so every
 harness is built and executed in the standard gate for the `fuzz` preset.
 Checked-in corpora under `tests/fuzz-corpus/` seed the harnesses with realistic
 Responses SSE transcripts, response JSON, MCP JSON-RPC envelopes, session
-history/state documents, and todo tool operations. `make fuzz-long` runs a
+history/state documents, todo tool operations, and Codex-style patches.
+`make fuzz-long` runs a
 longer bounded AFL++ campaign, controlled by `CAI_FUZZ_LONG_SECONDS` per
 target (120 seconds by default).
 

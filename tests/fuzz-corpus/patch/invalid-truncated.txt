@@ -1,0 +1,5 @@
+*** Begin Patch
+*** Update File: alpha.txt
+@@ context
+-one
++two

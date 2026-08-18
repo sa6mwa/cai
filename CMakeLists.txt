@@ -1303,7 +1303,8 @@ if(CAI_BUILD_TESTS)
         source_sink
         lonejson_nested_mapped_array_stream
         client_open
-        mike_mind_prompt_contract)
+        mike_mind_prompt_contract
+        patch_tool)
     set_tests_properties(cai_tests.valgrind PROPERTIES
       LABELS "valgrind;local;memory-check"
       TIMEOUT 180)
@@ -1884,6 +1885,7 @@ if(CAI_BUILD_FUZZERS)
   cai_add_fuzzer(cai_mcp_fuzz tests/mcp_fuzz.c mcp)
   cai_add_fuzzer(cai_session_fuzz tests/session_fuzz.c session)
   cai_add_fuzzer(cai_todo_fuzz tests/todo_fuzz.c todo)
+  cai_add_fuzzer(cai_patch_fuzz tests/patch_fuzz.c patch)
 endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)
