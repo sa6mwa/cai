@@ -593,6 +593,7 @@ static int cai_runtime_terminal_event(void *context,
                                       const cai_terminal_event *event,
                                       cai_error *error) {
   cai_agent_runtime *runtime;
+  cai_terminal_event display_event;
   int type;
   int rc;
 
@@ -616,8 +617,15 @@ static int cai_runtime_terminal_event(void *context,
          : event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED
              ? CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
              : CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED;
+  display_event = *event;
+  if (event->type == CAI_TERMINAL_EVENT_COMMAND_STARTED) {
+    display_event.output = event->command;
+    display_event.output_length =
+        event->command != NULL ? strlen(event->command) : 0U;
+  }
   pthread_mutex_lock(&runtime->lock);
-  rc = cai_runtime_enqueue_terminal_locked(runtime, type, event, error);
+  rc = cai_runtime_enqueue_terminal_locked(runtime, type, &display_event,
+                                           error);
   pthread_mutex_unlock(&runtime->lock);
   return rc;
 }

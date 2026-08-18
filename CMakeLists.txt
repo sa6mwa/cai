@@ -753,6 +753,7 @@ if(CAI_BUILD_EXAMPLES)
     smhi_weather:smhi-weather
     mcp_server:mcp-server
     streaming_text:streaming-text
+    smith_terminal:smith-terminal
     terminal_chat:terminal-chat
     mike_mind:mike-mind)
   foreach(_cai_example_spec IN LISTS _cai_examples)
