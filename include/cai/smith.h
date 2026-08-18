@@ -60,6 +60,16 @@ int cai_client_new_smith_agent(cai_client *client,
                                const cai_smith_config *config, cai_agent **out,
                                cai_error *error);
 
+/**
+ * Construct an isolated read-only Smith reviewer. The reviewer has a separate
+ * session and registers only read_file, list_files, and view_image when the
+ * selected model supports images. It never exposes patch, terminal, goal, or
+ * image-generation tools.
+ */
+int cai_client_new_smith_review_agent(cai_client *client,
+                                      const cai_smith_config *config,
+                                      cai_agent **out, cai_error *error);
+
 #ifdef __cplusplus
 }
 #endif

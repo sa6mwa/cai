@@ -23905,6 +23905,25 @@ static void test_smith_profile(test_state *state) {
       cai_response_destroy(response);
     }
     cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  expect_int(state, "smith_review_open",
+             cai_client_new_smith_review_agent(mock.client, &config, &agent,
+                                               &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "smith_review_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 3L);
+    expect_str(state, "smith_review_tool_read",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 0U),
+               CAI_READ_DEFAULT_TOOL_NAME);
+    expect_str(state, "smith_review_tool_list",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 1U),
+               CAI_LIST_FILES_DEFAULT_TOOL_NAME);
+    expect_str(state, "smith_review_tool_image",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 2U),
+               CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME);
+    cai_agent_destroy(agent);
   }
   http_mock_client_close(state, "smith_mock", &mock);
   cai_error_cleanup(&error);

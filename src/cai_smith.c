@@ -314,3 +314,92 @@ int cai_client_new_smith_agent(cai_client *client,
   }
   return rc;
 }
+
+int cai_client_new_smith_review_agent(cai_client *client,
+                                      const cai_smith_config *config,
+                                      cai_agent **out, cai_error *error) {
+  cai_client_impl *client_impl;
+  cai_agent_config agent_config;
+  cai_read_tool_config read_config;
+  cai_view_image_tool_config view_image_config;
+  const char *identity;
+  static const char review_suffix[] =
+      ", a read-only code reviewer running in CAI agent mode. Review the "
+      "proposed change independently. Report only discrete, actionable bugs "
+      "that materially affect correctness, performance, security, or "
+      "maintainability and that the author would fix. Do not modify files, "
+      "run commands, create goals, or claim verification you did not perform. "
+      "Inspect relevant files before making a finding. Return a concise review "
+      "report with all qualifying findings, or clearly state that none were "
+      "found.\n";
+  char *instructions;
+  size_t length;
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review agent output pointer is required");
+  }
+  *out = NULL;
+  if (client == NULL || config == NULL || config->workspace_directory == NULL ||
+      config->workspace_directory[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review client and workspace directory are required");
+  }
+  client_impl = CAI_CLIENT_IMPL(client);
+  if (client_impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
+  }
+  identity = config->agent_identity != NULL ? config->agent_identity
+                                            : CAI_SMITH_DEFAULT_IDENTITY;
+  if (identity[0] == '\0' || strlen(identity) > SIZE_MAX - strlen("You are ") -
+                                                 strlen(review_suffix) - 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review agent identity is invalid");
+  }
+  length = strlen("You are ") + strlen(identity) + strlen(review_suffix);
+  instructions = (char *)cai_alloc(&client_impl->allocator, length + 1U);
+  if (instructions == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate Smith review instructions");
+  }
+  snprintf(instructions, length + 1U, "You are %s%s", identity, review_suffix);
+  cai_agent_config_init(&agent_config);
+  agent_config.model = config->model != NULL ? config->model : CAI_SMITH_DEFAULT_MODEL;
+  agent_config.developer_instructions = instructions;
+  agent_config.reasoning_effort = config->reasoning_effort != NULL
+                                      ? config->reasoning_effort
+                                      : CAI_REASONING_EFFORT_MEDIUM;
+  agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
+  agent_config.disable_parallel_tool_calls = 1;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  agent_config.enable_local_history = 1;
+  agent_config.disable_auto_compaction = 1;
+  rc = cai_client_new_agent(client, &agent_config, out, error);
+  cai_free_mem(&client_impl->allocator, instructions);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&read_config, 0, sizeof(read_config));
+  read_config.root_path = config->workspace_directory;
+  read_config.default_workdir = config->workspace_directory;
+  read_config.content_memory_limit = config->file_content_memory_limit;
+  read_config.content_max_bytes = config->file_content_max_bytes;
+  read_config.content_spool_dir = config->file_content_spool_dir;
+  rc = cai_agent_register_read_tool(*out, &read_config, error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_list_files_tool(*out, &read_config, error);
+  }
+  if (rc == CAI_OK &&
+      cai_model_supports(agent_config.model, CAI_MODEL_CAP_IMAGE_INPUT)) {
+    memset(&view_image_config, 0, sizeof(view_image_config));
+    view_image_config.root_path = config->workspace_directory;
+    view_image_config.default_workdir = config->workspace_directory;
+    rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
+  }
+  if (rc != CAI_OK) {
+    cai_agent_destroy(*out);
+    *out = NULL;
+  }
+  return rc;
+}
