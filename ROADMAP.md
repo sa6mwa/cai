@@ -202,6 +202,39 @@ Official OpenAI docs checked:
 - <https://developers.openai.com/api/docs/guides/websocket-mode>
 - <https://developers.openai.com/api/docs/guides/streaming-responses>
 
+## Deferred: Agent Conversation Export
+
+Investigate and design a host-invoked conversation-transcript export for CAI
+agent sessions, following the useful visible behavior of Codex CLI's current
+`/export` command without coupling CAI to its TUI or treating a user export as
+a model action.
+
+Codex source inspected on 2026-08-19 (`f5a3dc55404ddc066a4e4a65602fee166ecc46b3`)
+shows that `/export` hydrates the complete persisted thread, renders Markdown,
+and offers clipboard or non-overwriting file destinations. Its output starts
+with `# Codex conversation`; uses `## User`, `## Assistant`, `## Plan`,
+`## Reasoning`, and `## Activity` sections; preserves message Markdown; indents
+activity; strips terminal-control text; represents non-text media without
+embedding its raw data; and omits export notices plus hidden review prompts.
+
+Before implementation, decide and specify:
+
+- a host-facing, sink/callback-based export API over the portable CAI session
+  transcript projection, including a streaming contract for large histories;
+- whether an optional model-facing `export_conversation` tool is ever useful.
+  It must not be enabled by the Smith preset by default: exporting is a
+  user/host action and a model-visible export can expose private transcript
+  content or create an unwanted filesystem/clipboard side effect;
+- the stable Markdown format and data policy: roles, plans, reasoning,
+  semantic local-tool receipts, terminal activity, MCP results, image/file
+  placeholders or references, ANSI/control-character treatment, and secrets;
+- destination ownership. CAI should return/render transcript bytes through a
+  host sink; Vectis or another embedding application owns clipboard access,
+  path selection, atomic file creation, collision policy, and user feedback;
+- complete-history behavior for local JSONL and callback stores, resume/replay
+  ordering, filtered review-child sessions, and deterministic snapshot,
+  privacy, no-overwrite, and large-transcript streaming tests.
+
 ## Parked: Realtime WebSocket
 
 Status: future feature, not implemented.

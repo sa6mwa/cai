@@ -774,6 +774,53 @@ authentication, endpoint selection, locks/leases, and backend-native search.
 CAI neither links liblockdc/pouch nor makes a network client part of its core
 library.
 
+### 11.5 Target: user-initiated transcript export
+
+CAI needs a deferred conversation-export capability comparable to Codex CLI's
+current `/export`, but it is not implemented by this delivery. The upstream
+behavior was inspected on 2026-08-19 at Codex commit
+`f5a3dc55404ddc066a4e4a65602fee166ecc46b3`:
+
+- `/export` is a TUI/user command, rather than a model tool. It hydrates the
+  complete persisted conversation (falling back to visible cells only for an
+  ephemeral thread), renders Markdown, then copies it to the clipboard or
+  creates a new file without overwriting an existing one.
+- The Markdown begins `# Codex conversation` and uses `## User`,
+  `## Assistant`, `## Plan`, `## Reasoning`, and `## Activity` sections.
+  Message Markdown is retained; activity is indented; terminal-control text is
+  sanitized; image/audio data become placeholders; and export/copy notices,
+  hidden review prompts, and nested review duplicates are excluded.
+
+CAI MUST first define a host-facing export API that writes the durable session
+transcript projection to a `cai_sink` or equivalent callback. That export must
+be genuinely streaming for large histories: it may use bounded parser and
+transport buffers, but it must not materialize the entire history or Markdown
+document as a hidden intermediate string. The host owns destination handling
+(clipboard, filename selection, atomic create/no-overwrite behavior, and user
+feedback), so CAI remains independent of a TUI, libmdf, softline, or a desktop
+clipboard implementation.
+
+The exported format needs a versioned Markdown contract and explicit privacy
+policy for model/user messages, plans, reasoning, semantic tool receipts,
+terminal activity, MCP text/structured/resource results, generated artifacts,
+and image/file references. Raw binary payloads, credentials, and private
+resource bodies must not be inadvertently embedded. It must load the complete
+session from either local JSONL or the callback store, preserve durable
+ordering/replay semantics, and apply the review-child/session visibility policy
+without making an export look like model context.
+
+Whether CAI also exposes an optional `export_conversation` local tool remains
+an open design decision. Smith MUST NOT register it by default: export is a
+user/host operation, while a model-visible tool could disclose private
+transcript content or trigger an unwanted filesystem/clipboard side effect.
+If a host later opts in, it must supply the destination and authorization
+policy; it cannot rely on the default Smith tool policy.
+
+Required future verification: deterministic Markdown snapshots; complete local
+and callback-store history export; streamed multi-megabyte transcripts;
+sanitization/privacy cases; ephemeral-session fallback; review filtering; and
+destination integration tests owned by the embedding application.
+
 ## 12. Client-side compaction
 
 Smith requires `CAI_SESSION_CONTINUITY_CLIENT_HISTORY` and local history. It
