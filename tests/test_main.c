@@ -1761,6 +1761,43 @@ static int test_runtime_event(void *context,
   return CAI_OK;
 }
 
+static int test_xid_session_id_valid(const char *session_id, time_t earliest,
+                                     time_t latest) {
+  unsigned int values[7];
+  unsigned long timestamp;
+  size_t index;
+
+  if (session_id == NULL || strlen(session_id) != 20U || earliest < 1 ||
+      latest < earliest) {
+    return 0;
+  }
+  for (index = 0U; index < 20U; index++) {
+    unsigned char character;
+
+    character = (unsigned char)session_id[index];
+    if (character >= '0' && character <= '9') {
+      if (index < 7U) {
+        values[index] = (unsigned int)(character - '0');
+      }
+    } else if (character >= 'a' && character <= 'v') {
+      if (index < 7U) {
+        values[index] = (unsigned int)(character - 'a') + 10U;
+      }
+    } else {
+      return 0;
+    }
+  }
+  timestamp = ((unsigned long)(values[0] << 3U | values[1] >> 2U) << 24U) |
+              ((unsigned long)(values[1] << 6U | values[2] << 1U |
+                               values[3] >> 4U)
+               << 16U) |
+              ((unsigned long)(values[3] << 4U | values[4] >> 1U) << 8U) |
+              (unsigned long)(values[4] << 7U | values[5] << 2U |
+                              values[6] >> 3U);
+  return timestamp >= (unsigned long)(earliest - 1) &&
+         timestamp <= (unsigned long)(latest + 1);
+}
+
 static int test_runtime_close_from_event(
     void *context, const cai_agent_runtime_event *event, cai_error *error) {
   runtime_close_callback_state *state;
@@ -24078,6 +24115,9 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime_close_callback_state close_state;
   cai_error error;
   struct timespec close_callback_delay;
+  const char *session_id;
+  time_t session_open_before;
+  time_t session_open_after;
 
   cai_error_init(&error);
   client = NULL;
@@ -24113,11 +24153,18 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime_config.event_queue_limit = 1U;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
+  session_open_before = time(NULL);
   expect_int(state, "runtime_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
+  session_open_after = time(NULL);
   expect_int(state, "runtime_mcp_refresh", mcp_fake.refresh_count, 1L);
   if (runtime != NULL) {
+    session_id = cai_agent_runtime_session_id(runtime);
+    expect_int(state, "runtime_session_id_xid",
+               test_xid_session_id_valid(session_id, session_open_before,
+                                         session_open_after),
+               1L);
     expect_int(state, "runtime_idle_state",
                cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     expect_int(state, "runtime_idle_value", run_state, CAI_AGENT_IDLE);

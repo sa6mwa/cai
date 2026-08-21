@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <openssl/sha.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,8 @@ extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
+#define CAI_RUNTIME_XID_RAW_BYTES 12U
+#define CAI_RUNTIME_XID_TEXT_BYTES 20U
 
 typedef struct cai_runtime_event_node {
   cai_agent_runtime_event event;
@@ -93,7 +96,9 @@ struct cai_agent_runtime {
 };
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
-static unsigned long long cai_runtime_session_id_counter = 0U;
+static unsigned char cai_runtime_session_machine_id[3];
+static unsigned int cai_runtime_session_id_counter = 0U;
+static int cai_runtime_session_id_initialized = 0;
 
 static void cai_agent_runtime_destroy(cai_agent_runtime *runtime);
 
@@ -435,27 +440,193 @@ static int cai_runtime_append_steering_locked(cai_agent_runtime *runtime,
   return rc;
 }
 
-static int
-cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
-                                cai_error *error) {
-  struct timespec now;
-  unsigned long long counter;
-  int length;
+static int cai_runtime_xid_random(unsigned char *output, size_t length,
+                                  cai_error *error) {
+  int fd;
+  size_t offset;
 
-  if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to generate agent session identifier");
+  fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to open random source for session identifier",
+                                strerror(errno));
   }
-  pthread_mutex_lock(&cai_runtime_session_id_lock);
-  counter = ++cai_runtime_session_id_counter;
-  pthread_mutex_unlock(&cai_runtime_session_id_lock);
-  length = snprintf(output, CAI_AGENT_SESSION_ID_MAX, "smith-%lld-%ld-%llu",
-                    (long long)now.tv_sec, now.tv_nsec, counter);
-  if (length < 0 || (size_t)length >= CAI_AGENT_SESSION_ID_MAX) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to format agent session identifier");
+  offset = 0U;
+  while (offset < length) {
+    ssize_t nread;
+
+    nread = read(fd, output + offset, length - offset);
+    if (nread > 0) {
+      offset += (size_t)nread;
+    } else if (nread < 0 && errno == EINTR) {
+      continue;
+    } else {
+      int saved_errno;
+
+      saved_errno = errno;
+      close(fd);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to read random session identifier bytes",
+                                  nread == 0 ? "unexpected end of random source"
+                                             : strerror(saved_errno));
+    }
   }
+  close(fd);
   return CAI_OK;
+}
+
+static int cai_runtime_xid_machine_override(unsigned char output[3], int *present,
+                                            cai_error *error) {
+  const char *value;
+  char *end;
+  unsigned long number;
+
+  value = getenv("XID_MACHINE_ID");
+  *present = 0;
+  if (value == NULL || value[0] == '\0') {
+    return CAI_OK;
+  }
+  errno = 0;
+  end = NULL;
+  number = strtoul(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || number > 0xffffffUL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "XID_MACHINE_ID must be a decimal value between 0 and 16777215");
+  }
+  output[0] = (unsigned char)(number >> 16U);
+  output[1] = (unsigned char)(number >> 8U);
+  output[2] = (unsigned char)number;
+  *present = 1;
+  return CAI_OK;
+}
+
+static int cai_runtime_xid_machine_id(unsigned char output[3], cai_error *error) {
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  char source[4096];
+  size_t length;
+  int fd;
+  int override_present;
+  int rc;
+
+  rc = cai_runtime_xid_machine_override(output, &override_present, error);
+  if (rc != CAI_OK || override_present) {
+    return rc;
+  }
+  fd = open("/etc/machine-id", O_RDONLY | O_CLOEXEC);
+  length = 0U;
+  if (fd >= 0) {
+    for (;;) {
+      ssize_t nread;
+
+      if (length == sizeof(source)) {
+        break;
+      }
+      nread = read(fd, source + length, sizeof(source) - length);
+      if (nread > 0) {
+        length += (size_t)nread;
+      } else if (nread == 0) {
+        break;
+      } else if (errno != EINTR) {
+        length = 0U;
+        break;
+      }
+    }
+    close(fd);
+  }
+  if (length == 0U) {
+    if (gethostname(source, sizeof(source) - 1U) != 0) {
+      return cai_runtime_xid_random(output, 3U, error);
+    }
+    source[sizeof(source) - 1U] = '\0';
+    length = strlen(source);
+  }
+  if (length == 0U ||
+      SHA256((const unsigned char *)source, length, digest) == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to derive session identifier machine component");
+  }
+  memcpy(output, digest, 3U);
+  return CAI_OK;
+}
+
+static int cai_runtime_xid_initialize_locked(cai_error *error) {
+  unsigned char counter[3];
+  int rc;
+
+  if (cai_runtime_session_id_initialized) {
+    return CAI_OK;
+  }
+  rc = cai_runtime_xid_machine_id(cai_runtime_session_machine_id, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_xid_random(counter, sizeof(counter), error);
+  }
+  if (rc == CAI_OK) {
+    cai_runtime_session_id_counter = ((unsigned int)counter[0] << 16U) |
+                                     ((unsigned int)counter[1] << 8U) |
+                                     (unsigned int)counter[2];
+    cai_runtime_session_id_initialized = 1;
+  }
+  return rc;
+}
+
+static void cai_runtime_xid_encode(const unsigned char raw[CAI_RUNTIME_XID_RAW_BYTES],
+                                   char output[CAI_RUNTIME_XID_TEXT_BYTES + 1U]) {
+  static const char alphabet[] = "0123456789abcdefghijklmnopqrstuv";
+  size_t index;
+
+  for (index = 0U; index < CAI_RUNTIME_XID_TEXT_BYTES; index++) {
+    size_t bit;
+    unsigned int value;
+
+    value = 0U;
+    for (bit = 0U; bit < 5U; bit++) {
+      size_t offset;
+
+      offset = index * 5U + bit;
+      value <<= 1U;
+      if (offset < CAI_RUNTIME_XID_RAW_BYTES * 8U) {
+        value |= (unsigned int)((raw[offset / 8U] >>
+                                  (7U - (offset % 8U))) & 1U);
+      }
+    }
+    output[index] = alphabet[value];
+  }
+  output[CAI_RUNTIME_XID_TEXT_BYTES] = '\0';
+}
+
+static int cai_runtime_generate_session_id(
+    char output[CAI_AGENT_SESSION_ID_MAX], cai_error *error) {
+  unsigned char raw[CAI_RUNTIME_XID_RAW_BYTES];
+  time_t now;
+  unsigned int counter;
+  unsigned long seconds;
+  int rc;
+
+  now = time(NULL);
+  if (now < 0 || (unsigned long)now > 0xffffffffUL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "system time is outside the XID session identifier range");
+  }
+  seconds = (unsigned long)now;
+  pthread_mutex_lock(&cai_runtime_session_id_lock);
+  rc = cai_runtime_xid_initialize_locked(error);
+  if (rc == CAI_OK) {
+    counter = ++cai_runtime_session_id_counter;
+    raw[0] = (unsigned char)(seconds >> 24U);
+    raw[1] = (unsigned char)(seconds >> 16U);
+    raw[2] = (unsigned char)(seconds >> 8U);
+    raw[3] = (unsigned char)seconds;
+    memcpy(raw + 4U, cai_runtime_session_machine_id,
+           sizeof(cai_runtime_session_machine_id));
+    raw[7] = (unsigned char)((unsigned int)getpid() >> 8U);
+    raw[8] = (unsigned char)getpid();
+    raw[9] = (unsigned char)(counter >> 16U);
+    raw[10] = (unsigned char)(counter >> 8U);
+    raw[11] = (unsigned char)counter;
+    cai_runtime_xid_encode(raw, output);
+  }
+  pthread_mutex_unlock(&cai_runtime_session_id_lock);
+  return rc;
 }
 
 static int cai_runtime_checkpoint(cai_agent_runtime *runtime,

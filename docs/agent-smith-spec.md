@@ -699,7 +699,11 @@ policy; a lockdc adapter should use its own CAS/lease facilities.
 
 The local store root is `${XDG_STATE_HOME:-$HOME/.local/state}/cai/agent`.
 Each session is one append-only JSONL file under
-`sessions/<scope-sha256>/<session-uuid>.jsonl`. The header record is
+`sessions/<scope-sha256>/<session-xid>.jsonl`. Generated session IDs are
+canonical [XID](https://github.com/rs/xid)-compatible 20-character,
+lowercase-base32 values (`[0-9a-v]{20}`): a sortable timestamp, machine
+component, process ID, and randomized-start counter. They are opaque storage
+keys, not authorization secrets. The header record is
 `session_created`; its metadata stores the canonical absolute workspace path,
 human scope, opaque scope key, preset, model/profile, rendered prompt manifest
 version/hash, creation time, and format version. The hash is a file-layout
@@ -725,7 +729,7 @@ Every JSONL record has at least:
 ```json
 {
   "format_version": 1,
-  "session_id": "uuid",
+  "session_id": "9m4e2mr0ui3e8a215n4g",
   "sequence": 42,
   "time": "2026-08-17T12:34:56.123Z",
   "type": "tool_completed",
