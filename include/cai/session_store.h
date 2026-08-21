@@ -31,6 +31,7 @@ typedef int (*cai_agent_session_event_fn)(void *context,
  * checkpoint receives a source owned by CAI. It must consume it synchronously
  * if needed and must not close or retain the source. Its watermark declares
  * every state-changing journal event incorporated into that checkpoint.
+ * scope is a borrowed, non-empty opaque storage namespace chosen by the host.
  * load_latest returns a new source owned by the caller, or sets *out to NULL
  * when no checkpoint exists. Callbacks may run on the agent runtime worker
  * thread and must be thread-safe when one store is shared by multiple
@@ -79,8 +80,10 @@ void cai_agent_local_session_store_config_init(
 /**
  * Open CAI's local append-only JSONL store.
  *
- * Each canonical scope gets an opaque SHA-256 directory and each session gets
- * one JSONL file. Checkpoints are fsync'd before this function returns.
+ * Each non-empty scope key gets an opaque SHA-256 directory and each session
+ * gets one JSONL file. The local store does not interpret scope keys as paths.
+ * Checkpoints are fsync'd before this function returns. Tied journal mtimes
+ * select the lexicographically later session identifier deterministically.
  */
 int cai_agent_local_session_store_open(
     const cai_agent_local_session_store_config *config,

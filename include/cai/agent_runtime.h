@@ -150,7 +150,11 @@ typedef struct cai_agent_runtime_config {
    * store unless disable_default_session_store is non-zero.
    */
   const cai_agent_session_store *session_store;
-  /** Optional storage scope; NULL uses the canonical workspace directory. */
+  /**
+   * Optional opaque storage namespace; NULL uses the canonical workspace
+   * directory. The local store hashes this value and does not interpret it as
+   * a filesystem path.
+   */
   const char *session_scope;
   /** Optional new session identifier; NULL generates one. */
   const char *session_id;

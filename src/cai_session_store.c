@@ -101,9 +101,8 @@ static int cai_store_scope_hash(const char *scope, char output[65],
   unsigned char digest[SHA256_DIGEST_LENGTH];
   size_t i;
 
-  if (scope == NULL || scope[0] != '/') {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "session scope must be a canonical absolute path");
+  if (scope == NULL || scope[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "session scope is required");
   }
   if (SHA256((const unsigned char *)scope, strlen(scope), digest) == NULL) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -806,19 +805,28 @@ cai_local_find_latest_checkpoint(int fd, long *out_state_start,
   }
 }
 
-static int cai_store_mtime_is_newer(const struct stat *candidate,
-                                    const struct stat *current) {
+static int cai_store_candidate_is_newer(const struct stat *candidate,
+                                        const char *candidate_name,
+                                        const struct stat *current,
+                                        const char *current_name) {
 #ifdef __APPLE__
   if (candidate->st_mtimespec.tv_sec != current->st_mtimespec.tv_sec) {
     return candidate->st_mtimespec.tv_sec > current->st_mtimespec.tv_sec;
   }
-  return candidate->st_mtimespec.tv_nsec > current->st_mtimespec.tv_nsec;
+  if (candidate->st_mtimespec.tv_nsec != current->st_mtimespec.tv_nsec) {
+    return candidate->st_mtimespec.tv_nsec > current->st_mtimespec.tv_nsec;
+  }
 #else
   if (candidate->st_mtim.tv_sec != current->st_mtim.tv_sec) {
     return candidate->st_mtim.tv_sec > current->st_mtim.tv_sec;
   }
-  return candidate->st_mtim.tv_nsec > current->st_mtim.tv_nsec;
+  if (candidate->st_mtim.tv_nsec != current->st_mtim.tv_nsec) {
+    return candidate->st_mtim.tv_nsec > current->st_mtim.tv_nsec;
+  }
 #endif
+  /* Generated XIDs sort chronologically, so this deterministic fallback also
+   * selects the newer generated session on filesystems with tied mtimes. */
+  return strcmp(candidate_name, current_name) > 0;
 }
 
 static int cai_local_session_load_latest(
@@ -903,7 +911,8 @@ static int cai_local_session_load_latest(
       continue;
     }
     if (candidate[0] == '\0' ||
-        cai_store_mtime_is_newer(&st, &candidate_stat)) {
+        cai_store_candidate_is_newer(&st, entry->d_name, &candidate_stat,
+                                     candidate)) {
       memcpy(candidate, entry->d_name, length + 1U);
       candidate_stat = st;
     }

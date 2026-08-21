@@ -60,6 +60,7 @@ typedef struct cai_patch_change {
   char *after;
   size_t after_length;
   size_t search_offset;
+  int target_published;
 } cai_patch_change;
 
 typedef struct cai_patch_plan {
@@ -1331,6 +1332,7 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
 
 static int cai_patch_write_atomic(int parent_fd, const char *name,
                                   const char *data, size_t length,
+                                  int no_replace, int *out_published,
                                   cai_error *error) {
   char temporary[64];
   size_t offset;
@@ -1338,12 +1340,18 @@ static int cai_patch_write_atomic(int parent_fd, const char *name,
   struct stat st;
   mode_t mode;
   int fd;
+  int saved_errno;
   unsigned int attempt;
 
   if (parent_fd < 0 || name == NULL || name[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "patch destination directory is required");
   }
+  if (out_published == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch publication output is required");
+  }
+  *out_published = 0;
   fd = -1;
   temporary[0] = '\0';
   for (attempt = 0U; attempt < 128U; attempt++) {
@@ -1386,12 +1394,53 @@ static int cai_patch_write_atomic(int parent_fd, const char *name,
     }
     offset += (size_t)nwritten;
   }
-  if (fsync(fd) != 0 || close(fd) != 0 ||
-      renameat(parent_fd, temporary, parent_fd, name) != 0) {
+  if (fsync(fd) != 0) {
+    saved_errno = errno;
+    close(fd);
     unlinkat(parent_fd, temporary, 0);
+    errno = saved_errno;
     return cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to publish patched file",
                                 strerror(errno));
+  }
+  if (close(fd) != 0) {
+    saved_errno = errno;
+    unlinkat(parent_fd, temporary, 0);
+    errno = saved_errno;
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to publish patched file",
+                                strerror(errno));
+  }
+  if (no_replace) {
+    /* linkat() creates the destination atomically and fails with EEXIST. It
+     * keeps add and move publication from replacing a file created after
+     * preflight, unlike renameat(). */
+    if (linkat(parent_fd, temporary, parent_fd, name, 0) != 0) {
+      saved_errno = errno;
+      unlinkat(parent_fd, temporary, 0);
+      errno = saved_errno;
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to publish patched file",
+                                  strerror(errno));
+    }
+    *out_published = 1;
+    if (unlinkat(parent_fd, temporary, 0) != 0) {
+      saved_errno = errno;
+      (void)unlinkat(parent_fd, temporary, 0);
+      errno = saved_errno;
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to finalize patched file",
+                                  strerror(errno));
+    }
+  } else if (renameat(parent_fd, temporary, parent_fd, name) != 0) {
+    saved_errno = errno;
+    unlinkat(parent_fd, temporary, 0);
+    errno = saved_errno;
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to publish patched file",
+                                strerror(errno));
+  } else {
+    *out_published = 1;
   }
   return CAI_OK;
 }
@@ -1403,6 +1452,7 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
   for (i = 0U; i < plan->count; i++) {
     cai_patch_change *change;
     int target_parent_fd;
+    int published;
     const char *target_name;
 
     change = &plan->items[i];
@@ -1414,8 +1464,14 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
                            : change->primary_parent_fd;
     target_name = change->resolved_move_path != NULL ? change->move_name
                                                      : change->primary_name;
-    rc = cai_patch_write_atomic(target_parent_fd, target_name, change->after,
-                                change->after_length, error);
+    published = 0;
+    rc = cai_patch_write_atomic(
+        target_parent_fd, target_name, change->after, change->after_length,
+        change->kind == CAI_PATCH_ADD || change->resolved_move_path != NULL,
+        &published, error);
+    if (published) {
+      change->target_published = 1;
+    }
     if (rc != CAI_OK) {
       goto rollback;
     }
@@ -1442,19 +1498,23 @@ rollback:
 
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_ADD) {
-      (void)unlinkat(change->primary_parent_fd, change->primary_name, 0);
+      if (change->target_published) {
+        (void)unlinkat(change->primary_parent_fd, change->primary_name, 0);
+      }
       continue;
     }
     if (change->before != NULL) {
       cai_error ignored;
+      int ignored_published;
 
       cai_error_init(&ignored);
-      (void)cai_patch_write_atomic(change->primary_parent_fd,
-                                   change->primary_name, change->before,
-                                   change->before_length, &ignored);
+      ignored_published = 0;
+      (void)cai_patch_write_atomic(
+          change->primary_parent_fd, change->primary_name, change->before,
+          change->before_length, 0, &ignored_published, &ignored);
       cai_error_cleanup(&ignored);
     }
-    if (change->resolved_move_path != NULL) {
+    if (change->resolved_move_path != NULL && change->target_published) {
       (void)unlinkat(change->move_parent_fd, change->move_name, 0);
     }
   }

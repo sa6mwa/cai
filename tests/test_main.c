@@ -24761,6 +24761,9 @@ static void test_agent_local_session_store(test_state *state) {
   char buffer[128];
   char scope_path[PATH_MAX];
   char file_path[PATH_MAX];
+  char opaque_scope_path[PATH_MAX];
+  char opaque_alpha_path[PATH_MAX];
+  char opaque_omega_path[PATH_MAX];
   char event_scope_path[PATH_MAX];
   char event_file_path[PATH_MAX];
   char newer_event_file_path[PATH_MAX];
@@ -24902,6 +24905,65 @@ static void test_agent_local_session_store(test_state *state) {
              "resume this steering input");
   cai_source_close(loaded);
   loaded = NULL;
+  reader.text = "{\"version\":4}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_opaque_alpha_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_opaque_alpha_checkpoint",
+               store.checkpoint(store.context, "team-alpha", "a-tied-session",
+                                source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  reader.text = "{\"version\":5}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_opaque_omega_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_opaque_omega_checkpoint",
+               store.checkpoint(store.context, "team-alpha", "z-tied-session",
+                                source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  (void)SHA256((const unsigned char *)"team-alpha", strlen("team-alpha"),
+               digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    opaque_scope_path[i * 2U] = hex[digest[i] >> 4U];
+    opaque_scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  opaque_scope_path[64] = '\0';
+  (void)snprintf(opaque_alpha_path, sizeof(opaque_alpha_path), "%s/%s/%s",
+                 template_directory, opaque_scope_path, "a-tied-session.jsonl");
+  (void)snprintf(opaque_omega_path, sizeof(opaque_omega_path), "%s/%s/%s",
+                 template_directory, opaque_scope_path, "z-tied-session.jsonl");
+  {
+    struct timespec tied_times[2];
+
+    memset(tied_times, 0, sizeof(tied_times));
+    tied_times[0].tv_sec = 1700000000L;
+    tied_times[1].tv_sec = 1700000000L;
+    if (utimensat(AT_FDCWD, opaque_alpha_path, tied_times, 0) != 0 ||
+        utimensat(AT_FDCWD, opaque_omega_path, tied_times, 0) != 0) {
+      test_fail(state, "local_session_store_tied_mtime", "utimensat failed");
+    }
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_opaque_load",
+             store.load_latest(store.context, "team-alpha", session_id,
+                               sizeof(session_id), &loaded, &loaded_sequence,
+                               &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_opaque_id", session_id,
+             "z-tied-session");
+  expect_int(state, "local_session_store_opaque_source", loaded != NULL, 1L);
+  cai_source_close(loaded);
+  loaded = NULL;
   {
     struct timespec pause_time;
 
@@ -24997,6 +25059,8 @@ static void test_agent_local_session_store(test_state *state) {
   cai_source_close(loaded);
   cai_agent_local_session_store_close(&store);
   unlink(file_path);
+  unlink(opaque_alpha_path);
+  unlink(opaque_omega_path);
   unlink(newer_event_file_path);
   unlink(incomplete_file_path);
   unlink(event_file_path);
@@ -25005,6 +25069,9 @@ static void test_agent_local_session_store(test_state *state) {
   rmdir(event_file_path);
   (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
                  scope_path);
+  rmdir(file_path);
+  (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
+                 opaque_scope_path);
   rmdir(file_path);
   rmdir(template_directory);
   cai_error_cleanup(&error);
@@ -25865,7 +25932,10 @@ static void test_patch_tool(test_state *state) {
   char eof_path[PATH_MAX];
   char alias_path[PATH_MAX];
   char ambiguous_path[PATH_MAX];
+  char race_path[PATH_MAX];
+  char race_temporary_path[PATH_MAX];
   char *contents;
+  char *race_patch;
   char *too_many_patch;
   cai_patch_tool_config config;
   cai_tool_registry *registry;
@@ -25876,6 +25946,9 @@ static void test_patch_tool(test_state *state) {
   cai_error error;
   size_t offset;
   size_t i;
+  size_t race_capacity;
+  size_t race_length;
+  pid_t race_pid;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
@@ -25890,6 +25963,7 @@ static void test_patch_tool(test_state *state) {
   snprintf(alias_path, sizeof(alias_path), "%s/alias.txt", dir_template);
   snprintf(ambiguous_path, sizeof(ambiguous_path), "%s/ambiguous.txt",
            dir_template);
+  snprintf(race_path, sizeof(race_path), "%s/raced.txt", dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -25946,6 +26020,100 @@ static void test_patch_tool(test_state *state) {
   contents = read_file_or_die(beta_path);
   expect_str(state, "patch_added_content", contents, "beta\n");
   free(contents);
+  race_capacity = 4U * 1024U * 1024U;
+  race_patch = (char *)malloc(race_capacity);
+  if (race_patch == NULL) {
+    test_fail(state, "patch_race_allocate", "allocation failed");
+  } else {
+    static const char begin_race_patch[] = "*** Begin Patch\n"
+                                           "*** Add File: raced.txt\n";
+    static const char end_race_patch[] = "*** End Patch";
+    int child_status;
+    int child_reaped;
+    int race_fd;
+    int saw_temporary;
+
+    race_length = strlen(begin_race_patch);
+    memcpy(race_patch, begin_race_patch, race_length);
+    while (race_length + 3U + sizeof(end_race_patch) <= race_capacity) {
+      race_patch[race_length++] = '+';
+      race_patch[race_length++] = 'x';
+      race_patch[race_length++] = '\n';
+    }
+    memcpy(race_patch + race_length, end_race_patch, sizeof(end_race_patch));
+    config.max_patch_bytes = race_capacity;
+    config.max_file_bytes = race_capacity;
+    race_pid = fork();
+    if (race_pid == 0) {
+      cai_error child_error;
+      int child_rc;
+
+      cai_error_init(&child_error);
+      child_rc = cai_apply_patch(&config, race_patch, NULL, &child_error);
+      cai_error_cleanup(&child_error);
+      _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+    }
+    if (race_pid < 0) {
+      test_fail(state, "patch_race_fork", "fork failed");
+    } else {
+      child_reaped = 0;
+      saw_temporary = 0;
+      (void)snprintf(race_temporary_path, sizeof(race_temporary_path),
+                     "%s/.cai-patch-%ld-0", dir_template, (long)race_pid);
+      for (i = 0U; i < 5000U; i++) {
+        struct timespec pause_time;
+
+        if (access(race_temporary_path, F_OK) == 0) {
+          saw_temporary = 1;
+          break;
+        }
+        if (waitpid(race_pid, &child_status, WNOHANG) == race_pid) {
+          child_reaped = 1;
+          break;
+        }
+        pause_time.tv_sec = 0;
+        pause_time.tv_nsec = 1000000L;
+        (void)nanosleep(&pause_time, NULL);
+      }
+      if (!saw_temporary) {
+        test_fail(state, "patch_race_temporary",
+                  "temporary file was not observed");
+      } else if (kill(race_pid, SIGSTOP) != 0 ||
+                 waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+                 !WIFSTOPPED(child_status)) {
+        test_fail(state, "patch_race_stop", "failed to stop patch writer");
+      } else {
+        race_fd = open(race_path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+        if (race_fd < 0 || write(race_fd, "external\n", 9U) != 9 ||
+            close(race_fd) != 0) {
+          if (race_fd >= 0) {
+            close(race_fd);
+          }
+          test_fail(state, "patch_race_create",
+                    "failed to create raced target");
+        }
+        if (kill(race_pid, SIGCONT) != 0) {
+          test_fail(state, "patch_race_continue",
+                    "failed to continue patch writer");
+        }
+      }
+      if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
+        child_reaped = 1;
+      }
+      if (!child_reaped || !WIFEXITED(child_status) ||
+          WEXITSTATUS(child_status) != 0) {
+        test_fail(state, "patch_race_rejected",
+                  "patch writer did not reject race");
+      }
+      contents = read_file_or_die(race_path);
+      expect_str(state, "patch_race_preserves_external", contents,
+                 "external\n");
+      free(contents);
+    }
+    free(race_patch);
+    config.max_patch_bytes = 0U;
+    config.max_file_bytes = 0U;
+  }
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "patch_preflight_failure",
@@ -26054,6 +26222,7 @@ static void test_patch_tool(test_state *state) {
   unlink(sections_path);
   unlink(renamed_path);
   unlink(ambiguous_path);
+  unlink(race_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
 }

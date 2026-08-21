@@ -757,7 +757,11 @@ Opening Smith without an explicit session ID lists sessions whose stored
 canonical absolute path equals the runtime workspace path and resumes the most
 recent resumable one when `resume_latest` is set. It never silently crosses
 workspace directories. A host may provide `session_scope` for a deliberate
-shared namespace; that exact supplied key then replaces directory matching.
+shared namespace; that exact supplied opaque key then replaces directory
+matching. The local JSONL store hashes every non-empty key without interpreting
+it as a filesystem path. If checkpoint mtimes tie, it chooses the
+lexicographically later session ID; generated XIDs preserve chronological order
+under that deterministic fallback.
 
 ### 11.3 Format
 
