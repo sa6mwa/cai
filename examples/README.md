@@ -130,8 +130,11 @@ CAI's wakeup descriptor in one poll loop, so its normal active-turn input uses
 the steering API path. `/queue <prompt>` is an examples-only convenience for
 the separate queued-normal-turn API. The small Lua example intentionally keeps
 blocking `io.read` input; a Lua TUI or GUI calls the same explicit methods from
-its own event loop. CAI itself does not parse slash commands: hosts select
-`submit_steering` or `submit_queued` directly.
+its own event loop. Both examples also intercept `/export` themselves and use
+the live runtime default-file receiver to create
+`cai-session-<xid>.md` in the workspace. CAI itself does not parse slash
+commands: hosts select `submit_steering`, `submit_queued`, or
+`export_markdown` directly.
 
 For an isolated review run, C hosts set
 `cai_agent_runtime_config.preset = CAI_SMITH_REVIEW_PRESET`; Lua hosts use

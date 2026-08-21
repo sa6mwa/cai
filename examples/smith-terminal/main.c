@@ -172,6 +172,7 @@ int main(void) {
   char *dotenv_api_key;
   char workspace[4096];
   char line[4096];
+  char exported_path[8192];
   int exit_requested;
   int prompt_shown;
   int wakeup_fd;
@@ -247,6 +248,20 @@ int main(void) {
     line[strcspn(line, "\r\n")] = '\0';
     if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0) {
       exit_requested = 1;
+      continue;
+    }
+    if (strcmp(line, "/export") == 0) {
+      rc = cai_agent_runtime_export_markdown_file(
+          runtime, "cai", NULL, exported_path, sizeof(exported_path), &error);
+      if (rc == CAI_OK) {
+        fprintf(stdout, GRAY "Exported %s" RESET "\n", exported_path);
+      } else {
+        fprintf(stderr, "smith-terminal: export failed: %s\n",
+                error.message != NULL ? error.message : "unknown error");
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        rc = CAI_OK;
+      }
       continue;
     }
     if (line[0] == '\0') {

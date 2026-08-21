@@ -866,7 +866,7 @@ do
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
   for _, method in ipairs({ "submit", "submit_steering", "submit_queued", "pump", "state",
-    "session_id", "wakeup_fd", "close" }) do
+    "session_id", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
   end
@@ -879,6 +879,31 @@ do
   assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
   assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")
   assert(type(runtime:wakeup_fd()) == "number", "Lua Smith runtime wakeup fd")
+  do
+    local chunks = {}
+    assert_ok(runtime:export_markdown(function(chunk)
+      chunks[#chunks + 1] = chunk
+      return true
+    end), nil, "Lua Smith runtime streaming export")
+    assert_eq(table.concat(chunks), "# CAI conversation\n\n",
+      "Lua Smith runtime empty export")
+    local export_path = os.tmpname()
+    os.remove(export_path)
+    assert_eq(assert_ok(runtime:export_markdown_file("cai", export_path), nil,
+      "Lua Smith runtime explicit export"), export_path,
+      "Lua Smith runtime export path")
+    local fp = assert(io.open(export_path, "rb"))
+    assert_eq(fp:read("*a"), "# CAI conversation\n\n",
+      "Lua Smith runtime export file content")
+    fp:close()
+    os.remove(export_path)
+    export_path = os.tmpname()
+    os.remove(export_path)
+    assert_eq(assert_ok(runtime:export_markdown_file(nil, export_path), nil,
+      "Lua Smith runtime explicit export without app name"), export_path,
+      "Lua Smith runtime export path without app name")
+    os.remove(export_path)
+  end
   do
     local value, err = dummy_client:close()
     assert_not_ok(value, err, "client close must reject a live Lua agent runtime")

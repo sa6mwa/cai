@@ -15,6 +15,22 @@ typedef struct cai_history_sink_context {
   lonejson_spooled *spool;
 } cai_history_sink_context;
 
+typedef struct cai_history_normalizer {
+  cai_session *session;
+  lonejson_spooled *history;
+  lonejson_spooled record;
+  lonejson_writer writer;
+  cai_history_sink_context sink_context;
+  cai_error *error;
+  char key[4096];
+  size_t key_length;
+  size_t depth;
+  int root_array_seen;
+  int writer_active;
+  int has_record;
+  int rc;
+} cai_history_normalizer;
+
 typedef struct cai_lonejson_cai_sink_context {
   cai_sink *sink;
   cai_error *error;
@@ -125,6 +141,8 @@ static int cai_history_append_array_record_spooled(cai_session *session,
 static int cai_history_append_array_record_to_spool(
     cai_session *session, lonejson_spooled *history,
     const lonejson_spooled *json, cai_error *error);
+static int cai_history_append_one_array_record_to_spool(
+    lonejson_spooled *history, const lonejson_spooled *json, cai_error *error);
 static lonejson *cai_agent_history_runtime(cai_session *session);
 static void cai_history_init_spooled(cai_session *session,
                                      lonejson_spooled *spool);
@@ -1841,16 +1859,465 @@ static int cai_history_append_array_record_spooled(cai_session *session,
       session, &CAI_SESSION_IMPL(session)->history, json, error);
 }
 
+static lonejson_status
+cai_history_normalizer_fail(cai_history_normalizer *normalizer,
+                            const char *message, lonejson_error *json_error) {
+  if (normalizer->rc == CAI_OK) {
+    normalizer->rc =
+        cai_set_error_detail(normalizer->error, CAI_ERR_TRANSPORT, message,
+                             json_error != NULL ? json_error->message : NULL);
+  }
+  return LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static lonejson_status cai_history_normalizer_writer_status(
+    cai_history_normalizer *normalizer, lonejson_status status,
+    const char *message, lonejson_error *json_error) {
+  return status == LONEJSON_STATUS_OK
+             ? LONEJSON_STATUS_OK
+             : cai_history_normalizer_fail(normalizer, message, json_error);
+}
+
+static lonejson_status
+cai_history_normalizer_start_item(cai_history_normalizer *normalizer,
+                                  lonejson_error *json_error) {
+  lonejson *runtime;
+  lonejson_status status;
+
+  if (normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "invalid history item structure", json_error);
+  }
+  runtime = cai_agent_history_runtime(normalizer->session);
+  memset(&normalizer->record, 0, sizeof(normalizer->record));
+  cai_history_init_spooled(normalizer->session, &normalizer->record);
+  normalizer->has_record = 1;
+  normalizer->sink_context.spool = &normalizer->record;
+  status = runtime->writer_init_sink(runtime, &normalizer->writer,
+                                     cai_history_lonejson_sink,
+                                     &normalizer->sink_context, json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = normalizer->writer.begin_array(&normalizer->writer, json_error);
+  }
+  if (status != LONEJSON_STATUS_OK) {
+    if (normalizer->writer.cleanup != NULL) {
+      normalizer->writer.cleanup(&normalizer->writer);
+    }
+    normalizer->record.cleanup(&normalizer->record);
+    memset(&normalizer->record, 0, sizeof(normalizer->record));
+    normalizer->has_record = 0;
+    return cai_history_normalizer_fail(
+        normalizer, "failed to start history item record", json_error);
+  }
+  normalizer->writer_active = 1;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_normalizer_finish_item(cai_history_normalizer *normalizer,
+                                   lonejson_error *json_error) {
+  lonejson_status status;
+
+  if (!normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "invalid history item structure", json_error);
+  }
+  status = normalizer->writer.end_array(&normalizer->writer, json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = normalizer->writer.finish(&normalizer->writer, json_error);
+  }
+  normalizer->writer.cleanup(&normalizer->writer);
+  normalizer->writer_active = 0;
+  if (status == LONEJSON_STATUS_OK) {
+    normalizer->rc = cai_history_append_one_array_record_to_spool(
+        normalizer->history, &normalizer->record, normalizer->error);
+  }
+  normalizer->record.cleanup(&normalizer->record);
+  memset(&normalizer->record, 0, sizeof(normalizer->record));
+  normalizer->has_record = 0;
+  if (normalizer->rc != CAI_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return cai_history_normalizer_writer_status(
+      normalizer, status, "failed to finish history item record", json_error);
+}
+
+static lonejson_status
+cai_history_normalizer_object_begin(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 0U) {
+    return cai_history_normalizer_fail(normalizer,
+                                       "history value must be an array", error);
+  }
+  if (normalizer->depth == 1U) {
+    status = cai_history_normalizer_start_item(normalizer, error);
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+  }
+  status = normalizer->writer.begin_object(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history object",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  normalizer->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_normalizer_object_end(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth < 2U || !normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "invalid history object structure", error);
+  }
+  status = normalizer->writer.end_object(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history object",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  normalizer->depth--;
+  return normalizer->depth == 1U
+             ? cai_history_normalizer_finish_item(normalizer, error)
+             : LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_normalizer_array_begin(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 0U) {
+    if (normalizer->root_array_seen) {
+      return cai_history_normalizer_fail(
+          normalizer, "invalid history array structure", error);
+    }
+    normalizer->root_array_seen = 1;
+    normalizer->depth = 1U;
+    return LONEJSON_STATUS_OK;
+  }
+  if (normalizer->depth == 1U) {
+    status = cai_history_normalizer_start_item(normalizer, error);
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+  }
+  status = normalizer->writer.begin_array(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history array",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  normalizer->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_normalizer_array_end(void *user,
+                                                        lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 1U && !normalizer->writer_active) {
+    normalizer->depth = 0U;
+    return LONEJSON_STATUS_OK;
+  }
+  if (normalizer->depth < 2U || !normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "invalid history array structure", error);
+  }
+  status = normalizer->writer.end_array(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history array",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  normalizer->depth--;
+  return normalizer->depth == 1U
+             ? cai_history_normalizer_finish_item(normalizer, error)
+             : LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_normalizer_key_begin(void *user,
+                                                        lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+
+  (void)error;
+  normalizer = (cai_history_normalizer *)user;
+  normalizer->key_length = 0U;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_normalizer_key_chunk(void *user,
+                                                        const char *data,
+                                                        size_t length,
+                                                        lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (length > sizeof(normalizer->key) - 1U - normalizer->key_length) {
+    return cai_history_normalizer_fail(
+        normalizer, "history object key exceeds limit", error);
+  }
+  memcpy(normalizer->key + normalizer->key_length, data, length);
+  normalizer->key_length += length;
+  normalizer->key[normalizer->key_length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_normalizer_key_end(void *user,
+                                                      lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (!normalizer->writer_active) {
+    return cai_history_normalizer_fail(normalizer,
+                                       "history key is outside an item", error);
+  }
+  status = normalizer->writer.key(&normalizer->writer, normalizer->key,
+                                  normalizer->key_length, error);
+  return cai_history_normalizer_writer_status(
+      normalizer, status, "failed to stream history key", error);
+}
+
+static lonejson_status
+cai_history_normalizer_string_begin(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 1U) {
+    status = cai_history_normalizer_start_item(normalizer, error);
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+  }
+  if (!normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "history value is outside an item", error);
+  }
+  status = normalizer->writer.string_begin(&normalizer->writer, error);
+  return cai_history_normalizer_writer_status(
+      normalizer, status, "failed to stream history string", error);
+}
+
+static lonejson_status
+cai_history_normalizer_string_chunk(void *user, const char *data, size_t length,
+                                    lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  status =
+      normalizer->writer.string_chunk(&normalizer->writer, data, length, error);
+  return cai_history_normalizer_writer_status(
+      normalizer, status, "failed to stream history string", error);
+}
+
+static lonejson_status
+cai_history_normalizer_string_end(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  status = normalizer->writer.string_end(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history string",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return normalizer->depth == 1U
+             ? cai_history_normalizer_finish_item(normalizer, error)
+             : LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_normalizer_number_begin(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 1U) {
+    status = cai_history_normalizer_start_item(normalizer, error);
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+  }
+  if (!normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "history value is outside an item", error);
+  }
+  status = normalizer->writer.number_begin(&normalizer->writer, error);
+  return cai_history_normalizer_writer_status(
+      normalizer, status, "failed to stream history number", error);
+}
+
+static lonejson_status
+cai_history_normalizer_number_chunk(void *user, const char *data, size_t length,
+                                    lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  status =
+      normalizer->writer.number_chunk(&normalizer->writer, data, length, error);
+  return cai_history_normalizer_writer_status(
+      normalizer, status, "failed to stream history number", error);
+}
+
+static lonejson_status
+cai_history_normalizer_number_end(void *user, lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  status = normalizer->writer.number_end(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history number",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return normalizer->depth == 1U
+             ? cai_history_normalizer_finish_item(normalizer, error)
+             : LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_normalizer_boolean(void *user, int value,
+                                                      lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 1U) {
+    status = cai_history_normalizer_start_item(normalizer, error);
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+  }
+  if (!normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "history value is outside an item", error);
+  }
+  status = normalizer->writer.bool_fn(&normalizer->writer, value, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history boolean",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return normalizer->depth == 1U
+             ? cai_history_normalizer_finish_item(normalizer, error)
+             : LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_normalizer_null(void *user,
+                                                   lonejson_error *error) {
+  cai_history_normalizer *normalizer;
+  lonejson_status status;
+
+  normalizer = (cai_history_normalizer *)user;
+  if (normalizer->depth == 1U) {
+    status = cai_history_normalizer_start_item(normalizer, error);
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+  }
+  if (!normalizer->writer_active) {
+    return cai_history_normalizer_fail(
+        normalizer, "history value is outside an item", error);
+  }
+  status = normalizer->writer.null_fn(&normalizer->writer, error);
+  if (cai_history_normalizer_writer_status(normalizer, status,
+                                           "failed to stream history null",
+                                           error) != LONEJSON_STATUS_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return normalizer->depth == 1U
+             ? cai_history_normalizer_finish_item(normalizer, error)
+             : LONEJSON_STATUS_OK;
+}
+
 static int cai_history_append_array_record_to_spool(
     cai_session *session, lonejson_spooled *history,
     const lonejson_spooled *json, cai_error *error) {
+  cai_spooled_reader_context reader_context;
+  cai_history_normalizer normalizer;
+  lonejson_value_visitor visitor;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (json == NULL || json->size_fn(json) == 0U) {
+    return CAI_OK;
+  }
+  memset(&reader_context, 0, sizeof(reader_context));
+  reader_context.cursor = *json;
+  lonejson_error_init(&json_error);
+  if (reader_context.cursor.rewind(&reader_context.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind history items",
+                                json_error.message);
+  }
+  memset(&normalizer, 0, sizeof(normalizer));
+  normalizer.session = session;
+  normalizer.history = history;
+  normalizer.error = error;
+  normalizer.rc = CAI_OK;
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_history_normalizer_object_begin;
+  visitor.object_end = cai_history_normalizer_object_end;
+  visitor.object_key_begin = cai_history_normalizer_key_begin;
+  visitor.object_key_chunk = cai_history_normalizer_key_chunk;
+  visitor.object_key_end = cai_history_normalizer_key_end;
+  visitor.array_begin = cai_history_normalizer_array_begin;
+  visitor.array_end = cai_history_normalizer_array_end;
+  visitor.string_begin = cai_history_normalizer_string_begin;
+  visitor.string_chunk = cai_history_normalizer_string_chunk;
+  visitor.string_end = cai_history_normalizer_string_end;
+  visitor.number_begin = cai_history_normalizer_number_begin;
+  visitor.number_chunk = cai_history_normalizer_number_chunk;
+  visitor.number_end = cai_history_normalizer_number_end;
+  visitor.boolean_value = cai_history_normalizer_boolean;
+  visitor.null_value = cai_history_normalizer_null;
+  lonejson_error_init(&json_error);
+  status = cai_agent_history_runtime(session)->visit_value_reader(
+      cai_agent_history_runtime(session), cai_history_spooled_reader,
+      &reader_context, &visitor, &normalizer, &json_error);
+  if (normalizer.writer_active) {
+    normalizer.writer.cleanup(&normalizer.writer);
+  }
+  if (normalizer.has_record) {
+    normalizer.record.cleanup(&normalizer.record);
+  }
+  if (normalizer.rc != CAI_OK) {
+    return normalizer.rc;
+  }
+  if (status != LONEJSON_STATUS_OK || !normalizer.root_array_seen ||
+      normalizer.depth != 0U) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to parse history item array",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int cai_history_append_one_array_record_to_spool(
+    lonejson_spooled *history, const lonejson_spooled *json, cai_error *error) {
   cai_history_sink_context sink_context;
   lonejson_error json_error;
   char header[32];
   size_t header_length;
   int rc;
 
-  (void)session;
   if (json == NULL || json->size_fn(json) == 0U) {
     return CAI_OK;
   }

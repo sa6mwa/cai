@@ -1180,6 +1180,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_goal_budget
     agent_local_session_store
     agent_runtime_resume
+    agent_runtime_markdown_export
     goal_tools
     goal_create_allocation_failure
     patch_tool

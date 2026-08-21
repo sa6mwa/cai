@@ -25,6 +25,9 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_DEFAULT_TURN_LIMIT 32U
 #define CAI_RUNTIME_XID_RAW_BYTES 12U
 #define CAI_RUNTIME_XID_TEXT_BYTES 20U
+#define CAI_RUNTIME_EXPORT_MAX_DEPTH 128U
+#define CAI_RUNTIME_EXPORT_KEY_BYTES 64U
+#define CAI_RUNTIME_EXPORT_FIELD_BYTES 160U
 
 typedef struct cai_runtime_event_node {
   cai_agent_runtime_event event;
@@ -62,6 +65,73 @@ typedef enum cai_runtime_input_kind {
   CAI_RUNTIME_INPUT_QUEUED_TURN = 2
 } cai_runtime_input_kind;
 
+typedef enum cai_runtime_export_container_kind {
+  CAI_RUNTIME_EXPORT_OBJECT = 1,
+  CAI_RUNTIME_EXPORT_ARRAY = 2
+} cai_runtime_export_container_kind;
+
+typedef struct cai_runtime_export_container {
+  int kind;
+  int root_array;
+  int content_object;
+  int summary_object;
+  int output_part_object;
+  char owner_key[CAI_RUNTIME_EXPORT_KEY_BYTES];
+  char key[CAI_RUNTIME_EXPORT_KEY_BYTES];
+  size_t key_length;
+  int key_truncated;
+  char content_type[CAI_RUNTIME_EXPORT_FIELD_BYTES];
+  size_t content_type_length;
+  int content_type_truncated;
+  int content_written;
+} cai_runtime_export_container;
+
+typedef struct cai_runtime_exporter {
+  cai_sink *sink;
+  cai_error *error;
+  int rc;
+  cai_runtime_export_container stack[CAI_RUNTIME_EXPORT_MAX_DEPTH];
+  size_t depth;
+  size_t item_depth;
+  int item_active;
+  char item_type[CAI_RUNTIME_EXPORT_FIELD_BYTES];
+  size_t item_type_length;
+  int item_type_truncated;
+  char item_role[CAI_RUNTIME_EXPORT_FIELD_BYTES];
+  size_t item_role_length;
+  int item_role_truncated;
+  char item_name[CAI_RUNTIME_EXPORT_FIELD_BYTES];
+  size_t item_name_length;
+  int item_name_truncated;
+  char *capture;
+  size_t *capture_length;
+  int *capture_truncated;
+  int stream_kind;
+  int item_heading_written;
+  int item_activity_written;
+  int item_content_written;
+  int code_at_line_start;
+  size_t record_item_index;
+  size_t target_item_index;
+  int target_item_found;
+  int metadata_only;
+  int preserve_item_metadata;
+} cai_runtime_exporter;
+
+typedef struct cai_runtime_spooled_record_reader {
+  lonejson_spooled cursor;
+  unsigned char buffer[4096];
+  size_t offset;
+  size_t length;
+  int eof;
+} cai_runtime_spooled_record_reader;
+
+typedef struct cai_runtime_history_record_reader {
+  cai_runtime_spooled_record_reader *records;
+  unsigned long remaining;
+  cai_error *error;
+} cai_runtime_history_record_reader;
+
 struct cai_agent_runtime {
   pthread_t owner_thread;
   pthread_t worker_thread;
@@ -81,6 +151,7 @@ struct cai_agent_runtime {
   cai_agent_session_store local_store;
   const cai_agent_session_store *session_store;
   int owns_local_store;
+  char *workspace_directory;
   char *session_scope;
   char *session_id;
   unsigned long long applied_event_sequence;
@@ -1616,6 +1687,784 @@ static void *cai_runtime_worker(void *context) {
   return NULL;
 }
 
+static int cai_runtime_export_write(cai_runtime_exporter *exporter,
+                                    const void *bytes, size_t count) {
+  if (exporter->rc != CAI_OK || count == 0U) {
+    return exporter->rc;
+  }
+  if (exporter->metadata_only) {
+    return CAI_OK;
+  }
+  exporter->rc = cai_sink_write(exporter->sink, bytes, count, exporter->error);
+  return exporter->rc;
+}
+
+static int cai_runtime_export_literal(cai_runtime_exporter *exporter,
+                                      const char *text) {
+  return cai_runtime_export_write(exporter, text, strlen(text));
+}
+
+static int cai_runtime_export_write_text(cai_runtime_exporter *exporter,
+                                         const char *data, size_t length) {
+  size_t start;
+  size_t i;
+
+  start = 0U;
+  for (i = 0U; i < length; i++) {
+    unsigned char ch;
+
+    ch = (unsigned char)data[i];
+    if ((ch < 0x20U && ch != '\n' && ch != '\t') || ch == 0x7fU) {
+      if (i > start) {
+        (void)cai_runtime_export_write(exporter, data + start, i - start);
+      }
+      start = i + 1U;
+    }
+  }
+  if (start < length) {
+    (void)cai_runtime_export_write(exporter, data + start, length - start);
+  }
+  return exporter->rc;
+}
+
+static int cai_runtime_export_write_code(cai_runtime_exporter *exporter,
+                                         const char *data, size_t length) {
+  size_t start;
+  size_t i;
+
+  start = 0U;
+  for (i = 0U; i < length && exporter->rc == CAI_OK; i++) {
+    unsigned char ch;
+
+    ch = (unsigned char)data[i];
+    if (exporter->code_at_line_start) {
+      (void)cai_runtime_export_literal(exporter, "    ");
+      exporter->code_at_line_start = 0;
+    }
+    if ((ch < 0x20U && ch != '\n' && ch != '\t') || ch == 0x7fU) {
+      if (i > start) {
+        (void)cai_runtime_export_write(exporter, data + start, i - start);
+      }
+      start = i + 1U;
+    }
+    if (ch == '\n') {
+      if (i + 1U > start) {
+        (void)cai_runtime_export_write(exporter, data + start, i + 1U - start);
+      }
+      start = i + 1U;
+      exporter->code_at_line_start = 1;
+    }
+  }
+  if (start < length && exporter->rc == CAI_OK) {
+    (void)cai_runtime_export_write(exporter, data + start, length - start);
+  }
+  return exporter->rc;
+}
+
+static void cai_runtime_export_capture_append(char *destination, size_t *length,
+                                              int *truncated, const char *data,
+                                              size_t count) {
+  size_t available;
+  size_t copy_count;
+
+  if (*truncated || *length >= CAI_RUNTIME_EXPORT_FIELD_BYTES - 1U) {
+    *truncated = 1;
+    return;
+  }
+  available = CAI_RUNTIME_EXPORT_FIELD_BYTES - 1U - *length;
+  copy_count = count < available ? count : available;
+  if (copy_count > 0U) {
+    memcpy(destination + *length, data, copy_count);
+    *length += copy_count;
+    destination[*length] = '\0';
+  }
+  if (copy_count != count) {
+    *truncated = 1;
+  }
+}
+
+static cai_runtime_export_container *
+cai_runtime_export_top(cai_runtime_exporter *exporter) {
+  return exporter->depth > 0U ? &exporter->stack[exporter->depth - 1U] : NULL;
+}
+
+static int cai_runtime_export_key_is(const cai_runtime_export_container *value,
+                                     const char *key) {
+  return value != NULL && !value->key_truncated && strcmp(value->key, key) == 0;
+}
+
+static int cai_runtime_export_string_is(const char *value, size_t length,
+                                        int truncated, const char *expected) {
+  return !truncated && strlen(expected) == length &&
+         memcmp(value, expected, length) == 0;
+}
+
+static int cai_runtime_export_item_is(const cai_runtime_exporter *exporter,
+                                      const char *type) {
+  return cai_runtime_export_string_is(exporter->item_type,
+                                      exporter->item_type_length,
+                                      exporter->item_type_truncated, type);
+}
+
+static int cai_runtime_export_role_is(const cai_runtime_exporter *exporter,
+                                      const char *role) {
+  return cai_runtime_export_string_is(exporter->item_role,
+                                      exporter->item_role_length,
+                                      exporter->item_role_truncated, role);
+}
+
+static int cai_runtime_export_begin_message(cai_runtime_exporter *exporter) {
+  const char *heading;
+
+  if (exporter->item_heading_written) {
+    return CAI_OK;
+  }
+  if (cai_runtime_export_role_is(exporter, "user")) {
+    heading = "## User\n\n";
+  } else if (cai_runtime_export_role_is(exporter, "assistant")) {
+    heading = "## Assistant\n\n";
+  } else if (cai_runtime_export_role_is(exporter, "developer")) {
+    heading = "## Developer\n\n";
+  } else if (cai_runtime_export_role_is(exporter, "system")) {
+    heading = "## System\n\n";
+  } else {
+    heading = "## Message\n\n";
+  }
+  exporter->item_heading_written = 1;
+  return cai_runtime_export_literal(exporter, heading);
+}
+
+static int cai_runtime_export_begin_reasoning(cai_runtime_exporter *exporter) {
+  if (!exporter->item_heading_written) {
+    exporter->item_heading_written = 1;
+    (void)cai_runtime_export_literal(exporter, "## Reasoning\n\n");
+  }
+  return exporter->rc;
+}
+
+static int cai_runtime_export_begin_activity(cai_runtime_exporter *exporter,
+                                             int output) {
+  if (!exporter->item_activity_written) {
+    (void)cai_runtime_export_literal(exporter, "## Activity\n\n");
+    exporter->item_activity_written = 1;
+  }
+  if (!exporter->item_heading_written) {
+    if (output) {
+      (void)cai_runtime_export_literal(exporter, "### Tool output\n\n");
+    } else {
+      (void)cai_runtime_export_literal(exporter, "### Tool call");
+      if (exporter->item_name_length > 0U) {
+        (void)cai_runtime_export_literal(exporter, ": ");
+        (void)cai_runtime_export_write_text(exporter, exporter->item_name,
+                                            exporter->item_name_length);
+      }
+      (void)cai_runtime_export_literal(exporter, "\n\n");
+    }
+    exporter->item_heading_written = 1;
+    exporter->code_at_line_start = 1;
+  }
+  return exporter->rc;
+}
+
+static lonejson_status cai_runtime_export_object_begin(void *user,
+                                                       lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+  cai_runtime_export_container *parent;
+  cai_runtime_export_container *value;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  if (exporter->depth >= CAI_RUNTIME_EXPORT_MAX_DEPTH) {
+    exporter->rc = cai_set_error(exporter->error, CAI_ERR_LIMIT,
+                                 "conversation export nesting is too deep");
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  parent = cai_runtime_export_top(exporter);
+  value = &exporter->stack[exporter->depth++];
+  memset(value, 0, sizeof(*value));
+  value->kind = CAI_RUNTIME_EXPORT_OBJECT;
+  if (parent != NULL && parent->kind == CAI_RUNTIME_EXPORT_ARRAY &&
+      parent->root_array) {
+    if (exporter->record_item_index++ == exporter->target_item_index) {
+      exporter->item_active = 1;
+      exporter->target_item_found = 1;
+      exporter->item_depth = exporter->depth;
+      if (!exporter->preserve_item_metadata) {
+        exporter->item_type_length = 0U;
+        exporter->item_type_truncated = 0;
+        exporter->item_type[0] = '\0';
+        exporter->item_role_length = 0U;
+        exporter->item_role_truncated = 0;
+        exporter->item_role[0] = '\0';
+        exporter->item_name_length = 0U;
+        exporter->item_name_truncated = 0;
+        exporter->item_name[0] = '\0';
+      }
+      exporter->item_heading_written = 0;
+      exporter->item_activity_written = 0;
+      exporter->item_content_written = 0;
+      exporter->code_at_line_start = 0;
+    }
+  } else if (parent != NULL && parent->kind == CAI_RUNTIME_EXPORT_ARRAY &&
+             strcmp(parent->owner_key, "content") == 0) {
+    value->content_object = 1;
+  } else if (parent != NULL && parent->kind == CAI_RUNTIME_EXPORT_ARRAY &&
+             strcmp(parent->owner_key, "summary") == 0) {
+    value->summary_object = 1;
+  } else if (parent != NULL && parent->kind == CAI_RUNTIME_EXPORT_ARRAY &&
+             strcmp(parent->owner_key, "output") == 0) {
+    value->output_part_object = 1;
+  } else if (parent != NULL && parent->kind == CAI_RUNTIME_EXPORT_OBJECT &&
+             exporter->item_active &&
+             exporter->item_depth == exporter->depth - 1U &&
+             cai_runtime_export_key_is(parent, "output")) {
+    (void)cai_runtime_export_begin_activity(exporter, 1);
+    (void)cai_runtime_export_literal(exporter,
+                                     "*[non-text attachment omitted]*\n\n");
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_runtime_export_object_end(void *user,
+                                                     lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+  cai_runtime_export_container *value;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  value = cai_runtime_export_top(exporter);
+  if (value == NULL || value->kind != CAI_RUNTIME_EXPORT_OBJECT) {
+    exporter->rc = cai_set_error(exporter->error, CAI_ERR_PROTOCOL,
+                                 "invalid conversation export structure");
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  if (exporter->item_active && value->content_object &&
+      !value->content_written && value->content_type_length > 0U &&
+      !cai_runtime_export_string_is(
+          value->content_type, value->content_type_length,
+          value->content_type_truncated, "input_text") &&
+      !cai_runtime_export_string_is(
+          value->content_type, value->content_type_length,
+          value->content_type_truncated, "output_text") &&
+      !cai_runtime_export_string_is(value->content_type,
+                                    value->content_type_length,
+                                    value->content_type_truncated, "refusal")) {
+    (void)cai_runtime_export_begin_message(exporter);
+    (void)cai_runtime_export_literal(exporter,
+                                     "*[non-text attachment omitted]*\n\n");
+  } else if (exporter->item_active && value->output_part_object &&
+             !value->content_written) {
+    (void)cai_runtime_export_begin_activity(exporter, 1);
+    (void)cai_runtime_export_literal(exporter,
+                                     "*[non-text attachment omitted]*\n\n");
+  }
+  if (exporter->item_active && exporter->item_depth == exporter->depth) {
+    if (!exporter->item_heading_written &&
+        cai_runtime_export_item_is(exporter, "function_call")) {
+      (void)cai_runtime_export_begin_activity(exporter, 0);
+      (void)cai_runtime_export_literal(exporter, "\n");
+    }
+    exporter->item_active = 0;
+  }
+  exporter->depth--;
+  return exporter->rc == CAI_OK ? LONEJSON_STATUS_OK
+                                : LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static lonejson_status cai_runtime_export_array_begin(void *user,
+                                                      lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+  cai_runtime_export_container *parent;
+  cai_runtime_export_container *value;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  if (exporter->depth >= CAI_RUNTIME_EXPORT_MAX_DEPTH) {
+    exporter->rc = cai_set_error(exporter->error, CAI_ERR_LIMIT,
+                                 "conversation export nesting is too deep");
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  parent = cai_runtime_export_top(exporter);
+  value = &exporter->stack[exporter->depth++];
+  memset(value, 0, sizeof(*value));
+  value->kind = CAI_RUNTIME_EXPORT_ARRAY;
+  value->root_array = parent == NULL;
+  if (parent != NULL && parent->kind == CAI_RUNTIME_EXPORT_OBJECT) {
+    memcpy(value->owner_key, parent->key, sizeof(value->owner_key));
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_runtime_export_array_end(void *user,
+                                                    lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+  cai_runtime_export_container *value;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  value = cai_runtime_export_top(exporter);
+  if (value == NULL || value->kind != CAI_RUNTIME_EXPORT_ARRAY) {
+    exporter->rc = cai_set_error(exporter->error, CAI_ERR_PROTOCOL,
+                                 "invalid conversation export structure");
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  exporter->depth--;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_runtime_export_key_begin(void *user,
+                                                    lonejson_error *error) {
+  cai_runtime_export_container *value;
+
+  (void)error;
+  value = cai_runtime_export_top((cai_runtime_exporter *)user);
+  if (value != NULL && value->kind == CAI_RUNTIME_EXPORT_OBJECT) {
+    value->key_length = 0U;
+    value->key_truncated = 0;
+    value->key[0] = '\0';
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_runtime_export_key_chunk(void *user,
+                                                    const char *data,
+                                                    size_t length,
+                                                    lonejson_error *error) {
+  cai_runtime_export_container *value;
+
+  (void)error;
+  value = cai_runtime_export_top((cai_runtime_exporter *)user);
+  if (value != NULL && value->kind == CAI_RUNTIME_EXPORT_OBJECT &&
+      !value->key_truncated) {
+    size_t available;
+    size_t copy_count;
+
+    available = sizeof(value->key) - 1U - value->key_length;
+    copy_count = length < available ? length : available;
+    if (copy_count > 0U) {
+      memcpy(value->key + value->key_length, data, copy_count);
+      value->key_length += copy_count;
+      value->key[value->key_length] = '\0';
+    }
+    if (copy_count != length) {
+      value->key_truncated = 1;
+    }
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_runtime_export_string_begin(void *user,
+                                                       lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+  cai_runtime_export_container *value;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  value = cai_runtime_export_top(exporter);
+  exporter->capture = NULL;
+  exporter->capture_length = NULL;
+  exporter->capture_truncated = NULL;
+  exporter->stream_kind = 0;
+  if (value == NULL || value->kind != CAI_RUNTIME_EXPORT_OBJECT ||
+      !exporter->item_active) {
+    return LONEJSON_STATUS_OK;
+  }
+  if (exporter->item_depth == exporter->depth) {
+    if (cai_runtime_export_key_is(value, "type")) {
+      if (!exporter->preserve_item_metadata) {
+        exporter->capture = exporter->item_type;
+        exporter->capture_length = &exporter->item_type_length;
+        exporter->capture_truncated = &exporter->item_type_truncated;
+      }
+    } else if (cai_runtime_export_key_is(value, "role")) {
+      if (!exporter->preserve_item_metadata) {
+        exporter->capture = exporter->item_role;
+        exporter->capture_length = &exporter->item_role_length;
+        exporter->capture_truncated = &exporter->item_role_truncated;
+      }
+    } else if (cai_runtime_export_key_is(value, "name")) {
+      if (!exporter->preserve_item_metadata) {
+        exporter->capture = exporter->item_name;
+        exporter->capture_length = &exporter->item_name_length;
+        exporter->capture_truncated = &exporter->item_name_truncated;
+      }
+    } else if (cai_runtime_export_key_is(value, "arguments") ||
+               cai_runtime_export_key_is(value, "input")) {
+      (void)cai_runtime_export_begin_activity(exporter, 0);
+      exporter->stream_kind = 2;
+    } else if (cai_runtime_export_key_is(value, "output")) {
+      (void)cai_runtime_export_begin_activity(exporter, 1);
+      exporter->stream_kind = 2;
+    } else if (cai_runtime_export_key_is(value, "summary")) {
+      (void)cai_runtime_export_begin_reasoning(exporter);
+      exporter->stream_kind = 3;
+    }
+  } else if (value->content_object) {
+    if (cai_runtime_export_key_is(value, "type")) {
+      exporter->capture = value->content_type;
+      exporter->capture_length = &value->content_type_length;
+      exporter->capture_truncated = &value->content_type_truncated;
+    } else if (cai_runtime_export_key_is(value, "text") ||
+               cai_runtime_export_key_is(value, "refusal")) {
+      (void)cai_runtime_export_begin_message(exporter);
+      value->content_written = 1;
+      exporter->item_content_written = 1;
+      exporter->stream_kind = 1;
+    }
+  } else if (value->output_part_object) {
+    if (cai_runtime_export_key_is(value, "type")) {
+      exporter->capture = value->content_type;
+      exporter->capture_length = &value->content_type_length;
+      exporter->capture_truncated = &value->content_type_truncated;
+    } else if (cai_runtime_export_key_is(value, "text") ||
+               cai_runtime_export_key_is(value, "refusal")) {
+      (void)cai_runtime_export_begin_activity(exporter, 1);
+      value->content_written = 1;
+      exporter->stream_kind = 2;
+    }
+  } else if (value->summary_object &&
+             cai_runtime_export_key_is(value, "text")) {
+    (void)cai_runtime_export_begin_reasoning(exporter);
+    exporter->stream_kind = 3;
+  }
+  return exporter->rc == CAI_OK ? LONEJSON_STATUS_OK
+                                : LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static lonejson_status cai_runtime_export_string_chunk(void *user,
+                                                       const char *data,
+                                                       size_t length,
+                                                       lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  if (exporter->capture != NULL) {
+    cai_runtime_export_capture_append(
+        exporter->capture, exporter->capture_length,
+        exporter->capture_truncated, data, length);
+  } else if (exporter->stream_kind == 1 || exporter->stream_kind == 3) {
+    (void)cai_runtime_export_write_text(exporter, data, length);
+  } else if (exporter->stream_kind == 2) {
+    (void)cai_runtime_export_write_code(exporter, data, length);
+  }
+  return exporter->rc == CAI_OK ? LONEJSON_STATUS_OK
+                                : LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static lonejson_status cai_runtime_export_string_end(void *user,
+                                                     lonejson_error *error) {
+  cai_runtime_exporter *exporter;
+
+  (void)error;
+  exporter = (cai_runtime_exporter *)user;
+  if (exporter->stream_kind == 1 || exporter->stream_kind == 3) {
+    (void)cai_runtime_export_literal(exporter, "\n\n");
+  } else if (exporter->stream_kind == 2) {
+    if (!exporter->code_at_line_start) {
+      (void)cai_runtime_export_literal(exporter, "\n");
+    }
+    (void)cai_runtime_export_literal(exporter, "\n");
+    /* The terminating blank line also begins the next code block. */
+    exporter->code_at_line_start = 1;
+  }
+  exporter->capture = NULL;
+  exporter->capture_length = NULL;
+  exporter->capture_truncated = NULL;
+  exporter->stream_kind = 0;
+  return exporter->rc == CAI_OK ? LONEJSON_STATUS_OK
+                                : LONEJSON_STATUS_CALLBACK_FAILED;
+}
+
+static int
+cai_runtime_spooled_record_next(cai_runtime_spooled_record_reader *reader,
+                                unsigned char *out, cai_error *error) {
+  lonejson_read_result chunk;
+
+  if (reader->offset >= reader->length) {
+    if (reader->eof) {
+      return 0;
+    }
+    chunk = reader->cursor.read(&reader->cursor, reader->buffer,
+                                sizeof(reader->buffer));
+    if (chunk.error_code != 0) {
+      (void)cai_set_error(error, CAI_ERR_TRANSPORT,
+                          "failed to read conversation history");
+      return -1;
+    }
+    reader->offset = 0U;
+    reader->length = chunk.bytes_read;
+    reader->eof = chunk.eof;
+    if (reader->length == 0U) {
+      return 0;
+    }
+  }
+  *out = reader->buffer[reader->offset++];
+  return 1;
+}
+
+static int
+cai_runtime_history_record_length(cai_runtime_spooled_record_reader *reader,
+                                  unsigned long *out_length,
+                                  int *out_have_record, cai_error *error) {
+  unsigned long length;
+  unsigned char ch;
+  int rc;
+
+  *out_length = 0UL;
+  *out_have_record = 0;
+  rc = cai_runtime_spooled_record_next(reader, &ch, error);
+  while (rc > 0 && (ch == '\n' || ch == '\r')) {
+    rc = cai_runtime_spooled_record_next(reader, &ch, error);
+  }
+  if (rc <= 0) {
+    return rc < 0 && error != NULL && error->code != CAI_OK ? error->code
+                                                            : CAI_OK;
+  }
+  if (ch < '0' || ch > '9') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "invalid conversation history record length");
+  }
+  length = 0UL;
+  do {
+    if (length > ULONG_MAX / 10UL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "conversation history record length overflow");
+    }
+    length = length * 10UL + (unsigned long)(ch - '0');
+    rc = cai_runtime_spooled_record_next(reader, &ch, error);
+    if (rc <= 0) {
+      return rc < 0 && error != NULL && error->code != CAI_OK
+                 ? error->code
+                 : cai_set_error(error, CAI_ERR_PROTOCOL,
+                                 "truncated conversation history record");
+    }
+  } while (ch >= '0' && ch <= '9');
+  if (ch != '\n') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "invalid conversation history record length");
+  }
+  *out_length = length;
+  *out_have_record = 1;
+  return CAI_OK;
+}
+
+static void cai_runtime_export_parse_reset(cai_runtime_exporter *exporter) {
+  memset(exporter->stack, 0, sizeof(exporter->stack));
+  exporter->depth = 0U;
+  exporter->item_depth = 0U;
+  exporter->item_active = 0;
+  exporter->record_item_index = 0U;
+  exporter->target_item_found = 0;
+  if (!exporter->preserve_item_metadata) {
+    exporter->item_type_length = 0U;
+    exporter->item_type_truncated = 0;
+    exporter->item_type[0] = '\0';
+    exporter->item_role_length = 0U;
+    exporter->item_role_truncated = 0;
+    exporter->item_role[0] = '\0';
+    exporter->item_name_length = 0U;
+    exporter->item_name_truncated = 0;
+    exporter->item_name[0] = '\0';
+  }
+  exporter->capture = NULL;
+  exporter->capture_length = NULL;
+  exporter->capture_truncated = NULL;
+  exporter->stream_kind = 0;
+  exporter->item_heading_written = 0;
+  exporter->item_activity_written = 0;
+  exporter->item_content_written = 0;
+  exporter->code_at_line_start = 0;
+}
+
+static lonejson_read_result
+cai_runtime_history_record_read(void *user, unsigned char *buffer,
+                                size_t capacity) {
+  cai_runtime_history_record_reader *reader;
+  lonejson_read_result result;
+  size_t want;
+  size_t i;
+  int rc;
+
+  reader = (cai_runtime_history_record_reader *)user;
+  result = lonejson_default_read_result();
+  if (reader == NULL || buffer == NULL) {
+    result.error_code = CAI_ERR_INVALID;
+    return result;
+  }
+  if (reader->remaining == 0UL) {
+    result.eof = 1;
+    return result;
+  }
+  want = capacity;
+  if ((unsigned long)want > reader->remaining) {
+    want = (size_t)reader->remaining;
+  }
+  for (i = 0U; i < want; i++) {
+    rc = cai_runtime_spooled_record_next(reader->records, &buffer[i],
+                                         reader->error);
+    if (rc <= 0) {
+      result.error_code =
+          rc < 0 && reader->error != NULL && reader->error->code != CAI_OK
+              ? reader->error->code
+              : CAI_ERR_PROTOCOL;
+      return result;
+    }
+  }
+  reader->remaining -= (unsigned long)want;
+  result.bytes_read = want;
+  result.eof = reader->remaining == 0UL;
+  return result;
+}
+
+static int cai_runtime_export_history_record(
+    cai_runtime_spooled_record_reader *records, unsigned long record_length,
+    lonejson_value_visitor *visitor, cai_runtime_exporter *exporter,
+    cai_error *error) {
+  cai_runtime_history_record_reader record;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  memset(&record, 0, sizeof(record));
+  record.records = records;
+  record.remaining = record_length;
+  record.error = error;
+  cai_runtime_export_parse_reset(exporter);
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->visit_value_reader(CAI_LJ, cai_runtime_history_record_read,
+                                      &record, visitor, exporter, &json_error);
+  if (status != LONEJSON_STATUS_OK || record.remaining != 0UL ||
+      exporter->depth != 0U || exporter->item_active) {
+    if (exporter->rc != CAI_OK) {
+      return exporter->rc;
+    }
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to stream conversation history",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int
+cai_runtime_history_record_drain(cai_runtime_spooled_record_reader *records,
+                                 unsigned long record_length,
+                                 cai_error *error) {
+  unsigned char ignored;
+  unsigned long i;
+  int rc;
+
+  for (i = 0UL; i < record_length; i++) {
+    rc = cai_runtime_spooled_record_next(records, &ignored, error);
+    if (rc <= 0) {
+      return rc < 0 && error != NULL && error->code != CAI_OK
+                 ? error->code
+                 : cai_set_error(error, CAI_ERR_PROTOCOL,
+                                 "truncated conversation history record");
+    }
+  }
+  return CAI_OK;
+}
+
+static int cai_runtime_export_history_markdown(cai_session *session,
+                                               cai_sink *sink,
+                                               cai_error *error) {
+  cai_runtime_exporter exporter;
+  cai_runtime_spooled_record_reader records;
+  lonejson_value_visitor visitor;
+  lonejson_error json_error;
+  unsigned long record_length;
+  int have_record;
+  int rc;
+
+  memset(&exporter, 0, sizeof(exporter));
+  exporter.sink = sink;
+  exporter.error = error;
+  exporter.rc = CAI_OK;
+  (void)cai_runtime_export_literal(&exporter, "# CAI conversation\n\n");
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_runtime_export_object_begin;
+  visitor.object_end = cai_runtime_export_object_end;
+  visitor.object_key_begin = cai_runtime_export_key_begin;
+  visitor.object_key_chunk = cai_runtime_export_key_chunk;
+  visitor.array_begin = cai_runtime_export_array_begin;
+  visitor.array_end = cai_runtime_export_array_end;
+  visitor.string_begin = cai_runtime_export_string_begin;
+  visitor.string_chunk = cai_runtime_export_string_chunk;
+  visitor.string_end = cai_runtime_export_string_end;
+  records.cursor = CAI_SESSION_IMPL(session)->history;
+  records.offset = 0U;
+  records.length = 0U;
+  records.eof = 0;
+  lonejson_error_init(&json_error);
+  if (records.cursor.rewind(&records.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind conversation history",
+                                json_error.message);
+  }
+  rc = CAI_OK;
+  for (;;) {
+    cai_runtime_spooled_record_reader record_start;
+    cai_runtime_spooled_record_reader pass;
+
+    rc = cai_runtime_history_record_length(&records, &record_length,
+                                           &have_record, error);
+    if (rc != CAI_OK || !have_record || exporter.rc != CAI_OK) {
+      break;
+    }
+    record_start = records;
+    /* Durable history is normalized to one item per array record when it is
+     * appended. JSON object member order is not semantic, so each bounded
+     * record receives one metadata scan before its streaming render pass.
+     * Export is consequently linear in the durable history size. */
+    exporter.target_item_index = 0U;
+    exporter.metadata_only = 1;
+    exporter.preserve_item_metadata = 0;
+    pass = record_start;
+    rc = cai_runtime_export_history_record(&pass, record_length, &visitor,
+                                           &exporter, error);
+    if (rc == CAI_OK && exporter.rc == CAI_OK && !exporter.target_item_found) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "conversation history record has no item");
+    }
+    if (rc == CAI_OK && exporter.rc == CAI_OK) {
+      exporter.metadata_only = 0;
+      exporter.preserve_item_metadata = 1;
+      pass = record_start;
+      rc = cai_runtime_export_history_record(&pass, record_length, &visitor,
+                                             &exporter, error);
+    }
+    exporter.metadata_only = 0;
+    exporter.preserve_item_metadata = 0;
+    if (rc != CAI_OK || exporter.rc != CAI_OK) {
+      break;
+    }
+    records = record_start;
+    rc = cai_runtime_history_record_drain(&records, record_length, error);
+    if (rc != CAI_OK) {
+      break;
+    }
+  }
+  if (exporter.rc != CAI_OK) {
+    return exporter.rc;
+  }
+  return rc;
+}
+
+static int cai_runtime_export_idle_locked(const cai_agent_runtime *runtime,
+                                          cai_error *error) {
+  if (runtime->stopping) {
+    return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
+  if (runtime->state == CAI_AGENT_SAMPLING ||
+      runtime->state == CAI_AGENT_DISPATCHING_TOOL ||
+      runtime->turn_head != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation export requires an idle runtime");
+  }
+  return CAI_OK;
+}
+
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config) {
   if (config != NULL) {
     memset(config, 0, sizeof(*config));
@@ -1756,6 +2605,10 @@ int cai_agent_runtime_open(cai_client *client,
     }
     scope = config->session_scope != NULL ? config->session_scope : workspace;
     if (rc == CAI_OK) {
+      rc = cai_runtime_copy_string(workspace, &runtime->workspace_directory,
+                                   error);
+    }
+    if (rc == CAI_OK) {
       rc = cai_runtime_copy_string(scope, &runtime->session_scope, error);
     }
     if (rc == CAI_OK && config->session_store != NULL) {
@@ -1880,6 +2733,7 @@ int cai_agent_runtime_open(cai_client *client,
       cai_agent_local_session_store_close(&runtime->local_store);
     }
     cai_free_mem(NULL, runtime->session_scope);
+    cai_free_mem(NULL, runtime->workspace_directory);
     cai_free_mem(NULL, runtime->session_id);
     close(runtime->wakeup_read_fd);
     close(runtime->wakeup_write_fd);
@@ -2226,6 +3080,182 @@ const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime) {
   return runtime != NULL ? runtime->session_id : NULL;
 }
 
+int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,
+                                      cai_sink *sink, cai_error *error) {
+  int rc;
+
+  if (sink == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation export sink is required");
+  }
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_export_idle_locked(runtime, error);
+  if (rc == CAI_OK) {
+    /* Hold the runtime lock for the complete producer-to-sink flow. This
+     * excludes worker/session mutation without staging the transcript. A sink
+     * callback must consequently not call back into this same runtime. */
+    rc = cai_runtime_export_history_markdown(runtime->session, sink, error);
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
+static int cai_runtime_export_app_name_valid(const char *app_name) {
+  const unsigned char *cursor;
+
+  if (app_name == NULL || app_name[0] == '\0') {
+    return 0;
+  }
+  for (cursor = (const unsigned char *)app_name; *cursor != '\0'; cursor++) {
+    if (!((*cursor >= 'a' && *cursor <= 'z') ||
+          (*cursor >= 'A' && *cursor <= 'Z') ||
+          (*cursor >= '0' && *cursor <= '9') || *cursor == '-' ||
+          *cursor == '_')) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
+                                           const char *app_name,
+                                           const char *path, char *out_path,
+                                           size_t out_path_capacity,
+                                           cai_error *error) {
+  char *default_path;
+  const char *chosen_path;
+  size_t path_length;
+  size_t app_length;
+  size_t workspace_length;
+  size_t session_id_length;
+  int fd;
+  FILE *fp;
+  cai_sink *sink;
+  int created;
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (out_path != NULL && out_path_capacity == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "conversation export path capacity is required");
+  }
+  default_path = NULL;
+  chosen_path = path;
+  created = 0;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_export_idle_locked(runtime, error);
+  if (rc == CAI_OK && (chosen_path == NULL || chosen_path[0] == '\0')) {
+    if (!cai_runtime_export_app_name_valid(app_name)) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "export app name uses only letters, digits, - and _");
+    } else if (runtime->workspace_directory == NULL ||
+               runtime->session_id == NULL) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime has no export workspace or session id");
+    } else if (!cai_runtime_local_session_id_valid(runtime->session_id)) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime session id is unsafe for export path");
+    } else {
+      app_length = strlen(app_name);
+      workspace_length = strlen(runtime->workspace_directory);
+      session_id_length = strlen(runtime->session_id);
+      if (workspace_length > SIZE_MAX - app_length - session_id_length - 15U) {
+        rc = cai_set_error(error, CAI_ERR_LIMIT,
+                           "conversation export path is too long");
+      } else {
+        path_length =
+            workspace_length + 1U + app_length + 9U + session_id_length + 3U;
+        default_path = (char *)cai_alloc(NULL, path_length + 1U);
+        if (default_path == NULL) {
+          rc = cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to allocate conversation export path");
+        } else {
+          (void)snprintf(default_path, path_length + 1U, "%s/%s-session-%s.md",
+                         runtime->workspace_directory, app_name,
+                         runtime->session_id);
+          chosen_path = default_path;
+        }
+      }
+    }
+  }
+  if (rc == CAI_OK && (chosen_path == NULL || chosen_path[0] == '\0')) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "conversation export path is required");
+  }
+  path_length = chosen_path != NULL ? strlen(chosen_path) : 0U;
+  if (rc == CAI_OK && out_path != NULL &&
+      path_length + 1U > out_path_capacity) {
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "conversation export path buffer is too small");
+  }
+  fd = -1;
+  fp = NULL;
+  sink = NULL;
+  if (rc == CAI_OK) {
+    fd = open(chosen_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to create conversation export file",
+                                strerror(errno));
+    } else {
+      created = 1;
+    }
+  }
+  if (rc == CAI_OK) {
+    fp = fdopen(fd, "wb");
+    if (fp == NULL) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to open conversation export file",
+                                strerror(errno));
+      close(fd);
+      fd = -1;
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_file(fp, 0, &sink, error);
+    if (rc != CAI_OK) {
+      fclose(fp);
+      fp = NULL;
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_export_history_markdown(runtime->session, sink, error);
+  }
+  if (sink != NULL) {
+    if (rc == CAI_OK && fflush(fp) != 0) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to flush conversation export file",
+                                strerror(errno));
+    }
+    cai_sink_close(sink);
+    sink = NULL;
+  }
+  if (fp != NULL) {
+    if (fclose(fp) != 0 && rc == CAI_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to close conversation export file",
+                                strerror(errno));
+    }
+    fp = NULL;
+  }
+  if (rc != CAI_OK && created) {
+    (void)unlink(chosen_path);
+  }
+  if (rc == CAI_OK && out_path != NULL) {
+    memcpy(out_path, chosen_path, path_length + 1U);
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  cai_free_mem(NULL, default_path);
+  return rc;
+}
+
 static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_runtime_event_node *event;
   cai_runtime_input_node *input;
@@ -2254,6 +3284,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   if (runtime->owns_local_store) {
     cai_agent_local_session_store_close(&runtime->local_store);
   }
+  cai_free_mem(NULL, runtime->workspace_directory);
   cai_free_mem(NULL, runtime->session_scope);
   cai_free_mem(NULL, runtime->session_id);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);

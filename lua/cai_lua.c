@@ -3206,6 +3206,56 @@ static int cai_lua_agent_runtime_session_id(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_agent_runtime_export_markdown(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_lua_sink_ctx sink_ctx;
+  cai_sink *sink;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  sink = NULL;
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
+  if (rc == CAI_OK) {
+    cai_lua_agent_runtime_enter(self);
+    rc = cai_agent_runtime_export_markdown(self->ptr, sink, &error);
+    cai_lua_agent_runtime_leave(self);
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  }
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_export_markdown_file(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  const char *app_name;
+  const char *path;
+  char exported_path[8192];
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  app_name = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+  path = lua_isnoneornil(L, 3) ? NULL : luaL_checkstring(L, 3);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_export_markdown_file(
+      self->ptr, app_name, path, exported_path, sizeof(exported_path), &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_pushstring(L, exported_path);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_wakeup_fd(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
@@ -8538,6 +8588,8 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
     {"session_id", cai_lua_agent_runtime_session_id},
+    {"export_markdown", cai_lua_agent_runtime_export_markdown},
+    {"export_markdown_file", cai_lua_agent_runtime_export_markdown_file},
     {"wakeup_fd", cai_lua_agent_runtime_wakeup_fd},
     {"close", cai_lua_agent_runtime_close},
     {NULL, NULL}};

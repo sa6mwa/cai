@@ -152,7 +152,15 @@ while true do
   if not line or line == "/exit" then
     break
   end
-  if line ~= "" then
+  if line == "/export" then
+    local path, err = runtime:export_markdown_file("cai")
+    if not path then
+      io.stderr:write("export failed: " ..
+        (type(err) == "table" and (err.message or err.status_string) or tostring(err)) .. "\n")
+    else
+      io.write(gray, "Exported ", path, "\n", reset)
+    end
+  elseif line ~= "" then
     if line:sub(1, 7) == "/queue " then
       ok(runtime:submit_queued(line:sub(8)), nil, "runtime:submit_queued")
     else

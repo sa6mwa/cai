@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -164,6 +165,7 @@ typedef struct runtime_session_store_state {
   char replay_event_data_items[8][256];
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
+  char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
   char saved_checkpoint[8192];
 } runtime_session_store_state;
 
@@ -1901,16 +1903,22 @@ static int test_runtime_session_store_load(
   cai_source_callbacks callbacks;
   runtime_session_store_state *store;
 
-  if (out == NULL || out_applied_event_sequence == NULL || session_id == NULL ||
-      session_id_capacity < strlen("resumed_session") + 1U) {
+  const char *loaded_session_id;
+
+  store = (runtime_session_store_state *)context;
+  loaded_session_id = store != NULL && store->loaded_session_id[0] != '\0'
+                          ? store->loaded_session_id
+                          : "resumed_session";
+  if (store == NULL || out == NULL || out_applied_event_sequence == NULL ||
+      session_id == NULL ||
+      session_id_capacity < strlen(loaded_session_id) + 1U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid runtime test session store outputs");
   }
-  store = (runtime_session_store_state *)context;
   *out_applied_event_sequence = store->load_applied_event_sequence;
   store->loads++;
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
-  (void)snprintf(session_id, session_id_capacity, "%s", "resumed_session");
+  (void)snprintf(session_id, session_id_capacity, "%s", loaded_session_id);
   store->reader.text = store->checkpoint_json;
   store->reader.offset = 0U;
   store->reader.closed = 0;
@@ -25196,6 +25204,234 @@ static void test_agent_runtime_resume(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_markdown_export(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-export-XXXXXX";
+  char path[PATH_MAX];
+  char expected_path[PATH_MAX];
+  char failed_path[PATH_MAX];
+  char file_text[16384];
+  char checkpoint_json[1024];
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_sink_callbacks callbacks;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_sink *sink;
+  mcp_sink_state captured;
+  cai_error error;
+  FILE *fp;
+  size_t read_count;
+  struct rlimit original_limit;
+  struct rlimit limited_limit;
+  struct sigaction old_xfsz;
+  struct sigaction ignored_xfsz;
+  int size_limit_changed;
+  int signal_changed;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_export_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  sink = NULL;
+  fp = NULL;
+  size_limit_changed = 0;
+  signal_changed = 0;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&captured, 0, sizeof(captured));
+  (void)snprintf(checkpoint_json, sizeof(checkpoint_json), "%s%s%s%s",
+                 "{\"version\":1,\"model\":\"gpt-5-nano\",\"history\":["
+                 "{\"type\":\"message\",\"content\":[{\"type\":\"input_text\","
+                 "\"text\":\"export user\\ntext\"}],\"role\":\"user\"},"
+                 "{\"type\":\"message\",\"role\":\"assistant\","
+                 "\"content\":[{\"type\":\"output_text\","
+                 "\"text\":\"export assistant\"}]},",
+                 "{\"type\":\"custom_tool_call\",\"input\":\"custom payload\","
+                 "\"name\":\"custom_lookup\"},",
+                 "{\"type\":\"function_call\",\"arguments\":"
+                 "\"{\\\"path\\\":\\\"README.md\\\"}\",\"name\":\"read_file\"},"
+                 "{\"type\":\"function_call_output\",\"call_id\":\"call_1\","
+                 "\"output\":\"file contents\"},",
+                 "{\"type\":\"function_call_output\",\"call_id\":\"call_2\","
+                 "\"output\":[{\"type\":\"input_text\","
+                 "\"text\":\"image analysis\"},{\"type\":\"input_text\","
+                 "\"text\":\"continued analysis\"},{\"type\":\"input_image\","
+                 "\"image_url\":\"data:image/png;base64,abc\"}]},"
+                 "{\"summary\":[{\"text\":\"reasoning summary\","
+                 "\"type\":\"summary_text\"}],\"type\":\"reasoning\"},"
+                 "{\"type\":\"message\",\"role\":\"user\",\"content\":[{"
+                 "\"type\":\"input_image\",\"image_url\":\"data:image/"
+                 "png;base64,abc\"}]}]}");
+  store_state.checkpoint_json = checkpoint_json;
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_export_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_export_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  callbacks.write = test_mcp_sink_write;
+  callbacks.close = test_mcp_sink_close;
+  callbacks.context = &captured;
+  if (runtime != NULL) {
+    expect_int(state, "runtime_export_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    if (sink != NULL) {
+      expect_int(state, "runtime_export_stream",
+                 cai_agent_runtime_export_markdown(runtime, sink, &error),
+                 CAI_OK);
+      expect_int(state, "runtime_export_multiple_chunks",
+                 captured.write_count > 1, 1L);
+      expect_substr(state, "runtime_export_title", captured.buffer,
+                    "# CAI conversation");
+      expect_substr(state, "runtime_export_user", captured.buffer,
+                    "## User\n\nexport user\ntext");
+      expect_substr(state, "runtime_export_assistant", captured.buffer,
+                    "## Assistant\n\nexport assistant");
+      expect_substr(state, "runtime_export_activity", captured.buffer,
+                    "### Tool call: read_file");
+      expect_substr(state, "runtime_export_custom_activity", captured.buffer,
+                    "### Tool call: custom_lookup\n\n    custom payload");
+      expect_substr(state, "runtime_export_arguments", captured.buffer,
+                    "    {\"path\":\"README.md\"}");
+      expect_substr(state, "runtime_export_output", captured.buffer,
+                    "### Tool output\n\n    file contents");
+      expect_substr(state, "runtime_export_output_attachment", captured.buffer,
+                    "    image analysis\n\n    continued analysis\n\n"
+                    "*[non-text attachment omitted]*");
+      expect_substr(state, "runtime_export_output_array_text", captured.buffer,
+                    "    image analysis");
+      expect_substr(state, "runtime_export_reasoning_summary", captured.buffer,
+                    "## Reasoning\n\nreasoning summary");
+      expect_substr(state, "runtime_export_attachment", captured.buffer,
+                    "*[non-text attachment omitted]*");
+      cai_sink_close(sink);
+      sink = NULL;
+    }
+    expect_int(state, "runtime_export_default_file",
+               cai_agent_runtime_export_markdown_file(
+                   runtime, "cai", NULL, path, sizeof(path), &error),
+               CAI_OK);
+    (void)snprintf(expected_path, sizeof(expected_path),
+                   "%s/cai-session-resumed_session.md", workspace);
+    expect_str(state, "runtime_export_default_file_path", path, expected_path);
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+      test_fail(state, "runtime_export_default_file_open", "fopen failed");
+    } else {
+      read_count = fread(file_text, 1U, sizeof(file_text) - 1U, fp);
+      file_text[read_count] = '\0';
+      fclose(fp);
+      fp = NULL;
+      expect_substr(state, "runtime_export_default_file_text", file_text,
+                    "export assistant");
+    }
+    expect_int(state, "runtime_export_no_overwrite",
+               cai_agent_runtime_export_markdown_file(
+                   runtime, "cai", NULL, path, sizeof(path), &error),
+               CAI_ERR_TRANSPORT);
+    (void)snprintf(failed_path, sizeof(failed_path), "%s/%s", workspace,
+                   "partial.md");
+    (void)unlink(failed_path);
+    memset(&ignored_xfsz, 0, sizeof(ignored_xfsz));
+    ignored_xfsz.sa_handler = SIG_IGN;
+    sigemptyset(&ignored_xfsz.sa_mask);
+    if (getrlimit(RLIMIT_FSIZE, &original_limit) != 0 ||
+        sigaction(SIGXFSZ, &ignored_xfsz, &old_xfsz) != 0) {
+      test_fail(state, "runtime_export_partial_file_setup",
+                "failed to configure file-size failure");
+    } else {
+      signal_changed = 1;
+      limited_limit = original_limit;
+      limited_limit.rlim_cur = 1U;
+      if (setrlimit(RLIMIT_FSIZE, &limited_limit) != 0) {
+        test_fail(state, "runtime_export_partial_file_limit",
+                  "failed to limit export file size");
+      } else {
+        size_limit_changed = 1;
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        expect_int(state, "runtime_export_partial_file_failure",
+                   cai_agent_runtime_export_markdown_file(
+                       runtime, "cai", failed_path, NULL, 0U, &error),
+                   CAI_ERR_TRANSPORT);
+        expect_int(state, "runtime_export_partial_file_removed",
+                   access(failed_path, F_OK) != 0, 1L);
+      }
+    }
+    if (size_limit_changed) {
+      (void)setrlimit(RLIMIT_FSIZE, &original_limit);
+      size_limit_changed = 0;
+    }
+    if (signal_changed) {
+      (void)sigaction(SIGXFSZ, &old_xfsz, NULL);
+      signal_changed = 0;
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_export_invalid_app_name",
+               cai_agent_runtime_export_markdown_file(
+                   runtime, "../cai", NULL, path, sizeof(path), &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    unlink(path);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    (void)snprintf(store_state.loaded_session_id,
+                   sizeof(store_state.loaded_session_id), "%s",
+                   "unsafe/session");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(
+        state, "runtime_export_unsafe_session_open",
+        cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+        CAI_OK);
+    if (runtime != NULL) {
+      expect_int(state, "runtime_export_unsafe_session_default_path",
+                 cai_agent_runtime_export_markdown_file(
+                     runtime, "cai", NULL, path, sizeof(path), &error),
+                 CAI_ERR_INVALID);
+      cai_agent_runtime_close(runtime);
+      runtime = NULL;
+    }
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  if (size_limit_changed) {
+    (void)setrlimit(RLIMIT_FSIZE, &original_limit);
+  }
+  if (signal_changed) {
+    (void)sigaction(SIGXFSZ, &old_xfsz, NULL);
+  }
+  rmdir(workspace);
+}
+
 static void test_goal_tools(test_state *state) {
   cai_client_config client_config;
   cai_agent_config agent_config;
@@ -36256,6 +36492,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_runtime_resume", test_agent_runtime_resume},
+    {"agent_runtime_markdown_export", test_agent_runtime_markdown_export},
     {"goal_tools", test_goal_tools},
     {"goal_create_allocation_failure", test_goal_create_allocation_failure},
     {"patch_tool", test_patch_tool},
