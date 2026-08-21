@@ -885,15 +885,24 @@ do
       chunks[#chunks + 1] = chunk
       return true
     end), nil, "Lua Smith runtime streaming export")
-    assert_eq(table.concat(chunks), "# CAI conversation\n\n",
-      "Lua Smith runtime empty export")
+    local handover = table.concat(chunks)
+    assert(handover:find("# CAI agent handover", 1, true),
+      "Lua Smith runtime handover title")
+    assert(handover:find("cai-agent-handover/1", 1, true),
+      "Lua Smith runtime handover format")
+    assert(handover:find("non-resumable handover document", 1, true),
+      "Lua Smith runtime handover contract")
+    assert(handover:find("## Runtime", 1, true),
+      "Lua Smith runtime handover runtime metadata")
+    assert(handover:find("## Active developer instructions", 1, true),
+      "Lua Smith runtime handover developer instructions")
     local export_path = os.tmpname()
     os.remove(export_path)
     assert_eq(assert_ok(runtime:export_markdown_file("cai", export_path), nil,
       "Lua Smith runtime explicit export"), export_path,
       "Lua Smith runtime export path")
     local fp = assert(io.open(export_path, "rb"))
-    assert_eq(fp:read("*a"), "# CAI conversation\n\n",
+    assert_eq(fp:read("*a"), handover,
       "Lua Smith runtime export file content")
     fp:close()
     os.remove(export_path)

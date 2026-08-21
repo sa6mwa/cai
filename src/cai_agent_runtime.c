@@ -179,6 +179,9 @@ struct cai_agent_runtime {
   void *terminal_event_context;
   char *terminal_origin_tool_call_id;
   int review_mode;
+  int terminal_enabled;
+  int image_generation_enabled;
+  size_t mcp_client_count;
 };
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1761,6 +1764,49 @@ static int cai_runtime_export_write_code(cai_runtime_exporter *exporter,
   return exporter->rc;
 }
 
+static int cai_runtime_export_write_code_block(cai_runtime_exporter *exporter,
+                                               const char *data) {
+  if (data == NULL || data[0] == '\0') {
+    return cai_runtime_export_literal(exporter, "    *[not available]*\n\n");
+  }
+  exporter->code_at_line_start = 1;
+  (void)cai_runtime_export_write_code(exporter, data, strlen(data));
+  if (!exporter->code_at_line_start) {
+    (void)cai_runtime_export_literal(exporter, "\n");
+  }
+  (void)cai_runtime_export_literal(exporter, "\n");
+  exporter->code_at_line_start = 1;
+  return exporter->rc;
+}
+
+static int cai_runtime_export_write_metadata(cai_runtime_exporter *exporter,
+                                             const char *label,
+                                             const char *value) {
+  (void)cai_runtime_export_literal(exporter, "- ");
+  (void)cai_runtime_export_literal(exporter, label);
+  (void)cai_runtime_export_literal(exporter, ":\n");
+  return cai_runtime_export_write_code_block(exporter, value);
+}
+
+static const char *cai_runtime_export_state_name(cai_agent_run_state state) {
+  switch (state) {
+  case CAI_AGENT_IDLE:
+    return "idle";
+  case CAI_AGENT_SAMPLING:
+    return "sampling";
+  case CAI_AGENT_DISPATCHING_TOOL:
+    return "dispatching_tool";
+  case CAI_AGENT_COMPLETED:
+    return "completed";
+  case CAI_AGENT_FAILED:
+    return "failed";
+  case CAI_AGENT_CANCELLED:
+    return "cancelled";
+  default:
+    return "unknown";
+  }
+}
+
 static void cai_runtime_export_capture_append(char *destination, size_t *length,
                                               int *truncated, const char *data,
                                               size_t count) {
@@ -2380,7 +2426,6 @@ static int cai_runtime_export_history_markdown(cai_session *session,
   exporter.sink = sink;
   exporter.error = error;
   exporter.rc = CAI_OK;
-  (void)cai_runtime_export_literal(&exporter, "# CAI conversation\n\n");
   visitor = lonejson_default_value_visitor();
   visitor.object_begin = cai_runtime_export_object_begin;
   visitor.object_end = cai_runtime_export_object_end;
@@ -2451,6 +2496,119 @@ static int cai_runtime_export_history_markdown(cai_session *session,
   return rc;
 }
 
+static int cai_runtime_export_handover_markdown(cai_agent_runtime *runtime,
+                                                cai_sink *sink,
+                                                cai_error *error) {
+  const cai_session_impl *session;
+  const cai_agent_impl *agent;
+  cai_runtime_exporter exporter;
+  char number[64];
+  int rc;
+
+  session = CAI_SESSION_IMPL(runtime->session);
+  agent = CAI_SESSION_AGENT_IMPL(runtime->session);
+  memset(&exporter, 0, sizeof(exporter));
+  exporter.sink = sink;
+  exporter.error = error;
+  exporter.rc = CAI_OK;
+  (void)cai_runtime_export_literal(&exporter, "# CAI agent handover\n\n");
+  (void)cai_runtime_export_literal(
+      &exporter, "> **Format:** `cai-agent-handover/1`\n>\n> ");
+  (void)cai_runtime_export_literal(
+      &exporter,
+      "This is a non-resumable handover document, not a session checkpoint. "
+      "It preserves durable conversation context and active developer "
+      "instructions available to this runtime.\n\n");
+  (void)cai_runtime_export_literal(&exporter, "## Runtime\n\n");
+  (void)cai_runtime_export_write_metadata(
+      &exporter, "Preset",
+      runtime->review_mode ? CAI_SMITH_REVIEW_PRESET : CAI_SMITH_PRESET);
+  (void)cai_runtime_export_write_metadata(&exporter, "Smith prompt version",
+                                          cai_smith_prompt_version());
+  (void)cai_runtime_export_write_metadata(&exporter, "Active model",
+                                          agent->model);
+  if (session->state_model != NULL && agent->model != NULL &&
+      strcmp(session->state_model, agent->model) != 0) {
+    (void)cai_runtime_export_write_metadata(&exporter, "Recorded history model",
+                                            session->state_model);
+  }
+  (void)cai_runtime_export_write_metadata(&exporter, "Reasoning effort",
+                                          agent->reasoning_effort);
+  (void)cai_runtime_export_write_metadata(
+      &exporter, "Runtime state",
+      cai_runtime_export_state_name(runtime->state));
+  (void)cai_runtime_export_write_metadata(&exporter, "Session ID",
+                                          runtime->session_id);
+  (void)cai_runtime_export_write_metadata(&exporter, "Workspace",
+                                          runtime->workspace_directory);
+  (void)cai_runtime_export_write_metadata(&exporter, "Session scope",
+                                          runtime->session_scope);
+  (void)cai_runtime_export_literal(&exporter, "- Terminal tools: ");
+  (void)cai_runtime_export_literal(
+      &exporter, runtime->terminal_enabled ? "enabled\n\n" : "disabled\n\n");
+  (void)cai_runtime_export_literal(&exporter, "- Image generation: ");
+  (void)cai_runtime_export_literal(&exporter, runtime->image_generation_enabled
+                                                  ? "enabled\n\n"
+                                                  : "disabled\n\n");
+  (void)snprintf(number, sizeof(number), "%lu configured",
+                 (unsigned long)runtime->mcp_client_count);
+  (void)cai_runtime_export_write_metadata(&exporter, "MCP clients", number);
+
+  (void)cai_runtime_export_literal(&exporter, "## Active goal\n\n");
+  if (session->goal_objective == NULL) {
+    (void)cai_runtime_export_literal(&exporter, "No active durable goal.\n\n");
+  } else {
+    (void)cai_runtime_export_write_metadata(&exporter, "Status",
+                                            session->goal_status);
+    if (session->goal_has_token_budget) {
+      (void)snprintf(number, sizeof(number), "%lld",
+                     session->goal_token_budget);
+      (void)cai_runtime_export_write_metadata(&exporter, "Token budget",
+                                              number);
+    } else {
+      (void)cai_runtime_export_write_metadata(&exporter, "Token budget",
+                                              "unbounded");
+    }
+    (void)snprintf(number, sizeof(number), "%lld", session->goal_tokens_used);
+    (void)cai_runtime_export_write_metadata(&exporter, "Tokens used", number);
+    (void)cai_runtime_export_literal(&exporter, "### Objective\n\n");
+    (void)cai_runtime_export_write_text(&exporter, session->goal_objective,
+                                        strlen(session->goal_objective));
+    (void)cai_runtime_export_literal(&exporter, "\n\n");
+  }
+
+  (void)cai_runtime_export_literal(&exporter,
+                                   "## Active developer instructions\n\n");
+  if (agent->developer_instructions == NULL ||
+      agent->developer_instructions[0] == '\0') {
+    (void)cai_runtime_export_literal(
+        &exporter, "*[no developer instructions configured]*\n\n");
+  } else {
+    (void)cai_runtime_export_write_text(&exporter,
+                                        agent->developer_instructions,
+                                        strlen(agent->developer_instructions));
+    (void)cai_runtime_export_literal(&exporter, "\n\n");
+  }
+
+  (void)cai_runtime_export_literal(&exporter, "## Handover limits\n\n");
+  (void)cai_runtime_export_literal(
+      &exporter,
+      "- This Markdown does not resume or authenticate a CAI session; the "
+      "durable session checkpoint remains authoritative for continuation.\n"
+      "- No live terminal process, PTY state, in-flight model/tool call, or "
+      "queued host input is included.\n"
+      "- Non-text attachments are represented as omission markers; raw binary "
+      "attachment payloads are never embedded.\n"
+      "- Text already durable in the conversation or configured as developer "
+      "instructions is intentionally preserved and is not automatically "
+      "redacted.\n\n");
+  if (exporter.rc != CAI_OK) {
+    return exporter.rc;
+  }
+  rc = cai_runtime_export_history_markdown(runtime->session, sink, error);
+  return rc;
+}
+
 static int cai_runtime_export_idle_locked(const cai_agent_runtime *runtime,
                                           cai_error *error) {
   if (runtime->stopping) {
@@ -2458,9 +2616,10 @@ static int cai_runtime_export_idle_locked(const cai_agent_runtime *runtime,
   }
   if (runtime->state == CAI_AGENT_SAMPLING ||
       runtime->state == CAI_AGENT_DISPATCHING_TOOL ||
-      runtime->turn_head != NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "conversation export requires an idle runtime");
+      runtime->turn_head != NULL || runtime->steering_head != NULL) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "conversation export requires a stable runtime boundary");
   }
   return CAI_OK;
 }
@@ -2523,6 +2682,9 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
   runtime->review_mode = review_mode;
+  runtime->terminal_enabled = review_mode || config->disable_terminal ? 0 : 1;
+  runtime->image_generation_enabled = config->enable_image_generation ? 1 : 0;
+  runtime->mcp_client_count = config->mcp_client_count;
   if (pthread_mutex_init(&runtime->lock, NULL) != 0) {
     cai_free_mem(NULL, runtime);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -3098,7 +3260,7 @@ int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,
     /* Hold the runtime lock for the complete producer-to-sink flow. This
      * excludes worker/session mutation without staging the transcript. A sink
      * callback must consequently not call back into this same runtime. */
-    rc = cai_runtime_export_history_markdown(runtime->session, sink, error);
+    rc = cai_runtime_export_handover_markdown(runtime, sink, error);
   }
   pthread_mutex_unlock(&runtime->lock);
   return rc;
@@ -3226,7 +3388,7 @@ int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_runtime_export_history_markdown(runtime->session, sink, error);
+    rc = cai_runtime_export_handover_markdown(runtime, sink, error);
   }
   if (sink != NULL) {
     if (rc == CAI_OK && fflush(fp) != 0) {

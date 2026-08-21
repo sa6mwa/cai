@@ -131,7 +131,7 @@ the steering API path. `/queue <prompt>` is an examples-only convenience for
 the separate queued-normal-turn API. The small Lua example intentionally keeps
 blocking `io.read` input; a Lua TUI or GUI calls the same explicit methods from
 its own event loop. Both examples also intercept `/export` themselves and use
-the live runtime default-file receiver to create
+the live runtime handover receiver to create
 `cai-session-<xid>.md` in the workspace. CAI itself does not parse slash
 commands: hosts select `submit_steering`, `submit_queued`, or
 `export_markdown` directly.

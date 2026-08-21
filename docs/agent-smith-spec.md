@@ -12,7 +12,7 @@ The first implementation is intentionally smaller than the full target design
 in this document. The delivered surface is the owner-thread runtime, local or
 callback-backed checkpoints, steering, goals, Smith and Smith-review presets,
 the local file/patch/image tools, one managed terminal slot, live-runtime
-streaming transcript export, and C/Lua reference renderers. Sections explicitly
+streaming handover export, and C/Lua reference renderers. Sections explicitly
 labelled **Target** describe the next compatible increments; they are not claims
 about the released ABI.
 
@@ -234,13 +234,13 @@ idle runtime). Both receivers have `_threadsafe` variants. They copy only the
 input under a short mutex, append durable journal events, signal the wakeup
 descriptor, and never call the host event callback.
 
-`export_markdown` is the live-runtime-only transcript projection receiver. It
+`export_markdown` is the live-runtime-only handover projection receiver. It
 writes incrementally to the caller's `cai_sink`; it neither reopens a session
 from a store nor materializes the complete history or Markdown as an
-intermediate buffer. It is owner-thread-only and requires an idle or terminal runtime so
-the projection has a coherent session boundary. During export CAI holds the
-runtime lock while it writes to the sink, therefore a sink callback must not
-call back into that runtime. `export_markdown_file` is the small local
+intermediate buffer. It is owner-thread-only and requires a stable runtime
+boundary with no model/tool operation or queued host input. During export CAI
+holds the runtime lock while it writes to the sink, therefore a sink callback
+must not call back into that runtime. `export_markdown_file` is the small local
 convenience layer: it creates a file mode `0600` with `O_EXCL`, never replaces
 an existing file, and streams to it. With no explicit path, it creates
 `<workspace>/<app_name>-session-<xid>.md`; the default rejects a session ID
@@ -857,27 +857,37 @@ calling the default-file helper with app name `cai`, which writes
 the same receiver to a menu, a file picker, or a clipboard sink without CAI
 depending on libmdf, softline, or a desktop clipboard implementation.
 
-The initial Markdown contract is `# CAI conversation`, followed by `## User`,
-`## Assistant`, `## Developer`, `## System`, `## Reasoning`, and `## Activity`
-as represented in durable Responses history. User and assistant Markdown is
-retained after terminal-control-byte removal. Function arguments and function
-outputs are indented activity blocks; non-text image/file/audio content becomes
-`*[non-text attachment omitted]*`. The projection never embeds raw binary
-attachment payloads. It accepts semantically equivalent durable JSON regardless
-of object-member ordering: CAI normalizes durable history to independently
-rewindable item records on append/import, then performs one bounded metadata
-scan and one render pass per record. Export is linear in history size, writes
-through bounded parser and transport buffers, and never materializes a complete
-transcript. This live-only API does not
-load a separate session by ID: a host resumes the desired session into a
-runtime before exporting it.
+The handover contract is `cai-agent-handover/1`, headed `# CAI agent handover`.
+It is deliberately **not** a serialization or resume format: the durable
+session checkpoint remains authoritative for continuation. The document first
+records the active preset and prompt version, active model/reasoning effort
+(and the recorded history model when it differs), stable session XID, workspace
+and session scope, tool capabilities, durable goal status/objective/accounting,
+and the complete active developer instructions.
+It then renders `## User`, `## Assistant`, `## Developer`, `## System`,
+`## Reasoning`, and `## Activity` as represented in durable Responses history.
 
-The history projection is intentionally transparent about privacy: text tool
-outputs and MCP outputs that CAI has made durable are included, just as they
-were model context. Embeddings that need redaction or different retention use
-the sink receiver to transform/destination-gate data, or store redacted data.
-Future format versions may add explicit plan, artifact, and review-child
-projections once those durable history forms are defined.
+User, assistant, and developer Markdown is retained after terminal-control-byte
+removal. Function arguments and function outputs are indented activity blocks;
+non-text image/file/audio content becomes `*[non-text attachment omitted]*`.
+The projection never embeds raw binary attachment payloads. It also states its
+limits explicitly: no live terminal/PTY state, in-flight model or tool work, or
+queued host input appears in the handover. It accepts semantically equivalent
+durable JSON regardless of object-member ordering: CAI normalizes durable
+history to independently rewindable item records on append/import, then
+performs one bounded metadata scan and one render pass per record. Export is
+linear in history size, writes through bounded parser and transport buffers,
+and never materializes a complete handover. This live-only API does not load a
+separate session by ID: a host resumes the desired session into a runtime before
+exporting it.
+
+The handover is intentionally transparent about privacy: text tool outputs,
+MCP outputs, and developer instructions are included because they are useful
+agent context. CAI does not automatically redact that text; embeddings needing
+redaction or different retention use the sink receiver to transform or gate the
+destination, or store redacted data. Future format versions may add explicit
+plan, artifact, and review-child projections once those durable forms are
+defined.
 
 Whether CAI also exposes an optional `export_conversation` local tool remains
 an open design decision. Smith MUST NOT register it by default: export is a
@@ -886,10 +896,11 @@ transcript content or trigger an unwanted filesystem/clipboard side effect.
 If a host later opts in, it must supply the destination and authorization
 policy; it cannot rely on the default Smith tool policy.
 
-Verification covers deterministic sink output, multi-write streaming behavior,
-function activity, attachment omission, default XID filenames, no-overwrite,
-and invalid default app names. Embedding applications own clipboard, picker,
-and external-store destination integration tests.
+Verification covers deterministic handover metadata, developer and goal
+context, multi-write streaming behavior, function activity, attachment
+omission, default XID filenames, no-overwrite, and invalid default app names.
+Embedding applications own clipboard, picker, and external-store destination
+integration tests.
 
 ## 12. Client-side compaction
 

@@ -25210,7 +25210,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   char expected_path[PATH_MAX];
   char failed_path[PATH_MAX];
   char file_text[16384];
-  char checkpoint_json[1024];
+  char checkpoint_json[4096];
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -25245,7 +25245,11 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   memset(&store_state, 0, sizeof(store_state));
   memset(&captured, 0, sizeof(captured));
   (void)snprintf(checkpoint_json, sizeof(checkpoint_json), "%s%s%s%s",
-                 "{\"version\":1,\"model\":\"gpt-5-nano\",\"history\":["
+                 "{\"version\":1,\"model\":\"gpt-5-nano\","
+                 "\"goal_objective\":\"finish the handover\","
+                 "\"goal_status\":\"active\","
+                 "\"goal_token_budget\":20000000,\"goal_tokens_used\":42,"
+                 "\"history\":["
                  "{\"type\":\"message\",\"content\":[{\"type\":\"input_text\","
                  "\"text\":\"export user\\ntext\"}],\"role\":\"user\"},"
                  "{\"type\":\"message\",\"role\":\"assistant\","
@@ -25281,7 +25285,9 @@ static void test_agent_runtime_markdown_export(test_state *state) {
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
-  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.model = CAI_MODEL_GPT_5_6_TERRA;
+  runtime_config.developer_instructions_extension =
+      "handover extension instructions";
   runtime_config.session_store = &store;
   runtime_config.resume_latest = 1;
   expect_int(state, "runtime_export_open",
@@ -25300,7 +25306,30 @@ static void test_agent_runtime_markdown_export(test_state *state) {
       expect_int(state, "runtime_export_multiple_chunks",
                  captured.write_count > 1, 1L);
       expect_substr(state, "runtime_export_title", captured.buffer,
-                    "# CAI conversation");
+                    "# CAI agent handover");
+      expect_substr(state, "runtime_export_format", captured.buffer,
+                    "cai-agent-handover/1");
+      expect_substr(state, "runtime_export_non_resumable", captured.buffer,
+                    "This is a non-resumable handover document");
+      expect_substr(state, "runtime_export_session_id", captured.buffer,
+                    "- Session ID:\n    resumed_session");
+      expect_substr(state, "runtime_export_workspace", captured.buffer,
+                    "- Workspace:\n    /tmp/cai-runtime-export-");
+      expect_substr(state, "runtime_export_active_model", captured.buffer,
+                    "- Active model:\n    gpt-5.6-terra");
+      expect_substr(state, "runtime_export_recorded_history_model",
+                    captured.buffer,
+                    "- Recorded history model:\n    gpt-5-nano");
+      expect_substr(state, "runtime_export_goal_status", captured.buffer,
+                    "- Status:\n    active");
+      expect_substr(state, "runtime_export_goal_budget", captured.buffer,
+                    "- Token budget:\n    20000000");
+      expect_substr(state, "runtime_export_goal_objective", captured.buffer,
+                    "### Objective\n\nfinish the handover");
+      expect_substr(state, "runtime_export_developer_instructions",
+                    captured.buffer, "handover extension instructions");
+      expect_substr(state, "runtime_export_limits", captured.buffer,
+                    "## Handover limits");
       expect_substr(state, "runtime_export_user", captured.buffer,
                     "## User\n\nexport user\ntext");
       expect_substr(state, "runtime_export_assistant", captured.buffer,

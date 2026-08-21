@@ -212,18 +212,20 @@ int cai_agent_runtime_state(cai_agent_runtime *runtime,
 /** Return the runtime's stable session identifier, borrowed until close. */
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
 /**
- * Stream the current durable conversation projection as Markdown to sink.
+ * Stream the current agent handover projection as Markdown to sink.
  *
+ * The versioned, non-resumable document includes durable conversation context,
+ * active developer instructions, and current session/goal/runtime metadata.
  * The caller retains sink ownership. Export is owner-thread-only and is
- * available while the runtime is idle or has reached a terminal state; it
- * returns CAI_ERR_INVALID while a model or tool turn is active. The sink must
- * not re-enter this runtime while export is in progress.
+ * available only at a stable runtime boundary; it returns CAI_ERR_INVALID
+ * while a model/tool turn or queued host input is active. The sink must not
+ * re-enter this runtime while export is in progress.
  */
 int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,
                                       cai_sink *sink, cai_error *error);
 /**
- * Stream the current durable conversation projection to a newly created
- * Markdown file. The path is created without replacing an existing file.
+ * Stream the current agent handover projection to a newly created Markdown
+ * file. The path is created without replacing an existing file.
  *
  * When path is NULL or empty, CAI creates
  * <workspace>/<app_name>-session-<xid>.md. Otherwise path selects the output
