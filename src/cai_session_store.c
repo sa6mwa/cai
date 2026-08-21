@@ -635,8 +635,7 @@ static int cai_local_checkpoint_source_open(int fd, long start, long end,
 
 static int cai_local_find_last_line_before(int fd, long before_end,
                                            long *out_start, long *out_end,
-                                           int *out_found,
-                                           cai_error *error) {
+                                           int *out_found, cai_error *error) {
   char buffer[4096];
   off_t end;
   off_t cursor;
@@ -748,10 +747,11 @@ static int cai_local_checkpoint_record_bounds(
  * are deliberately allowed to precede the first checkpoint: such a journal
  * records durable intent, but cannot itself resume an agent session.
  */
-static int cai_local_find_latest_checkpoint(
-    int fd, long *out_state_start, long *out_state_end,
-    unsigned long long *out_applied_event_sequence, int *out_found,
-    cai_error *error) {
+static int
+cai_local_find_latest_checkpoint(int fd, long *out_state_start,
+                                 long *out_state_end,
+                                 unsigned long long *out_applied_event_sequence,
+                                 int *out_found, cai_error *error) {
   static const char event_prefix[] = "{\"record_type\":\"event\",";
   char record_prefix[sizeof(event_prefix)];
   long start;
@@ -780,8 +780,7 @@ static int cai_local_find_latest_checkpoint(
     if (!found_record) {
       return CAI_OK;
     }
-    nread = pread(fd, record_prefix, sizeof(record_prefix) - 1U,
-                  (off_t)start);
+    nread = pread(fd, record_prefix, sizeof(record_prefix) - 1U, (off_t)start);
     if (nread < 0) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "failed to read session checkpoint record");
@@ -789,17 +788,17 @@ static int cai_local_find_latest_checkpoint(
     if (nread > 0) {
       record_prefix[nread] = '\0';
     }
-    if (nread > 0 && strncmp(record_prefix, event_prefix,
-                             sizeof(event_prefix) - 1U) == 0) {
+    if (nread > 0 &&
+        strncmp(record_prefix, event_prefix, sizeof(event_prefix) - 1U) == 0) {
       if (start == 0L) {
         return CAI_OK;
       }
       before_end = start;
       continue;
     }
-    rc = cai_local_checkpoint_record_bounds(
-        fd, start, end, out_state_start, out_state_end,
-        out_applied_event_sequence, error);
+    rc = cai_local_checkpoint_record_bounds(fd, start, end, out_state_start,
+                                            out_state_end,
+                                            out_applied_event_sequence, error);
     if (rc == CAI_OK) {
       *out_found = 1;
     }
@@ -879,8 +878,8 @@ static int cai_local_session_load_latest(
     if (length >= sizeof(candidate)) {
       continue;
     }
-    journal_fd = openat(scope_fd, entry->d_name, O_RDONLY | O_CLOEXEC |
-                                                    O_NOFOLLOW);
+    journal_fd =
+        openat(scope_fd, entry->d_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (journal_fd < 0) {
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to open session checkpoint log");
@@ -892,9 +891,9 @@ static int cai_local_session_load_latest(
                          "failed to lock session checkpoint log");
       break;
     }
-    rc = cai_local_find_latest_checkpoint(
-        journal_fd, &state_start, &state_end, &applied_event_sequence,
-        &found_checkpoint, error);
+    rc = cai_local_find_latest_checkpoint(journal_fd, &state_start, &state_end,
+                                          &applied_event_sequence,
+                                          &found_checkpoint, error);
     (void)flock(journal_fd, LOCK_UN);
     close(journal_fd);
     if (rc != CAI_OK) {
@@ -947,9 +946,9 @@ static int cai_local_session_load_latest(
     long state_end;
     int found_checkpoint;
 
-    rc = cai_local_find_latest_checkpoint(
-        fd, &state_start, &state_end, out_applied_event_sequence,
-        &found_checkpoint, error);
+    rc = cai_local_find_latest_checkpoint(fd, &state_start, &state_end,
+                                          out_applied_event_sequence,
+                                          &found_checkpoint, error);
     if (rc == CAI_OK && found_checkpoint) {
       rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
                                             error);

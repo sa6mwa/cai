@@ -19,7 +19,8 @@ extern "C" {
 #define CAI_TERMINAL_EVENT_COMMAND_COMPLETED 4
 #define CAI_TERMINAL_EVENT_COMMAND_CANCELLED 5
 
-/** Borrowed terminal lifecycle fact emitted on the agent tool-dispatch thread. */
+/** Borrowed terminal lifecycle fact emitted on the agent tool-dispatch thread.
+ */
 typedef struct cai_terminal_event {
   int type;
   const char *terminal_id;

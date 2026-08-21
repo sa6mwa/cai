@@ -2717,8 +2717,7 @@ static int cai_session_replay_history_with_params_input(
 
 static int cai_session_goal_budget_limited(const cai_session *session) {
   return session != NULL && CAI_SESSION_IMPL(session)->goal_status != NULL &&
-         strcmp(CAI_SESSION_IMPL(session)->goal_status, "budget_limited") ==
-             0;
+         strcmp(CAI_SESSION_IMPL(session)->goal_status, "budget_limited") == 0;
 }
 
 /*
@@ -3618,8 +3617,7 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_run_options_open_tool_output_runtime(options, &tool_output_runtime,
                                                   error);
   }
-  if (rc == CAI_OK &&
-      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_response_create_params_new(&history_params, error);
   }
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
@@ -3732,9 +3730,8 @@ static int cai_session_run_tool_round(cai_session *session,
       cai_capture_cleanup(&capture);
     }
   }
-  if (rc == CAI_OK &&
-      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
   }
@@ -3764,7 +3761,8 @@ static int cai_session_run_tool_round(cai_session *session,
                                        session, error);
   }
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
-    /* Include callback-queued steering in this continuation, then persist it. */
+    /* Include callback-queued steering in this continuation, then persist it.
+     */
     rc = cai_session_add_pending_inputs(session, params, error);
   }
   if (rc == CAI_OK && options->tool_round_completed != NULL &&
@@ -3781,8 +3779,9 @@ static int cai_session_run_tool_round(cai_session *session,
                                      session, error);
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
-    rc = cai_set_error(error, CAI_ERR_LIMIT,
-                       "goal token budget exhausted before another model request");
+    rc = cai_set_error(
+        error, CAI_ERR_LIMIT,
+        "goal token budget exhausted before another model request");
   }
   if (rc == CAI_OK) {
     rc = cai_session_create_response_from_params(
@@ -3791,7 +3790,8 @@ static int cai_session_run_tool_round(cai_session *session,
   if (rc == CAI_OK && options->tool_round_completed != NULL &&
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_SERVER) {
-    /* Server-continuity callbacks supplied these inputs to the request above. */
+    /* Server-continuity callbacks supplied these inputs to the request above.
+     */
     cai_session_clear_inputs(session);
   }
   cai_response_create_params_destroy(params);
@@ -4176,8 +4176,7 @@ static int cai_session_stream_tool_round(
   if (rc == CAI_OK) {
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
   }
-  if (rc == CAI_OK &&
-      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_response_create_params_new(&history_params, error);
   }
   if (rc == CAI_OK) {
@@ -4187,9 +4186,8 @@ static int cai_session_stream_tool_round(
     rc = cai_session_add_stream_tool_outputs(session, params, history_params,
                                              input_calls, options, error);
   }
-  if (rc == CAI_OK &&
-      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
   }
@@ -4231,8 +4229,9 @@ static int cai_session_stream_tool_round(
                                      session, error);
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
-    rc = cai_set_error(error, CAI_ERR_LIMIT,
-                       "goal token budget exhausted before another model request");
+    rc = cai_set_error(
+        error, CAI_ERR_LIMIT,
+        "goal token budget exhausted before another model request");
   }
   if (rc == CAI_OK) {
     rc = cai_session_check_usage_available(session, error);
@@ -4274,7 +4273,8 @@ static int cai_session_stream_tool_round(
   if (rc == CAI_OK && options->tool_round_completed != NULL &&
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_SERVER) {
-    /* Server-continuity callbacks supplied these inputs to the request above. */
+    /* Server-continuity callbacks supplied these inputs to the request above.
+     */
     cai_session_clear_inputs(session);
   }
   cai_response_create_params_destroy(params);

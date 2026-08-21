@@ -120,6 +120,7 @@ assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) == "number",
   "agent terminal completion event")
 assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) == "number",
   "agent terminal cancellation event")
+assert(type(cai.AGENT_EVENT_TURN_QUEUED) == "number", "agent queued turn event")
 assert(type(cai.AGENT_TOOL_ACTION_READ) == "number", "agent read action")
 assert(type(cai.AGENT_TOOL_ACTION_PATCH) == "number", "agent patch action")
 assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
@@ -864,7 +865,7 @@ local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }
 do
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "submit_steering", "pump", "state",
+  for _, method in ipairs({ "submit", "submit_steering", "submit_queued", "pump", "state",
     "session_id", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)

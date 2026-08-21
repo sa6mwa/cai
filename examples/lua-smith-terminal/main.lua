@@ -109,6 +109,8 @@ local function render_event(event)
     end
     io.write(string.format("%s %s (%s, %.1fs)\n", verb, render.command,
       status, (event.terminal_duration_ms or 0) / 1000))
+  elseif event.type == cai.AGENT_EVENT_TURN_QUEUED then
+    io.write(gray, "Queued next turn\n", reset)
   elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED and
       event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" then
     local verbs = {
@@ -151,7 +153,16 @@ while true do
     break
   end
   if line ~= "" then
-    ok(runtime:submit(line), nil, "runtime:submit")
+    if line:sub(1, 7) == "/queue " then
+      ok(runtime:submit_queued(line:sub(8)), nil, "runtime:submit_queued")
+    else
+      local state = ok(runtime:state(), nil, "runtime:state")
+      if state == "sampling" or state == "dispatching_tool" then
+        ok(runtime:submit_steering(line), nil, "runtime:submit_steering")
+      else
+        ok(runtime:submit(line), nil, "runtime:submit")
+      end
+    end
     while true do
       local state, err = runtime:pump(100)
       if not state then

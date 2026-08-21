@@ -133,7 +133,7 @@ typedef struct cai_terminal_result {
 static const lonejson_field cai_terminal_exec_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_terminal_exec_args, cmd, "cmd"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_terminal_exec_args, workdir,
-                                           "workdir"),
+                                          "workdir"),
     LONEJSON_FIELD_I64_PRESENT(cai_terminal_exec_args, yield_time_ms,
                                has_yield_time_ms, "yield_time_ms"),
     LONEJSON_FIELD_I64_PRESENT(cai_terminal_exec_args, max_output_tokens,
@@ -147,7 +147,7 @@ static const lonejson_field cai_terminal_write_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_terminal_write_args, session_id,
                                     "session_id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_terminal_write_args, chars,
-                                           "chars"),
+                                          "chars"),
     LONEJSON_FIELD_I64_PRESENT(cai_terminal_write_args, yield_time_ms,
                                has_yield_time_ms, "yield_time_ms"),
     LONEJSON_FIELD_I64_PRESENT(cai_terminal_write_args, max_output_tokens,
@@ -281,15 +281,15 @@ static int cai_terminal_resolve_workdir(cai_terminal_manager *manager,
 
   *out = NULL;
   base = requested != NULL && requested[0] != '\0' ? requested
-                                                     : manager->default_workdir;
+                                                   : manager->default_workdir;
   if (base == NULL || base[0] == '\0') {
     base = manager->root_path;
   }
   if (base[0] == '/') {
     written = snprintf(candidate, sizeof(candidate), "%s", base);
   } else {
-    written = snprintf(candidate, sizeof(candidate), "%s/%s", manager->root_path,
-                       base);
+    written = snprintf(candidate, sizeof(candidate), "%s/%s",
+                       manager->root_path, base);
   }
   if (written < 0 || (size_t)written >= sizeof(candidate) ||
       realpath(candidate, resolved) == NULL ||
@@ -298,10 +298,9 @@ static int cai_terminal_resolve_workdir(cai_terminal_manager *manager,
                          "terminal workdir must resolve below workspace root");
   }
   *out = cai_strdup(NULL, resolved);
-  return *out != NULL
-             ? CAI_OK
-             : cai_set_error(error, CAI_ERR_NOMEM,
-                             "failed to copy terminal workdir");
+  return *out != NULL ? CAI_OK
+                      : cai_set_error(error, CAI_ERR_NOMEM,
+                                      "failed to copy terminal workdir");
 }
 
 static int cai_terminal_output_append(cai_terminal_manager *manager,
@@ -329,7 +328,8 @@ static int cai_terminal_output_append(cai_terminal_manager *manager,
   if (needed > manager->output_capacity) {
     size_t capacity;
 
-    capacity = manager->output_capacity == 0U ? 4096U : manager->output_capacity;
+    capacity =
+        manager->output_capacity == 0U ? 4096U : manager->output_capacity;
     while (capacity < needed) {
       if (capacity > manager->output_max_bytes / 2U) {
         capacity = manager->output_max_bytes + 1U;
@@ -428,7 +428,8 @@ static void *cai_terminal_reader(void *value) {
       break;
     }
     pthread_mutex_unlock(&manager->lock);
-    if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+    if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+        errno != EINTR) {
       pthread_mutex_lock(&manager->lock);
       manager->pty_eof = 1;
       pthread_mutex_unlock(&manager->lock);
@@ -500,7 +501,8 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   size_t home_length;
 
   *out = NULL;
-  if (config == NULL || config->root_path == NULL || config->root_path[0] == '\0' ||
+  if (config == NULL || config->root_path == NULL ||
+      config->root_path[0] == '\0' ||
       realpath(config->root_path, resolved) == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "terminal tools require a valid workspace root");
@@ -516,8 +518,8 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   manager->default_workdir = config->default_workdir != NULL
                                  ? cai_strdup(NULL, config->default_workdir)
                                  : NULL;
-  manager->shell_path = cai_strdup(NULL, config->shell_path != NULL ? config->shell_path
-                                                                      : "/bin/sh");
+  manager->shell_path = cai_strdup(
+      NULL, config->shell_path != NULL ? config->shell_path : "/bin/sh");
   home_length = strlen("HOME=") + strlen(resolved) + 1U;
   manager->home_environment = (char *)cai_alloc(NULL, home_length);
   if (manager->home_environment != NULL) {
@@ -538,8 +540,8 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   manager->event_context = config->event_context;
   snprintf(manager->terminal_id, sizeof(manager->terminal_id), "terminal-1");
   if (manager->root_path == NULL || manager->shell_path == NULL ||
-      manager->home_environment == NULL ||
-      manager->max_yield_ms <= 0L || manager->output_max_bytes == 0U) {
+      manager->home_environment == NULL || manager->max_yield_ms <= 0L ||
+      manager->output_max_bytes == 0U) {
     cai_free_mem(NULL, manager->root_path);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
@@ -654,7 +656,8 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to create terminal PTY", strerror(errno));
+                                "failed to create terminal PTY",
+                                strerror(errno));
   }
   pid = fork();
   if (pid < 0) {
@@ -667,7 +670,8 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to fork terminal command", strerror(errno));
+                                "failed to fork terminal command",
+                                strerror(errno));
   }
   if (pid == 0) {
     char *argv[4];
@@ -725,7 +729,8 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     manager->output[0] = '\0';
   }
   pthread_mutex_unlock(&manager->lock);
-  if (pthread_create(&manager->reader, NULL, cai_terminal_reader, manager) != 0) {
+  if (pthread_create(&manager->reader, NULL, cai_terminal_reader, manager) !=
+      0) {
     (void)kill(-pid, SIGKILL);
     (void)waitpid(pid, NULL, 0);
     pthread_mutex_lock(&manager->lock);
@@ -785,8 +790,7 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
   {
     unsigned long long duration;
 
-    duration =
-        cai_terminal_elapsed_ms(&manager->command_started_at, &now);
+    duration = cai_terminal_elapsed_ms(&manager->command_started_at, &now);
     result->duration_ms = duration > (unsigned long long)LLONG_MAX
                               ? LLONG_MAX
                               : (long long)duration;
@@ -905,18 +909,19 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   (void)cai_terminal_wait(binding->manager, 0U, wait_ms);
   rc = cai_terminal_fill_result(binding->manager, output_limit, result, error);
   if (rc == CAI_OK) {
-    rc = result->completed
-             ? cai_terminal_emit_completion_once(binding->manager, result, error)
-             : cai_terminal_emit(binding->manager,
-                                 result->output[0] != '\0'
-                                     ? CAI_TERMINAL_EVENT_OUTPUT
-                                     : CAI_TERMINAL_EVENT_WAITING,
-                                 result, error);
+    rc = result->completed ? cai_terminal_emit_completion_once(binding->manager,
+                                                               result, error)
+                           : cai_terminal_emit(binding->manager,
+                                               result->output[0] != '\0'
+                                                   ? CAI_TERMINAL_EVENT_OUTPUT
+                                                   : CAI_TERMINAL_EVENT_WAITING,
+                                               result, error);
   }
   return rc;
 }
 
-static void cai_terminal_send_signal(cai_terminal_manager *manager, int signal) {
+static void cai_terminal_send_signal(cai_terminal_manager *manager,
+                                     int signal) {
   pthread_mutex_lock(&manager->lock);
   if (manager->running && manager->pid > 0) {
     (void)kill(-manager->pid, signal);
@@ -965,7 +970,8 @@ static int cai_terminal_write_all(int fd, const char *data, cai_error *error) {
       }
     } else {
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                  "failed to write terminal stdin", strerror(errno));
+                                  "failed to write terminal stdin",
+                                  strerror(errno));
     }
   }
   return CAI_OK;
@@ -988,8 +994,9 @@ static int cai_terminal_write_callback(void *value, const void *params,
   if (binding == NULL || binding->manager == NULL || args == NULL ||
       args->session_id == NULL ||
       strcmp(args->session_id, binding->manager->terminal_id) != 0) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "write_stdin session_id does not match the single terminal");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "write_stdin session_id does not match the single terminal");
   }
   pthread_mutex_lock(&binding->manager->lock);
   if (!binding->manager->running) {
@@ -998,9 +1005,10 @@ static int cai_terminal_write_callback(void *value, const void *params,
     completed = binding->manager->completed;
     pthread_mutex_unlock(&binding->manager->lock);
     if (completed) {
-      output_limit = args->has_max_output_tokens && args->max_output_tokens > 0LL
-                         ? (size_t)args->max_output_tokens
-                         : 0U;
+      output_limit =
+          args->has_max_output_tokens && args->max_output_tokens > 0LL
+              ? (size_t)args->max_output_tokens
+              : 0U;
       rc = cai_terminal_fill_result(binding->manager, output_limit, result,
                                     error);
       if (rc == CAI_OK) {
@@ -1052,13 +1060,13 @@ static int cai_terminal_write_callback(void *value, const void *params,
                      : 0U;
   rc = cai_terminal_fill_result(binding->manager, output_limit, result, error);
   if (rc == CAI_OK) {
-    rc = result->completed
-             ? cai_terminal_emit_completion_once(binding->manager, result, error)
-             : cai_terminal_emit(binding->manager,
-                                 result->output[0] != '\0'
-                                     ? CAI_TERMINAL_EVENT_OUTPUT
-                                     : CAI_TERMINAL_EVENT_WAITING,
-                                 result, error);
+    rc = result->completed ? cai_terminal_emit_completion_once(binding->manager,
+                                                               result, error)
+                           : cai_terminal_emit(binding->manager,
+                                               result->output[0] != '\0'
+                                                   ? CAI_TERMINAL_EVENT_OUTPUT
+                                                   : CAI_TERMINAL_EVENT_WAITING,
+                                               result, error);
   }
   return rc;
 }
@@ -1112,9 +1120,10 @@ int cai_tool_registry_register_terminal_tools(
     if (rc == CAI_OK) {
       exec_binding = NULL;
       rc = cai_tool_registry_register_lonejson_schema_owned(
-          registry, CAI_TERMINAL_WRITE_TOOL_NAME, cai_terminal_write_description,
-          cai_terminal_write_schema, 0, &cai_terminal_write_args_map,
-          &cai_terminal_result_map, cai_terminal_write_callback, write_binding,
+          registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+          cai_terminal_write_description, cai_terminal_write_schema, 0,
+          &cai_terminal_write_args_map, &cai_terminal_result_map,
+          cai_terminal_write_callback, write_binding,
           cai_terminal_binding_cleanup, error);
       if (rc == CAI_OK) {
         write_binding = NULL;
@@ -1140,5 +1149,5 @@ int cai_agent_register_terminal_tools(cai_agent *agent,
     return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
   }
   return cai_tool_registry_register_terminal_tools(CAI_AGENT_IMPL(agent)->tools,
-                                                    config, error);
+                                                   config, error);
 }

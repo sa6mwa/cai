@@ -193,6 +193,7 @@ typedef struct cai_agent_runtime_config {
   size_t steering_queue_limit;
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
+  size_t turn_queue_limit;
 } cai_agent_runtime_config;
 
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config);
@@ -203,6 +204,8 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);
+int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
+                                    const char *text, cai_error *error);
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error);
 int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime,
@@ -213,12 +216,15 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime);
 ```
 
 `submit` is permitted only in `IDLE`, `COMPLETED`, or a terminal error state
-after that state has been observed. `submit_steering` is permitted during an
-active sampling or tool-dispatch state and is bounded, durable, FIFO, and
-non-blocking with respect to network/model progress. Hosts that call it
-off-owner-thread use `cai_agent_runtime_submit_steering_threadsafe`; it only
-copies an input item under a short mutex, appends the durable journal event,
-and signals the wakeup descriptor. It never calls the host event callback.
+after that state has been observed, and only when no queued normal turn is
+already waiting. `submit_steering` is permitted during an active sampling or
+tool-dispatch state and is bounded, durable, FIFO, and
+non-blocking with respect to network/model progress. `submit_queued` is the
+separate normal-turn receiver: it queues a durable FIFO user turn that begins
+only after the active turn becomes terminal (or begins immediately from an
+idle runtime). Both receivers have `_threadsafe` variants. They copy only the
+input under a short mutex, append durable journal events, signal the wakeup
+descriptor, and never call the host event callback.
 
 `pump` advances one or more currently-ready operations until the timeout or a
 state boundary. It returns `CAI_OK` for “no event before timeout”; callers
@@ -230,7 +236,7 @@ implemented as a pump loop and retain their present synchronous behavior.
 Events are explicit objects delivered through a registration callback and a
 bounded queue. The delivered set includes `RUN_STARTED`, `RUN_STATE_CHANGED`,
 `RUN_COMPLETED`, `RUN_FAILED`, `TEXT_DELTA`, `TOOL_CALL_STARTED`,
-`TOOL_CALL_COMPLETED`, `TOOL_CALL_FAILED`, `STEERING_QUEUED`,
+`TOOL_CALL_COMPLETED`, `TOOL_CALL_FAILED`, `STEERING_QUEUED`, `TURN_QUEUED`,
 `STEERING_DELIVERED`, `SESSION_CHECKPOINTED`, and the terminal lifecycle
 events `TERMINAL_COMMAND_STARTED`, `TERMINAL_OUTPUT`, `TERMINAL_WAITING`,
 `TERMINAL_COMMAND_COMPLETED`, and `TERMINAL_COMMAND_CANCELLED`. Each carries
@@ -606,28 +612,38 @@ not Vectis:
    all count as a completion boundary.
 3. Because Smith serializes calls, when that boundary is reached CAI appends
    the steering input after the tool output and before the next model request.
-   It emits and persists `steering_delivered` exactly once.
+   CAI checkpoints the completed tool/response state first, then emits
+   `STEERING_DELIVERED`; a subsequent checkpoint advances its durable watermark
+   only after that injected input is part of session state.
 4. If the active response finishes without another tool call, CAI delivers the
    steering as the next user input immediately after that logical turn reaches
    a safe completion boundary. It cannot disappear behind an absent tool call.
 5. Multiple steering inputs preserve FIFO order and share the earliest eligible
    boundary. A cancelled runtime preserves queued inputs; they are delivered
-   on resume only if the host resumes that session.
+   on resume only if the host resumes that session. A crashed request cannot
+   continue in place, so restored steering is scheduled ahead of restored
+   normal turns, while preserving FIFO order within each class.
 
-An idle runtime treats steering as a normal user submission. An explicit future
-submission mode may request “after current response” or “immediate next
-request”, but no host may fake the default by injecting text directly into the
-renderer or transport.
+Steering requires an active turn; hosts start an idle turn with `submit`.
+Normal future work belongs on `submit_queued`, which persists `turn_queued`,
+emits `TURN_QUEUED`, and is consumed FIFO only after the current turn reaches
+`COMPLETED`, `FAILED`, or `CANCELLED`. Its accepted event remains pending across
+checkpoints until the runtime records that particular input as incorporated.
+If a budgeted goal becomes exhausted before a queued turn can start, CAI emits
+an explicit terminal rejection and checkpoints that rejection rather than
+silently consuming the turn. A host may expose these two API paths however it
+chooses, but must not fake either by injecting text directly into the renderer
+or transport.
 
 ### 9.3 Concurrency with Vectis/libmdf/softline
 
 Vectis runs libmdf and softline in its UI/event-loop domain. It registers CAI
 event delivery on that same owner thread and calls `pump` without holding any
 libmdf or softline lock. If it uses an agent worker, it copies CAI events into
-a mailbox and renders them on the UI thread. A UI keypress calls the
-thread-safe steering enqueue operation; CAI writes its wakeup fd, and the
-runtime owner integrates that fd into its poll loop. Neither CAI nor Vectis is
-allowed to enter a `lua_State` or a libmdf renderer from a terminal/network
+a mailbox and renders them on the UI thread. A UI keypress selects either the
+thread-safe steering or queued-turn enqueue operation; CAI writes its wakeup
+fd, and the runtime owner integrates that fd into its poll loop. Neither CAI
+nor Vectis is allowed to enter a `lua_State` or a libmdf renderer from a terminal/network
 worker thread.
 
 ## 10. Goals
@@ -740,7 +756,9 @@ Every JSONL record has at least:
 Record types include `session_created`, `turn_started`, `input_added`,
 `model_request`, `model_response`, `tool_started`, `tool_progress`,
 `tool_completed`, `tool_failed`, `terminal_state`, `steering_queued`,
-`steering_delivered`, `goal_changed`, `compaction_started`,
+`turn_queued`, `input_journal_v2`, `input_consumed`, `steering_delivered`,
+`goal_changed`,
+`compaction_started`,
 `compaction_completed`, `checkpoint`, `turn_completed`, and `turn_failed`.
 Large binary/image/tool artifacts are external references with hash, MIME,
 byte size, and storage URI/path; JSONL does not contain arbitrary large base64
@@ -748,31 +766,41 @@ blobs.
 
 The canonical state reconstructs model-visible history exactly, including
 function calls and outputs, internal context inputs, model/preset information,
-goal state, and pending steering. It also stores a display transcript projection
-so hosts can resume UI history without re-parsing provider wire events.
+and goal state. The durable input journal reconstructs pending steering and
+normal turns. It also stores a display transcript projection so hosts can resume
+UI history without re-parsing provider wire events.
 
 ### 11.3.1 Journal/checkpoint atomicity
 
-Steering is accepted from a non-owner thread while the worker may be streaming,
-so accepting it cannot read or snapshot mutable session state. The storage ABI
-therefore has two coordinated operations: an append-only event write and a
-checkpoint write with an `applied_event_sequence` high-watermark. A successful
-`steering_queued` append is fsync-visible before CAI reports acceptance to the
-caller. At a safe boundary, the owner thread injects queued steering into the
-session, creates a replacement checkpoint, and atomically records the highest
-journal sequence incorporated in that checkpoint. On resume, CAI imports the
-latest complete checkpoint and replays only state-changing journal records with
-sequence greater than that high-watermark.
+Steering and queued normal turns are accepted from a non-owner thread while the
+worker may be streaming, so acceptance cannot read or snapshot mutable session
+state. The storage ABI therefore has two coordinated operations: an append-only
+input event write and a checkpoint write with an `applied_event_sequence`
+high-watermark. A successful `steering_queued` or `turn_queued` append is
+fsync-visible before CAI reports acceptance to the caller. At a safe boundary,
+the owner thread injects an input, appends an `input_consumed` marker naming the
+input event, then writes a replacement checkpoint whose watermark covers that
+marker. The checkpoint therefore preserves completed tool history even when an
+earlier normal turn is still pending.
 
-This is deliberately not a separate `steering_delivered` acknowledgement used
-for recovery: recording delivery before the checkpoint can lose accepted input
-after a crash, while recording it after the checkpoint can replay it twice.
-`steering_delivered` remains an observational event, but recovery is defined
-solely by the checkpoint watermark. The same rule applies to any future
-cross-thread durable input or terminal-state transition. A callback backend
-must provide the two operations with this ordering contract; CAI must reject a
-backend that advertises durable steering but cannot atomically associate a
-checkpoint with its applied-event watermark.
+When a durable store opens a new session, CAI first writes an empty checkpoint
+with watermark zero. This silent anchor lets a default latest-session lookup
+find an acknowledged first `turn_queued` event even if the process stops before
+the worker reaches its first normal checkpoint.
+
+On resume CAI imports the latest checkpoint and replays the complete input
+journal to reconstruct only still-pending inputs. An `input_consumed` marker is
+authoritative only when its own sequence is at or below the checkpoint
+watermark; it then suppresses the named input because that checkpoint contains
+it. A marker after the watermark may have been written immediately before a
+crash, so CAI deliberately ignores it and replays its input. Thus a crash never
+loses accepted input, while completed non-idempotent tool results are never
+discarded merely because a later steering input and an earlier queued normal
+turn interleave. `STEERING_DELIVERED` remains observational only. A callback
+backend must provide this append-before-checkpoint ordering contract.
+On its first resume of a pre-v2 journal, CAI appends `input_journal_v2`;
+records before that boundary retain the former watermark-only replay rule, so
+upgrading does not replay steering already represented by an older checkpoint.
 
 ### 11.4 Vectis adapter
 

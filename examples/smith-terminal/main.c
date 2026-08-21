@@ -2,6 +2,8 @@
 
 #include "../common.h"
 
+#include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -21,7 +23,7 @@ static void remember_command(render_state *state, const char *data,
   size_t count;
 
   count = length < sizeof(state->command) - 1U ? length
-                                                : sizeof(state->command) - 1U;
+                                               : sizeof(state->command) - 1U;
   if (count > 3U && count < length) {
     count -= 3U;
     memcpy(state->command, data, count);
@@ -147,6 +149,8 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     render_terminal_finish(event, "Ran", state);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) {
     render_terminal_finish(event, "Cancelled", state);
+  } else if (event->type == CAI_AGENT_EVENT_TURN_QUEUED) {
+    fprintf(stdout, GRAY "Queued next turn" RESET "\n");
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
              event->tool_name != NULL &&
              strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
@@ -163,16 +167,23 @@ int main(void) {
   cai_agent_runtime *runtime;
   cai_agent_run_state status;
   cai_error error;
+  struct pollfd poll_fds[2];
   render_state renderer;
   char *dotenv_api_key;
   char workspace[4096];
   char line[4096];
+  int exit_requested;
+  int prompt_shown;
+  int wakeup_fd;
   int rc;
 
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
   dotenv_api_key = NULL;
+  exit_requested = 0;
+  prompt_shown = 0;
+  wakeup_fd = -1;
   memset(&renderer, 0, sizeof(renderer));
   if (getcwd(workspace, sizeof(workspace)) == NULL) {
     fputs("getcwd failed\n", stderr);
@@ -190,26 +201,66 @@ int main(void) {
   if (rc == CAI_OK) {
     rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
   }
-  while (rc == CAI_OK && fputs("smith> ", stdout) >= 0 &&
-         fflush(stdout) == 0 && fgets(line, sizeof(line), stdin) != NULL) {
+  while (rc == CAI_OK && !exit_requested) {
+    int poll_result;
+
+    if (!prompt_shown) {
+      if (fputs("smith> ", stdout) < 0 || fflush(stdout) != 0) {
+        fputs("smith-terminal: failed to write prompt\n", stderr);
+        rc = CAI_ERR_TRANSPORT;
+        break;
+      }
+      prompt_shown = 1;
+    }
+    rc = cai_agent_runtime_wakeup_fd(runtime, &wakeup_fd, &error);
+    if (rc != CAI_OK) {
+      break;
+    }
+    memset(poll_fds, 0, sizeof(poll_fds));
+    poll_fds[0].fd = STDIN_FILENO;
+    poll_fds[0].events = POLLIN;
+    poll_fds[1].fd = wakeup_fd;
+    poll_fds[1].events = POLLIN;
+    poll_result = poll(poll_fds, 2U, 100);
+    if (poll_result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      fputs("smith-terminal: failed to poll input and runtime events\n",
+            stderr);
+      rc = CAI_ERR_TRANSPORT;
+      break;
+    }
+    if ((poll_fds[1].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+      rc = cai_agent_runtime_pump(runtime, 0L, &error);
+      if (rc != CAI_OK) {
+        break;
+      }
+    }
+    if ((poll_fds[0].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
+      continue;
+    }
+    if (fgets(line, sizeof(line), stdin) == NULL) {
+      break;
+    }
+    prompt_shown = 0;
     line[strcspn(line, "\r\n")] = '\0';
     if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0) {
-      break;
+      exit_requested = 1;
+      continue;
     }
     if (line[0] == '\0') {
       continue;
     }
-    rc = cai_agent_runtime_submit(runtime, line, &error);
-    while (rc == CAI_OK) {
-      rc = cai_agent_runtime_pump(runtime, 100L, &error);
-      if (rc == CAI_OK) {
-        rc = cai_agent_runtime_state(runtime, &status, &error);
-      }
-      if (rc == CAI_OK && (status == CAI_AGENT_COMPLETED ||
-                           status == CAI_AGENT_FAILED ||
-                           status == CAI_AGENT_CANCELLED)) {
-        fputc('\n', stdout);
-        break;
+    if (strncmp(line, "/queue ", 7U) == 0) {
+      rc = cai_agent_runtime_submit_queued(runtime, line + 7, &error);
+    } else {
+      rc = cai_agent_runtime_state(runtime, &status, &error);
+      if (rc == CAI_OK && (status == CAI_AGENT_SAMPLING ||
+                           status == CAI_AGENT_DISPATCHING_TOOL)) {
+        rc = cai_agent_runtime_submit_steering(runtime, line, &error);
+      } else if (rc == CAI_OK) {
+        rc = cai_agent_runtime_submit(runtime, line, &error);
       }
     }
   }

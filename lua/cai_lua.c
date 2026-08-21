@@ -1,5 +1,5 @@
-#include <cai/auth.h>
 #include <cai/agent_runtime.h>
+#include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/smith.h>
@@ -766,11 +766,11 @@ static cai_lua_session *cai_lua_check_session(lua_State *L, int index) {
 }
 
 static cai_lua_agent_runtime *cai_lua_check_agent_runtime(lua_State *L,
-                                                           int index) {
+                                                          int index) {
   cai_lua_agent_runtime *self;
 
-  self = (cai_lua_agent_runtime *)luaL_checkudata(
-      L, index, CAI_LUA_AGENT_RUNTIME);
+  self =
+      (cai_lua_agent_runtime *)luaL_checkudata(L, index, CAI_LUA_AGENT_RUNTIME);
   luaL_argcheck(L, self->ptr != NULL, index, "closed cai agent runtime");
   return self;
 }
@@ -2338,8 +2338,10 @@ static int cai_lua_client_close(lua_State *L) {
   if (self->child_runtimes != 0U) {
     cai_error_init(&error);
     return cai_lua_fail(
-        L, cai_lua_set_error(&error, CAI_ERR_INVALID,
-                             "cai client has live agent runtimes; close them first"),
+        L,
+        cai_lua_set_error(
+            &error, CAI_ERR_INVALID,
+            "cai client has live agent runtimes; close them first"),
         &error);
   }
   return cai_lua_client_gc(L);
@@ -2379,18 +2381,18 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
   }
   config.workspace_directory =
       cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
-  config.workspace_directory = cai_lua_opt_string_field(
-      L, 2, "workspace", config.workspace_directory);
+  config.workspace_directory =
+      cai_lua_opt_string_field(L, 2, "workspace", config.workspace_directory);
   config.agent_identity =
       cai_lua_opt_string_field(L, 2, "agent_identity", NULL);
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
   config.reasoning_effort =
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
-  config.developer_instructions_extension = cai_lua_opt_string_field(
-      L, 2, "developer_instructions_extension", NULL);
-  config.disable_terminal =
-      cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
-  if (config.workspace_directory == NULL || config.workspace_directory[0] == '\0') {
+  config.developer_instructions_extension =
+      cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
+  config.disable_terminal = cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
+  if (config.workspace_directory == NULL ||
+      config.workspace_directory[0] == '\0') {
     return luaL_error(L, "new_smith_agent requires workspace_directory");
   }
   cai_error_init(&error);
@@ -2405,8 +2407,9 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
   return 1;
 }
 
-static int cai_lua_agent_runtime_event(
-    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+static int cai_lua_agent_runtime_event(void *context,
+                                       const cai_agent_runtime_event *event,
+                                       cai_error *error) {
   cai_lua_agent_runtime *self;
   lua_State *L;
   int top;
@@ -2476,9 +2479,9 @@ static int cai_lua_agent_runtime_event(
 
     message = lua_tostring(L, -1);
     lua_settop(L, top);
-    return cai_lua_set_error(error, CAI_ERR_INVALID,
-                             message != NULL ? message
-                                             : "Lua agent runtime callback failed");
+    return cai_lua_set_error(
+        error, CAI_ERR_INVALID,
+        message != NULL ? message : "Lua agent runtime callback failed");
   }
   lua_settop(L, top);
   return CAI_OK;
@@ -2515,27 +2518,33 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.preset = review_mode ? CAI_SMITH_REVIEW_PRESET : CAI_SMITH_PRESET;
   config.workspace_directory =
       cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
-  config.workspace_directory = cai_lua_opt_string_field(
-      L, 2, "workspace", config.workspace_directory);
+  config.workspace_directory =
+      cai_lua_opt_string_field(L, 2, "workspace", config.workspace_directory);
   config.agent_identity =
       cai_lua_opt_string_field(L, 2, "agent_identity", NULL);
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
   config.reasoning_effort =
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
-  config.developer_instructions_extension = cai_lua_opt_string_field(
-      L, 2, "developer_instructions_extension", NULL);
+  config.developer_instructions_extension =
+      cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.enable_image_generation =
       cai_lua_opt_bool_field(L, 2, "enable_image_generation", 0);
-  config.disable_terminal =
-      cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
+  config.disable_terminal = cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
   config.session_scope = cai_lua_opt_string_field(L, 2, "session_scope", NULL);
   config.session_id = cai_lua_opt_string_field(L, 2, "session_id", NULL);
   config.resume_latest = cai_lua_opt_bool_field(L, 2, "resume_latest", 0);
-  config.disable_default_session_store = cai_lua_opt_bool_field(
-      L, 2, "disable_default_session_store", 0);
+  config.disable_default_session_store =
+      cai_lua_opt_bool_field(L, 2, "disable_default_session_store", 0);
+  config.event_queue_limit =
+      cai_lua_opt_size_field(L, 2, "event_queue_limit", 0U);
+  config.steering_queue_limit =
+      cai_lua_opt_size_field(L, 2, "steering_queue_limit", 0U);
+  config.turn_queue_limit =
+      cai_lua_opt_size_field(L, 2, "turn_queue_limit", 0U);
   config.event_callback = cai_lua_agent_runtime_event;
   config.event_context = runtime;
-  if (config.workspace_directory == NULL || config.workspace_directory[0] == '\0') {
+  if (config.workspace_directory == NULL ||
+      config.workspace_directory[0] == '\0') {
     if (runtime->callback_ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
     }
@@ -3059,8 +3068,7 @@ static const char *cai_lua_agent_runtime_state_name(cai_agent_run_state state) {
 static int cai_lua_agent_runtime_gc(lua_State *L) {
   cai_lua_agent_runtime *self;
 
-  self = (cai_lua_agent_runtime *)luaL_checkudata(
-      L, 1, CAI_LUA_AGENT_RUNTIME);
+  self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
   if (self->active_calls != 0U) {
     return 0;
   }
@@ -3089,14 +3097,14 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
 
-  self = (cai_lua_agent_runtime *)luaL_checkudata(
-      L, 1, CAI_LUA_AGENT_RUNTIME);
+  self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
   if (self->active_calls != 0U) {
     cai_error_init(&error);
-    return cai_lua_fail(L,
-                        cai_lua_set_error(&error, CAI_ERR_INVALID,
-                                          "cai agent runtime has an active operation"),
-                        &error);
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "cai agent runtime has an active operation"),
+        &error);
   }
   return cai_lua_agent_runtime_gc(L);
 }
@@ -3128,6 +3136,20 @@ static int cai_lua_agent_runtime_submit_steering(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_submit_queued(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_submit_queued(self->ptr, luaL_checkstring(L, 2),
+                                       &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_pump(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_run_state state;
@@ -3137,8 +3159,8 @@ static int cai_lua_agent_runtime_pump(lua_State *L) {
   self = cai_lua_check_agent_runtime(L, 1);
   cai_error_init(&error);
   cai_lua_agent_runtime_enter(self);
-  rc = cai_agent_runtime_pump(self->ptr, (long)luaL_optinteger(L, 2, 0),
-                              &error);
+  rc =
+      cai_agent_runtime_pump(self->ptr, (long)luaL_optinteger(L, 2, 0), &error);
   if (rc == CAI_OK) {
     rc = cai_agent_runtime_state(self->ptr, &state, &error);
   }
@@ -8512,6 +8534,7 @@ static const luaL_Reg cai_lua_client_methods[] = {
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
     {"submit_steering", cai_lua_agent_runtime_submit_steering},
+    {"submit_queued", cai_lua_agent_runtime_submit_queued},
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
     {"session_id", cai_lua_agent_runtime_session_id},
@@ -8912,6 +8935,7 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_CANCELLED",
                       CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TURN_QUEUED", CAI_AGENT_EVENT_TURN_QUEUED);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);

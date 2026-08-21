@@ -58,7 +58,9 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_TERMINAL_OUTPUT = 13,
   CAI_AGENT_EVENT_TERMINAL_WAITING = 14,
   CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED = 15,
-  CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED = 16
+  CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED = 16,
+  /** A normal user turn was accepted to run after the active turn. */
+  CAI_AGENT_EVENT_TURN_QUEUED = 17
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */
@@ -164,6 +166,8 @@ typedef struct cai_agent_runtime_config {
   cai_agent_runtime_event_fn event_callback;
   /** Context passed to event_callback. */
   void *event_context;
+  /** Maximum queued normal turns; zero selects the bounded default. */
+  size_t turn_queue_limit;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */
@@ -182,6 +186,16 @@ int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
 int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
                                                  const char *text,
                                                  cai_error *error);
+/**
+ * Queue a normal user turn. It runs FIFO after the active turn reaches a
+ * terminal state, or immediately when the runtime is idle.
+ */
+int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
+                                    const char *text, cai_error *error);
+/** Thread-safe variant of cai_agent_runtime_submit_queued. */
+int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
+                                               const char *text,
+                                               cai_error *error);
 /** Drain ready events on the owner thread; timeout is currently advisory. */
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error);

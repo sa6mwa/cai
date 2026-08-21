@@ -272,8 +272,9 @@ int cai_client_new_smith_agent(cai_client *client,
         strcmp(terminal_config.root_path, config->workspace_directory) != 0) {
       cai_agent_destroy(*out);
       *out = NULL;
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "Smith terminal root must equal workspace directory");
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "Smith terminal root must equal workspace directory");
     }
     terminal_config.root_path = config->workspace_directory;
     if (terminal_config.default_workdir == NULL) {
@@ -347,8 +348,9 @@ int cai_client_new_smith_review_agent(cai_client *client,
   *out = NULL;
   if (client == NULL || config == NULL || config->workspace_directory == NULL ||
       config->workspace_directory[0] == '\0') {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "Smith review client and workspace directory are required");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "Smith review client and workspace directory are required");
   }
   client_impl = CAI_CLIENT_IMPL(client);
   if (client_impl == NULL) {
@@ -381,7 +383,8 @@ int cai_client_new_smith_review_agent(cai_client *client,
          strlen(review_suffix_second));
   instructions[length] = '\0';
   cai_agent_config_init(&agent_config);
-  agent_config.model = config->model != NULL ? config->model : CAI_SMITH_DEFAULT_MODEL;
+  agent_config.model =
+      config->model != NULL ? config->model : CAI_SMITH_DEFAULT_MODEL;
   agent_config.developer_instructions = instructions;
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort

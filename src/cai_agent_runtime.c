@@ -22,6 +22,7 @@ extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
+#define CAI_RUNTIME_DEFAULT_TURN_LIMIT 32U
 #define CAI_RUNTIME_XID_RAW_BYTES 12U
 #define CAI_RUNTIME_XID_TEXT_BYTES 20U
 
@@ -47,8 +48,19 @@ LONEJSON_MAP_DEFINE(cai_runtime_path_map, cai_runtime_path_doc,
 typedef struct cai_runtime_input_node {
   char *text;
   unsigned long long journal_sequence;
+  /* True once this input must enter the worker as a standalone user turn.
+   * Restored steering is promoted to a standalone turn after a crash, but
+   * remains outside the normal-turn capacity below. */
+  int queued_turn;
+  int counts_toward_turn_limit;
   struct cai_runtime_input_node *next;
 } cai_runtime_input_node;
+
+typedef enum cai_runtime_input_kind {
+  CAI_RUNTIME_INPUT_TURN = 0,
+  CAI_RUNTIME_INPUT_STEERING = 1,
+  CAI_RUNTIME_INPUT_QUEUED_TURN = 2
+} cai_runtime_input_kind;
 
 struct cai_agent_runtime {
   pthread_t owner_thread;
@@ -73,6 +85,7 @@ struct cai_agent_runtime {
   char *session_id;
   unsigned long long applied_event_sequence;
   unsigned long long next_event_sequence;
+  unsigned long long journal_v2_start_sequence;
   int resume_compaction_pending;
   int accepting_steering;
   cai_agent_run_state state;
@@ -83,6 +96,8 @@ struct cai_agent_runtime {
   cai_runtime_event_node *event_tail;
   size_t steering_limit;
   size_t steering_count;
+  size_t turn_limit;
+  size_t turn_count;
   cai_runtime_input_node *turn_head;
   cai_runtime_input_node *turn_tail;
   cai_runtime_input_node *steering_head;
@@ -105,7 +120,8 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime);
 static int cai_runtime_local_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
 
-  if (session_id == NULL || session_id[0] == '\0' || strlen(session_id) > 128U) {
+  if (session_id == NULL || session_id[0] == '\0' ||
+      strlen(session_id) > 128U) {
     return 0;
   }
   for (cursor = (const unsigned char *)session_id; *cursor != '\0'; cursor++) {
@@ -307,15 +323,11 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
   return CAI_OK;
 }
 
-static int cai_runtime_enqueue_tool_locked(cai_agent_runtime *runtime, int type,
-                                           const char *data, size_t data_length,
-                                           const char *tool_name,
-                                           const char *tool_call_id,
-                                           int tool_action,
-                                           const char *tool_path,
-                                           size_t tool_path_count,
-                                           cai_agent_run_state state,
-                                           cai_error *error) {
+static int cai_runtime_enqueue_tool_locked(
+    cai_agent_runtime *runtime, int type, const char *data, size_t data_length,
+    const char *tool_name, const char *tool_call_id, int tool_action,
+    const char *tool_path, size_t tool_path_count, cai_agent_run_state state,
+    cai_error *error) {
   cai_runtime_event_node *node;
   int rc;
 
@@ -360,8 +372,7 @@ static int cai_runtime_enqueue_terminal_locked(cai_agent_runtime *runtime,
   }
   rc = cai_runtime_event_node_new(type, event->output, event->output_length,
                                   NULL, runtime->terminal_origin_tool_call_id,
-                                  runtime->state,
-                                  &node, error);
+                                  runtime->state, &node, error);
   if (rc == CAI_OK) {
     node->terminal_id = cai_strdup(NULL, event->terminal_id);
     if (node->terminal_id == NULL) {
@@ -414,29 +425,58 @@ static int cai_runtime_copy_string(const char *value, char **out,
   return CAI_OK;
 }
 
-static int cai_runtime_append_steering_locked(cai_agent_runtime *runtime,
-                                              cai_runtime_input_node *input,
-                                              cai_error *error) {
+static int cai_runtime_append_journal_event_locked(
+    cai_agent_runtime *runtime, const char *type, const char *data,
+    unsigned long long *out_sequence, cai_error *error) {
   cai_agent_session_event event;
   int rc;
 
+  if (out_sequence != NULL) {
+    *out_sequence = 0U;
+  }
   if (runtime->session_store == NULL) {
     return CAI_OK;
   }
   if (runtime->session_store->append_event == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session store does not support durable steering");
+                         "session store does not support durable agent input");
   }
   event.sequence = runtime->next_event_sequence + 1U;
-  event.type = "steering_queued";
-  event.data = input->text;
+  event.type = type;
+  event.data = data;
   rc = runtime->session_store->append_event(runtime->session_store->context,
                                             runtime->session_scope,
                                             runtime->session_id, &event, error);
   if (rc == CAI_OK) {
     runtime->next_event_sequence = event.sequence;
-    input->journal_sequence = event.sequence;
+    if (out_sequence != NULL) {
+      *out_sequence = event.sequence;
+    }
   }
+  return rc;
+}
+
+static int
+cai_runtime_mark_input_consumed_locked(cai_agent_runtime *runtime,
+                                       unsigned long long input_sequence,
+                                       cai_error *error) {
+  char data[32];
+  int rc;
+
+  if (input_sequence == 0U || runtime->session_store == NULL) {
+    return CAI_OK;
+  }
+  if (snprintf(data, sizeof(data), "%llu", input_sequence) >=
+      (int)sizeof(data)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent input journal sequence is invalid");
+  }
+  /* This marker is deliberately appended before the snapshot that contains
+   * the input.  On recovery it is authoritative only when its own sequence
+   * is covered by that snapshot's watermark; a crash before the checkpoint
+   * therefore replays the input instead of losing it. */
+  rc = cai_runtime_append_journal_event_locked(runtime, "input_consumed", data,
+                                               NULL, error);
   return rc;
 }
 
@@ -447,9 +487,9 @@ static int cai_runtime_xid_random(unsigned char *output, size_t length,
 
   fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
-    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to open random source for session identifier",
-                                strerror(errno));
+    return cai_set_error_detail(
+        error, CAI_ERR_TRANSPORT,
+        "failed to open random source for session identifier", strerror(errno));
   }
   offset = 0U;
   while (offset < length) {
@@ -465,18 +505,19 @@ static int cai_runtime_xid_random(unsigned char *output, size_t length,
 
       saved_errno = errno;
       close(fd);
-      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                  "failed to read random session identifier bytes",
-                                  nread == 0 ? "unexpected end of random source"
-                                             : strerror(saved_errno));
+      return cai_set_error_detail(
+          error, CAI_ERR_TRANSPORT,
+          "failed to read random session identifier bytes",
+          nread == 0 ? "unexpected end of random source"
+                     : strerror(saved_errno));
     }
   }
   close(fd);
   return CAI_OK;
 }
 
-static int cai_runtime_xid_machine_override(unsigned char output[3], int *present,
-                                            cai_error *error) {
+static int cai_runtime_xid_machine_override(unsigned char output[3],
+                                            int *present, cai_error *error) {
   const char *value;
   char *end;
   unsigned long number;
@@ -490,8 +531,9 @@ static int cai_runtime_xid_machine_override(unsigned char output[3], int *presen
   end = NULL;
   number = strtoul(value, &end, 10);
   if (errno != 0 || end == value || *end != '\0' || number > 0xffffffUL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "XID_MACHINE_ID must be a decimal value between 0 and 16777215");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "XID_MACHINE_ID must be a decimal value between 0 and 16777215");
   }
   output[0] = (unsigned char)(number >> 16U);
   output[1] = (unsigned char)(number >> 8U);
@@ -500,7 +542,8 @@ static int cai_runtime_xid_machine_override(unsigned char output[3], int *presen
   return CAI_OK;
 }
 
-static int cai_runtime_xid_machine_id(unsigned char output[3], cai_error *error) {
+static int cai_runtime_xid_machine_id(unsigned char output[3],
+                                      cai_error *error) {
   unsigned char digest[SHA256_DIGEST_LENGTH];
   char source[4096];
   size_t length;
@@ -542,8 +585,9 @@ static int cai_runtime_xid_machine_id(unsigned char output[3], cai_error *error)
   }
   if (length == 0U ||
       SHA256((const unsigned char *)source, length, digest) == NULL) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to derive session identifier machine component");
+    return cai_set_error(
+        error, CAI_ERR_TRANSPORT,
+        "failed to derive session identifier machine component");
   }
   memcpy(output, digest, 3U);
   return CAI_OK;
@@ -569,8 +613,9 @@ static int cai_runtime_xid_initialize_locked(cai_error *error) {
   return rc;
 }
 
-static void cai_runtime_xid_encode(const unsigned char raw[CAI_RUNTIME_XID_RAW_BYTES],
-                                   char output[CAI_RUNTIME_XID_TEXT_BYTES + 1U]) {
+static void
+cai_runtime_xid_encode(const unsigned char raw[CAI_RUNTIME_XID_RAW_BYTES],
+                       char output[CAI_RUNTIME_XID_TEXT_BYTES + 1U]) {
   static const char alphabet[] = "0123456789abcdefghijklmnopqrstuv";
   size_t index;
 
@@ -585,8 +630,8 @@ static void cai_runtime_xid_encode(const unsigned char raw[CAI_RUNTIME_XID_RAW_B
       offset = index * 5U + bit;
       value <<= 1U;
       if (offset < CAI_RUNTIME_XID_RAW_BYTES * 8U) {
-        value |= (unsigned int)((raw[offset / 8U] >>
-                                  (7U - (offset % 8U))) & 1U);
+        value |=
+            (unsigned int)((raw[offset / 8U] >> (7U - (offset % 8U))) & 1U);
       }
     }
     output[index] = alphabet[value];
@@ -594,8 +639,9 @@ static void cai_runtime_xid_encode(const unsigned char raw[CAI_RUNTIME_XID_RAW_B
   output[CAI_RUNTIME_XID_TEXT_BYTES] = '\0';
 }
 
-static int cai_runtime_generate_session_id(
-    char output[CAI_AGENT_SESSION_ID_MAX], cai_error *error) {
+static int
+cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
+                                cai_error *error) {
   unsigned char raw[CAI_RUNTIME_XID_RAW_BYTES];
   time_t now;
   unsigned int counter;
@@ -604,8 +650,9 @@ static int cai_runtime_generate_session_id(
 
   now = time(NULL);
   if (now < 0 || (unsigned long)now > 0xffffffffUL) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "system time is outside the XID session identifier range");
+    return cai_set_error(
+        error, CAI_ERR_TRANSPORT,
+        "system time is outside the XID session identifier range");
   }
   seconds = (unsigned long)now;
   pthread_mutex_lock(&cai_runtime_session_id_lock);
@@ -629,15 +676,19 @@ static int cai_runtime_generate_session_id(
   return rc;
 }
 
-static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
+static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
                                   cai_error *error) {
   cai_source *state;
   char *model;
+  unsigned long long applied_event_sequence;
   int rc;
 
   if (runtime->session_store == NULL) {
     return CAI_OK;
   }
+  pthread_mutex_lock(&runtime->lock);
+  applied_event_sequence = runtime->next_event_sequence;
+  pthread_mutex_unlock(&runtime->lock);
   state = NULL;
   model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                      CAI_SESSION_AGENT_IMPL(runtime->session)->model);
@@ -652,10 +703,15 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
   if (rc == CAI_OK) {
     rc = runtime->session_store->checkpoint(
         runtime->session_store->context, runtime->session_scope,
-        runtime->session_id, state, runtime->applied_event_sequence, error);
+        runtime->session_id, state, applied_event_sequence, error);
   }
   cai_source_close(state);
   if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    runtime->applied_event_sequence = applied_event_sequence;
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  if (rc == CAI_OK && emit_event) {
     pthread_mutex_lock(&runtime->lock);
     rc = cai_runtime_enqueue_locked(
         runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
@@ -666,8 +722,7 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
 }
 
 static int cai_runtime_account_goal(cai_agent_runtime *runtime,
-                                    int *out_budget_limited,
-                                    cai_error *error) {
+                                    int *out_budget_limited, cai_error *error) {
   cai_session_impl *session;
   long long total_tokens;
   long long delta;
@@ -921,8 +976,8 @@ static char *cai_runtime_tool_path_from_arguments(const cai_tool_event *event) {
   }
   memset(&doc, 0, sizeof(doc));
   lonejson_error_init(&json_error);
-  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_runtime_path_map, &doc,
-                              arguments, &json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_runtime_path_map, &doc, arguments,
+                              &json_error);
   if (status != LONEJSON_STATUS_OK || doc.path == NULL || doc.path[0] == '\0') {
     CAI_LJ->cleanup(CAI_LJ, &cai_runtime_path_map, &doc);
     cai_free_mem(NULL, arguments_copy);
@@ -1024,8 +1079,8 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   if (event->type == CAI_TOOL_EVENT_OUTPUT &&
       tool_action == CAI_AGENT_TOOL_ACTION_PATCH) {
     cai_free_mem(NULL, tool_path);
-    tool_path = cai_runtime_patch_path_from_output(data, data_length,
-                                                   &tool_path_count);
+    tool_path =
+        cai_runtime_patch_path_from_output(data, data_length, &tool_path_count);
   }
   pthread_mutex_lock(&runtime->lock);
   runtime->state = CAI_AGENT_DISPATCHING_TOOL;
@@ -1066,7 +1121,8 @@ static int cai_runtime_terminal_event(void *context,
 
   runtime = (cai_agent_runtime *)context;
   if (runtime == NULL || event == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "invalid runtime terminal event");
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid runtime terminal event");
   }
   if (runtime->terminal_event_callback != NULL) {
     rc = runtime->terminal_event_callback(runtime->terminal_event_context,
@@ -1091,8 +1147,8 @@ static int cai_runtime_terminal_event(void *context,
         event->command != NULL ? strlen(event->command) : 0U;
   }
   pthread_mutex_lock(&runtime->lock);
-  rc = cai_runtime_enqueue_terminal_locked(runtime, type, &display_event,
-                                           error);
+  rc =
+      cai_runtime_enqueue_terminal_locked(runtime, type, &display_event, error);
   pthread_mutex_unlock(&runtime->lock);
   return rc;
 }
@@ -1102,8 +1158,8 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
                                                          cai_error *error) {
   cai_agent_runtime *runtime;
   cai_runtime_input_node *input;
-  unsigned long long applied_sequence;
   int budget_limited;
+  int has_steering;
   int rc;
 
   runtime = (cai_agent_runtime *)context;
@@ -1112,7 +1168,13 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
                          "invalid Smith steering tool-round boundary");
   }
   rc = CAI_OK;
-  applied_sequence = runtime->applied_event_sequence;
+  pthread_mutex_lock(&runtime->lock);
+  has_steering = runtime->steering_head != NULL;
+  pthread_mutex_unlock(&runtime->lock);
+  /* Preserve completed tool/response history before injecting steering. */
+  if (has_steering) {
+    rc = cai_runtime_checkpoint(runtime, 1, error);
+  }
   pthread_mutex_lock(&runtime->lock);
   while (rc == CAI_OK && runtime->steering_head != NULL) {
     input = runtime->steering_head;
@@ -1123,19 +1185,19 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
         runtime->steering_tail = NULL;
       }
       runtime->steering_count--;
-      if (input->journal_sequence > applied_sequence) {
-        applied_sequence = input->journal_sequence;
+      rc = cai_runtime_mark_input_consumed_locked(
+          runtime, input->journal_sequence, error);
+      if (rc == CAI_OK) {
+        rc = cai_runtime_enqueue_locked(
+            runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
+            strlen(input->text), NULL, NULL, CAI_AGENT_SAMPLING, error);
       }
-      rc = cai_runtime_enqueue_locked(
-          runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
-          strlen(input->text), NULL, NULL, CAI_AGENT_SAMPLING, error);
       cai_runtime_input_node_free(input);
     }
   }
   pthread_mutex_unlock(&runtime->lock);
   budget_limited = 0;
   if (rc == CAI_OK) {
-    runtime->applied_event_sequence = applied_sequence;
     rc = cai_runtime_account_goal(runtime, &budget_limited, error);
   }
   /* The tool-loop durable boundary checkpoints only after it has committed
@@ -1154,18 +1216,19 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid Smith durable tool-round boundary");
   }
-  return cai_runtime_checkpoint(runtime, error);
+  return cai_runtime_checkpoint(runtime, 1, error);
 }
 
 /* A response that finishes without another tool call still needs a durable
  * steering boundary. Tool rounds leave this commit to their safe tool-output
  * history path so the tool output remains ordered before steering. */
-static int cai_runtime_deliver_steering_after_response(
-    cai_agent_runtime *runtime, cai_error *error) {
+static int
+cai_runtime_deliver_steering_after_response(cai_agent_runtime *runtime,
+                                            cai_error *error) {
   int rc;
 
   rc = cai_runtime_deliver_steering_after_tool_round(runtime, runtime->session,
-                                                       error);
+                                                     error);
   if (rc == CAI_OK) {
     rc = cai_session_commit_pending_inputs(runtime->session, error);
   }
@@ -1188,10 +1251,106 @@ cai_runtime_take_input_locked(cai_runtime_input_node **head,
   return node;
 }
 
+static int
+cai_runtime_remove_replayed_input(cai_runtime_input_node **head,
+                                  cai_runtime_input_node **tail, size_t *count,
+                                  unsigned long long journal_sequence) {
+  cai_runtime_input_node *previous;
+  cai_runtime_input_node *node;
+
+  previous = NULL;
+  for (node = *head; node != NULL; node = node->next) {
+    if (node->journal_sequence == journal_sequence) {
+      if (previous == NULL) {
+        *head = node->next;
+      } else {
+        previous->next = node->next;
+      }
+      if (*tail == node) {
+        *tail = previous;
+      }
+      if (count != NULL && *count > 0U) {
+        (*count)--;
+      }
+      cai_runtime_input_node_free(node);
+      return 1;
+    }
+    previous = node;
+  }
+  return 0;
+}
+
+static int
+cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
+                                  const cai_agent_session_event *event,
+                                  cai_error *error) {
+  char *end;
+  unsigned long long input_sequence;
+  int removed;
+
+  if (event->data == NULL || event->data[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input-consumed journal event has no input sequence");
+  }
+  errno = 0;
+  end = NULL;
+  input_sequence = strtoull(event->data, &end, 10);
+  if (errno != 0 || end == event->data || *end != '\0' ||
+      input_sequence == 0U) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "input-consumed journal event has an invalid input sequence");
+  }
+  /* The marker precedes the checkpoint that makes an injected input durable.
+   * A marker beyond the loaded checkpoint's watermark may have survived a
+   * crash before that checkpoint, so it must not suppress replay. */
+  if (event->sequence > runtime->applied_event_sequence) {
+    return CAI_OK;
+  }
+  /* A v2 consumption marker may acknowledge a legacy input while migrating an
+   * existing session. That input continues to use the legacy checkpoint
+   * watermark rule, so it is absent from the replay queues by design. */
+  if (input_sequence < runtime->journal_v2_start_sequence) {
+    return CAI_OK;
+  }
+  removed = cai_runtime_remove_replayed_input(
+      &runtime->steering_head, &runtime->steering_tail,
+      &runtime->steering_count, input_sequence);
+  if (!removed) {
+    removed = cai_runtime_remove_replayed_input(
+        &runtime->turn_head, &runtime->turn_tail, &runtime->turn_count,
+        input_sequence);
+  }
+  if (!removed) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "input-consumed journal event has no queued input");
+  }
+  return CAI_OK;
+}
+
+static int cai_runtime_find_journal_v2(void *context,
+                                       const cai_agent_session_event *event,
+                                       cai_error *error) {
+  cai_agent_runtime *runtime;
+
+  runtime = (cai_agent_runtime *)context;
+  if (runtime == NULL || event == NULL || event->type == NULL ||
+      event->sequence == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid session journal migration event");
+  }
+  if (strcmp(event->type, "input_journal_v2") == 0 &&
+      event->sequence < runtime->journal_v2_start_sequence) {
+    runtime->journal_v2_start_sequence = event->sequence;
+  }
+  return CAI_OK;
+}
+
 static int cai_runtime_replay_journal_event(
     void *context, const cai_agent_session_event *event, cai_error *error) {
   cai_agent_runtime *runtime;
   cai_runtime_input_node *input;
+  int input_event;
 
   runtime = (cai_agent_runtime *)context;
   if (runtime == NULL || event == NULL || event->type == NULL) {
@@ -1201,33 +1360,89 @@ static int cai_runtime_replay_journal_event(
   if (event->sequence > runtime->next_event_sequence) {
     runtime->next_event_sequence = event->sequence;
   }
-  if (strcmp(event->type, "steering_queued") != 0) {
+  input_event = strcmp(event->type, "steering_queued") == 0 ||
+                strcmp(event->type, "turn_queued") == 0;
+  if (strcmp(event->type, "input_consumed") == 0) {
+    if (event->sequence < runtime->journal_v2_start_sequence) {
+      return CAI_OK;
+    }
+    return cai_runtime_replay_consumed_input(runtime, event, error);
+  }
+  if (!input_event) {
+    return CAI_OK;
+  }
+  /* Journals written before input_journal_v2 used the checkpoint watermark as
+   * their acknowledgement. Keep that recovery rule for their records so an
+   * upgrade never replays a steering instruction already in old state. */
+  if (event->sequence < runtime->journal_v2_start_sequence &&
+      event->sequence <= runtime->applied_event_sequence) {
     return CAI_OK;
   }
   if (event->data == NULL || event->data[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "queued steering event has no text");
+                         "queued agent input event has no text");
+  }
+  if (strcmp(event->type, "turn_queued") == 0 &&
+      runtime->turn_count >= runtime->turn_limit) {
+    return cai_set_error(
+        error, CAI_ERR_LIMIT,
+        "agent queued-turn limit is too small to resume session");
   }
   input = (cai_runtime_input_node *)cai_alloc(NULL, sizeof(*input));
   if (input == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to restore queued steering input");
+                         "failed to restore queued agent input");
   }
   memset(input, 0, sizeof(*input));
   input->text = cai_strdup(NULL, event->data);
   if (input->text == NULL) {
     cai_runtime_input_node_free(input);
     return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to copy queued steering input");
+                         "failed to copy queued agent input");
   }
   input->journal_sequence = event->sequence;
-  if (runtime->turn_tail == NULL) {
-    runtime->turn_head = input;
+  input->queued_turn = strcmp(event->type, "turn_queued") == 0;
+  input->counts_toward_turn_limit = input->queued_turn;
+  if (input->counts_toward_turn_limit) {
+    if (runtime->turn_tail == NULL) {
+      runtime->turn_head = input;
+    } else {
+      runtime->turn_tail->next = input;
+    }
+    runtime->turn_tail = input;
+    runtime->turn_count++;
   } else {
-    runtime->turn_tail->next = input;
+    if (runtime->steering_tail == NULL) {
+      runtime->steering_head = input;
+    } else {
+      runtime->steering_tail->next = input;
+    }
+    runtime->steering_tail = input;
+    runtime->steering_count++;
   }
-  runtime->turn_tail = input;
   return CAI_OK;
+}
+
+/* A crashed model request cannot resume in place. Restored steering therefore
+ * becomes the next durable user work before any restored normal turn, while
+ * preserving its FIFO order and its separate capacity accounting. */
+static void cai_runtime_promote_resumed_steering(cai_agent_runtime *runtime) {
+  cai_runtime_input_node *input;
+
+  if (runtime->steering_head == NULL) {
+    return;
+  }
+  for (input = runtime->steering_head; input != NULL; input = input->next) {
+    input->queued_turn = 1;
+  }
+  runtime->steering_tail->next = runtime->turn_head;
+  runtime->turn_head = runtime->steering_head;
+  if (runtime->turn_tail == NULL) {
+    runtime->turn_tail = runtime->steering_tail;
+  }
+  runtime->steering_head = NULL;
+  runtime->steering_tail = NULL;
+  runtime->steering_count = 0U;
 }
 
 static void *cai_runtime_worker(void *context) {
@@ -1252,6 +1467,7 @@ static void *cai_runtime_worker(void *context) {
   options.tool_round_durable = cai_runtime_checkpoint_durable_tool_round;
   options.tool_round_durable_context = runtime;
   for (;;) {
+    cai_error_init(&error);
     pthread_mutex_lock(&runtime->lock);
     while (!runtime->stopping && runtime->turn_head == NULL) {
       pthread_cond_wait(&runtime->condition, &runtime->lock);
@@ -1262,18 +1478,73 @@ static void *cai_runtime_worker(void *context) {
     }
     input =
         cai_runtime_take_input_locked(&runtime->turn_head, &runtime->turn_tail);
+    if (input != NULL && input->counts_toward_turn_limit &&
+        runtime->turn_count > 0U) {
+      runtime->turn_count--;
+    }
+    if (input != NULL && input->queued_turn) {
+      /* A queued turn becomes active while it is still protected by the
+       * runtime lock.  In particular, do not expose COMPLETED between taking
+       * this input and publishing RUN_STARTED: callers must not be able to
+       * submit a competing immediate turn in that interval. */
+      runtime->state = CAI_AGENT_SAMPLING;
+      runtime->accepting_steering = 1;
+      rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_STARTED,
+                                      input->text, strlen(input->text), NULL,
+                                      NULL, runtime->state, &error);
+    } else {
+      rc = CAI_OK;
+    }
     pthread_mutex_unlock(&runtime->lock);
     if (input == NULL) {
       continue;
     }
-    cai_error_init(&error);
+    if (rc == CAI_ERR_NOMEM && input->queued_turn) {
+      /* RUN_STARTED is observational. A transient allocation failure while
+       * publishing it must not strand or discard an already durable user
+       * turn; continue the run and let subsequent lifecycle events report its
+       * outcome when memory is available. */
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      rc = CAI_OK;
+    }
+    if (rc != CAI_OK) {
+      cai_runtime_input_node_free(input);
+      cai_error_cleanup(&error);
+      continue;
+    }
+    if (cai_runtime_goal_budget_limited(runtime)) {
+      static const char message[] = "queued user turn rejected because the "
+                                    "goal token budget is exhausted";
+
+      pthread_mutex_lock(&runtime->lock);
+      rc = cai_runtime_mark_input_consumed_locked(
+          runtime, input->journal_sequence, &error);
+      pthread_mutex_unlock(&runtime->lock);
+      if (rc == CAI_OK) {
+        rc = cai_runtime_checkpoint(runtime, 1, &error);
+      }
+      pthread_mutex_lock(&runtime->lock);
+      runtime->accepting_steering = 0;
+      runtime->state = CAI_AGENT_FAILED;
+      (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
+                                       message, sizeof(message) - 1U, NULL,
+                                       NULL, runtime->state, &error);
+      pthread_cond_broadcast(&runtime->condition);
+      pthread_mutex_unlock(&runtime->lock);
+      cai_runtime_input_node_free(input);
+      cai_error_cleanup(&error);
+      continue;
+    }
     rc = cai_runtime_compact_resumed_history(runtime, &error);
     if (rc == CAI_OK) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
     }
-    if (rc == CAI_OK &&
-        input->journal_sequence > runtime->applied_event_sequence) {
-      runtime->applied_event_sequence = input->journal_sequence;
+    if (rc == CAI_OK) {
+      pthread_mutex_lock(&runtime->lock);
+      rc = cai_runtime_mark_input_consumed_locked(
+          runtime, input->journal_sequence, &error);
+      pthread_mutex_unlock(&runtime->lock);
     }
     cai_runtime_input_node_free(input);
     if (rc == CAI_OK) {
@@ -1284,7 +1555,7 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
     }
     if (rc == CAI_OK) {
-      rc = cai_runtime_checkpoint(runtime, &error);
+      rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
     while (rc == CAI_OK && !budget_limited) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
@@ -1312,13 +1583,13 @@ static void *cai_runtime_worker(void *context) {
        * exact state durable before reporting the next-request boundary. */
       cai_error_cleanup(&error);
       cai_error_init(&error);
-      rc = cai_runtime_checkpoint(runtime, &error);
+      rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
     if (rc == CAI_OK) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
     }
     if (rc == CAI_OK) {
-      rc = cai_runtime_checkpoint(runtime, &error);
+      rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
@@ -1335,8 +1606,8 @@ static void *cai_runtime_worker(void *context) {
           rc == CAI_ERR_CANCELLED ? CAI_AGENT_CANCELLED : CAI_AGENT_FAILED;
       message = error.message != NULL ? error.message : "agent run failed";
       (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
-                                       message, strlen(message), NULL,
-                                       NULL, runtime->state, &error);
+                                       message, strlen(message), NULL, NULL,
+                                       runtime->state, &error);
     }
     pthread_cond_broadcast(&runtime->condition);
     pthread_mutex_unlock(&runtime->lock);
@@ -1358,6 +1629,7 @@ int cai_agent_runtime_open(cai_client *client,
   cai_smith_config smith;
   cai_terminal_tool_config terminal_config;
   int review_mode;
+  int resumed_checkpoint;
   size_t i;
   int rc;
 
@@ -1374,6 +1646,7 @@ int cai_agent_runtime_open(cai_client *client,
   }
   review_mode = config->preset != NULL &&
                 strcmp(config->preset, CAI_SMITH_REVIEW_PRESET) == 0;
+  resumed_checkpoint = 0;
   if (config->preset != NULL && strcmp(config->preset, CAI_SMITH_PRESET) != 0 &&
       !review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID, "unsupported agent preset");
@@ -1395,6 +1668,9 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->steering_limit = config->steering_queue_limit != 0U
                                 ? config->steering_queue_limit
                                 : CAI_RUNTIME_DEFAULT_STEERING_LIMIT;
+  runtime->turn_limit = config->turn_queue_limit != 0U
+                            ? config->turn_queue_limit
+                            : CAI_RUNTIME_DEFAULT_TURN_LIMIT;
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
   runtime->review_mode = review_mode;
@@ -1439,8 +1715,9 @@ int cai_agent_runtime_open(cai_client *client,
            : cai_client_new_smith_agent(client, &smith, &runtime->agent, error);
   if (rc == CAI_OK && review_mode &&
       (config->mcp_client_count > 0U || config->enable_image_generation)) {
-    rc = cai_set_error(error, CAI_ERR_INVALID,
-                       "Smith review runtime does not support MCP or image generation tools");
+    rc = cai_set_error(
+        error, CAI_ERR_INVALID,
+        "Smith review runtime does not support MCP or image generation tools");
   }
   if (rc == CAI_OK && config->mcp_client_count > 0U &&
       config->mcp_clients == NULL) {
@@ -1517,7 +1794,10 @@ int cai_agent_runtime_open(cai_client *client,
                 CAI_SESSION_IMPL(runtime->session)->usage.usage.total_tokens;
           }
           rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
-          runtime->resume_compaction_pending = 1;
+          if (rc == CAI_OK) {
+            runtime->resume_compaction_pending = 1;
+            resumed_checkpoint = 1;
+          }
         }
       }
       cai_source_close(state);
@@ -1526,8 +1806,9 @@ int cai_agent_runtime_open(cai_client *client,
       if (config->session_id != NULL) {
         if (runtime->owns_local_store &&
             !cai_runtime_local_session_id_valid(config->session_id)) {
-          rc = cai_set_error(error, CAI_ERR_INVALID,
-                             "local session identifiers use only letters, digits, - and _");
+          rc = cai_set_error(
+              error, CAI_ERR_INVALID,
+              "local session identifiers use only letters, digits, - and _");
         } else {
           rc = cai_runtime_copy_string(config->session_id, &runtime->session_id,
                                        error);
@@ -1542,10 +1823,45 @@ int cai_agent_runtime_open(cai_client *client,
     if (rc == CAI_OK && runtime->session_store != NULL &&
         config->resume_latest) {
       runtime->next_event_sequence = runtime->applied_event_sequence;
+      runtime->journal_v2_start_sequence = ULLONG_MAX;
       rc = runtime->session_store->load_events_after(
           runtime->session_store->context, runtime->session_scope,
-          runtime->session_id, runtime->applied_event_sequence,
-          cai_runtime_replay_journal_event, runtime, error);
+          runtime->session_id, 0U, cai_runtime_find_journal_v2, runtime, error);
+      if (rc == CAI_OK) {
+        rc = runtime->session_store->load_events_after(
+            runtime->session_store->context, runtime->session_scope,
+            runtime->session_id, 0U, cai_runtime_replay_journal_event, runtime,
+            error);
+      }
+      if (rc == CAI_OK) {
+        cai_runtime_promote_resumed_steering(runtime);
+      }
+      if (rc == CAI_OK && runtime->journal_v2_start_sequence == ULLONG_MAX) {
+        pthread_mutex_lock(&runtime->lock);
+        rc = cai_runtime_append_journal_event_locked(
+            runtime, "input_journal_v2", NULL,
+            &runtime->journal_v2_start_sequence, error);
+        pthread_mutex_unlock(&runtime->lock);
+      }
+    }
+    /* A durable journal is v2 from its first checkpoint.  In particular,
+     * an input accepted after this empty anchor must not be treated as a
+     * legacy watermark-only record if the process crashes before its own
+     * checkpoint. */
+    if (rc == CAI_OK && runtime->session_store != NULL &&
+        !config->resume_latest) {
+      pthread_mutex_lock(&runtime->lock);
+      rc = cai_runtime_append_journal_event_locked(
+          runtime, "input_journal_v2", NULL,
+          &runtime->journal_v2_start_sequence, error);
+      pthread_mutex_unlock(&runtime->lock);
+    }
+    /* The local JSONL backend discovers sessions through checkpoints.  Create
+     * a silent empty anchor before the worker can acknowledge a first durable
+     * queued turn, so that a crash in that first-turn window remains resumable.
+     */
+    if (rc == CAI_OK && runtime->session_store != NULL && !resumed_checkpoint) {
+      rc = cai_runtime_checkpoint(runtime, 0, error);
     }
   }
   if (rc == CAI_OK && pthread_create(&runtime->worker_thread, NULL,
@@ -1578,10 +1894,14 @@ int cai_agent_runtime_open(cai_client *client,
 }
 
 static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
-                                     const char *text, int steering,
+                                     const char *text,
+                                     cai_runtime_input_kind kind,
                                      cai_error *error) {
   cai_runtime_input_node *node;
   cai_runtime_event_node *event_node;
+  cai_agent_run_state previous_state;
+  const char *journal_type;
+  int activated;
   int type;
   int rc;
 
@@ -1601,41 +1921,97 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to copy agent input");
   }
+  journal_type = kind == CAI_RUNTIME_INPUT_STEERING      ? "steering_queued"
+                 : kind == CAI_RUNTIME_INPUT_QUEUED_TURN ? "turn_queued"
+                                                         : NULL;
+  activated = 0;
   pthread_mutex_lock(&runtime->lock);
-  if (steering && !runtime->accepting_steering) {
+  if (kind == CAI_RUNTIME_INPUT_TURN &&
+      (runtime->turn_head != NULL || (runtime->state != CAI_AGENT_IDLE &&
+                                      runtime->state != CAI_AGENT_COMPLETED &&
+                                      runtime->state != CAI_AGENT_FAILED &&
+                                      runtime->state != CAI_AGENT_CANCELLED))) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime already has an active turn");
+  }
+  if (kind == CAI_RUNTIME_INPUT_TURN &&
+      cai_runtime_goal_budget_limited(runtime)) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "goal token budget is exhausted");
+  }
+  if (kind == CAI_RUNTIME_INPUT_QUEUED_TURN && runtime->stopping) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
+  if (kind == CAI_RUNTIME_INPUT_STEERING &&
+      ((runtime->state != CAI_AGENT_SAMPLING &&
+        runtime->state != CAI_AGENT_DISPATCHING_TOOL) ||
+       !runtime->accepting_steering)) {
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "steering safe boundary has already passed");
   }
-  if (steering && runtime->steering_count >= runtime->steering_limit) {
+  if (kind == CAI_RUNTIME_INPUT_STEERING &&
+      runtime->steering_count >= runtime->steering_limit) {
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_LIMIT, "agent steering queue is full");
   }
-  if (steering) {
+  if (kind == CAI_RUNTIME_INPUT_QUEUED_TURN &&
+      runtime->turn_count >= runtime->turn_limit) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_LIMIT, "agent turn queue is full");
+  }
+  if (kind == CAI_RUNTIME_INPUT_TURN ||
+      (kind == CAI_RUNTIME_INPUT_QUEUED_TURN &&
+       (runtime->state == CAI_AGENT_IDLE ||
+        runtime->state == CAI_AGENT_COMPLETED ||
+        runtime->state == CAI_AGENT_FAILED ||
+        runtime->state == CAI_AGENT_CANCELLED))) {
+    previous_state = runtime->state;
+    runtime->state = CAI_AGENT_SAMPLING;
+    runtime->accepting_steering = 0;
+    activated = 1;
+  }
+  if (kind != CAI_RUNTIME_INPUT_TURN) {
     rc = cai_runtime_require_event_capacity_locked(runtime, error);
     if (rc == CAI_OK) {
-      rc = cai_runtime_event_node_new(CAI_AGENT_EVENT_STEERING_QUEUED, text,
-                                      strlen(text), NULL, NULL, runtime->state,
-                                      &event_node, error);
+      type = kind == CAI_RUNTIME_INPUT_STEERING
+                 ? CAI_AGENT_EVENT_STEERING_QUEUED
+                 : CAI_AGENT_EVENT_TURN_QUEUED;
+      rc = cai_runtime_event_node_new(type, text, strlen(text), NULL, NULL,
+                                      runtime->state, &event_node, error);
     }
     if (rc != CAI_OK) {
+      if (activated) {
+        runtime->state = previous_state;
+      }
       pthread_mutex_unlock(&runtime->lock);
       cai_runtime_input_node_free(node);
       return rc;
     }
-    rc = cai_runtime_append_steering_locked(runtime, node, error);
+    rc = cai_runtime_append_journal_event_locked(
+        runtime, journal_type, node->text, &node->journal_sequence, error);
     if (rc != CAI_OK) {
+      if (activated) {
+        runtime->state = previous_state;
+      }
       pthread_mutex_unlock(&runtime->lock);
       cai_runtime_event_node_free(event_node);
       cai_runtime_input_node_free(node);
       return rc;
     }
   }
-  type =
-      steering ? CAI_AGENT_EVENT_STEERING_QUEUED : CAI_AGENT_EVENT_RUN_STARTED;
-  if (steering) {
+  type = kind == CAI_RUNTIME_INPUT_TURN ? CAI_AGENT_EVENT_RUN_STARTED
+                                        : CAI_AGENT_EVENT_TURN_QUEUED;
+  if (kind != CAI_RUNTIME_INPUT_TURN) {
     cai_runtime_append_event_node_locked(runtime, event_node);
     rc = CAI_OK;
   } else {
@@ -1643,11 +2019,16 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
                                     NULL, runtime->state, error);
   }
   if (rc != CAI_OK) {
+    if (activated) {
+      runtime->state = previous_state;
+    }
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return rc;
   }
-  if (steering) {
+  node->queued_turn = kind == CAI_RUNTIME_INPUT_QUEUED_TURN;
+  node->counts_toward_turn_limit = node->queued_turn;
+  if (kind == CAI_RUNTIME_INPUT_STEERING) {
     if (runtime->steering_tail == NULL) {
       runtime->steering_head = node;
     } else {
@@ -1662,6 +2043,15 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
       runtime->turn_tail->next = node;
     }
     runtime->turn_tail = node;
+    if (node->counts_toward_turn_limit) {
+      runtime->turn_count++;
+    }
+  }
+  /* The first turn must be visible to the worker before steering opens.  This
+   * is one lock-protected transition, so a completed worker cannot clear the
+   * safe-boundary gate and have a submitter reopen it afterwards. */
+  if (activated) {
+    runtime->accepting_steering = 1;
   }
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
@@ -1670,41 +2060,14 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
 
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error) {
-  cai_agent_run_state previous_state;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK) {
     return rc;
   }
-  pthread_mutex_lock(&runtime->lock);
-  if (runtime->state != CAI_AGENT_IDLE &&
-      runtime->state != CAI_AGENT_COMPLETED &&
-      runtime->state != CAI_AGENT_FAILED &&
-      runtime->state != CAI_AGENT_CANCELLED) {
-    pthread_mutex_unlock(&runtime->lock);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "agent runtime already has an active turn");
-  }
-  if (cai_runtime_goal_budget_limited(runtime)) {
-    pthread_mutex_unlock(&runtime->lock);
-    return cai_set_error(error, CAI_ERR_LIMIT,
-                         "goal token budget is exhausted");
-  }
-  previous_state = runtime->state;
-  runtime->state = CAI_AGENT_SAMPLING;
-  runtime->accepting_steering = 1;
-  pthread_mutex_unlock(&runtime->lock);
-  rc = cai_runtime_enqueue_input(runtime, text, 0, error);
-  if (rc != CAI_OK) {
-    pthread_mutex_lock(&runtime->lock);
-    if (runtime->turn_head == NULL && runtime->state == CAI_AGENT_SAMPLING) {
-      runtime->state = previous_state;
-      runtime->accepting_steering = 0;
-    }
-    pthread_mutex_unlock(&runtime->lock);
-  }
-  return rc;
+  return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_TURN,
+                                   error);
 }
 
 int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
@@ -1713,16 +2076,8 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
   if (runtime == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
   }
-  pthread_mutex_lock(&runtime->lock);
-  if ((runtime->state != CAI_AGENT_SAMPLING &&
-       runtime->state != CAI_AGENT_DISPATCHING_TOOL) ||
-      !runtime->accepting_steering) {
-    pthread_mutex_unlock(&runtime->lock);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "steering requires an active agent turn");
-  }
-  pthread_mutex_unlock(&runtime->lock);
-  return cai_runtime_enqueue_input(runtime, text, 1, error);
+  return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_STEERING,
+                                   error);
 }
 
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
@@ -1734,6 +2089,27 @@ int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
     return rc;
   }
   return cai_agent_runtime_submit_steering_threadsafe(runtime, text, error);
+}
+
+int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
+                                               const char *text,
+                                               cai_error *error) {
+  if (runtime == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
+  }
+  return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_QUEUED_TURN,
+                                   error);
+}
+
+int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
+                                    const char *text, cai_error *error) {
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_agent_runtime_submit_queued_threadsafe(runtime, text, error);
 }
 
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,

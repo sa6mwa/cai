@@ -122,9 +122,17 @@ typedef struct write_state {
 
 typedef struct runtime_event_state {
   pthread_t owner;
+  cai_agent_runtime *runtime;
   int calls;
   int saw_started;
+  int run_started_inactive_state;
+  int saw_turn_queued;
+  int saw_steering_queued;
+  int completed_count;
+  int completed_submit_attempts;
+  int completed_submit_result;
   int saw_failed;
+  int failed_count;
   int saw_list_tool;
   int tool_action;
   char tool_path[PATH_MAX];
@@ -143,12 +151,17 @@ typedef struct runtime_session_store_state {
   int loads;
   int checkpoints;
   int saw_goal_checkpoint_without_tool_output;
+  int saw_steering_checkpoint_before_watermark;
   int appended_events;
   unsigned long long load_applied_event_sequence;
   unsigned long long saved_applied_event_sequence;
   unsigned long long replay_event_sequence;
   char replay_event_type[64];
   char replay_event_data[256];
+  size_t replay_event_count;
+  unsigned long long replay_event_sequences[8];
+  char replay_event_types[8][64];
+  char replay_event_data_items[8][256];
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char saved_checkpoint[8192];
@@ -1740,9 +1753,31 @@ static int test_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
     state->saw_started = 1;
+    if (event->state != CAI_AGENT_SAMPLING) {
+      state->run_started_inactive_state = 1;
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_TURN_QUEUED) {
+    state->saw_turn_queued = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_STEERING_QUEUED) {
+    state->saw_steering_queued = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
+    state->completed_count++;
+    if (state->runtime != NULL && state->completed_submit_attempts == 0) {
+      cai_error submit_error;
+
+      state->completed_submit_attempts++;
+      cai_error_init(&submit_error);
+      state->completed_submit_result = cai_agent_runtime_submit(
+          state->runtime, "competing immediate turn", &submit_error);
+      cai_error_cleanup(&submit_error);
+    }
   }
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
     state->saw_failed = 1;
+    state->failed_count++;
     if (event->data != NULL) {
       snprintf(state->failure_message, sizeof(state->failure_message), "%.*s",
                (int)event->data_length, event->data);
@@ -1787,19 +1822,19 @@ static int test_xid_session_id_valid(const char *session_id, time_t earliest,
       return 0;
     }
   }
-  timestamp = ((unsigned long)(values[0] << 3U | values[1] >> 2U) << 24U) |
-              ((unsigned long)(values[1] << 6U | values[2] << 1U |
-                               values[3] >> 4U)
-               << 16U) |
-              ((unsigned long)(values[3] << 4U | values[4] >> 1U) << 8U) |
-              (unsigned long)(values[4] << 7U | values[5] << 2U |
-                              values[6] >> 3U);
+  timestamp =
+      ((unsigned long)(values[0] << 3U | values[1] >> 2U) << 24U) |
+      ((unsigned long)(values[1] << 6U | values[2] << 1U | values[3] >> 4U)
+       << 16U) |
+      ((unsigned long)(values[3] << 4U | values[4] >> 1U) << 8U) |
+      (unsigned long)(values[4] << 7U | values[5] << 2U | values[6] >> 3U);
   return timestamp >= (unsigned long)(earliest - 1) &&
          timestamp <= (unsigned long)(latest + 1);
 }
 
-static int test_runtime_close_from_event(
-    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+static int test_runtime_close_from_event(void *context,
+                                         const cai_agent_runtime_event *event,
+                                         cai_error *error) {
   runtime_close_callback_state *state;
 
   (void)event;
@@ -1846,10 +1881,14 @@ static int test_runtime_session_store_checkpoint(
                          "runtime test checkpoint buffer is too small");
   }
   store->saved_checkpoint[offset] = '\0';
+  if (strstr(store->saved_checkpoint, "interleaved steering") != NULL &&
+      applied_event_sequence < 2U) {
+    store->saw_steering_checkpoint_before_watermark = 1;
+  }
   if (strstr(store->saved_checkpoint, "\"goal_status\":\"budget_limited\"") !=
           NULL &&
-      strstr(store->saved_checkpoint,
-             "\"type\":\"function_call_output\"") == NULL) {
+      strstr(store->saved_checkpoint, "\"type\":\"function_call_output\"") ==
+          NULL) {
     store->saw_goal_checkpoint_without_tool_output = 1;
   }
   return CAI_OK;
@@ -1899,6 +1938,19 @@ static int test_runtime_session_store_append_event(
                  "%s", event->type);
   (void)snprintf(store->replay_event_data, sizeof(store->replay_event_data),
                  "%s", event->data != NULL ? event->data : "");
+  if (store->replay_event_count <
+      sizeof(store->replay_event_sequences) /
+          sizeof(store->replay_event_sequences[0])) {
+    size_t index;
+
+    index = store->replay_event_count++;
+    store->replay_event_sequences[index] = event->sequence;
+    (void)snprintf(store->replay_event_types[index],
+                   sizeof(store->replay_event_types[index]), "%s", event->type);
+    (void)snprintf(store->replay_event_data_items[index],
+                   sizeof(store->replay_event_data_items[index]), "%s",
+                   event->data != NULL ? event->data : "");
+  }
   (void)scope;
   (void)session_id;
   return CAI_OK;
@@ -1910,13 +1962,28 @@ static int test_runtime_session_store_load_events_after(
     void *callback_context, cai_error *error) {
   runtime_session_store_state *store;
   cai_agent_session_event event;
+  size_t index;
+  int rc;
 
   store = (runtime_session_store_state *)context;
   if (store == NULL || callback == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "runtime test replay callback is required");
   }
-  if (store->replay_event_sequence > after_sequence) {
+  if (store->replay_event_count > 0U) {
+    for (index = 0U; index < store->replay_event_count; index++) {
+      if (store->replay_event_sequences[index] <= after_sequence) {
+        continue;
+      }
+      event.sequence = store->replay_event_sequences[index];
+      event.type = store->replay_event_types[index];
+      event.data = store->replay_event_data_items[index];
+      rc = callback(callback_context, &event, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    }
+  } else if (store->replay_event_sequence > after_sequence) {
     event.sequence = store->replay_event_sequence;
     event.type = store->replay_event_type;
     event.data = store->replay_event_data;
@@ -3135,8 +3202,7 @@ static void *test_terminal_race_exec(void *value) {
   if (state->rc == CAI_OK) {
     state->rc = cai_tool_registry_run(
         state->registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-        "{\"cmd\":\"sleep 5\",\"yield_time_ms\":0}", sink,
-        &state->error);
+        "{\"cmd\":\"sleep 5\",\"yield_time_ms\":0}", sink, &state->error);
   }
   cai_sink_close(sink);
   return NULL;
@@ -8645,8 +8711,7 @@ static const char *mock_response_for_request(const char *request) {
         return stream_large_tool_done_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
-          strstr(request, "\"call_id\":\"call_stream_list_error_1\"") !=
-              NULL &&
+          strstr(request, "\"call_id\":\"call_stream_list_error_1\"") != NULL &&
           strstr(request, "stream list error tool turn") != NULL) {
         return stream_list_error_tool_done_body;
       }
@@ -24077,10 +24142,10 @@ static void test_smith_profile(test_state *state) {
     cai_agent_destroy(agent);
     agent = NULL;
   }
-  expect_int(state, "smith_review_open",
-             cai_client_new_smith_review_agent(mock.client, &config, &agent,
-                                               &error),
-             CAI_OK);
+  expect_int(
+      state, "smith_review_open",
+      cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
+      CAI_OK);
   if (agent != NULL) {
     expect_int(state, "smith_review_tool_count",
                (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 3L);
@@ -24118,6 +24183,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   const char *session_id;
   time_t session_open_before;
   time_t session_open_after;
+  int i;
 
   cai_error_init(&error);
   client = NULL;
@@ -24168,6 +24234,12 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_int(state, "runtime_idle_state",
                cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     expect_int(state, "runtime_idle_value", run_state, CAI_AGENT_IDLE);
+    expect_int(state, "runtime_empty_session_anchor", store_state.checkpoints,
+               1L);
+    expect_int(state, "runtime_empty_session_anchor_watermark",
+               (long)store_state.saved_applied_event_sequence, 1L);
+    expect_str(state, "runtime_empty_session_journal_v2",
+               store_state.replay_event_type, "input_journal_v2");
     poll_fd.fd = -1;
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
@@ -24180,8 +24252,17 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                CAI_ERR_INVALID);
     cai_error_cleanup(&error);
     cai_error_init(&error);
-    expect_int(state, "runtime_submit",
-               cai_agent_runtime_submit(runtime, "offline turn", &error),
+    expect_int(state, "runtime_reject_invalid_queue",
+               cai_agent_runtime_submit_queued(runtime, "", &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "runtime_invalid_queue_state",
+               cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    expect_int(state, "runtime_invalid_queue_returns_idle", run_state,
+               CAI_AGENT_IDLE);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_queue_idle",
+               cai_agent_runtime_submit_queued(runtime, "offline turn", &error),
                CAI_OK);
     expect_int(state, "runtime_wakeup_started", poll(&poll_fd, 1U, 0), 1L);
     expect_int(state, "runtime_reject_full_queue_steering",
@@ -24194,13 +24275,16 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                CAI_ERR_INVALID);
     cai_error_cleanup(&error);
     cai_error_init(&error);
-    expect_int(state, "runtime_pump",
-               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
-    expect_int(state, "runtime_checkpoint_pump",
-               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    for (i = 0;
+         i < 10 && (store_state.checkpoints < 2 || events.saw_started == 0);
+         i++) {
+      expect_int(state, "runtime_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    }
     expect_int(state, "runtime_event_started", events.saw_started, 1L);
+    expect_int(state, "runtime_event_turn_queued", events.saw_turn_queued, 1L);
     expect_int(state, "runtime_events_owner_thread", events.wrong_thread, 0L);
-    expect_int(state, "runtime_input_checkpoint", store_state.checkpoints, 1L);
+    expect_int(state, "runtime_input_checkpoint", store_state.checkpoints, 2L);
     expect_str(state, "runtime_input_checkpoint_scope", store_state.scope,
                "/tmp");
     expect_substr(state, "runtime_input_checkpoint_turn",
@@ -24251,6 +24335,153 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     cai_client_close(client);
   }
   cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_queued_turns(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-queued-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_queued_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_queued_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_queued_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 3);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_queued_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  events.owner = pthread_self();
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  client_config.organization_id = "org_mock";
+  client_config.project_id = "proj_mock";
+  expect_int(state, "runtime_queued_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.turn_queue_limit = 1U;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_queued_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    events.runtime = runtime;
+    expect_int(state, "runtime_queued_submit",
+               cai_agent_runtime_submit(runtime, "first queued turn", &error),
+               CAI_OK);
+    expect_int(
+        state, "runtime_queued_enqueue",
+        cai_agent_runtime_submit_queued(runtime, "second queued turn", &error),
+        CAI_OK);
+    expect_int(state, "runtime_queued_steering",
+               cai_agent_runtime_submit_steering(
+                   runtime, "interleaved steering", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && (run_state != CAI_AGENT_COMPLETED ||
+                            events.completed_count < 2);
+         i++) {
+      expect_int(state, "runtime_queued_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_queued_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_queued_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "runtime_queued_completed_count", events.completed_count,
+               2L);
+    expect_int(state, "runtime_queued_completed_submit_attempts",
+               events.completed_submit_attempts, 1L);
+    expect_int(state, "runtime_queued_completed_submit_rejected",
+               events.completed_submit_result, CAI_ERR_INVALID);
+    expect_int(state, "runtime_queued_event", events.saw_turn_queued, 1L);
+    expect_int(state, "runtime_queued_started_active",
+               events.run_started_inactive_state, 0L);
+    expect_int(state, "runtime_queued_steering_event",
+               events.saw_steering_queued, 1L);
+    expect_int(state, "runtime_queued_journal_events",
+               (long)store_state.appended_events, 5L);
+    expect_str(state, "runtime_queued_journal_v2",
+               store_state.replay_event_types[0], "input_journal_v2");
+    expect_str(state, "runtime_queued_journal_last",
+               store_state.replay_event_type, "input_consumed");
+    expect_int(state, "runtime_queued_journal_watermark",
+               (long)store_state.saved_applied_event_sequence, 5L);
+    expect_int(state, "runtime_queued_steering_checkpoint_durable",
+               store_state.saw_steering_checkpoint_before_watermark, 0L);
+    expect_substr(state, "runtime_queued_checkpoint_first",
+                  store_state.saved_checkpoint, "first queued turn");
+    expect_substr(state, "runtime_queued_checkpoint_second",
+                  store_state.saved_checkpoint, "second queued turn");
+    expect_substr(state, "runtime_queued_checkpoint_steering",
+                  store_state.saved_checkpoint, "interleaved steering");
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_queued_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_queued_mock", "mock child failed");
+  }
 }
 
 static void test_agent_runtime_semantic_events(test_state *state) {
@@ -24336,8 +24567,9 @@ static void test_agent_runtime_semantic_events(test_state *state) {
                                         &error),
                CAI_OK);
     run_state = CAI_AGENT_SAMPLING;
-    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
-                run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+    for (i = 0;
+         i < 100 && run_state != CAI_AGENT_COMPLETED &&
+         run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
          i++) {
       (void)poll(&poll_fd, 1U, 100);
       expect_int(state, "runtime_semantic_pump",
@@ -24352,8 +24584,7 @@ static void test_agent_runtime_semantic_events(test_state *state) {
     expect_int(state, "runtime_semantic_action", events.tool_action,
                CAI_AGENT_TOOL_ACTION_LIST);
     expect_str(state, "runtime_semantic_path", events.tool_path, "/tmp");
-    expect_int(state, "runtime_semantic_owner_thread", events.wrong_thread,
-               0L);
+    expect_int(state, "runtime_semantic_owner_thread", events.wrong_thread, 0L);
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -24462,39 +24693,44 @@ static void test_agent_runtime_goal_budget(test_state *state) {
     expect_int(state, "runtime_goal_budget_wakeup_fd",
                cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
                CAI_OK);
-    expect_int(state, "runtime_goal_budget_submit",
-               cai_agent_runtime_submit(runtime, "goal budget no-tool turn",
-                                        &error),
+    expect_int(
+        state, "runtime_goal_budget_submit",
+        cai_agent_runtime_submit(runtime, "goal budget no-tool turn", &error),
+        CAI_OK);
+    expect_int(state, "runtime_goal_budget_queue_normal",
+               cai_agent_runtime_submit_queued(
+                   runtime, "queued after goal budget exhaustion", &error),
                CAI_OK);
     expect_int(state, "runtime_goal_budget_steering",
-               cai_agent_runtime_submit_steering(runtime,
-                                                 "queued at budget boundary",
-                                                 &error),
+               cai_agent_runtime_submit_steering(
+                   runtime, "queued at budget boundary", &error),
                CAI_OK);
     run_state = CAI_AGENT_SAMPLING;
-    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
-                run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
-         i++) {
+    for (i = 0; i < 100 && events.failed_count == 0; i++) {
       (void)poll(&poll_fd, 1U, 100);
       expect_int(state, "runtime_goal_budget_pump",
                  cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
       expect_int(state, "runtime_goal_budget_state",
                  cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     }
-    expect_int(state, "runtime_goal_budget_completed", run_state,
-               CAI_AGENT_COMPLETED);
-    expect_str(state, "runtime_goal_budget_failure", events.failure_message,
-               "");
-    expect_substr(state, "runtime_goal_budget_status", store_state.saved_checkpoint,
+    expect_int(state, "runtime_goal_budget_rejected_state", run_state,
+               CAI_AGENT_FAILED);
+    expect_str(
+        state, "runtime_goal_budget_rejection", events.failure_message,
+        "queued user turn rejected because the goal token budget is exhausted");
+    expect_substr(state, "runtime_goal_budget_status",
+                  store_state.saved_checkpoint,
                   "\"goal_status\":\"budget_limited\"");
-    expect_substr(state, "runtime_goal_budget_usage", store_state.saved_checkpoint,
-                  "\"goal_tokens_used\":3");
+    expect_substr(state, "runtime_goal_budget_usage",
+                  store_state.saved_checkpoint, "\"goal_tokens_used\":3");
     expect_substr(state, "runtime_goal_budget_steering_checkpoint",
                   store_state.saved_checkpoint, "queued at budget boundary");
-    expect_int(state, "runtime_goal_budget_reject_resubmit",
-               cai_agent_runtime_submit(runtime, "try after budget limit",
-                                        &error),
-               CAI_ERR_LIMIT);
+    expect_int(state, "runtime_goal_budget_rejected_checkpoint_watermark",
+               (long)store_state.saved_applied_event_sequence, 5L);
+    expect_int(
+        state, "runtime_goal_budget_reject_resubmit",
+        cai_agent_runtime_submit(runtime, "try after budget limit", &error),
+        CAI_ERR_LIMIT);
     cai_error_cleanup(&error);
     cai_error_init(&error);
     cai_agent_runtime_close(runtime);
@@ -24675,9 +24911,8 @@ static void test_agent_local_session_store(test_state *state) {
   (void)snprintf(newer_event_file_path, sizeof(newer_event_file_path),
                  "%s/%s/%s", template_directory, scope_path,
                  "events_only.jsonl");
-  (void)snprintf(incomplete_file_path, sizeof(incomplete_file_path),
-                 "%s/%s/%s", template_directory, scope_path,
-                 "incomplete.jsonl");
+  (void)snprintf(incomplete_file_path, sizeof(incomplete_file_path), "%s/%s/%s",
+                 template_directory, scope_path, "incomplete.jsonl");
   fp = fopen(incomplete_file_path, "wb");
   if (fp == NULL || fwrite("{\"partial\"", 1U, strlen("{\"partial\""), fp) !=
                         strlen("{\"partial\"")) {
@@ -24790,13 +25025,31 @@ static void test_agent_runtime_resume(test_state *state) {
       "{\"version\":1,\"model\":\"custom-resumed-model\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
   store_state.load_applied_event_sequence = 8U;
-  store_state.replay_event_sequence = 9U;
-  (void)snprintf(store_state.replay_event_type,
-                 sizeof(store_state.replay_event_type), "%s",
+  store_state.replay_event_count = 4U;
+  store_state.replay_event_sequences[0] = 8U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "input_journal_v2");
+  store_state.replay_event_sequences[1] = 9U;
+  (void)snprintf(store_state.replay_event_types[1],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "turn_queued");
+  (void)snprintf(store_state.replay_event_data_items[1],
+                 sizeof(store_state.replay_event_data_items[1]), "%s",
+                 "resume queued normal turn");
+  store_state.replay_event_sequences[2] = 10U;
+  (void)snprintf(store_state.replay_event_types[2],
+                 sizeof(store_state.replay_event_types[2]), "%s",
                  "steering_queued");
-  (void)snprintf(store_state.replay_event_data,
-                 sizeof(store_state.replay_event_data), "%s",
-                 "resume durable steering");
+  (void)snprintf(store_state.replay_event_data_items[2],
+                 sizeof(store_state.replay_event_data_items[2]), "%s",
+                 "resume priority steering");
+  store_state.replay_event_sequences[3] = 11U;
+  (void)snprintf(store_state.replay_event_types[3],
+                 sizeof(store_state.replay_event_types[3]), "%s",
+                 "input_consumed");
+  (void)snprintf(store_state.replay_event_data_items[3],
+                 sizeof(store_state.replay_event_data_items[3]), "%s", "9");
   store.checkpoint = test_runtime_session_store_checkpoint;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
@@ -24825,7 +25078,7 @@ static void test_agent_runtime_resume(test_state *state) {
     expect_str(state, "runtime_resume_session_id",
                cai_agent_runtime_session_id(runtime), "resumed_session");
     run_state = CAI_AGENT_IDLE;
-    for (i = 0; i < 10 && run_state != CAI_AGENT_FAILED; i++) {
+    for (i = 0; i < 20 && events.failed_count < 2; i++) {
       expect_int(state, "runtime_resume_pump",
                  cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
       expect_int(state, "runtime_resume_state",
@@ -24834,12 +25087,107 @@ static void test_agent_runtime_resume(test_state *state) {
     expect_int(state, "runtime_resume_replayed_failed", run_state,
                CAI_AGENT_FAILED);
     expect_int(state, "runtime_resume_replayed_event", events.saw_failed, 1L);
+    expect_int(state, "runtime_resume_replayed_failures", events.failed_count,
+               2L);
     expect_int(state, "runtime_resume_replayed_checkpoint",
                store_state.checkpoints > 0, 1L);
     expect_int(state, "runtime_resume_replayed_watermark",
-               (long)store_state.saved_applied_event_sequence, 9L);
+               (long)store_state.saved_applied_event_sequence, 13L);
     expect_substr(state, "runtime_resume_replayed_text",
-                  store_state.saved_checkpoint, "resume durable steering");
+                  store_state.saved_checkpoint, "resume priority steering");
+    expect_substr(state, "runtime_resume_replayed_normal_after_ack",
+                  store_state.saved_checkpoint, "resume queued normal turn");
+    cai_agent_runtime_close(runtime);
+  }
+  /* A covered consumption marker means the checkpoint already contains the
+   * steering input. The earlier normal turn must still be reconstructed, but
+   * replay must not inject the steering text a second time. */
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  store_state.load_applied_event_sequence = 11U;
+  (void)snprintf(store_state.replay_event_data_items[3],
+                 sizeof(store_state.replay_event_data_items[3]), "%s", "10");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_covered_marker_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && events.failed_count == 0; i++) {
+      expect_int(state, "runtime_resume_covered_marker_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_covered_marker_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_covered_marker_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "runtime_resume_covered_marker_failures",
+               events.failed_count, 1L);
+    expect_substr(state, "runtime_resume_covered_marker_normal_turn",
+                  store_state.saved_checkpoint, "resume queued normal turn");
+    if (strstr(store_state.saved_checkpoint, "resume priority steering") !=
+        NULL) {
+      test_fail(state, "runtime_resume_covered_marker_no_duplicate_steering",
+                "covered steering input was replayed into the checkpoint");
+    }
+    expect_int(state, "runtime_resume_covered_marker_watermark",
+               (long)store_state.saved_applied_event_sequence, 14L);
+    cai_agent_runtime_close(runtime);
+  }
+  /* A migrated v2 marker can acknowledge a legacy input. Once the legacy
+   * input is covered by the checkpoint it is intentionally absent on replay;
+   * reopening the upgraded session must ignore that marker instead of treating
+   * it as corrupt. */
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 6U;
+  store_state.replay_event_count = 1U;
+  store_state.replay_event_sequences[0] = 7U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "steering_queued");
+  (void)snprintf(store_state.replay_event_data_items[0],
+                 sizeof(store_state.replay_event_data_items[0]), "%s",
+                 "legacy steering before migration");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_legacy_migration_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && events.failed_count == 0; i++) {
+      expect_int(state, "runtime_resume_legacy_migration_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_legacy_migration_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_legacy_migration_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "runtime_resume_legacy_migration_anchor",
+               (long)store_state.replay_event_sequences[1], 8L);
+    expect_str(state, "runtime_resume_legacy_migration_anchor_type",
+               store_state.replay_event_types[1], "input_journal_v2");
+    expect_int(state, "runtime_resume_legacy_migration_marker",
+               (long)store_state.replay_event_sequences[2], 9L);
+    expect_str(state, "runtime_resume_legacy_migration_marker_type",
+               store_state.replay_event_types[2], "input_consumed");
+    cai_agent_runtime_close(runtime);
+  }
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  store_state.load_applied_event_sequence = 9U;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_legacy_reopen",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -24946,8 +25294,8 @@ static void test_goal_tools(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "goal_blocked_user_turn_one",
-             cai_session_add_user_text(session,
-                                       "the external blocker remains", &error),
+             cai_session_add_user_text(session, "the external blocker remains",
+                                       &error),
              CAI_OK);
   expect_int(state, "goal_blocked_second",
              CAI_AGENT_IMPL(agent)->tools->run(
@@ -24957,9 +25305,8 @@ static void test_goal_tools(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "goal_blocked_user_turn_two",
-             cai_session_add_user_text(session,
-                                       "the same external blocker remains",
-                                       &error),
+             cai_session_add_user_text(
+                 session, "the same external blocker remains", &error),
              CAI_OK);
   CAI_SESSION_IMPL(session)->goal_tokens_used = 19LL;
   CAI_SESSION_IMPL(session)->goal_token_usage_baseline = 7LL;
@@ -25023,8 +25370,7 @@ static void test_goal_tools(test_state *state) {
   expect_int(state, "goal_create_after_blocked",
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
-                 "{\"objective\":\"replacement after block\"}", sink,
-                 &error),
+                 "{\"objective\":\"replacement after block\"}", sink, &error),
              CAI_OK);
   expect_substr(state, "goal_create_after_blocked_status", writer.buffer,
                 "\"status\":\"active\"");
@@ -25218,11 +25564,11 @@ static void test_patch_tool(test_state *state) {
                                         "+collision\n"
                                         "*** End Patch";
   static const char relative_alias_patch[] = "*** Begin Patch\n"
-                                           "*** Add File: alias.txt\n"
-                                           "+first\n"
-                                           "*** Add File: ./alias.txt\n"
-                                           "+second\n"
-                                           "*** End Patch";
+                                             "*** Add File: alias.txt\n"
+                                             "+first\n"
+                                             "*** Add File: ./alias.txt\n"
+                                             "+second\n"
+                                             "*** End Patch";
   static const char context_patch[] = "*** Begin Patch\n"
                                       "*** Update File: sections.txt\n"
                                       "@@   second   \n"
@@ -25237,11 +25583,11 @@ static void test_patch_tool(test_state *state) {
                                           "*** End of File\n"
                                           "*** End Patch";
   static const char ambiguous_patch[] = "*** Begin Patch\n"
-                                       "*** Update File: ambiguous.txt\n"
-                                       "@@\n"
-                                       "-same\n"
-                                       "+changed\n"
-                                       "*** End Patch";
+                                        "*** Update File: ambiguous.txt\n"
+                                        "@@\n"
+                                        "-same\n"
+                                        "+changed\n"
+                                        "*** End Patch";
   static const char nul_stream_patch[] = "*** Begin Patch\n\0"
                                          "*** Add File: hidden.txt\n"
                                          "+hidden\n"
@@ -25291,9 +25637,9 @@ static void test_patch_tool(test_state *state) {
     for (i = 0U; i < 1025U && offset < 65536U; i++) {
       int written;
 
-      written = snprintf(too_many_patch + offset, 65536U - offset,
-                         "*** Add File: change-%lu.txt\n+x\n",
-                         (unsigned long)i);
+      written =
+          snprintf(too_many_patch + offset, 65536U - offset,
+                   "*** Add File: change-%lu.txt\n+x\n", (unsigned long)i);
       if (written < 0 || (size_t)written >= 65536U - offset) {
         test_fail(state, "patch_change_limit_build", "patch buffer overflow");
         break;
@@ -25301,8 +25647,7 @@ static void test_patch_tool(test_state *state) {
       offset += (size_t)written;
     }
     if (offset < 65536U) {
-      (void)snprintf(too_many_patch + offset, 65536U - offset,
-                     "*** End Patch");
+      (void)snprintf(too_many_patch + offset, 65536U - offset, "*** End Patch");
       expect_int(state, "patch_change_limit",
                  cai_apply_patch(&config, too_many_patch, NULL, &error),
                  CAI_ERR_LIMIT);
@@ -25988,8 +26333,8 @@ static void test_agent_client_history_tool_auto_run(test_state *state) {
   }
 }
 
-static void test_agent_client_history_tool_callback_durability(
-    test_state *state) {
+static void
+test_agent_client_history_tool_callback_durability(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   int pipe_fds[2];
   pid_t pid;
@@ -26079,10 +26424,10 @@ static void test_agent_client_history_tool_callback_durability(
              1L);
   expect_str(state, "agent_client_history_callback_tool", raw_state.seen,
              "{\"x\":1}");
-  expect_int(state, "agent_client_history_callback_export",
-             cai_session_export_history_source(session, &history_source,
-                                               &error),
-             CAI_OK);
+  expect_int(
+      state, "agent_client_history_callback_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
   if (read_source_text(state, "agent_client_history_callback_read",
                        history_source, history_json, sizeof(history_json),
                        &error)) {
@@ -28139,22 +28484,22 @@ static void test_terminal_tools(test_state *state) {
   expect_int(state, "terminal_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
   if (registry != NULL) {
-    expect_int(state, "terminal_register",
-               cai_tool_registry_register_terminal_tools(registry, &config,
-                                                        &error),
-               CAI_OK);
+    expect_int(
+        state, "terminal_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
   }
   if (registry != NULL) {
-    expect_int(state, "terminal_sink", cai_sink_from_callbacks(&callbacks,
-                                                                 &sink, &error),
-               CAI_OK);
+    expect_int(state, "terminal_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
   }
   if (registry != NULL && sink != NULL) {
     setenv("CAI_TEST_TERMINAL_SECRET", "must-not-reach-model", 1);
     expect_int(state, "terminal_sanitized_environment",
                cai_tool_registry_run(
                    registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                   "{\"cmd\":\"printf '%s|%s' \\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\"\","
+                   "{\"cmd\":\"printf '%s|%s' "
+                   "\\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\"\","
                    "\"yield_time_ms\":100}",
                    sink, &error),
                CAI_OK);
@@ -28183,8 +28528,7 @@ static void test_terminal_tools(test_state *state) {
     writer.length = 0U;
     expect_int(state, "terminal_policy_reject",
                cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                                     "{\"cmd\":\"forbidden\"}", sink,
-                                     &error),
+                                     "{\"cmd\":\"forbidden\"}", sink, &error),
                CAI_ERR_INVALID);
     expect_int(state, "terminal_policy_called", policy_calls, 2L);
     cai_error_cleanup(&error);
@@ -28237,13 +28581,13 @@ static void test_terminal_tools(test_state *state) {
     expect_int(state, "terminal_event_cancelled", events.cancelled, 1L);
     writer.buffer[0] = '\0';
     writer.length = 0U;
-    expect_int(state, "terminal_exec_interactive",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                   "{\"cmd\":\"IFS= read line; printf got:$line\","
-                   "\"yield_time_ms\":10}",
-                   sink, &error),
-               CAI_OK);
+    expect_int(
+        state, "terminal_exec_interactive",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"IFS= read line; printf got:$line\","
+                              "\"yield_time_ms\":10}",
+                              sink, &error),
+        CAI_OK);
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_write_interactive",
@@ -28277,12 +28621,12 @@ static void test_terminal_tools(test_state *state) {
                   "\"completed\":true");
     writer.buffer[0] = '\0';
     writer.length = 0U;
-    expect_int(state, "terminal_exec_detached_child",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                   "{\"cmd\":\"sleep 0.2 &\",\"yield_time_ms\":100}",
-                   sink, &error),
-               CAI_OK);
+    expect_int(
+        state, "terminal_exec_detached_child",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"sleep 0.2 &\",\"yield_time_ms\":100}",
+                              sink, &error),
+        CAI_OK);
     expect_substr(state, "terminal_detached_shell_completed", writer.buffer,
                   "\"completed\":true");
     expect_substr(state, "terminal_detached_truthful", writer.buffer,
@@ -28298,7 +28642,8 @@ static void test_terminal_tools(test_state *state) {
                cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"seq 1 3000\","
                                      "\"yield_time_ms\":100,"
-                                     "\"max_output_tokens\":16}", sink, &error),
+                                     "\"max_output_tokens\":16}",
+                                     sink, &error),
                CAI_OK);
     for (i = 0; i < 10 && events.completed < 4; i++) {
       writer.buffer[0] = '\0';
@@ -28306,7 +28651,8 @@ static void test_terminal_tools(test_state *state) {
       rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                                  "{\"session_id\":\"terminal-1\","
                                  "\"yield_time_ms\":100,"
-                                 "\"max_output_tokens\":16}", sink, &error);
+                                 "\"max_output_tokens\":16}",
+                                 sink, &error);
       if (rc != CAI_OK) {
         expect_int(state, "terminal_drain_fast_output_poll", rc, CAI_OK);
         break;
@@ -28319,11 +28665,12 @@ static void test_terminal_tools(test_state *state) {
     expect_int(state, "terminal_exec_no_stdin_reader",
                cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"stty -echo; sleep 5\","
-                                     "\"yield_time_ms\":10}", sink, &error),
+                                     "\"yield_time_ms\":10}",
+                                     sink, &error),
                CAI_OK);
     blocked_stdin_request_size =
-        strlen("{\"session_id\":\"terminal-1\",\"chars\":\"") +
-        65536U + strlen("\",\"yield_time_ms\":10}") + 1U;
+        strlen("{\"session_id\":\"terminal-1\",\"chars\":\"") + 65536U +
+        strlen("\",\"yield_time_ms\":10}") + 1U;
     blocked_stdin_request = (char *)malloc(blocked_stdin_request_size);
     if (blocked_stdin_request == NULL) {
       test_fail(state, "terminal_stdin_limit_allocate", "allocation failed");
@@ -28332,8 +28679,7 @@ static void test_terminal_tools(test_state *state) {
 
       prefix_length = strlen("{\"session_id\":\"terminal-1\",\"chars\":\"");
       memcpy(blocked_stdin_request,
-             "{\"session_id\":\"terminal-1\",\"chars\":\"",
-             prefix_length);
+             "{\"session_id\":\"terminal-1\",\"chars\":\"", prefix_length);
       memset(blocked_stdin_request + prefix_length, 'x', 65536U);
       memcpy(blocked_stdin_request + prefix_length + 65536U,
              "\",\"yield_time_ms\":10}",
@@ -28351,7 +28697,8 @@ static void test_terminal_tools(test_state *state) {
                cai_tool_registry_run(
                    registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                    "{\"session_id\":\"terminal-1\",\"terminate\":true,"
-                   "\"yield_time_ms\":10}", sink, &error),
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
                CAI_OK);
   }
   free(blocked_stdin_request);
@@ -28365,21 +28712,21 @@ static void test_terminal_tools(test_state *state) {
   expect_int(state, "terminal_root_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
   if (registry != NULL) {
-    expect_int(state, "terminal_root_register",
-               cai_tool_registry_register_terminal_tools(registry, &config,
-                                                        &error),
-               CAI_OK);
+    expect_int(
+        state, "terminal_root_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
   }
   if (registry != NULL) {
-    expect_int(state, "terminal_root_sink", cai_sink_from_callbacks(&callbacks,
-                                                                      &sink, &error),
-               CAI_OK);
+    expect_int(state, "terminal_root_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
   }
   if (sink != NULL) {
     expect_int(state, "terminal_root_workdir",
                cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"printf root-ok\","
-                                     "\"yield_time_ms\":100}", sink, &error),
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
                CAI_OK);
     expect_substr(state, "terminal_root_workdir_output", writer.buffer,
                   "root-ok");
@@ -28433,19 +28780,18 @@ static void test_terminal_concurrent_start(test_state *state) {
   expect_int(state, "terminal_race_registry",
              cai_tool_registry_new(&registry, &error), CAI_OK);
   if (registry != NULL) {
-    expect_int(state, "terminal_race_register",
-               cai_tool_registry_register_terminal_tools(registry, &config,
-                                                        &error),
-               CAI_OK);
+    expect_int(
+        state, "terminal_race_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
   }
   if (registry != NULL) {
     first.registry = registry;
     second.registry = registry;
     first_created = pthread_create(&first_thread, NULL, test_terminal_race_exec,
                                    &first) == 0;
-    second_created =
-        pthread_create(&second_thread, NULL, test_terminal_race_exec, &second) ==
-        0;
+    second_created = pthread_create(&second_thread, NULL,
+                                    test_terminal_race_exec, &second) == 0;
     expect_int(state, "terminal_race_first_thread", first_created, 1L);
     expect_int(state, "terminal_race_second_thread", second_created, 1L);
     if (!first_created || !second_created) {
@@ -32855,10 +33201,10 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   expect_str(state, "stream_auto_tool_event_output", event_state.output,
              "{\"summary\":\"Gothenburg:0\"}");
   expect_int(state, "stream_auto_tool_round_callback", inject_state.calls, 1L);
-  expect_int(state, "stream_auto_tool_history_export",
-             cai_session_export_history_source(session, &history_source,
-                                               &error),
-             CAI_OK);
+  expect_int(
+      state, "stream_auto_tool_history_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
   if (history_source != NULL) {
     char history_json[8192];
     char *output_pos;
@@ -35905,6 +36251,7 @@ static const test_entry test_entries[] = {
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},

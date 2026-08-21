@@ -1175,6 +1175,7 @@ if(CAI_BUILD_TESTS)
     agent_client_history_continuity
     smith_profile
     agent_runtime_lifecycle
+    agent_runtime_queued_turns
     agent_runtime_semantic_events
     agent_runtime_goal_budget
     agent_local_session_store

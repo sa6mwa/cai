@@ -1257,9 +1257,9 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
                             : cai_set_error(error, CAI_ERR_INVALID,
                                             "added file exceeds size limit");
       }
-      rc = cai_patch_open_parent(change->resolved_path, &change->primary_parent_fd,
-                                 change->primary_name,
-                                 sizeof(change->primary_name), error);
+      rc = cai_patch_open_parent(
+          change->resolved_path, &change->primary_parent_fd,
+          change->primary_name, sizeof(change->primary_name), error);
       if (rc != CAI_OK) {
         return rc;
       }
@@ -1274,8 +1274,8 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
     if (rc != CAI_OK) {
       return rc;
     }
-    rc = cai_patch_open_parent(change->resolved_path, &change->primary_parent_fd,
-                               change->primary_name,
+    rc = cai_patch_open_parent(change->resolved_path,
+                               &change->primary_parent_fd, change->primary_name,
                                sizeof(change->primary_name), error);
     if (rc != CAI_OK) {
       return rc;
@@ -1330,8 +1330,8 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
 }
 
 static int cai_patch_write_atomic(int parent_fd, const char *name,
-                                  const char *data,
-                                  size_t length, cai_error *error) {
+                                  const char *data, size_t length,
+                                  cai_error *error) {
   char temporary[64];
   size_t offset;
   ssize_t nwritten;
@@ -1413,7 +1413,7 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
                            ? change->move_parent_fd
                            : change->primary_parent_fd;
     target_name = change->resolved_move_path != NULL ? change->move_name
-                                                      : change->primary_name;
+                                                     : change->primary_name;
     rc = cai_patch_write_atomic(target_parent_fd, target_name, change->after,
                                 change->after_length, error);
     if (rc != CAI_OK) {
