@@ -399,7 +399,11 @@ typedef struct cai_tool_event {
 /** Callback invoked for tool start/output/error events. */
 typedef int (*cai_tool_event_fn)(void *context, const cai_tool_event *event,
                                  cai_error *error);
-/** Callback invoked after a completed local tool round, before continuation. */
+/**
+ * Callback invoked after a completed local tool round, before continuation.
+ * Client-history sessions have committed the safe tool result before this
+ * callback; the callback may queue additional session input for continuation.
+ */
 typedef int (*cai_tool_round_completed_fn)(void *context, cai_session *session,
                                            cai_error *error);
 
@@ -435,6 +439,13 @@ typedef struct cai_run_options {
   cai_tool_round_completed_fn tool_round_completed;
   /** Context passed to tool_round_completed. */
   void *tool_round_completed_context;
+  /**
+   * Optional boundary after safe local tool-result history and callback input
+   * are committed, before the continuation request can begin.
+   */
+  cai_tool_round_completed_fn tool_round_durable;
+  /** Context passed to tool_round_durable. */
+  void *tool_round_durable_context;
 } cai_run_options;
 
 /** Source read callback. Returns bytes read, 0 for EOF or error. */

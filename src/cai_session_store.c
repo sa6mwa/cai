@@ -635,16 +635,21 @@ static int cai_local_checkpoint_source_open(int fd, long start, long end,
 
 static int cai_local_find_last_line_before(int fd, long before_end,
                                            long *out_start, long *out_end,
+                                           int *out_found,
                                            cai_error *error) {
   char buffer[4096];
   off_t end;
   off_t cursor;
   off_t record_end;
 
+  if (out_start == NULL || out_end == NULL || out_found == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session checkpoint record outputs are required");
+  }
+  *out_found = 0;
   end = before_end > 0L ? (off_t)before_end : lseek(fd, 0, SEEK_END);
   if (end <= 0) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint log is empty");
+    return CAI_OK;
   }
   cursor = end;
   record_end = -1;
@@ -670,16 +675,17 @@ static int cai_local_find_last_line_before(int fd, long before_end,
       } else if (buffer[i - 1U] == '\n') {
         *out_start = (long)(cursor + (off_t)i);
         *out_end = (long)record_end;
+        *out_found = 1;
         return CAI_OK;
       }
     }
   }
   if (record_end < 0) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint log has no complete record");
+    return CAI_OK;
   }
   *out_start = 0L;
   *out_end = (long)record_end;
+  *out_found = 1;
   return CAI_OK;
 }
 
@@ -735,6 +741,70 @@ static int cai_local_checkpoint_record_bounds(
   *out_state_end = record_end - 2L;
   *out_applied_event_sequence = sequence;
   return CAI_OK;
+}
+
+/*
+ * Find the newest complete checkpoint record in one journal.  Journal events
+ * are deliberately allowed to precede the first checkpoint: such a journal
+ * records durable intent, but cannot itself resume an agent session.
+ */
+static int cai_local_find_latest_checkpoint(
+    int fd, long *out_state_start, long *out_state_end,
+    unsigned long long *out_applied_event_sequence, int *out_found,
+    cai_error *error) {
+  static const char event_prefix[] = "{\"record_type\":\"event\",";
+  char record_prefix[sizeof(event_prefix)];
+  long start;
+  long end;
+  long before_end;
+  ssize_t nread;
+  int found_record;
+  int rc;
+
+  if (fd < 0 || out_state_start == NULL || out_state_end == NULL ||
+      out_applied_event_sequence == NULL || out_found == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session checkpoint search outputs are required");
+  }
+  *out_state_start = 0L;
+  *out_state_end = 0L;
+  *out_applied_event_sequence = 0U;
+  *out_found = 0;
+  before_end = 0L;
+  for (;;) {
+    rc = cai_local_find_last_line_before(fd, before_end, &start, &end,
+                                         &found_record, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (!found_record) {
+      return CAI_OK;
+    }
+    nread = pread(fd, record_prefix, sizeof(record_prefix) - 1U,
+                  (off_t)start);
+    if (nread < 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read session checkpoint record");
+    }
+    if (nread > 0) {
+      record_prefix[nread] = '\0';
+    }
+    if (nread > 0 && strncmp(record_prefix, event_prefix,
+                             sizeof(event_prefix) - 1U) == 0) {
+      if (start == 0L) {
+        return CAI_OK;
+      }
+      before_end = start;
+      continue;
+    }
+    rc = cai_local_checkpoint_record_bounds(
+        fd, start, end, out_state_start, out_state_end,
+        out_applied_event_sequence, error);
+    if (rc == CAI_OK) {
+      *out_found = 1;
+    }
+    return rc;
+  }
 }
 
 static int cai_store_mtime_is_newer(const struct stat *candidate,
@@ -793,6 +863,11 @@ static int cai_local_session_load_latest(
   }
   while ((entry = readdir(directory)) != NULL) {
     struct stat st;
+    long state_start;
+    long state_end;
+    unsigned long long applied_event_sequence;
+    int journal_fd;
+    int found_checkpoint;
     size_t length;
 
     length = strlen(entry->d_name);
@@ -801,16 +876,45 @@ static int cai_local_session_load_latest(
         !S_ISREG(st.st_mode) || st.st_nlink != 1) {
       continue;
     }
+    if (length >= sizeof(candidate)) {
+      continue;
+    }
+    journal_fd = openat(scope_fd, entry->d_name, O_RDONLY | O_CLOEXEC |
+                                                    O_NOFOLLOW);
+    if (journal_fd < 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open session checkpoint log");
+      break;
+    }
+    if (flock(journal_fd, LOCK_SH) != 0) {
+      close(journal_fd);
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to lock session checkpoint log");
+      break;
+    }
+    rc = cai_local_find_latest_checkpoint(
+        journal_fd, &state_start, &state_end, &applied_event_sequence,
+        &found_checkpoint, error);
+    (void)flock(journal_fd, LOCK_UN);
+    close(journal_fd);
+    if (rc != CAI_OK) {
+      break;
+    }
+    if (!found_checkpoint) {
+      continue;
+    }
     if (candidate[0] == '\0' ||
         cai_store_mtime_is_newer(&st, &candidate_stat)) {
-      if (length >= sizeof(candidate)) {
-        continue;
-      }
       memcpy(candidate, entry->d_name, length + 1U);
       candidate_stat = st;
     }
   }
   closedir(directory);
+  if (rc != CAI_OK) {
+    close(scope_fd);
+    session_id[0] = '\0';
+    return rc;
+  }
   if (candidate[0] == '\0') {
     close(scope_fd);
     return CAI_OK;
@@ -839,41 +943,14 @@ static int cai_local_session_load_latest(
                          "failed to lock latest session checkpoint log");
   }
   {
-    static const char event_prefix[] = "{\"record_type\":\"event\",";
-    char record_prefix[sizeof(event_prefix)];
-    long start;
-    long end;
     long state_start;
     long state_end;
-    long before_end;
-    ssize_t nread;
+    int found_checkpoint;
 
-    start = 0L;
-    end = 0L;
-    state_start = 0L;
-    state_end = 0L;
-    before_end = 0L;
-    for (;;) {
-      rc = cai_local_find_last_line_before(fd, before_end, &start, &end, error);
-      if (rc != CAI_OK) {
-        break;
-      }
-      nread =
-          pread(fd, record_prefix, sizeof(record_prefix) - 1U, (off_t)start);
-      if (nread > 0) {
-        record_prefix[nread] = '\0';
-      }
-      if (nread > 0 && strncmp(record_prefix, event_prefix,
-                               sizeof(event_prefix) - 1U) == 0) {
-        before_end = start;
-        continue;
-      }
-      rc = cai_local_checkpoint_record_bounds(
-          fd, start, end, &state_start, &state_end, out_applied_event_sequence,
-          error);
-      break;
-    }
-    if (rc == CAI_OK) {
+    rc = cai_local_find_latest_checkpoint(
+        fd, &state_start, &state_end, out_applied_event_sequence,
+        &found_checkpoint, error);
+    if (rc == CAI_OK && found_checkpoint) {
       rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
                                             error);
       fd = -1;

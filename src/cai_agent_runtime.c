@@ -56,6 +56,10 @@ struct cai_agent_runtime {
   int wakeup_write_fd;
   int worker_started;
   int stopping;
+  int pumping;
+  int close_deferred;
+  int destroying;
+  size_t close_waiters;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
@@ -90,6 +94,25 @@ struct cai_agent_runtime {
 
 static pthread_mutex_t cai_runtime_session_id_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned long long cai_runtime_session_id_counter = 0U;
+
+static void cai_agent_runtime_destroy(cai_agent_runtime *runtime);
+
+static int cai_runtime_local_session_id_valid(const char *session_id) {
+  const unsigned char *cursor;
+
+  if (session_id == NULL || session_id[0] == '\0' || strlen(session_id) > 128U) {
+    return 0;
+  }
+  for (cursor = (const unsigned char *)session_id; *cursor != '\0'; cursor++) {
+    if (!((*cursor >= 'a' && *cursor <= 'z') ||
+          (*cursor >= 'A' && *cursor <= 'Z') ||
+          (*cursor >= '0' && *cursor <= '9') || *cursor == '-' ||
+          *cursor == '_')) {
+      return 0;
+    }
+  }
+  return 1;
+}
 
 static int cai_runtime_wakeup_open(cai_agent_runtime *runtime,
                                    cai_error *error) {
@@ -471,27 +494,67 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime,
   return rc;
 }
 
-static void cai_runtime_account_goal(cai_agent_runtime *runtime) {
+static int cai_runtime_account_goal(cai_agent_runtime *runtime,
+                                    int *out_budget_limited,
+                                    cai_error *error) {
   cai_session_impl *session;
   long long total_tokens;
   long long delta;
+  char *status;
+
+  if (out_budget_limited != NULL) {
+    *out_budget_limited = 0;
+  }
 
   session = CAI_SESSION_IMPL(runtime->session);
-  if (session->goal_status != NULL) {
-    total_tokens = session->usage.usage.total_tokens;
-    if (total_tokens >= session->goal_token_usage_baseline) {
-      delta = total_tokens - session->goal_token_usage_baseline;
-      if (delta > 0LL) {
-        if (session->goal_tokens_used > LLONG_MAX - delta) {
-          session->goal_tokens_used = LLONG_MAX;
-        } else {
-          session->goal_tokens_used += delta;
-        }
+  if (session->goal_status == NULL) {
+    return CAI_OK;
+  }
+  if (strcmp(session->goal_status, "budget_limited") == 0) {
+    if (out_budget_limited != NULL) {
+      *out_budget_limited = 1;
+    }
+    return CAI_OK;
+  }
+  total_tokens = session->usage.usage.total_tokens;
+  if (total_tokens >= session->goal_token_usage_baseline) {
+    delta = total_tokens - session->goal_token_usage_baseline;
+    if (delta > 0LL) {
+      if (session->goal_tokens_used > LLONG_MAX - delta) {
+        session->goal_tokens_used = LLONG_MAX;
+      } else {
+        session->goal_tokens_used += delta;
       }
     }
-    session->goal_token_usage_baseline = total_tokens;
-    session->goal_updated_at = (long long)time(NULL);
   }
+  session->goal_token_usage_baseline = total_tokens;
+  session->goal_updated_at = (long long)time(NULL);
+  if (strcmp(session->goal_status, "active") != 0 ||
+      !session->goal_has_token_budget ||
+      session->goal_tokens_used < session->goal_token_budget) {
+    return CAI_OK;
+  }
+  status = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                      "budget_limited");
+  if (status == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to record exhausted goal token budget");
+  }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+               session->goal_status);
+  session->goal_status = status;
+  if (out_budget_limited != NULL) {
+    *out_budget_limited = 1;
+  }
+  return CAI_OK;
+}
+
+static int cai_runtime_goal_budget_limited(const cai_agent_runtime *runtime) {
+  const cai_session_impl *session;
+
+  session = CAI_SESSION_IMPL(runtime->session);
+  return session->goal_status != NULL &&
+         strcmp(session->goal_status, "budget_limited") == 0;
 }
 
 static int
@@ -869,6 +932,7 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   cai_agent_runtime *runtime;
   cai_runtime_input_node *input;
   unsigned long long applied_sequence;
+  int budget_limited;
   int rc;
 
   runtime = (cai_agent_runtime *)context;
@@ -898,13 +962,41 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
     }
   }
   pthread_mutex_unlock(&runtime->lock);
-  if (rc == CAI_OK) {
-    rc = cai_session_commit_pending_inputs(runtime->session, error);
-  }
+  budget_limited = 0;
   if (rc == CAI_OK) {
     runtime->applied_event_sequence = applied_sequence;
-    cai_runtime_account_goal(runtime);
-    rc = cai_runtime_checkpoint(runtime, error);
+    rc = cai_runtime_account_goal(runtime, &budget_limited, error);
+  }
+  /* The tool-loop durable boundary checkpoints only after it has committed
+   * the safe tool result that accompanies this round. */
+  (void)budget_limited;
+  return rc;
+}
+
+static int cai_runtime_checkpoint_durable_tool_round(void *context,
+                                                     cai_session *session,
+                                                     cai_error *error) {
+  cai_agent_runtime *runtime;
+
+  runtime = (cai_agent_runtime *)context;
+  if (runtime == NULL || session != runtime->session) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid Smith durable tool-round boundary");
+  }
+  return cai_runtime_checkpoint(runtime, error);
+}
+
+/* A response that finishes without another tool call still needs a durable
+ * steering boundary. Tool rounds leave this commit to their safe tool-output
+ * history path so the tool output remains ordered before steering. */
+static int cai_runtime_deliver_steering_after_response(
+    cai_agent_runtime *runtime, cai_error *error) {
+  int rc;
+
+  rc = cai_runtime_deliver_steering_after_tool_round(runtime, runtime->session,
+                                                       error);
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_inputs(runtime->session, error);
   }
   return rc;
 }
@@ -973,6 +1065,7 @@ static void *cai_runtime_worker(void *context) {
   cai_run_options options;
   cai_runtime_input_node *input;
   cai_error error;
+  int budget_limited;
   int rc;
 
   runtime = (cai_agent_runtime *)context;
@@ -985,6 +1078,8 @@ static void *cai_runtime_worker(void *context) {
   options.tool_event_context = runtime;
   options.tool_round_completed = cai_runtime_deliver_steering_after_tool_round;
   options.tool_round_completed_context = runtime;
+  options.tool_round_durable = cai_runtime_checkpoint_durable_tool_round;
+  options.tool_round_durable_context = runtime;
   for (;;) {
     pthread_mutex_lock(&runtime->lock);
     while (!runtime->stopping && runtime->turn_head == NULL) {
@@ -1013,11 +1108,14 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       rc = cai_session_commit_pending_inputs(runtime->session, &error);
     }
+    budget_limited = 0;
     if (rc == CAI_OK) {
-      cai_runtime_account_goal(runtime);
+      rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
+    }
+    if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, &error);
     }
-    while (rc == CAI_OK) {
+    while (rc == CAI_OK && !budget_limited) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
       rc = cai_session_stream_auto(runtime->session, &options, &sinks, &error);
       if (rc != CAI_OK) {
@@ -1030,16 +1128,31 @@ static void *cai_runtime_worker(void *context) {
         break;
       }
       pthread_mutex_unlock(&runtime->lock);
-      rc = cai_runtime_deliver_steering_after_tool_round(
-          runtime, runtime->session, &error);
+      rc = cai_runtime_deliver_steering_after_response(runtime, &error);
+      if (rc == CAI_OK && cai_runtime_goal_budget_limited(runtime)) {
+        budget_limited = 1;
+        rc = cai_set_error(
+            &error, CAI_ERR_LIMIT,
+            "goal token budget exhausted before another model request");
+      }
+    }
+    if (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime)) {
+      /* The completed tool round has committed client history; make that
+       * exact state durable before reporting the next-request boundary. */
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      rc = cai_runtime_checkpoint(runtime, &error);
     }
     if (rc == CAI_OK) {
-      cai_runtime_account_goal(runtime);
+      rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
+    }
+    if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, &error);
     }
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
-    if (rc == CAI_OK) {
+    if (rc == CAI_OK ||
+        (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime))) {
       runtime->state = CAI_AGENT_COMPLETED;
       (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
                                        NULL, 0U, NULL, NULL, runtime->state,
@@ -1240,8 +1353,14 @@ int cai_agent_runtime_open(cai_client *client,
     }
     if (rc == CAI_OK && runtime->session_id == NULL) {
       if (config->session_id != NULL) {
-        rc = cai_runtime_copy_string(config->session_id, &runtime->session_id,
-                                     error);
+        if (runtime->owns_local_store &&
+            !cai_runtime_local_session_id_valid(config->session_id)) {
+          rc = cai_set_error(error, CAI_ERR_INVALID,
+                             "local session identifiers use only letters, digits, - and _");
+        } else {
+          rc = cai_runtime_copy_string(config->session_id, &runtime->session_id,
+                                       error);
+        }
       } else {
         rc = cai_runtime_generate_session_id(session_id, error);
         if (rc == CAI_OK) {
@@ -1396,6 +1515,11 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "agent runtime already has an active turn");
   }
+  if (cai_runtime_goal_budget_limited(runtime)) {
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "goal token budget is exhausted");
+  }
   previous_state = runtime->state;
   runtime->state = CAI_AGENT_SAMPLING;
   runtime->accepting_steering = 1;
@@ -1444,6 +1568,7 @@ int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error) {
   cai_runtime_event_node *node;
+  int close_deferred;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -1455,6 +1580,12 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                          "pump timeout must not be negative");
   }
   pthread_mutex_lock(&runtime->lock);
+  if (runtime->pumping) {
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime pump is already active");
+  }
+  runtime->pumping = 1;
   if (runtime->event_head == NULL) {
     cai_runtime_wakeup_drain_locked(runtime);
   }
@@ -1483,17 +1614,37 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
       rc = runtime->event_callback(runtime->event_context, &node->event, error);
       if (rc != CAI_OK) {
         cai_runtime_event_node_free(node);
-        return rc;
+        pthread_mutex_lock(&runtime->lock);
+        break;
       }
     }
     cai_runtime_event_node_free(node);
     pthread_mutex_lock(&runtime->lock);
+    if (runtime->close_deferred) {
+      /*
+       * The callback may have released its event context as part of closing
+       * this runtime. Do not dispatch any more queued events to it.
+       */
+      break;
+    }
   }
   if (runtime->event_head == NULL) {
     cai_runtime_wakeup_drain_locked(runtime);
   }
+  runtime->pumping = 0;
+  close_deferred = runtime->close_deferred;
+  if (close_deferred) {
+    runtime->destroying = 1;
+  }
+  pthread_cond_broadcast(&runtime->condition);
+  while (close_deferred && runtime->close_waiters > 0U) {
+    pthread_cond_wait(&runtime->condition, &runtime->lock);
+  }
   pthread_mutex_unlock(&runtime->lock);
-  return CAI_OK;
+  if (close_deferred) {
+    cai_agent_runtime_destroy(runtime);
+  }
+  return rc;
 }
 
 int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime, int *out_fd,
@@ -1528,17 +1679,10 @@ const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime) {
   return runtime != NULL ? runtime->session_id : NULL;
 }
 
-void cai_agent_runtime_close(cai_agent_runtime *runtime) {
+static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_runtime_event_node *event;
   cai_runtime_input_node *input;
 
-  if (runtime == NULL) {
-    return;
-  }
-  pthread_mutex_lock(&runtime->lock);
-  runtime->stopping = 1;
-  pthread_cond_broadcast(&runtime->condition);
-  pthread_mutex_unlock(&runtime->lock);
   if (runtime->worker_started) {
     pthread_join(runtime->worker_thread, NULL);
   }
@@ -1571,4 +1715,47 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   pthread_cond_destroy(&runtime->condition);
   pthread_mutex_destroy(&runtime->lock);
   cai_free_mem(NULL, runtime);
+}
+
+void cai_agent_runtime_close(cai_agent_runtime *runtime) {
+  int owner_callback;
+
+  if (runtime == NULL) {
+    return;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->destroying) {
+    pthread_mutex_unlock(&runtime->lock);
+    return;
+  }
+  runtime->stopping = 1;
+  owner_callback = pthread_equal(runtime->owner_thread, pthread_self());
+  if (runtime->pumping && owner_callback) {
+    runtime->close_deferred = 1;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    return;
+  }
+  while (runtime->pumping) {
+    runtime->close_waiters++;
+    pthread_cond_wait(&runtime->condition, &runtime->lock);
+    runtime->close_waiters--;
+    pthread_cond_broadcast(&runtime->condition);
+  }
+  /*
+   * An owner callback requested destruction and pump has claimed it. A
+   * concurrent closer has waited until that callback is no longer active, so
+   * it may now safely return without touching callback-owned resources.
+   */
+  if (runtime->destroying) {
+    pthread_mutex_unlock(&runtime->lock);
+    return;
+  }
+  runtime->destroying = 1;
+  pthread_cond_broadcast(&runtime->condition);
+  while (runtime->close_waiters > 0U) {
+    pthread_cond_wait(&runtime->condition, &runtime->lock);
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  cai_agent_runtime_destroy(runtime);
 }

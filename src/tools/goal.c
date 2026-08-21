@@ -87,6 +87,13 @@ static const char cai_goal_clear_schema[] =
 
 static long long cai_goal_now(void) { return (long long)time(NULL); }
 
+static int cai_goal_status_is_terminal(const char *status) {
+  return status != NULL &&
+         (strcmp(status, "complete") == 0 || strcmp(status, "blocked") == 0 ||
+          strcmp(status, "usage_limited") == 0 ||
+          strcmp(status, "budget_limited") == 0);
+}
+
 static void cai_goal_context_cleanup(void *value) { cai_free_mem(NULL, value); }
 
 static int cai_goal_fill_result(cai_goal_context *context,
@@ -146,7 +153,7 @@ static int cai_goal_create(void *value, const void *params, void *out,
   }
   session = CAI_SESSION_IMPL(context->session);
   if (session->goal_status != NULL &&
-      strcmp(session->goal_status, "complete") != 0) {
+      !cai_goal_status_is_terminal(session->goal_status)) {
     return cai_set_error(
         error, CAI_ERR_INVALID,
         "cannot create a new goal while an unfinished goal exists");
@@ -176,8 +183,17 @@ static int cai_goal_create(void *value, const void *params, void *out,
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(context->session)->allocator,
                session->goal_objective);
+  session->goal_objective = NULL;
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(context->session)->allocator,
                session->goal_status);
+  session->goal_status = NULL;
+  session->goal_has_token_budget = 0;
+  session->goal_token_budget = 0LL;
+  session->goal_token_usage_baseline = 0LL;
+  session->goal_tokens_used = 0LL;
+  session->goal_created_at = 0LL;
+  session->goal_updated_at = 0LL;
+  session->goal_blocked_attempts = 0;
   session->goal_objective = objective;
   session->goal_status = cai_strdup(
       &CAI_SESSION_CLIENT_IMPL(context->session)->allocator, "active");

@@ -132,11 +132,17 @@ typedef struct runtime_event_state {
   int wrong_thread;
 } runtime_event_state;
 
+typedef struct runtime_close_callback_state {
+  cai_agent_runtime *runtime;
+  int calls;
+} runtime_close_callback_state;
+
 typedef struct runtime_session_store_state {
   const char *checkpoint_json;
   read_state reader;
   int loads;
   int checkpoints;
+  int saw_goal_checkpoint_without_tool_output;
   int appended_events;
   unsigned long long load_applied_event_sequence;
   unsigned long long saved_applied_event_sequence;
@@ -373,8 +379,23 @@ typedef struct terminal_event_state {
   int waiting;
   int completed;
   int cancelled;
+  unsigned long long total_output_bytes;
   char terminal_id[48];
 } terminal_event_state;
+
+typedef struct terminal_race_policy_state {
+  pthread_mutex_t lock;
+  pthread_cond_t changed;
+  int arrivals;
+  int released;
+} terminal_race_policy_state;
+
+typedef struct terminal_race_exec_state {
+  cai_tool_registry *registry;
+  int rc;
+  cai_error error;
+  write_state writer;
+} terminal_race_exec_state;
 
 typedef struct failing_callback_state {
   int calls;
@@ -1740,6 +1761,21 @@ static int test_runtime_event(void *context,
   return CAI_OK;
 }
 
+static int test_runtime_close_from_event(
+    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+  runtime_close_callback_state *state;
+
+  (void)event;
+  (void)error;
+  state = (runtime_close_callback_state *)context;
+  state->calls++;
+  if (state->runtime != NULL) {
+    cai_agent_runtime_close(state->runtime);
+    state->runtime = NULL;
+  }
+  return CAI_OK;
+}
+
 static int test_runtime_session_store_checkpoint(
     void *context, const char *scope, const char *session_id, cai_source *state,
     unsigned long long applied_event_sequence, cai_error *error) {
@@ -1773,6 +1809,12 @@ static int test_runtime_session_store_checkpoint(
                          "runtime test checkpoint buffer is too small");
   }
   store->saved_checkpoint[offset] = '\0';
+  if (strstr(store->saved_checkpoint, "\"goal_status\":\"budget_limited\"") !=
+          NULL &&
+      strstr(store->saved_checkpoint,
+             "\"type\":\"function_call_output\"") == NULL) {
+    store->saw_goal_checkpoint_without_tool_output = 1;
+  }
   return CAI_OK;
 }
 
@@ -2985,6 +3027,10 @@ static int test_terminal_event(void *context, const cai_terminal_event *event,
   } else if (event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED) {
     state->cancelled++;
   }
+  if (event->type == CAI_TERMINAL_EVENT_COMMAND_COMPLETED ||
+      event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED) {
+    state->total_output_bytes = event->total_output_bytes;
+  }
   snprintf(state->terminal_id, sizeof(state->terminal_id), "%s",
            event->terminal_id != NULL ? event->terminal_id : "");
   return CAI_OK;
@@ -3009,6 +3055,56 @@ static int test_terminal_policy(void *context, const char *command,
   return CAI_OK;
 }
 
+static int test_terminal_race_policy(void *context, const char *command,
+                                     const char *workspace, const char *workdir,
+                                     int tty, cai_error *error) {
+  terminal_race_policy_state *state;
+
+  (void)command;
+  (void)workspace;
+  (void)workdir;
+  (void)tty;
+  (void)error;
+  state = (terminal_race_policy_state *)context;
+  if (state == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  pthread_mutex_lock(&state->lock);
+  state->arrivals++;
+  if (state->arrivals >= 2) {
+    state->released = 1;
+    pthread_cond_broadcast(&state->changed);
+  }
+  while (!state->released) {
+    pthread_cond_wait(&state->changed, &state->lock);
+  }
+  pthread_mutex_unlock(&state->lock);
+  return CAI_OK;
+}
+
+static void *test_terminal_race_exec(void *value) {
+  terminal_race_exec_state *state;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+
+  state = (terminal_race_exec_state *)value;
+  sink = NULL;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &state->writer;
+  cai_error_init(&state->error);
+  state->rc = cai_sink_from_callbacks(&callbacks, &sink, &state->error);
+  if (state->rc == CAI_OK) {
+    state->rc = cai_tool_registry_run(
+        state->registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+        "{\"cmd\":\"sleep 5\",\"yield_time_ms\":0}", sink,
+        &state->error);
+  }
+  cai_sink_close(sink);
+  return NULL;
+}
+
 static int test_tool_round_inject(void *context, cai_session *session,
                                   cai_error *error) {
   tool_round_inject_state *state;
@@ -3020,6 +3116,19 @@ static int test_tool_round_inject(void *context, cai_session *session,
   }
   state->calls++;
   return cai_session_add_user_text(session, state->text, error);
+}
+
+static int test_failing_tool_round(void *context, cai_session *session,
+                                   cai_error *error) {
+  failing_callback_state *state;
+
+  (void)session;
+  state = (failing_callback_state *)context;
+  if (state != NULL) {
+    state->calls++;
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "tool round callback failed deliberately");
 }
 
 static int test_tool_round_capture_history(void *context, cai_session *session,
@@ -23966,12 +24075,15 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   test_mcp_client_impl mcp_fake;
   cai_mcp_client *mcp_clients[1];
   cai_mcp_tool_registration_config mcp_config;
+  runtime_close_callback_state close_state;
   cai_error error;
+  struct timespec close_callback_delay;
 
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
   memset(&events, 0, sizeof(events));
+  memset(&close_state, 0, sizeof(close_state));
   memset(&store_state, 0, sizeof(store_state));
   memset(&store, 0, sizeof(store));
   store.checkpoint = test_runtime_session_store_checkpoint;
@@ -24047,6 +24159,33 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_substr(state, "runtime_input_checkpoint_turn",
                   store_state.saved_checkpoint, "offline turn");
     cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_close_from_event;
+  runtime_config.event_context = &close_state;
+  expect_int(state, "runtime_callback_close_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    close_state.runtime = runtime;
+    expect_int(state, "runtime_callback_close_submit",
+               cai_agent_runtime_submit(runtime, "close from event", &error),
+               CAI_OK);
+    /*
+     * Let the worker queue its checkpoint/state events behind RUN_STARTED.
+     * Closing from the first callback must discard those queued events rather
+     * than invoking a callback whose context may already be released.
+     */
+    close_callback_delay.tv_sec = 0;
+    close_callback_delay.tv_nsec = 100000000L;
+    (void)nanosleep(&close_callback_delay, NULL);
+    expect_int(state, "runtime_callback_close_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    expect_int(state, "runtime_callback_close_called_once", close_state.calls,
+               1L);
     runtime = NULL;
   }
   cai_agent_runtime_config_init(&runtime_config);
@@ -24182,12 +24321,159 @@ static void test_agent_runtime_semantic_events(test_state *state) {
   }
 }
 
+static void test_agent_runtime_goal_budget(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-goal-budget-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  struct pollfd poll_fd;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_budget_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_goal_budget_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_goal_budget_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_goal_budget_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5-nano\","
+      "\"goal_objective\":\"bounded test goal\","
+      "\"goal_status\":\"active\",\"goal_token_budget\":1,"
+      "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
+      "\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  expect_int(state, "runtime_goal_budget_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_goal_budget_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_goal_budget_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(state, "runtime_goal_budget_submit",
+               cai_agent_runtime_submit(runtime, "goal budget no-tool turn",
+                                        &error),
+               CAI_OK);
+    expect_int(state, "runtime_goal_budget_steering",
+               cai_agent_runtime_submit_steering(runtime,
+                                                 "queued at budget boundary",
+                                                 &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_goal_budget_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_goal_budget_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_goal_budget_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_str(state, "runtime_goal_budget_failure", events.failure_message,
+               "");
+    expect_substr(state, "runtime_goal_budget_status", store_state.saved_checkpoint,
+                  "\"goal_status\":\"budget_limited\"");
+    expect_substr(state, "runtime_goal_budget_usage", store_state.saved_checkpoint,
+                  "\"goal_tokens_used\":3");
+    expect_substr(state, "runtime_goal_budget_steering_checkpoint",
+                  store_state.saved_checkpoint, "queued at budget boundary");
+    expect_int(state, "runtime_goal_budget_reject_resubmit",
+               cai_agent_runtime_submit(runtime, "try after budget limit",
+                                        &error),
+               CAI_ERR_LIMIT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_goal_budget_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_goal_budget_mock", "mock child failed");
+  }
+}
+
 static void test_agent_local_session_store(test_state *state) {
   char template_directory[] = "/tmp/cai-session-store-XXXXXX";
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char buffer[128];
   char scope_path[PATH_MAX];
   char file_path[PATH_MAX];
+  char event_scope_path[PATH_MAX];
+  char event_file_path[PATH_MAX];
+  char newer_event_file_path[PATH_MAX];
+  char incomplete_file_path[PATH_MAX];
   cai_agent_local_session_store_config config;
   cai_agent_session_store store;
   cai_source_callbacks callbacks;
@@ -24325,6 +24611,73 @@ static void test_agent_local_session_store(test_state *state) {
              "resume this steering input");
   cai_source_close(loaded);
   loaded = NULL;
+  {
+    struct timespec pause_time;
+
+    pause_time.tv_sec = 0;
+    pause_time.tv_nsec = 10000000L;
+    (void)nanosleep(&pause_time, NULL);
+  }
+  event.sequence = 1U;
+  event.type = "steering_queued";
+  event.data = "event in a newer journal";
+  expect_int(state, "local_session_store_newer_event_only_append",
+             store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                "events_only", &event, &error),
+             CAI_OK);
+  (void)snprintf(newer_event_file_path, sizeof(newer_event_file_path),
+                 "%s/%s/%s", template_directory, scope_path,
+                 "events_only.jsonl");
+  (void)snprintf(incomplete_file_path, sizeof(incomplete_file_path),
+                 "%s/%s/%s", template_directory, scope_path,
+                 "incomplete.jsonl");
+  fp = fopen(incomplete_file_path, "wb");
+  if (fp == NULL || fwrite("{\"partial\"", 1U, strlen("{\"partial\""), fp) !=
+                        strlen("{\"partial\"")) {
+    test_fail(state, "local_session_store_orphan_partial_write",
+              "failed to create incomplete journal");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_skip_incomplete_journal",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_skip_incomplete_journal_id",
+             session_id, "session_one");
+  expect_int(state, "local_session_store_skip_incomplete_journal_source",
+             loaded != NULL, 1L);
+  cai_source_close(loaded);
+  loaded = NULL;
+  event.sequence = 1U;
+  event.type = "steering_queued";
+  event.data = "event before first checkpoint";
+  expect_int(state, "local_session_store_event_only_append",
+             store.append_event(store.context, "/tmp/cai-session-event-only",
+                                "events_only", &event, &error),
+             CAI_OK);
+  (void)SHA256((const unsigned char *)"/tmp/cai-session-event-only",
+               strlen("/tmp/cai-session-event-only"), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    event_scope_path[i * 2U] = hex[digest[i] >> 4U];
+    event_scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  event_scope_path[64] = '\0';
+  (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s/%s",
+                 template_directory, event_scope_path, "events_only.jsonl");
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_event_only_load",
+             store.load_latest(store.context, "/tmp/cai-session-event-only",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_event_only_no_checkpoint",
+             loaded == NULL, 1L);
+  expect_str(state, "local_session_store_event_only_no_session", session_id,
+             "");
   fp = fopen(file_path, "ab");
   if (fp == NULL ||
       fwrite("{\"record_type\":\"checkpoint\","
@@ -24354,6 +24707,12 @@ static void test_agent_local_session_store(test_state *state) {
   cai_source_close(loaded);
   cai_agent_local_session_store_close(&store);
   unlink(file_path);
+  unlink(newer_event_file_path);
+  unlink(incomplete_file_path);
+  unlink(event_file_path);
+  (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s",
+                 template_directory, event_scope_path);
+  rmdir(event_file_path);
   (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
                  scope_path);
   rmdir(file_path);
@@ -24539,6 +24898,10 @@ static void test_goal_tools(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(state, "goal_blocked_user_turn_one",
+             cai_session_add_user_text(session,
+                                       "the external blocker remains", &error),
+             CAI_OK);
   expect_int(state, "goal_blocked_second",
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
@@ -24546,6 +24909,11 @@ static void test_goal_tools(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(state, "goal_blocked_user_turn_two",
+             cai_session_add_user_text(session,
+                                       "the same external blocker remains",
+                                       &error),
+             CAI_OK);
   CAI_SESSION_IMPL(session)->goal_tokens_used = 19LL;
   CAI_SESSION_IMPL(session)->goal_token_usage_baseline = 7LL;
   expect_int(state, "goal_blocked_state_export",
@@ -24605,6 +24973,16 @@ static void test_goal_tools(test_state *state) {
              CAI_OK);
   writer.length = 0U;
   writer.buffer[0] = '\0';
+  expect_int(state, "goal_create_after_blocked",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"replacement after block\"}", sink,
+                 &error),
+             CAI_OK);
+  expect_substr(state, "goal_create_after_blocked_status", writer.buffer,
+                "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
   expect_int(state, "goal_clear",
              CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
                                                CAI_GOAL_CLEAR_TOOL_NAME, "{}",
@@ -24640,6 +25018,108 @@ static void test_goal_tools(test_state *state) {
   cai_agent_destroy(resumed_agent);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_goal_create_allocation_failure(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  fail_alloc_state allocation;
+  write_state writer;
+  cai_error error;
+  size_t offset;
+  int found;
+
+  memset(&allocation, 0, sizeof(allocation));
+  allocation.fail_after = (size_t)-1;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  client_config.api_key = "test-key";
+  client_config.allocator.context = &allocation;
+  client_config.allocator.malloc_fn = test_fail_allocator_malloc;
+  client_config.allocator.realloc_fn = test_fail_allocator_realloc;
+  client_config.allocator.free_fn = test_fail_allocator_free;
+  agent_config.model = CAI_MODEL_GPT_5_6_TERRA;
+  client = NULL;
+  sink = NULL;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "goal_alloc_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "goal_alloc_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  found = 0;
+  for (offset = 0U; client != NULL && sink != NULL && offset < 64U && !found;
+       offset++) {
+    int rc;
+
+    agent = NULL;
+    session = NULL;
+    writer.length = 0U;
+    writer.buffer[0] = '\0';
+    writer.closed = 0;
+    allocation.fail_after = (size_t)-1;
+    expect_int(state, "goal_alloc_agent",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_int(state, "goal_alloc_session",
+                 cai_agent_new_session(agent, &session, &error), CAI_OK);
+    }
+    if (session != NULL) {
+      expect_int(state, "goal_alloc_register",
+                 cai_agent_register_goal_tools(agent, session, &error), CAI_OK);
+      expect_int(state, "goal_alloc_base",
+                 CAI_AGENT_IMPL(agent)->tools->run(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                     "{\"objective\":\"base\"}", sink, &error),
+                 CAI_OK);
+      expect_int(state, "goal_alloc_complete",
+                 CAI_AGENT_IMPL(agent)->tools->run(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                     "{\"status\":\"complete\"}", sink, &error),
+                 CAI_OK);
+      allocation.fail_after = allocation.allocs + offset;
+      rc = CAI_AGENT_IMPL(agent)->tools->run(
+          CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+          "{\"objective\":\"replacement\"}", sink, &error);
+      allocation.fail_after = (size_t)-1;
+      if (rc == CAI_ERR_NOMEM && error.message != NULL &&
+          strstr(error.message, "failed to store goal status") != NULL) {
+        found = 1;
+        expect_int(state, "goal_alloc_failure_objective_cleared",
+                   CAI_SESSION_IMPL(session)->goal_objective == NULL, 1L);
+        expect_int(state, "goal_alloc_failure_status_cleared",
+                   CAI_SESSION_IMPL(session)->goal_status == NULL, 1L);
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        writer.length = 0U;
+        writer.buffer[0] = '\0';
+        expect_int(state, "goal_alloc_failure_get",
+                   CAI_AGENT_IMPL(agent)->tools->run(
+                       CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_GET_TOOL_NAME,
+                       "{}", sink, &error),
+                   CAI_OK);
+        expect_substr(state, "goal_alloc_failure_no_goal", writer.buffer,
+                      "\"has_goal\":false");
+      }
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_session_destroy(session);
+    cai_agent_destroy(agent);
+  }
+  expect_int(state, "goal_alloc_status_failure_reached", found, 1L);
+  cai_sink_close(sink);
   cai_client_close(client);
   cai_error_cleanup(&error);
 }
@@ -24690,6 +25170,12 @@ static void test_patch_tool(test_state *state) {
                                         "*** Add File: beta.txt\n"
                                         "+collision\n"
                                         "*** End Patch";
+  static const char relative_alias_patch[] = "*** Begin Patch\n"
+                                           "*** Add File: alias.txt\n"
+                                           "+first\n"
+                                           "*** Add File: ./alias.txt\n"
+                                           "+second\n"
+                                           "*** End Patch";
   static const char context_patch[] = "*** Begin Patch\n"
                                       "*** Update File: sections.txt\n"
                                       "@@   second   \n"
@@ -24703,6 +25189,12 @@ static void test_patch_tool(test_state *state) {
                                           "+updated\n"
                                           "*** End of File\n"
                                           "*** End Patch";
+  static const char ambiguous_patch[] = "*** Begin Patch\n"
+                                       "*** Update File: ambiguous.txt\n"
+                                       "@@\n"
+                                       "-same\n"
+                                       "+changed\n"
+                                       "*** End Patch";
   static const char nul_stream_patch[] = "*** Begin Patch\n\0"
                                          "*** Add File: hidden.txt\n"
                                          "+hidden\n"
@@ -24713,7 +25205,10 @@ static void test_patch_tool(test_state *state) {
   char renamed_path[PATH_MAX];
   char sections_path[PATH_MAX];
   char eof_path[PATH_MAX];
+  char alias_path[PATH_MAX];
+  char ambiguous_path[PATH_MAX];
   char *contents;
+  char *too_many_patch;
   cai_patch_tool_config config;
   cai_tool_registry *registry;
   lonejson_spooled spooled_patch;
@@ -24721,6 +25216,8 @@ static void test_patch_tool(test_state *state) {
   cai_sink *sink;
   write_state writer;
   cai_error error;
+  size_t offset;
+  size_t i;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
@@ -24732,9 +25229,41 @@ static void test_patch_tool(test_state *state) {
   snprintf(sections_path, sizeof(sections_path), "%s/sections.txt",
            dir_template);
   snprintf(eof_path, sizeof(eof_path), "%s/eof.txt", dir_template);
+  snprintf(alias_path, sizeof(alias_path), "%s/alias.txt", dir_template);
+  snprintf(ambiguous_path, sizeof(ambiguous_path), "%s/ambiguous.txt",
+           dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
+  cai_error_init(&error);
+  too_many_patch = (char *)malloc(65536U);
+  if (too_many_patch == NULL) {
+    test_fail(state, "patch_change_limit_allocate", "allocation failed");
+  } else {
+    offset = (size_t)snprintf(too_many_patch, 65536U, "*** Begin Patch\n");
+    for (i = 0U; i < 1025U && offset < 65536U; i++) {
+      int written;
+
+      written = snprintf(too_many_patch + offset, 65536U - offset,
+                         "*** Add File: change-%lu.txt\n+x\n",
+                         (unsigned long)i);
+      if (written < 0 || (size_t)written >= 65536U - offset) {
+        test_fail(state, "patch_change_limit_build", "patch buffer overflow");
+        break;
+      }
+      offset += (size_t)written;
+    }
+    if (offset < 65536U) {
+      (void)snprintf(too_many_patch + offset, 65536U - offset,
+                     "*** End Patch");
+      expect_int(state, "patch_change_limit",
+                 cai_apply_patch(&config, too_many_patch, NULL, &error),
+                 CAI_ERR_LIMIT);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+    free(too_many_patch);
+  }
   memset(&writer, 0, sizeof(writer));
   callbacks.write = test_write;
   callbacks.close = test_write_close;
@@ -24772,6 +25301,23 @@ static void test_patch_tool(test_state *state) {
   expect_int(state, "patch_reject_collision",
              cai_apply_patch(&config, collision_patch, NULL, &error),
              CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_reject_relative_alias",
+             cai_apply_patch(&config, relative_alias_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "patch_relative_alias_preserves_target",
+             access(alias_path, F_OK) != 0, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  write_file_or_die(ambiguous_path, "same\nseparator\nsame\n");
+  expect_int(state, "patch_reject_ambiguous_hunk",
+             cai_apply_patch(&config, ambiguous_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  contents = read_file_or_die(ambiguous_path);
+  expect_str(state, "patch_ambiguous_hunk_preserves_file", contents,
+             "same\nseparator\nsame\n");
+  free(contents);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   write_file_or_die(sections_path, "first\nvalue: old\n  second\nvalue: old\n");
@@ -24850,6 +25396,7 @@ static void test_patch_tool(test_state *state) {
   unlink(eof_path);
   unlink(sections_path);
   unlink(renamed_path);
+  unlink(ambiguous_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
 }
@@ -24981,6 +25528,8 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_response *response;
   raw_tool_state raw_state;
   tool_event_state event_state;
+  tool_round_inject_state inject_state;
+  tool_round_history_state history_state;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -25017,6 +25566,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
+  agent_config.enable_local_history = 1;
   cai_run_options_init(&run_options);
   if (mkdtemp(spool_dir) == NULL) {
     test_fail(state, "agent_auto_spool", "mkdtemp failed");
@@ -25027,12 +25577,19 @@ static void test_agent_tool_auto_run(test_state *state) {
   run_options.tool_spool_dir = spool_dir;
   run_options.tool_event = test_tool_event;
   run_options.tool_event_context = &event_state;
+  run_options.tool_round_completed = test_tool_round_inject;
+  run_options.tool_round_completed_context = &inject_state;
+  run_options.tool_round_durable = test_tool_round_capture_history;
+  run_options.tool_round_durable_context = &history_state;
   client = NULL;
   agent = NULL;
   session = NULL;
   response = NULL;
   raw_state.seen[0] = '\0';
   memset(&event_state, 0, sizeof(event_state));
+  memset(&inject_state, 0, sizeof(inject_state));
+  memset(&history_state, 0, sizeof(history_state));
+  inject_state.text = "server-continuity-steering";
 
   expect_int(state, "agent_auto_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -25066,6 +25623,15 @@ static void test_agent_tool_auto_run(test_state *state) {
              "{\"x\":1}");
   expect_str(state, "agent_auto_tool_event_output", event_state.output,
              "{\"x\":1}");
+  expect_int(state, "agent_auto_callback_calls", inject_state.calls, 1L);
+  expect_int(state, "agent_auto_durable_callback_calls", history_state.calls,
+             1L);
+  expect_substr(state, "agent_auto_durable_tool_output", history_state.history,
+                "\"type\":\"function_call_output\"");
+  expect_substr(state, "agent_auto_durable_steering", history_state.history,
+                "server-continuity-steering");
+  expect_int(state, "agent_auto_callback_inputs_consumed",
+             (long)CAI_SESSION_IMPL(session)->input_count, 0L);
   cai_response_destroy(response);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
@@ -25372,6 +25938,123 @@ static void test_agent_client_history_tool_auto_run(test_state *state) {
     test_fail(state, "agent_client_history_tool_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_client_history_tool_mock", "mock child failed");
+  }
+}
+
+static void test_agent_client_history_tool_callback_durability(
+    test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char history_json[4096];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_source *history_source;
+  raw_tool_state raw_state;
+  failing_callback_state callback_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_client_history_callback_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_client_history_callback_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_client_history_callback_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  cai_run_options_init(&run_options);
+  run_options.tool_round_completed = test_failing_tool_round;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+  memset(&raw_state, 0, sizeof(raw_state));
+  memset(&callback_state, 0, sizeof(callback_state));
+  run_options.tool_round_completed_context = &callback_state;
+
+  expect_int(state, "agent_client_history_callback_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_client_history_callback_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_callback_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_callback_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_client_history_callback_add",
+             cai_session_add_user_text(session, "auto client history tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_callback_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "agent_client_history_callback_calls", callback_state.calls,
+             1L);
+  expect_str(state, "agent_client_history_callback_tool", raw_state.seen,
+             "{\"x\":1}");
+  expect_int(state, "agent_client_history_callback_export",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_OK);
+  if (read_source_text(state, "agent_client_history_callback_read",
+                       history_source, history_json, sizeof(history_json),
+                       &error)) {
+    expect_substr(state, "agent_client_history_callback_output", history_json,
+                  "\"type\":\"function_call_output\"");
+    expect_substr(state, "agent_client_history_callback_result", history_json,
+                  "\"output\":\"{\\\"x\\\":1}\"");
+  }
+
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_client_history_callback_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_client_history_callback_mock", "mock child failed");
   }
 }
 
@@ -26704,7 +27387,7 @@ static void test_exec_tool(test_state *state) {
   config.timeout_ms = 1000L;
   config.max_timeout_ms = 1000L;
   config.output_memory_limit = 8U;
-  config.output_max_bytes = 4096U;
+  config.output_max_bytes = 32768U;
 
   if (run_exec_tool_case(state, "exec_success", &config,
                          "{\"cmd\":\"printf stdout; printf stderr >&2\"}",
@@ -27183,7 +27866,7 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
-  config.output_max_bytes = 4096U;
+  config.output_max_bytes = 32768U;
   if (run_exec_tool_case(state, "exec_per_call_output_cap", &config,
                          "{\"cmd\":\"printf 1234567890\","
                          "\"max_output_tokens\":4}",
@@ -27378,6 +28061,9 @@ static void test_terminal_tools(test_state *state) {
   cai_error error;
   int policy_calls;
   int rc;
+  int i;
+  char *blocked_stdin_request;
+  size_t blocked_stdin_request_size;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
@@ -27386,11 +28072,12 @@ static void test_terminal_tools(test_state *state) {
   memset(&config, 0, sizeof(config));
   memset(&events, 0, sizeof(events));
   policy_calls = 0;
+  blocked_stdin_request = NULL;
   config.root_path = dir_template;
   config.default_workdir = dir_template;
   config.default_yield_time_ms = 20L;
   config.max_yield_time_ms = 100L;
-  config.output_max_bytes = 4096U;
+  config.output_max_bytes = 32768U;
   config.event_callback = test_terminal_event;
   config.event_context = &events;
   config.policy = test_terminal_policy;
@@ -27416,12 +28103,43 @@ static void test_terminal_tools(test_state *state) {
                CAI_OK);
   }
   if (registry != NULL && sink != NULL) {
+    setenv("CAI_TEST_TERMINAL_SECRET", "must-not-reach-model", 1);
+    expect_int(state, "terminal_sanitized_environment",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"printf '%s|%s' \\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\"\","
+                   "\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    expect_int(state, "terminal_sanitized_environment_secret",
+               strstr(writer.buffer, "must-not-reach-model") == NULL, 1L);
+    expect_substr(state, "terminal_sanitized_environment_home", writer.buffer,
+                  dir_template);
+    unsetenv("CAI_TEST_TERMINAL_SECRET");
+    /* Output arrival is intentionally allowed before shell exit.  Drain the
+     * fast command to a verified terminal result before starting the next
+     * command so this event assertion does not depend on scheduler timing. */
+    for (i = 0; i < 5 && strstr(writer.buffer, "\"completed\":true") == NULL;
+         i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_sanitized_environment_finalize",
+                 cai_tool_registry_run(
+                     registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                     "{\"session_id\":\"terminal-1\",\"yield_time_ms\":100}",
+                     sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_sanitized_environment_finished",
+                  writer.buffer, "\"completed\":true");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
     expect_int(state, "terminal_policy_reject",
                cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"forbidden\"}", sink,
                                      &error),
                CAI_ERR_INVALID);
-    expect_int(state, "terminal_policy_called", policy_calls, 1L);
+    expect_int(state, "terminal_policy_called", policy_calls, 2L);
     cai_error_cleanup(&error);
     cai_error_init(&error);
     rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
@@ -27488,6 +28206,16 @@ static void test_terminal_tools(test_state *state) {
                    "\"yield_time_ms\":100}",
                    sink, &error),
                CAI_OK);
+    for (i = 0; i < 5 && strstr(writer.buffer, "got:alpha") == NULL; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_write_interactive_poll",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       "{\"session_id\":\"terminal-1\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
     expect_substr(state, "terminal_write_interactive_output", writer.buffer,
                   "got:alpha");
     writer.buffer[0] = '\0';
@@ -27514,12 +28242,205 @@ static void test_terminal_tools(test_state *state) {
                   "\"detached_processes_possible\":true");
     expect_substr(state, "terminal_detached_duration", writer.buffer,
                   "\"duration_ms\":");
-    expect_int(state, "terminal_event_started", events.started, 3L);
-    expect_int(state, "terminal_event_completed", events.completed, 2L);
+    expect_int(state, "terminal_event_started", events.started, 4L);
+    expect_int(state, "terminal_event_completed", events.completed, 3L);
     expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_drain_fast_output",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"seq 1 3000\","
+                                     "\"yield_time_ms\":100,"
+                                     "\"max_output_tokens\":16}", sink, &error),
+               CAI_OK);
+    for (i = 0; i < 10 && events.completed < 4; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                 "{\"session_id\":\"terminal-1\","
+                                 "\"yield_time_ms\":100,"
+                                 "\"max_output_tokens\":16}", sink, &error);
+      if (rc != CAI_OK) {
+        expect_int(state, "terminal_drain_fast_output_poll", rc, CAI_OK);
+        break;
+      }
+    }
+    expect_int(state, "terminal_drain_fast_output_bytes",
+               events.total_output_bytes >= 10000U, 1L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_exec_no_stdin_reader",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"stty -echo; sleep 5\","
+                                     "\"yield_time_ms\":10}", sink, &error),
+               CAI_OK);
+    blocked_stdin_request_size =
+        strlen("{\"session_id\":\"terminal-1\",\"chars\":\"") +
+        65536U + strlen("\",\"yield_time_ms\":10}") + 1U;
+    blocked_stdin_request = (char *)malloc(blocked_stdin_request_size);
+    if (blocked_stdin_request == NULL) {
+      test_fail(state, "terminal_stdin_limit_allocate", "allocation failed");
+    } else {
+      size_t prefix_length;
+
+      prefix_length = strlen("{\"session_id\":\"terminal-1\",\"chars\":\"");
+      memcpy(blocked_stdin_request,
+             "{\"session_id\":\"terminal-1\",\"chars\":\"",
+             prefix_length);
+      memset(blocked_stdin_request + prefix_length, 'x', 65536U);
+      memcpy(blocked_stdin_request + prefix_length + 65536U,
+             "\",\"yield_time_ms\":10}",
+             strlen("\",\"yield_time_ms\":10}") + 1U);
+      expect_int(state, "terminal_stdin_unread",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       blocked_stdin_request, sink, &error),
+                 CAI_OK);
+      free(blocked_stdin_request);
+      blocked_stdin_request = NULL;
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_stdin_limit_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}", sink, &error),
+               CAI_OK);
+  }
+  free(blocked_stdin_request);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+  sink = NULL;
+  config.root_path = "/";
+  config.default_workdir = dir_template;
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "terminal_root_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(state, "terminal_root_register",
+               cai_tool_registry_register_terminal_tools(registry, &config,
+                                                        &error),
+               CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_root_sink", cai_sink_from_callbacks(&callbacks,
+                                                                      &sink, &error),
+               CAI_OK);
+  }
+  if (sink != NULL) {
+    expect_int(state, "terminal_root_workdir",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"printf root-ok\","
+                                     "\"yield_time_ms\":100}", sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_root_workdir_output", writer.buffer,
+                  "root-ok");
   }
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_concurrent_start(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  terminal_race_policy_state policy;
+  terminal_race_exec_state first;
+  terminal_race_exec_state second;
+  pthread_t first_thread;
+  pthread_t second_thread;
+  write_state writer;
+  cai_error error;
+  int first_created;
+  int second_created;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_race_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&policy, 0, sizeof(policy));
+  memset(&first, 0, sizeof(first));
+  memset(&second, 0, sizeof(second));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  first_created = 0;
+  second_created = 0;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 20L;
+  config.max_yield_time_ms = 100L;
+  config.policy = test_terminal_race_policy;
+  config.policy_context = &policy;
+  expect_int(state, "terminal_race_policy_lock",
+             pthread_mutex_init(&policy.lock, NULL), 0L);
+  expect_int(state, "terminal_race_policy_condition",
+             pthread_cond_init(&policy.changed, NULL), 0L);
+  expect_int(state, "terminal_race_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(state, "terminal_race_register",
+               cai_tool_registry_register_terminal_tools(registry, &config,
+                                                        &error),
+               CAI_OK);
+  }
+  if (registry != NULL) {
+    first.registry = registry;
+    second.registry = registry;
+    first_created = pthread_create(&first_thread, NULL, test_terminal_race_exec,
+                                   &first) == 0;
+    second_created =
+        pthread_create(&second_thread, NULL, test_terminal_race_exec, &second) ==
+        0;
+    expect_int(state, "terminal_race_first_thread", first_created, 1L);
+    expect_int(state, "terminal_race_second_thread", second_created, 1L);
+    if (!first_created || !second_created) {
+      pthread_mutex_lock(&policy.lock);
+      policy.released = 1;
+      pthread_cond_broadcast(&policy.changed);
+      pthread_mutex_unlock(&policy.lock);
+    }
+    if (first_created) {
+      pthread_join(first_thread, NULL);
+    }
+    if (second_created) {
+      pthread_join(second_thread, NULL);
+    }
+    if (first_created && second_created) {
+      expect_int(state, "terminal_race_one_success",
+                 (first.rc == CAI_OK) + (second.rc == CAI_OK), 1L);
+      expect_int(state, "terminal_race_one_rejected",
+                 (first.rc == CAI_ERR_INVALID) + (second.rc == CAI_ERR_INVALID),
+                 1L);
+    }
+    cai_error_cleanup(&first.error);
+    cai_error_cleanup(&second.error);
+    callbacks.write = test_write;
+    callbacks.close = test_write_close;
+    callbacks.context = &writer;
+    expect_int(state, "terminal_race_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    if (sink != NULL) {
+      expect_int(state, "terminal_race_terminate",
+                 cai_tool_registry_run(
+                     registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                     "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                     "\"yield_time_ms\":10}",
+                     sink, &error),
+                 CAI_OK);
+    }
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  pthread_cond_destroy(&policy.changed);
+  pthread_mutex_destroy(&policy.lock);
   cai_error_cleanup(&error);
   rmdir(dir_template);
 }
@@ -31766,6 +32687,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   cai_stream_sinks stream_sinks;
+  cai_source *history_source;
   write_state writer;
   stream_tool_state tool_stream;
   tool_event_state event_state;
@@ -31807,6 +32729,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
   agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
   cai_run_options_init(&run_options);
   run_options.max_tool_rounds = 2;
@@ -31818,6 +32741,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   agent = NULL;
   session = NULL;
   sink = NULL;
+  history_source = NULL;
   memset(&writer, 0, sizeof(writer));
   memset(&tool_stream, 0, sizeof(tool_stream));
   memset(&event_state, 0, sizeof(event_state));
@@ -31884,7 +32808,30 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   expect_str(state, "stream_auto_tool_event_output", event_state.output,
              "{\"summary\":\"Gothenburg:0\"}");
   expect_int(state, "stream_auto_tool_round_callback", inject_state.calls, 1L);
+  expect_int(state, "stream_auto_tool_history_export",
+             cai_session_export_history_source(session, &history_source,
+                                               &error),
+             CAI_OK);
+  if (history_source != NULL) {
+    char history_json[8192];
+    char *output_pos;
+    char *steering_pos;
 
+    if (read_source_text(state, "stream_auto_tool_history_read", history_source,
+                         history_json, sizeof(history_json), &error)) {
+      expect_substr(state, "stream_auto_tool_history_steering", history_json,
+                    "after-next-tool");
+      output_pos = strstr(history_json, "\"type\":\"function_call_output\"");
+      steering_pos = strstr(history_json, "after-next-tool");
+      if (output_pos == NULL || steering_pos == NULL ||
+          !(output_pos < steering_pos)) {
+        test_fail(state, "stream_auto_tool_history_steering_order",
+                  "steering did not follow the completed tool output");
+      }
+    }
+  }
+
+  cai_source_close(history_source);
   cai_sink_close(sink);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
@@ -33656,8 +34603,6 @@ static void test_stream_client_history_tool_order(test_state *state) {
              event_state.outputs, 1L);
   expect_int(state, "stream_client_history_tool_history_callback",
              history_state.calls, 1L);
-  expect_substr(state, "stream_client_history_tool_durable_output",
-                history_state.history, "\"type\":\"function_call_output\"");
   writer.length = 0U;
   writer.closed = 0;
   writer.buffer[0] = '\0';
@@ -34914,9 +35859,11 @@ static const test_entry test_entries[] = {
     {"smith_profile", test_smith_profile},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
+    {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_runtime_resume", test_agent_runtime_resume},
     {"goal_tools", test_goal_tools},
+    {"goal_create_allocation_failure", test_goal_create_allocation_failure},
     {"patch_tool", test_patch_tool},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
@@ -34928,6 +35875,8 @@ static const test_entry test_entries[] = {
      test_agent_custom_tool_client_history_auto_run},
     {"agent_client_history_tool_auto_run",
      test_agent_client_history_tool_auto_run},
+    {"agent_client_history_tool_callback_durability",
+     test_agent_client_history_tool_callback_durability},
     {"agent_view_image_auto_run", test_agent_view_image_auto_run},
     {"revgeo_tool", test_revgeo_tool},
     {"todo_file_store_initializes_under_lock",
@@ -34937,6 +35886,7 @@ static const test_entry test_entries[] = {
     {"searxng_registry_tool", test_searxng_registry_tool},
     {"exec_tool", test_exec_tool},
     {"terminal_tools", test_terminal_tools},
+    {"terminal_concurrent_start", test_terminal_concurrent_start},
     {"read_tool", test_read_tool},
     {"view_image_tool", test_view_image_tool},
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},

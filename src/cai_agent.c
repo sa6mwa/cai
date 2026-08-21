@@ -2200,20 +2200,26 @@ static int cai_session_add_text_input_spooled(cai_session *session,
 
 int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error) {
+  int rc;
+
   if (text == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "text is required");
   }
-  return cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, "user", text,
-                               NULL, NULL, NULL, NULL, error);
+  rc = cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, "user", text,
+                             NULL, NULL, NULL, NULL, error);
+  return rc;
 }
 
 int cai_session_add_user_text_spooled(cai_session *session,
                                       lonejson_spooled *text,
                                       cai_error *error) {
+  int rc;
+
   if (text == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "text spool is required");
   }
-  return cai_session_add_text_input_spooled(session, "user", text, error);
+  rc = cai_session_add_text_input_spooled(session, "user", text, error);
+  return rc;
 }
 
 int cai_session_add_user_text_source(cai_session *session, cai_source *source,
@@ -2648,6 +2654,12 @@ static int cai_session_prepare_history_params(
   return rc;
 }
 
+/*
+ * Rebuild a client-history continuation without committing its typed input.
+ * This preserves tool-specific typed deliveries (for example, view_image's
+ * data URL) for this request only.  Callers commit the corresponding safe
+ * tool-result history separately, after this request has been assembled.
+ */
 static int cai_session_replay_history_with_params_input(
     cai_session *session, cai_response_create_params *params,
     lonejson_spooled *out_pending_items, int *out_has_pending_items,
@@ -2672,6 +2684,7 @@ static int cai_session_replay_history_with_params_input(
   rc = cai_history_to_array_spool(session, &history_items, error);
   if (rc == CAI_OK) {
     has_history_items = 1;
+    rc = cai_session_add_pending_inputs(session, params, error);
   }
   if (rc == CAI_OK && params->input.count > 0U) {
     rc = cai_response_params_input_items_spool(params, &pending_items, NULL,
@@ -2700,6 +2713,12 @@ static int cai_session_replay_history_with_params_input(
     history_items.cleanup(&history_items);
   }
   return rc;
+}
+
+static int cai_session_goal_budget_limited(const cai_session *session) {
+  return session != NULL && CAI_SESSION_IMPL(session)->goal_status != NULL &&
+         strcmp(CAI_SESSION_IMPL(session)->goal_status, "budget_limited") ==
+             0;
 }
 
 /*
@@ -2768,6 +2787,54 @@ int cai_session_commit_pending_inputs(cai_session *session, cai_error *error) {
   }
   if (rc == CAI_OK) {
     cai_session_clear_inputs(session);
+  }
+  cai_response_create_params_destroy(params);
+  if (has_pending_items) {
+    pending_items.cleanup(&pending_items);
+  }
+  return rc;
+}
+
+/*
+ * Persist a safe snapshot of pending inputs without consuming them. Server
+ * continuity must keep callback steering available until its continuation
+ * request succeeds, while the durable tool-round hook must be able to
+ * checkpoint that steering before the request is made.
+ */
+static int cai_session_checkpoint_pending_inputs(cai_session *session,
+                                                 cai_error *error) {
+  cai_response_create_params *params;
+  lonejson_spooled pending_items;
+  int has_pending_items;
+  int rc;
+
+  if (session == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "session is required");
+  }
+  if (CAI_SESSION_IMPL(session)->input_count == 0U) {
+    return CAI_OK;
+  }
+  if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "durable inputs require local history capture");
+  }
+  params = NULL;
+  memset(&pending_items, 0, sizeof(pending_items));
+  has_pending_items = 0;
+  rc = cai_session_init_response_params(session, &params, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_response_params_input_items_spool(params, &pending_items, NULL,
+                                               error);
+    if (rc == CAI_OK) {
+      has_pending_items = 1;
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_history(session, &pending_items,
+                                            &has_pending_items, error);
   }
   cai_response_create_params_destroy(params);
   if (has_pending_items) {
@@ -3551,8 +3618,8 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = cai_run_options_open_tool_output_runtime(options, &tool_output_runtime,
                                                   error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+  if (rc == CAI_OK &&
+      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_response_create_params_new(&history_params, error);
   }
   for (i = 0U; rc == CAI_OK && i < cai_response_tool_call_count(response);
@@ -3665,7 +3732,9 @@ static int cai_session_run_tool_round(cai_session *session,
       cai_capture_cleanup(&capture);
     }
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
   }
@@ -3681,17 +3750,49 @@ static int cai_session_run_tool_round(cai_session *session,
       has_pending_items = 1;
     }
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && history_params != NULL) {
     rc = cai_session_commit_pending_history(session, &pending_items,
                                             &has_pending_items, error);
   }
+  /*
+   * The client-history tool result is durable now.  A completed callback may
+   * fail while delivering steering or checkpointing, but that must never make
+   * an executed (and potentially non-idempotent) tool call replayable.
+   */
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
     rc = options->tool_round_completed(options->tool_round_completed_context,
                                        session, error);
   }
+  if (rc == CAI_OK && options->tool_round_completed != NULL) {
+    /* Include callback-queued steering in this continuation, then persist it. */
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK && options->tool_round_completed != NULL &&
+      history_params != NULL) {
+    if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+        CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+      rc = cai_session_commit_pending_inputs(session, error);
+    } else {
+      rc = cai_session_checkpoint_pending_inputs(session, error);
+    }
+  }
+  if (rc == CAI_OK && options->tool_round_durable != NULL) {
+    rc = options->tool_round_durable(options->tool_round_durable_context,
+                                     session, error);
+  }
+  if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "goal token budget exhausted before another model request");
+  }
   if (rc == CAI_OK) {
     rc = cai_session_create_response_from_params(
         session, params, &pending_items, has_pending_items, out, error);
+  }
+  if (rc == CAI_OK && options->tool_round_completed != NULL &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_SERVER) {
+    /* Server-continuity callbacks supplied these inputs to the request above. */
+    cai_session_clear_inputs(session);
   }
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(history_params);
@@ -4075,8 +4176,8 @@ static int cai_session_stream_tool_round(
   if (rc == CAI_OK) {
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-                          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+  if (rc == CAI_OK &&
+      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_response_create_params_new(&history_params, error);
   }
   if (rc == CAI_OK) {
@@ -4086,7 +4187,9 @@ static int cai_session_stream_tool_round(
     rc = cai_session_add_stream_tool_outputs(session, params, history_params,
                                              input_calls, options, error);
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
     rc = cai_session_replay_history_with_params_input(
         session, params, &pending_items, &has_pending_items, error);
   }
@@ -4102,13 +4205,34 @@ static int cai_session_stream_tool_round(
       has_pending_items = 1;
     }
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && history_params != NULL) {
     rc = cai_session_commit_pending_history(session, &pending_items,
                                             &has_pending_items, error);
   }
+  /* See cai_session_run_tool_round: durable tool history precedes callbacks. */
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
     rc = options->tool_round_completed(options->tool_round_completed_context,
                                        session, error);
+  }
+  if (rc == CAI_OK && options->tool_round_completed != NULL) {
+    rc = cai_session_add_pending_inputs(session, params, error);
+  }
+  if (rc == CAI_OK && options->tool_round_completed != NULL &&
+      history_params != NULL) {
+    if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+        CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+      rc = cai_session_commit_pending_inputs(session, error);
+    } else {
+      rc = cai_session_checkpoint_pending_inputs(session, error);
+    }
+  }
+  if (rc == CAI_OK && options->tool_round_durable != NULL) {
+    rc = options->tool_round_durable(options->tool_round_durable_context,
+                                     session, error);
+  }
+  if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "goal token budget exhausted before another model request");
   }
   if (rc == CAI_OK) {
     rc = cai_session_check_usage_available(session, error);
@@ -4146,6 +4270,12 @@ static int cai_session_stream_tool_round(
         rc = cai_set_error(error, rc, "failed to record streamed response");
       }
     }
+  }
+  if (rc == CAI_OK && options->tool_round_completed != NULL &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_SERVER) {
+    /* Server-continuity callbacks supplied these inputs to the request above. */
+    cai_session_clear_inputs(session);
   }
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(history_params);

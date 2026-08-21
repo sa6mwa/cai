@@ -78,7 +78,7 @@ typedef struct cai_agent_runtime_event {
   /** CAI_AGENT_TOOL_ACTION_* derived from a known tool name. */
   int tool_action;
   /**
-   * Best-effort primary workspace-relative target for a known local tool.
+   * Best-effort primary target path supplied by a known local tool.
    * NULL when the invocation has no single target or CAI cannot derive one.
    */
   const char *tool_path;
@@ -197,7 +197,12 @@ int cai_agent_runtime_state(cai_agent_runtime *runtime,
                             cai_agent_run_state *out, cai_error *error);
 /** Return the runtime's stable session identifier, borrowed until close. */
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
-/** Close the runtime after stopping and joining its worker. */
+/**
+ * Close the runtime after stopping and joining its worker. If invoked by its
+ * owner-thread event callback, destruction is deferred until pump unwinds.
+ * Calls from other threads wait until active event delivery has unwound before
+ * returning, so callback-owned resources are never used after close returns.
+ */
 void cai_agent_runtime_close(cai_agent_runtime *runtime);
 
 #ifdef __cplusplus

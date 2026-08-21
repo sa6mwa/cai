@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -30,6 +31,22 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_TERMINAL_DEFAULT_YIELD_MS 10000L
 #define CAI_TERMINAL_MAX_YIELD_MS 30000L
 #define CAI_TERMINAL_DEFAULT_OUTPUT_MAX (3U * 1024U * 1024U)
+#define CAI_TERMINAL_STDIN_WRITE_TIMEOUT_MS 1000L
+
+/*
+ * The terminal is an explicit host-side capability, but it must not inherit
+ * the client process environment. In particular, API credentials commonly
+ * live there and tool output is returned to the model. Keep the useful,
+ * deterministic shell settings here and derive HOME from the already-scoped
+ * workspace below.
+ */
+static char cai_terminal_shell_flag[] = "-c";
+static char cai_terminal_safe_path[] =
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+static char cai_terminal_safe_lang[] = "LANG=C.UTF-8";
+static char cai_terminal_safe_lc_all[] = "LC_ALL=C.UTF-8";
+static char cai_terminal_safe_term[] = "TERM=xterm-256color";
+static char cai_terminal_safe_tmpdir[] = "TMPDIR=/tmp";
 
 typedef struct cai_terminal_manager {
   pthread_mutex_t lock;
@@ -38,6 +55,7 @@ typedef struct cai_terminal_manager {
   char *root_path;
   char *default_workdir;
   char *shell_path;
+  char *home_environment;
   long default_yield_ms;
   long max_yield_ms;
   size_t output_max_bytes;
@@ -53,6 +71,7 @@ typedef struct cai_terminal_manager {
   pid_t pid;
   pthread_t reader;
   int reader_started;
+  int starting;
   int running;
   int completed;
   int child_reaped;
@@ -242,6 +261,9 @@ static int cai_terminal_under_root(const char *root, const char *path) {
   if (root == NULL || path == NULL) {
     return 0;
   }
+  if (strcmp(root, "/") == 0) {
+    return path[0] == '/' ? 1 : 0;
+  }
   length = strlen(root);
   return strncmp(root, path, length) == 0 &&
                  (path[length] == '\0' || path[length] == '/')
@@ -371,6 +393,33 @@ static void *cai_terminal_reader(void *value) {
      * explicitly reports that detached descendants may remain.
      */
     if (manager->child_reaped) {
+      /*
+       * A nonblocking read may have returned one full buffer before waitpid
+       * observes a short-lived shell exit. Drain all bytes already queued on
+       * the PTY before declaring completion; otherwise a fast command can
+       * lose its final output while still being reported as complete.
+       */
+      pthread_mutex_unlock(&manager->lock);
+      for (;;) {
+        count = read(manager->pty_fd, buffer, sizeof(buffer));
+        if (count > 0) {
+          pthread_mutex_lock(&manager->lock);
+          (void)cai_terminal_output_append(manager, buffer, (size_t)count);
+          pthread_cond_broadcast(&manager->changed);
+          pthread_mutex_unlock(&manager->lock);
+          continue;
+        }
+        if (count == 0 || (count < 0 && errno == EIO)) {
+          pthread_mutex_lock(&manager->lock);
+          manager->pty_eof = 1;
+          pthread_mutex_unlock(&manager->lock);
+        }
+        if (count < 0 && errno == EINTR) {
+          continue;
+        }
+        break;
+      }
+      pthread_mutex_lock(&manager->lock);
       manager->running = 0;
       manager->completed = 1;
       cai_terminal_close_fd(&manager->pty_fd);
@@ -411,6 +460,7 @@ static void cai_terminal_manager_destroy(cai_terminal_manager *manager) {
   cai_free_mem(NULL, manager->root_path);
   cai_free_mem(NULL, manager->default_workdir);
   cai_free_mem(NULL, manager->shell_path);
+  cai_free_mem(NULL, manager->home_environment);
   cai_free_mem(NULL, manager->command);
   cai_free_mem(NULL, manager->workdir);
   cai_free_mem(NULL, manager->output);
@@ -447,6 +497,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
                                     cai_error *error) {
   cai_terminal_manager *manager;
   char resolved[PATH_MAX];
+  size_t home_length;
 
   *out = NULL;
   if (config == NULL || config->root_path == NULL || config->root_path[0] == '\0' ||
@@ -467,6 +518,11 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
                                  : NULL;
   manager->shell_path = cai_strdup(NULL, config->shell_path != NULL ? config->shell_path
                                                                       : "/bin/sh");
+  home_length = strlen("HOME=") + strlen(resolved) + 1U;
+  manager->home_environment = (char *)cai_alloc(NULL, home_length);
+  if (manager->home_environment != NULL) {
+    (void)snprintf(manager->home_environment, home_length, "HOME=%s", resolved);
+  }
   manager->default_yield_ms = config->default_yield_time_ms > 0L
                                   ? config->default_yield_time_ms
                                   : CAI_TERMINAL_DEFAULT_YIELD_MS;
@@ -482,10 +538,12 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   manager->event_context = config->event_context;
   snprintf(manager->terminal_id, sizeof(manager->terminal_id), "terminal-1");
   if (manager->root_path == NULL || manager->shell_path == NULL ||
+      manager->home_environment == NULL ||
       manager->max_yield_ms <= 0L || manager->output_max_bytes == 0U) {
     cai_free_mem(NULL, manager->root_path);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
+    cai_free_mem(NULL, manager->home_environment);
     cai_free_mem(NULL, manager);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate terminal manager");
@@ -494,6 +552,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
     cai_free_mem(NULL, manager->root_path);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
+    cai_free_mem(NULL, manager->home_environment);
     cai_free_mem(NULL, manager);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize terminal manager lock");
@@ -503,6 +562,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
     cai_free_mem(NULL, manager->root_path);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
+    cai_free_mem(NULL, manager->home_environment);
     cai_free_mem(NULL, manager);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize terminal manager condition");
@@ -529,24 +589,30 @@ static int cai_terminal_wait(cai_terminal_manager *manager, size_t initial,
 
 static long cai_terminal_clamp_yield(const cai_terminal_manager *manager,
                                      long long requested, int has_requested) {
-  long value;
+  long long value;
 
-  value = has_requested ? (requested < 0LL ? 0L : (long)requested)
-                        : manager->default_yield_ms;
-  return value > manager->max_yield_ms ? manager->max_yield_ms : value;
+  value = has_requested ? (requested < 0LL ? 0LL : requested)
+                        : (long long)manager->default_yield_ms;
+  if (value > (long long)manager->max_yield_ms) {
+    value = (long long)manager->max_yield_ms;
+  }
+  return (long)value;
 }
 
 static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
                               const char *workdir, int tty, cai_error *error) {
   int master;
   int slave;
+  int join_reader;
   pid_t pid;
+  pthread_t reader;
   char *command_copy;
   char *workdir_copy;
 
   (void)tty;
   master = -1;
   slave = -1;
+  memset(&reader, 0, sizeof(reader));
   command_copy = cai_strdup(NULL, cmd);
   workdir_copy = cai_strdup(NULL, workdir);
   if (command_copy == NULL || workdir_copy == NULL) {
@@ -555,23 +621,36 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to copy terminal command metadata");
   }
-  if (manager->reader_started) {
-    pthread_mutex_lock(&manager->lock);
-    if (manager->running) {
-      pthread_mutex_unlock(&manager->lock);
-      cai_free_mem(NULL, command_copy);
-      cai_free_mem(NULL, workdir_copy);
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "single terminal already has a running command");
-    }
+  pthread_mutex_lock(&manager->lock);
+  if (manager->starting || manager->running) {
     pthread_mutex_unlock(&manager->lock);
-    pthread_join(manager->reader, NULL);
+    cai_free_mem(NULL, command_copy);
+    cai_free_mem(NULL, workdir_copy);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "single terminal already has a running command");
+  }
+  join_reader = manager->reader_started;
+  if (join_reader) {
+    reader = manager->reader;
+  }
+  /* Reserve the only slot before opening a PTY or forking.  Calls can arrive
+   * concurrently through independently dispatched tools. */
+  manager->starting = 1;
+  pthread_mutex_unlock(&manager->lock);
+  if (join_reader) {
+    pthread_join(reader, NULL);
+    pthread_mutex_lock(&manager->lock);
     manager->reader_started = 0;
+    pthread_mutex_unlock(&manager->lock);
   }
   if (openpty(&master, &slave, NULL, NULL, NULL) != 0 ||
       cai_terminal_set_nonblock(master) != 0) {
     cai_terminal_close_fd(&master);
     cai_terminal_close_fd(&slave);
+    pthread_mutex_lock(&manager->lock);
+    manager->starting = 0;
+    pthread_cond_broadcast(&manager->changed);
+    pthread_mutex_unlock(&manager->lock);
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -581,12 +660,31 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   if (pid < 0) {
     cai_terminal_close_fd(&master);
     cai_terminal_close_fd(&slave);
+    pthread_mutex_lock(&manager->lock);
+    manager->starting = 0;
+    pthread_cond_broadcast(&manager->changed);
+    pthread_mutex_unlock(&manager->lock);
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to fork terminal command", strerror(errno));
   }
   if (pid == 0) {
+    char *argv[4];
+    char *environment[7];
+
+    argv[0] = manager->shell_path;
+    argv[1] = cai_terminal_shell_flag;
+    argv[2] = command_copy;
+    argv[3] = NULL;
+    environment[0] = manager->home_environment;
+    environment[1] = cai_terminal_safe_path;
+    environment[2] = cai_terminal_safe_lang;
+    environment[3] = cai_terminal_safe_lc_all;
+    environment[4] = cai_terminal_safe_term;
+    environment[5] = cai_terminal_safe_tmpdir;
+    environment[6] = NULL;
+
     (void)setsid();
     (void)ioctl(slave, TIOCSCTTY, 0);
     dup2(slave, STDIN_FILENO);
@@ -599,7 +697,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     if (chdir(workdir) != 0) {
       _exit(126);
     }
-    execl(manager->shell_path, manager->shell_path, "-c", cmd, (char *)NULL);
+    execve(manager->shell_path, argv, environment);
     _exit(127);
   }
   close(slave);
@@ -633,11 +731,17 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     pthread_mutex_lock(&manager->lock);
     cai_terminal_close_fd(&manager->pty_fd);
     manager->running = 0;
+    manager->starting = 0;
+    pthread_cond_broadcast(&manager->changed);
     pthread_mutex_unlock(&manager->lock);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to start terminal output reader");
   }
+  pthread_mutex_lock(&manager->lock);
   manager->reader_started = 1;
+  manager->starting = 0;
+  pthread_cond_broadcast(&manager->changed);
+  pthread_mutex_unlock(&manager->lock);
   return CAI_OK;
 }
 
@@ -823,9 +927,11 @@ static void cai_terminal_send_signal(cai_terminal_manager *manager, int signal) 
 static int cai_terminal_write_all(int fd, const char *data, cai_error *error) {
   size_t offset;
   size_t length;
+  struct timespec started_at;
 
   offset = 0U;
   length = strlen(data);
+  (void)clock_gettime(CLOCK_MONOTONIC, &started_at);
   while (offset < length) {
     ssize_t written;
 
@@ -835,11 +941,28 @@ static int cai_terminal_write_all(int fd, const char *data, cai_error *error) {
     } else if (written < 0 && errno == EINTR) {
       continue;
     } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      struct timespec pause_time;
+      struct pollfd poll_fd;
+      struct timespec now;
+      long long elapsed_ms;
+      int poll_rc;
 
-      pause_time.tv_sec = 0;
-      pause_time.tv_nsec = 1000000L;
-      nanosleep(&pause_time, NULL);
+      (void)clock_gettime(CLOCK_MONOTONIC, &now);
+      elapsed_ms = (long long)(now.tv_sec - started_at.tv_sec) * 1000LL +
+                   (long long)(now.tv_nsec - started_at.tv_nsec) / 1000000LL;
+      if (elapsed_ms >= CAI_TERMINAL_STDIN_WRITE_TIMEOUT_MS) {
+        return cai_set_error(error, CAI_ERR_TRANSPORT,
+                             "terminal stdin stopped accepting input");
+      }
+      poll_fd.fd = fd;
+      poll_fd.events = POLLOUT;
+      poll_fd.revents = 0;
+      poll_rc = poll(&poll_fd, 1U,
+                     (int)(CAI_TERMINAL_STDIN_WRITE_TIMEOUT_MS - elapsed_ms));
+      if (poll_rc < 0 && errno != EINTR) {
+        return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to wait for terminal stdin",
+                                    strerror(errno));
+      }
     } else {
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to write terminal stdin", strerror(errno));

@@ -20,6 +20,7 @@ extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_PATCH_DEFAULT_MAX_PATCH_BYTES (1024U * 1024U)
 #define CAI_PATCH_DEFAULT_MAX_FILE_BYTES (8U * 1024U * 1024U)
+#define CAI_PATCH_MAX_CHANGES 1024U
 #define CAI_PATCH_ADD 1
 #define CAI_PATCH_DELETE 2
 #define CAI_PATCH_UPDATE 3
@@ -50,6 +51,10 @@ typedef struct cai_patch_change {
   size_t hunk_capacity;
   char *resolved_path;
   char *resolved_move_path;
+  int primary_parent_fd;
+  char primary_name[PATH_MAX];
+  int move_parent_fd;
+  char move_name[PATH_MAX];
   char *before;
   size_t before_length;
   char *after;
@@ -168,6 +173,12 @@ static void cai_patch_change_cleanup(cai_patch_change *change) {
   cai_free_mem(NULL, change->hunks);
   cai_free_mem(NULL, change->resolved_path);
   cai_free_mem(NULL, change->resolved_move_path);
+  if (change->primary_parent_fd >= 0) {
+    close(change->primary_parent_fd);
+  }
+  if (change->move_parent_fd >= 0) {
+    close(change->move_parent_fd);
+  }
   cai_free_mem(NULL, change->before);
   cai_free_mem(NULL, change->after);
   memset(change, 0, sizeof(*change));
@@ -229,6 +240,10 @@ static int cai_patch_plan_append(cai_patch_plan *plan, cai_patch_change **out,
   size_t allocation_size;
   size_t required;
 
+  if (plan->count >= CAI_PATCH_MAX_CHANGES) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "patch exceeds the maximum changed-file count");
+  }
   if (plan->count == plan->capacity) {
     if (!cai_patch_size_add(plan->count, 1U, &required)) {
       return cai_set_error(error, CAI_ERR_LIMIT,
@@ -252,6 +267,8 @@ static int cai_patch_plan_append(cai_patch_plan *plan, cai_patch_change **out,
     plan->capacity = capacity;
   }
   memset(&plan->items[plan->count], 0, sizeof(plan->items[plan->count]));
+  plan->items[plan->count].primary_parent_fd = -1;
+  plan->items[plan->count].move_parent_fd = -1;
   *out = &plan->items[plan->count++];
   return CAI_OK;
 }
@@ -292,7 +309,9 @@ static int cai_patch_validate_relative_path(const char *path,
   if (path == NULL || path[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "patch path is required");
   }
-  if (strstr(path, "//") != NULL || strstr(path, "/./") != NULL ||
+  if (strncmp(path, "./", 2U) == 0 || strstr(path, "//") != NULL ||
+      strstr(path, "/./") != NULL ||
+      (strlen(path) >= 2U && strcmp(path + strlen(path) - 2U, "/.") == 0) ||
       strcmp(path, ".") == 0 || strcmp(path, "..") == 0 ||
       strncmp(path, "../", 3U) == 0 || strstr(path, "/../") != NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -449,6 +468,46 @@ static int cai_patch_read_file(const char *path, size_t maximum, char **out,
   data[offset] = '\0';
   *out = data;
   *out_length = offset;
+  return CAI_OK;
+}
+
+/* Keep an opened parent directory from preflight through publication so an
+ * attacker cannot redirect a later path-based write by swapping a directory
+ * for a symlink. */
+static int cai_patch_open_parent(const char *path, int *out_fd, char *name,
+                                 size_t name_size, cai_error *error) {
+  char parent[PATH_MAX];
+  char *slash;
+  size_t name_length;
+  int fd;
+
+  *out_fd = -1;
+  if (path == NULL || name == NULL || name_size == 0U ||
+      snprintf(parent, sizeof(parent), "%s", path) >= (int)sizeof(parent)) {
+    return cai_set_error(error, CAI_ERR_INVALID, "patch path is too long");
+  }
+  slash = strrchr(parent, '/');
+  if (slash == NULL || slash[1] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch target must have a file name");
+  }
+  name_length = strlen(slash + 1);
+  if (name_length + 1U > name_size) {
+    return cai_set_error(error, CAI_ERR_INVALID, "patch file name is too long");
+  }
+  memcpy(name, slash + 1, name_length + 1U);
+  if (slash == parent) {
+    slash[1] = '\0';
+  } else {
+    *slash = '\0';
+  }
+  fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to open patch parent directory",
+                                strerror(errno));
+  }
+  *out_fd = fd;
   return CAI_OK;
 }
 
@@ -1074,6 +1133,7 @@ static char *cai_patch_find_context_line(char *text, size_t offset,
 static int cai_patch_apply_hunk(cai_patch_change *change,
                                 const cai_patch_hunk *hunk, cai_error *error) {
   char *match;
+  char *next_match;
   char *anchor;
   char *anchor_end;
   char *replacement;
@@ -1108,6 +1168,14 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
            change->after_length)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "update patch context does not match exactly once");
+  }
+  if (!hunk->end_of_file &&
+      (hunk->context == NULL || hunk->context[0] == '\0')) {
+    next_match = strstr(match + 1U, hunk->old_text);
+    if (next_match != NULL) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "update patch context is ambiguous");
+    }
   }
   prefix = (size_t)(match - change->after);
   suffix = change->after_length - prefix - hunk->old_length;
@@ -1189,6 +1257,12 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
                             : cai_set_error(error, CAI_ERR_INVALID,
                                             "added file exceeds size limit");
       }
+      rc = cai_patch_open_parent(change->resolved_path, &change->primary_parent_fd,
+                                 change->primary_name,
+                                 sizeof(change->primary_name), error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
       rc = cai_patch_validate_destinations(plan, i, error);
       if (rc != CAI_OK) {
         return rc;
@@ -1197,6 +1271,12 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
     }
     rc = cai_patch_resolve_existing(ctx, change->path, &change->resolved_path,
                                     error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    rc = cai_patch_open_parent(change->resolved_path, &change->primary_parent_fd,
+                               change->primary_name,
+                               sizeof(change->primary_name), error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -1215,6 +1295,12 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
     if (change->move_path != NULL) {
       rc = cai_patch_resolve_new(ctx, change->move_path,
                                  &change->resolved_move_path, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+      rc = cai_patch_open_parent(change->resolved_move_path,
+                                 &change->move_parent_fd, change->move_name,
+                                 sizeof(change->move_name), error);
       if (rc != CAI_OK) {
         return rc;
       }
@@ -1243,33 +1329,47 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
   return CAI_OK;
 }
 
-static int cai_patch_write_atomic(const char *path, const char *data,
+static int cai_patch_write_atomic(int parent_fd, const char *name,
+                                  const char *data,
                                   size_t length, cai_error *error) {
-  char temporary[PATH_MAX];
+  char temporary[64];
   size_t offset;
   ssize_t nwritten;
   struct stat st;
   mode_t mode;
   int fd;
+  unsigned int attempt;
 
-  if (snprintf(temporary, sizeof(temporary), "%s.cai-patch-XXXXXX", path) >=
-      (int)sizeof(temporary)) {
+  if (parent_fd < 0 || name == NULL || name[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "patch temporary path is too long");
+                         "patch destination directory is required");
   }
-  fd = mkstemp(temporary);
+  fd = -1;
+  temporary[0] = '\0';
+  for (attempt = 0U; attempt < 128U; attempt++) {
+    if (snprintf(temporary, sizeof(temporary), ".cai-patch-%ld-%u",
+                 (long)getpid(), attempt) >= (int)sizeof(temporary)) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch temporary name is too long");
+    }
+    fd = openat(parent_fd, temporary,
+                O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd >= 0 || errno != EEXIST) {
+      break;
+    }
+  }
   if (fd < 0) {
     return cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to create patch temporary file",
                                 strerror(errno));
   }
   mode = 0644;
-  if (stat(path, &st) == 0) {
+  if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
     mode = st.st_mode & 0777;
   }
   if (fchmod(fd, mode) != 0) {
     close(fd);
-    unlink(temporary);
+    unlinkat(parent_fd, temporary, 0);
     return cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to set patch file mode",
                                 strerror(errno));
@@ -1279,15 +1379,16 @@ static int cai_patch_write_atomic(const char *path, const char *data,
     nwritten = write(fd, data + offset, length - offset);
     if (nwritten <= 0) {
       close(fd);
-      unlink(temporary);
+      unlinkat(parent_fd, temporary, 0);
       return cai_set_error_detail(error, CAI_ERR_INVALID,
                                   "failed to write patch file",
                                   strerror(errno));
     }
     offset += (size_t)nwritten;
   }
-  if (fsync(fd) != 0 || close(fd) != 0 || rename(temporary, path) != 0) {
-    unlink(temporary);
+  if (fsync(fd) != 0 || close(fd) != 0 ||
+      renameat(parent_fd, temporary, parent_fd, name) != 0) {
+    unlinkat(parent_fd, temporary, 0);
     return cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to publish patched file",
                                 strerror(errno));
@@ -1301,16 +1402,20 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
 
   for (i = 0U; i < plan->count; i++) {
     cai_patch_change *change;
-    const char *target;
+    int target_parent_fd;
+    const char *target_name;
 
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_DELETE) {
       continue;
     }
-    target = change->resolved_move_path != NULL ? change->resolved_move_path
-                                                : change->resolved_path;
-    rc = cai_patch_write_atomic(target, change->after, change->after_length,
-                                error);
+    target_parent_fd = change->resolved_move_path != NULL
+                           ? change->move_parent_fd
+                           : change->primary_parent_fd;
+    target_name = change->resolved_move_path != NULL ? change->move_name
+                                                      : change->primary_name;
+    rc = cai_patch_write_atomic(target_parent_fd, target_name, change->after,
+                                change->after_length, error);
     if (rc != CAI_OK) {
       goto rollback;
     }
@@ -1321,7 +1426,7 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_DELETE ||
         change->resolved_move_path != NULL) {
-      if (unlink(change->resolved_path) != 0) {
+      if (unlinkat(change->primary_parent_fd, change->primary_name, 0) != 0) {
         rc = cai_set_error_detail(error, CAI_ERR_INVALID,
                                   "failed to remove patched file",
                                   strerror(errno));
@@ -1337,19 +1442,20 @@ rollback:
 
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_ADD) {
-      (void)unlink(change->resolved_path);
+      (void)unlinkat(change->primary_parent_fd, change->primary_name, 0);
       continue;
     }
     if (change->before != NULL) {
       cai_error ignored;
 
       cai_error_init(&ignored);
-      (void)cai_patch_write_atomic(change->resolved_path, change->before,
+      (void)cai_patch_write_atomic(change->primary_parent_fd,
+                                   change->primary_name, change->before,
                                    change->before_length, &ignored);
       cai_error_cleanup(&ignored);
     }
     if (change->resolved_move_path != NULL) {
-      (void)unlink(change->resolved_move_path);
+      (void)unlinkat(change->move_parent_fd, change->move_name, 0);
     }
   }
   return rc;

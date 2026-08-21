@@ -1176,9 +1176,11 @@ if(CAI_BUILD_TESTS)
     smith_profile
     agent_runtime_lifecycle
     agent_runtime_semantic_events
+    agent_runtime_goal_budget
     agent_local_session_store
     agent_runtime_resume
     goal_tools
+    goal_create_allocation_failure
     patch_tool
     agent_tool_declarations
     agent_tool_manual_step
@@ -1188,6 +1190,7 @@ if(CAI_BUILD_TESTS)
     agent_custom_tool_auto_run
     agent_custom_tool_client_history_auto_run
     agent_client_history_tool_auto_run
+    agent_client_history_tool_callback_durability
     agent_view_image_auto_run
     revgeo_tool
     todo_file_store_initializes_under_lock
@@ -1195,6 +1198,7 @@ if(CAI_BUILD_TESTS)
     todo_callback_store
     searxng_registry_tool
     terminal_tools
+    terminal_concurrent_start
     exec_tool
     read_tool
     view_image_tool
