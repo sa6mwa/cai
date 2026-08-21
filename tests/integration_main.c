@@ -401,11 +401,16 @@ typedef struct integration_smith_tool_event_state {
   int read_file_outputs;
   int apply_patch_starts;
   int apply_patch_outputs;
+  int exec_command_starts;
+  int exec_command_outputs;
+  integration_write_state exec_command_arguments;
+  integration_write_state exec_command_output;
   int output_sequence;
   int first_read_file_output_sequence;
   int first_apply_patch_output_sequence;
   int last_read_file_output_sequence;
   int last_apply_patch_output_sequence;
+  int first_exec_command_output_sequence;
 } integration_smith_tool_event_state;
 
 typedef struct integration_stream_debug_state {
@@ -585,6 +590,34 @@ static void integration_write_reset(integration_write_state *state) {
   state->length = 0U;
 }
 
+static int integration_capture_tool_event_json(const cai_tool_event *event,
+                                               int output,
+                                               integration_write_state *state,
+                                               cai_error *error) {
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  int rc;
+
+  if (event == NULL || state == NULL ||
+      (output && event->write_output == NULL) ||
+      (!output && event->write_arguments == NULL)) {
+    return integration_set_error(
+        error, CAI_ERR_INVALID,
+        "tool event does not provide serializable JSON");
+  }
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = integration_write;
+  callbacks.context = state;
+  sink = NULL;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  if (rc == CAI_OK) {
+    rc = output ? event->write_output(event, sink, error)
+                : event->write_arguments(event, sink, error);
+  }
+  cai_sink_close(sink);
+  return rc;
+}
+
 static void integration_exec_tool_event_state_reset(
     integration_exec_tool_event_state *state) {
   if (state == NULL) {
@@ -662,7 +695,6 @@ static int integration_smith_tool_event(void *context,
                                         cai_error *error) {
   integration_smith_tool_event_state *state;
 
-  (void)error;
   state = (integration_smith_tool_event_state *)context;
   if (state == NULL || event == NULL || event->name == NULL) {
     return CAI_OK;
@@ -688,6 +720,20 @@ static int integration_smith_tool_event(void *context,
         state->first_apply_patch_output_sequence = state->output_sequence;
       }
       state->last_apply_patch_output_sequence = state->output_sequence;
+    }
+  } else if (strcmp(event->name, "exec_command") == 0) {
+    if (event->type == CAI_TOOL_EVENT_START) {
+      state->exec_command_starts++;
+      return integration_capture_tool_event_json(
+          event, 0, &state->exec_command_arguments, error);
+    } else if (event->type == CAI_TOOL_EVENT_OUTPUT) {
+      state->exec_command_outputs++;
+      state->output_sequence++;
+      if (state->first_exec_command_output_sequence == 0) {
+        state->first_exec_command_output_sequence = state->output_sequence;
+      }
+      return integration_capture_tool_event_json(
+          event, 1, &state->exec_command_output, error);
     }
   }
   return CAI_OK;
@@ -4362,7 +4408,7 @@ static int run_chatgpt_smith_regression(void) {
   smith_config.workspace_directory = workspace;
   smith_config.model = model;
   smith_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
-  run_options.max_tool_rounds = 6;
+  run_options.max_tool_rounds = 8;
   run_options.tool_event = integration_smith_tool_event;
   run_options.tool_event_context = &tool_events;
   rc = cai_client_new_smith_agent(client, &smith_config, &agent, &error);
@@ -4388,8 +4434,10 @@ static int run_chatgpt_smith_regression(void) {
       "Work only in task.txt. First use read_file to read task.txt. Then use "
       "apply_patch to replace the exact line `state: pending` with "
       "`state: complete`. Finally use read_file to verify task.txt contains "
-      "`state: complete`. Do not create or modify any other file. In your "
-      "final response, state that task.txt was verified with state: complete.",
+      "`state: complete`, then use exec_command to run exactly "
+      "`grep -Fx 'state: complete' task.txt` and observe a successful result. "
+      "Do not create or modify any other file. In your final response, state "
+      "that task.txt was verified with state: complete.",
       &error);
   if (rc == CAI_OK) {
     rc = integration_provider_stream_auto(session, &run_options, &stream_sinks,
@@ -4413,13 +4461,16 @@ static int run_chatgpt_smith_regression(void) {
   }
   if (tool_events.read_file_starts < 2 || tool_events.read_file_outputs < 2 ||
       tool_events.apply_patch_starts < 1 ||
-      tool_events.apply_patch_outputs < 1) {
-    fprintf(
-        stderr,
-        "Smith coding E2E missing completed read/patch/read-back tool "
-        "sequence (read starts=%d outputs=%d; patch starts=%d outputs=%d)\n",
-        tool_events.read_file_starts, tool_events.read_file_outputs,
-        tool_events.apply_patch_starts, tool_events.apply_patch_outputs);
+      tool_events.apply_patch_outputs < 1 ||
+      tool_events.exec_command_starts != 1 ||
+      tool_events.exec_command_outputs != 1) {
+    fprintf(stderr,
+            "Smith coding E2E missing completed read/patch/read-back/terminal "
+            "sequence (read starts=%d outputs=%d; patch starts=%d outputs=%d; "
+            "exec starts=%d outputs=%d)\n",
+            tool_events.read_file_starts, tool_events.read_file_outputs,
+            tool_events.apply_patch_starts, tool_events.apply_patch_outputs,
+            tool_events.exec_command_starts, tool_events.exec_command_outputs);
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
@@ -4439,6 +4490,34 @@ static int run_chatgpt_smith_regression(void) {
     rc = CAI_ERR_PROTOCOL;
     goto done;
   }
+  if (tool_events.first_exec_command_output_sequence <=
+      tool_events.last_read_file_output_sequence) {
+    fprintf(stderr,
+            "Smith coding E2E did not complete terminal verification after "
+            "read-back\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (!integration_text_contains(
+          tool_events.exec_command_arguments.buffer,
+          "\"cmd\":\"grep -Fx 'state: complete' task.txt\"")) {
+    fprintf(stderr,
+            "Smith coding E2E did not run the exact terminal verification "
+            "command\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
+  if (!integration_text_contains(tool_events.exec_command_output.buffer,
+                                 "\"completed\":true") ||
+      !integration_text_contains(tool_events.exec_command_output.buffer,
+                                 "\"exit_code\":0") ||
+      !integration_text_contains(tool_events.exec_command_output.buffer,
+                                 "state: complete")) {
+    fprintf(stderr, "Smith coding E2E terminal verification did not complete "
+                    "successfully with the expected output\n");
+    rc = CAI_ERR_PROTOCOL;
+    goto done;
+  }
   if (!integration_text_contains(answer, "state: complete")) {
     fprintf(stderr,
             "Smith coding E2E final response did not report verified state\n");
@@ -4447,9 +4526,11 @@ static int run_chatgpt_smith_regression(void) {
   }
   fprintf(stderr,
           "[integration-chatgpt-smith] model=%s read_starts=%d "
-          "read_outputs=%d patch_starts=%d patch_outputs=%d answer=%s\n",
+          "read_outputs=%d patch_starts=%d patch_outputs=%d exec_starts=%d "
+          "exec_outputs=%d answer=%s\n",
           model, tool_events.read_file_starts, tool_events.read_file_outputs,
           tool_events.apply_patch_starts, tool_events.apply_patch_outputs,
+          tool_events.exec_command_starts, tool_events.exec_command_outputs,
           answer != NULL ? answer : "");
   rc = CAI_OK;
 
