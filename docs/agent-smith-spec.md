@@ -88,7 +88,9 @@ prompt.
    time or through a blocking convenience wrapper.
 2. Provide the `smith` preset with Codex-inspired instructions, stable
    tool names, serial tool dispatch, and defaults for
-   `gpt-5.6-terra` at medium reasoning effort.
+   `gpt-5.6-terra` at medium reasoning effort. Smith permits eight serial
+   local tool rounds per submitted model turn, matching the former Smith
+   runner and leaving room for read/patch/read-back/terminal workflows.
 3. Let an application stream model deltas to any renderer without CAI knowing
    about libmdf, a TUI, or a UI toolkit.
 4. Queue user steering safely while a model response or tool loop is active,

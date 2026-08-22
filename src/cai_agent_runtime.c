@@ -23,6 +23,7 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
 #define CAI_RUNTIME_DEFAULT_TURN_LIMIT 32U
+#define CAI_RUNTIME_DEFAULT_TOOL_ROUNDS 8
 #define CAI_RUNTIME_XID_RAW_BYTES 12U
 #define CAI_RUNTIME_XID_TEXT_BYTES 20U
 #define CAI_RUNTIME_EXPORT_MAX_DEPTH 128U
@@ -1755,6 +1756,10 @@ static void *cai_runtime_worker(void *context) {
   sinks.output_text_delta = cai_runtime_output_text_delta;
   sinks.output_text_context = runtime;
   cai_run_options_init(&options);
+  /* Smith's read/patch/read-back/terminal workflows commonly need more than
+   * the generic four-round convenience default. Keep this aligned with the
+   * former synchronous Smith runner while preserving serial tool dispatch. */
+  options.max_tool_rounds = CAI_RUNTIME_DEFAULT_TOOL_ROUNDS;
   options.max_tool_calls_per_round = 1;
   options.tool_event = cai_runtime_tool_event;
   options.tool_event_context = runtime;

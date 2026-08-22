@@ -1096,7 +1096,9 @@ CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live
 Once integration tests are enabled, CTest enumerates the real API e2e cases.
 The environment variables below are internal selectors for running one
 scenario directly from an already-built integration preset, not opt-in gates
-for the integration suite.
+for the integration suite. ChatGPT subscription scenarios use
+`CAI_CHATGPT_AUTH_JSON` when set, otherwise a readable `$HOME/.codex/auth.json`
+before CAI's normal `cai_chatgpt_auth_default_path` fallback.
 
 ```sh
 bash ./scripts/build.sh integration
@@ -1104,6 +1106,8 @@ bash ./scripts/build.sh integration
 CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_SMITH_E2E=1 CAI_CHATGPT_TEST_MODEL=gpt-5.6-luna build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1 CAI_CHATGPT_TEST_MODEL=gpt-5.6-terra build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
@@ -1226,11 +1230,18 @@ binary file. On OpenAI API-key clients this uses the Responses WebSocket
 transport.
 
 `CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1` runs an 11-turn ChatGPT
-subscription-auth session against the ChatGPT Codex backend using the default
-auth file from `cai_chatgpt_auth_default_path`. It alternates stream APIs,
-forces tool calls on selected turns, verifies first/current/previous turn
-recall, and exercises transparent token refresh behavior through the same
-Responses WebSocket transport used by ChatGPT-auth streaming sessions.
+subscription-auth session against the ChatGPT Codex backend. It alternates
+stream APIs, forces tool calls on selected turns, verifies first/current/
+previous turn recall, and exercises transparent token refresh behavior through
+the same Responses WebSocket transport used by ChatGPT-auth streaming sessions.
+
+`CAI_INTEGRATION_CHATGPT_SMITH_E2E=1` is the live Luna-medium acceptance test
+for `cai_agent_runtime`, using a disposable workspace and local JSONL store.
+It proves Smith's runtime event loop, read/patch/read-back flow, one-slot PTY
+terminal start/wait/completion lifecycle, steering delivery after a tool round,
+durable checkpoints, and `resume_latest` continuation. The smaller
+`CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1` test runs the same runtime and
+terminal lifecycle against Terra-medium without file mutation or resume.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,

@@ -1716,6 +1716,17 @@ if(CAI_BUILD_TESTS)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_chatgpt_smith_terra_smoke
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1"
+        "CAI_CHATGPT_TEST_MODEL=gpt-5.6-terra"
+        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_smith_terra_smoke PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_state_restore
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_STATE_RESTORE=1"
