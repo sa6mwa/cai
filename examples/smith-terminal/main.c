@@ -12,6 +12,7 @@
 #define GRAY "\033[90m"
 #define GREEN "\033[32m"
 #define MAGENTA "\033[35m"
+#define RED "\033[31m"
 
 typedef struct render_state {
   int terminal_lines;
@@ -249,6 +250,10 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     }
     fwrite(event->data, 1U, event->data_length, stdout);
     fflush(stdout);
+  } else if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+    /* A steering follow-up remains in the same run but starts a new model
+     * response, so the next text/reasoning delta receives its own label. */
+    render_close_message(state);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
     render_close_message(state);
     state->terminal_lines = 0;
@@ -289,8 +294,12 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
              strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0) {
     render_close_message(state);
     render_tool_completion(event);
-  } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
-             event->type == CAI_AGENT_EVENT_RUN_FAILED) {
+  } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
+    render_close_message(state);
+    fprintf(stdout, RED "Smith failed: %.*s" RESET "\n",
+            (int)event->data_length,
+            event->data != NULL ? event->data : "agent run failed");
+  } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
     render_close_message(state);
   }
   return CAI_OK;

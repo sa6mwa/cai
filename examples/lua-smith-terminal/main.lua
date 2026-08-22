@@ -5,6 +5,7 @@ local reset = "\27[0m"
 local gray = "\27[90m"
 local green = "\27[32m"
 local magenta = "\27[35m"
+local red = "\27[31m"
 
 local function fail(operation, err)
   io.stderr:write(operation .. " failed: " ..
@@ -154,6 +155,10 @@ local function render_event(event)
     end
     io.write(event.data or "")
     io.flush()
+  elseif event.type == cai.AGENT_EVENT_RESPONSE_COMPLETED then
+    -- A steering follow-up remains in the same run but starts a new model
+    -- response, so the next text/reasoning delta receives its own label.
+    close_message()
   elseif event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_STARTED then
     close_message()
     render.lines = 0
@@ -215,8 +220,10 @@ local function render_event(event)
     else
       io.write(gray, "Completed ", event.tool_name or "tool", "\n", reset)
     end
-  elseif event.type == cai.AGENT_EVENT_RUN_COMPLETED or
-      event.type == cai.AGENT_EVENT_RUN_FAILED then
+  elseif event.type == cai.AGENT_EVENT_RUN_FAILED then
+    close_message()
+    io.write(red, "Smith failed: ", event.data or "agent run failed", "\n", reset)
+  elseif event.type == cai.AGENT_EVENT_RUN_COMPLETED then
     close_message()
   end
 end

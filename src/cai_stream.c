@@ -230,6 +230,7 @@ typedef struct cai_sse_state {
   size_t done_line_length;
   int done_line_start;
   int done_seen;
+  int response_completed_seen;
   int event_seen;
   int caller_output_attempted;
   int caller_output_seen;
@@ -1810,6 +1811,9 @@ static int cai_sse_emit_event(cai_sse_state *state,
     if (rc == CAI_OK && state->out_usage != NULL) {
       cai_stream_copy_usage(state->out_usage, &response_doc.usage);
     }
+    if (rc == CAI_OK) {
+      state->response_completed_seen = 1;
+    }
   }
 
 done:
@@ -2925,7 +2929,8 @@ static int cai_client_stream_response_params_with_id(
        sinks->function_call_arguments_delta == NULL &&
        sinks->function_call_arguments_done == NULL &&
        sinks->custom_tool_call_input_delta == NULL &&
-       sinks->custom_tool_call_input_done == NULL)) {
+       sinks->custom_tool_call_input_done == NULL &&
+       sinks->response_completed == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "client, params, and at least one stream sink or "
                          "callback are required");
@@ -3007,6 +3012,7 @@ retry_request:
   state.done_line_length = 0U;
   state.done_line_start = 1;
   state.done_seen = 0;
+  state.response_completed_seen = 0;
   http_success = 0;
   if (state.sse == NULL) {
     rc = cai_set_error(error, cai_sse_status_to_code(sse_error.code),
@@ -3184,6 +3190,11 @@ retry_request:
                                  state.failed_message);
     return cai_set_error(error, state.failed_code, state.failed_message);
   }
+  if (!state.response_completed_seen) {
+    cai_free_mem(NULL, state.body);
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "stream ended before response.completed");
+  }
   cai_free_mem(NULL, state.body);
   return CAI_OK;
 }
@@ -3213,6 +3224,20 @@ int cai_client_stream_response_with_id(cai_client *client,
                                        char **out_response_id,
                                        cai_token_usage *out_usage,
                                        cai_error *error) {
+  int rc;
+
+  rc = cai_client_stream_response_internal_with_id(
+      client, params, sinks, out_response_id, out_usage, error);
+  if (rc == CAI_OK && sinks != NULL && sinks->response_completed != NULL) {
+    rc = sinks->response_completed(sinks->response_completed_context, error);
+  }
+  return rc;
+}
+
+int cai_client_stream_response_internal_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error) {
   if (out_response_id != NULL) {
     *out_response_id = NULL;
   }

@@ -408,6 +408,7 @@ typedef struct integration_smith_runtime_event_state {
   int terminal_waiting;
   int terminal_completed;
   int terminal_exit_zero;
+  int response_completed;
   int review_started;
   int review_handed_off;
   int review_report;
@@ -761,6 +762,8 @@ static int integration_smith_runtime_event(
     integration_runtime_copy_event_text(state->review_report_json,
                                         sizeof(state->review_report_json),
                                         event->data, event->data_length);
+  } else if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+    state->response_completed++;
   } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
     state->run_completed++;
   } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
@@ -4975,6 +4978,7 @@ static int run_chatgpt_smith_review_regression(void) {
   if (!integration_text_contains(events.answer.buffer,
                                  "SMITH_REVIEW_PROJECT_COMMITTED") ||
       events.terminal_started < 1 || events.terminal_completed < 1 ||
+      events.response_completed < 2 ||
       !integration_run_program(git_identity, command_output,
                                sizeof(command_output)) ||
       strcmp(command_output, "Test Tester <info@c89.systems>\n") != 0 ||
@@ -4982,10 +4986,11 @@ static int run_chatgpt_smith_review_regression(void) {
                                sizeof(command_output)) ||
       command_output[0] != '\0') {
     fprintf(stderr,
-            "Smith review project evidence failed (terminal=%d/%d identity=%s "
-            "status=%s answer=%s)\n",
-            events.terminal_started, events.terminal_completed, command_output,
-            command_output, events.answer.buffer);
+            "Smith review project evidence failed (terminal=%d/%d responses=%d "
+            "identity=%s status=%s answer=%s)\n",
+            events.terminal_started, events.terminal_completed,
+            events.response_completed, command_output, command_output,
+            events.answer.buffer);
     rc = integration_set_error(
         &error, CAI_ERR_PROTOCOL,
         "Smith did not produce a clean, locally authored project commit");
@@ -5011,7 +5016,8 @@ static int run_chatgpt_smith_review_regression(void) {
     goto done;
   }
   if (review_events.review_report != 1 ||
-      review_events.review_report_json[0] == '\0') {
+      review_events.review_report_json[0] == '\0' ||
+      review_events.response_completed < 1) {
     rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
                                "Smith interactive review did not report");
     goto done;
@@ -5075,9 +5081,10 @@ static int run_chatgpt_smith_review_regression(void) {
   }
   fprintf(stderr,
           "[integration-chatgpt-smith-review] model=%s review_report=%s "
-          "terminal_commands=%d\n",
+          "terminal_commands=%d responses=%d\n",
           CAI_MODEL_GPT_5_6_LUNA, review_events.review_report_json,
-          events.terminal_completed + review_events.terminal_completed);
+          events.terminal_completed + review_events.terminal_completed,
+          events.response_completed + review_events.response_completed);
   rc = CAI_OK;
 
 done:

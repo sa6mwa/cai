@@ -23,11 +23,6 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
 #define CAI_RUNTIME_DEFAULT_TURN_LIMIT 32U
-/* Smith uses Codex-compatible, serial tool workflows. A review regularly
- * needs several discovery, diff, and verification calls before it can report;
- * eight rounds is too small for that normal bounded workflow. Keep the cap
- * finite so a runaway tool loop remains cancellable and resource-bounded. */
-#define CAI_RUNTIME_DEFAULT_TOOL_ROUNDS 32
 #define CAI_RUNTIME_XID_RAW_BYTES 12U
 #define CAI_RUNTIME_XID_TEXT_BYTES 20U
 #define CAI_RUNTIME_EXPORT_MAX_DEPTH 128U
@@ -244,6 +239,10 @@ struct cai_agent_runtime {
   int resume_compaction_pending;
   int accepting_steering;
   cai_agent_run_state state;
+  /* A terminal lifecycle event is queued but has not reached the host yet.
+   * Public state stays non-terminal until pump dispatches it, so consumers
+   * cannot stop pumping and lose the final report or failure explanation. */
+  int terminal_event_pending;
   unsigned long long next_sequence;
   size_t event_limit;
   size_t event_count;
@@ -1383,6 +1382,22 @@ static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
   return rc;
 }
 
+static int cai_runtime_response_completed(void *context, cai_error *error) {
+  cai_agent_runtime *runtime;
+  int rc;
+
+  runtime = (cai_agent_runtime *)context;
+  if (runtime == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "response completion has no runtime");
+  }
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RESPONSE_COMPLETED,
+                                  NULL, 0U, NULL, NULL, runtime->state, error);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
 static int cai_runtime_tool_action(const char *name) {
   if (name == NULL) {
     return CAI_AGENT_TOOL_ACTION_EXTERNAL;
@@ -1965,14 +1980,17 @@ static void *cai_runtime_worker(void *context) {
   if (rc != CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     runtime->state = CAI_AGENT_FAILED;
-    (void)cai_runtime_enqueue_locked(
-        runtime, CAI_AGENT_EVENT_RUN_FAILED,
-        error.message != NULL ? error.message
-                              : "failed to initialize reasoning summary stream",
-        error.message != NULL
-            ? strlen(error.message)
-            : sizeof("failed to initialize reasoning summary stream") - 1U,
-        NULL, NULL, runtime->state, &error);
+    if (cai_runtime_enqueue_locked(
+            runtime, CAI_AGENT_EVENT_RUN_FAILED,
+            error.message != NULL
+                ? error.message
+                : "failed to initialize reasoning summary stream",
+            error.message != NULL
+                ? strlen(error.message)
+                : sizeof("failed to initialize reasoning summary stream") - 1U,
+            NULL, NULL, runtime->state, &error) == CAI_OK) {
+      runtime->terminal_event_pending = 1;
+    }
     pthread_cond_broadcast(&runtime->condition);
     pthread_mutex_unlock(&runtime->lock);
     cai_error_cleanup(&error);
@@ -1981,11 +1999,14 @@ static void *cai_runtime_worker(void *context) {
   sinks.reasoning_summary = reasoning_sink;
   sinks.output_text_delta = cai_runtime_output_text_delta;
   sinks.output_text_context = runtime;
+  sinks.response_completed = cai_runtime_response_completed;
+  sinks.response_completed_context = runtime;
   cai_run_options_init(&options);
-  /* Smith's read/patch/read-back/terminal workflows—and isolated reviews—
-   * commonly need more than the generic four-round convenience default. The
-   * preset remains strictly serial and finite: 32 rounds, one call each. */
-  options.max_tool_rounds = CAI_RUNTIME_DEFAULT_TOOL_ROUNDS;
+  /* Agent turns follow Codex's unbounded continuation loop. A host may cancel
+   * the runtime or deny a particular operation, but CAI must not silently
+   * abandon a coding or review turn after an arbitrary number of inspections.
+   * Tool dispatch remains strictly serial. */
+  options.max_tool_rounds = 0;
   options.max_tool_calls_per_round = 1;
   options.tool_event = cai_runtime_tool_event;
   options.tool_event_context = runtime;
@@ -2056,9 +2077,11 @@ static void *cai_runtime_worker(void *context) {
       pthread_mutex_lock(&runtime->lock);
       runtime->accepting_steering = 0;
       runtime->state = CAI_AGENT_FAILED;
-      (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
-                                       message, sizeof(message) - 1U, NULL,
-                                       NULL, runtime->state, &error);
+      if (cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
+                                     message, sizeof(message) - 1U, NULL, NULL,
+                                     runtime->state, &error) == CAI_OK) {
+        runtime->terminal_event_pending = 1;
+      }
       pthread_cond_broadcast(&runtime->condition);
       pthread_mutex_unlock(&runtime->lock);
       cai_runtime_input_node_free(input);
@@ -2135,18 +2158,22 @@ static void *cai_runtime_worker(void *context) {
             runtime, CAI_AGENT_EVENT_REVIEW_REPORT, runtime->review_report,
             runtime->review_report_length, NULL, NULL, runtime->state, &error);
       }
-      (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
-                                       NULL, 0U, NULL, NULL, runtime->state,
-                                       &error);
+      if (cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
+                                     NULL, 0U, NULL, NULL, runtime->state,
+                                     &error) == CAI_OK) {
+        runtime->terminal_event_pending = 1;
+      }
     } else {
       const char *message;
 
       runtime->state =
           rc == CAI_ERR_CANCELLED ? CAI_AGENT_CANCELLED : CAI_AGENT_FAILED;
       message = error.message != NULL ? error.message : "agent run failed";
-      (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
-                                       message, strlen(message), NULL, NULL,
-                                       runtime->state, &error);
+      if (cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
+                                     message, strlen(message), NULL, NULL,
+                                     runtime->state, &error) == CAI_OK) {
+        runtime->terminal_event_pending = 1;
+      }
     }
     pthread_cond_broadcast(&runtime->condition);
     pthread_mutex_unlock(&runtime->lock);
@@ -4190,6 +4217,7 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error) {
   cai_runtime_event_node *node;
   int close_deferred;
+  int terminal_event;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -4224,6 +4252,8 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                                  &deadline);
   }
   while ((node = runtime->event_head) != NULL) {
+    terminal_event = node->event.type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+                     node->event.type == CAI_AGENT_EVENT_RUN_FAILED;
     runtime->event_head = node->next;
     if (runtime->event_head == NULL) {
       runtime->event_tail = NULL;
@@ -4236,11 +4266,19 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
       if (rc != CAI_OK) {
         cai_runtime_event_node_free(node);
         pthread_mutex_lock(&runtime->lock);
+        if (terminal_event) {
+          runtime->terminal_event_pending = 0;
+          pthread_cond_broadcast(&runtime->condition);
+        }
         break;
       }
     }
     cai_runtime_event_node_free(node);
     pthread_mutex_lock(&runtime->lock);
+    if (terminal_event) {
+      runtime->terminal_event_pending = 0;
+      pthread_cond_broadcast(&runtime->condition);
+    }
     if (runtime->close_deferred) {
       /*
        * The callback may have released its event context as part of closing
@@ -4291,7 +4329,7 @@ int cai_agent_runtime_state(cai_agent_runtime *runtime,
     return rc;
   }
   pthread_mutex_lock(&runtime->lock);
-  *out = runtime->state;
+  *out = runtime->terminal_event_pending ? CAI_AGENT_SAMPLING : runtime->state;
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }

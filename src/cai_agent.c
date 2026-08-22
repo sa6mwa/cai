@@ -291,12 +291,13 @@ cai_agent_warn_openrouter_server_continuity(const cai_client_impl *client) {
   cai_log_openrouter_server_continuity(client);
 }
 
-static int
-cai_run_options_effective_max_tool_rounds(const cai_run_options *options) {
+static int cai_run_options_allows_tool_round(const cai_run_options *options,
+                                             int rounds) {
   if (options == NULL || options->disable_tool_auto_run) {
     return 0;
   }
-  return options->max_tool_rounds > 0 ? options->max_tool_rounds : 4;
+  return options->max_tool_rounds == 0 || rounds < options->max_tool_rounds ? 1
+                                                                            : 0;
 }
 
 static size_t cai_run_options_effective_tool_output_memory_limit(
@@ -4349,7 +4350,7 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
   effective = options != NULL ? options : &defaults;
   if (effective->max_tool_rounds < 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "max tool rounds cannot be negative");
+                         "max tool rounds must be zero or positive");
   }
   if (effective->max_tool_calls_per_round < 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -4359,7 +4360,7 @@ int cai_session_run_auto(cai_session *session, const cai_run_options *options,
   rc = cai_session_run(session, &current, error);
   rounds = 0;
   while (rc == CAI_OK && cai_response_tool_call_count(current) > 0U &&
-         rounds < cai_run_options_effective_max_tool_rounds(effective)) {
+         cai_run_options_allows_tool_round(effective, rounds)) {
     if (effective->max_tool_calls_per_round > 0 &&
         cai_response_tool_call_count(current) >
             (size_t)effective->max_tool_calls_per_round) {
@@ -4430,7 +4431,8 @@ static int cai_session_stream_once(cai_session *session,
        sinks->function_call_arguments_delta == NULL &&
        sinks->function_call_arguments_done == NULL &&
        sinks->custom_tool_call_input_delta == NULL &&
-       sinks->custom_tool_call_input_done == NULL && tool_calls == NULL)) {
+       sinks->custom_tool_call_input_done == NULL &&
+       sinks->response_completed == NULL && tool_calls == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and at least one stream sink or callback are "
                          "required");
@@ -4482,7 +4484,7 @@ static int cai_session_stream_once(cai_session *session,
     rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_with_id(
+    rc = cai_client_stream_response_internal_with_id(
         CAI_SESSION_AGENT_IMPL(session)->client, params, &effective_sinks,
         &response_id, &usage, error);
   }
@@ -4504,6 +4506,14 @@ static int cai_session_stream_once(cai_session *session,
                                     response_id, &usage, error);
     }
   }
+  if (rc == CAI_OK) {
+    /* The response is already durable; a presentation callback cannot make
+     * its committed input eligible for replay. */
+    cai_session_clear_inputs(session);
+  }
+  if (rc == CAI_OK && sinks->response_completed != NULL) {
+    rc = sinks->response_completed(sinks->response_completed_context, error);
+  }
   cai_response_create_params_destroy(params);
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
@@ -4515,7 +4525,7 @@ static int cai_session_stream_once(cai_session *session,
   if (capture_stream && capture.output_items_initialized) {
     capture.output_items.cleanup(&capture.output_items);
   }
-  if (rc == CAI_OK || (rc == CAI_ERR_LIMIT && response_id != NULL)) {
+  if (rc == CAI_ERR_LIMIT && response_id != NULL) {
     cai_session_clear_inputs(session);
   }
   return rc;
@@ -4762,7 +4772,7 @@ static int cai_session_stream_tool_round(
     rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_with_id(
+    rc = cai_client_stream_response_internal_with_id(
         CAI_SESSION_AGENT_IMPL(session)->client, params, &effective_sinks,
         &response_id, &usage, error);
   }
@@ -4799,8 +4809,12 @@ static int cai_session_stream_tool_round(
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_SERVER) {
     /* Server-continuity callbacks supplied these inputs to the request above.
-     */
+     * Once its response is recorded, do not retain them if a presentation
+     * callback below fails. */
     cai_session_clear_inputs(session);
+  }
+  if (rc == CAI_OK && sinks->response_completed != NULL) {
+    rc = sinks->response_completed(sinks->response_completed_context, error);
   }
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(history_params);
@@ -4835,7 +4849,7 @@ int cai_session_stream_auto(cai_session *session,
   effective = options != NULL ? options : &defaults;
   if (effective->max_tool_rounds < 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "max tool rounds cannot be negative");
+                         "max tool rounds must be zero or positive");
   }
   if (effective->max_tool_calls_per_round < 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -4846,7 +4860,7 @@ int cai_session_stream_auto(cai_session *session,
   rc = cai_session_stream_once(session, sinks, &current_calls, error);
   rounds = 0;
   while (rc == CAI_OK && current_calls.count > 0U &&
-         rounds < cai_run_options_effective_max_tool_rounds(effective)) {
+         cai_run_options_allows_tool_round(effective, rounds)) {
     if (effective->max_tool_calls_per_round > 0 &&
         current_calls.count > (size_t)effective->max_tool_calls_per_round) {
       rc = cai_set_error(error, CAI_ERR_CANCELLED,

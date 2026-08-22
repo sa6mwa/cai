@@ -88,11 +88,10 @@ prompt.
    time or through a blocking convenience wrapper.
 2. Provide the `smith` preset with Codex-inspired instructions, stable
    tool names, serial tool dispatch, and defaults for
-   `gpt-5.6-terra` at medium reasoning effort. Smith permits up to 32 serial
-   local tool rounds per submitted model turn, leaving enough bounded room for
-   normal repository discovery, patch verification, and isolated review flows
-   while preserving one-call-at-a-time terminal ownership. This supersedes the
-   former Smith runner limit for read/patch/read-back/terminal workflows.
+   `gpt-5.6-terra` at medium reasoning effort. Smith continues local tool
+   rounds until the model stops, the host cancels, or execution policy denies
+   an operation; it does not impose an arbitrary round ceiling. Dispatch still
+   preserves one-call-at-a-time terminal ownership.
 3. Let an application stream model deltas to any renderer without CAI knowing
    about libmdf, a TUI, or a UI toolkit.
 4. Queue user steering safely while a model response or tool loop is active,
@@ -289,6 +288,13 @@ Smith-review request the provider-directed `auto` summary mode by default. A
 generic runtime renderer decides whether and how to display that event; CAI
 never silently substitutes it into normal answer text.
 
+`RESPONSE_COMPLETED` marks the end of every successfully streamed and
+persisted model response, including responses that request local tools before
+the automatic continuation. It is distinct from `RUN_COMPLETED`: a run can
+continue when a tool result or steering input produces another response. Hosts
+close the active text or reasoning presentation on this event so each following
+response begins with its own visible label.
+
 `REVIEW_REPORT` carries the schema-validated reviewer JSON and
 `REVIEW_HANDED_OFF` carries that same report (or an empty payload for a
 durably recorded failed/cancelled review) after it enters parent history. These
@@ -460,6 +466,13 @@ the embedding host's configured execution policy, matching Codex review's
 inherited sandbox model. A host that needs OS-level read-only execution must
 provide that policy/sandbox; CAI must not misrepresent tool omission as a
 terminal security boundary.
+
+Smith-review does not impose an arbitrary tool-round ceiling: it remains active
+until the reviewer produces its final report, the embedding host cancels it, or
+the host's terminal/execution policy stops a command. The runtime still permits
+only one local tool call at a time. Generic `cai_run_options` callers may select
+the same behavior with the zero-valued default; positive values are explicit
+caller-selected caps for a bounded harness or test.
 
 The completed reviewer emits `CAI_AGENT_EVENT_REVIEW_REPORT` before
 `CAI_AGENT_EVENT_RUN_COMPLETED`. Its data is the model's exact final JSON

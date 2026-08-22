@@ -337,6 +337,10 @@ int cai_client_stream_response_with_id(cai_client *client,
                                        char **out_response_id,
                                        cai_token_usage *out_usage,
                                        cai_error *error);
+int cai_client_stream_response_internal_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error);
 void cai_client_close_responses_websocket(cai_client_impl *impl);
 #ifdef CAI_TESTING
 int cai_client_stream_response_websocket_test(

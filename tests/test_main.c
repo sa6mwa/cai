@@ -139,6 +139,7 @@ typedef struct runtime_event_state {
   int saw_review_started;
   int saw_review_handed_off;
   int saw_reasoning_summary;
+  int response_completed_count;
   int reasoning_summary_count;
   int tool_action;
   char tool_path[PATH_MAX];
@@ -308,6 +309,10 @@ typedef struct stream_output_state {
   int output_index;
   int delta_count;
 } stream_output_state;
+
+typedef struct stream_response_completed_state {
+  int count;
+} stream_response_completed_state;
 
 typedef struct tool_weather_args {
   char *city;
@@ -1788,6 +1793,9 @@ static int test_runtime_event(void *context,
       cai_error_cleanup(&submit_error);
     }
   }
+  if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+    state->response_completed_count++;
+  }
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
     state->saw_failed = 1;
     state->failed_count++;
@@ -2918,6 +2926,15 @@ static int test_stream_output_delta(void *context, const char *item_id,
   return CAI_OK;
 }
 
+static int test_stream_response_completed(void *context, cai_error *error) {
+  stream_response_completed_state *state;
+
+  (void)error;
+  state = (stream_response_completed_state *)context;
+  state->count++;
+  return CAI_OK;
+}
+
 static int test_weather_tool(void *context, const void *params, void *result,
                              cai_error *error) {
   const tool_weather_args *args;
@@ -3376,6 +3393,17 @@ static int test_failing_stream_output_item_done(
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "output item done callback failed");
+}
+
+static int test_failing_response_completed(void *context, cai_error *error) {
+  failing_callback_state *state;
+
+  state = (failing_callback_state *)context;
+  if (state != NULL) {
+    state->calls++;
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "response completion callback failed");
 }
 
 static int test_large_raw_tool(void *context, const char *arguments_json,
@@ -8251,6 +8279,12 @@ static const char *mock_response_for_request(const char *request) {
       "data: \"output_tokens_details\":{\"reasoning_tokens\":0},\r\n"
       "data: \"total_tokens\":3}}}\r\n"
       "\r\n";
+  static const char stream_missing_terminal_body[] =
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+      "\"resp_stream_partial\"}}\n\n"
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"partial\"}\n\n"
+      "data: [DONE]\n\n";
   static const char stream_session_first_body[] =
       "data: {\"type\":\"response.created\",\"response\":{\"id\":"
       "\"resp_stream_session_1\",\"usage\":null,\"instructions\":\"large "
@@ -8290,6 +8324,12 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"four\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_missing_retrieve\"}}\n\n";
+  static const char stream_session_completion_failure_body[] =
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+      "\"resp_stream_completion_failure\"}}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_completion_failure\"}}\n\n";
   static const char stream_session_source_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
@@ -8529,6 +8569,12 @@ static const char *mock_response_for_request(const char *request) {
       }
       if (strstr(request, "session stream missing retrieve") != NULL) {
         return stream_session_missing_retrieve_body;
+      }
+      if (strstr(request, "session stream completion failure") != NULL) {
+        return stream_session_completion_failure_body;
+      }
+      if (strstr(request, "stream missing terminal") != NULL) {
+        return stream_missing_terminal_body;
       }
       if (strstr(request, "openrouter metadata stream") != NULL) {
         if (stream_openrouter_metadata_body[0] == '\0') {
@@ -9229,6 +9275,78 @@ static void mock_openai_child(int pipe_fd, int request_count) {
       _exit(9);
     }
     if (mock_write_json_response(client_fd, body) != 0) {
+      _exit(10);
+    }
+    close(client_fd);
+  }
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+/* Deliberately exceeds the former agent-runtime ceiling. This is kept apart
+ * from the request-content matcher because every continuation has a distinct
+ * response ID and function-call ID. */
+static void mock_unbounded_tool_rounds_child(int pipe_fd, int tool_rounds) {
+  char request[65536];
+  char body[512];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  int i;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(10U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0 || mock_set_socket_deadline(server_fd) != 0) {
+    _exit(4);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  for (i = 0; i <= tool_rounds; i++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+      _exit(7);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      close(client_fd);
+      _exit(8);
+    }
+    if (i < tool_rounds) {
+      (void)snprintf(body, sizeof(body),
+                     "{\"id\":\"resp_unbounded_%d\",\"status\":\"completed\","
+                     "\"output\":[{\"id\":\"fc_unbounded_%d\",\"type\":"
+                     "\"function_call\",\"call_id\":\"call_unbounded_%d\","
+                     "\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":1}\"}]}",
+                     i, i, i);
+    } else {
+      (void)snprintf(body, sizeof(body),
+                     "{\"id\":\"resp_unbounded_final\",\"status\":"
+                     "\"completed\",\"output\":[{\"type\":\"message\","
+                     "\"content\":[{\"type\":\"output_text\",\"text\":"
+                     "\"unbounded done\"}]}]}");
+    }
+    if (mock_write_json_response(client_fd, body) != 0) {
+      close(client_fd);
       _exit(10);
     }
     close(client_fd);
@@ -24613,7 +24731,6 @@ static void test_smith_review_parent_handoff(test_state *state) {
   cai_agent_session_store store;
   runtime_session_store_state store_state;
   runtime_event_state events;
-  runtime_event_state review_events;
   cai_agent_run_state run_state;
   cai_error error;
   int i;
@@ -24626,14 +24743,12 @@ static void test_smith_review_parent_handoff(test_state *state) {
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   memset(&events, 0, sizeof(events));
-  memset(&review_events, 0, sizeof(review_events));
   store.checkpoint = test_runtime_session_store_checkpoint;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
   store.context = &store_state;
   events.owner = pthread_self();
-  review_events.owner = pthread_self();
   cai_error_init(&error);
   parent = NULL;
   review = NULL;
@@ -24650,9 +24765,7 @@ static void test_smith_review_parent_handoff(test_state *state) {
   config.session_scope = "review-parent-handoff";
   config.event_callback = test_runtime_event;
   config.event_context = &events;
-  /* A child inherits the callback but may select its own event context. */
-  config.review_event_callback = NULL;
-  config.review_event_context = &review_events;
+  /* The normal host receiver must also observe its isolated reviewer. */
   expect_int(state, "smith_review_parent_open",
              cai_agent_runtime_open(mock.client, &config, &parent, &error),
              CAI_OK);
@@ -24682,8 +24795,8 @@ static void test_smith_review_parent_handoff(test_state *state) {
     }
     expect_int(state, "smith_review_parent_review_completed", run_state,
                CAI_AGENT_COMPLETED);
-    expect_int(state, "smith_review_parent_review_context",
-               review_events.saw_review_report, 1L);
+    expect_int(state, "smith_review_parent_default_receiver_report",
+               events.saw_review_report, 1L);
     expect_int(state, "smith_review_parent_finish",
                cai_agent_runtime_finish_review(parent, review, &error), CAI_OK);
     expect_substr(state, "smith_review_parent_checkpoint_handoff",
@@ -25214,6 +25327,8 @@ static void test_agent_runtime_semantic_events(test_state *state) {
     }
     expect_int(state, "runtime_semantic_completed", run_state,
                CAI_AGENT_COMPLETED);
+    expect_int(state, "runtime_semantic_response_completed",
+               events.response_completed_count, 2L);
     expect_str(state, "runtime_semantic_failure", events.failure_message, "");
     expect_int(state, "runtime_semantic_list_seen", events.saw_list_tool, 1L);
     expect_int(state, "runtime_semantic_action", events.tool_action,
@@ -31606,6 +31721,98 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   }
 }
 
+static void test_agent_tool_auto_default_unbounded(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_unbounded_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_unbounded_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_unbounded_tool_rounds_child(pipe_fds[1], 33);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_unbounded_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  raw_state.seen[0] = '\0';
+
+  expect_int(state, "agent_unbounded_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_unbounded_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_unbounded_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_unbounded_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_unbounded_add",
+             cai_session_add_user_text(session, "unbounded tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_unbounded_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_unbounded_response",
+             cai_response_output_text(response), "unbounded done");
+  expect_str(state, "agent_unbounded_seen", raw_state.seen, "{\"x\":1}");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_unbounded_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_unbounded_mock", "mock child failed");
+  }
+}
+
 static void test_agent_tool_error_output_continues(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -32141,6 +32348,7 @@ static void test_stream_response_text(test_state *state) {
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_session *callback_session;
   cai_source *source;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -32152,6 +32360,8 @@ static void test_stream_response_text(test_state *state) {
   stream_tool_state tool_stream;
   stream_output_item_state output_item_stream;
   stream_output_state output_stream;
+  stream_response_completed_state response_completed;
+  failing_callback_state response_completion_failure;
   cai_error error;
   pslog_logger fake_logger;
 
@@ -32168,7 +32378,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 14);
+    mock_openai_child(pipe_fds[1], 18);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -32203,6 +32413,7 @@ static void test_stream_response_text(test_state *state) {
   client = NULL;
   agent = NULL;
   session = NULL;
+  callback_session = NULL;
   params = NULL;
   custom_params = NULL;
   sink = NULL;
@@ -32217,6 +32428,8 @@ static void test_stream_response_text(test_state *state) {
   memset(&tool_stream, 0, sizeof(tool_stream));
   memset(&output_item_stream, 0, sizeof(output_item_stream));
   memset(&output_stream, 0, sizeof(output_stream));
+  memset(&response_completed, 0, sizeof(response_completed));
+  memset(&response_completion_failure, 0, sizeof(response_completion_failure));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -32270,6 +32483,16 @@ static void test_stream_response_text(test_state *state) {
   expect_int(state, "stream_output_delta_only_count", output_stream.delta_count,
              2L);
 
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
+  expect_int(state, "stream_response_completed_only_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, &usage, &error),
+             CAI_OK);
+  expect_int(state, "stream_response_completed_only_count",
+             response_completed.count, 1L);
+
   memset(&tool_stream, 0, sizeof(tool_stream));
   expect_int(state, "stream_custom_only_params",
              cai_response_create_params_new(&custom_params, &error), CAI_OK);
@@ -32294,6 +32517,32 @@ static void test_stream_response_text(test_state *state) {
              "custom_echo");
   expect_str(state, "stream_custom_only_callback_input", tool_stream.arguments,
              "");
+  cai_response_create_params_destroy(custom_params);
+  custom_params = NULL;
+
+  expect_int(state, "stream_missing_terminal_params",
+             cai_response_create_params_new(&custom_params, &error), CAI_OK);
+  expect_int(
+      state, "stream_missing_terminal_model",
+      custom_params->set_model(custom_params, CAI_MODEL_GPT_5_NANO, &error),
+      CAI_OK);
+  expect_int(state, "stream_missing_terminal_text",
+             custom_params->add_text(custom_params, "user",
+                                     "stream missing terminal", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
+  expect_int(state, "stream_missing_terminal_rejected",
+             cai_client_stream_response_with_id(
+                 client, custom_params, &stream_sinks, NULL, &usage, &error),
+             CAI_ERR_PROTOCOL);
+  expect_substr(state, "stream_missing_terminal_error", error.message,
+                "before response.completed");
+  expect_int(state, "stream_missing_terminal_not_completed",
+             response_completed.count, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   cai_response_create_params_destroy(custom_params);
   custom_params = NULL;
 
@@ -32335,9 +32584,15 @@ static void test_stream_response_text(test_state *state) {
              CAI_OK);
   expect_int(state, "stream_session_sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
   expect_int(state, "stream_session_to_sink",
-             cai_session_stream_text(session, sink, &error), CAI_OK);
+             cai_session_stream(session, &stream_sinks, &error), CAI_OK);
   expect_str(state, "stream_session_sink_value", writer.buffer, "one");
+  expect_int(state, "stream_session_response_completed_count",
+             response_completed.count, 2L);
   expect_int(state, "stream_session_usage",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_session_usage_cached", usage.input_cached_tokens,
@@ -32519,15 +32774,35 @@ static void test_stream_response_text(test_state *state) {
   cai_sink_close(sink);
   sink = NULL;
 
+  expect_int(state, "stream_session_completion_failure_new",
+             cai_agent_new_session(agent, &callback_session, &error), CAI_OK);
+  expect_int(state, "stream_session_completion_failure_add",
+             cai_session_add_user_text(
+                 callback_session, "session stream completion failure", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.response_completed = test_failing_response_completed;
+  stream_sinks.response_completed_context = &response_completion_failure;
+  expect_int(state, "stream_session_completion_failure_run",
+             cai_session_stream(callback_session, &stream_sinks, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "stream_session_completion_failure_calls",
+             response_completion_failure.calls, 1L);
+  expect_int(state, "stream_session_completion_failure_inputs_cleared",
+             (long)CAI_SESSION_IMPL(callback_session)->input_count, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 15L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 13L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 19L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 16L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
-  expect_int(state, "stream_log_error_count", g_test_errorf_count, 2L);
+  expect_int(state, "stream_log_error_count", g_test_errorf_count, 3L);
 
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(custom_params);
+  cai_session_destroy(callback_session);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -37521,6 +37796,8 @@ static const test_entry test_entries[] = {
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},
     {"agent_multi_tool_auto_run", test_agent_multi_tool_auto_run},
     {"agent_tool_auto_round_limit", test_agent_tool_auto_round_limit},
+    {"agent_tool_auto_default_unbounded",
+     test_agent_tool_auto_default_unbounded},
     {"agent_tool_error_output_continues",
      test_agent_tool_error_output_continues},
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},

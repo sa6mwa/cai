@@ -71,7 +71,12 @@ typedef enum cai_agent_runtime_event_type {
    * Provider-supplied reasoning-summary delta. This is not raw chain of
    * thought; it is the summary explicitly returned by the provider.
    */
-  CAI_AGENT_EVENT_REASONING_SUMMARY = 21
+  CAI_AGENT_EVENT_REASONING_SUMMARY = 21,
+  /**
+   * One model response finished. A single agent run can contain multiple
+   * responses when steering is delivered after a response boundary.
+   */
+  CAI_AGENT_EVENT_RESPONSE_COMPLETED = 22
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */

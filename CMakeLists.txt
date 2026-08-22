@@ -1245,6 +1245,7 @@ if(CAI_BUILD_TESTS)
     agent_searxng_tool_auto_run
     agent_multi_tool_auto_run
     agent_tool_auto_round_limit
+    agent_tool_auto_default_unbounded
     agent_tool_error_output_continues
     agent_tool_output_max_bytes
     conversations

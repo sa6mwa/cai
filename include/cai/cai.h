@@ -421,7 +421,12 @@ typedef struct cai_list_params {
 
 /** Options controlling local tool auto-run loops. */
 typedef struct cai_run_options {
-  /** Maximum auto-run tool rounds; zero uses default. */
+  /**
+   * Maximum auto-run tool rounds. Zero keeps running until the model stops,
+   * cancellation, or another execution policy ends the run. A positive value
+   * is an explicit caller-selected cap, primarily useful for bounded harnesses
+   * and tests.
+   */
   int max_tool_rounds;
   /** Maximum calls in one tool round; zero leaves the count unrestricted. */
   int max_tool_calls_per_round;
@@ -823,6 +828,13 @@ typedef int (*cai_stream_output_item_done_fn)(
 typedef int (*cai_stream_output_text_delta_fn)(
     void *context, const char *item_id, int output_index,
     const struct lonejson_spooled *delta, cai_error *error);
+/**
+ * Callback after one streamed model response completes successfully.
+ *
+ * Session streaming invokes this after CAI has durably recorded the response.
+ */
+typedef int (*cai_stream_response_completed_fn)(void *context,
+                                                cai_error *error);
 
 /** Static or dynamic prefix/suffix emitted around stream sections. */
 typedef struct cai_stream_affix {
@@ -868,6 +880,10 @@ typedef struct cai_stream_sinks {
   cai_stream_output_text_delta_fn output_text_delta;
   /** Context passed to output_text_delta. */
   void *output_text_context;
+  /** Callback after each streamed model response completes successfully. */
+  cai_stream_response_completed_fn response_completed;
+  /** Context passed to response_completed. */
+  void *response_completed_context;
 } cai_stream_sinks;
 
 /** Typed lonejson-backed tool callback. */

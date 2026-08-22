@@ -78,6 +78,7 @@ local function event_state()
     executions = 0,
     terminal_started = 0,
     terminal_completed = 0,
+    response_completed = 0,
     reasoning_summaries = {},
     review_reports = {},
     review_started = 0,
@@ -103,6 +104,8 @@ local function event_callback(events)
       events.terminal_started = events.terminal_started + 1
     elseif event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED then
       events.terminal_completed = events.terminal_completed + 1
+    elseif event.type == cai.AGENT_EVENT_RESPONSE_COMPLETED then
+      events.response_completed = events.response_completed + 1
     elseif event.type == cai.AGENT_EVENT_REVIEW_REPORT then
       events.review_reports[#events.review_reports + 1] = event.data or ""
     elseif event.type == cai.AGENT_EVENT_REVIEW_STARTED then
@@ -254,12 +257,14 @@ local ok, err = xpcall(function()
     fail("Lua Smith build did not expose a provider reasoning summary")
   end
   if events.reads < 1 or events.patches < 1 or events.executions < 1 or
-      events.terminal_started < 1 or events.terminal_completed < 1 then
+      events.terminal_started < 1 or events.terminal_completed < 1 or
+      events.response_completed < 2 then
     fail("Lua Smith build evidence is incomplete (reads=" .. tostring(events.reads) ..
       " patches=" .. tostring(events.patches) ..
       " executions=" .. tostring(events.executions) ..
       " terminal=" .. tostring(events.terminal_started) .. "/" ..
-      tostring(events.terminal_completed) .. ")")
+      tostring(events.terminal_completed) ..
+      " responses=" .. tostring(events.response_completed) .. ")")
   end
 
   local identity = run("git -C " .. git_workspace .. " log -1 " ..
@@ -337,6 +342,7 @@ local ok, err = xpcall(function()
 
   io.stderr:write("[lua-smith-e2e] review_report=" .. events.review_reports[1] ..
     " terminal_commands=" .. tostring(events.terminal_completed) ..
+    " responses=" .. tostring(events.response_completed) ..
     " reasoning_summaries=" .. tostring(#events.reasoning_summaries) .. "\n")
   success = true
 end, debug.traceback)
