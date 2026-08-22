@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -407,6 +408,9 @@ typedef struct integration_smith_runtime_event_state {
   int terminal_waiting;
   int terminal_completed;
   int terminal_exit_zero;
+  int review_started;
+  int review_handed_off;
+  int review_report;
   int steering_requested;
   int steering_submitted;
   int steering_queued;
@@ -420,6 +424,7 @@ typedef struct integration_smith_runtime_event_state {
   unsigned long long terminal_started_sequence;
   char terminal_command[512];
   char failure_message[512];
+  char review_report_json[4096];
 } integration_smith_runtime_event_state;
 
 typedef struct integration_stream_debug_state {
@@ -747,6 +752,15 @@ static int integration_smith_runtime_event(
     if (event->terminal_has_exit_code && event->terminal_exit_code == 0) {
       state->terminal_exit_zero++;
     }
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED) {
+    state->review_started++;
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
+    state->review_handed_off++;
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+    state->review_report++;
+    integration_runtime_copy_event_text(state->review_report_json,
+                                        sizeof(state->review_report_json),
+                                        event->data, event->data_length);
   } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
     state->run_completed++;
   } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
@@ -1075,6 +1089,70 @@ static int integration_remove_directory_tree(const char *path) {
     valid = 0;
   }
   return valid;
+}
+
+static int integration_run_program(const char *const *arguments, char *output,
+                                   size_t output_capacity) {
+  char *program_arguments[32];
+  char buffer[1024];
+  pid_t child;
+  pid_t waited;
+  int pipe_fds[2];
+  int status;
+  ssize_t count;
+  size_t argument_count;
+  size_t output_length;
+
+  if (arguments == NULL || arguments[0] == NULL || output == NULL ||
+      output_capacity == 0U) {
+    return 0;
+  }
+  argument_count = 0U;
+  while (arguments[argument_count] != NULL &&
+         argument_count <
+             sizeof(program_arguments) / sizeof(program_arguments[0]) - 1U) {
+    argument_count++;
+  }
+  if (arguments[argument_count] != NULL || pipe(pipe_fds) != 0) {
+    return 0;
+  }
+  output[0] = '\0';
+  child = fork();
+  if (child < 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return 0;
+  }
+  if (child == 0) {
+    memcpy(program_arguments, arguments,
+           (argument_count + 1U) * sizeof(program_arguments[0]));
+    (void)close(pipe_fds[0]);
+    (void)dup2(pipe_fds[1], STDOUT_FILENO);
+    (void)dup2(pipe_fds[1], STDERR_FILENO);
+    (void)close(pipe_fds[1]);
+    execvp(program_arguments[0], program_arguments);
+    _exit(127);
+  }
+  (void)close(pipe_fds[1]);
+  output_length = 0U;
+  while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0) {
+    size_t copied;
+
+    copied = (size_t)count;
+    if (copied > output_capacity - output_length - 1U) {
+      copied = output_capacity - output_length - 1U;
+    }
+    if (copied > 0U) {
+      memcpy(output + output_length, buffer, copied);
+      output_length += copied;
+    }
+  }
+  output[output_length] = '\0';
+  (void)close(pipe_fds[0]);
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 static int run_basic_response(void) {
@@ -4699,6 +4777,334 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_chatgpt_smith_review_regression(void) {
+  static const char build_prompt_1[] =
+      "You are in a newly initialized, otherwise empty Git repository. "
+      "Create a small Hello World project in C. It must include a CMake build "
+      "definition and a conventional Makefile; both `cmake -S . -B build && ";
+  static const char build_prompt_2[] =
+      "cmake --build build` and `make hello` must build a runnable program "
+      "named hello whose exact standard output is `Hello, world!` followed by "
+      "a newline. Use the terminal to build and run both paths, ";
+  static const char build_prompt_3[] =
+      "add appropriate "
+      "ignore rules for generated artifacts, and commit the completed work "
+      "with "
+      "the repository's configured local Git author. Do not ask questions. "
+      "In your final response include the exact marker "
+      "SMITH_REVIEW_PROJECT_COMMITTED.";
+  static const char follow_up_prompt_1[] =
+      "Read the developer review handoff now in your context. If it identifies "
+      "any actionable defect, fix every valid finding and do not make "
+      "unrelated "
+      "changes. If it identifies no actionable defect, leave the "
+      "implementation ";
+  static const char follow_up_prompt_2[] =
+      "alone. In either case, verify both the CMake and Makefile build paths "
+      "and "
+      "their hello output. Commit any changes you make with the configured "
+      "local "
+      "Git author, leaving the worktree clean. In your final response include "
+      "the exact marker SMITH_REVIEW_FOLLOWUP_CONFIRMED.";
+  const char *git_init[] = {"git", "init", NULL, NULL};
+  const char *git_config_name[] = {"git",       "-C",          NULL, "config",
+                                   "user.name", "Test Tester", NULL};
+  const char *git_config_email[] = {
+      "git", "-C", NULL, "config", "user.email", "info@c89.systems", NULL};
+  const char *git_identity[] = {
+      "git", "-C", NULL, "log", "-1", "--format=%an <%ae>", NULL};
+  const char *git_head[] = {"git",      "-C",   NULL, "rev-parse",
+                            "--verify", "HEAD", NULL};
+  const char *git_status[] = {"git", "-C", NULL, "status", "--porcelain", NULL};
+  const char *cmake_configure[] = {"cmake", "-S", NULL, "-B", NULL, NULL};
+  const char *cmake_build[] = {"cmake", "--build", NULL, NULL};
+  const char *cmake_hello[] = {NULL, NULL};
+  const char *make_hello[] = {"make", "-C", NULL, "hello", NULL};
+  const char *make_binary[] = {NULL, NULL};
+  cai_agent_local_session_store_config store_config;
+  cai_agent_review_request review_request;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_client_config client_config;
+  cai_agent_runtime *review;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  integration_smith_runtime_event_state review_events;
+  char build_directory[PATH_MAX];
+  char build_hello_path[PATH_MAX];
+  char build_prompt[1024];
+  char commit_sha[128];
+  char command_output[4096];
+  char follow_up_prompt[1024];
+  char make_hello_path[PATH_MAX];
+  char sessions_root[] = "/tmp/cai-smith-review-sessions-XXXXXX";
+  char workspace[] = "/tmp/cai-smith-review-e2e-XXXXXX";
+  int cleanup_failed;
+  int rc;
+  int sessions_root_created;
+  int skipped;
+  int store_open;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_local_session_store_config_init(&store_config);
+  memset(&store, 0, sizeof(store));
+  memset(&events, 0, sizeof(events));
+  memset(&review_events, 0, sizeof(review_events));
+  auth = NULL;
+  client = NULL;
+  review = NULL;
+  runtime = NULL;
+  cleanup_failed = 0;
+  sessions_root_created = 0;
+  skipped = 0;
+  store_open = 0;
+  workspace_created = 0;
+
+  if (snprintf(build_prompt, sizeof(build_prompt), "%s%s%s", build_prompt_1,
+               build_prompt_2, build_prompt_3) >= (int)sizeof(build_prompt) ||
+      snprintf(follow_up_prompt, sizeof(follow_up_prompt), "%s%s",
+               follow_up_prompt_1,
+               follow_up_prompt_2) >= (int)sizeof(follow_up_prompt)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith review prompt is too long");
+    goto done;
+  }
+
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith review workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  git_init[2] = workspace;
+  git_config_name[2] = workspace;
+  git_config_email[2] = workspace;
+  git_identity[2] = workspace;
+  git_head[2] = workspace;
+  git_status[2] = workspace;
+  cmake_configure[2] = workspace;
+  cmake_configure[4] = build_directory;
+  cmake_build[2] = build_directory;
+  cmake_hello[0] = build_hello_path;
+  make_hello[2] = workspace;
+  make_binary[0] = make_hello_path;
+  if (snprintf(build_directory, sizeof(build_directory), "%s/build",
+               workspace) >= (int)sizeof(build_directory) ||
+      snprintf(build_hello_path, sizeof(build_hello_path), "%s/hello",
+               build_directory) >= (int)sizeof(build_hello_path) ||
+      snprintf(make_hello_path, sizeof(make_hello_path), "%s/hello",
+               workspace) >= (int)sizeof(make_hello_path)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith review fixture path is too long");
+    goto done;
+  }
+  if (!integration_run_program(git_init, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_name, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_email, command_output,
+                               sizeof(command_output))) {
+    fprintf(stderr, "Smith review Git fixture setup output: %s\n",
+            command_output);
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to initialize Smith review Git fixture");
+    goto done;
+  }
+  if (mkdtemp(sessions_root) == NULL) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to create Smith review local-session-store root");
+    goto done;
+  }
+  sessions_root_created = 1;
+  store_config.root_directory = sessions_root;
+  rc = cai_agent_local_session_store_open(&store_config, &store, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review session store open", rc, &error);
+    goto done;
+  }
+  store_open = 1;
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc == 77) {
+    skipped = 1;
+    goto done;
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith review ChatGPT auth open", rc, &error);
+    goto done;
+  }
+  client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review ChatGPT client open", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.review_model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.review_reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = workspace;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  runtime_config.review_event_callback = integration_smith_runtime_event;
+  runtime_config.review_event_context = &review_events;
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review runtime open", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_runtime_submit(runtime, build_prompt, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 240, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith review project turn", rc, &error);
+    goto done;
+  }
+  if (!integration_text_contains(events.answer.buffer,
+                                 "SMITH_REVIEW_PROJECT_COMMITTED") ||
+      events.terminal_started < 1 || events.terminal_completed < 1 ||
+      !integration_run_program(git_identity, command_output,
+                               sizeof(command_output)) ||
+      strcmp(command_output, "Test Tester <info@c89.systems>\n") != 0 ||
+      !integration_run_program(git_status, command_output,
+                               sizeof(command_output)) ||
+      command_output[0] != '\0') {
+    fprintf(stderr,
+            "Smith review project evidence failed (terminal=%d/%d identity=%s "
+            "status=%s answer=%s)\n",
+            events.terminal_started, events.terminal_completed, command_output,
+            command_output, events.answer.buffer);
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith did not produce a clean, locally authored project commit");
+    goto done;
+  }
+  if (!integration_run_program(git_head, commit_sha, sizeof(commit_sha))) {
+    fprintf(stderr, "Smith review commit lookup output: %s\n", commit_sha);
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith project commit has no resolvable SHA");
+    goto done;
+  }
+  commit_sha[strcspn(commit_sha, "\r\n")] = '\0';
+  cai_agent_review_request_init(&review_request);
+  review_request.target = CAI_AGENT_REVIEW_COMMIT;
+  review_request.commit = commit_sha;
+  rc =
+      cai_agent_runtime_start_review(runtime, &review_request, &review, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(review, &review_events, 0, 180, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith interactive review", rc, &error);
+    goto done;
+  }
+  if (review_events.review_report != 1 ||
+      review_events.review_report_json[0] == '\0') {
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith interactive review did not report");
+    goto done;
+  }
+  rc = cai_agent_runtime_finish_review(runtime, review, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review handoff", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_close(review);
+  review = NULL;
+  /* integration_smith_runtime_wait observes completion for one submitted turn;
+   * preserve accumulated event evidence but begin a fresh parent turn. */
+  events.run_completed = 0;
+  events.run_failed = 0;
+  events.failure_message[0] = '\0';
+  rc = cai_agent_runtime_submit(runtime, follow_up_prompt, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 240, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith review follow-up", rc, &error);
+    goto done;
+  }
+  if (!integration_text_contains(events.answer.buffer,
+                                 "SMITH_REVIEW_FOLLOWUP_CONFIRMED") ||
+      events.review_started != 1 || events.review_handed_off != 1 ||
+      !integration_run_program(git_status, command_output,
+                               sizeof(command_output)) ||
+      command_output[0] != '\0') {
+    fprintf(stderr,
+            "Smith review handoff evidence failed (started=%d handed_off=%d "
+            "status=%s answer=%s)\n",
+            events.review_started, events.review_handed_off, command_output,
+            events.answer.buffer);
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith review handoff was not consumed cleanly");
+    goto done;
+  }
+  if (!integration_run_program(cmake_configure, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(cmake_build, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(cmake_hello, command_output,
+                               sizeof(command_output)) ||
+      strcmp(command_output, "Hello, world!\n") != 0 ||
+      !integration_run_program(make_hello, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(make_binary, command_output,
+                               sizeof(command_output)) ||
+      strcmp(command_output, "Hello, world!\n") != 0 ||
+      !integration_run_program(git_status, command_output,
+                               sizeof(command_output)) ||
+      command_output[0] != '\0') {
+    fprintf(stderr, "Smith review build verification output: %s\n",
+            command_output);
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith review project did not retain clean CMake and Makefile builds");
+    goto done;
+  }
+  fprintf(stderr,
+          "[integration-chatgpt-smith-review] model=%s review_report=%s "
+          "terminal_commands=%d\n",
+          CAI_MODEL_GPT_5_6_LUNA, review_events.review_report_json,
+          events.terminal_completed + review_events.terminal_completed);
+  rc = CAI_OK;
+
+done:
+  cai_agent_runtime_close(review);
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  if (store_open) {
+    cai_agent_local_session_store_close(&store);
+  }
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace)) {
+    cleanup_failed = 1;
+  }
+  if (sessions_root_created &&
+      !integration_remove_directory_tree(sessions_root)) {
+    cleanup_failed = 1;
+  }
+  if (cleanup_failed) {
+    fprintf(stderr,
+            "Smith review live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  if (skipped) {
+    return 77;
+  }
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_chatgpt_subscription_session_regression(void) {
   static const char first_secret[] = "chatgpt-first-key-481";
   static const char tool_code[] = "chatgpt-tool-code-739";
@@ -5321,6 +5727,7 @@ int main(void) {
   const char *compaction;
   const char *chatgpt_subscription;
   const char *chatgpt_smith;
+  const char *chatgpt_smith_review;
   const char *chatgpt_smith_terra;
   const char *chatgpt_defaults;
   const char *e2e;
@@ -5362,12 +5769,16 @@ int main(void) {
   }
   chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
   chatgpt_smith = getenv("CAI_INTEGRATION_CHATGPT_SMITH_E2E");
+  chatgpt_smith_review = getenv("CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E");
   chatgpt_smith_terra = getenv("CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE");
   if (integration_flag_enabled(chatgpt_smith_terra)) {
     return run_chatgpt_smith_runtime_regression(0);
   }
   if (integration_flag_enabled(chatgpt_smith)) {
     return run_chatgpt_smith_runtime_regression(1);
+  }
+  if (integration_flag_enabled(chatgpt_smith_review)) {
+    return run_chatgpt_smith_review_regression();
   }
   if (integration_flag_enabled(chatgpt_subscription)) {
     return run_chatgpt_subscription_session_regression();

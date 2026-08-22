@@ -1107,6 +1107,7 @@ CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SMITH_E2E=1 CAI_CHATGPT_TEST_MODEL=gpt-5.6-luna build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1 CAI_CHATGPT_TEST_MODEL=gpt-5.6-terra build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
@@ -1242,6 +1243,16 @@ terminal start/wait/completion lifecycle, steering delivery after a tool round,
 durable checkpoints, and `resume_latest` continuation. The smaller
 `CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1` test runs the same runtime and
 terminal lifecycle against Terra-medium without file mutation or resume.
+
+`CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1` is the live Luna-medium Smith
+review-handoff regression. Its harness creates only an empty, locally authored
+Git fixture; Smith creates, builds, runs, and commits a small C/CMake/Makefile
+project. CAI then launches the isolated interactive review of that commit,
+hands its report to the original Smith runtime, and Smith fixes any actionable
+finding before both independent build paths and clean Git state are checked.
+It is registered with the integration label, so
+`CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` and
+`CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` include it.
 
 `CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
 API using `gpt-5-nano` by default. It checks every turn for the current secret,

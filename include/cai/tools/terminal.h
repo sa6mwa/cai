@@ -59,8 +59,8 @@ typedef int (*cai_terminal_policy_fn)(void *context, const char *command,
 /**
  * Configuration for CAI's one-slot PTY terminal tool pair. Child commands
  * receive a fixed minimal environment: HOME is the configured workspace and
- * PATH, LANG, LC_ALL, TERM, and TMPDIR are CAI-controlled. Host process
- * environment variables, including credentials, are never inherited.
+ * PATH, LANG, LC_ALL, TERM, TMPDIR, and LESSHISTFILE are CAI-controlled. Host
+ * process environment variables, including credentials, are never inherited.
  */
 typedef struct cai_terminal_tool_config {
   /** Required workspace root. Command working directories stay below it. */

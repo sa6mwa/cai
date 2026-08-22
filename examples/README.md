@@ -161,9 +161,12 @@ For a Codex-like review launched from an existing Smith chat, call
 `parent:start_review(request)`). Pump the returned child runtime in the same
 application event loop, then call `cai_agent_runtime_finish_review(parent,
 review, &error)` (Lua: `parent:finish_review(review)`) after it reaches a
-terminal state. The handoff is checkpointed into the parent before any normal
-turns queued during review resume. Close that child before the parent so its
-remaining events cannot outlive the callback receiver. CAI itself still leaves
+terminal state. Set `review_model` and `review_reasoning_effort` on the parent
+runtime configuration when the reviewer should use a different profile; omitted
+values inherit the coding runtime's model and effort. The handoff is
+checkpointed into the parent before any normal turns queued during review
+resume. Close that child before the parent so its remaining events cannot
+outlive the callback receiver. CAI itself still leaves
 `/review` parsing to the example or downstream UI. If the durable parent-pause
 checkpoint fails after a review child was created, the C call returns an error
 and a populated child output; Lua mirrors this as `review, err` so the child

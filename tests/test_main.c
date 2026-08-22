@@ -24532,10 +24532,11 @@ static void test_smith_review_parent_handoff(test_state *state) {
   static const char *review_required[] = {
       "POST /v1/responses HTTP/",
       "Review the current code changes (staged, unstaged, and untracked files)",
-      "You are Cai Smith, a code reviewer"};
+      "You are Cai Smith, a code reviewer", "\"effort\":\"medium\""};
   static const char *parent_required[] = {
       "POST /v1/responses HTTP/", "act on the review findings",
-      "<review_handoff", "No qualifying defects.", "\"role\":\"developer\""};
+      "<review_handoff",          "No qualifying defects.",
+      "\"role\":\"developer\"",   "\"effort\":\"low\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", review_required,
        sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
@@ -24578,6 +24579,9 @@ static void test_smith_review_parent_handoff(test_state *state) {
   cai_agent_runtime_config_init(&config);
   config.workspace_directory = "/tmp";
   config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  config.review_model = CAI_MODEL_GPT_5_6_LUNA;
+  config.review_reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
   config.session_store = &store;
   config.disable_default_session_store = 1;
   config.session_scope = "review-parent-handoff";
@@ -29629,18 +29633,21 @@ static void test_terminal_tools(test_state *state) {
   }
   if (registry != NULL && sink != NULL) {
     setenv("CAI_TEST_TERMINAL_SECRET", "must-not-reach-model", 1);
-    expect_int(state, "terminal_sanitized_environment",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                   "{\"cmd\":\"printf '%s|%s' "
-                   "\\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\"\","
-                   "\"yield_time_ms\":100}",
-                   sink, &error),
-               CAI_OK);
+    expect_int(
+        state, "terminal_sanitized_environment",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"printf '%s|%s|%s' "
+                              "\\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\" "
+                              "\\\"$LESSHISTFILE\\\"\","
+                              "\"yield_time_ms\":100}",
+                              sink, &error),
+        CAI_OK);
     expect_int(state, "terminal_sanitized_environment_secret",
                strstr(writer.buffer, "must-not-reach-model") == NULL, 1L);
     expect_substr(state, "terminal_sanitized_environment_home", writer.buffer,
                   dir_template);
+    expect_substr(state, "terminal_sanitized_environment_less_history",
+                  writer.buffer, "/dev/null");
     unsetenv("CAI_TEST_TERMINAL_SECRET");
     /* Output arrival is intentionally allowed before shell exit.  Drain the
      * fast command to a verified terminal result before starting the next

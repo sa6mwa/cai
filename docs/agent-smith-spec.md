@@ -88,9 +88,11 @@ prompt.
    time or through a blocking convenience wrapper.
 2. Provide the `smith` preset with Codex-inspired instructions, stable
    tool names, serial tool dispatch, and defaults for
-   `gpt-5.6-terra` at medium reasoning effort. Smith permits eight serial
-   local tool rounds per submitted model turn, matching the former Smith
-   runner and leaving room for read/patch/read-back/terminal workflows.
+   `gpt-5.6-terra` at medium reasoning effort. Smith permits up to 32 serial
+   local tool rounds per submitted model turn, leaving enough bounded room for
+   normal repository discovery, patch verification, and isolated review flows
+   while preserving one-call-at-a-time terminal ownership. This supersedes the
+   former Smith runner limit for read/patch/read-back/terminal workflows.
 3. Let an application stream model deltas to any renderer without CAI knowing
    about libmdf, a TUI, or a UI toolkit.
 4. Queue user steering safely while a model response or tool loop is active,
@@ -182,6 +184,8 @@ typedef struct cai_agent_runtime_config {
   const char *agent_identity;      /* default: "Cai Smith" */
   const char *model;               /* Smith default: gpt-5.6-terra */
   const char *reasoning_effort;    /* Smith default: medium */
+  const char *review_model;        /* review child inherits model when NULL */
+  const char *review_reasoning_effort; /* review child inherits effort when NULL */
   const char *developer_instructions_extension;
   cai_mcp_client *const *mcp_clients;
   size_t mcp_client_count;
@@ -465,12 +469,15 @@ cai_agent_runtime_close(review);
 ```
 
 `start_review` derives a fresh reviewer from the parent’s workspace, identity,
-model/reasoning selection, developer extension, terminal policy, session-store
-selection, and review event receiver. It preserves the review preset’s private
-session namespace and tool restrictions. The returned child has its own wakeup
-descriptor and is deliberately still host-pumped: CAI never constrains a TUI,
-GUI, or embedding event loop to one rendering model. The inherited event
-receiver can distinguish the source through `event.runtime_session_id`.
+developer extension, terminal policy, session-store selection, and review event
+receiver. `review_model` and `review_reasoning_effort` select the child’s
+profile independently; either omitted field inherits the corresponding parent
+`model` or `reasoning_effort`. This makes a fast coding profile and a more
+deliberate review profile an explicit host policy, without changing the review
+preset or its tool boundary. The returned child has its own wakeup descriptor
+and is deliberately still host-pumped: CAI never constrains a TUI, GUI, or
+embedding event loop to one rendering model. The inherited event receiver can
+distinguish the source through `event.runtime_session_id`.
 
 Once started, the parent is paused. CAI journals and checkpoints that pause
 before `start_review` returns. Immediate and steering input are rejected;

@@ -23,7 +23,11 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
 #define CAI_RUNTIME_DEFAULT_TURN_LIMIT 32U
-#define CAI_RUNTIME_DEFAULT_TOOL_ROUNDS 8
+/* Smith uses Codex-compatible, serial tool workflows. A review regularly
+ * needs several discovery, diff, and verification calls before it can report;
+ * eight rounds is too small for that normal bounded workflow. Keep the cap
+ * finite so a runaway tool loop remains cancellable and resource-bounded. */
+#define CAI_RUNTIME_DEFAULT_TOOL_ROUNDS 32
 #define CAI_RUNTIME_XID_RAW_BYTES 12U
 #define CAI_RUNTIME_XID_TEXT_BYTES 20U
 #define CAI_RUNTIME_EXPORT_MAX_DEPTH 128U
@@ -261,6 +265,8 @@ struct cai_agent_runtime {
   char *smith_identity;
   char *smith_model;
   char *smith_reasoning_effort;
+  char *smith_review_model;
+  char *smith_review_reasoning_effort;
   char *smith_developer_instructions_extension;
   cai_terminal_tool_config smith_terminal_config;
   char *smith_terminal_default_workdir;
@@ -646,12 +652,16 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->smith_identity);
   cai_free_mem(NULL, runtime->smith_model);
   cai_free_mem(NULL, runtime->smith_reasoning_effort);
+  cai_free_mem(NULL, runtime->smith_review_model);
+  cai_free_mem(NULL, runtime->smith_review_reasoning_effort);
   cai_free_mem(NULL, runtime->smith_developer_instructions_extension);
   cai_free_mem(NULL, runtime->smith_terminal_default_workdir);
   cai_free_mem(NULL, runtime->smith_terminal_shell_path);
   runtime->smith_identity = NULL;
   runtime->smith_model = NULL;
   runtime->smith_reasoning_effort = NULL;
+  runtime->smith_review_model = NULL;
+  runtime->smith_review_reasoning_effort = NULL;
   runtime->smith_developer_instructions_extension = NULL;
   runtime->smith_terminal_default_workdir = NULL;
   runtime->smith_terminal_shell_path = NULL;
@@ -674,6 +684,15 @@ static int cai_runtime_capture_smith_profile(
   if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(
         config->reasoning_effort, &runtime->smith_reasoning_effort, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(config->review_model,
+                                          &runtime->smith_review_model, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        config->review_reasoning_effort,
+        &runtime->smith_review_reasoning_effort, error);
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(
@@ -1899,9 +1918,9 @@ static void *cai_runtime_worker(void *context) {
   sinks.output_text_delta = cai_runtime_output_text_delta;
   sinks.output_text_context = runtime;
   cai_run_options_init(&options);
-  /* Smith's read/patch/read-back/terminal workflows commonly need more than
-   * the generic four-round convenience default. Keep this aligned with the
-   * former synchronous Smith runner while preserving serial tool dispatch. */
+  /* Smith's read/patch/read-back/terminal workflows—and isolated reviews—
+   * commonly need more than the generic four-round convenience default. The
+   * preset remains strictly serial and finite: 32 rounds, one call each. */
   options.max_tool_rounds = CAI_RUNTIME_DEFAULT_TOOL_ROUNDS;
   options.max_tool_calls_per_round = 1;
   options.tool_event = cai_runtime_tool_event;
@@ -3762,8 +3781,11 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   config.preset = CAI_SMITH_REVIEW_PRESET;
   config.workspace_directory = parent->workspace_directory;
   config.agent_identity = parent->smith_identity;
-  config.model = parent->smith_model;
-  config.reasoning_effort = parent->smith_reasoning_effort;
+  config.model = parent->smith_review_model != NULL ? parent->smith_review_model
+                                                    : parent->smith_model;
+  config.reasoning_effort = parent->smith_review_reasoning_effort != NULL
+                                ? parent->smith_review_reasoning_effort
+                                : parent->smith_reasoning_effort;
   config.developer_instructions_extension =
       parent->smith_developer_instructions_extension;
   config.terminal_tool_config =

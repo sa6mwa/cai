@@ -880,6 +880,8 @@ do
   }))
   local parent = assert_ok(review_client:new_smith_runtime({
     workspace_directory = ".",
+    review_model = cai.MODEL_GPT_5_6_LUNA,
+    review_reasoning_effort = cai.REASONING_EFFORT_MEDIUM,
     disable_default_session_store = true,
   }))
   local review = assert_ok(parent:start_review({ target = "uncommitted" }))

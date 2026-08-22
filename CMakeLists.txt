@@ -1649,6 +1649,9 @@ if(CAI_BUILD_TESTS)
     set(CAI_INTEGRATION_TIMEOUT_SHORT 10)
     set(CAI_INTEGRATION_TIMEOUT_MEDIUM 30)
     set(CAI_INTEGRATION_TIMEOUT_LONG 240)
+    # Smith review has separate coding, review, and handoff turns (240 + 180
+    # + 240 seconds) and needs cleanup headroom beyond one long turn.
+    set(CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW 720)
     add_executable(cai_integration_tests tests/integration_main.c)
     target_include_directories(cai_integration_tests PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
@@ -1726,6 +1729,16 @@ if(CAI_BUILD_TESTS)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_chatgpt_smith_review_e2e
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1"
+        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_smith_review_e2e PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
     add_test(NAME cai_integration_chatgpt_smith_terra_smoke
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1"

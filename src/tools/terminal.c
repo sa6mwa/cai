@@ -52,6 +52,9 @@ static char cai_terminal_safe_lang[] = "LANG=C.UTF-8";
 static char cai_terminal_safe_lc_all[] = "LC_ALL=C.UTF-8";
 static char cai_terminal_safe_term[] = "TERM=xterm-256color";
 static char cai_terminal_safe_tmpdir[] = "TMPDIR=/tmp";
+/* A PTY causes tools such as git to select less; never let its history file
+ * become an untracked workspace artifact. */
+static char cai_terminal_safe_lesshistfile[] = "LESSHISTFILE=/dev/null";
 
 typedef struct cai_terminal_manager {
   pthread_mutex_t lock;
@@ -708,7 +711,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   }
   if (pid == 0) {
     char *argv[4];
-    char *environment[7];
+    char *environment[8];
 
     argv[0] = manager->shell_path;
     argv[1] = cai_terminal_shell_flag;
@@ -720,7 +723,8 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     environment[3] = cai_terminal_safe_lc_all;
     environment[4] = cai_terminal_safe_term;
     environment[5] = cai_terminal_safe_tmpdir;
-    environment[6] = NULL;
+    environment[6] = cai_terminal_safe_lesshistfile;
+    environment[7] = NULL;
 
     (void)setsid();
     (void)ioctl(slave, TIOCSCTTY, 0);

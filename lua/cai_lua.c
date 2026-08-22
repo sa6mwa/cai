@@ -2849,6 +2849,9 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
   config.reasoning_effort =
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
+  config.review_model = cai_lua_opt_string_field(L, 2, "review_model", NULL);
+  config.review_reasoning_effort =
+      cai_lua_opt_string_field(L, 2, "review_reasoning_effort", NULL);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.enable_image_generation =
