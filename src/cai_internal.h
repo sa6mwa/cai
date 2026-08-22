@@ -409,5 +409,8 @@ int cai_session_commit_pending_inputs(cai_session *session, cai_error *error);
 /* Insert steering into the active model cycle without creating a user turn. */
 int cai_session_add_steering_text(cai_session *session, const char *text,
                                   cai_error *error);
+/* Add CAI-generated trusted context without creating a user turn. */
+int cai_session_add_internal_context_text(cai_session *session,
+                                          const char *text, cai_error *error);
 
 #endif

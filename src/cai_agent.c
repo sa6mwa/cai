@@ -2700,6 +2700,15 @@ int cai_session_add_steering_text(cai_session *session, const char *text,
                                NULL, NULL, NULL, NULL, error);
 }
 
+int cai_session_add_internal_context_text(cai_session *session,
+                                          const char *text, cai_error *error) {
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "text is required");
+  }
+  return cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, "developer",
+                               text, NULL, NULL, NULL, NULL, error);
+}
+
 int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error) {
   int rc;

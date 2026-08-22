@@ -197,6 +197,8 @@ typedef struct cai_agent_runtime_config {
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
   size_t turn_queue_limit;
+  cai_agent_runtime_event_fn review_event_callback;
+  void *review_event_context;
 } cai_agent_runtime_config;
 
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config);
@@ -205,6 +207,13 @@ int cai_agent_runtime_open(cai_client *client,
                            cai_agent_runtime **out, cai_error *error);
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
+int cai_agent_runtime_start_review(cai_agent_runtime *parent,
+                                   const cai_agent_review_request *request,
+                                   cai_agent_runtime **out_review,
+                                   cai_error *error);
+int cai_agent_runtime_finish_review(cai_agent_runtime *parent,
+                                    cai_agent_runtime *review,
+                                    cai_error *error);
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);
 int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
@@ -435,6 +444,76 @@ buffer is bounded to 256 KiB, and a tool round clears earlier assistant text so
 only the final review response is reported. A successful provider response
 without a schema-valid final report fails the run rather than producing a
 successful review with no handoff report.
+
+### 6.2.1 Parent review handoff
+
+`smith-review` remains useful as a standalone isolated runtime, but an
+ordinary `smith` runtime also exposes the Codex-like orchestration path:
+
+```c
+cai_agent_runtime *review = NULL;
+
+cai_agent_runtime_start_review(parent, &request, &review, &error);
+/* Poll/pump review alongside parent and render review's events inline. */
+cai_agent_runtime_finish_review(parent, review, &error);
+cai_agent_runtime_close(review);
+```
+
+`start_review` derives a fresh reviewer from the parent’s workspace, identity,
+model/reasoning selection, developer extension, terminal policy, session-store
+selection, and review event receiver. It preserves the review preset’s private
+session namespace and tool restrictions. The returned child has its own wakeup
+descriptor and is deliberately still host-pumped: CAI never constrains a TUI,
+GUI, or embedding event loop to one rendering model. The inherited event
+receiver can distinguish the source through `event.runtime_session_id`.
+
+Once started, the parent is paused. CAI journals and checkpoints that pause
+before `start_review` returns. Immediate and steering input are rejected;
+normal queued turns remain accepted, journaled, and FIFO, but cannot start.
+If the process crashes, resume restores the pause before it considers replayed
+queued turns. The host starts a replacement isolated review and completes its
+handoff; it never resumes queued parent work without review context.
+The host must call `finish_review` only after the child reaches `COMPLETED`,
+`FAILED`, or `CANCELLED`. For success, CAI first inserts a generated,
+delimited handoff containing the exact schema-validated review JSON into the
+parent’s local history, commits it, journals the resolution, checkpoints the
+parent session, and only then emits `CAI_AGENT_EVENT_REVIEW_HANDED_OFF` and
+releases queued turns. The checkpoint atomically covers the developer-role
+handoff and its resolution marker for recovery purposes: a crash before that
+checkpoint retains the pause. The next parent model request therefore sees the
+report as provenance-labelled internal review context rather than a synthetic
+user instruction. A failed or cancelled child produces a durable no-report
+handoff marker and also releases queued turns.
+
+Checkpoint failure is a hard handoff boundary: the parent remains paused and
+`finish_review` may be retried without inserting the handoff twice. CAI does
+not automatically ask the parent to fix findings; the host/user supplies an
+ordinary next turn, or allows a turn queued during review to proceed. The
+caller owns the review child and must finish the handoff, then close the child
+before closing its parent. Lua deliberately retains that child/parent link
+until child close so queued child events cannot call a released callback.
+
+The start boundary is equally strict. If the review-pending journal record was
+accepted but the checkpoint fails, `start_review` returns the checkpoint error
+with its child output populated and leaves the parent paused. The host retains
+that child: it may finish its terminal review and retry the handoff, or close
+the child and parent before reopening the durable parent with a replacement
+review. CAI never silently clears such a pause, because a later checkpoint
+could otherwise make the recorded pending review visible after restart without
+a reachable child. The Lua binding preserves that reachability by returning
+`review, err` in this exceptional case (rather than its usual `nil, err`
+failure shape); callers that inspect `err` can surface the checkpoint failure
+while retaining the child needed to resolve it. If recovery is impossible,
+Lua permits closing that unfinished child as the documented abandon path; it
+then marks the parent abandoned, rejects all operations other than `close`, and
+requires the host to close and reopen the parent for a replacement review.
+
+The parent’s `REVIEW_STARTED` and `REVIEW_HANDED_OFF` events are observational:
+when its bounded event queue is full, CAI completes the control operation and
+the durable handoff without blocking the owner thread. Hosts must therefore use
+the returned child handle, `finish_review` result, and durable session state as
+the authoritative lifecycle boundary rather than treating either observation
+as a delivery guarantee.
 
 ## 7. Tool surface
 

@@ -62,7 +62,11 @@ typedef enum cai_agent_runtime_event_type {
   /** A normal user turn was accepted to run after the active turn. */
   CAI_AGENT_EVENT_TURN_QUEUED = 17,
   /** Final JSON report emitted by a completed smith-review run. */
-  CAI_AGENT_EVENT_REVIEW_REPORT = 18
+  CAI_AGENT_EVENT_REVIEW_REPORT = 18,
+  /** A parent Smith runtime has launched an isolated review child. */
+  CAI_AGENT_EVENT_REVIEW_STARTED = 19,
+  /** A completed or failed review was durably handed back to its parent. */
+  CAI_AGENT_EVENT_REVIEW_HANDED_OFF = 20
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */
@@ -111,6 +115,8 @@ typedef struct cai_agent_runtime_event {
   int terminal_output_truncated;
   /** Non-zero when detached descendants may remain after shell completion. */
   int terminal_detached_processes_possible;
+  /** Stable source runtime session ID, borrowed until the callback returns. */
+  const char *runtime_session_id;
 } cai_agent_runtime_event;
 
 /** Owner-thread callback that receives queued runtime events. */
@@ -213,6 +219,13 @@ typedef struct cai_agent_runtime_config {
   void *event_context;
   /** Maximum queued normal turns; zero selects the bounded default. */
   size_t turn_queue_limit;
+  /**
+   * Optional observer for review children launched by this runtime. NULL uses
+   * event_callback. The child is still pumped independently by the host.
+   */
+  cai_agent_runtime_event_fn review_event_callback;
+  /** Context passed to review_event_callback; NULL uses event_context. */
+  void *review_event_context;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */
@@ -230,6 +243,38 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
  */
 int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
                                     const cai_agent_review_request *request,
+                                    cai_error *error);
+/**
+ * Launch a fresh, isolated Smith reviewer derived from a quiescent ordinary
+ * Smith runtime and submit its one review request. A recovered durable review
+ * pause is the sole exception: it may launch a replacement review while its
+ * held queued turns remain paused. The returned child has its own session and
+ * wakeup descriptor; the host pumps and renders it just like any other
+ * runtime. While a review child is active, immediate and steering parent input
+ * is rejected, while normal queued turns remain durable and wait for
+ * cai_agent_runtime_finish_review. CAI checkpoints that pause before this
+ * function returns, so recovery keeps queued turns held until a replacement
+ * review is started and handed off. The caller owns the child and must finish
+ * its review handoff, then close the child before closing its parent.
+ * If the pause journal record was accepted but its checkpoint fails, this
+ * function returns that error with out_review populated and keeps the parent
+ * paused; the caller must retain and finish that child, or close both child
+ * and parent before reopening the durable parent for a replacement review.
+ */
+int cai_agent_runtime_start_review(cai_agent_runtime *parent,
+                                   const cai_agent_review_request *request,
+                                   cai_agent_runtime **out_review,
+                                   cai_error *error);
+/**
+ * Persist a completed review report, or a reviewer failure marker, as trusted
+ * handoff context in parent before releasing its queued normal turns. review
+ * must be the active child returned by cai_agent_runtime_start_review and be
+ * in a terminal state. A failed durable checkpoint leaves the parent paused
+ * so the caller may retry this function without duplicating the handoff. The
+ * resolution marker and developer-role handoff are checkpointed together.
+ */
+int cai_agent_runtime_finish_review(cai_agent_runtime *parent,
+                                    cai_agent_runtime *review,
                                     cai_error *error);
 /** Queue steering for injection after the current model/tool cycle. */
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,

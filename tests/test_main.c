@@ -136,6 +136,8 @@ typedef struct runtime_event_state {
   int failed_count;
   int saw_list_tool;
   int saw_review_report;
+  int saw_review_started;
+  int saw_review_handed_off;
   int tool_action;
   char tool_path[PATH_MAX];
   char failure_message[256];
@@ -154,6 +156,7 @@ typedef struct runtime_session_store_state {
   int loads;
   int checkpoints;
   int load_only_saved_scope;
+  int fail_checkpoint_once;
   int saw_goal_checkpoint_without_tool_output;
   int saw_steering_checkpoint_before_watermark;
   int appended_events;
@@ -169,6 +172,7 @@ typedef struct runtime_session_store_state {
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
+  char fail_checkpoint_session_id[CAI_AGENT_SESSION_ID_MAX];
   char saved_checkpoint[8192];
 } runtime_session_store_state;
 
@@ -1795,6 +1799,12 @@ static int test_runtime_event(void *context,
                (int)event->data_length, event->data);
     }
   }
+  if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED) {
+    state->saw_review_started = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
+    state->saw_review_handed_off = 1;
+  }
   if ((event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED ||
        event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) &&
       event->tool_action == CAI_AGENT_TOOL_ACTION_LIST) {
@@ -1870,6 +1880,12 @@ static int test_runtime_session_store_checkpoint(
   if (store == NULL || state == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "runtime test checkpoint state is required");
+  }
+  if (store->fail_checkpoint_once > 0 &&
+      strcmp(session_id, store->fail_checkpoint_session_id) == 0) {
+    store->fail_checkpoint_once--;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "injected runtime checkpoint failure");
   }
   store->checkpoints++;
   store->saved_applied_event_sequence = applied_event_sequence;
@@ -24474,6 +24490,219 @@ static void test_smith_review_runtime(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_smith_review_parent_handoff(test_state *state) {
+  static const char review_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[],\\\"overall_correctness\\\":\\\"patch is "
+      "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
+      "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_review_handoff\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":4,\"total_tokens\":7}}}\n\n";
+  static const char parent_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"Review findings received.\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_handoff\",\"usage\":{\"input_tokens\":5,"
+      "\"output_tokens\":4,\"total_tokens\":9}}}\n\n";
+  static const char *review_required[] = {
+      "POST /v1/responses HTTP/",
+      "Review the current code changes (staged, unstaged, and untracked files)",
+      "You are Cai Smith, a code reviewer"};
+  static const char *parent_required[] = {
+      "POST /v1/responses HTTP/", "act on the review findings",
+      "<review_handoff", "No qualifying defects.", "\"role\":\"developer\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", review_required,
+       sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, review_response},
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, parent_response}};
+  http_mock_client mock;
+  cai_agent_runtime_config config;
+  cai_agent_review_request request;
+  cai_agent_runtime *parent;
+  cai_agent_runtime *review;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  runtime_event_state review_events;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int i;
+
+  if (http_mock_client_open_script(state, "smith_review_parent_handoff", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&events, 0, sizeof(events));
+  memset(&review_events, 0, sizeof(review_events));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  events.owner = pthread_self();
+  review_events.owner = pthread_self();
+  cai_error_init(&error);
+  parent = NULL;
+  review = NULL;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  config.session_scope = "review-parent-handoff";
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  /* A child inherits the callback but may select its own event context. */
+  config.review_event_callback = NULL;
+  config.review_event_context = &review_events;
+  expect_int(state, "smith_review_parent_open",
+             cai_agent_runtime_open(mock.client, &config, &parent, &error),
+             CAI_OK);
+  if (parent != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(
+        state, "smith_review_parent_start",
+        cai_agent_runtime_start_review(parent, &request, &review, &error),
+        CAI_OK);
+    expect_int(
+        state, "smith_review_parent_submit_rejected",
+        cai_agent_runtime_submit(parent, "cannot interrupt review", &error),
+        CAI_ERR_INVALID);
+    expect_int(state, "smith_review_parent_queued",
+               cai_agent_runtime_submit_queued(
+                   parent, "act on the review findings", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; review != NULL && i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_parent_review_pump",
+                 cai_agent_runtime_pump(review, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_parent_review_state",
+                 cai_agent_runtime_state(review, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_parent_review_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "smith_review_parent_review_context",
+               review_events.saw_review_report, 1L);
+    expect_int(state, "smith_review_parent_finish",
+               cai_agent_runtime_finish_review(parent, review, &error), CAI_OK);
+    expect_substr(state, "smith_review_parent_checkpoint_handoff",
+                  store_state.saved_checkpoint, "<review_handoff");
+    expect_substr(state, "smith_review_parent_checkpoint_report",
+                  store_state.saved_checkpoint, "No qualifying defects.");
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_parent_pump",
+                 cai_agent_runtime_pump(parent, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_parent_state",
+                 cai_agent_runtime_state(parent, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_parent_queued_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "smith_review_parent_started_event",
+               events.saw_review_started, 1L);
+    expect_int(state, "smith_review_parent_handoff_event",
+               events.saw_review_handed_off, 1L);
+    cai_agent_runtime_close(review);
+    cai_agent_runtime_close(parent);
+  }
+  http_mock_client_close(state, "smith_review_parent_handoff", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_review_pause_checkpoint_failure(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_review_request request;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *parent;
+  cai_agent_runtime *review;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  parent = NULL;
+  review = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "smith_review_pause_failure_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  config.session_scope = "review-pause-checkpoint-failure";
+  expect_int(state, "smith_review_pause_failure_parent_open",
+             cai_agent_runtime_open(client, &config, &parent, &error), CAI_OK);
+  if (parent != NULL) {
+    (void)snprintf(store_state.fail_checkpoint_session_id,
+                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+                   cai_agent_runtime_session_id(parent));
+    store_state.fail_checkpoint_once = 1;
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(
+        state, "smith_review_pause_failure_start",
+        cai_agent_runtime_start_review(parent, &request, &review, &error),
+        CAI_ERR_TRANSPORT);
+    expect_int(state, "smith_review_pause_failure_child_returned",
+               review != NULL, 1L);
+    expect_int(state, "smith_review_pause_failure_parent_held",
+               cai_agent_runtime_submit(parent, "must remain paused", &error),
+               CAI_ERR_INVALID);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0;
+         review != NULL && i < 20 && run_state != CAI_AGENT_COMPLETED &&
+         run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      expect_int(state, "smith_review_pause_failure_child_pump",
+                 cai_agent_runtime_pump(review, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_pause_failure_child_state",
+                 cai_agent_runtime_state(review, &run_state, &error), CAI_OK);
+    }
+    if (review != NULL) {
+      expect_int(state, "smith_review_pause_failure_handoff",
+                 cai_agent_runtime_finish_review(parent, review, &error),
+                 CAI_OK);
+      expect_int(
+          state, "smith_review_pause_failure_parent_released",
+          cai_agent_runtime_submit(parent, "resume after handoff", &error),
+          CAI_OK);
+      cai_agent_runtime_close(review);
+    }
+    cai_agent_runtime_close(parent);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_lifecycle(test_state *state) {
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -25416,6 +25645,8 @@ static void test_agent_runtime_resume(test_state *state) {
   runtime_session_store_state store_state;
   cai_client *client;
   cai_agent_runtime *runtime;
+  cai_agent_runtime *review;
+  cai_agent_review_request review_request;
   cai_agent_run_state run_state;
   runtime_event_state events;
   cai_error error;
@@ -25424,6 +25655,7 @@ static void test_agent_runtime_resume(test_state *state) {
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
+  review = NULL;
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   memset(&events, 0, sizeof(events));
@@ -25595,6 +25827,87 @@ static void test_agent_runtime_resume(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  /* A checkpointed review pause is recovered before replayed normal input can
+   * reach the worker.  Simulate the crash window after a parent accepted a
+   * queued follow-up and before its child was handed off. */
+  runtime = NULL;
+  review = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 3U;
+  store_state.replay_event_count = 3U;
+  store_state.replay_event_sequences[0] = 1U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "input_journal_v2");
+  store_state.replay_event_sequences[1] = 2U;
+  (void)snprintf(store_state.replay_event_types[1],
+                 sizeof(store_state.replay_event_types[1]), "%s",
+                 "review_pending");
+  (void)snprintf(store_state.replay_event_data_items[1],
+                 sizeof(store_state.replay_event_data_items[1]), "%s",
+                 "interrupted-review");
+  store_state.replay_event_sequences[2] = 3U;
+  (void)snprintf(store_state.replay_event_types[2],
+                 sizeof(store_state.replay_event_types[2]), "%s",
+                 "turn_queued");
+  (void)snprintf(store_state.replay_event_data_items[2],
+                 sizeof(store_state.replay_event_data_items[2]), "%s",
+                 "only after replacement review");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_review_pause_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 3; i++) {
+      expect_int(state, "runtime_resume_review_pause_pump",
+                 cai_agent_runtime_pump(runtime, 20L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_review_pause_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_review_pause_held", run_state,
+               CAI_AGENT_IDLE);
+    expect_int(state, "runtime_resume_review_pause_direct_rejected",
+               cai_agent_runtime_submit(runtime, "must stay paused", &error),
+               CAI_ERR_INVALID);
+    cai_agent_review_request_init(&review_request);
+    review_request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "runtime_resume_review_pause_replacement_start",
+               cai_agent_runtime_start_review(runtime, &review_request, &review,
+                                              &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0;
+         review != NULL && i < 20 && run_state != CAI_AGENT_COMPLETED &&
+         run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      expect_int(state, "runtime_resume_review_pause_review_pump",
+                 cai_agent_runtime_pump(review, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_review_pause_review_state",
+                 cai_agent_runtime_state(review, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_review_pause_finish",
+               cai_agent_runtime_finish_review(runtime, review, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "runtime_resume_review_pause_parent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_review_pause_parent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_review_pause_released", run_state,
+               CAI_AGENT_FAILED);
+    cai_agent_runtime_close(review);
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -37069,6 +37382,9 @@ static const test_entry test_entries[] = {
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
     {"smith_review_runtime", test_smith_review_runtime},
+    {"smith_review_parent_handoff", test_smith_review_parent_handoff},
+    {"smith_review_pause_checkpoint_failure",
+     test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},

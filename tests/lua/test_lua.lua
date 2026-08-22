@@ -124,6 +124,8 @@ assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) == "number",
   "agent terminal cancellation event")
 assert(type(cai.AGENT_EVENT_TURN_QUEUED) == "number", "agent queued turn event")
 assert(type(cai.AGENT_EVENT_REVIEW_REPORT) == "number", "agent review report event")
+assert(type(cai.AGENT_EVENT_REVIEW_STARTED) == "number", "agent review started event")
+assert(type(cai.AGENT_EVENT_REVIEW_HANDED_OFF) == "number", "agent review handoff event")
 assert(type(cai.AGENT_TOOL_ACTION_READ) == "number", "agent read action")
 assert(type(cai.AGENT_TOOL_ACTION_PATCH) == "number", "agent patch action")
 assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
@@ -261,6 +263,10 @@ do
     "Lua client new_smith_review_runtime method missing")
   assert(type(registry["cai.agent_runtime"].__index.submit_review) == "function",
     "Lua agent runtime submit_review method missing")
+  assert(type(registry["cai.agent_runtime"].__index.start_review) == "function",
+    "Lua agent runtime start_review method missing")
+  assert(type(registry["cai.agent_runtime"].__index.finish_review) == "function",
+    "Lua agent runtime finish_review method missing")
   assert(type(agent_methods.set_session_usage_limits) == "function",
     "Lua agent set_session_usage_limits method missing")
   assert(type(agent_methods.usage) == "function",
@@ -866,11 +872,72 @@ do
   failed_client:close()
 end
 
+do
+  local review_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local parent = assert_ok(review_client:new_smith_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+  }))
+  local review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  assert_not_ok(parent:submit("must wait for review"),
+    "parent direct input must be paused during review")
+  local review_state = "sampling"
+  for _ = 1, 20 do
+    review_state = assert_ok(review:pump(50))
+    if review_state == "failed" or review_state == "cancelled" or review_state == "completed" then
+      break
+    end
+  end
+  assert(review_state == "failed" or review_state == "cancelled",
+    "offline review child must reach a terminal failure state")
+  assert_ok(parent:finish_review(review))
+  local second_review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  review:close()
+  assert_not_ok(parent:close(),
+    "closing an earlier review must retain a later review callback receiver")
+  review_state = "sampling"
+  for _ = 1, 20 do
+    review_state = assert_ok(second_review:pump(50))
+    if review_state == "failed" or review_state == "cancelled" or review_state == "completed" then
+      break
+    end
+  end
+  assert(review_state == "failed" or review_state == "cancelled",
+    "second offline review child must reach a terminal failure state")
+  assert_ok(parent:finish_review(second_review))
+  second_review:close()
+  parent:close()
+  review_client:close()
+end
+
+do
+  local review_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local parent = assert_ok(review_client:new_smith_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+  }))
+  local review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  review:close()
+  assert_throws(function()
+    parent:submit("abandoned reviews cannot resume the parent")
+  end, "abandoned review parent must reject further operations")
+  parent:close()
+  review_client:close()
+end
+
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 do
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "submit_review", "submit_steering", "submit_queued", "pump", "state",
+  for _, method in ipairs({ "submit", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "pump", "state",
     "session_id", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)

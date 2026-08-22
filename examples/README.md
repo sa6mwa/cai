@@ -145,6 +145,21 @@ fresh session and no CAI patch, goal, MCP, or image-generation tools. It does
 retain the normal one-slot managed terminal for git inspection and checks, so
 the embedding host's terminal sandbox policy remains authoritative.
 
+For a Codex-like review launched from an existing Smith chat, call
+`cai_agent_runtime_start_review(parent, &request, &review, &error)` (Lua:
+`parent:start_review(request)`). Pump the returned child runtime in the same
+application event loop, then call `cai_agent_runtime_finish_review(parent,
+review, &error)` (Lua: `parent:finish_review(review)`) after it reaches a
+terminal state. The handoff is checkpointed into the parent before any normal
+turns queued during review resume. Close that child before the parent so its
+remaining events cannot outlive the callback receiver. CAI itself still leaves
+`/review` parsing to the example or downstream UI. If the durable parent-pause
+checkpoint fails after a review child was created, the C call returns an error
+and a populated child output; Lua mirrors this as `review, err` so the child
+remains available for a safe handoff or close. Closing an unfinished Lua child
+marks its parent abandoned; the host must then close and reopen that parent
+before starting a replacement review.
+
 ## History Export
 
 Run one non-streamed agent turn with opt-in local history capture, then stream

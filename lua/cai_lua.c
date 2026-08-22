@@ -108,6 +108,11 @@ typedef struct cai_lua_agent_runtime {
   int parent_ref;
   int callback_ref;
   int session_store_ref;
+  int review_parent_ref;
+  int review_children_ref;
+  int review_finished;
+  int review_abandoned;
+  size_t review_child_count;
   size_t active_calls;
 } cai_lua_agent_runtime;
 
@@ -1080,6 +1085,8 @@ static cai_lua_agent_runtime *cai_lua_check_agent_runtime(lua_State *L,
   self =
       (cai_lua_agent_runtime *)luaL_checkudata(L, index, CAI_LUA_AGENT_RUNTIME);
   luaL_argcheck(L, self->ptr != NULL, index, "closed cai agent runtime");
+  luaL_argcheck(L, !self->review_abandoned, index,
+                "abandoned cai review runtime; close it");
   return self;
 }
 
@@ -2740,6 +2747,10 @@ static int cai_lua_agent_runtime_event(void *context,
   lua_setfield(L, -2, "state");
   lua_pushinteger(L, (lua_Integer)event->sequence);
   lua_setfield(L, -2, "sequence");
+  if (event->runtime_session_id != NULL) {
+    lua_pushstring(L, event->runtime_session_id);
+    lua_setfield(L, -2, "runtime_session_id");
+  }
   if (event->data != NULL) {
     lua_pushlstring(L, event->data, event->data_length);
     lua_setfield(L, -2, "data");
@@ -2817,6 +2828,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->parent_ref = cai_lua_ref_parent(L, 1);
   runtime->callback_ref = LUA_NOREF;
   runtime->session_store_ref = LUA_NOREF;
+  runtime->review_parent_ref = LUA_NOREF;
+  runtime->review_children_ref = LUA_NOREF;
   native_session_store = NULL;
   lua_getfield(L, 2, "event_callback");
   if (!lua_isnil(L, -1)) {
@@ -2875,6 +2888,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_size_field(L, 2, "turn_queue_limit", 0U);
   config.event_callback = cai_lua_agent_runtime_event;
   config.event_context = runtime;
+  config.review_event_callback = cai_lua_agent_runtime_event;
+  config.review_event_context = runtime;
   if (config.workspace_directory == NULL ||
       config.workspace_directory[0] == '\0') {
     if (runtime->callback_ref != LUA_NOREF) {
@@ -3406,7 +3421,10 @@ static int cai_lua_agent_runtime_gc(lua_State *L) {
   cai_lua_agent_runtime *self;
 
   self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
-  if (self->active_calls != 0U) {
+  if (self->active_calls != 0U ||
+      (self->review_parent_ref != LUA_NOREF && !self->review_finished &&
+       !self->review_abandoned) ||
+      self->review_child_count != 0U) {
     return 0;
   }
   if (self->ptr != NULL) {
@@ -3439,12 +3457,37 @@ static int cai_lua_agent_runtime_gc(lua_State *L) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->parent_ref);
     self->parent_ref = LUA_NOREF;
   }
+  if (self->review_parent_ref != LUA_NOREF) {
+    cai_lua_agent_runtime *parent;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, self->review_parent_ref);
+    parent =
+        (cai_lua_agent_runtime *)luaL_testudata(L, -1, CAI_LUA_AGENT_RUNTIME);
+    if (parent != NULL && parent->review_children_ref != LUA_NOREF) {
+      lua_rawgeti(L, LUA_REGISTRYINDEX, parent->review_children_ref);
+      lua_pushvalue(L, 1);
+      lua_pushnil(L);
+      lua_rawset(L, -3);
+      lua_pop(L, 1);
+      if (parent->review_child_count > 0U) {
+        parent->review_child_count--;
+      }
+    }
+    lua_pop(L, 1);
+    luaL_unref(L, LUA_REGISTRYINDEX, self->review_parent_ref);
+    self->review_parent_ref = LUA_NOREF;
+  }
+  if (self->review_children_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->review_children_ref);
+    self->review_children_ref = LUA_NOREF;
+  }
   self->parent_client = NULL;
   return 0;
 }
 
 static int cai_lua_agent_runtime_close(lua_State *L) {
   cai_lua_agent_runtime *self;
+  cai_lua_agent_runtime *parent;
   cai_error error;
 
   self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
@@ -3454,6 +3497,35 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
         L,
         cai_lua_set_error(&error, CAI_ERR_INVALID,
                           "cai agent runtime has an active operation"),
+        &error);
+  }
+  if (self->review_parent_ref != LUA_NOREF && !self->review_finished) {
+    /*
+     * The C recovery contract permits abandoning a child whose durable
+     * handoff cannot be checkpointed, provided its parent is closed and
+     * reopened for a replacement review. Make that escape hatch explicit in
+     * Lua without leaving a parent that can still be used with a dangling C
+     * child pointer.
+     */
+    lua_rawgeti(L, LUA_REGISTRYINDEX, self->review_parent_ref);
+    parent =
+        (cai_lua_agent_runtime *)luaL_testudata(L, -1, CAI_LUA_AGENT_RUNTIME);
+    if (parent != NULL) {
+      parent->review_abandoned = 1;
+    }
+    lua_pop(L, 1);
+    self->review_abandoned = 1;
+    self->review_finished = 1;
+    return cai_lua_agent_runtime_gc(L);
+  }
+  if ((self->review_parent_ref != LUA_NOREF && !self->review_finished) ||
+      self->review_child_count != 0U) {
+    cai_error_init(&error);
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(
+            &error, CAI_ERR_INVALID,
+            "finish the active review before closing either agent runtime"),
         &error);
   }
   return cai_lua_agent_runtime_gc(L);
@@ -3503,6 +3575,122 @@ static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   cai_lua_agent_runtime_enter(self);
   rc = cai_agent_runtime_submit_review(self->ptr, &request, &error);
   cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_start_review(lua_State *L) {
+  cai_lua_agent_runtime *parent;
+  cai_lua_agent_runtime *review;
+  cai_lua_native_store *store;
+  cai_agent_review_request request;
+  cai_agent_runtime *review_ptr;
+  const char *target;
+  cai_error error;
+  int rc;
+
+  parent = cai_lua_check_agent_runtime(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  cai_agent_review_request_init(&request);
+  target = cai_lua_opt_string_field(L, 2, "target", NULL);
+  if (target == NULL || strcmp(target, "uncommitted") == 0) {
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+  } else if (strcmp(target, "base") == 0) {
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+  } else if (strcmp(target, "commit") == 0) {
+    request.target = CAI_AGENT_REVIEW_COMMIT;
+    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
+    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+  } else if (strcmp(target, "custom") == 0) {
+    request.target = CAI_AGENT_REVIEW_CUSTOM;
+    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+  } else {
+    return luaL_error(
+        L, "review target must be uncommitted, base, commit, or custom");
+  }
+  cai_error_init(&error);
+  review_ptr = NULL;
+  cai_lua_agent_runtime_enter(parent);
+  rc = cai_agent_runtime_start_review(parent->ptr, &request, &review_ptr,
+                                      &error);
+  cai_lua_agent_runtime_leave(parent);
+  if (rc != CAI_OK && review_ptr == NULL) {
+    return cai_lua_fail(L, rc, &error);
+  }
+
+  review = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*review));
+  memset(review, 0, sizeof(*review));
+  review->ptr = review_ptr;
+  review->L = L;
+  review->parent_client = parent->parent_client;
+  review->parent_ref = LUA_NOREF;
+  review->callback_ref = LUA_NOREF;
+  review->session_store_ref = LUA_NOREF;
+  review->review_parent_ref = cai_lua_ref_parent(L, 1);
+  review->review_children_ref = LUA_NOREF;
+  if (parent->parent_ref != LUA_NOREF) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, parent->parent_ref);
+    review->parent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  if (review->parent_client != NULL) {
+    review->parent_client->child_runtimes++;
+  }
+  if (parent->session_store_ref != LUA_NOREF) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, parent->session_store_ref);
+    review->session_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, review->session_store_ref);
+    store = (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (store != NULL && store->adapter != NULL) {
+      store->adapter->active_runtimes++;
+    }
+    lua_pop(L, 1);
+  }
+  if (parent->review_children_ref == LUA_NOREF) {
+    lua_newtable(L);
+    parent->review_children_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  lua_rawgeti(L, LUA_REGISTRYINDEX, parent->review_children_ref);
+  lua_pushvalue(L, -2);
+  lua_pushboolean(L, 1);
+  lua_rawset(L, -3);
+  lua_pop(L, 1);
+  parent->review_child_count++;
+  luaL_getmetatable(L, CAI_LUA_AGENT_RUNTIME);
+  lua_setmetatable(L, -2);
+  if (rc != CAI_OK) {
+    /*
+     * The C API can return a live reviewer alongside the error when the
+     * durable review-pause checkpoint failed after its journal record was
+     * accepted. Keep the child reachable: the host must be able to finish its
+     * review handoff (or close it with the parent) while the parent remains
+     * paused. Returning the child first preserves the normal Lua ownership
+     * model; the second result reports the checkpoint failure to callers that
+     * need to surface it.
+     */
+    cai_lua_push_error(L, rc, &error);
+    cai_lua_error_cleanup(&error);
+    return 2;
+  }
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_finish_review(lua_State *L) {
+  cai_lua_agent_runtime *parent;
+  cai_lua_agent_runtime *review;
+  cai_error error;
+  int rc;
+
+  parent = cai_lua_check_agent_runtime(L, 1);
+  review = cai_lua_check_agent_runtime(L, 2);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(parent);
+  rc = cai_agent_runtime_finish_review(parent->ptr, review->ptr, &error);
+  cai_lua_agent_runtime_leave(parent);
+  if (rc != CAI_OK) {
+    return cai_lua_bool_result(L, rc, &error);
+  }
+  review->review_finished = 1;
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -9273,6 +9461,8 @@ static const luaL_Reg cai_lua_client_methods[] = {
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
     {"submit_review", cai_lua_agent_runtime_submit_review},
+    {"start_review", cai_lua_agent_runtime_start_review},
+    {"finish_review", cai_lua_agent_runtime_finish_review},
     {"submit_steering", cai_lua_agent_runtime_submit_steering},
     {"submit_queued", cai_lua_agent_runtime_submit_queued},
     {"pump", cai_lua_agent_runtime_pump},
@@ -9687,6 +9877,10 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TURN_QUEUED", CAI_AGENT_EVENT_TURN_QUEUED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_REVIEW_REPORT",
                       CAI_AGENT_EVENT_REVIEW_REPORT);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_REVIEW_STARTED",
+                      CAI_AGENT_EVENT_REVIEW_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_REVIEW_HANDED_OFF",
+                      CAI_AGENT_EVENT_REVIEW_HANDED_OFF);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
