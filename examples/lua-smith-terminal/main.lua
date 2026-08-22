@@ -132,6 +132,47 @@ local function render_event(event)
   end
 end
 
+local function review_request(command)
+  local argument = command:sub(8):match("^%s*(.-)%s*$")
+  if argument == "" or argument == "uncommitted" then
+    return { target = "uncommitted" }
+  end
+  local base = argument:match("^base%s+(.+)$")
+  if base then
+    return { target = "base", base_branch = base }
+  end
+  local commit = argument:match("^commit%s+(.+)$")
+  if commit then
+    return { target = "commit", commit = commit }
+  end
+  -- Preserve Codex-like free-form review scope verbatim.
+  return { target = "custom", instructions = argument }
+end
+
+local function run_review(parent, command)
+  local review, err = parent:start_review(review_request(command))
+  if not review then
+    fail("runtime:start_review", err)
+  end
+  if err then
+    io.stderr:write("review start checkpoint failed: " ..
+      (err.message or err.status_string or tostring(err)) .. "\n")
+  end
+  io.write(gray, "Started isolated review\n", reset)
+  while true do
+    local state, pump_err = review:pump(100)
+    if not state then
+      review:close()
+      fail("review:pump", pump_err)
+    end
+    if state == "completed" or state == "failed" or state == "cancelled" then
+      break
+    end
+  end
+  ok(parent:finish_review(review), nil, "runtime:finish_review")
+  review:close()
+end
+
 local client_config
 if use_chatgpt_auth then
   client_config = { chatgpt_auth = true, chatgpt_auth_json = auth_json }
@@ -160,6 +201,9 @@ while true do
     else
       io.write(gray, "Exported ", path, "\n", reset)
     end
+  elseif line:sub(1, 7) == "/review" and
+      (#line == 7 or line:sub(8, 8):match("%s")) then
+    run_review(runtime, line)
   elseif line ~= "" then
     if line:sub(1, 7) == "/queue " then
       ok(runtime:submit_queued(line:sub(8)), nil, "runtime:submit_queued")

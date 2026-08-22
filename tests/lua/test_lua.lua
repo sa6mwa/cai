@@ -1016,6 +1016,8 @@ do
   assert_eq(review_runtime:state(), "idle", "Lua Smith review runtime initial state")
   assert_not_ok(review_runtime:submit_review({ target = "custom" }),
     "Lua Smith review custom target requires instructions")
+  assert_ok(review_runtime:submit_review({ target = "base", base_branch = "HEAD~2" }),
+    nil, "Lua Smith review target accepts a safe revision expression")
   review_runtime:close()
 end
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))

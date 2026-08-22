@@ -410,10 +410,15 @@ cai_agent_runtime_submit_review(runtime, &request, &error);
 ```
 
 The target is one of `UNCOMMITTED` (staged, unstaged, and untracked changes),
-`BASE_BRANCH` (the merge diff against a validated ref), `COMMIT` (a validated
+`BASE_BRANCH` (the merge diff against a validated base revision such as
+`trunk`, `HEAD~2`, or a safe branch-qualified ref), `COMMIT` (a validated
 hexadecimal commit ID), or `CUSTOM` (host-owned review instructions). CAI does
-not parse `/review`; a TUI/GUI maps its command grammar to this API. A review
-runtime accepts exactly one `submit_review` request; generic, queued, and
+not parse `/review`; a TUI/GUI maps its command grammar to this API. The Smith
+terminal examples demonstrate that host-only mapping: `/review` and `/review
+uncommitted` select uncommitted work, `/review base <revision>` selects the
+structured base target, `/review commit <sha>` selects the commit target, and
+any other `/review <message>` becomes the reviewer’s exact custom instruction.
+A review runtime accepts exactly one `submit_review` request; generic, queued, and
 steering inputs are rejected so its local history cannot become a second
 review's hidden context. `smith-review` rejects both `session_id` and
 `resume_latest`; it generates a fresh ID, never imports or overwrites a

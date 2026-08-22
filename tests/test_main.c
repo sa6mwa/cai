@@ -24279,6 +24279,7 @@ static void test_smith_review_runtime(test_state *state) {
   http_mock_client invalid_mock;
   cai_agent_runtime_config config;
   cai_agent_runtime_config normal_config;
+  cai_agent_runtime_config revision_config;
   cai_agent_review_request request;
   cai_agent_runtime *runtime;
   cai_agent_runtime *normal_runtime;
@@ -24383,6 +24384,29 @@ static void test_smith_review_runtime(test_state *state) {
   }
   expect_str(state, "smith_review_storage_scope", store_state.scope,
              "smith-review:review-isolation");
+  runtime = NULL;
+  cai_agent_runtime_config_init(&revision_config);
+  revision_config.preset = CAI_SMITH_REVIEW_PRESET;
+  revision_config.workspace_directory = "/tmp";
+  revision_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  revision_config.disable_default_session_store = 1;
+  revision_config.session_store = &store;
+  revision_config.session_scope = "review-revision-expression";
+  expect_int(
+      state, "smith_review_revision_runtime_open",
+      cai_agent_runtime_open(mock.client, &revision_config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = "HEAD~2";
+    expect_int(state, "smith_review_revision_expression",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    cai_agent_runtime_close(runtime);
+  }
+  expect_str(state, "smith_review_revision_storage_scope", store_state.scope,
+             "smith-review:review-revision-expression");
   cai_agent_runtime_config_init(&normal_config);
   normal_config.workspace_directory = "/tmp";
   normal_config.model = CAI_MODEL_GPT_5_6_LUNA;

@@ -3533,7 +3533,8 @@ static int cai_runtime_review_ref_valid(const char *value) {
     if (!((*cursor >= 'a' && *cursor <= 'z') ||
           (*cursor >= 'A' && *cursor <= 'Z') ||
           (*cursor >= '0' && *cursor <= '9') || *cursor == '.' ||
-          *cursor == '_' || *cursor == '-' || *cursor == '/')) {
+          *cursor == '_' || *cursor == '-' || *cursor == '/' ||
+          *cursor == '~' || *cursor == '^')) {
       return 0;
     }
   }
@@ -3601,9 +3602,10 @@ cai_runtime_render_review_request(const cai_agent_review_request *request,
       return cai_set_error(error, CAI_ERR_INVALID,
                            "review base_branch must be a safe git ref");
     }
-    format = "Review code changes against base branch %s. First establish the "
-             "merge base with that branch, inspect the merge diff, and provide "
-             "prioritized, actionable findings.";
+    format =
+        "Review code changes against base revision %s. First establish the "
+        "merge base with that branch, inspect the merge diff, and provide "
+        "prioritized, actionable findings.";
     length = snprintf(NULL, 0, format, request->base_branch);
   } else if (request->target == CAI_AGENT_REVIEW_COMMIT) {
     if (!cai_runtime_review_commit_valid(request->commit)) {

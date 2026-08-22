@@ -125,7 +125,18 @@ make -C examples run-lua-smith-terminal CAI_CHATGPT_AUTH=1 \
 ```
 
 The Lua example also accepts `CAI_CHATGPT_AUTH_JSON=/path/auth.json`. Exit
-either example with Ctrl-D or `/exit`. The C example integrates stdin and
+either example with Ctrl-D or `/exit`. Both examples intercept `/review`
+themselves: `/review` (or `/review uncommitted`) reviews workspace changes,
+`/review base <revision>` compares against a branch, tag, commit, or revision
+such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and
+`/review <message>` forwards the message verbatim as the reviewer’s custom
+scope. Thus `/review changes against trunk` has the same free-form intent as
+Codex review. The C example pumps the isolated child alongside its parent and
+hands the report back into the parent session before accepting follow-up work;
+ordinary input entered while that review is active becomes a queued parent
+turn. The deliberately small blocking Lua example pumps the child to
+completion.
+The C example integrates stdin and
 CAI's wakeup descriptor in one poll loop, so its normal active-turn input uses
 the steering API path. `/queue <prompt>` is an examples-only convenience for
 the separate queued-normal-turn API. The small Lua example intentionally keeps

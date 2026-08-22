@@ -18,6 +18,40 @@ typedef struct render_state {
   char command[161];
 } render_state;
 
+static const char *skip_space(const char *text) {
+  while (*text == ' ' || *text == '\t') {
+    text++;
+  }
+  return text;
+}
+
+static int start_review(cai_agent_runtime *parent, const char *command,
+                        cai_agent_runtime **out_review, cai_error *error) {
+  cai_agent_review_request request;
+  const char *argument;
+
+  if (out_review == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  *out_review = NULL;
+  argument = skip_space(command + 7U);
+  cai_agent_review_request_init(&request);
+  if (*argument == '\0' || strcmp(argument, "uncommitted") == 0) {
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+  } else if (strncmp(argument, "base ", 5U) == 0) {
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = skip_space(argument + 5U);
+  } else if (strncmp(argument, "commit ", 7U) == 0) {
+    request.target = CAI_AGENT_REVIEW_COMMIT;
+    request.commit = skip_space(argument + 7U);
+  } else {
+    /* Preserve Codex-like free-form review scope verbatim. */
+    request.target = CAI_AGENT_REVIEW_CUSTOM;
+    request.instructions = argument;
+  }
+  return cai_agent_runtime_start_review(parent, &request, out_review, error);
+}
+
 static void remember_command(render_state *state, const char *data,
                              size_t length) {
   size_t count;
@@ -165,9 +199,10 @@ int main(void) {
   cai_agent_runtime_config runtime_config;
   cai_client *client;
   cai_agent_runtime *runtime;
+  cai_agent_runtime *review;
   cai_agent_run_state status;
   cai_error error;
-  struct pollfd poll_fds[2];
+  struct pollfd poll_fds[3];
   render_state renderer;
   char *dotenv_api_key;
   char workspace[4096];
@@ -181,6 +216,7 @@ int main(void) {
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
+  review = NULL;
   dotenv_api_key = NULL;
   exit_requested = 0;
   prompt_shown = 0;
@@ -222,7 +258,14 @@ int main(void) {
     poll_fds[0].events = POLLIN;
     poll_fds[1].fd = wakeup_fd;
     poll_fds[1].events = POLLIN;
-    poll_result = poll(poll_fds, 2U, 100);
+    if (review != NULL) {
+      rc = cai_agent_runtime_wakeup_fd(review, &poll_fds[2].fd, &error);
+      if (rc != CAI_OK) {
+        break;
+      }
+      poll_fds[2].events = POLLIN;
+    }
+    poll_result = poll(poll_fds, review != NULL ? 3U : 2U, 100);
     if (poll_result < 0) {
       if (errno == EINTR) {
         continue;
@@ -236,6 +279,26 @@ int main(void) {
       rc = cai_agent_runtime_pump(runtime, 0L, &error);
       if (rc != CAI_OK) {
         break;
+      }
+    }
+    if (review != NULL &&
+        (poll_fds[2].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+      rc = cai_agent_runtime_pump(review, 0L, &error);
+      if (rc != CAI_OK) {
+        break;
+      }
+      rc = cai_agent_runtime_state(review, &status, &error);
+      if (rc != CAI_OK) {
+        break;
+      }
+      if (status == CAI_AGENT_COMPLETED || status == CAI_AGENT_FAILED ||
+          status == CAI_AGENT_CANCELLED) {
+        rc = cai_agent_runtime_finish_review(runtime, review, &error);
+        if (rc != CAI_OK) {
+          break;
+        }
+        cai_agent_runtime_close(review);
+        review = NULL;
       }
     }
     if ((poll_fds[0].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
@@ -264,11 +327,35 @@ int main(void) {
       }
       continue;
     }
+    if (strncmp(line, "/review", 7U) == 0 &&
+        (line[7] == '\0' || line[7] == ' ' || line[7] == '\t')) {
+      if (review != NULL) {
+        fputs(GRAY "Review already in progress" RESET "\n", stdout);
+        continue;
+      }
+      rc = start_review(runtime, line, &review, &error);
+      if (review != NULL) {
+        fputs(GRAY "Started isolated review" RESET "\n", stdout);
+      }
+      if (rc != CAI_OK) {
+        fprintf(stderr, "smith-terminal: review start failed: %s\n",
+                error.message != NULL ? error.message : "unknown error");
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        /* A durable-pause checkpoint error may still return a live child. */
+        if (review != NULL) {
+          rc = CAI_OK;
+        }
+      }
+      continue;
+    }
     if (line[0] == '\0') {
       continue;
     }
     if (strncmp(line, "/queue ", 7U) == 0) {
       rc = cai_agent_runtime_submit_queued(runtime, line + 7, &error);
+    } else if (review != NULL) {
+      rc = cai_agent_runtime_submit_queued(runtime, line, &error);
     } else {
       rc = cai_agent_runtime_state(runtime, &status, &error);
       if (rc == CAI_OK && (status == CAI_AGENT_SAMPLING ||
@@ -282,6 +369,7 @@ int main(void) {
   if (rc != CAI_OK && error.message != NULL) {
     fprintf(stderr, "smith-terminal: %s\n", error.message);
   }
+  cai_agent_runtime_close(review);
   cai_agent_runtime_close(runtime);
   if (client != NULL) {
     client->close(client);
