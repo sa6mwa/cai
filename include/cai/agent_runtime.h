@@ -66,7 +66,12 @@ typedef enum cai_agent_runtime_event_type {
   /** A parent Smith runtime has launched an isolated review child. */
   CAI_AGENT_EVENT_REVIEW_STARTED = 19,
   /** A completed or failed review was durably handed back to its parent. */
-  CAI_AGENT_EVENT_REVIEW_HANDED_OFF = 20
+  CAI_AGENT_EVENT_REVIEW_HANDED_OFF = 20,
+  /**
+   * Provider-supplied reasoning-summary delta. This is not raw chain of
+   * thought; it is the summary explicitly returned by the provider.
+   */
+  CAI_AGENT_EVENT_REASONING_SUMMARY = 21
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */

@@ -253,6 +253,9 @@ int cai_client_new_smith_agent(cai_client *client,
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort
                                       : CAI_REASONING_EFFORT_MEDIUM;
+  /* Smith is intentionally operator-visible: request the provider's concise
+   * summaries so runtimes can deliver them to an embedding UI. */
+  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
   agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
   agent_config.disable_parallel_tool_calls = 1;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
@@ -457,6 +460,7 @@ int cai_client_new_smith_review_agent(cai_client *client,
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort
                                       : CAI_REASONING_EFFORT_MEDIUM;
+  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
   agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
   agent_config.disable_parallel_tool_calls = 1;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;

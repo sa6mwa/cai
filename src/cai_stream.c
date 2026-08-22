@@ -1693,15 +1693,17 @@ static int cai_sse_emit_event(cai_sse_state *state,
                    0 &&
                !cai_stream_spooled_empty(&delta_doc.delta)) {
       rc = cai_sse_emit_function_call_delta(state, &delta_doc, 1);
-    } else if (!cai_stream_spooled_empty(&delta_doc.delta)) {
+    } else if ((strcmp(event_name, "response.reasoning_summary_text.delta") ==
+                    0 ||
+                strcmp(event_name, "response.reasoning_summary.delta") == 0) &&
+               !cai_stream_spooled_empty(&delta_doc.delta)) {
       rc = cai_sse_write_reasoning_delta(state, &delta_doc.delta);
     }
     goto done;
   }
 
   if (strcmp(event_name, "response.reasoning_summary_text.done") == 0 ||
-      strcmp(event_name, "response.reasoning_summary.done") == 0 ||
-      strcmp(event_name, "response.reasoning_text.done") == 0) {
+      strcmp(event_name, "response.reasoning_summary.done") == 0) {
     rc = cai_sse_finish_reasoning(state);
     goto done;
   }

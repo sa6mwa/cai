@@ -138,10 +138,13 @@ typedef struct runtime_event_state {
   int saw_review_report;
   int saw_review_started;
   int saw_review_handed_off;
+  int saw_reasoning_summary;
+  int reasoning_summary_count;
   int tool_action;
   char tool_path[PATH_MAX];
   char failure_message[256];
   char review_report[1024];
+  char reasoning_summary[1024];
   int wrong_thread;
 } runtime_event_state;
 
@@ -1797,6 +1800,14 @@ static int test_runtime_event(void *context,
     if (event->data != NULL) {
       snprintf(state->review_report, sizeof(state->review_report), "%.*s",
                (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY) {
+    state->saw_reasoning_summary = 1;
+    state->reasoning_summary_count++;
+    if (event->data != NULL) {
+      snprintf(state->reasoning_summary, sizeof(state->reasoning_summary),
+               "%.*s", (int)event->data_length, event->data);
     }
   }
   if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED) {
@@ -24107,6 +24118,7 @@ static void test_smith_profile(test_state *state) {
       "\"model\":\"gpt-5.6-luna\"",
       "You are Vectis Agent Smith",
       "\"effort\":\"medium\"",
+      "\"summary\":\"concise\"",
       "\"parallel_tool_calls\":false",
       "\"name\":\"read_file\"",
       "\"name\":\"list_files\"",
@@ -24233,12 +24245,12 @@ static void test_smith_profile(test_state *state) {
 
 static void test_smith_review_runtime(test_state *state) {
   static const char review_response[] =
-      "data: "
-      "{\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"findings\\\":["
-      "],\"}\n\n"
-      "data: "
-      "{\"type\":\"response.output_text.delta\",\"delta\":\"\\\"overall_"
-      "correctness\\\":\\\"patch is "
+      "data: {\"type\":\"response.reasoning_text.delta\","
+      "\"delta\":\"hidden raw reasoning\"}\n\n"
+      "data: {\"type\":\"response.reasoning_summary_text.delta\","
+      "\"delta\":\"Checking the diff.\"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[],\\\"overall_correctness\\\":\\\"patch is "
       "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
       "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
       "data: "
@@ -24260,6 +24272,7 @@ static void test_smith_review_runtime(test_state *state) {
       "\"stream\":true",
       "Review the current code changes (staged, unstaged, and untracked files)",
       "You are Cai Smith, a code reviewer",
+      "\"summary\":\"concise\"",
       "\"name\":\"exec_command\"",
       "\"name\":\"write_stdin\""};
   static const mock_http_expectation script[] = {
@@ -24351,6 +24364,12 @@ static void test_smith_review_runtime(test_state *state) {
                CAI_AGENT_COMPLETED);
     expect_int(state, "smith_review_runtime_report", events.saw_review_report,
                1L);
+    expect_int(state, "smith_review_runtime_reasoning_summary",
+               events.saw_reasoning_summary, 1L);
+    expect_int(state, "smith_review_runtime_reasoning_summary_count",
+               events.reasoning_summary_count, 1L);
+    expect_str(state, "smith_review_runtime_reasoning_summary_value",
+               events.reasoning_summary, "Checking the diff.");
     expect_str(state, "smith_review_runtime_report_value", events.review_report,
                "{\"findings\":[],\"overall_correctness\":\"patch is "
                "correct\",\"overall_explanation\":\"No qualifying "
@@ -36806,8 +36825,8 @@ static void test_stream_openrouter_metadata_events(test_state *state) {
                                                 NULL, &usage, &error),
              CAI_OK);
   expect_str(state, "stream_or_metadata_output", writer.buffer, "or text");
-  expect_str(state, "stream_or_metadata_reasoning", reasoning_writer.buffer,
-             "[r] or thought\n\n");
+  expect_str(state, "stream_or_metadata_raw_reasoning_not_exposed",
+             reasoning_writer.buffer, "");
   expect_int(state, "stream_or_metadata_usage_total", usage.total_tokens, 11L);
   expect_int(state, "stream_or_metadata_usage_cached",
              usage.input_cached_tokens, 2L);

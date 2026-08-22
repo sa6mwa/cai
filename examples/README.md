@@ -111,12 +111,14 @@ make -C examples run-streaming-text
 
 The C and Lua Smith terminal examples are reference renderers for the generic
 agent-runtime event stream. They run the `smith` preset in the current
-directory, stream model text, print each terminal command as `$ <command>`,
-show the first ten terminal output lines in dim gray, and report terminal
-completion from the runtime's structured lifecycle facts. Local tool outcomes
-arrive as semantic facts, so the examples can show receipts such as `Read
-src/main.c` and `Patched 2 files` without parsing raw tool output. They do not
-own a second agent loop or terminal implementation.
+directory, stream provider-issued concise reasoning summaries as `Thinking:`
+(never hidden raw chain of thought), and stream model text as `Smith:`. They
+print each terminal command as `$ <command>`, show the first ten terminal
+output lines in dim gray, and report terminal completion from the runtime's
+structured lifecycle facts. Local tool outcomes arrive as semantic facts, so
+the examples can show receipts such as `Read src/main.c` and `Patched 2 files`
+without parsing raw tool output. They do not own a second agent loop or
+terminal implementation.
 
 ```sh
 make -C examples run-smith-terminal
@@ -131,11 +133,13 @@ themselves: `/review` (or `/review uncommitted`) reviews workspace changes,
 such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and
 `/review <message>` forwards the message verbatim as the reviewer’s custom
 scope. Thus `/review changes against trunk` has the same free-form intent as
-Codex review. The C example pumps the isolated child alongside its parent and
-hands the report back into the parent session before accepting follow-up work;
-ordinary input entered while that review is active becomes a queued parent
-turn. The deliberately small blocking Lua example pumps the child to
-completion.
+Codex review. Both examples render the reviewer's schema-validated report
+inline as soon as the isolated child completes, then immediately pump and show
+the durable parent-handoff receipt. The report is therefore operator-visible
+as well as available to Smith in the next parent turn. The C example pumps the
+isolated child alongside its parent; ordinary input entered while that review
+is active becomes a queued parent turn. The deliberately small blocking Lua
+example pumps the child to completion.
 The C example integrates stdin and
 CAI's wakeup descriptor in one poll loop, so its normal active-turn input uses
 the steering API path. `/queue <prompt>` is an examples-only convenience for

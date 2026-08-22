@@ -78,6 +78,7 @@ local function event_state()
     executions = 0,
     terminal_started = 0,
     terminal_completed = 0,
+    reasoning_summaries = {},
     review_reports = {},
     review_started = 0,
     review_handed_off = 0,
@@ -88,6 +89,8 @@ local function event_callback(events)
   return function(event)
     if event.type == cai.AGENT_EVENT_TEXT_DELTA and event.data ~= nil then
       events.answer[#events.answer + 1] = event.data
+    elseif event.type == cai.AGENT_EVENT_REASONING_SUMMARY and event.data ~= nil then
+      events.reasoning_summaries[#events.reasoning_summaries + 1] = event.data
     elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED then
       if event.tool_action == cai.AGENT_TOOL_ACTION_READ then
         events.reads = events.reads + 1
@@ -245,6 +248,9 @@ local ok, err = xpcall(function()
   pump_until_completed(parent, 240, "Lua Smith build turn")
   assert_contains("Lua Smith build answer", event_answer(events),
     "LUA_SMITH_PROJECT_COMMITTED")
+  if #events.reasoning_summaries == 0 then
+    fail("Lua Smith build did not expose a provider reasoning summary")
+  end
   if events.reads < 1 or events.patches < 1 or events.executions < 1 or
       events.terminal_started < 1 or events.terminal_completed < 1 then
     fail("Lua Smith build evidence is incomplete (reads=" .. tostring(events.reads) ..
@@ -328,7 +334,8 @@ local ok, err = xpcall(function()
   end
 
   io.stderr:write("[lua-smith-e2e] review_report=" .. events.review_reports[1] ..
-    " terminal_commands=" .. tostring(events.terminal_completed) .. "\n")
+    " terminal_commands=" .. tostring(events.terminal_completed) ..
+    " reasoning_summaries=" .. tostring(#events.reasoning_summaries) .. "\n")
   success = true
 end, debug.traceback)
 

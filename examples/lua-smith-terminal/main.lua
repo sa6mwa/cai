@@ -3,6 +3,8 @@ local common = dofile("examples/lua-common.lua")
 
 local reset = "\27[0m"
 local gray = "\27[90m"
+local green = "\27[32m"
+local magenta = "\27[35m"
 
 local function fail(operation, err)
   io.stderr:write(operation .. " failed: " ..
@@ -49,7 +51,13 @@ while i <= #arg do
   end
 end
 
-local render = { lines = 0, omitted = false, command = "" }
+local render = {
+  lines = 0,
+  omitted = false,
+  command = "",
+  text_open = false,
+  reasoning_open = false,
+}
 
 local function remembered_command(value)
   if #value <= 160 then
@@ -82,21 +90,84 @@ local function render_terminal_output(event)
   end
 end
 
+local function close_message()
+  if render.text_open or render.reasoning_open then
+    io.write(reset, "\n")
+    render.text_open = false
+    render.reasoning_open = false
+  end
+end
+
+-- The runtime has already validated the report. Pretty-print its JSON shape
+-- for the human operator without changing the event's portable JSON payload.
+local function render_review_report(data)
+  local depth = 0
+  local in_string = false
+  local escaped = false
+  io.write(green, "Reviewer report\n", reset)
+  for index = 1, #data do
+    local character = data:sub(index, index)
+    if in_string then
+      io.write(character)
+      if escaped then
+        escaped = false
+      elseif character == "\\" then
+        escaped = true
+      elseif character == '"' then
+        in_string = false
+      end
+    elseif character == '"' then
+      in_string = true
+      io.write(character)
+    elseif character == "{" or character == "[" then
+      depth = depth + 1
+      io.write(character, "\n", string.rep("  ", depth))
+    elseif character == "}" or character == "]" then
+      depth = math.max(0, depth - 1)
+      io.write("\n", string.rep("  ", depth), character)
+    elseif character == "," then
+      io.write(",\n", string.rep("  ", depth))
+    elseif character == ":" then
+      io.write(": ")
+    elseif character ~= "\n" and character ~= "\r" and character ~= "\t" then
+      io.write(character)
+    end
+  end
+  io.write("\n")
+end
+
 local function render_event(event)
-  if event.type == cai.AGENT_EVENT_TEXT_DELTA then
+  if event.type == cai.AGENT_EVENT_REASONING_SUMMARY then
+    if not render.reasoning_open then
+      close_message()
+      io.write(magenta, "Thinking: ", reset)
+      render.reasoning_open = true
+    end
+    io.write(event.data or "")
+    io.flush()
+  elseif event.type == cai.AGENT_EVENT_TEXT_DELTA then
+    if not render.text_open then
+      close_message()
+      io.write(green, "Smith: ", reset)
+      render.text_open = true
+    end
     io.write(event.data or "")
     io.flush()
   elseif event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_STARTED then
+    close_message()
     render.lines = 0
     render.omitted = false
     render.command = remembered_command(event.data or "")
     io.write("$ ", event.data or "", "\n")
   elseif event.type == cai.AGENT_EVENT_TERMINAL_OUTPUT then
+    close_message()
     render_terminal_output(event)
   elseif event.type == cai.AGENT_EVENT_TERMINAL_WAITING then
+    close_message()
     io.write(gray, "Waiting for terminal progress…\n", reset)
   elseif event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED or
       event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED then
+    close_message()
     local verb = event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED and
       "Cancelled" or "Ran"
     local status
@@ -110,9 +181,17 @@ local function render_event(event)
     io.write(string.format("%s %s (%s, %.1fs)\n", verb, render.command,
       status, (event.terminal_duration_ms or 0) / 1000))
   elseif event.type == cai.AGENT_EVENT_TURN_QUEUED then
+    close_message()
     io.write(gray, "Queued next turn\n", reset)
+  elseif event.type == cai.AGENT_EVENT_REVIEW_REPORT then
+    close_message()
+    render_review_report(event.data or "{}")
+  elseif event.type == cai.AGENT_EVENT_REVIEW_HANDED_OFF then
+    close_message()
+    io.write(gray, "Review handoff is now in Smith's context; send a follow-up to act on it.\n", reset)
   elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED and
       event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" then
+    close_message()
     local verbs = {
       [cai.AGENT_TOOL_ACTION_READ] = "Read",
       [cai.AGENT_TOOL_ACTION_LIST] = "Listed",
@@ -129,6 +208,9 @@ local function render_event(event)
     else
       io.write(gray, "Completed ", event.tool_name or "tool", "\n", reset)
     end
+  elseif event.type == cai.AGENT_EVENT_RUN_COMPLETED or
+      event.type == cai.AGENT_EVENT_RUN_FAILED then
+    close_message()
   end
 end
 
@@ -170,6 +252,8 @@ local function run_review(parent, command)
     end
   end
   ok(parent:finish_review(review), nil, "runtime:finish_review")
+  -- Flush the parent receipt now, not only after a later operator action.
+  ok(parent:pump(0), nil, "runtime:pump review handoff")
   review:close()
 end
 

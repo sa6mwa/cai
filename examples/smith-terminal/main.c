@@ -11,10 +11,13 @@
 #define RESET "\033[0m"
 #define GRAY "\033[90m"
 #define GREEN "\033[32m"
+#define MAGENTA "\033[35m"
 
 typedef struct render_state {
   int terminal_lines;
   int terminal_omitted;
+  int text_open;
+  int reasoning_open;
   char command[161];
 } render_state;
 
@@ -97,6 +100,68 @@ static void render_terminal_output(render_state *state, const char *data,
   }
 }
 
+static void render_close_message(render_state *state) {
+  if (state->text_open || state->reasoning_open) {
+    fputs(RESET "\n", stdout);
+    state->text_open = 0;
+    state->reasoning_open = 0;
+  }
+}
+
+/* The runtime validates reviewer output before it emits the report. Format the
+ * JSON structurally here rather than making an interactive operator decipher
+ * one long line. This is presentation-only; the JSON remains the portable
+ * report payload carried by CAI's event and handoff APIs. */
+static void render_review_report(const char *data, size_t length) {
+  size_t i;
+  int depth;
+  int in_string;
+  int escaped;
+
+  fputs(GREEN "Reviewer report" RESET "\n", stdout);
+  depth = 0;
+  in_string = 0;
+  escaped = 0;
+  for (i = 0U; i < length; i++) {
+    unsigned char character;
+
+    character = (unsigned char)data[i];
+    if (in_string) {
+      fputc((int)character, stdout);
+      if (escaped) {
+        escaped = 0;
+      } else if (character == '\\') {
+        escaped = 1;
+      } else if (character == '"') {
+        in_string = 0;
+      }
+      continue;
+    }
+    if (character == '"') {
+      in_string = 1;
+      fputc('"', stdout);
+    } else if (character == '{' || character == '[') {
+      depth++;
+      fputc((int)character, stdout);
+      fputc('\n', stdout);
+      fprintf(stdout, "%*s", depth * 2, "");
+    } else if (character == '}' || character == ']') {
+      depth = depth > 0 ? depth - 1 : 0;
+      fputc('\n', stdout);
+      fprintf(stdout, "%*s", depth * 2, "");
+      fputc((int)character, stdout);
+    } else if (character == ',') {
+      fputs(",\n", stdout);
+      fprintf(stdout, "%*s", depth * 2, "");
+    } else if (character == ':') {
+      fputs(": ", stdout);
+    } else if (character != '\n' && character != '\r' && character != '\t') {
+      fputc((int)character, stdout);
+    }
+  }
+  fputs("\n", stdout);
+}
+
 static void render_terminal_finish(const cai_agent_runtime_event *event,
                                    const char *verb,
                                    const render_state *state) {
@@ -167,29 +232,60 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
 
   (void)error;
   state = (render_state *)context;
-  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+  if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY) {
+    if (!state->reasoning_open) {
+      render_close_message(state);
+      fputs(MAGENTA "Thinking: " RESET, stdout);
+      state->reasoning_open = 1;
+    }
+    fwrite(event->data, 1U, event->data_length, stdout);
+    fflush(stdout);
+  } else if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+    if (!state->text_open) {
+      render_close_message(state);
+      fputs(GREEN "Smith: " RESET, stdout);
+      state->text_open = 1;
+    }
     fwrite(event->data, 1U, event->data_length, stdout);
     fflush(stdout);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
+    render_close_message(state);
     state->terminal_lines = 0;
     state->terminal_omitted = 0;
     remember_command(state, event->data, event->data_length);
     fprintf(stdout, "$ %.*s\n", (int)event->data_length, event->data);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_OUTPUT) {
+    render_close_message(state);
     render_terminal_output(state, event->data, event->data_length);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_WAITING) {
+    render_close_message(state);
     fputs(GRAY "Waiting for terminal progress…" RESET "\n", stdout);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) {
+    render_close_message(state);
     render_terminal_finish(event, "Ran", state);
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) {
+    render_close_message(state);
     render_terminal_finish(event, "Cancelled", state);
   } else if (event->type == CAI_AGENT_EVENT_TURN_QUEUED) {
+    render_close_message(state);
     fprintf(stdout, GRAY "Queued next turn" RESET "\n");
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+    render_close_message(state);
+    render_review_report(event->data, event->data_length);
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
+    render_close_message(state);
+    fputs(GRAY "Review handoff is now in Smith's context; send a follow-up "
+               "to act on it." RESET "\n",
+          stdout);
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
              event->tool_name != NULL &&
              strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
              strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0) {
+    render_close_message(state);
     render_tool_completion(event);
+  } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+             event->type == CAI_AGENT_EVENT_RUN_FAILED) {
+    render_close_message(state);
   }
   return CAI_OK;
 }
@@ -294,6 +390,11 @@ int main(void) {
       if (status == CAI_AGENT_COMPLETED || status == CAI_AGENT_FAILED ||
           status == CAI_AGENT_CANCELLED) {
         rc = cai_agent_runtime_finish_review(runtime, review, &error);
+        if (rc != CAI_OK) {
+          break;
+        }
+        /* Deliver the parent handoff receipt before the next prompt. */
+        rc = cai_agent_runtime_pump(runtime, 0L, &error);
         if (rc != CAI_OK) {
           break;
         }

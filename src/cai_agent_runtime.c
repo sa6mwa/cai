@@ -1344,6 +1344,30 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
   return rc;
 }
 
+/* Stream summaries through the same owner-thread event queue as visible
+ * response text.  The provider chooses the summary content; CAI never exposes
+ * hidden reasoning or attempts to synthesize a substitute. */
+static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
+                                               size_t count, cai_error *error) {
+  cai_agent_runtime *runtime;
+  int rc;
+
+  if (count == 0U) {
+    return CAI_OK;
+  }
+  if (context == NULL || bytes == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "reasoning summary sink has invalid input");
+  }
+  runtime = (cai_agent_runtime *)context;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_REASONING_SUMMARY,
+                                  (const char *)bytes, count, NULL, NULL,
+                                  runtime->state, error);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
 static int cai_runtime_tool_action(const char *name) {
   if (name == NULL) {
     return CAI_AGENT_TOOL_ACTION_EXTERNAL;
@@ -1907,6 +1931,8 @@ static void cai_runtime_promote_resumed_steering(cai_agent_runtime *runtime) {
 static void *cai_runtime_worker(void *context) {
   cai_agent_runtime *runtime;
   cai_stream_sinks sinks;
+  cai_sink_callbacks reasoning_callbacks;
+  cai_sink *reasoning_sink;
   cai_run_options options;
   cai_runtime_input_node *input;
   cai_error error;
@@ -1915,6 +1941,29 @@ static void *cai_runtime_worker(void *context) {
 
   runtime = (cai_agent_runtime *)context;
   cai_stream_sinks_init(&sinks);
+  memset(&reasoning_callbacks, 0, sizeof(reasoning_callbacks));
+  reasoning_callbacks.write = cai_runtime_reasoning_summary_write;
+  reasoning_callbacks.context = runtime;
+  reasoning_sink = NULL;
+  cai_error_init(&error);
+  rc = cai_sink_from_callbacks(&reasoning_callbacks, &reasoning_sink, &error);
+  if (rc != CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    runtime->state = CAI_AGENT_FAILED;
+    (void)cai_runtime_enqueue_locked(
+        runtime, CAI_AGENT_EVENT_RUN_FAILED,
+        error.message != NULL ? error.message
+                              : "failed to initialize reasoning summary stream",
+        error.message != NULL
+            ? strlen(error.message)
+            : sizeof("failed to initialize reasoning summary stream") - 1U,
+        NULL, NULL, runtime->state, &error);
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    cai_error_cleanup(&error);
+    return NULL;
+  }
+  sinks.reasoning_summary = reasoning_sink;
   sinks.output_text_delta = cai_runtime_output_text_delta;
   sinks.output_text_context = runtime;
   cai_run_options_init(&options);
@@ -2088,6 +2137,7 @@ static void *cai_runtime_worker(void *context) {
     pthread_mutex_unlock(&runtime->lock);
     cai_error_cleanup(&error);
   }
+  cai_sink_close(reasoning_sink);
   return NULL;
 }
 
