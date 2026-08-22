@@ -104,7 +104,13 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.9.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-set(CAI_ABI_VERSION "5" CACHE STRING "Shared library ABI/SOVERSION.")
+# ABI 5 predates the enlarged terminal configuration record and must not
+# survive a reconfigure. Preserve any other packager-selected ABI override.
+if(CAI_ABI_VERSION STREQUAL "5")
+  set(CAI_ABI_VERSION "6" CACHE STRING "Shared library ABI/SOVERSION." FORCE)
+else()
+  set(CAI_ABI_VERSION "6" CACHE STRING "Shared library ABI/SOVERSION.")
+endif()
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.42.0")
 set(CAI_LONEJSON_ABI_VERSION "25")

@@ -445,8 +445,8 @@ to the host as events before they are returned to the model.
 
 | Tool | Kind | Smith behavior |
 | --- | --- | --- |
-| `exec_command` | function | Submit the one active terminal command; yields with its terminal session ID if still running. |
-| `write_stdin` | function | Write/poll/terminate the same terminal command; cannot select another terminal. |
+| `exec_command` | function | Submit the one active terminal command; default initial wait is 10 seconds, capped at 30 seconds; an explicit zero yield returns promptly with the terminal session ID if still running. Hosts may configure other limits. |
+| `write_stdin` | function | Write/poll/terminate the same terminal command; cannot select another terminal. Default non-empty input waits 250 ms and caps at 30 seconds; a non-terminating empty poll waits at least 5 seconds and defaults to a five-minute cap. Termination uses the short input-write limits. Hosts may configure other limits. |
 | `apply_patch` | freeform | Apply validated add/update/delete/move patch atomically where possible. |
 | `read_file` | function | Read a regular file with byte/line bounds, UTF-8-aware text presentation, and explicit binary refusal/reference. |
 | `list_files` | function | Enumerate a bounded subtree with deterministic ordering and ignored-path policy. |
@@ -557,7 +557,7 @@ or terminate.
 stateDiagram-v2
   [*] --> Idle
   Idle --> Running: exec_command accepted
-  Running --> Running: write_stdin / output
+  Running --> Running: write_stdin / output or bounded wait
   Running --> Draining: command supervisor exited
   Draining --> Idle: EOF drained + status recorded
   Running --> Terminating: terminate=true or runtime cancellation

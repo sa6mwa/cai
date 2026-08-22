@@ -30,6 +30,11 @@ extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_TERMINAL_DEFAULT_YIELD_MS 10000L
 #define CAI_TERMINAL_MAX_YIELD_MS 30000L
+#define CAI_TERMINAL_DEFAULT_WRITE_YIELD_MS 250L
+#define CAI_TERMINAL_MAX_WRITE_YIELD_MS 30000L
+#define CAI_TERMINAL_MIN_POLL_YIELD_MS 5000L
+#define CAI_TERMINAL_DEFAULT_POLL_YIELD_MS 5000L
+#define CAI_TERMINAL_MAX_POLL_YIELD_MS 300000L
 #define CAI_TERMINAL_DEFAULT_OUTPUT_MAX (3U * 1024U * 1024U)
 #define CAI_TERMINAL_STDIN_WRITE_TIMEOUT_MS 1000L
 
@@ -58,6 +63,10 @@ typedef struct cai_terminal_manager {
   char *home_environment;
   long default_yield_ms;
   long max_yield_ms;
+  long default_write_yield_ms;
+  long max_write_yield_ms;
+  long default_poll_yield_ms;
+  long max_poll_yield_ms;
   size_t output_max_bytes;
   cai_terminal_policy_fn policy;
   void *policy_context;
@@ -199,10 +208,14 @@ static const char cai_terminal_exec_description[] =
     "Runs one command in CAI's single managed terminal. If it is still "
     "running after yield_time_ms, use write_stdin with the returned session_id "
     "to send input, wait for output, or terminate it. Only one command can "
-    "run at a time.";
+    "run at a time. Default configuration waits 10000 ms and caps the wait "
+    "at 30000 ms; the host may configure other limits.";
 static const char cai_terminal_write_description[] =
     "Writes input to, waits for, or terminates CAI's single managed terminal. "
-    "Use the exact session_id returned by exec_command; empty chars polls.";
+    "Use the exact session_id returned by exec_command; empty chars polls. "
+    "Default configuration gives non-empty writes a 250 ms wait capped at "
+    "30000 ms, and empty polls a 5000-300000 ms wait. Termination uses the "
+    "non-empty-write limits. The host may configure other limits.";
 
 static void cai_terminal_deadline(struct timespec *deadline, long wait_ms) {
   clock_gettime(CLOCK_REALTIME, deadline);
@@ -531,6 +544,21 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   manager->max_yield_ms = config->max_yield_time_ms > 0L
                               ? config->max_yield_time_ms
                               : CAI_TERMINAL_MAX_YIELD_MS;
+  manager->default_write_yield_ms = config->default_write_yield_time_ms > 0L
+                                        ? config->default_write_yield_time_ms
+                                        : CAI_TERMINAL_DEFAULT_WRITE_YIELD_MS;
+  manager->max_write_yield_ms = config->max_write_yield_time_ms > 0L
+                                    ? config->max_write_yield_time_ms
+                                    : CAI_TERMINAL_MAX_WRITE_YIELD_MS;
+  manager->default_poll_yield_ms = config->default_poll_yield_time_ms > 0L
+                                       ? config->default_poll_yield_time_ms
+                                       : CAI_TERMINAL_DEFAULT_POLL_YIELD_MS;
+  manager->max_poll_yield_ms = config->max_poll_yield_time_ms > 0L
+                                   ? config->max_poll_yield_time_ms
+                                   : CAI_TERMINAL_MAX_POLL_YIELD_MS;
+  if (manager->max_poll_yield_ms < CAI_TERMINAL_MIN_POLL_YIELD_MS) {
+    manager->max_poll_yield_ms = CAI_TERMINAL_MIN_POLL_YIELD_MS;
+  }
   manager->output_max_bytes = config->output_max_bytes != 0U
                                   ? config->output_max_bytes
                                   : CAI_TERMINAL_DEFAULT_OUTPUT_MAX;
@@ -541,6 +569,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   snprintf(manager->terminal_id, sizeof(manager->terminal_id), "terminal-1");
   if (manager->root_path == NULL || manager->shell_path == NULL ||
       manager->home_environment == NULL || manager->max_yield_ms <= 0L ||
+      manager->max_write_yield_ms <= 0L || manager->max_poll_yield_ms <= 0L ||
       manager->output_max_bytes == 0U) {
     cai_free_mem(NULL, manager->root_path);
     cai_free_mem(NULL, manager->default_workdir);
@@ -589,14 +618,18 @@ static int cai_terminal_wait(cai_terminal_manager *manager, size_t initial,
   return CAI_OK;
 }
 
-static long cai_terminal_clamp_yield(const cai_terminal_manager *manager,
-                                     long long requested, int has_requested) {
+static long cai_terminal_clamp_yield(long long requested, int has_requested,
+                                     long default_yield_ms, long max_yield_ms,
+                                     long min_yield_ms) {
   long long value;
 
   value = has_requested ? (requested < 0LL ? 0LL : requested)
-                        : (long long)manager->default_yield_ms;
-  if (value > (long long)manager->max_yield_ms) {
-    value = (long long)manager->max_yield_ms;
+                        : (long long)default_yield_ms;
+  if (value < (long long)min_yield_ms) {
+    value = (long long)min_yield_ms;
+  }
+  if (value > (long long)max_yield_ms) {
+    value = (long long)max_yield_ms;
   }
   return (long)value;
 }
@@ -901,8 +934,9 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   if (rc != CAI_OK) {
     return rc;
   }
-  wait_ms = cai_terminal_clamp_yield(binding->manager, args->yield_time_ms,
-                                     args->has_yield_time_ms);
+  wait_ms = cai_terminal_clamp_yield(
+      args->yield_time_ms, args->has_yield_time_ms,
+      binding->manager->default_yield_ms, binding->manager->max_yield_ms, 0L);
   output_limit = args->has_max_output_tokens && args->max_output_tokens > 0LL
                      ? (size_t)args->max_output_tokens
                      : 0U;
@@ -1028,8 +1062,18 @@ static int cai_terminal_write_callback(void *value, const void *params,
       return rc;
     }
   }
-  wait_ms = cai_terminal_clamp_yield(binding->manager, args->yield_time_ms,
-                                     args->has_yield_time_ms);
+  if ((args->has_terminate && args->terminate) ||
+      (args->chars != NULL && args->chars[0] != '\0')) {
+    wait_ms =
+        cai_terminal_clamp_yield(args->yield_time_ms, args->has_yield_time_ms,
+                                 binding->manager->default_write_yield_ms,
+                                 binding->manager->max_write_yield_ms, 0L);
+  } else {
+    wait_ms = cai_terminal_clamp_yield(
+        args->yield_time_ms, args->has_yield_time_ms,
+        binding->manager->default_poll_yield_ms,
+        binding->manager->max_poll_yield_ms, CAI_TERMINAL_MIN_POLL_YIELD_MS);
+  }
   if (args->has_terminate && args->terminate) {
     pthread_mutex_lock(&binding->manager->lock);
     binding->manager->termination_requested = 1;

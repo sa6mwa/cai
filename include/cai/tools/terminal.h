@@ -69,9 +69,9 @@ typedef struct cai_terminal_tool_config {
   const char *default_workdir;
   /** Shell used for command execution; NULL selects /bin/sh. */
   const char *shell_path;
-  /** Default initial/poll wait in milliseconds; zero selects 10000. */
+  /** Default initial exec_command wait in milliseconds; zero selects 10000. */
   long default_yield_time_ms;
-  /** Maximum accepted initial/poll wait; zero selects 30000. */
+  /** Maximum initial exec_command wait; zero selects 30000. */
   long max_yield_time_ms;
   /** Maximum retained terminal output per command; zero selects 3 MiB. */
   size_t output_max_bytes;
@@ -83,6 +83,24 @@ typedef struct cai_terminal_tool_config {
   cai_terminal_event_fn event_callback;
   /** Context passed to event_callback. */
   void *event_context;
+  /**
+   * Default wait after non-empty write_stdin input; zero selects 250.
+   * The requested/default wait is capped by max_write_yield_time_ms.
+   */
+  long default_write_yield_time_ms;
+  /** Maximum non-empty write_stdin wait; zero selects 30000. */
+  long max_write_yield_time_ms;
+  /**
+   * Default wait for an empty write_stdin poll; zero selects 5000.
+   * A non-terminating empty poll always waits at least 5000 milliseconds
+   * unless output or completion arrives first.
+   */
+  long default_poll_yield_time_ms;
+  /**
+   * Maximum empty write_stdin poll wait; zero selects 300000 (five minutes).
+   * Values below 5000 select the 5000 millisecond minimum.
+   */
+  long max_poll_yield_time_ms;
 } cai_terminal_tool_config;
 
 /** Register the coupled one-slot exec_command and write_stdin tools. */

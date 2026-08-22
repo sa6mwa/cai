@@ -24097,6 +24097,11 @@ static void test_smith_profile(test_state *state) {
       "\"name\":\"apply_patch\"",
       "\"name\":\"exec_command\"",
       "\"name\":\"write_stdin\"",
+      "Default configuration waits 10000 ms and caps the wait at 30000 ms; "
+      "the host may configure other limits.",
+      "Default configuration gives non-empty writes a 250 ms wait capped at "
+      "30000 ms, and empty polls a 5000-300000 ms wait. Termination uses the "
+      "non-empty-write limits. The host may configure other limits.",
       "\"type\":\"custom\"",
       "\"syntax\":\"lark\"",
       "This is a FREEFORM tool, so do not wrap the patch in JSON.",
@@ -29231,14 +29236,17 @@ static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
 
 static void test_terminal_tools(test_state *state) {
   char dir_template[] = "/tmp/cai-terminal-test-XXXXXX";
+  static const cai_terminal_tool_config legacy_config = {
+      NULL, NULL, NULL, 20L, 300L, 32768U, NULL,
+      NULL, NULL, NULL, 0L,  0L,   0L,     0L};
+  terminal_event_state events;
+  int policy_calls;
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
   cai_sink *sink;
   write_state writer;
-  terminal_event_state events;
   cai_error error;
-  int policy_calls;
   int rc;
   int i;
   char *blocked_stdin_request;
@@ -29248,19 +29256,21 @@ static void test_terminal_tools(test_state *state) {
     test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
     return;
   }
-  memset(&config, 0, sizeof(config));
   memset(&events, 0, sizeof(events));
   policy_calls = 0;
   blocked_stdin_request = NULL;
+  /* Keep the pre-polling-field positional layout valid for source consumers. */
+  config = legacy_config;
   config.root_path = dir_template;
   config.default_workdir = dir_template;
-  config.default_yield_time_ms = 20L;
-  config.max_yield_time_ms = 100L;
-  config.output_max_bytes = 32768U;
-  config.event_callback = test_terminal_event;
-  config.event_context = &events;
   config.policy = test_terminal_policy;
   config.policy_context = &policy_calls;
+  config.event_callback = test_terminal_event;
+  config.event_context = &events;
+  config.default_write_yield_time_ms = 20L;
+  config.max_write_yield_time_ms = 250L;
+  config.default_poll_yield_time_ms = 5000L;
+  config.max_poll_yield_time_ms = 5000L;
   registry = NULL;
   sink = NULL;
   memset(&writer, 0, sizeof(writer));
@@ -29321,14 +29331,17 @@ static void test_terminal_tools(test_state *state) {
     cai_error_cleanup(&error);
     cai_error_init(&error);
     rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                               "{\"cmd\":\"printf ready; sleep 5\","
-                               "\"yield_time_ms\":10}",
+                               "{\"cmd\":\"trap '' INT; sleep 0.15; "
+                               "printf poll-ready; while :; do sleep 1; done\","
+                               "\"yield_time_ms\":0}",
                                sink, &error);
     expect_int(state, "terminal_exec_background", rc, CAI_OK);
     expect_substr(state, "terminal_exec_session", writer.buffer,
                   "\"session_id\":\"terminal-1\"");
     expect_substr(state, "terminal_exec_running", writer.buffer,
                   "\"running\":true");
+    expect_int(state, "terminal_exec_zero_yield_returns_before_output",
+               strstr(writer.buffer, "poll-ready") == NULL, 1L);
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_reject_parallel_exec",
@@ -29348,10 +29361,10 @@ static void test_terminal_tools(test_state *state) {
     writer.length = 0U;
     expect_int(state, "terminal_poll",
                cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                                     "{\"session_id\":\"terminal-1\","
-                                     "\"yield_time_ms\":50}",
-                                     sink, &error),
+                                     "{\"session_id\":\"terminal-1\"}", sink,
+                                     &error),
                CAI_OK);
+    expect_substr(state, "terminal_poll_output", writer.buffer, "poll-ready");
     cai_error_cleanup(&error);
     cai_error_init(&error);
     writer.buffer[0] = '\0';
@@ -29359,31 +29372,32 @@ static void test_terminal_tools(test_state *state) {
     expect_int(state, "terminal_terminate",
                cai_tool_registry_run(
                    registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
-                   "\"yield_time_ms\":10}",
-                   sink, &error),
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true}", sink,
+                   &error),
                CAI_OK);
     expect_substr(state, "terminal_terminate_finished", writer.buffer,
                   "\"completed\":true");
     expect_int(state, "terminal_event_cancelled", events.cancelled, 1L);
     writer.buffer[0] = '\0';
     writer.length = 0U;
-    expect_int(
-        state, "terminal_exec_interactive",
-        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                              "{\"cmd\":\"IFS= read line; printf got:$line\","
-                              "\"yield_time_ms\":10}",
-                              sink, &error),
-        CAI_OK);
+    expect_int(state, "terminal_exec_interactive",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"stty -echo; IFS= read line; sleep 0.15; "
+                   "printf got:$line\","
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_write_interactive",
                cai_tool_registry_run(
                    registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                   "{\"session_id\":\"terminal-1\",\"chars\":\"alpha\\n\","
-                   "\"yield_time_ms\":100}",
+                   "{\"session_id\":\"terminal-1\",\"chars\":\"alpha\\n\"}",
                    sink, &error),
                CAI_OK);
+    expect_int(state, "terminal_write_interactive_short_default",
+               strstr(writer.buffer, "got:alpha") == NULL, 1L);
     for (i = 0; i < 5 && strstr(writer.buffer, "got:alpha") == NULL; i++) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
