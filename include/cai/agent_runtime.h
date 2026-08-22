@@ -60,7 +60,9 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED = 15,
   CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED = 16,
   /** A normal user turn was accepted to run after the active turn. */
-  CAI_AGENT_EVENT_TURN_QUEUED = 17
+  CAI_AGENT_EVENT_TURN_QUEUED = 17,
+  /** Final JSON report emitted by a completed smith-review run. */
+  CAI_AGENT_EVENT_REVIEW_REPORT = 18
 } cai_agent_runtime_event_type;
 
 /** A borrowed runtime event, valid only for the event callback duration. */
@@ -116,11 +118,42 @@ typedef int (*cai_agent_runtime_event_fn)(void *context,
                                           const cai_agent_runtime_event *event,
                                           cai_error *error);
 
+/** Explicit target for an isolated Smith review run. */
+typedef enum cai_agent_review_target {
+  /** Review staged, unstaged, and untracked workspace changes. */
+  CAI_AGENT_REVIEW_UNCOMMITTED = 1,
+  /** Review the merge diff against base_branch. */
+  CAI_AGENT_REVIEW_BASE_BRANCH = 2,
+  /** Review the changes introduced by commit. */
+  CAI_AGENT_REVIEW_COMMIT = 3,
+  /** Run a review using host-provided review instructions. */
+  CAI_AGENT_REVIEW_CUSTOM = 4
+} cai_agent_review_target;
+
+/**
+ * Request for cai_agent_runtime_submit_review. Strings are borrowed for the
+ * call only. base_branch is required for CAI_AGENT_REVIEW_BASE_BRANCH;
+ * commit is required for CAI_AGENT_REVIEW_COMMIT; instructions is required
+ * for CAI_AGENT_REVIEW_CUSTOM. commit_title is optional metadata.
+ */
+typedef struct cai_agent_review_request {
+  int target;
+  const char *base_branch;
+  const char *commit;
+  const char *commit_title;
+  const char *instructions;
+} cai_agent_review_request;
+
+/** Initialize a zero-defaultable review request. */
+void cai_agent_review_request_init(cai_agent_review_request *request);
+
 /** Configuration for a host-neutral CAI agent runtime. */
 typedef struct cai_agent_runtime_config {
   /**
    * Preset name; NULL selects smith. Supported values are smith and
-   * smith-review. The review preset is isolated and read-only.
+   * smith-review. The review preset is isolated and excludes file-mutation,
+   * goal, MCP, and image-generation tools. It retains Smith's managed
+   * terminal under the embedding host's normal terminal policy.
    */
   const char *preset;
   /** Canonical workspace root. Required by smith file tools. */
@@ -153,12 +186,20 @@ typedef struct cai_agent_runtime_config {
   /**
    * Optional opaque storage namespace; NULL uses the canonical workspace
    * directory. The local store hashes this value and does not interpret it as
-   * a filesystem path.
+   * a filesystem path. smith-review derives a reserved private namespace from
+   * this value so its checkpoints are not eligible for normal Smith resume;
+   * normal Smith rejects the reserved smith-review: prefix.
    */
   const char *session_scope;
-  /** Optional new session identifier; NULL generates one. */
+  /**
+   * Optional new session identifier; NULL generates one. smith-review rejects
+   * this so every review run starts in a fresh, unaddressable session.
+   */
   const char *session_id;
-  /** Resume the newest checkpoint for the configured session scope. */
+  /**
+   * Resume the newest checkpoint for the configured session scope. smith-review
+   * rejects this to preserve review-session isolation.
+   */
   int resume_latest;
   /** Disable CAI's default local JSONL store when session_store is NULL. */
   int disable_default_session_store;
@@ -183,6 +224,13 @@ int cai_agent_runtime_open(cai_client *client,
 /** Submit a new user turn while the runtime is idle or completed. */
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
+/**
+ * Submit an explicit Codex-style review target to an idle smith-review
+ * runtime. The request is rendered as the review turn's user instruction.
+ */
+int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
+                                    const cai_agent_review_request *request,
+                                    cai_error *error);
 /** Queue steering for injection after the current model/tool cycle. */
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);

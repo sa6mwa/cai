@@ -135,9 +135,11 @@ typedef struct runtime_event_state {
   int saw_failed;
   int failed_count;
   int saw_list_tool;
+  int saw_review_report;
   int tool_action;
   char tool_path[PATH_MAX];
   char failure_message[256];
+  char review_report[1024];
   int wrong_thread;
 } runtime_event_state;
 
@@ -151,6 +153,7 @@ typedef struct runtime_session_store_state {
   read_state reader;
   int loads;
   int checkpoints;
+  int load_only_saved_scope;
   int saw_goal_checkpoint_without_tool_output;
   int saw_steering_checkpoint_before_watermark;
   int appended_events;
@@ -1785,6 +1788,13 @@ static int test_runtime_event(void *context,
                (int)event->data_length, event->data);
     }
   }
+  if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+    state->saw_review_report = 1;
+    if (event->data != NULL) {
+      snprintf(state->review_report, sizeof(state->review_report), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
   if ((event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED ||
        event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) &&
       event->tool_action == CAI_AGENT_TOOL_ACTION_LIST) {
@@ -1917,6 +1927,11 @@ static int test_runtime_session_store_load(
   }
   *out_applied_event_sequence = store->load_applied_event_sequence;
   store->loads++;
+  if (store->load_only_saved_scope && strcmp(scope, store->scope) != 0) {
+    *out = NULL;
+    *out_applied_event_sequence = 0U;
+    return CAI_OK;
+  }
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
   (void)snprintf(session_id, session_id_capacity, "%s", loaded_session_id);
   store->reader.text = store->checkpoint_json;
@@ -24095,6 +24110,7 @@ static void test_smith_profile(test_state *state) {
        NULL, response_body}};
   http_mock_client mock;
   cai_smith_config config;
+  cai_terminal_tool_config terminal_config;
   cai_agent *agent;
   cai_response *response;
   cai_error error;
@@ -24156,19 +24172,300 @@ static void test_smith_profile(test_state *state) {
       CAI_OK);
   if (agent != NULL) {
     expect_int(state, "smith_review_tool_count",
-               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 3L);
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 5L);
     expect_str(state, "smith_review_tool_read",
                cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 0U),
                CAI_READ_DEFAULT_TOOL_NAME);
     expect_str(state, "smith_review_tool_list",
                cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 1U),
                CAI_LIST_FILES_DEFAULT_TOOL_NAME);
-    expect_str(state, "smith_review_tool_image",
+    expect_str(state, "smith_review_tool_exec",
                cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 2U),
+               CAI_TERMINAL_EXEC_TOOL_NAME);
+    expect_str(state, "smith_review_tool_stdin",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 3U),
+               CAI_TERMINAL_WRITE_TOOL_NAME);
+    expect_str(state, "smith_review_tool_image",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 4U),
                CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME);
+    expect_substr(state, "smith_review_rubric",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "final response MUST be exactly one JSON object");
+    cai_agent_destroy(agent);
+  }
+  memset(&terminal_config, 0, sizeof(terminal_config));
+  terminal_config.root_path = "/";
+  config.terminal_tool_config = &terminal_config;
+  agent = NULL;
+  expect_int(
+      state, "smith_review_reject_terminal_root",
+      cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (agent != NULL) {
     cai_agent_destroy(agent);
   }
   http_mock_client_close(state, "smith_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_review_runtime(test_state *state) {
+  static const char review_response[] =
+      "data: "
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"findings\\\":["
+      "],\"}\n\n"
+      "data: "
+      "{\"type\":\"response.output_text.delta\",\"delta\":\"\\\"overall_"
+      "correctness\\\":\\\"patch is "
+      "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
+      "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_smith_"
+      "review\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"total_"
+      "tokens\":7}}}\n\n";
+  static const char empty_review_response[] =
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_smith_review_empty\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":0,\"total_tokens\":3}}}\n\n";
+  static const char invalid_review_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[]}\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_smith_review_invalid\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":3,\"total_tokens\":6}}}\n\n";
+  static const char *required[] = {
+      "POST /v1/responses HTTP/",
+      "\"stream\":true",
+      "Review the current code changes (staged, unstaged, and untracked files)",
+      "You are Cai Smith, a code reviewer",
+      "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, review_response}};
+  static const mock_http_expectation empty_script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, empty_review_response}};
+  static const mock_http_expectation invalid_script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, invalid_review_response}};
+  http_mock_client mock;
+  http_mock_client empty_mock;
+  http_mock_client invalid_mock;
+  cai_agent_runtime_config config;
+  cai_agent_runtime_config normal_config;
+  cai_agent_review_request request;
+  cai_agent_runtime *runtime;
+  cai_agent_runtime *normal_runtime;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  char review_session_id[CAI_AGENT_SESSION_ID_MAX];
+  int i;
+
+  if (http_mock_client_open_script(state, "smith_review_runtime_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  normal_runtime = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  store_state.load_only_saved_scope = 1;
+  review_session_id[0] = '\0';
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.preset = CAI_SMITH_REVIEW_PRESET;
+  config.workspace_directory = "/tmp";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.disable_default_session_store = 1;
+  config.session_store = &store;
+  config.session_scope = "review-isolation";
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  config.resume_latest = 1;
+  expect_int(state, "smith_review_reject_resume_latest",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_ERR_INVALID);
+  config.resume_latest = 0;
+  config.session_id = "parent-session";
+  expect_int(state, "smith_review_reject_session_id",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_ERR_INVALID);
+  config.session_id = NULL;
+  expect_int(state, "smith_review_runtime_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_runtime_submit",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_runtime_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_runtime_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_runtime_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "smith_review_runtime_report", events.saw_review_report,
+               1L);
+    expect_str(state, "smith_review_runtime_report_value", events.review_report,
+               "{\"findings\":[],\"overall_correctness\":\"patch is "
+               "correct\",\"overall_explanation\":\"No qualifying "
+               "defects.\",\"overall_confidence_score\":0.9}");
+    (void)snprintf(review_session_id, sizeof(review_session_id), "%s",
+                   cai_agent_runtime_session_id(runtime));
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_runtime_repeat",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "smith_review_runtime_generic_submit",
+               cai_agent_runtime_submit(runtime, "not a review", &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "smith_review_runtime_queued_submit",
+               cai_agent_runtime_submit_queued(runtime, "not a review", &error),
+               CAI_ERR_INVALID);
+    expect_int(
+        state, "smith_review_runtime_steering_submit",
+        cai_agent_runtime_submit_steering(runtime, "not a review", &error),
+        CAI_ERR_INVALID);
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = "main;not-a-ref";
+    expect_int(state, "smith_review_runtime_bad_base",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_close(runtime);
+  }
+  expect_str(state, "smith_review_storage_scope", store_state.scope,
+             "smith-review:review-isolation");
+  cai_agent_runtime_config_init(&normal_config);
+  normal_config.workspace_directory = "/tmp";
+  normal_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  normal_config.session_store = &store;
+  normal_config.resume_latest = 1;
+  normal_config.session_scope = "smith-review:review-isolation";
+  expect_int(state, "smith_review_normal_reject_reserved_scope",
+             cai_agent_runtime_open(mock.client, &normal_config,
+                                    &normal_runtime, &error),
+             CAI_ERR_INVALID);
+  normal_config.session_scope = "review-isolation";
+  expect_int(state, "smith_review_normal_resume_open",
+             cai_agent_runtime_open(mock.client, &normal_config,
+                                    &normal_runtime, &error),
+             CAI_OK);
+  if (normal_runtime != NULL) {
+    if (review_session_id[0] != '\0' &&
+        strcmp(cai_agent_runtime_session_id(normal_runtime),
+               review_session_id) == 0) {
+      test_fail(state, "smith_review_normal_resume_isolated",
+                "normal Smith resumed the review session");
+    }
+    cai_agent_runtime_close(normal_runtime);
+  }
+  http_mock_client_close(state, "smith_review_runtime_mock", &mock);
+  cai_error_cleanup(&error);
+  if (http_mock_client_open_script(
+          state, "smith_review_empty_mock", empty_script,
+          sizeof(empty_script) / sizeof(empty_script[0]), &empty_mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  config.event_context = &events;
+  expect_int(
+      state, "smith_review_empty_open",
+      cai_agent_runtime_open(empty_mock.client, &config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_empty_submit",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_empty_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_empty_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_empty_failed", run_state, CAI_AGENT_FAILED);
+    expect_int(state, "smith_review_empty_no_report", events.saw_review_report,
+               0L);
+    expect_str(state, "smith_review_empty_failure", events.failure_message,
+               "Smith review completed without a final JSON report");
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "smith_review_empty_mock", &empty_mock);
+  cai_error_cleanup(&error);
+  if (http_mock_client_open_script(
+          state, "smith_review_invalid_mock", invalid_script,
+          sizeof(invalid_script) / sizeof(invalid_script[0]),
+          &invalid_mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  config.event_context = &events;
+  expect_int(
+      state, "smith_review_invalid_open",
+      cai_agent_runtime_open(invalid_mock.client, &config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_invalid_submit",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_invalid_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_invalid_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_invalid_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "smith_review_invalid_no_report",
+               events.saw_review_report, 0L);
+    expect_substr(state, "smith_review_invalid_failure", events.failure_message,
+                  "Smith review final output does not match the required JSON "
+                  "report schema");
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "smith_review_invalid_mock", &invalid_mock);
   cai_error_cleanup(&error);
 }
 
@@ -36757,6 +37054,7 @@ static const test_entry test_entries[] = {
      test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"smith_profile", test_smith_profile},
+    {"smith_review_runtime", test_smith_review_runtime},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},

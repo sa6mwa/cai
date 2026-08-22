@@ -322,23 +322,65 @@ int cai_client_new_smith_review_agent(cai_client *client,
   cai_client_impl *client_impl;
   cai_agent_config agent_config;
   cai_read_tool_config read_config;
+  cai_terminal_tool_config terminal_config;
   cai_view_image_tool_config view_image_config;
   const char *identity;
-  static const char review_suffix_first[] =
-      ", a read-only code reviewer running in CAI agent mode. Review the "
-      "changes or workspace described by the user independently. Report only "
-      "actionable defects with material correctness, performance, security, "
-      "or maintainability impact. Do not report style preferences or "
-      "unsupported speculation. Inspect relevant files before making a "
-      "finding. Do not modify files, run commands, create goals, or claim "
-      "verification you did not perform.\n\n";
-  static const char review_suffix_second[] =
-      "Use one bullet per finding: - [P1|P2|P3] short title — path:line, "
-      "then impact and cause. Include qualifying findings only. If none, "
-      "reply exactly `No findings.`\n";
+  const char *extension;
+  static const char *const review_suffix_parts[] = {
+      ", a code reviewer running in CAI agent mode. You are acting as a "
+      "reviewer for a proposed code change made by another engineer.\n\n",
+      "Specific guidance from later developer, user, or applicable repository "
+      "instructions overrides these general review guidelines.\n\n",
+      "Flag a bug only when it meaningfully impacts accuracy, performance, "
+      "security, or maintainability; is discrete and actionable; fits the "
+      "repository's existing rigor; was introduced by the reviewed change; "
+      "would likely be fixed by the author; does not rely on unstated "
+      "assumptions; is proven to affect another part of the code rather than ",
+      "merely suspected; and is clearly not an intentional change.\n\n",
+      "Every finding body must explain why it is a bug, state the conditions "
+      "needed for it to arise, communicate proportionate severity, stay within "
+      "one concise paragraph, avoid code excerpts longer than three lines, and "
+      "use a matter-of-fact, useful tone. Do not add flattery or ",
+      "non-actionable comments.\n\n",
+      "Return every qualifying finding that the author would fix if aware of "
+      "it; prefer no findings over speculative ones. Ignore trivial style "
+      "unless it obscures meaning or violates documented standards. Use one "
+      "finding per distinct issue and deduplicate by changed location and "
+      "defect/remedy.\n\n",
+      "Use suggestion blocks only for concrete minimal replacement code; keep "
+      "their exact leading whitespace and do not change outer indentation "
+      "unless that is the fix.\n\n",
+      "Inspect applicable root and scoped project instructions for changed "
+      "files. More-specific guidance wins. For a rule-supported finding, ",
+      "verify ",
+      "the smallest supporting instruction-file line range and include one "
+      "compact local-file or Markdown reference in the body. Do not invent "
+      "findings solely because an instruction file exists.\n\n",
+      "Choose the shortest code location that makes the issue clear, normally "
+      "no more than 5-10 lines, and ensure it overlaps the reviewed diff. Use "
+      "[P0] only for universal release blockers, [P1] for next-cycle urgent "
+      "issues, [P2] for normal issues, and [P3] for low-priority issues.\n\n",
+      "Your final response MUST be exactly one JSON object with this shape: "
+      "{\"findings\":[{\"title\":\"[P1] imperative title under 80 chars\","
+      "\"body\":\"one-paragraph impact and cause\","
+      "\"confidence_score\":0.0,\"priority\":1,"
+      "\"code_location\":{\"absolute_file_path\":\"/absolute/path\","
+      "\"line_range\":{\"start\":1,\"end\":1}}}],",
+      "\"overall_correctness\":\"patch is correct\"|"
+      "\"patch is incorrect\",\"overall_explanation\":\"brief reason\","
+      "\"overall_confidence_score\":0.0}. The code_location field is ",
+      "required for every finding and must overlap the reviewed diff. Set "
+      "priority to 0-3 or omit it when undetermined. Correct means existing "
+      "code and tests will not break and the patch is free of bugs or other "
+      "blocking issues; ignore non-blocking style, formatting, typo, and ",
+      "documentation nits. Return an empty findings array when there are no "
+      "qualifying findings. Do not wrap the JSON in Markdown or include extra ",
+      "prose. Do not generate a PR fix.\n"};
   char *instructions;
   size_t length;
   size_t offset;
+  size_t extension_length;
+  size_t i;
   int rc;
 
   if (out == NULL) {
@@ -358,15 +400,34 @@ int cai_client_new_smith_review_agent(cai_client *client,
   }
   identity = config->agent_identity != NULL ? config->agent_identity
                                             : CAI_SMITH_DEFAULT_IDENTITY;
-  if (identity[0] == '\0' ||
-      strlen(identity) > SIZE_MAX - strlen("You are ") -
-                             strlen(review_suffix_first) -
-                             strlen(review_suffix_second) - 1U) {
+  extension = config->developer_instructions_extension;
+  if (identity[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "Smith review agent identity is invalid");
   }
-  length = strlen("You are ") + strlen(identity) + strlen(review_suffix_first) +
-           strlen(review_suffix_second);
+  if (strlen(identity) > SIZE_MAX - strlen("You are ") - 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review instructions are too large");
+  }
+  length = strlen("You are ") + strlen(identity);
+  for (i = 0U; i < sizeof(review_suffix_parts) / sizeof(review_suffix_parts[0]);
+       i++) {
+    if (strlen(review_suffix_parts[i]) > SIZE_MAX - length) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "Smith review instructions are too large");
+    }
+    length += strlen(review_suffix_parts[i]);
+  }
+  extension_length = extension != NULL ? strlen(extension) : 0U;
+  if (extension_length > 0U &&
+      (length > SIZE_MAX - 2U ||
+       extension_length > SIZE_MAX - length - 2U - 1U)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review instructions are too large");
+  }
+  if (extension_length > 0U) {
+    length += 2U + extension_length;
+  }
   instructions = (char *)cai_alloc(&client_impl->allocator, length + 1U);
   if (instructions == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -376,11 +437,18 @@ int cai_client_new_smith_review_agent(cai_client *client,
   offset = strlen("You are ");
   memcpy(instructions + offset, identity, strlen(identity));
   offset += strlen(identity);
-  memcpy(instructions + offset, review_suffix_first,
-         strlen(review_suffix_first));
-  offset += strlen(review_suffix_first);
-  memcpy(instructions + offset, review_suffix_second,
-         strlen(review_suffix_second));
+  for (i = 0U; i < sizeof(review_suffix_parts) / sizeof(review_suffix_parts[0]);
+       i++) {
+    size_t part_length;
+
+    part_length = strlen(review_suffix_parts[i]);
+    memcpy(instructions + offset, review_suffix_parts[i], part_length);
+    offset += part_length;
+  }
+  if (extension_length > 0U) {
+    memcpy(instructions + offset, "\n\n", 2U);
+    memcpy(instructions + offset + 2U, extension, extension_length);
+  }
   instructions[length] = '\0';
   cai_agent_config_init(&agent_config);
   agent_config.model =
@@ -408,6 +476,24 @@ int cai_client_new_smith_review_agent(cai_client *client,
   rc = cai_agent_register_read_tool(*out, &read_config, error);
   if (rc == CAI_OK) {
     rc = cai_agent_register_list_files_tool(*out, &read_config, error);
+  }
+  if (rc == CAI_OK && !config->disable_terminal) {
+    memset(&terminal_config, 0, sizeof(terminal_config));
+    if (config->terminal_tool_config != NULL) {
+      terminal_config = *config->terminal_tool_config;
+    }
+    if (terminal_config.root_path != NULL &&
+        strcmp(terminal_config.root_path, config->workspace_directory) != 0) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith terminal root must equal workspace directory");
+    }
+    terminal_config.root_path = config->workspace_directory;
+    if (rc == CAI_OK && terminal_config.default_workdir == NULL) {
+      terminal_config.default_workdir = config->workspace_directory;
+    }
+    if (rc == CAI_OK) {
+      rc = cai_agent_register_terminal_tools(*out, &terminal_config, error);
+    }
   }
   if (rc == CAI_OK &&
       cai_model_supports(agent_config.model, CAI_MODEL_CAP_IMAGE_INPUT)) {

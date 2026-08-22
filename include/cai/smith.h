@@ -13,14 +13,14 @@ extern "C" {
 
 /** Stable name of the first CAI coding-agent preset. */
 #define CAI_SMITH_PRESET "smith"
-/** Stable name of the isolated read-only Smith review preset. */
+/** Stable name of the isolated Smith review preset. */
 #define CAI_SMITH_REVIEW_PRESET "smith-review"
 /** Smith's default model. */
 #define CAI_SMITH_DEFAULT_MODEL CAI_MODEL_GPT_5_6_TERRA
 /** Smith's default visible identity. */
 #define CAI_SMITH_DEFAULT_IDENTITY "Cai Smith"
 /** Version of the developer-instruction asset rendered by this preset. */
-#define CAI_SMITH_PROMPT_VERSION "smith-2"
+#define CAI_SMITH_PROMPT_VERSION "smith-3"
 
 /** Configuration for a Smith agent profile. */
 typedef struct cai_smith_config {
@@ -63,10 +63,11 @@ int cai_client_new_smith_agent(cai_client *client,
                                cai_error *error);
 
 /**
- * Construct an isolated read-only Smith reviewer. The reviewer has a separate
- * session and registers only read_file, list_files, and view_image when the
- * selected model supports images. It never exposes patch, terminal, goal, or
- * image-generation tools.
+ * Construct an isolated Smith reviewer. The reviewer has a separate session,
+ * uses the dedicated review rubric, and registers read_file, list_files,
+ * exec_command, write_stdin, and view_image when the selected model supports
+ * images. It never exposes patch, goal, MCP, or image-generation tools.
+ * Terminal commands remain subject to the configured host terminal policy.
  */
 int cai_client_new_smith_review_agent(cai_client *client,
                                       const cai_smith_config *config,

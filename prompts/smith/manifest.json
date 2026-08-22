@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "preset": "smith",
-  "rendered_asset_version": "smith-2",
+  "rendered_asset_version": "smith-3",
   "identity_placeholder": "{{agent_identity}}",
   "upstream": {
     "project": "openai/codex",
@@ -11,6 +11,10 @@
       {
         "path": "codex-rs/protocol/src/prompts/base_instructions/default.md",
         "sha256": "ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807"
+      },
+      {
+        "path": "codex-rs/prompts/templates/review/rubric.md",
+        "sha256": "ec60e7f36a1d1c2679ce095c0205ecc56f7dd8fb57707a13ef362072390f219f"
       }
     ]
   },
@@ -19,7 +23,8 @@
     "changes": [
       "replace the agent identity with the configured identity placeholder",
       "remove unavailable terminal, image, and host-specific tool claims",
-      "retain Codex-inspired repository, safety, goal, and communication policy"
+      "retain Codex-inspired repository, safety, goal, and communication policy",
+      "derive the Smith review rubric and exact JSON report contract from Codex review"
     ]
   }
 }

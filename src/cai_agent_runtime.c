@@ -28,6 +28,8 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_EXPORT_MAX_DEPTH 128U
 #define CAI_RUNTIME_EXPORT_KEY_BYTES 64U
 #define CAI_RUNTIME_EXPORT_FIELD_BYTES 160U
+#define CAI_RUNTIME_REVIEW_REPORT_MAX_BYTES (256U * 1024U)
+#define CAI_RUNTIME_REVIEW_SCOPE_PREFIX "smith-review:"
 
 typedef struct cai_runtime_event_node {
   cai_agent_runtime_event event;
@@ -47,6 +49,83 @@ static const lonejson_field cai_runtime_path_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, path, "path")};
 LONEJSON_MAP_DEFINE(cai_runtime_path_map, cai_runtime_path_doc,
                     cai_runtime_path_fields);
+
+typedef struct cai_runtime_review_line_range {
+  lonejson_int64 start;
+  lonejson_int64 end;
+} cai_runtime_review_line_range;
+
+typedef struct cai_runtime_review_code_location {
+  char *absolute_file_path;
+  cai_runtime_review_line_range line_range;
+} cai_runtime_review_code_location;
+
+typedef struct cai_runtime_review_finding {
+  char *title;
+  char *body;
+  double confidence_score;
+  lonejson_int64 priority;
+  int priority_present;
+  cai_runtime_review_code_location code_location;
+} cai_runtime_review_finding;
+
+typedef struct cai_runtime_review_report_doc {
+  lonejson_object_array findings;
+  char *overall_correctness;
+  char *overall_explanation;
+  double overall_confidence_score;
+} cai_runtime_review_report_doc;
+
+static const lonejson_field cai_runtime_review_line_range_fields[] = {
+    LONEJSON_FIELD_I64_REQ(cai_runtime_review_line_range, start, "start"),
+    LONEJSON_FIELD_I64_REQ(cai_runtime_review_line_range, end, "end")};
+LONEJSON_MAP_DEFINE(cai_runtime_review_line_range_map,
+                    cai_runtime_review_line_range,
+                    cai_runtime_review_line_range_fields);
+
+static const lonejson_field cai_runtime_review_code_location_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_code_location,
+                                    absolute_file_path, "absolute_file_path"),
+    LONEJSON_FIELD_OBJECT_REQ(cai_runtime_review_code_location, line_range,
+                              "line_range",
+                              &cai_runtime_review_line_range_map)};
+LONEJSON_MAP_DEFINE(cai_runtime_review_code_location_map,
+                    cai_runtime_review_code_location,
+                    cai_runtime_review_code_location_fields);
+
+static const lonejson_field cai_runtime_review_finding_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_finding, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_finding, body, "body"),
+    LONEJSON_FIELD_F64_REQ(cai_runtime_review_finding, confidence_score,
+                           "confidence_score"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(cai_runtime_review_finding, priority,
+                                        priority_present, "priority"),
+    LONEJSON_FIELD_OBJECT_REQ(cai_runtime_review_finding, code_location,
+                              "code_location",
+                              &cai_runtime_review_code_location_map)};
+LONEJSON_MAP_DEFINE(cai_runtime_review_finding_map, cai_runtime_review_finding,
+                    cai_runtime_review_finding_fields);
+
+/* lonejson has no public required-object-array helper. Keep this one literal
+ * field local so an absent "findings" key cannot be treated as an empty list.
+ */
+static const lonejson_field cai_runtime_review_report_fields[] = {
+    {"findings", sizeof("findings") - 1U, (unsigned char)'f',
+     (unsigned char)'s', offsetof(cai_runtime_review_report_doc, findings),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(cai_runtime_review_finding), &cai_runtime_review_finding_map, NULL,
+     0U, LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_report_doc,
+                                    overall_correctness, "overall_correctness"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_report_doc,
+                                    overall_explanation, "overall_explanation"),
+    LONEJSON_FIELD_F64_REQ(cai_runtime_review_report_doc,
+                           overall_confidence_score,
+                           "overall_confidence_score")};
+LONEJSON_MAP_DEFINE(cai_runtime_review_report_map,
+                    cai_runtime_review_report_doc,
+                    cai_runtime_review_report_fields);
 
 typedef struct cai_runtime_input_node {
   char *text;
@@ -178,7 +257,11 @@ struct cai_agent_runtime {
   cai_terminal_event_fn terminal_event_callback;
   void *terminal_event_context;
   char *terminal_origin_tool_call_id;
+  char *review_report;
+  size_t review_report_length;
+  size_t review_report_capacity;
   int review_mode;
+  int review_submitted;
   int terminal_enabled;
   int image_generation_enabled;
   size_t mcp_client_count;
@@ -496,6 +579,34 @@ static int cai_runtime_copy_string(const char *value, char **out,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to copy agent runtime string");
   }
+  return CAI_OK;
+}
+
+static int cai_runtime_copy_review_scope(const char *scope, char **out,
+                                         cai_error *error) {
+  size_t prefix_length;
+  size_t scope_length;
+  char *value;
+
+  *out = NULL;
+  if (scope == NULL || scope[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review storage scope is required");
+  }
+  prefix_length = sizeof(CAI_RUNTIME_REVIEW_SCOPE_PREFIX) - 1U;
+  scope_length = strlen(scope);
+  if (scope_length > SIZE_MAX - prefix_length - 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review storage scope is too large");
+  }
+  value = (char *)cai_alloc(NULL, prefix_length + scope_length + 1U);
+  if (value == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate Smith review storage scope");
+  }
+  memcpy(value, CAI_RUNTIME_REVIEW_SCOPE_PREFIX, prefix_length);
+  memcpy(value + prefix_length, scope, scope_length + 1U);
+  *out = value;
   return CAI_OK;
 }
 
@@ -951,6 +1062,108 @@ static int cai_runtime_spooled_copy(const lonejson_spooled *spool, char **out,
   return CAI_OK;
 }
 
+static void cai_runtime_clear_review_report_locked(cai_agent_runtime *runtime) {
+  cai_free_mem(NULL, runtime->review_report);
+  runtime->review_report = NULL;
+  runtime->review_report_length = 0U;
+  runtime->review_report_capacity = 0U;
+}
+
+static int cai_runtime_append_review_report_locked(cai_agent_runtime *runtime,
+                                                   const char *data,
+                                                   size_t length,
+                                                   cai_error *error) {
+  size_t required;
+  size_t capacity;
+  char *next;
+
+  if (!runtime->review_mode || length == 0U) {
+    return CAI_OK;
+  }
+  if (length > CAI_RUNTIME_REVIEW_REPORT_MAX_BYTES -
+                   runtime->review_report_length - 1U) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "Smith review report exceeds bounded output size");
+  }
+  required = runtime->review_report_length + length + 1U;
+  if (required > runtime->review_report_capacity) {
+    capacity = runtime->review_report_capacity != 0U
+                   ? runtime->review_report_capacity
+                   : 4096U;
+    while (capacity < required) {
+      if (capacity > CAI_RUNTIME_REVIEW_REPORT_MAX_BYTES / 2U) {
+        capacity = CAI_RUNTIME_REVIEW_REPORT_MAX_BYTES + 1U;
+        break;
+      }
+      capacity *= 2U;
+    }
+    next = (char *)cai_realloc_mem(NULL, runtime->review_report, capacity);
+    if (next == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to retain Smith review report");
+    }
+    runtime->review_report = next;
+    runtime->review_report_capacity = capacity;
+  }
+  memcpy(runtime->review_report + runtime->review_report_length, data, length);
+  runtime->review_report_length += length;
+  runtime->review_report[runtime->review_report_length] = '\0';
+  return CAI_OK;
+}
+
+static int cai_runtime_validate_review_report(const char *report,
+                                              cai_error *error) {
+  cai_runtime_review_report_doc doc;
+  lonejson_error json_error;
+  lonejson_status status;
+  cai_runtime_review_finding *findings;
+  size_t i;
+  int rc;
+
+  if (report == NULL || report[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "Smith review completed without a final JSON report");
+  }
+  memset(&doc, 0, sizeof(doc));
+  CAI_LJ->init(CAI_LJ, &cai_runtime_review_report_map, &doc);
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_runtime_review_report_map, &doc,
+                              report, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_runtime_review_report_map, &doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "Smith review final output does not match the "
+                                "required JSON report schema",
+                                json_error.message);
+  }
+  rc = CAI_OK;
+  if ((strcmp(doc.overall_correctness, "patch is correct") != 0 &&
+       strcmp(doc.overall_correctness, "patch is incorrect") != 0) ||
+      doc.overall_confidence_score < 0.0 ||
+      doc.overall_confidence_score > 1.0) {
+    rc = cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "Smith review final JSON has an invalid verdict or confidence score");
+  }
+  findings = (cai_runtime_review_finding *)doc.findings.items;
+  for (i = 0U; rc == CAI_OK && i < doc.findings.count; i++) {
+    if (findings[i].title[0] == '\0' || findings[i].body[0] == '\0' ||
+        findings[i].code_location.absolute_file_path[0] != '/' ||
+        findings[i].code_location.line_range.start < 1 ||
+        findings[i].code_location.line_range.end <
+            findings[i].code_location.line_range.start ||
+        findings[i].confidence_score < 0.0 ||
+        findings[i].confidence_score > 1.0 ||
+        (findings[i].priority_present &&
+         (findings[i].priority < 0 || findings[i].priority > 3))) {
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "Smith review final JSON contains an invalid finding");
+    }
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_runtime_review_report_map, &doc);
+  return rc;
+}
+
 static int cai_runtime_output_text_delta(void *context, const char *item_id,
                                          int output_index,
                                          const lonejson_spooled *delta,
@@ -968,8 +1181,12 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
   rc = cai_runtime_spooled_copy(delta, &data, &length, error);
   if (rc == CAI_OK && length > 0U) {
     pthread_mutex_lock(&runtime->lock);
-    rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_TEXT_DELTA, data,
-                                    length, NULL, NULL, runtime->state, error);
+    rc = cai_runtime_append_review_report_locked(runtime, data, length, error);
+    if (rc == CAI_OK) {
+      rc =
+          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_TEXT_DELTA, data,
+                                     length, NULL, NULL, runtime->state, error);
+    }
     pthread_mutex_unlock(&runtime->lock);
   }
   cai_free_mem(NULL, data);
@@ -1243,6 +1460,11 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   }
   rc = CAI_OK;
   pthread_mutex_lock(&runtime->lock);
+  if (runtime->review_mode) {
+    /* A review must report only its final assistant message, not analysis
+     * emitted before a tool round. */
+    cai_runtime_clear_review_report_locked(runtime);
+  }
   has_steering = runtime->steering_head != NULL;
   pthread_mutex_unlock(&runtime->lock);
   /* Preserve completed tool/response history before injecting steering. */
@@ -1665,11 +1887,21 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
+    if (rc == CAI_OK && runtime->review_mode) {
+      pthread_mutex_lock(&runtime->lock);
+      rc = cai_runtime_validate_review_report(runtime->review_report, &error);
+      pthread_mutex_unlock(&runtime->lock);
+    }
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
     if (rc == CAI_OK ||
         (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime))) {
       runtime->state = CAI_AGENT_COMPLETED;
+      if (runtime->review_mode && runtime->review_report_length > 0U) {
+        (void)cai_runtime_enqueue_locked(
+            runtime, CAI_AGENT_EVENT_REVIEW_REPORT, runtime->review_report,
+            runtime->review_report_length, NULL, NULL, runtime->state, &error);
+      }
       (void)cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
                                        NULL, 0U, NULL, NULL, runtime->state,
                                        &error);
@@ -2630,6 +2862,12 @@ void cai_agent_runtime_config_init(cai_agent_runtime_config *config) {
   }
 }
 
+void cai_agent_review_request_init(cai_agent_review_request *request) {
+  if (request != NULL) {
+    memset(request, 0, sizeof(*request));
+  }
+}
+
 int cai_agent_runtime_open(cai_client *client,
                            const cai_agent_runtime_config *config,
                            cai_agent_runtime **out, cai_error *error) {
@@ -2659,6 +2897,17 @@ int cai_agent_runtime_open(cai_client *client,
       !review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID, "unsupported agent preset");
   }
+  if (review_mode && (config->resume_latest || config->session_id != NULL)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review runtime always uses a fresh session and "
+                         "cannot resume or name one");
+  }
+  if (!review_mode && config->session_scope != NULL &&
+      strncmp(config->session_scope, CAI_RUNTIME_REVIEW_SCOPE_PREFIX,
+              sizeof(CAI_RUNTIME_REVIEW_SCOPE_PREFIX) - 1U) == 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review storage namespace is reserved");
+  }
   runtime = (cai_agent_runtime *)cai_alloc(NULL, sizeof(*runtime));
   if (runtime == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -2682,7 +2931,7 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
   runtime->review_mode = review_mode;
-  runtime->terminal_enabled = review_mode || config->disable_terminal ? 0 : 1;
+  runtime->terminal_enabled = config->disable_terminal ? 0 : 1;
   runtime->image_generation_enabled = config->enable_image_generation ? 1 : 0;
   runtime->mcp_client_count = config->mcp_client_count;
   if (pthread_mutex_init(&runtime->lock, NULL) != 0) {
@@ -2719,7 +2968,7 @@ int cai_agent_runtime_open(cai_client *client,
   terminal_config.event_callback = cai_runtime_terminal_event;
   terminal_config.event_context = runtime;
   smith.terminal_tool_config = &terminal_config;
-  smith.disable_terminal = review_mode || config->disable_terminal;
+  smith.disable_terminal = config->disable_terminal;
   rc = review_mode
            ? cai_client_new_smith_review_agent(client, &smith, &runtime->agent,
                                                error)
@@ -2771,7 +3020,10 @@ int cai_agent_runtime_open(cai_client *client,
                                    error);
     }
     if (rc == CAI_OK) {
-      rc = cai_runtime_copy_string(scope, &runtime->session_scope, error);
+      rc = review_mode
+               ? cai_runtime_copy_review_scope(scope, &runtime->session_scope,
+                                               error)
+               : cai_runtime_copy_string(scope, &runtime->session_scope, error);
     }
     if (rc == CAI_OK && config->session_store != NULL) {
       if (config->session_store->checkpoint == NULL ||
@@ -2897,6 +3149,7 @@ int cai_agent_runtime_open(cai_client *client,
     cai_free_mem(NULL, runtime->session_scope);
     cai_free_mem(NULL, runtime->workspace_directory);
     cai_free_mem(NULL, runtime->session_id);
+    cai_free_mem(NULL, runtime->review_report);
     close(runtime->wakeup_read_fd);
     close(runtime->wakeup_write_fd);
     pthread_cond_destroy(&runtime->condition);
@@ -2996,6 +3249,9 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     runtime->accepting_steering = 0;
     activated = 1;
   }
+  if (kind == CAI_RUNTIME_INPUT_TURN && runtime->review_mode) {
+    cai_runtime_clear_review_report_locked(runtime);
+  }
   if (kind != CAI_RUNTIME_INPUT_TURN) {
     rc = cai_runtime_require_event_capacity_locked(runtime, error);
     if (rc == CAI_OK) {
@@ -3082,8 +3338,192 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
   if (rc != CAI_OK) {
     return rc;
   }
+  if (runtime->review_mode) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "smith-review requires submit_review");
+  }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_TURN,
                                    error);
+}
+
+static int cai_runtime_review_ref_valid(const char *value) {
+  const unsigned char *cursor;
+  size_t length;
+
+  if (value == NULL || value[0] == '\0' || value[0] == '-') {
+    return 0;
+  }
+  length = strlen(value);
+  if (length > 256U) {
+    return 0;
+  }
+  for (cursor = (const unsigned char *)value; *cursor != '\0'; cursor++) {
+    if (!((*cursor >= 'a' && *cursor <= 'z') ||
+          (*cursor >= 'A' && *cursor <= 'Z') ||
+          (*cursor >= '0' && *cursor <= '9') || *cursor == '.' ||
+          *cursor == '_' || *cursor == '-' || *cursor == '/')) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int cai_runtime_review_commit_valid(const char *value) {
+  const unsigned char *cursor;
+  size_t length;
+
+  if (value == NULL) {
+    return 0;
+  }
+  length = strlen(value);
+  if (length < 7U || length > 64U) {
+    return 0;
+  }
+  for (cursor = (const unsigned char *)value; *cursor != '\0'; cursor++) {
+    if (!((*cursor >= '0' && *cursor <= '9') ||
+          (*cursor >= 'a' && *cursor <= 'f') ||
+          (*cursor >= 'A' && *cursor <= 'F'))) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int cai_runtime_review_text_valid(const char *value, size_t maximum) {
+  const unsigned char *cursor;
+  size_t length;
+
+  if (value == NULL || value[0] == '\0') {
+    return 0;
+  }
+  length = strlen(value);
+  if (length > maximum) {
+    return 0;
+  }
+  for (cursor = (const unsigned char *)value; *cursor != '\0'; cursor++) {
+    if (*cursor < 0x20U && *cursor != '\n' && *cursor != '\t') {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int
+cai_runtime_render_review_request(const cai_agent_review_request *request,
+                                  char **out, cai_error *error) {
+  const char *format;
+  int length;
+  char *text;
+
+  if (out == NULL || request == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "review request is required");
+  }
+  *out = NULL;
+  format = NULL;
+  if (request->target == CAI_AGENT_REVIEW_UNCOMMITTED) {
+    format = "Review the current code changes (staged, unstaged, and untracked "
+             "files) and provide prioritized, actionable findings.";
+    length = (int)strlen(format);
+  } else if (request->target == CAI_AGENT_REVIEW_BASE_BRANCH) {
+    if (!cai_runtime_review_ref_valid(request->base_branch)) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "review base_branch must be a safe git ref");
+    }
+    format = "Review code changes against base branch %s. First establish the "
+             "merge base with that branch, inspect the merge diff, and provide "
+             "prioritized, actionable findings.";
+    length = snprintf(NULL, 0, format, request->base_branch);
+  } else if (request->target == CAI_AGENT_REVIEW_COMMIT) {
+    if (!cai_runtime_review_commit_valid(request->commit)) {
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "review commit must be a 7-64 digit hexadecimal SHA");
+    }
+    if (request->commit_title != NULL &&
+        !cai_runtime_review_text_valid(request->commit_title, 1024U)) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "review commit_title is invalid");
+    }
+    format = request->commit_title != NULL
+                 ? "Review code changes introduced by commit %s (\"%s\") and "
+                   "provide prioritized, actionable findings."
+                 : "Review code changes introduced by commit %s and provide "
+                   "prioritized, actionable findings.";
+    length =
+        request->commit_title != NULL
+            ? snprintf(NULL, 0, format, request->commit, request->commit_title)
+            : snprintf(NULL, 0, format, request->commit);
+  } else if (request->target == CAI_AGENT_REVIEW_CUSTOM) {
+    if (!cai_runtime_review_text_valid(request->instructions, 32768U)) {
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "review custom instructions are required and bounded");
+    }
+    *out = cai_strdup(NULL, request->instructions);
+    return *out != NULL
+               ? CAI_OK
+               : cai_set_error(error, CAI_ERR_NOMEM,
+                               "failed to allocate review instructions");
+  } else {
+    return cai_set_error(error, CAI_ERR_INVALID, "unsupported review target");
+  }
+  if (length < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to render review instructions");
+  }
+  text = (char *)cai_alloc(NULL, (size_t)length + 1U);
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate review instructions");
+  }
+  if ((request->target == CAI_AGENT_REVIEW_BASE_BRANCH &&
+       snprintf(text, (size_t)length + 1U, format, request->base_branch) !=
+           length) ||
+      (request->target == CAI_AGENT_REVIEW_COMMIT &&
+       (request->commit_title != NULL
+            ? snprintf(text, (size_t)length + 1U, format, request->commit,
+                       request->commit_title)
+            : snprintf(text, (size_t)length + 1U, format, request->commit)) !=
+           length) ||
+      (request->target == CAI_AGENT_REVIEW_UNCOMMITTED &&
+       snprintf(text, (size_t)length + 1U, "%s", format) != length)) {
+    cai_free_mem(NULL, text);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to render review instructions");
+  }
+  *out = text;
+  return CAI_OK;
+}
+
+int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
+                                    const cai_agent_review_request *request,
+                                    cai_error *error) {
+  char *text;
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (!runtime->review_mode) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review submissions require smith-review preset");
+  }
+  if (runtime->review_submitted) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "smith-review accepts exactly one review request");
+  }
+  text = NULL;
+  rc = cai_runtime_render_review_request(request, &text, error);
+  if (rc == CAI_OK) {
+    rc =
+        cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_TURN, error);
+    if (rc == CAI_OK) {
+      runtime->review_submitted = 1;
+    }
+  }
+  cai_free_mem(NULL, text);
+  return rc;
 }
 
 int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
@@ -3091,6 +3531,10 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
                                                  cai_error *error) {
   if (runtime == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
+  }
+  if (runtime->review_mode) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "smith-review does not accept steering input");
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_STEERING,
                                    error);
@@ -3112,6 +3556,10 @@ int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
                                                cai_error *error) {
   if (runtime == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
+  }
+  if (runtime->review_mode) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "smith-review accepts exactly one review request");
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_QUEUED_TURN,
                                    error);
@@ -3450,6 +3898,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->session_scope);
   cai_free_mem(NULL, runtime->session_id);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
+  cai_free_mem(NULL, runtime->review_report);
   close(runtime->wakeup_read_fd);
   close(runtime->wakeup_write_fd);
   pthread_cond_destroy(&runtime->condition);

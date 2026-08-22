@@ -385,21 +385,54 @@ compaction compatibility check.
 
 ### 6.2 Review
 
-The delivered `smith-review` preset is an **isolated, read-only agent run**,
-not a multi-agent service. Hosts select it with `preset =
-CAI_SMITH_REVIEW_PRESET` (or Lua `client:new_smith_review_runtime`). It has a
-fresh session identifier and registers only `read_file`, `list_files`, and,
-for image-capable models, `view_image`. It deliberately exposes neither a
-terminal nor MCP: CAI does not yet have an enforceable read-only command/MCP
-policy, so registering either would turn “review” into a claim rather than a
-guarantee. It also excludes `apply_patch`, image generation, goals, and any
-shared terminal state.
+The delivered `smith-review` preset is an **isolated reviewer runtime**, not a
+multi-agent service and not a claim that arbitrary terminal commands are
+read-only. Hosts select it with `preset = CAI_SMITH_REVIEW_PRESET` (or Lua
+`client:new_smith_review_runtime`). It starts with a fresh session identifier,
+uses the Codex-derived review rubric, and accepts one explicit review request:
 
-**Target:** a host-level `/review` convenience may create this preset with an
-explicit review request and a linked child-session record. Git/base/commit
-targets, copied parent-context snapshots, a rendered report event, and
-read-only terminal/MCP capabilities require an enforceable policy before they
-can be enabled. None is silently inferred by the current preset.
+```c
+cai_agent_review_request request;
+cai_agent_review_request_init(&request);
+request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+cai_agent_runtime_submit_review(runtime, &request, &error);
+```
+
+The target is one of `UNCOMMITTED` (staged, unstaged, and untracked changes),
+`BASE_BRANCH` (the merge diff against a validated ref), `COMMIT` (a validated
+hexadecimal commit ID), or `CUSTOM` (host-owned review instructions). CAI does
+not parse `/review`; a TUI/GUI maps its command grammar to this API. A review
+runtime accepts exactly one `submit_review` request; generic, queued, and
+steering inputs are rejected so its local history cannot become a second
+review's hidden context. `smith-review` rejects both `session_id` and
+`resume_latest`; it generates a fresh ID, never imports or overwrites a
+caller-selected session checkpoint, and persists under a reserved namespace
+derived from its requested scope. A normal Smith runtime therefore cannot
+select a review checkpoint through `resume_latest`; CAI rejects the reserved
+`smith-review:` namespace for normal Smith runtimes.
+
+The reviewer registers `read_file`, `list_files`, `exec_command`,
+`write_stdin`, and `view_image` for image-capable models. It excludes
+`apply_patch`, goal tools, MCP, image generation, and shared terminal state.
+Its terminal is the same one-slot managed terminal as Smith and is governed by
+the embedding host's configured execution policy, matching Codex review's
+inherited sandbox model. A host that needs OS-level read-only execution must
+provide that policy/sandbox; CAI must not misrepresent tool omission as a
+terminal security boundary.
+
+The completed reviewer emits `CAI_AGENT_EVENT_REVIEW_REPORT` before
+`CAI_AGENT_EVENT_RUN_COMPLETED`. Its data is the model's exact final JSON
+report under the documented Codex-compatible schema (`findings`, each with a
+location/confidence/optional priority, plus an overall correctness verdict,
+explanation, and confidence). CAI preserves the streamed bytes and does not
+treat Markdown as persistence or invent a lossy finding model; hosts may parse
+the JSON into their own UI or review transport. Before emitting the report, CAI
+strictly parses the final output against that schema and validates verdicts,
+line ranges, absolute paths, priorities, and confidence ranges. The report
+buffer is bounded to 256 KiB, and a tool round clears earlier assistant text so
+only the final review response is reported. A successful provider response
+without a schema-valid final report fails the run rather than producing a
+successful review with no handoff report.
 
 ## 7. Tool surface
 
@@ -1038,6 +1071,9 @@ use observable model/tool/store behavior rather than private fields.
   policy, failed compaction preservation, and replay of compacted history.
 - MCP tests cover discovery, collision rejection, serial dispatch, progress,
   result bounds, and persisted remote-call records.
+- Review tests prove an isolated review request renders the Codex-derived
+  rubric and target, exposes the managed terminal but no mutation tools, and
+  emits the exact final JSON report event before completion.
 
 ### 15.2 Live end-to-end proof
 
@@ -1074,6 +1110,8 @@ true:
    session JSONL survives restart and supports a callback replacement backend.
 7. Client-side compaction preserves resumability, uses compatibility metadata
    instead of model-name superstition, and retains original durable history.
-8. `/review` is isolated/read-only and never changes parent workspace/session
-   state.
+8. A Smith review request is isolated from the parent session, uses the
+   Codex-derived rubric and explicit target, and emits its final JSON handoff
+report. It has no CAI file-mutation tools; terminal execution follows the
+host's normal sandbox policy.
 9. Deterministic tests and the opt-in luna live e2e proof pass.

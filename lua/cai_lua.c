@@ -3122,6 +3122,40 @@ static int cai_lua_agent_runtime_submit(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_submit_review(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_agent_review_request request;
+  const char *target;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  cai_agent_review_request_init(&request);
+  target = cai_lua_opt_string_field(L, 2, "target", NULL);
+  if (target == NULL || strcmp(target, "uncommitted") == 0) {
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+  } else if (strcmp(target, "base") == 0) {
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+  } else if (strcmp(target, "commit") == 0) {
+    request.target = CAI_AGENT_REVIEW_COMMIT;
+    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
+    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+  } else if (strcmp(target, "custom") == 0) {
+    request.target = CAI_AGENT_REVIEW_CUSTOM;
+    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+  } else {
+    return luaL_error(
+        L, "review target must be uncommitted, base, commit, or custom");
+  }
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_submit_review(self->ptr, &request, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_submit_steering(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
@@ -8583,6 +8617,7 @@ static const luaL_Reg cai_lua_client_methods[] = {
 
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
+    {"submit_review", cai_lua_agent_runtime_submit_review},
     {"submit_steering", cai_lua_agent_runtime_submit_steering},
     {"submit_queued", cai_lua_agent_runtime_submit_queued},
     {"pump", cai_lua_agent_runtime_pump},
@@ -8988,6 +9023,8 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_CANCELLED",
                       CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TURN_QUEUED", CAI_AGENT_EVENT_TURN_QUEUED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_REVIEW_REPORT",
+                      CAI_AGENT_EVENT_REVIEW_REPORT);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
