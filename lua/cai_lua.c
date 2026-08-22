@@ -56,6 +56,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_CONVERSATION_PARAMS "cai.conversation_items_params"
 #define CAI_LUA_SPOOL_READER "cai.spooled_reader"
 #define CAI_LUA_AGENT_RUNTIME "cai.agent_runtime"
+#define CAI_LUA_TODO_STORE "cai.todo_store"
 
 int luaopen_cai(lua_State *L);
 static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
@@ -123,6 +124,22 @@ typedef struct cai_lua_registry {
   cai_lua_tool_ref *tools;
   size_t active_calls;
 } cai_lua_registry;
+
+/*
+ * A native todo store is intentionally Lua-free after construction.  The
+ * copied callback table and opaque context are owned by this adapter; Lua
+ * only chooses the store while it configures a tool.
+ */
+typedef struct cai_lua_todo_store_adapter {
+  cai_todo_store_callbacks callbacks;
+  void *context;
+  size_t references;
+  int tool_reference_active;
+} cai_lua_todo_store_adapter;
+
+typedef struct cai_lua_todo_store {
+  cai_lua_todo_store_adapter *adapter;
+} cai_lua_todo_store;
 
 typedef struct cai_lua_mcp {
   cai_mcp_handler *ptr;
@@ -387,6 +404,160 @@ static int cai_lua_bool_result(lua_State *L, int rc, cai_error *error) {
     return 1;
   }
   return cai_lua_fail(L, rc, error);
+}
+
+static void
+cai_lua_todo_store_adapter_release(cai_lua_todo_store_adapter *adapter) {
+  if (adapter == NULL || adapter->references == 0U) {
+    return;
+  }
+  adapter->references--;
+  if (adapter->references != 0U) {
+    return;
+  }
+  if (adapter->callbacks.destroy != NULL) {
+    adapter->callbacks.destroy(adapter->context);
+  }
+  free(adapter);
+}
+
+static int cai_lua_todo_store_begin(void *context, void **transaction,
+                                    cai_error *error) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter == NULL || adapter->callbacks.begin == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "native todo store is unavailable");
+  }
+  return adapter->callbacks.begin(adapter->context, transaction, error);
+}
+
+static int cai_lua_todo_store_open_read(void *context, void *transaction,
+                                        lonejson_reader_fn *reader,
+                                        void **reader_context,
+                                        cai_error *error) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter == NULL || adapter->callbacks.open_read == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "native todo store is unavailable");
+  }
+  return adapter->callbacks.open_read(adapter->context, transaction, reader,
+                                      reader_context, error);
+}
+
+static void cai_lua_todo_store_close_read(void *context, void *transaction,
+                                          void *reader_context) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter != NULL && adapter->callbacks.close_read != NULL) {
+    adapter->callbacks.close_read(adapter->context, transaction,
+                                  reader_context);
+  }
+}
+
+static int cai_lua_todo_store_open_write(void *context, void *transaction,
+                                         lonejson_sink_fn *sink,
+                                         void **sink_context,
+                                         cai_error *error) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter == NULL || adapter->callbacks.open_write == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "native todo store is unavailable");
+  }
+  return adapter->callbacks.open_write(adapter->context, transaction, sink,
+                                       sink_context, error);
+}
+
+static int cai_lua_todo_store_commit_write(void *context, void *transaction,
+                                           cai_error *error) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter == NULL || adapter->callbacks.commit_write == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "native todo store is unavailable");
+  }
+  return adapter->callbacks.commit_write(adapter->context, transaction, error);
+}
+
+static int cai_lua_todo_store_commit(void *context, void *transaction,
+                                     cai_error *error) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter == NULL || adapter->callbacks.commit == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "native todo store is unavailable");
+  }
+  return adapter->callbacks.commit(adapter->context, transaction, error);
+}
+
+static void cai_lua_todo_store_rollback(void *context, void *transaction) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter != NULL && adapter->callbacks.rollback != NULL) {
+    adapter->callbacks.rollback(adapter->context, transaction);
+  }
+}
+
+static void cai_lua_todo_store_destroy(void *context) {
+  cai_lua_todo_store_adapter *adapter;
+
+  adapter = (cai_lua_todo_store_adapter *)context;
+  if (adapter == NULL || !adapter->tool_reference_active) {
+    return;
+  }
+  adapter->tool_reference_active = 0;
+  cai_lua_todo_store_adapter_release(adapter);
+}
+
+static const cai_todo_store_callbacks cai_lua_todo_store_callbacks = {
+    cai_lua_todo_store_begin,        cai_lua_todo_store_open_read,
+    cai_lua_todo_store_close_read,   cai_lua_todo_store_open_write,
+    cai_lua_todo_store_commit_write, cai_lua_todo_store_commit,
+    cai_lua_todo_store_rollback,     cai_lua_todo_store_destroy};
+
+static int cai_lua_todo_store_prepare(cai_lua_todo_store *store,
+                                      cai_error *error) {
+  cai_lua_todo_store_adapter *adapter;
+
+  if (store == NULL || store->adapter == NULL) {
+    return cai_lua_set_error(
+        error, CAI_ERR_INVALID,
+        "native todo store is closed or already registered");
+  }
+  adapter = store->adapter;
+  if (adapter->tool_reference_active) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "native todo store is already registered");
+  }
+  adapter->references++;
+  adapter->tool_reference_active = 1;
+  return CAI_OK;
+}
+
+static void cai_lua_todo_store_finish(cai_lua_todo_store *store,
+                                      int registration_succeeded) {
+  cai_lua_todo_store_adapter *adapter;
+
+  if (store == NULL || store->adapter == NULL) {
+    return;
+  }
+  adapter = store->adapter;
+  if (registration_succeeded) {
+    store->adapter = NULL;
+    cai_lua_todo_store_adapter_release(adapter);
+  } else if (adapter->tool_reference_active) {
+    adapter->tool_reference_active = 0;
+    cai_lua_todo_store_adapter_release(adapter);
+  }
 }
 
 static int cai_lua_require_pslog_core(lua_State *L, cai_error *error) {
@@ -4398,11 +4569,18 @@ static void cai_lua_searxng_config(lua_State *L, int index,
       cai_lua_opt_string_field(L, index, "response_spool_dir", NULL);
 }
 
-static void cai_lua_todo_config(lua_State *L, int index,
-                                cai_todo_tool_config *config) {
+static int cai_lua_todo_config(lua_State *L, int index,
+                               cai_todo_tool_config *config,
+                               cai_lua_todo_store **native_store,
+                               cai_error *error) {
+  cai_lua_todo_store *store;
+
   memset(config, 0, sizeof(*config));
+  if (native_store != NULL) {
+    *native_store = NULL;
+  }
   if (!lua_istable(L, index)) {
-    return;
+    return CAI_OK;
   }
   config->name = cai_lua_opt_string_field(L, index, "name", NULL);
   config->description = cai_lua_opt_string_field(L, index, "description", NULL);
@@ -4416,6 +4594,101 @@ static void cai_lua_todo_config(lua_State *L, int index,
       cai_lua_opt_size_field(L, index, "max_description_bytes", 0u);
   config->max_result_items =
       cai_lua_opt_size_field(L, index, "max_result_items", 0u);
+  lua_getfield(L, index, "store");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return CAI_OK;
+  }
+  store = (cai_lua_todo_store *)luaL_testudata(L, -1, CAI_LUA_TODO_STORE);
+  lua_pop(L, 1);
+  if (store == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "todo store must be a native cai todo store");
+  }
+  if (store->adapter == NULL) {
+    return cai_lua_set_error(
+        error, CAI_ERR_INVALID,
+        "native todo store is closed or already registered");
+  }
+  if (config->store_path != NULL || config->lock_path != NULL) {
+    return cai_lua_set_error(
+        error, CAI_ERR_INVALID,
+        "native todo store cannot be combined with store_path or lock_path");
+  }
+  config->store = &cai_lua_todo_store_callbacks;
+  config->store_context = store->adapter;
+  if (native_store != NULL) {
+    *native_store = store;
+  }
+  return CAI_OK;
+}
+
+static int cai_lua_todo_store_gc(lua_State *L) {
+  cai_lua_todo_store *self;
+
+  self = (cai_lua_todo_store *)luaL_checkudata(L, 1, CAI_LUA_TODO_STORE);
+  if (self->adapter != NULL) {
+    cai_lua_todo_store_adapter_release(self->adapter);
+    self->adapter = NULL;
+  }
+  return 0;
+}
+
+static int cai_lua_todo_store_close(lua_State *L) {
+  return cai_lua_todo_store_gc(L);
+}
+
+static int cai_lua_todo_store_from_native(lua_State *L) {
+  const cai_todo_store_callbacks *callbacks;
+  cai_lua_todo_store_adapter *adapter;
+  cai_lua_todo_store *store;
+  cai_error error;
+
+  cai_error_init(&error);
+  if (lua_type(L, 1) != LUA_TLIGHTUSERDATA) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "todo callbacks must be C lightuserdata"),
+        &error);
+  }
+  if (!lua_isnoneornil(L, 2) && lua_type(L, 2) != LUA_TLIGHTUSERDATA) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "todo context must be C lightuserdata or nil"),
+        &error);
+  }
+  callbacks = (const cai_todo_store_callbacks *)lua_touserdata(L, 1);
+  if (callbacks == NULL || callbacks->begin == NULL ||
+      callbacks->open_read == NULL || callbacks->close_read == NULL ||
+      callbacks->open_write == NULL || callbacks->commit_write == NULL ||
+      callbacks->commit == NULL || callbacks->rollback == NULL) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "native todo store callbacks are incomplete"),
+        &error);
+  }
+  store = (cai_lua_todo_store *)lua_newuserdata(L, sizeof(*store));
+  store->adapter = NULL;
+  adapter = (cai_lua_todo_store_adapter *)malloc(sizeof(*adapter));
+  if (adapter == NULL) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_NOMEM,
+                          "failed to allocate native todo store adapter"),
+        &error);
+  }
+  memset(adapter, 0, sizeof(*adapter));
+  adapter->callbacks = *callbacks;
+  adapter->context = lua_isnoneornil(L, 2) ? NULL : lua_touserdata(L, 2);
+  adapter->references = 1U;
+  store->adapter = adapter;
+  luaL_getmetatable(L, CAI_LUA_TODO_STORE);
+  lua_setmetatable(L, -2);
+  cai_lua_error_cleanup(&error);
+  return 1;
 }
 
 static void cai_lua_exec_config(lua_State *L, int index,
@@ -4501,12 +4774,22 @@ static int cai_lua_agent_register_searxng(lua_State *L) {
 static int cai_lua_agent_register_todo(lua_State *L) {
   cai_lua_agent *self;
   cai_todo_tool_config config;
+  cai_lua_todo_store *native_store;
   cai_error error;
   int rc;
+
   self = cai_lua_check_agent(L, 1);
-  cai_lua_todo_config(L, 2, &config);
   cai_error_init(&error);
-  rc = cai_agent_register_todo_tool(self->ptr, &config, &error);
+  rc = cai_lua_todo_config(L, 2, &config, &native_store, &error);
+  if (rc == CAI_OK && native_store != NULL) {
+    rc = cai_lua_todo_store_prepare(native_store, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_register_todo_tool(self->ptr, &config, &error);
+  }
+  if (native_store != NULL) {
+    cai_lua_todo_store_finish(native_store, rc == CAI_OK);
+  }
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -6001,12 +6284,22 @@ static int cai_lua_registry_register_searxng(lua_State *L) {
 static int cai_lua_registry_register_todo(lua_State *L) {
   cai_lua_registry *self;
   cai_todo_tool_config config;
+  cai_lua_todo_store *native_store;
   cai_error error;
   int rc;
+
   self = cai_lua_check_registry(L, 1);
-  cai_lua_todo_config(L, 2, &config);
   cai_error_init(&error);
-  rc = cai_tool_registry_register_todo_tool(self->ptr, &config, &error);
+  rc = cai_lua_todo_config(L, 2, &config, &native_store, &error);
+  if (rc == CAI_OK && native_store != NULL) {
+    rc = cai_lua_todo_store_prepare(native_store, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_todo_tool(self->ptr, &config, &error);
+  }
+  if (native_store != NULL) {
+    cai_lua_todo_store_finish(native_store, rc == CAI_OK);
+  }
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -8751,6 +9044,9 @@ static const luaL_Reg cai_lua_spool_reader_methods[] = {
     {"write", cai_lua_spool_reader_write},
     {NULL, NULL}};
 
+static const luaL_Reg cai_lua_todo_store_methods[] = {
+    {"close", cai_lua_todo_store_close}, {NULL, NULL}};
+
 static const luaL_Reg cai_lua_registry_methods[] = {
     {"register_raw_tool", cai_lua_registry_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_registry_register_raw_spooled_tool},
@@ -8962,11 +9258,15 @@ int luaopen_cai(lua_State *L) {
                     cai_lua_conversation_params_gc);
   cai_lua_metatable(L, CAI_LUA_SPOOL_READER, cai_lua_spool_reader_methods,
                     cai_lua_spool_reader_gc);
+  cai_lua_metatable(L, CAI_LUA_TODO_STORE, cai_lua_todo_store_methods,
+                    cai_lua_todo_store_gc);
   lua_newtable(L);
   lua_pushcfunction(L, cai_lua_open);
   lua_setfield(L, -2, "open");
   lua_pushcfunction(L, cai_lua_registry_new);
   lua_setfield(L, -2, "tool_registry");
+  lua_pushcfunction(L, cai_lua_todo_store_from_native);
+  lua_setfield(L, -2, "todo_store_from_native");
   lua_pushcfunction(L, cai_lua_mcp_new);
   lua_setfield(L, -2, "mcp_handler");
   lua_pushcfunction(L, cai_lua_mcp_client_new);

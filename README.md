@@ -234,8 +234,13 @@ or spooled reader to stream JSON output without building the full value first.
 
 The Lua facade intentionally does not expose C-only embedding surfaces such as
 custom allocators, `FILE *`, `lc_source` / `lc_sink`, raw `cai_source` /
-`cai_sink` constructors, lonejson C maps, or custom todo storage callbacks.
-Lua code uses Lua callbacks/readers/writers for those integration points.
+`cai_sink` constructors, or lonejson C maps. A Lua host written in C can pass
+its native `cai_todo_store_callbacks` table and opaque context as
+lightuserdata to `cai.todo_store_from_native(callbacks, context)`, then pass
+the returned store as `store` to `register_todo_tool`. CAI copies the callback
+table and owns the opaque context through the registered tool; all storage
+callbacks remain native C and never enter Lua. Pure Lua code cannot construct
+that store and continues to use `store_path` / `lock_path`.
 
 The Lua examples include a basic streaming agent, a terminal chatbot with
 SearXNG and todo/kanban tools, streamed tool output, low-level conversation

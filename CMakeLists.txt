@@ -846,6 +846,30 @@ if(CAI_BUILD_LUA)
     target_link_libraries(cai_lua PRIVATE "${CAI_LUA_LIBRARY}")
   endif()
   cai_configure_c_target(cai_lua)
+  if(CAI_BUILD_TESTS)
+    add_library(cai_lua_native_todo_store_test MODULE
+      tests/lua/native_todo_store.c)
+    set_target_properties(cai_lua_native_todo_store_test PROPERTIES
+      OUTPUT_NAME cai_native_todo_store_test
+      PREFIX ""
+      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lua")
+    target_include_directories(cai_lua_native_todo_store_test PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}"
+      "${CAI_GENERATED_INCLUDE_DIR}"
+      "${CAI_LONEJSON_INCLUDE_DIR}"
+      "${CAI_LUA_INCLUDE_DIR}")
+    if(APPLE)
+      target_link_options(cai_lua_native_todo_store_test PRIVATE
+        "-undefined" "dynamic_lookup")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_options(cai_lua_native_todo_store_test PRIVATE
+        "-Wl,--allow-shlib-undefined")
+    else()
+      target_link_libraries(cai_lua_native_todo_store_test PRIVATE
+        "${CAI_LUA_LIBRARY}")
+    endif()
+    cai_configure_c_target(cai_lua_native_todo_store_test)
+  endif()
   unset(_cai_lua_link_target)
 endif()
 

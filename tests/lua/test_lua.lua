@@ -1608,6 +1608,32 @@ assert_not_ok(registry:run("list_files", '{"path":"/etc"}', function()
   return true
 end), "list_files must reject absolute escapes")
 
+local native_todo = require("cai_native_todo_store_test")
+assert_not_ok(cai.todo_store_from_native(nil),
+  "native todo stores must require a C callback table")
+native_todo.reset()
+local native_store = assert(native_todo.new())
+local native_registry = cai.tool_registry()
+assert_ok(native_registry:register_todo_tool({
+  store = native_store,
+  default_board = "native",
+}))
+assert_not_ok(native_registry:register_todo_tool({store = native_store}),
+  "a native todo store must only be registered once")
+assert_not_ok(native_registry:run("todo_kanban",
+  '{"operation":"list_boards"}', function()
+    return true
+  end), "native C callbacks must service todo operations")
+assert(native_todo.begin_count() == 1,
+  "native todo store must be called without a Lua callback")
+native_registry:close()
+assert(native_todo.destroy_count() == 1,
+  "native todo store context must be destroyed exactly once")
+native_store:close()
+collectgarbage("collect")
+assert(native_todo.destroy_count() == 1,
+  "closing or collecting consumed native store must not double destroy")
+
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
 assert_ok(registry:register_todo_tool({
