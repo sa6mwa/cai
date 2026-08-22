@@ -537,6 +537,9 @@ if(CAI_BUILD_LUA)
   set(CAI_LUA_TEST_ENV
       "LUA_PATH=${CAI_LUA_ROCK_SHARE_DIR}/?.lua\;${CAI_LUA_ROCK_SHARE_DIR}/?/init.lua\;\;"
       "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.dylib\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib\;${CAI_LUA_ROCK_LIB_DIR}/?.so\;\;")
+  set(CAI_LUA_SMITH_E2E_ENV
+      "CAI_LUA_SMITH_E2E=1"
+      "CAI_LUA_LD_LIBRARY_PATH=${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/cai-prefix/lib:${CAI_LONEJSON_PREFIX}/lib:${CAI_C_PKT_SYSTEMS_PREFIX}/lib:${CAI_PSLOG_PREFIX}/lib")
   if(CMAKE_C_FLAGS_DEBUG MATCHES "fsanitize=address" AND
      CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -1912,6 +1915,18 @@ if(CAI_BUILD_TESTS)
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+      add_test(NAME cai_lua_smith_e2e
+        COMMAND "/bin/sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_rock_e2e.sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_smith.lua")
+      set_tests_properties(cai_lua_smith_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_SMITH_E2E_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
     endif()
     if(TARGET cai_example_basic_response AND
         TARGET cai_example_streaming_text AND

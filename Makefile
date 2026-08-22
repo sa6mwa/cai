@@ -49,7 +49,7 @@ RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE docs/model-metadata.md include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
+.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
 
 help:
 	@printf '%s\n' \
@@ -71,6 +71,7 @@ help:
 		'make test-cross   Build cross targets; execution is target/tooling dependent.' \
 		'make cross-test   Run the standard release cross matrix test script.' \
 		'make test-integration  Run opt-in OpenAI API integration tests; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
+		'make test-lua-smith-e2e Run the opt-in Lua Smith coding/review e2e.' \
 		'make test-install-tree Verify installed SDK metadata and downstream consumers.' \
 		'make asan         Build and run optional Bootlin ASan/UBSan unit tests.' \
 		'make test-asan    Alias for asan.' \
@@ -185,8 +186,18 @@ test-integration:
 		printf '%s\n' 'Refusing to run integration tests without CAI_ENABLE_INTEGRATION_TESTS=1'; \
 		exit 2; \
 	fi
+	$(MAKE) lua-rock
 	$(MAKE) integration-build
 	bash ./scripts/test.sh integration $(CTEST_FLAGS)
+
+test-lua-smith-e2e:
+	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
+		printf '%s\n' 'Refusing to run Lua Smith e2e without CAI_ENABLE_INTEGRATION_TESTS=1'; \
+		exit 2; \
+	fi
+	$(MAKE) lua-rock
+	$(MAKE) integration-build
+	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_lua_smith_e2e$$'
 
 test-install-tree: build-debug
 	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -R '^cai_install_metadata_test$$'

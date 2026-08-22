@@ -1091,6 +1091,8 @@ tokens and must be run explicitly through the lifecycle opt-in gate:
 ```sh
 CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration
 CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live
+# Run the Lua-owned Smith coding/review scenario through the installed LuaRock.
+CAI_ENABLE_INTEGRATION_TESTS=1 make test-lua-smith-e2e
 ```
 
 Once integration tests are enabled, CTest enumerates the real API e2e cases.
