@@ -404,6 +404,14 @@ static int cai_local_session_append_event(void *context, const char *scope,
                          "failed to open session event log");
     }
   }
+  if (rc == CAI_OK) {
+    struct stat st;
+
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "session event log is not a private regular file");
+    }
+  }
   if (rc == CAI_OK && flock(fd, LOCK_EX) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to lock session event log");

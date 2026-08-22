@@ -1252,7 +1252,7 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   pthread_mutex_lock(&runtime->lock);
   while (rc == CAI_OK && runtime->steering_head != NULL) {
     input = runtime->steering_head;
-    rc = cai_session_add_user_text(session, input->text, error);
+    rc = cai_session_add_steering_text(session, input->text, error);
     if (rc == CAI_OK) {
       runtime->steering_head = input->next;
       if (runtime->steering_head == NULL) {

@@ -27,6 +27,7 @@ extern char *realpath(const char *path, char *resolved_path);
 
 typedef struct cai_patch_context {
   char *root_path;
+  int root_fd;
   size_t max_patch_bytes;
   size_t max_file_bytes;
 } cai_patch_context;
@@ -424,8 +425,9 @@ static int cai_patch_resolve_new(const cai_patch_context *ctx, const char *path,
   return cai_patch_copy(out, candidate, strlen(candidate), error);
 }
 
-static int cai_patch_read_file(const char *path, size_t maximum, char **out,
-                               size_t *out_length, cai_error *error) {
+static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
+                               char **out, size_t *out_length,
+                               cai_error *error) {
   struct stat st;
   char *data;
   size_t offset;
@@ -435,8 +437,14 @@ static int cai_patch_read_file(const char *path, size_t maximum, char **out,
 
   *out = NULL;
   *out_length = 0U;
-  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
-      (size_t)st.st_size > maximum) {
+  fd = openat(parent_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to open patch file", strerror(errno));
+  }
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+      st.st_size < 0 || (size_t)st.st_size > maximum) {
+    close(fd);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "patch file is not a permitted size regular file");
   }
@@ -446,13 +454,8 @@ static int cai_patch_read_file(const char *path, size_t maximum, char **out,
   }
   data = (char *)cai_alloc(NULL, allocation_size);
   if (data == NULL) {
+    close(fd);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate patch file");
-  }
-  fd = open(path, O_RDONLY);
-  if (fd < 0) {
-    cai_free_mem(NULL, data);
-    return cai_set_error_detail(error, CAI_ERR_INVALID,
-                                "failed to open patch file", strerror(errno));
   }
   offset = 0U;
   while (offset < (size_t)st.st_size) {
@@ -472,41 +475,100 @@ static int cai_patch_read_file(const char *path, size_t maximum, char **out,
   return CAI_OK;
 }
 
-/* Keep an opened parent directory from preflight through publication so an
- * attacker cannot redirect a later path-based write by swapping a directory
- * for a symlink. */
-static int cai_patch_open_parent(const char *path, int *out_fd, char *name,
-                                 size_t name_size, cai_error *error) {
-  char parent[PATH_MAX];
+/* Keep an opened parent directory from preflight through publication. Every
+ * component is opened from the pinned workspace descriptor, so an attacker
+ * cannot redirect a later write by replacing an ancestor with a symlink. */
+static int cai_patch_open_parent(const cai_patch_context *ctx, const char *path,
+                                 int *out_fd, char *name, size_t name_size,
+                                 cai_error *error) {
+  char relative[PATH_MAX];
+  char *component;
+  char *next;
   char *slash;
+  size_t root_length;
   size_t name_length;
   int fd;
 
   *out_fd = -1;
-  if (path == NULL || name == NULL || name_size == 0U ||
-      snprintf(parent, sizeof(parent), "%s", path) >= (int)sizeof(parent)) {
-    return cai_set_error(error, CAI_ERR_INVALID, "patch path is too long");
+  if (ctx == NULL || ctx->root_path == NULL || ctx->root_fd < 0 ||
+      path == NULL || name == NULL || name_size == 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID, "patch context is invalid");
   }
-  slash = strrchr(parent, '/');
-  if (slash == NULL || slash[1] == '\0') {
+  root_length = strlen(ctx->root_path);
+  if ((strcmp(ctx->root_path, "/") == 0 && path[0] == '/') ||
+      (strcmp(ctx->root_path, "/") != 0 &&
+       strncmp(path, ctx->root_path, root_length) == 0 &&
+       path[root_length] == '/')) {
+    const char *start;
+
+    start =
+        strcmp(ctx->root_path, "/") == 0 ? path + 1U : path + root_length + 1U;
+    if (snprintf(relative, sizeof(relative), "%s", start) >=
+        (int)sizeof(relative)) {
+      return cai_set_error(error, CAI_ERR_INVALID, "patch path is too long");
+    }
+  } else {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch path escapes configured root");
+  }
+  if (cai_patch_validate_relative_path(relative, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
+  slash = strrchr(relative, '/');
+  if (slash == NULL) {
+    component = NULL;
+    slash = relative;
+  } else {
+    *slash = '\0';
+    component = relative;
+    slash++;
+  }
+  if (slash[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "patch target must have a file name");
   }
-  name_length = strlen(slash + 1);
+  name_length = strlen(slash);
   if (name_length + 1U > name_size) {
     return cai_set_error(error, CAI_ERR_INVALID, "patch file name is too long");
   }
-  memcpy(name, slash + 1, name_length + 1U);
-  if (slash == parent) {
-    slash[1] = '\0';
-  } else {
-    *slash = '\0';
-  }
-  fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  memcpy(name, slash, name_length + 1U);
+  fd = dup(ctx->root_fd);
   if (fd < 0) {
     return cai_set_error_detail(error, CAI_ERR_INVALID,
-                                "failed to open patch parent directory",
+                                "failed to duplicate patch workspace",
                                 strerror(errno));
+  }
+  if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+    close(fd);
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to secure patch workspace",
+                                strerror(errno));
+  }
+  while (component != NULL && component[0] != '\0') {
+    int next_fd;
+    struct stat st;
+
+    next = strchr(component, '/');
+    if (next != NULL) {
+      *next = '\0';
+    }
+    next_fd =
+        openat(fd, component, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (next_fd < 0 || fstat(next_fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+      if (next_fd >= 0) {
+        close(next_fd);
+      }
+      close(fd);
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to open patch parent directory",
+                                  strerror(errno));
+    }
+    close(fd);
+    fd = next_fd;
+    if (next == NULL) {
+      break;
+    }
+    component = next + 1U;
   }
   *out_fd = fd;
   return CAI_OK;
@@ -1259,7 +1321,7 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
                                             "added file exceeds size limit");
       }
       rc = cai_patch_open_parent(
-          change->resolved_path, &change->primary_parent_fd,
+          ctx, change->resolved_path, &change->primary_parent_fd,
           change->primary_name, sizeof(change->primary_name), error);
       if (rc != CAI_OK) {
         return rc;
@@ -1275,14 +1337,15 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
     if (rc != CAI_OK) {
       return rc;
     }
-    rc = cai_patch_open_parent(change->resolved_path,
+    rc = cai_patch_open_parent(ctx, change->resolved_path,
                                &change->primary_parent_fd, change->primary_name,
                                sizeof(change->primary_name), error);
     if (rc != CAI_OK) {
       return rc;
     }
-    rc = cai_patch_read_file(change->resolved_path, ctx->max_file_bytes,
-                             &change->before, &change->before_length, error);
+    rc = cai_patch_read_file(change->primary_parent_fd, change->primary_name,
+                             ctx->max_file_bytes, &change->before,
+                             &change->before_length, error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -1299,7 +1362,7 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
       if (rc != CAI_OK) {
         return rc;
       }
-      rc = cai_patch_open_parent(change->resolved_move_path,
+      rc = cai_patch_open_parent(ctx, change->resolved_move_path,
                                  &change->move_parent_fd, change->move_name,
                                  sizeof(change->move_name), error);
       if (rc != CAI_OK) {
@@ -1581,6 +1644,7 @@ static int cai_patch_context_new(const cai_patch_tool_config *config,
                                  cai_patch_context **out, cai_error *error) {
   cai_patch_context *ctx;
   char *root;
+  struct stat st;
   int rc;
 
   *out = NULL;
@@ -1602,6 +1666,18 @@ static int cai_patch_context_new(const cai_patch_tool_config *config,
   }
   memset(ctx, 0, sizeof(*ctx));
   ctx->root_path = root;
+  ctx->root_fd = -1;
+  ctx->root_fd = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (ctx->root_fd < 0 || fstat(ctx->root_fd, &st) != 0 ||
+      !S_ISDIR(st.st_mode)) {
+    if (ctx->root_fd >= 0) {
+      close(ctx->root_fd);
+    }
+    cai_free_mem(NULL, root);
+    cai_free_mem(NULL, ctx);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch tool root_path must be a directory");
+  }
   ctx->max_patch_bytes = config->max_patch_bytes != 0U
                              ? config->max_patch_bytes
                              : CAI_PATCH_DEFAULT_MAX_PATCH_BYTES;
@@ -1618,6 +1694,9 @@ static void cai_patch_context_cleanup(void *context) {
   ctx = (cai_patch_context *)context;
   if (ctx == NULL) {
     return;
+  }
+  if (ctx->root_fd >= 0) {
+    close(ctx->root_fd);
   }
   cai_free_mem(NULL, ctx->root_path);
   cai_free_mem(NULL, ctx);

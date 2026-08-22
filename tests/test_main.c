@@ -24768,6 +24768,9 @@ static void test_agent_local_session_store(test_state *state) {
   char event_file_path[PATH_MAX];
   char newer_event_file_path[PATH_MAX];
   char incomplete_file_path[PATH_MAX];
+  char linked_event_path[PATH_MAX];
+  char external_event_path[PATH_MAX];
+  char *linked_contents;
   cai_agent_local_session_store_config config;
   cai_agent_session_store store;
   cai_source_callbacks callbacks;
@@ -24787,6 +24790,7 @@ static void test_agent_local_session_store(test_state *state) {
   source = NULL;
   loaded = NULL;
   loaded_sequence = 0U;
+  linked_contents = NULL;
   memset(&event_capture, 0, sizeof(event_capture));
   memset(&store, 0, sizeof(store));
   if (mkdtemp(template_directory) == NULL) {
@@ -24868,6 +24872,30 @@ static void test_agent_local_session_store(test_state *state) {
              store.append_event(store.context, "/tmp/cai-session-store-scope",
                                 "session_one", &event, &error),
              CAI_OK);
+  (void)snprintf(external_event_path, sizeof(external_event_path), "%s/%s",
+                 template_directory, "external-event-source");
+  (void)snprintf(linked_event_path, sizeof(linked_event_path), "%s/%s/%s",
+                 template_directory, scope_path, "linked-event.jsonl");
+  write_file_or_die(external_event_path, "external event source\n");
+  if (link(external_event_path, linked_event_path) != 0) {
+    test_fail(state, "local_session_store_event_hardlink",
+              "failed to create linked event log");
+  } else {
+    event.sequence = 9U;
+    event.type = "steering_queued";
+    event.data = "must not write linked log";
+    expect_int(state, "local_session_store_event_hardlink_rejected",
+               store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                  "linked-event", &event, &error),
+               CAI_ERR_TRANSPORT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    linked_contents = read_file_or_die(external_event_path);
+    expect_str(state, "local_session_store_event_hardlink_preserved",
+               linked_contents, "external event source\n");
+    free(linked_contents);
+    linked_contents = NULL;
+  }
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_load",
              store.load_latest(store.context, "/tmp/cai-session-store-scope",
@@ -25063,6 +25091,8 @@ static void test_agent_local_session_store(test_state *state) {
   unlink(opaque_omega_path);
   unlink(newer_event_file_path);
   unlink(incomplete_file_path);
+  unlink(linked_event_path);
+  unlink(external_event_path);
   unlink(event_file_path);
   (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s",
                  template_directory, event_scope_path);
@@ -25541,6 +25571,7 @@ static void test_goal_tools(test_state *state) {
   cai_source *state_source;
   cai_source *resumed_state_source;
   cai_source_callbacks source_callbacks;
+  lonejson_spooled file_data;
   read_state state_reader;
   write_state writer;
   char state_json[2048];
@@ -25555,6 +25586,7 @@ static void test_goal_tools(test_state *state) {
   sink = NULL;
   state_source = NULL;
   resumed_state_source = NULL;
+  memset(&file_data, 0, sizeof(file_data));
   memset(&writer, 0, sizeof(writer));
   cai_client_config_init(&client_config);
   client_config.api_key = "test-key";
@@ -25625,9 +25657,27 @@ static void test_goal_tools(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
-  expect_int(state, "goal_blocked_user_turn_one",
-             cai_session_add_user_text(session, "the external blocker remains",
-                                       &error),
+  expect_int(state, "goal_blocked_same_turn_rejected",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "goal_blocked_same_turn_error", error.message,
+             "blocked already assessed in this goal turn");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_blocked_steering_not_turn",
+             cai_session_add_steering_text(
+                 session, "steering is not a normal turn", &error),
+             CAI_OK);
+  expect_int(state, "goal_blocked_steering_turn_unchanged",
+             CAI_SESSION_IMPL(session)->goal_turn_count, 0L);
+  expect_int(state, "goal_blocked_steering_attempts_unchanged",
+             CAI_SESSION_IMPL(session)->goal_blocked_attempts, 1L);
+  expect_int(state, "goal_blocked_image_turn_one",
+             cai_session_add_user_image_url(
+                 session, "https://example.invalid/external-blocker.png", NULL,
+                 &error),
              CAI_OK);
   expect_int(state, "goal_blocked_second",
              CAI_AGENT_IMPL(agent)->tools->run(
@@ -25636,9 +25686,11 @@ static void test_goal_tools(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
-  expect_int(state, "goal_blocked_user_turn_two",
-             cai_session_add_user_text(
-                 session, "the same external blocker remains", &error),
+  test_init_spooled_text(state, "goal_blocked_file_turn_data", &file_data,
+                         "the same external blocker remains\n");
+  expect_int(state, "goal_blocked_file_turn_two",
+             cai_session_add_user_file_data_spooled(
+                 session, "blocker.txt", &file_data, "text/plain", &error),
              CAI_OK);
   CAI_SESSION_IMPL(session)->goal_tokens_used = 19LL;
   CAI_SESSION_IMPL(session)->goal_token_usage_baseline = 7LL;
@@ -25649,6 +25701,10 @@ static void test_goal_tools(test_state *state) {
                        state_json, sizeof(state_json), &error)) {
     expect_substr(state, "goal_blocked_state_attempts", state_json,
                   "\"goal_blocked_attempts\":2");
+    expect_substr(state, "goal_blocked_state_turn", state_json,
+                  "\"goal_turn_count\":2");
+    expect_substr(state, "goal_blocked_state_last_turn", state_json,
+                  "\"goal_blocked_last_turn\":1");
     memset(&source_callbacks, 0, sizeof(source_callbacks));
     memset(&state_reader, 0, sizeof(state_reader));
     state_reader.text = state_json;
@@ -35906,6 +35962,23 @@ static void test_session_state_validation(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"active\",\"goal_blocked_attempts\":2,"
+                "\"goal_turn_count\":0,\"goal_blocked_last_turn\":-1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_goal_counter_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_goal_counter_import",
+             cai_session_import_state_source(restored, source, &error), CAI_OK);
+  expect_int(state, "state_validation_goal_counter_reset",
+             CAI_SESSION_IMPL(restored)->goal_blocked_attempts, 0L);
+  expect_int(state, "state_validation_goal_counter_last_turn_reset",
+             CAI_SESSION_IMPL(restored)->goal_blocked_last_turn, -1L);
   cai_source_close(source);
   source = NULL;
 

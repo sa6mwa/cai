@@ -94,6 +94,10 @@ typedef struct cai_session_state_doc {
   long long goal_token_usage_baseline;
   long long goal_tokens_used;
   long long goal_blocked_attempts;
+  long long goal_turn_count;
+  int has_goal_turn_count;
+  long long goal_blocked_last_turn;
+  int has_goal_blocked_last_turn;
   long long goal_created_at;
   long long goal_updated_at;
   lonejson_json_value history;
@@ -119,6 +123,11 @@ static const lonejson_field cai_session_state_fields[] = {
                        "goal_tokens_used"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_blocked_attempts,
                        "goal_blocked_attempts"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, goal_turn_count,
+                               has_goal_turn_count, "goal_turn_count"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, goal_blocked_last_turn,
+                               has_goal_blocked_last_turn,
+                               "goal_blocked_last_turn"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_created_at,
                        "goal_created_at"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_updated_at,
@@ -918,6 +927,8 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->goal_has_token_budget = 0;
   impl->goal_token_usage_baseline = 0LL;
   impl->goal_tokens_used = 0LL;
+  impl->goal_turn_count = 0LL;
+  impl->goal_blocked_last_turn = -1LL;
   impl->goal_blocked_attempts = 0;
   impl->goal_created_at = 0LL;
   impl->goal_updated_at = 0LL;
@@ -2665,15 +2676,38 @@ static int cai_session_add_text_input_spooled(cai_session *session,
   return CAI_OK;
 }
 
+static void cai_session_note_user_turn(cai_session *session) {
+  cai_session_impl *impl;
+
+  impl = CAI_SESSION_IMPL(session);
+  if (impl->goal_turn_count == LLONG_MAX) {
+    return;
+  }
+  impl->goal_turn_count++;
+  if (impl->goal_status != NULL && strcmp(impl->goal_status, "active") == 0 &&
+      impl->goal_blocked_last_turn != impl->goal_turn_count - 1LL) {
+    impl->goal_blocked_attempts = 0;
+    impl->goal_blocked_last_turn = -1LL;
+  }
+}
+
+int cai_session_add_steering_text(cai_session *session, const char *text,
+                                  cai_error *error) {
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "text is required");
+  }
+  return cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, "user", text,
+                               NULL, NULL, NULL, NULL, error);
+}
+
 int cai_session_add_user_text(cai_session *session, const char *text,
                               cai_error *error) {
   int rc;
 
-  if (text == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "text is required");
+  rc = cai_session_add_steering_text(session, text, error);
+  if (rc == CAI_OK) {
+    cai_session_note_user_turn(session);
   }
-  rc = cai_session_add_input(session, CAI_SESSION_INPUT_TEXT, "user", text,
-                             NULL, NULL, NULL, NULL, error);
   return rc;
 }
 
@@ -2686,6 +2720,9 @@ int cai_session_add_user_text_spooled(cai_session *session,
     return cai_set_error(error, CAI_ERR_INVALID, "text spool is required");
   }
   rc = cai_session_add_text_input_spooled(session, "user", text, error);
+  if (rc == CAI_OK) {
+    cai_session_note_user_turn(session);
+  }
   return rc;
 }
 
@@ -2711,11 +2748,17 @@ int cai_session_add_user_text_source(cai_session *session, cai_source *source,
 
 int cai_session_add_user_image_url(cai_session *session, const char *url,
                                    const char *detail, cai_error *error) {
+  int rc;
+
   if (url == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "image URL is required");
   }
-  return cai_session_add_input(session, CAI_SESSION_INPUT_IMAGE, "user", NULL,
-                               url, detail, NULL, NULL, error);
+  rc = cai_session_add_input(session, CAI_SESSION_INPUT_IMAGE, "user", NULL,
+                             url, detail, NULL, NULL, error);
+  if (rc == CAI_OK) {
+    cai_session_note_user_turn(session);
+  }
+  return rc;
 }
 
 int cai_session_add_user_file_data_spooled(cai_session *session,
@@ -2723,11 +2766,17 @@ int cai_session_add_user_file_data_spooled(cai_session *session,
                                            lonejson_spooled *file_data,
                                            const char *detail,
                                            cai_error *error) {
+  int rc;
+
   if (file_data == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "file data spool is required");
   }
-  return cai_session_add_file_input_spooled(session, "user", filename,
-                                            file_data, detail, error);
+  rc = cai_session_add_file_input_spooled(session, "user", filename, file_data,
+                                          detail, error);
+  if (rc == CAI_OK) {
+    cai_session_note_user_turn(session);
+  }
+  return rc;
 }
 
 int cai_session_add_user_file_source(cai_session *session, const char *filename,
@@ -5411,6 +5460,11 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.goal_tokens_used = CAI_SESSION_IMPL(session)->goal_tokens_used;
   doc.goal_blocked_attempts =
       (long long)CAI_SESSION_IMPL(session)->goal_blocked_attempts;
+  doc.goal_turn_count = CAI_SESSION_IMPL(session)->goal_turn_count;
+  doc.has_goal_turn_count = 1;
+  doc.goal_blocked_last_turn =
+      CAI_SESSION_IMPL(session)->goal_blocked_last_turn;
+  doc.has_goal_blocked_last_turn = 1;
   doc.goal_created_at = CAI_SESSION_IMPL(session)->goal_created_at;
   doc.goal_updated_at = CAI_SESSION_IMPL(session)->goal_updated_at;
   if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
@@ -5615,6 +5669,27 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
         doc.goal_blocked_attempts < 0LL || doc.goal_blocked_attempts > 2LL
             ? 0
             : (int)doc.goal_blocked_attempts;
+    if (doc.has_goal_turn_count && doc.has_goal_blocked_last_turn &&
+        doc.goal_turn_count >= 0LL && doc.goal_blocked_last_turn >= -1LL &&
+        doc.goal_blocked_last_turn <= doc.goal_turn_count) {
+      CAI_SESSION_IMPL(session)->goal_turn_count = doc.goal_turn_count;
+      if ((CAI_SESSION_IMPL(session)->goal_blocked_attempts == 0 &&
+           doc.goal_blocked_last_turn == -1LL) ||
+          (CAI_SESSION_IMPL(session)->goal_blocked_attempts > 0 &&
+           doc.goal_blocked_last_turn >=
+               (long long)CAI_SESSION_IMPL(session)->goal_blocked_attempts -
+                   1LL)) {
+        CAI_SESSION_IMPL(session)->goal_blocked_last_turn =
+            doc.goal_blocked_last_turn;
+      } else {
+        CAI_SESSION_IMPL(session)->goal_blocked_attempts = 0;
+        CAI_SESSION_IMPL(session)->goal_blocked_last_turn = -1LL;
+      }
+    } else {
+      CAI_SESSION_IMPL(session)->goal_turn_count = 0LL;
+      CAI_SESSION_IMPL(session)->goal_blocked_last_turn = -1LL;
+      CAI_SESSION_IMPL(session)->goal_blocked_attempts = 0;
+    }
     CAI_SESSION_IMPL(session)->goal_created_at = doc.goal_created_at;
     CAI_SESSION_IMPL(session)->goal_updated_at = doc.goal_updated_at;
     next_goal_objective = NULL;

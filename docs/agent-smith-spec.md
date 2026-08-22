@@ -688,6 +688,12 @@ contract:
 Goal statuses are `active`, `complete`, `blocked`, `usage_limited`, and
 `budget_limited`. Only `active` is model-settable at creation and only
 `complete`/`blocked` at update. Host policy controls pause/resume/usage limits.
+CAI records at most one blocked assessment for each distinct user-turn
+boundary. A repeated `update_goal({"status":"blocked"})` in the same turn is
+rejected without advancing the count; an intervening active-goal turn that
+does not qualify as blocked resets it. The tool contract and developer prompt
+remain responsible for the semantic requirement that the external blocker is
+the same one on all three turns.
 The runtime records one goal-accounting checkpoint at each model response and
 tool round. When a budgeted active goal reaches its token budget, the runtime
 atomically records `budget_limited`, checkpoints that terminal state, and

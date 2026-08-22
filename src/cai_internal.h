@@ -105,6 +105,10 @@ typedef struct cai_session_impl {
   long long goal_tokens_used;
   long long goal_created_at;
   long long goal_updated_at;
+  /** Monotonic user-turn ordinal used to qualify blocked-goal updates. */
+  long long goal_turn_count;
+  /** Last turn that counted toward blocked-goal qualification, or -1. */
+  long long goal_blocked_last_turn;
   int goal_blocked_attempts;
   cai_token_usage last_usage;
   int has_last_usage;
@@ -402,5 +406,8 @@ void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
 int cai_session_commit_pending_inputs(cai_session *session, cai_error *error);
+/* Insert steering into the active model cycle without creating a user turn. */
+int cai_session_add_steering_text(cai_session *session, const char *text,
+                                  cai_error *error);
 
 #endif
