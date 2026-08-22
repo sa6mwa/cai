@@ -237,6 +237,7 @@ assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
 assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
 assert_eq(cai.REASONING_EFFORT_MAX, "max", "reasoning effort max")
 assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
+assert_eq(cai.REASONING_SUMMARY_NONE, "none", "reasoning summary none")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
 assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
 

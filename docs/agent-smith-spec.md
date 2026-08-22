@@ -184,8 +184,10 @@ typedef struct cai_agent_runtime_config {
   const char *agent_identity;      /* default: "Cai Smith" */
   const char *model;               /* Smith default: gpt-5.6-terra */
   const char *reasoning_effort;    /* Smith default: medium */
+  const char *reasoning_summary;   /* Smith default: auto */
   const char *review_model;        /* review child inherits model when NULL */
   const char *review_reasoning_effort; /* review child inherits effort when NULL */
+  const char *review_reasoning_summary; /* review child inherits mode when NULL */
   const char *developer_instructions_extension;
   cai_mcp_client *const *mcp_clients;
   size_t mcp_client_count;
@@ -283,17 +285,17 @@ truthful `detached_processes_possible` flag.
 
 `REASONING_SUMMARY` carries only the provider-issued reasoning-summary stream,
 not raw hidden chain-of-thought and not a CAI-generated substitute. Smith and
-Smith-review request concise summaries by default so an interactive host can
-show the same operator-visible progress that a coding-agent UI expects. A
+Smith-review request the provider-directed `auto` summary mode by default. A
 generic runtime renderer decides whether and how to display that event; CAI
 never silently substitutes it into normal answer text.
 
 `REVIEW_REPORT` carries the schema-validated reviewer JSON and
-`REVIEW_HANDED_OFF` confirms that the exact report (or a durable failed-review
-marker) is now in the parent history. These are operator-facing events, not
-private orchestration details. A host that launches a child review renders its
-report inline, then pumps the parent immediately after `finish_review` so the
-handoff receipt appears before the operator makes the next decision.
+`REVIEW_HANDED_OFF` carries that same report (or an empty payload for a
+durably recorded failed/cancelled review) after it enters parent history. These
+are operator-facing events, not private orchestration details. A host renders
+the child report inline and treats the parent event as a durable fallback, so
+the result remains visible even when the child reaches a terminal state before
+its final event was observed.
 
 CAI retains event storage only until the callback returns or the consumer
 releases the event. A host feeding libmdf copies text or reasoning-summary
@@ -343,8 +345,8 @@ its separate bounded model-visible terminal result. The examples also render
 provider-issued `REASONING_SUMMARY` deltas as visibly labelled progress, normal
 model text as a visibly labelled Smith response, semantic local-tool receipts
 such as `Read <path>` and `Patched <path>`, and a formatted inline reviewer
-report followed by the parent-handoff receipt. Review output is never hidden
-merely because it has also been placed in the parent model context.
+report. Review output is never hidden merely because it has also been placed
+in the parent model context.
 Snapshot tests cover these examples' rendering policy; core runtime tests cover
 the underlying facts.
 
@@ -357,7 +359,7 @@ fragile group of flags. Its initial defaults are:
 | --- | --- |
 | Model | `gpt-5.6-terra` |
 | Reasoning effort | `medium` |
-| Reasoning summary | provider-issued `concise` stream |
+| Reasoning summary | provider-directed `auto` stream |
 | Continuity | client history |
 | Local history | required |
 | Parallel tool calls | disabled |

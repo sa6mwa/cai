@@ -18,6 +18,7 @@ typedef struct render_state {
   int terminal_omitted;
   int text_open;
   int reasoning_open;
+  int review_report_visible;
   char command[161];
 } render_state;
 
@@ -272,11 +273,16 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
   } else if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
     render_close_message(state);
     render_review_report(event->data, event->data_length);
+    state->review_report_visible = 1;
   } else if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
     render_close_message(state);
-    fputs(GRAY "Review handoff is now in Smith's context; send a follow-up "
-               "to act on it." RESET "\n",
-          stdout);
+    /* A review child normally emitted its report while it ran. The durable
+     * parent handoff carries that same report as a fallback, so never replace
+     * a result with an opaque implementation receipt. */
+    if (!state->review_report_visible && event->data_length > 0U) {
+      render_review_report(event->data, event->data_length);
+    }
+    state->review_report_visible = 0;
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
              event->tool_name != NULL &&
              strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
@@ -389,11 +395,17 @@ int main(void) {
       }
       if (status == CAI_AGENT_COMPLETED || status == CAI_AGENT_FAILED ||
           status == CAI_AGENT_CANCELLED) {
+        /* State becomes terminal before a host necessarily observes every
+         * final event. Drain once more so the report cannot be skipped. */
+        rc = cai_agent_runtime_pump(review, 0L, &error);
+        if (rc != CAI_OK) {
+          break;
+        }
         rc = cai_agent_runtime_finish_review(runtime, review, &error);
         if (rc != CAI_OK) {
           break;
         }
-        /* Deliver the parent handoff receipt before the next prompt. */
+        /* Drain the durable parent handoff before the next prompt. */
         rc = cai_agent_runtime_pump(runtime, 0L, &error);
         if (rc != CAI_OK) {
           break;

@@ -253,9 +253,12 @@ int cai_client_new_smith_agent(cai_client *client,
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort
                                       : CAI_REASONING_EFFORT_MEDIUM;
-  /* Smith is intentionally operator-visible: request the provider's concise
-   * summaries so runtimes can deliver them to an embedding UI. */
-  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
+  /* Smith exposes the provider's approved reasoning summaries. Hosts can
+   * choose any supported mode; the preset otherwise follows the provider's
+   * auto selection, matching Codex's configurable request behavior. */
+  agent_config.reasoning_summary = config->reasoning_summary != NULL
+                                       ? config->reasoning_summary
+                                       : CAI_REASONING_SUMMARY_AUTO;
   agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
   agent_config.disable_parallel_tool_calls = 1;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
@@ -460,7 +463,9 @@ int cai_client_new_smith_review_agent(cai_client *client,
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort
                                       : CAI_REASONING_EFFORT_MEDIUM;
-  agent_config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
+  agent_config.reasoning_summary = config->reasoning_summary != NULL
+                                       ? config->reasoning_summary
+                                       : CAI_REASONING_SUMMARY_AUTO;
   agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
   agent_config.disable_parallel_tool_calls = 1;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;

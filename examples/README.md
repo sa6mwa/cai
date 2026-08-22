@@ -111,7 +111,8 @@ make -C examples run-streaming-text
 
 The C and Lua Smith terminal examples are reference renderers for the generic
 agent-runtime event stream. They run the `smith` preset in the current
-directory, stream provider-issued concise reasoning summaries as `Thinking:`
+directory, stream provider-issued reasoning summaries selected by the default
+`auto` mode as `Thinking:`
 (never hidden raw chain of thought), and stream model text as `Smith:`. They
 print each terminal command as `$ <command>`, show the first ten terminal
 output lines in dim gray, and report terminal completion from the runtime's
@@ -119,6 +120,9 @@ structured lifecycle facts. Local tool outcomes arrive as semantic facts, so
 the examples can show receipts such as `Read src/main.c` and `Patched 2 files`
 without parsing raw tool output. They do not own a second agent loop or
 terminal implementation.
+
+Both the direct `cai_smith_config`/`client:new_smith_agent` profile and the
+runtime configuration accept `reasoning_summary`; `auto` is the default.
 
 ```sh
 make -C examples run-smith-terminal
@@ -134,9 +138,10 @@ such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and
 `/review <message>` forwards the message verbatim as the reviewer’s custom
 scope. Thus `/review changes against trunk` has the same free-form intent as
 Codex review. Both examples render the reviewer's schema-validated report
-inline as soon as the isolated child completes, then immediately pump and show
-the durable parent-handoff receipt. The report is therefore operator-visible
-as well as available to Smith in the next parent turn. The C example pumps the
+inline as soon as the isolated child completes; the durable parent-handoff
+payload is rendered as a fallback if that final child event has not yet been
+observed. The report is therefore operator-visible as well as available to
+Smith in the next parent turn. The C example pumps the
 isolated child alongside its parent; ordinary input entered while that review
 is active becomes a queued parent turn. The deliberately small blocking Lua
 example pumps the child to completion.
@@ -165,9 +170,14 @@ For a Codex-like review launched from an existing Smith chat, call
 `parent:start_review(request)`). Pump the returned child runtime in the same
 application event loop, then call `cai_agent_runtime_finish_review(parent,
 review, &error)` (Lua: `parent:finish_review(review)`) after it reaches a
-terminal state. Set `review_model` and `review_reasoning_effort` on the parent
-runtime configuration when the reviewer should use a different profile; omitted
-values inherit the coding runtime's model and effort. The handoff is
+terminal state. The review report is an event payload and must be rendered to
+the operator; the two examples make the handoff payload a fallback so a final
+report can never be replaced by an opaque status receipt. Set `review_model`
+and `review_reasoning_effort` on the parent
+runtime configuration when the reviewer should use a different profile; set
+`reasoning_summary` and `review_reasoning_summary` the same way when hosts
+want to choose `none`, `auto`, `concise`, or `detailed` summary delivery.
+Omitted review values inherit their coding-runtime counterpart. The handoff is
 checkpointed into the parent before any normal turns queued during review
 resume. Close that child before the parent so its remaining events cannot
 outlive the callback receiver. CAI itself still leaves

@@ -32,6 +32,12 @@ typedef struct cai_smith_config {
   const char *model;
   /** Optional reasoning effort; NULL selects medium. */
   const char *reasoning_effort;
+  /**
+   * Optional provider reasoning-summary mode. Accepted values are
+   * CAI_REASONING_SUMMARY_NONE, _AUTO, _CONCISE, and _DETAILED. NULL selects
+   * CAI_REASONING_SUMMARY_AUTO.
+   */
+  const char *reasoning_summary;
   /** Optional developer-instruction extension owned by the embedding host. */
   const char *developer_instructions_extension;
   /** In-memory bytes retained by each file reader before spill. */

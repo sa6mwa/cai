@@ -144,6 +144,7 @@ typedef struct runtime_event_state {
   char tool_path[PATH_MAX];
   char failure_message[256];
   char review_report[1024];
+  char review_handoff[1024];
   char reasoning_summary[1024];
   int wrong_thread;
 } runtime_event_state;
@@ -1815,6 +1816,10 @@ static int test_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
     state->saw_review_handed_off = 1;
+    if (event->data != NULL) {
+      snprintf(state->review_handoff, sizeof(state->review_handoff), "%.*s",
+               (int)event->data_length, event->data);
+    }
   }
   if ((event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED ||
        event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) &&
@@ -24118,7 +24123,7 @@ static void test_smith_profile(test_state *state) {
       "\"model\":\"gpt-5.6-luna\"",
       "You are Vectis Agent Smith",
       "\"effort\":\"medium\"",
-      "\"summary\":\"concise\"",
+      "\"summary\":\"auto\"",
       "\"parallel_tool_calls\":false",
       "\"name\":\"read_file\"",
       "\"name\":\"list_files\"",
@@ -24136,11 +24141,19 @@ static void test_smith_profile(test_state *state) {
       "Make workspace edits only with apply_patch.",
       "Create a goal only when the user or system/developer instructions"};
   static const char *forbidden[] = {"\"name\":\"shell_command\""};
+  static const char *none_required[] = {
+      "POST /v1/responses HTTP/", "\"model\":\"gpt-5.6-luna\"",
+      "You are Vectis Agent Smith", "\"effort\":\"medium\""};
+  static const char *none_forbidden[] = {"\"summary\":"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", required,
        sizeof(required) / sizeof(required[0]), forbidden,
        sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
-       NULL, response_body}};
+       NULL, response_body},
+      {"POST /v1/responses HTTP/", none_required,
+       sizeof(none_required) / sizeof(none_required[0]), none_forbidden,
+       sizeof(none_forbidden) / sizeof(none_forbidden[0]), 200, "OK",
+       "application/json", NULL, response_body}};
   http_mock_client mock;
   cai_smith_config config;
   cai_terminal_tool_config terminal_config;
@@ -24154,6 +24167,8 @@ static void test_smith_profile(test_state *state) {
   cai_smith_config_init(&config);
   expect_str(state, "smith_prompt_version", cai_smith_prompt_version(),
              CAI_SMITH_PROMPT_VERSION);
+  expect_str(state, "reasoning_summary_none", CAI_REASONING_SUMMARY_NONE,
+             "none");
   expect_int(state, "smith_reject_missing_client",
              cai_client_new_smith_agent(NULL, &config, &agent, &error),
              CAI_ERR_INVALID);
@@ -24181,6 +24196,9 @@ static void test_smith_profile(test_state *state) {
                CAI_AGENT_IMPL(agent)->parallel_tool_calls, 0L);
     expect_int(state, "smith_auto_compaction_disabled",
                CAI_AGENT_IMPL(agent)->auto_compact, 0L);
+    expect_str(state, "smith_default_reasoning_summary",
+               CAI_AGENT_IMPL(agent)->reasoning_summary,
+               CAI_REASONING_SUMMARY_AUTO);
     expect_int(state, "smith_tool_count",
                (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 6L);
     if (cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 5U) == NULL ||
@@ -24195,10 +24213,12 @@ static void test_smith_profile(test_state *state) {
       expect_str(state, "smith_response", cai_response_output_text(response),
                  "smith ok");
       cai_response_destroy(response);
+      response = NULL;
     }
     cai_agent_destroy(agent);
     agent = NULL;
   }
+  config.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
   expect_int(
       state, "smith_review_open",
       cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
@@ -24224,7 +24244,27 @@ static void test_smith_profile(test_state *state) {
     expect_substr(state, "smith_review_rubric",
                   CAI_AGENT_IMPL(agent)->developer_instructions,
                   "final response MUST be exactly one JSON object");
+    expect_str(state, "smith_review_reasoning_summary",
+               CAI_AGENT_IMPL(agent)->reasoning_summary,
+               CAI_REASONING_SUMMARY_DETAILED);
     cai_agent_destroy(agent);
+  }
+  config.reasoning_summary = CAI_REASONING_SUMMARY_NONE;
+  agent = NULL;
+  expect_int(state, "smith_none_summary_open",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(
+        state, "smith_none_summary_send",
+        agent->send_text(agent, "inspect without summary", &response, &error),
+        CAI_OK);
+    if (response != NULL) {
+      cai_response_destroy(response);
+      response = NULL;
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
   }
   memset(&terminal_config, 0, sizeof(terminal_config));
   terminal_config.root_path = "/";
@@ -24272,7 +24312,7 @@ static void test_smith_review_runtime(test_state *state) {
       "\"stream\":true",
       "Review the current code changes (staged, unstaged, and untracked files)",
       "You are Cai Smith, a code reviewer",
-      "\"summary\":\"concise\"",
+      "\"summary\":\"auto\"",
       "\"name\":\"exec_command\"",
       "\"name\":\"write_stdin\""};
   static const mock_http_expectation script[] = {
@@ -24551,11 +24591,13 @@ static void test_smith_review_parent_handoff(test_state *state) {
   static const char *review_required[] = {
       "POST /v1/responses HTTP/",
       "Review the current code changes (staged, unstaged, and untracked files)",
-      "You are Cai Smith, a code reviewer", "\"effort\":\"medium\""};
+      "You are Cai Smith, a code reviewer", "\"effort\":\"medium\"",
+      "\"summary\":\"detailed\""};
   static const char *parent_required[] = {
       "POST /v1/responses HTTP/", "act on the review findings",
       "<review_handoff",          "No qualifying defects.",
-      "\"role\":\"developer\"",   "\"effort\":\"low\""};
+      "\"role\":\"developer\"",   "\"effort\":\"low\"",
+      "\"summary\":\"concise\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", review_required,
        sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
@@ -24599,8 +24641,10 @@ static void test_smith_review_parent_handoff(test_state *state) {
   config.workspace_directory = "/tmp";
   config.model = CAI_MODEL_GPT_5_6_LUNA;
   config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
   config.review_model = CAI_MODEL_GPT_5_6_LUNA;
   config.review_reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  config.review_reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
   config.session_store = &store;
   config.disable_default_session_store = 1;
   config.session_scope = "review-parent-handoff";
@@ -24661,6 +24705,11 @@ static void test_smith_review_parent_handoff(test_state *state) {
                events.saw_review_started, 1L);
     expect_int(state, "smith_review_parent_handoff_event",
                events.saw_review_handed_off, 1L);
+    expect_str(state, "smith_review_parent_handoff_report",
+               events.review_handoff,
+               "{\"findings\":[],\"overall_correctness\":\"patch is "
+               "correct\",\"overall_explanation\":\"No qualifying "
+               "defects.\",\"overall_confidence_score\":0.9}");
     cai_agent_runtime_close(review);
     cai_agent_runtime_close(parent);
   }

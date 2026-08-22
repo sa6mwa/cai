@@ -235,8 +235,10 @@ local ok, err = xpcall(function()
       workspace_directory = workspace,
       model = cai.MODEL_GPT_5_6_LUNA,
       reasoning_effort = cai.REASONING_EFFORT_LOW,
+      reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
       review_model = cai.MODEL_GPT_5_6_LUNA,
       review_reasoning_effort = cai.REASONING_EFFORT_MEDIUM,
+      review_reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
       disable_default_session_store = true,
       event_callback = event_callback(events),
     })

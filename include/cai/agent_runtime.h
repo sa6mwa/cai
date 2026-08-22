@@ -176,6 +176,12 @@ typedef struct cai_agent_runtime_config {
   /** Optional reasoning-effort override; Smith defaults to medium. */
   const char *reasoning_effort;
   /**
+   * Optional provider reasoning-summary mode for this runtime. Accepted values
+   * are CAI_REASONING_SUMMARY_NONE, _AUTO, _CONCISE, and _DETAILED. NULL
+   * selects the provider-directed CAI_REASONING_SUMMARY_AUTO default.
+   */
+  const char *reasoning_summary;
+  /**
    * Optional model for review children launched from this Smith runtime. NULL
    * inherits model. Ignored by a directly opened smith-review runtime.
    */
@@ -185,6 +191,11 @@ typedef struct cai_agent_runtime_config {
    * reasoning_effort. Ignored by a directly opened smith-review runtime.
    */
   const char *review_reasoning_effort;
+  /**
+   * Optional reasoning-summary mode for review children. NULL inherits
+   * reasoning_summary. Ignored by a directly opened smith-review runtime.
+   */
+  const char *review_reasoning_summary;
   /** Optional host developer-instruction extension. */
   const char *developer_instructions_extension;
   /** Host-owned local MCP clients whose discovered tools Smith registers. */

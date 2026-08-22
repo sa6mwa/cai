@@ -57,6 +57,7 @@ local render = {
   command = "",
   text_open = false,
   reasoning_open = false,
+  review_report_visible = false,
 }
 
 local function remembered_command(value)
@@ -186,9 +187,15 @@ local function render_event(event)
   elseif event.type == cai.AGENT_EVENT_REVIEW_REPORT then
     close_message()
     render_review_report(event.data or "{}")
+    render.review_report_visible = true
   elseif event.type == cai.AGENT_EVENT_REVIEW_HANDED_OFF then
     close_message()
-    io.write(gray, "Review handoff is now in Smith's context; send a follow-up to act on it.\n", reset)
+    -- The durable parent handoff repeats the final review payload as a
+    -- fallback. Display the result itself, never an opaque receipt.
+    if not render.review_report_visible and event.data and #event.data > 0 then
+      render_review_report(event.data)
+    end
+    render.review_report_visible = false
   elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED and
       event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" then
     close_message()
@@ -251,8 +258,11 @@ local function run_review(parent, command)
       break
     end
   end
+  -- A terminal state can become observable before the owner has dispatched
+  -- every final event. Drain once more so the report is never skipped.
+  ok(review:pump(0), nil, "review:pump final events")
   ok(parent:finish_review(review), nil, "runtime:finish_review")
-  -- Flush the parent receipt now, not only after a later operator action.
+  -- Flush the durable parent handoff before another operator action.
   ok(parent:pump(0), nil, "runtime:pump review handoff")
   review:close()
 end

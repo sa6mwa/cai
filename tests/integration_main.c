@@ -4949,8 +4949,10 @@ static int run_chatgpt_smith_review_regression(void) {
   runtime_config.workspace_directory = workspace;
   runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
   runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
   runtime_config.review_model = CAI_MODEL_GPT_5_6_LUNA;
   runtime_config.review_reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  runtime_config.review_reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
   runtime_config.session_store = &store;
   runtime_config.session_scope = workspace;
   runtime_config.event_callback = integration_smith_runtime_event;

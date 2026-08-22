@@ -2703,6 +2703,8 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
   config.reasoning_effort =
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
+  config.reasoning_summary =
+      cai_lua_opt_string_field(L, 2, "reasoning_summary", NULL);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.disable_terminal = cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
@@ -2849,9 +2851,13 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
   config.reasoning_effort =
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
+  config.reasoning_summary =
+      cai_lua_opt_string_field(L, 2, "reasoning_summary", NULL);
   config.review_model = cai_lua_opt_string_field(L, 2, "review_model", NULL);
   config.review_reasoning_effort =
       cai_lua_opt_string_field(L, 2, "review_reasoning_effort", NULL);
+  config.review_reasoning_summary =
+      cai_lua_opt_string_field(L, 2, "review_reasoning_summary", NULL);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.enable_image_generation =
@@ -9966,6 +9972,7 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("REASONING_MODE_STANDARD", CAI_REASONING_MODE_STANDARD);
   CAI_LUA_SET_STRING("REASONING_MODE_PRO", CAI_REASONING_MODE_PRO);
   CAI_LUA_SET_STRING("REASONING_SUMMARY_AUTO", CAI_REASONING_SUMMARY_AUTO);
+  CAI_LUA_SET_STRING("REASONING_SUMMARY_NONE", CAI_REASONING_SUMMARY_NONE);
   CAI_LUA_SET_STRING("REASONING_SUMMARY_CONCISE",
                      CAI_REASONING_SUMMARY_CONCISE);
   CAI_LUA_SET_STRING("REASONING_SUMMARY_DETAILED",

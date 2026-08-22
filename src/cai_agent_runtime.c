@@ -265,8 +265,10 @@ struct cai_agent_runtime {
   char *smith_identity;
   char *smith_model;
   char *smith_reasoning_effort;
+  char *smith_reasoning_summary;
   char *smith_review_model;
   char *smith_review_reasoning_effort;
+  char *smith_review_reasoning_summary;
   char *smith_developer_instructions_extension;
   cai_terminal_tool_config smith_terminal_config;
   char *smith_terminal_default_workdir;
@@ -652,16 +654,20 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->smith_identity);
   cai_free_mem(NULL, runtime->smith_model);
   cai_free_mem(NULL, runtime->smith_reasoning_effort);
+  cai_free_mem(NULL, runtime->smith_reasoning_summary);
   cai_free_mem(NULL, runtime->smith_review_model);
   cai_free_mem(NULL, runtime->smith_review_reasoning_effort);
+  cai_free_mem(NULL, runtime->smith_review_reasoning_summary);
   cai_free_mem(NULL, runtime->smith_developer_instructions_extension);
   cai_free_mem(NULL, runtime->smith_terminal_default_workdir);
   cai_free_mem(NULL, runtime->smith_terminal_shell_path);
   runtime->smith_identity = NULL;
   runtime->smith_model = NULL;
   runtime->smith_reasoning_effort = NULL;
+  runtime->smith_reasoning_summary = NULL;
   runtime->smith_review_model = NULL;
   runtime->smith_review_reasoning_effort = NULL;
+  runtime->smith_review_reasoning_summary = NULL;
   runtime->smith_developer_instructions_extension = NULL;
   runtime->smith_terminal_default_workdir = NULL;
   runtime->smith_terminal_shell_path = NULL;
@@ -686,6 +692,10 @@ static int cai_runtime_capture_smith_profile(
         config->reasoning_effort, &runtime->smith_reasoning_effort, error);
   }
   if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        config->reasoning_summary, &runtime->smith_reasoning_summary, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(config->review_model,
                                           &runtime->smith_review_model, error);
   }
@@ -693,6 +703,11 @@ static int cai_runtime_capture_smith_profile(
     rc = cai_runtime_copy_optional_string(
         config->review_reasoning_effort,
         &runtime->smith_review_reasoning_effort, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        config->review_reasoning_summary,
+        &runtime->smith_review_reasoning_summary, error);
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(
@@ -3176,6 +3191,7 @@ int cai_agent_runtime_open(cai_client *client,
   smith.agent_identity = config->agent_identity;
   smith.model = config->model;
   smith.reasoning_effort = config->reasoning_effort;
+  smith.reasoning_summary = config->reasoning_summary;
   smith.developer_instructions_extension =
       config->developer_instructions_extension;
   memset(&terminal_config, 0, sizeof(terminal_config));
@@ -3836,6 +3852,9 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   config.reasoning_effort = parent->smith_review_reasoning_effort != NULL
                                 ? parent->smith_review_reasoning_effort
                                 : parent->smith_reasoning_effort;
+  config.reasoning_summary = parent->smith_review_reasoning_summary != NULL
+                                 ? parent->smith_review_reasoning_summary
+                                 : parent->smith_reasoning_summary;
   config.developer_instructions_extension =
       parent->smith_developer_instructions_extension;
   config.terminal_tool_config =

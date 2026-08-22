@@ -330,6 +330,8 @@ typedef struct cai_agent_config {
 
 /** Let the API decide whether to stream reasoning summaries. */
 #define CAI_REASONING_SUMMARY_AUTO "auto"
+/** Do not request reasoning summaries. */
+#define CAI_REASONING_SUMMARY_NONE "none"
 /** Concise reasoning summary mode. */
 #define CAI_REASONING_SUMMARY_CONCISE "concise"
 /** Detailed reasoning summary mode. */

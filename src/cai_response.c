@@ -1817,6 +1817,13 @@ int cai_response_create_params_set_reasoning(cai_response_create_params *params,
   if (rc != CAI_OK) {
     return rc;
   }
+  /* `none` is CAI's public sentinel for suppressing summaries. The Responses
+   * API represents that by omitting reasoning.summary, rather than accepting
+   * a literal "none" value. Keep the translation here so direct response
+   * users and every agent preset obey the same contract. */
+  if (summary != NULL && strcmp(summary, CAI_REASONING_SUMMARY_NONE) == 0) {
+    summary = NULL;
+  }
   return cai_replace_string(&params->allocator, &params->reasoning_summary,
                             summary, error);
 }
