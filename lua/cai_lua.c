@@ -3552,24 +3552,33 @@ static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   cai_agent_review_request request;
   const char *target;
   cai_error error;
+  int request_value_count;
   int rc;
 
   self = cai_lua_check_agent_runtime(L, 1);
   luaL_checktype(L, 2, LUA_TTABLE);
   cai_agent_review_request_init(&request);
+  request_value_count = 0;
   target = cai_lua_opt_string_field(L, 2, "target", NULL);
   if (target == NULL || strcmp(target, "uncommitted") == 0) {
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
   } else if (strcmp(target, "base") == 0) {
     request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
-    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+    lua_getfield(L, 2, "base_branch");
+    request.base_branch = luaL_optstring(L, -1, NULL);
+    request_value_count++;
   } else if (strcmp(target, "commit") == 0) {
     request.target = CAI_AGENT_REVIEW_COMMIT;
-    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
-    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+    lua_getfield(L, 2, "commit");
+    request.commit = luaL_optstring(L, -1, NULL);
+    lua_getfield(L, 2, "commit_title");
+    request.commit_title = luaL_optstring(L, -1, NULL);
+    request_value_count += 2;
   } else if (strcmp(target, "custom") == 0) {
     request.target = CAI_AGENT_REVIEW_CUSTOM;
-    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+    lua_getfield(L, 2, "instructions");
+    request.instructions = luaL_optstring(L, -1, NULL);
+    request_value_count++;
   } else {
     return luaL_error(
         L, "review target must be uncommitted, base, commit, or custom");
@@ -3578,6 +3587,7 @@ static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   cai_lua_agent_runtime_enter(self);
   rc = cai_agent_runtime_submit_review(self->ptr, &request, &error);
   cai_lua_agent_runtime_leave(self);
+  lua_pop(L, request_value_count);
   return cai_lua_bool_result(L, rc, &error);
 }
 
@@ -3589,24 +3599,33 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   cai_agent_runtime *review_ptr;
   const char *target;
   cai_error error;
+  int request_value_count;
   int rc;
 
   parent = cai_lua_check_agent_runtime(L, 1);
   luaL_checktype(L, 2, LUA_TTABLE);
   cai_agent_review_request_init(&request);
+  request_value_count = 0;
   target = cai_lua_opt_string_field(L, 2, "target", NULL);
   if (target == NULL || strcmp(target, "uncommitted") == 0) {
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
   } else if (strcmp(target, "base") == 0) {
     request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
-    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+    lua_getfield(L, 2, "base_branch");
+    request.base_branch = luaL_optstring(L, -1, NULL);
+    request_value_count++;
   } else if (strcmp(target, "commit") == 0) {
     request.target = CAI_AGENT_REVIEW_COMMIT;
-    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
-    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+    lua_getfield(L, 2, "commit");
+    request.commit = luaL_optstring(L, -1, NULL);
+    lua_getfield(L, 2, "commit_title");
+    request.commit_title = luaL_optstring(L, -1, NULL);
+    request_value_count += 2;
   } else if (strcmp(target, "custom") == 0) {
     request.target = CAI_AGENT_REVIEW_CUSTOM;
-    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+    lua_getfield(L, 2, "instructions");
+    request.instructions = luaL_optstring(L, -1, NULL);
+    request_value_count++;
   } else {
     return luaL_error(
         L, "review target must be uncommitted, base, commit, or custom");
@@ -3617,6 +3636,7 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   rc = cai_agent_runtime_start_review(parent->ptr, &request, &review_ptr,
                                       &error);
   cai_lua_agent_runtime_leave(parent);
+  lua_pop(L, request_value_count);
   if (rc != CAI_OK && review_ptr == NULL) {
     return cai_lua_fail(L, rc, &error);
   }

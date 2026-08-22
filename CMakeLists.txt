@@ -536,7 +536,7 @@ if(CAI_BUILD_LUA)
   set(CAI_LUA_ROCK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/lib/lua/5.5")
   set(CAI_LUA_TEST_ENV
       "LUA_PATH=${CAI_LUA_ROCK_SHARE_DIR}/?.lua\;${CAI_LUA_ROCK_SHARE_DIR}/?/init.lua\;\;"
-      "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib\;${CAI_LUA_ROCK_LIB_DIR}/?.so\;\;")
+      "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.dylib\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib\;${CAI_LUA_ROCK_LIB_DIR}/?.so\;\;")
   if(CMAKE_C_FLAGS_DEBUG MATCHES "fsanitize=address" AND
      CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -860,7 +860,7 @@ if(CAI_BUILD_LUA)
     set_target_properties(cai_lua_native_todo_store_test PROPERTIES
       OUTPUT_NAME cai_native_todo_store_test
       PREFIX ""
-      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lua")
+      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lua-test")
     target_include_directories(cai_lua_native_todo_store_test PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"

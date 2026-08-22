@@ -386,7 +386,10 @@ lua-env:
 		"$(CAI_PSLOG_PREFIX)/lib"
 
 lua-test: lua-rock
+	$(CMAKE) --preset debug-lua
+	$(CMAKE) --build --preset debug-lua --target cai_lua_native_todo_store_test
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
+	LUA_CPATH="$(ROOT)/build/debug-lua/lua-test/?.so;$(ROOT)/build/debug-lua/lua-test/?.dylib;$${LUA_CPATH:-}" \
 	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	lua tests/lua/test_lua.lua
 	$(CMAKE) --build build/debug --target cai_mcp_http_server
