@@ -1,5 +1,6 @@
 local cai = require("cai")
 local pslog = require("pslog")
+local native_store_test = require("cai_native_todo_store_test")
 
 local function assert_eq(actual, expected, label)
   if actual ~= expected then
@@ -89,6 +90,7 @@ end
 
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
+assert(type(cai.native_store) == "function")
 assert(type(cai.mcp_handler) == "function")
 assert(type(cai.mcp_client) == "function")
 assert(type(cai.chatgpt_auth) == "function")
@@ -873,9 +875,22 @@ do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
   end
+  native_store_test.reset_sessions()
+  local native_session_store = assert(native_store_test.new_agent_session())
+  local wrong_session_store = assert(native_store_test.new_mcp_session())
+  assert_not_ok(cai.native_store("agent_session", nil),
+    "native agent session stores must require a C callback table")
+  assert_throws(function()
+    dummy_client:new_smith_runtime({
+      workspace_directory = ".",
+      session_store = wrong_session_store,
+      disable_terminal = true,
+    })
+  end, "Smith runtime must reject an MCP session backend")
+  wrong_session_store:close()
   local runtime = assert_ok(dummy_client:new_smith_runtime({
     workspace_directory = ".",
-    disable_default_session_store = true,
+    session_store = native_session_store,
     disable_terminal = true,
     event_callback = function() end,
   }))
@@ -916,11 +931,16 @@ do
       "Lua Smith runtime export path without app name")
     os.remove(export_path)
   end
+  assert(native_store_test.checkpoint_count() > 0,
+    "native agent session store must receive runtime checkpoints")
+  assert_not_ok(native_session_store:close(),
+    "native session store must remain pinned by a live runtime")
   do
     local value, err = dummy_client:close()
     assert_not_ok(value, err, "client close must reject a live Lua agent runtime")
   end
   runtime:close()
+  native_session_store:close()
   local review_runtime = assert_ok(dummy_client:new_smith_review_runtime({
     workspace_directory = ".",
     disable_default_session_store = true,
@@ -1608,12 +1628,19 @@ assert_not_ok(registry:run("list_files", '{"path":"/etc"}', function()
   return true
 end), "list_files must reject absolute escapes")
 
-local native_todo = require("cai_native_todo_store_test")
-assert_not_ok(cai.todo_store_from_native(nil),
+local native_todo = native_store_test
+assert_not_ok(cai.native_store("todo", nil),
   "native todo stores must require a C callback table")
 native_todo.reset()
 local native_store = assert(native_todo.new())
 local native_registry = cai.tool_registry()
+assert_throws(function()
+  cai.mcp_handler({
+    name = "cai-lua-wrong-native-store",
+    tools = native_registry,
+    session = native_store,
+  })
+end, "MCP handler must reject a todo backend")
 assert_ok(native_registry:register_todo_tool({
   store = native_store,
   default_board = "native",
@@ -1746,6 +1773,79 @@ assert(response_json:match('"jsonrpc"'))
 assert(body_index > 1, "request body should be consumed in chunks")
 
 mcp:close()
+
+native_store_test.reset_sessions()
+local native_mcp_store = assert(native_store_test.new_mcp_session())
+assert_throws(function()
+  cai.mcp_handler({
+    name = "cai-lua-native-mcp-store-invalid",
+    tools = {},
+    session = native_mcp_store,
+  })
+end, "invalid native MCP session configuration must preserve the backend")
+local native_mcp = assert_ok(cai.mcp_handler({
+  name = "cai-lua-native-mcp-store",
+  tools = registry,
+  session = native_mcp_store,
+}))
+local native_init_chunks = {}
+local native_init = assert_ok(native_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = '{"jsonrpc":"2.0","id":"native-init","method":"initialize","params":{"protocolVersion":"' ..
+      cai.MCP_PROTOCOL_VERSION ..
+      '","clientInfo":{"name":"native-client","version":"1.0"}}}',
+  write = function(chunk)
+    native_init_chunks[#native_init_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(native_init.status, 200, "native MCP initialize status")
+assert_eq(native_init.headers["mcp-session-id"], "native-session",
+  "native MCP session header")
+assert_eq(native_store_test.mcp_create_count(), 1,
+  "native MCP create callback count")
+local native_ping = assert_ok(native_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = native_init.headers["mcp-session-id"],
+  },
+  body = '{"jsonrpc":"2.0","id":"native-ping","method":"ping"}',
+  write = function()
+    return true
+  end,
+}))
+assert_eq(native_ping.status, 200, "native MCP ping status")
+assert_eq(native_store_test.mcp_load_count(), 1,
+  "native MCP load callback count")
+assert_eq(native_store_test.mcp_save_count(), 1,
+  "native MCP save callback count")
+local native_delete = assert_ok(native_mcp:handle_http({
+  method = "DELETE",
+  headers = {
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = native_init.headers["mcp-session-id"],
+  },
+  body = "{}",
+  write = function()
+    return true
+  end,
+}))
+assert_eq(native_delete.status, 202, "native MCP delete status")
+assert_eq(native_store_test.mcp_destroy_count(), 1,
+  "native MCP destroy callback count")
+native_mcp:close()
+assert_eq(native_store_test.cleanup_count(), 1,
+  "native MCP session cleanup must run exactly once")
+native_mcp_store:close()
+collectgarbage("collect")
+assert_eq(native_store_test.cleanup_count(), 1,
+  "consumed native MCP session store must not double cleanup")
 
 local sessions = {}
 local session_events = { creates = 0, loads = 0, saves = 0, destroys = 0 }

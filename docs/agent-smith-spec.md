@@ -746,30 +746,29 @@ transcript renderers do not display them as user prose.
 ### 11.1 Store contract
 
 `cai_agent_session_store` is an append-oriented callback interface. CAI owns
-the JSON schema and supplies/consumes UTF-8 JSON records through `cai_source`
-and `cai_sink`; a backend does not need CAI’s allocator or filesystem.
+the durable-state schema, passes checkpoints through `cai_source`, and
+represents journal updates as structured `cai_agent_session_event` values; a
+backend does not need CAI’s allocator or filesystem. Its callback table
+contains the backend context and has four required operations:
 
-Required operations are:
+- `checkpoint(context, scope, session_id, state_source,
+  applied_event_sequence)`, which synchronously consumes a complete runtime
+  snapshot;
+- `load_latest(context, scope, session_id_out, state_source_out,
+  applied_event_sequence_out)`, which returns the newest snapshot or a
+  successful `NULL` source when none exists;
+- `append_event(context, scope, session_id, event)`, which durably records one
+  ordered journal event; and
+- `load_events_after(context, scope, session_id, sequence, callback)`, which
+  replays subsequent events in strict order.
 
-- `create(meta, expected_absent)`;
-- `append(session_id, expected_revision, record_source, out_revision)`;
-- `load(session_id, optional_from_sequence, sink, out_meta)`;
-- `list(scope_key, filter, sink)`;
-- `checkpoint(session_id, expected_revision, snapshot_source, out_revision)`;
-- `close`.
-
-`append` and `checkpoint` use optimistic revisions. A conflict returns a
-distinct `CAI_ERR_CONFLICT` status containing expected/actual revision; CAI
-emits `SESSION_CONFLICT` and does not attempt to merge two active writers.
-`list` supports scope equality, date range, preset/model, terminal status,
-goal status, and an optional backend-native opaque query. Search is optional;
-the host may expose lockdc/pouch query capability without CAI learning its
-query language.
-
-The backend must guarantee that a successfully returned append is visible to a
-subsequent load, preserves record byte order, and never returns a torn record.
-CAI assumes a session has one active writer. Remote locking/leases are backend
-policy; a lockdc adapter should use its own CAS/lease facilities.
+Snapshots and events are opaque UTF-8 JSON payloads defined by CAI. A
+checkpoint source is owned by CAI and must be consumed synchronously without
+being retained or closed. A source returned by `load_latest` is newly allocated
+for CAI to consume and close. The store must make a successful event append
+visible before it returns, preserve event order, and never expose a torn
+checkpoint. CAI assumes one active writer per session; remote locking, leases,
+or CAS remain backend policy.
 
 ### 11.2 Default local backend
 
@@ -874,6 +873,26 @@ remote lockd endpoint is equivalent from CAI’s perspective. The adapter owns
 authentication, endpoint selection, locks/leases, and backend-native search.
 CAI neither links liblockdc/pouch nor makes a network client part of its core
 library.
+
+### 11.4.1 Lua-native backend handles
+
+A C host embedding CAI through Lua can expose the same callback backends
+without reimplementing them in Lua. `cai.native_store(kind, callbacks,
+context)` accepts C lightuserdata and returns a typed Lua handle. The common
+constructor supports `"agent_session"` for a complete
+`cai_agent_session_store` pointer, `"mcp_session"` for a
+`cai_mcp_session_callbacks` pointer plus context, and `"todo"` for a
+`cai_todo_store_callbacks` pointer plus context. The callback table is copied;
+CAI never frees the opaque context directly.
+
+Attach these handles only at their matching surface: `session_store` on a Smith
+runtime, `session` on an MCP handler, or `store` on the todo tool. Todo and MCP
+handles transfer to their core owner and run their native destruction callback
+exactly once. An agent-session handle is pinned until its runtime closes; its
+native context must remain live for that period. The adapter never calls into
+`lua_State`, so stores remain usable from the runtime worker thread. Lua-level
+MCP callbacks remain supported independently for applications that deliberately
+implement the backend in Lua.
 
 ### 11.5 User-initiated transcript export
 

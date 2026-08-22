@@ -234,13 +234,31 @@ or spooled reader to stream JSON output without building the full value first.
 
 The Lua facade intentionally does not expose C-only embedding surfaces such as
 custom allocators, `FILE *`, `lc_source` / `lc_sink`, raw `cai_source` /
-`cai_sink` constructors, or lonejson C maps. A Lua host written in C can pass
-its native `cai_todo_store_callbacks` table and opaque context as
-lightuserdata to `cai.todo_store_from_native(callbacks, context)`, then pass
-the returned store as `store` to `register_todo_tool`. CAI copies the callback
-table and owns the opaque context through the registered tool; all storage
-callbacks remain native C and never enter Lua. Pure Lua code cannot construct
-that store and continues to use `store_path` / `lock_path`.
+`cai_sink` constructors, or lonejson C maps. A Lua host written in C can expose
+any current CAI persistent backend through one constructor:
+
+```lua
+local backend = assert(cai.native_store(kind, callbacks, context))
+```
+
+`kind` is `"todo"` for a `cai_todo_store_callbacks` pointer plus its opaque
+context, `"mcp_session"` for a `cai_mcp_session_callbacks` pointer plus its
+opaque context, or `"agent_session"` for a complete
+`cai_agent_session_store` pointer (which already contains its context; pass no
+third argument). The embedding host supplies those pointers as lightuserdata;
+CAI copies the callback table before returning the Lua userdata.
+The host must keep the opaque context valid for the handle's documented
+lifetime; the lightuserdata itself is only an embedding boundary and must not
+be supplied by untrusted Lua code.
+
+Pass the handle as `store` to `register_todo_tool`, as `session` to
+`cai.mcp_handler`, or as `session_store` to `new_smith_runtime`. Handles are
+typed and cannot be used on the wrong surface. Todo and MCP handles transfer to
+their registered owner and call the native `destroy` / `cleanup` hook exactly
+once. Agent-session stores remain owned by the native host; CAI pins their Lua
+handle until the Smith runtime has closed. No native-store callback enters a
+`lua_State`. Pure Lua continues to use `store_path` / `lock_path` for todo and
+may use the existing Lua callback table for MCP sessions.
 
 The Lua examples include a basic streaming agent, a terminal chatbot with
 SearXNG and todo/kanban tools, streamed tool output, low-level conversation
