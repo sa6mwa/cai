@@ -2974,10 +2974,12 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_size_field(L, 2, "steering_queue_limit", 0U);
   config.turn_queue_limit =
       cai_lua_opt_size_field(L, 2, "turn_queue_limit", 0U);
-  config.event_callback = cai_lua_agent_runtime_event;
-  config.event_context = runtime;
-  config.review_event_callback = cai_lua_agent_runtime_event;
-  config.review_event_context = runtime;
+  if (runtime->callback_ref != LUA_NOREF) {
+    config.event_callback = cai_lua_agent_runtime_event;
+    config.event_context = runtime;
+    config.review_event_callback = cai_lua_agent_runtime_event;
+    config.review_event_context = runtime;
+  }
   if (config.workspace_directory == NULL ||
       config.workspace_directory[0] == '\0') {
     if (runtime->callback_ref != LUA_NOREF) {

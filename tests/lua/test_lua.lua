@@ -980,6 +980,24 @@ do
     "Lua custom preset export metadata")
   custom_runtime:close()
   do
+    local poll_client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local poll_runtime = assert_ok(poll_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      event_queue_limit = 1,
+    }))
+    assert_ok(poll_runtime:submit("Lua poll-only initial turn"), nil,
+      "Lua poll-only runtime accepts an initial turn")
+    assert_ok(poll_runtime:submit_queued("Lua poll-only queued turn"), nil,
+      "Lua poll-only runtime does not queue undrainable events")
+    poll_runtime:close()
+    poll_client:close()
+  end
+  do
     local rejected_mcp = assert_ok(cai.mcp_client({
       url = "http://127.0.0.1:1/mcp",
       timeout_ms = 1,
