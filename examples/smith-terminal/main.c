@@ -1,9 +1,11 @@
 #include <cai/agent_runtime.h>
+#include <lonejson.h>
 
 #include "../common.h"
 
 #include <errno.h>
 #include <poll.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -19,9 +21,76 @@ typedef struct render_state {
   int terminal_omitted;
   int text_open;
   int reasoning_open;
+  int suppress_review_text;
   int review_report_visible;
   char command[161];
 } render_state;
+
+typedef struct review_line_range {
+  lonejson_int64 start;
+  lonejson_int64 end;
+} review_line_range;
+
+typedef struct review_code_location {
+  char *absolute_file_path;
+  review_line_range line_range;
+} review_code_location;
+
+typedef struct review_finding {
+  char *title;
+  char *body;
+  double confidence_score;
+  lonejson_int64 priority;
+  int priority_present;
+  review_code_location code_location;
+} review_finding;
+
+typedef struct review_report {
+  lonejson_object_array findings;
+  char *overall_correctness;
+  char *overall_explanation;
+  double overall_confidence_score;
+} review_report;
+
+static const lonejson_field review_line_range_fields[] = {
+    LONEJSON_FIELD_I64_REQ(review_line_range, start, "start"),
+    LONEJSON_FIELD_I64_REQ(review_line_range, end, "end")};
+LONEJSON_MAP_DEFINE(review_line_range_map, review_line_range,
+                    review_line_range_fields);
+
+static const lonejson_field review_code_location_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(review_code_location, absolute_file_path,
+                                    "absolute_file_path"),
+    LONEJSON_FIELD_OBJECT_REQ(review_code_location, line_range, "line_range",
+                              &review_line_range_map)};
+LONEJSON_MAP_DEFINE(review_code_location_map, review_code_location,
+                    review_code_location_fields);
+
+static const lonejson_field review_finding_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(review_finding, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(review_finding, body, "body"),
+    LONEJSON_FIELD_F64_REQ(review_finding, confidence_score,
+                           "confidence_score"),
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(review_finding, priority,
+                                        priority_present, "priority"),
+    LONEJSON_FIELD_OBJECT_REQ(review_finding, code_location, "code_location",
+                              &review_code_location_map)};
+LONEJSON_MAP_DEFINE(review_finding_map, review_finding, review_finding_fields);
+
+static const lonejson_field review_report_fields[] = {
+    {"findings", sizeof("findings") - 1U, (unsigned char)'f',
+     (unsigned char)'s', offsetof(review_report, findings),
+     LONEJSON_FIELD_KIND_OBJECT_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON_FIELD_REQUIRED, 0U,
+     sizeof(review_finding), &review_finding_map, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC_REQ(review_report, overall_correctness,
+                                    "overall_correctness"),
+    LONEJSON_FIELD_STRING_ALLOC_REQ(review_report, overall_explanation,
+                                    "overall_explanation"),
+    LONEJSON_FIELD_F64_REQ(review_report, overall_confidence_score,
+                           "overall_confidence_score")};
+LONEJSON_MAP_DEFINE(review_report_map, review_report, review_report_fields);
 
 static const char *skip_space(const char *text) {
   while (*text == ' ' || *text == '\t') {
@@ -110,58 +179,118 @@ static void render_close_message(render_state *state) {
   }
 }
 
-/* The runtime validates reviewer output before it emits the report. Format the
- * JSON structurally here rather than making an interactive operator decipher
- * one long line. This is presentation-only; the JSON remains the portable
- * report payload carried by CAI's event and handoff APIs. */
-static void render_review_report(const char *data, size_t length) {
+/* Reviewer strings are model-controlled. Render control code points visibly
+ * instead of allowing decoded JSON escapes to become terminal commands. */
+static void render_review_text(const char *text, size_t length) {
   size_t i;
-  int depth;
-  int in_string;
-  int escaped;
 
-  fputs(GREEN "Reviewer report" RESET "\n", stdout);
-  depth = 0;
-  in_string = 0;
-  escaped = 0;
   for (i = 0U; i < length; i++) {
     unsigned char character;
 
-    character = (unsigned char)data[i];
-    if (in_string) {
-      fputc((int)character, stdout);
-      if (escaped) {
-        escaped = 0;
-      } else if (character == '\\') {
-        escaped = 1;
-      } else if (character == '"') {
-        in_string = 0;
-      }
-      continue;
-    }
-    if (character == '"') {
-      in_string = 1;
-      fputc('"', stdout);
-    } else if (character == '{' || character == '[') {
-      depth++;
-      fputc((int)character, stdout);
-      fputc('\n', stdout);
-      fprintf(stdout, "%*s", depth * 2, "");
-    } else if (character == '}' || character == ']') {
-      depth = depth > 0 ? depth - 1 : 0;
-      fputc('\n', stdout);
-      fprintf(stdout, "%*s", depth * 2, "");
-      fputc((int)character, stdout);
-    } else if (character == ',') {
-      fputs(",\n", stdout);
-      fprintf(stdout, "%*s", depth * 2, "");
-    } else if (character == ':') {
-      fputs(": ", stdout);
-    } else if (character != '\n' && character != '\r' && character != '\t') {
+    character = (unsigned char)text[i];
+    /* U+0080 through U+009F are encoded as C2 80 through C2 9F in UTF-8.
+     * Treat those C1 controls visibly too, without disturbing other UTF-8. */
+    if (character == 0xC2U && i + 1U < length &&
+        (unsigned char)text[i + 1U] >= 0x80U &&
+        (unsigned char)text[i + 1U] <= 0x9FU) {
+      fprintf(stdout, "\\u00%02X", (unsigned char)text[i + 1U]);
+      i++;
+    } else if (character < 0x20U ||
+               (character >= 0x7FU && character <= 0x9FU)) {
+      fprintf(stdout, "\\x%02X", character);
+    } else {
       fputc((int)character, stdout);
     }
   }
-  fputs("\n", stdout);
+}
+
+static void render_review_string(const char *text) {
+  render_review_text(text, strlen(text));
+}
+
+static void render_review_body(const char *body) {
+  const char *line;
+  const char *end;
+
+  line = body;
+  while (*line != '\0') {
+    end = strchr(line, '\n');
+    if (end == NULL) {
+      fputs("  ", stdout);
+      render_review_text(line, strlen(line));
+      fputc('\n', stdout);
+      return;
+    }
+    fputs("  ", stdout);
+    render_review_text(line, (size_t)(end - line));
+    fputc('\n', stdout);
+    line = end + 1;
+  }
+}
+
+/* The runtime validates reviewer output before it emits the report. The event
+ * retains its portable JSON payload, while this terminal presentation renders
+ * the validated fields as an operator-facing review result. */
+static void render_review_report(const char *data, size_t length) {
+  review_report report;
+  review_finding *findings;
+  lonejson *json;
+  lonejson_error error;
+  lonejson_status status;
+  size_t i;
+
+  memset(&report, 0, sizeof(report));
+  lonejson_error_init(&error);
+  json = lonejson_new(NULL, &error);
+  if (json == NULL) {
+    fputs(RED "Reviewer report could not be displayed" RESET "\n", stdout);
+    return;
+  }
+  lonejson_init(json, &review_report_map, &report);
+  status = lonejson_parse_buffer(json, &review_report_map, &report, data,
+                                 length, &error);
+  if (status != LONEJSON_STATUS_OK) {
+    fputs(RED "Reviewer report could not be displayed" RESET "\n", stdout);
+    lonejson_cleanup(&review_report_map, &report);
+    lonejson_free(json);
+    return;
+  }
+  if (report.overall_explanation[0] != '\0') {
+    render_review_string(report.overall_explanation);
+    fputc('\n', stdout);
+  }
+  findings = (review_finding *)report.findings.items;
+  if (report.findings.count > 0U) {
+    if (report.overall_explanation[0] != '\0') {
+      fputc('\n', stdout);
+    }
+    fputs(report.findings.count > 1U ? "Full review comments:\n"
+                                     : "Review comment:\n",
+          stdout);
+  } else if (report.overall_explanation[0] == '\0') {
+    /* The review contract permits a valid verdict without prose or findings.
+     * It is still a completed review, not a failed reviewer response. */
+    fputs("Review completed: ", stdout);
+    render_review_string(report.overall_correctness);
+    fputs(".\n", stdout);
+  }
+  for (i = 0U; i < report.findings.count; i++) {
+    fputc('\n', stdout);
+    fputs("- ", stdout);
+    render_review_string(findings[i].title);
+    fputs(" — ", stdout);
+    render_review_string(findings[i].code_location.absolute_file_path);
+    fprintf(stdout, ":%lld-%lld\n", findings[i].code_location.line_range.start,
+            findings[i].code_location.line_range.end);
+    render_review_body(findings[i].body);
+  }
+  lonejson_cleanup(&review_report_map, &report);
+  lonejson_free(json);
+}
+
+static int runtime_accepts_prompt(cai_agent_run_state state) {
+  return state == CAI_AGENT_IDLE || state == CAI_AGENT_COMPLETED ||
+         state == CAI_AGENT_FAILED || state == CAI_AGENT_CANCELLED;
 }
 
 static void render_terminal_finish(const cai_agent_runtime_event *event,
@@ -243,6 +372,9 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     fwrite(event->data, 1U, event->data_length, stdout);
     fflush(stdout);
   } else if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+    if (state->suppress_review_text) {
+      return CAI_OK;
+    }
     if (!state->text_open) {
       render_close_message(state);
       fputs(GREEN "Smith: " RESET, stdout);
@@ -320,6 +452,7 @@ int main(void) {
   char line[4096];
   char exported_path[8192];
   int exit_requested;
+  int input_enabled;
   int prompt_shown;
   int wakeup_fd;
   int rc;
@@ -352,7 +485,16 @@ int main(void) {
   while (rc == CAI_OK && !exit_requested) {
     int poll_result;
 
-    if (!prompt_shown) {
+    rc = cai_agent_runtime_state(runtime, &status, &error);
+    if (rc != CAI_OK) {
+      break;
+    }
+    /* A canonical terminal cannot redraw a live input line around streamed
+     * output. Keep this compact example coherent by prompting only at a stable
+     * boundary; a TUI can instead submit steering or queued turns while active.
+     */
+    input_enabled = review == NULL && runtime_accepts_prompt(status);
+    if (input_enabled && !prompt_shown) {
       if (fputs("smith> ", stdout) < 0 || fflush(stdout) != 0) {
         fputs("smith-terminal: failed to write prompt\n", stderr);
         rc = CAI_ERR_TRANSPORT;
@@ -365,8 +507,8 @@ int main(void) {
       break;
     }
     memset(poll_fds, 0, sizeof(poll_fds));
-    poll_fds[0].fd = STDIN_FILENO;
-    poll_fds[0].events = POLLIN;
+    poll_fds[0].fd = input_enabled ? STDIN_FILENO : -1;
+    poll_fds[0].events = input_enabled ? POLLIN : 0;
     poll_fds[1].fd = wakeup_fd;
     poll_fds[1].events = POLLIN;
     if (review != NULL) {
@@ -394,7 +536,9 @@ int main(void) {
     }
     if (review != NULL &&
         (poll_fds[2].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+      renderer.suppress_review_text = 1;
       rc = cai_agent_runtime_pump(review, 0L, &error);
+      renderer.suppress_review_text = 0;
       if (rc != CAI_OK) {
         break;
       }
@@ -406,7 +550,9 @@ int main(void) {
           status == CAI_AGENT_CANCELLED) {
         /* State becomes terminal before a host necessarily observes every
          * final event. Drain once more so the report cannot be skipped. */
+        renderer.suppress_review_text = 1;
         rc = cai_agent_runtime_pump(review, 0L, &error);
+        renderer.suppress_review_text = 0;
         if (rc != CAI_OK) {
           break;
         }
@@ -423,7 +569,8 @@ int main(void) {
         review = NULL;
       }
     }
-    if ((poll_fds[0].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
+    if (!input_enabled ||
+        (poll_fds[0].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
       continue;
     }
     if (fgets(line, sizeof(line), stdin) == NULL) {
@@ -474,19 +621,7 @@ int main(void) {
     if (line[0] == '\0') {
       continue;
     }
-    if (strncmp(line, "/queue ", 7U) == 0) {
-      rc = cai_agent_runtime_submit_queued(runtime, line + 7, &error);
-    } else if (review != NULL) {
-      rc = cai_agent_runtime_submit_queued(runtime, line, &error);
-    } else {
-      rc = cai_agent_runtime_state(runtime, &status, &error);
-      if (rc == CAI_OK && (status == CAI_AGENT_SAMPLING ||
-                           status == CAI_AGENT_DISPATCHING_TOOL)) {
-        rc = cai_agent_runtime_submit_steering(runtime, line, &error);
-      } else if (rc == CAI_OK) {
-        rc = cai_agent_runtime_submit(runtime, line, &error);
-      }
-    }
+    rc = cai_agent_runtime_submit(runtime, line, &error);
   }
   if (rc != CAI_OK && error.message != NULL) {
     fprintf(stderr, "smith-terminal: %s\n", error.message);

@@ -1,4 +1,5 @@
 local cai = require("cai")
+local lonejson = require("lonejson")
 local common = dofile("examples/lua-common.lua")
 
 local reset = "\27[0m"
@@ -58,6 +59,7 @@ local render = {
   command = "",
   text_open = false,
   reasoning_open = false,
+  suppress_review_text = false,
   review_report_visible = false,
 }
 
@@ -100,42 +102,74 @@ local function close_message()
   end
 end
 
--- The runtime has already validated the report. Pretty-print its JSON shape
--- for the human operator without changing the event's portable JSON payload.
-local function render_review_report(data)
-  local depth = 0
-  local in_string = false
-  local escaped = false
-  io.write(green, "Reviewer report\n", reset)
-  for index = 1, #data do
-    local character = data:sub(index, index)
-    if in_string then
-      io.write(character)
-      if escaped then
-        escaped = false
-      elseif character == "\\" then
-        escaped = true
-      elseif character == '"' then
-        in_string = false
-      end
-    elseif character == '"' then
-      in_string = true
-      io.write(character)
-    elseif character == "{" or character == "[" then
-      depth = depth + 1
-      io.write(character, "\n", string.rep("  ", depth))
-    elseif character == "}" or character == "]" then
-      depth = math.max(0, depth - 1)
-      io.write("\n", string.rep("  ", depth), character)
-    elseif character == "," then
-      io.write(",\n", string.rep("  ", depth))
-    elseif character == ":" then
-      io.write(": ")
-    elseif character ~= "\n" and character ~= "\r" and character ~= "\t" then
-      io.write(character)
+-- Reviewer strings are model-controlled. Keep decoded control code points
+-- visible rather than allowing JSON escapes to become terminal commands.
+local function safe_terminal_text(value)
+  local output = {}
+  local index = 1
+  while index <= #value do
+    local byte = value:byte(index)
+    local next_byte = value:byte(index + 1)
+    if byte == 0xc2 and next_byte and next_byte >= 0x80 and next_byte <= 0x9f then
+      output[#output + 1] = string.format("\\u00%02X", next_byte)
+      index = index + 2
+    elseif byte < 0x20 or (byte >= 0x7f and byte <= 0x9f) then
+      output[#output + 1] = string.format("\\x%02X", byte)
+      index = index + 1
+    else
+      output[#output + 1] = string.char(byte)
+      index = index + 1
     end
   end
-  io.write("\n")
+  return table.concat(output)
+end
+
+local function render_review_body(body)
+  local start = 1
+  while start <= #body do
+    local newline = body:find("\n", start, true)
+    local finish = newline and newline - 1 or #body
+    io.write("  ", safe_terminal_text(body:sub(start, finish)), "\n")
+    if not newline then
+      return
+    end
+    start = newline + 1
+  end
+end
+
+-- The runtime has already validated the report. Its event payload stays JSON,
+-- while the example renders the same operator-facing form as Codex review.
+local function render_review_report(data)
+  local decoded, report = pcall(lonejson.decode_json, data)
+  if not decoded or type(report) ~= "table" then
+    io.write(red, "Reviewer report could not be displayed\n", reset)
+    return
+  end
+  local explanation = tostring(report.overall_explanation or "")
+  local findings = type(report.findings) == "table" and report.findings or {}
+  if explanation ~= "" then
+    io.write(safe_terminal_text(explanation), "\n")
+  end
+  if #findings > 0 then
+    if explanation ~= "" then
+      io.write("\n")
+    end
+    io.write(#findings > 1 and "Full review comments:\n" or "Review comment:\n")
+  elseif explanation == "" then
+    -- A contract-valid reviewer can return only its verdict. This is still a
+    -- completed review, rather than a missing reviewer response.
+    io.write("Review completed: ",
+      safe_terminal_text(tostring(report.overall_correctness or "unknown")), ".\n")
+  end
+  for _, finding in ipairs(findings) do
+    local location = type(finding.code_location) == "table" and
+      finding.code_location or {}
+    local range = type(location.line_range) == "table" and location.line_range or {}
+    io.write("\n- ", safe_terminal_text(tostring(finding.title or "Untitled finding")), " — ",
+      safe_terminal_text(tostring(location.absolute_file_path or "unknown")), ":",
+      tostring(range.start or "?"), "-", tostring(range["end"] or "?"), "\n")
+    render_review_body(tostring(finding.body or ""))
+  end
 end
 
 local function render_event(event)
@@ -148,6 +182,9 @@ local function render_event(event)
     io.write(event.data or "")
     io.flush()
   elseif event.type == cai.AGENT_EVENT_TEXT_DELTA then
+    if render.suppress_review_text then
+      return
+    end
     if not render.text_open then
       close_message()
       io.write(green, "Smith: ", reset)
@@ -255,6 +292,7 @@ local function run_review(parent, command)
       (err.message or err.status_string or tostring(err)) .. "\n")
   end
   io.write(gray, "Started isolated review\n", reset)
+  render.suppress_review_text = true
   while true do
     local state, pump_err = review:pump(100)
     if not state then
@@ -272,6 +310,7 @@ local function run_review(parent, command)
   -- Flush the durable parent handoff before another operator action.
   ok(parent:pump(0), nil, "runtime:pump review handoff")
   review:close()
+  render.suppress_review_text = false
 end
 
 local client_config
