@@ -1215,6 +1215,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_lifecycle
     agent_runtime_queued_turns
     agent_runtime_semantic_events
+    agent_runtime_poll_only
     agent_runtime_goal_budget
     agent_local_session_store
     agent_runtime_resume

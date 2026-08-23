@@ -252,7 +252,10 @@ typedef struct cai_agent_runtime_config {
   size_t event_queue_limit;
   /** Maximum queued steering inputs; zero selects the bounded default. */
   size_t steering_queue_limit;
-  /** Owner-thread event consumer; NULL permits polling state only. */
+  /**
+   * Owner-thread event consumer. NULL selects poll-only operation: CAI does
+   * not queue runtime events, while cai_agent_runtime_state remains usable.
+   */
   cai_agent_runtime_event_fn event_callback;
   /** Context passed to event_callback. */
   void *event_context;

@@ -192,11 +192,13 @@ flowchart LR
 
 The runtime has exactly one owner thread. CAI may perform blocking model I/O
 and tool orchestration on an internal worker, but it never invokes a host UI,
-libmdf, softline, Lua, or renderer callback there. Instead it queues immutable
-runtime events; the owner thread receives them only through `pump`. A pollable
-wakeup descriptor becomes readable whenever such an event is queued, allowing
-a host to integrate CAI directly into a softline/libmdf event loop without
-timer polling.
+libmdf, softline, Lua, or renderer callback there. When an event receiver is
+configured, CAI queues immutable runtime events and the owner receives them
+only through `pump`. A pollable wakeup descriptor becomes readable whenever
+such an event is queued, allowing a host to integrate CAI directly into a
+softline/libmdf event loop without timer polling. With no event receiver, CAI
+is poll-only: it queues no runtime events and the host observes only runtime
+state, so an undrained event queue cannot stall the worker.
 
 CAI MAY use an internal reader thread only for a blocking POSIX terminal or
 network transport. Such a thread may append bytes to CAI-owned bounded buffers

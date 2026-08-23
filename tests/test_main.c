@@ -8803,6 +8803,9 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "stream large tool turn") != NULL) {
         return stream_large_tool_body;
       }
+      if (strstr(request, "poll-only queued turn") != NULL) {
+        return stream_body;
+      }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_large_1\"") != NULL &&
           strstr(request, "\\\"ok\\\":false") != NULL &&
@@ -25410,7 +25413,8 @@ static void test_agent_runtime_queued_turns(test_state *state) {
   }
 }
 
-static void test_agent_runtime_semantic_events(test_state *state) {
+static void test_agent_runtime_semantic_events_common(test_state *state,
+                                                      int poll_only) {
   int pipe_fds[2];
   pid_t pid;
   int port;
@@ -25427,6 +25431,7 @@ static void test_agent_runtime_semantic_events(test_state *state) {
   runtime_event_state events;
   cai_error error;
   int i;
+  struct timespec poll_only_delay;
 
   if (mkdtemp(workspace) == NULL) {
     test_fail(state, "runtime_semantic_workspace", "mkdtemp failed");
@@ -25447,7 +25452,7 @@ static void test_agent_runtime_semantic_events(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], poll_only ? 3 : 2);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -25470,49 +25475,72 @@ static void test_agent_runtime_semantic_events(test_state *state) {
   runtime = NULL;
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
+  poll_only_delay.tv_sec = 0;
+  poll_only_delay.tv_nsec = 10000000L;
   expect_int(state, "runtime_semantic_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
   runtime_config.model = CAI_MODEL_GPT_5_NANO;
   runtime_config.disable_default_session_store = 1;
-  runtime_config.event_callback = test_runtime_event;
-  runtime_config.event_context = &events;
+  runtime_config.event_queue_limit = poll_only ? 1U : 0U;
+  if (!poll_only) {
+    runtime_config.event_callback = test_runtime_event;
+    runtime_config.event_context = &events;
+  }
   expect_int(state, "runtime_semantic_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    poll_fd.fd = -1;
-    poll_fd.events = POLLIN;
-    poll_fd.revents = 0;
-    expect_int(state, "runtime_semantic_wakeup_fd",
-               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
-               CAI_OK);
+    if (!poll_only) {
+      poll_fd.fd = -1;
+      poll_fd.events = POLLIN;
+      poll_fd.revents = 0;
+      expect_int(state, "runtime_semantic_wakeup_fd",
+                 cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+                 CAI_OK);
+    }
     expect_int(state, "runtime_semantic_submit",
                cai_agent_runtime_submit(runtime, "stream list error tool turn",
                                         &error),
                CAI_OK);
+    if (poll_only) {
+      expect_int(state, "runtime_poll_only_queue",
+                 cai_agent_runtime_submit_queued(
+                     runtime, "poll-only queued turn", &error),
+                 CAI_OK);
+    }
     run_state = CAI_AGENT_SAMPLING;
     for (i = 0;
          i < 100 && run_state != CAI_AGENT_COMPLETED &&
          run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
          i++) {
-      (void)poll(&poll_fd, 1U, 100);
-      expect_int(state, "runtime_semantic_pump",
-                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      if (poll_only) {
+        (void)nanosleep(&poll_only_delay, NULL);
+      } else {
+        (void)poll(&poll_fd, 1U, 100);
+        expect_int(state, "runtime_semantic_pump",
+                   cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      }
       expect_int(state, "runtime_semantic_state",
                  cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     }
     expect_int(state, "runtime_semantic_completed", run_state,
                CAI_AGENT_COMPLETED);
-    expect_int(state, "runtime_semantic_response_completed",
-               events.response_completed_count, 2L);
-    expect_str(state, "runtime_semantic_failure", events.failure_message, "");
-    expect_int(state, "runtime_semantic_list_seen", events.saw_list_tool, 1L);
-    expect_int(state, "runtime_semantic_action", events.tool_action,
-               CAI_AGENT_TOOL_ACTION_LIST);
-    expect_str(state, "runtime_semantic_path", events.tool_path, "/tmp");
-    expect_int(state, "runtime_semantic_owner_thread", events.wrong_thread, 0L);
+    if (poll_only) {
+      expect_int(state, "runtime_poll_only_no_event_callback",
+                 (long)events.calls, 0L);
+    } else {
+      expect_int(state, "runtime_semantic_response_completed",
+                 events.response_completed_count, 2L);
+      expect_str(state, "runtime_semantic_failure", events.failure_message, "");
+      expect_int(state, "runtime_semantic_list_seen", events.saw_list_tool, 1L);
+      expect_int(state, "runtime_semantic_action", events.tool_action,
+                 CAI_AGENT_TOOL_ACTION_LIST);
+      expect_str(state, "runtime_semantic_path", events.tool_path, "/tmp");
+      expect_int(state, "runtime_semantic_owner_thread", events.wrong_thread,
+                 0L);
+    }
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -25525,6 +25553,14 @@ static void test_agent_runtime_semantic_events(test_state *state) {
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "runtime_semantic_mock", "mock child failed");
   }
+}
+
+static void test_agent_runtime_semantic_events(test_state *state) {
+  test_agent_runtime_semantic_events_common(state, 0);
+}
+
+static void test_agent_runtime_poll_only(test_state *state) {
+  test_agent_runtime_semantic_events_common(state, 1);
 }
 
 static void test_agent_runtime_goal_budget(test_state *state) {
@@ -37940,6 +37976,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
+    {"agent_runtime_poll_only", test_agent_runtime_poll_only},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_runtime_resume", test_agent_runtime_resume},

@@ -511,6 +511,12 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
   cai_runtime_event_node *node;
   int rc;
 
+  /* A poll-only runtime has no event consumer. Its observable state remains
+   * available through cai_agent_runtime_state(), but observational events must
+   * not accumulate and stall the worker. */
+  if (runtime->event_callback == NULL) {
+    return CAI_OK;
+  }
   rc = cai_runtime_wait_event_capacity_locked(runtime, error);
   if (rc != CAI_OK) {
     return rc;
@@ -533,6 +539,9 @@ static int cai_runtime_enqueue_nonblocking_locked(
   cai_runtime_event_node *node;
   int rc;
 
+  if (runtime->event_callback == NULL) {
+    return CAI_OK;
+  }
   rc = cai_runtime_require_event_capacity_locked(runtime, error);
   if (rc != CAI_OK) {
     return rc;
@@ -554,6 +563,9 @@ static int cai_runtime_enqueue_tool_locked(
   cai_runtime_event_node *node;
   int rc;
 
+  if (runtime->event_callback == NULL) {
+    return CAI_OK;
+  }
   rc = cai_runtime_wait_event_capacity_locked(runtime, error);
   if (rc != CAI_OK) {
     return rc;
@@ -588,6 +600,9 @@ static int cai_runtime_enqueue_terminal_locked(cai_agent_runtime *runtime,
   if (event->terminal_id == NULL || event->terminal_id[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "terminal lifecycle event has no terminal id");
+  }
+  if (runtime->event_callback == NULL) {
+    return CAI_OK;
   }
   rc = cai_runtime_wait_event_capacity_locked(runtime, error);
   if (rc != CAI_OK) {
@@ -2099,7 +2114,8 @@ static void *cai_runtime_worker(void *context) {
   if (rc != CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     runtime->state = CAI_AGENT_FAILED;
-    if (cai_runtime_enqueue_locked(
+    if (runtime->event_callback != NULL &&
+        cai_runtime_enqueue_locked(
             runtime, CAI_AGENT_EVENT_RUN_FAILED,
             error.message != NULL
                 ? error.message
@@ -2196,7 +2212,8 @@ static void *cai_runtime_worker(void *context) {
       pthread_mutex_lock(&runtime->lock);
       runtime->accepting_steering = 0;
       runtime->state = CAI_AGENT_FAILED;
-      if (cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
+      if (runtime->event_callback != NULL &&
+          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
                                      message, sizeof(message) - 1U, NULL, NULL,
                                      runtime->state, &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
@@ -2277,7 +2294,8 @@ static void *cai_runtime_worker(void *context) {
             runtime, CAI_AGENT_EVENT_REVIEW_REPORT, runtime->review_report,
             runtime->review_report_length, NULL, NULL, runtime->state, &error);
       }
-      if (cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
+      if (runtime->event_callback != NULL &&
+          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
                                      NULL, 0U, NULL, NULL, runtime->state,
                                      &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
@@ -2288,7 +2306,8 @@ static void *cai_runtime_worker(void *context) {
       runtime->state =
           rc == CAI_ERR_CANCELLED ? CAI_AGENT_CANCELLED : CAI_AGENT_FAILED;
       message = error.message != NULL ? error.message : "agent run failed";
-      if (cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
+      if (runtime->event_callback != NULL &&
+          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
                                      message, strlen(message), NULL, NULL,
                                      runtime->state, &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
@@ -3709,7 +3728,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   if (kind == CAI_RUNTIME_INPUT_TURN && runtime->review_mode) {
     cai_runtime_clear_review_report_locked(runtime);
   }
-  if (kind != CAI_RUNTIME_INPUT_TURN) {
+  if (kind != CAI_RUNTIME_INPUT_TURN && runtime->event_callback != NULL) {
     rc = cai_runtime_require_event_capacity_locked(runtime, error);
     if (rc == CAI_OK) {
       type = kind == CAI_RUNTIME_INPUT_STEERING
@@ -3726,6 +3745,8 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
       cai_runtime_input_node_free(node);
       return rc;
     }
+  }
+  if (kind != CAI_RUNTIME_INPUT_TURN) {
     rc = cai_runtime_append_journal_event_locked(
         runtime, journal_type, node->text, &node->journal_sequence, error);
     if (rc != CAI_OK) {
@@ -3741,7 +3762,9 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   type = kind == CAI_RUNTIME_INPUT_TURN ? CAI_AGENT_EVENT_RUN_STARTED
                                         : CAI_AGENT_EVENT_TURN_QUEUED;
   if (kind != CAI_RUNTIME_INPUT_TURN) {
-    cai_runtime_append_event_node_locked(runtime, event_node);
+    if (event_node != NULL) {
+      cai_runtime_append_event_node_locked(runtime, event_node);
+    }
     rc = CAI_OK;
   } else {
     rc = cai_runtime_enqueue_locked(runtime, type, text, strlen(text), NULL,
