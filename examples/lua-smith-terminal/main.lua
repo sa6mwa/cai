@@ -1,6 +1,5 @@
 local cai = require("cai")
 local lonejson = require("lonejson")
-local common = dofile("examples/lua-common.lua")
 
 local reset = "\27[0m"
 local gray = "\27[90m"
@@ -22,8 +21,8 @@ local function ok(value, err, operation)
 end
 
 local model = nil
-local auth_json = nil
-local use_chatgpt_auth = false
+local auth_json = os.getenv("CAI_CHATGPT_AUTH_JSON")
+local use_chatgpt_auth = true
 local i = 1
 while i <= #arg do
   if arg[i] == "--chatgpt-auth" then
@@ -45,12 +44,23 @@ while i <= #arg do
     end
     i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-smith-terminal/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>]\n")
+    io.stderr:write("usage: lua examples/lua-smith-terminal/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>]\n\n" ..
+      "Smith uses CAI's ChatGPT subscription auth by default. Run make chatgpt-login first.\n")
     os.exit(0)
   else
     io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
     os.exit(2)
   end
+end
+
+if not model or model == "" then
+  model = os.getenv("CAI_SMITH_MODEL")
+end
+if not model or model == "" then
+  model = os.getenv("CAI_TERMINAL_CHAT_MODEL")
+end
+if not model or model == "" then
+  model = "gpt-5.6-luna"
 end
 
 local render = {
@@ -313,12 +323,7 @@ local function run_review(parent, command)
   render.suppress_review_text = false
 end
 
-local client_config
-if use_chatgpt_auth then
-  client_config = { chatgpt_auth = true, chatgpt_auth_json = auth_json }
-else
-  client_config = common.client_config(cai)
-end
+local client_config = { chatgpt_auth = use_chatgpt_auth, chatgpt_auth_json = auth_json }
 local client = ok(cai.open(client_config), nil, "cai.open")
 local runtime = ok(client:new_smith_runtime({
   workspace_directory = os.getenv("PWD") or ".",

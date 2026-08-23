@@ -1445,6 +1445,10 @@ if(CAI_BUILD_TESTS)
     list(APPEND _cai_examples_help_smoke_args
       $<TARGET_FILE:cai_example_chatgpt_login>)
   endif()
+  if(TARGET cai_example_smith_terminal)
+    list(APPEND _cai_examples_help_smoke_args
+      $<TARGET_FILE:cai_example_smith_terminal>)
+  endif()
   add_test(NAME cai_examples_help_smoke
     COMMAND ${_cai_examples_help_smoke_args})
   set_tests_properties(cai_examples_help_smoke PROPERTIES

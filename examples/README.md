@@ -127,12 +127,14 @@ runtime configuration accept `reasoning_summary`; `auto` is the default.
 
 ```sh
 make -C examples run-smith-terminal
-make -C examples run-lua-smith-terminal CAI_CHATGPT_AUTH=1 \
-  CAI_TERMINAL_CHAT_MODEL=gpt-5.6-luna
+make -C examples run-lua-smith-terminal
 ```
 
-The Lua example also accepts `CAI_CHATGPT_AUTH_JSON=/path/auth.json`. Exit
-either example with Ctrl-D or `/exit`. Both examples intercept `/review`
+Both Smith examples use CAI's ChatGPT subscription auth by default and select
+`gpt-5.6-luna`; run `make chatgpt-login` first. Set
+`CAI_CHATGPT_AUTH_JSON=/path/auth.json` to select another CAI auth state or
+`CAI_SMITH_MODEL=<model>` to override the model. Exit either example with
+Ctrl-D or `/exit`. Both examples intercept `/review`
 themselves: `/review` (or `/review uncommitted`) reviews workspace changes,
 `/review base <revision>` compares against a branch, tag, commit, or revision
 such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and

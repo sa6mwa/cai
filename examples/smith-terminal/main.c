@@ -1,12 +1,12 @@
 #include <cai/agent_runtime.h>
+#include <cai/auth.h>
 #include <lonejson.h>
-
-#include "../common.h"
 
 #include <errno.h>
 #include <poll.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -97,6 +97,64 @@ static const char *skip_space(const char *text) {
     text++;
   }
   return text;
+}
+
+static void print_usage(const char *program) {
+  fprintf(stderr,
+          "usage: %s [--chatgpt-auth] [--chatgpt-auth-json <path>] "
+          "[--model <model>]\n\n"
+          "Smith uses CAI's ChatGPT subscription auth by default. Run "
+          "make chatgpt-login first.\n\n"
+          "  --chatgpt-auth       Compatibility alias for the default "
+          "ChatGPT auth path.\n"
+          "  --chatgpt-auth-json <path>\n"
+          "                       Use a specific CAI auth.json file.\n"
+          "  --model <model>      Override the model. Defaults to "
+          "gpt-5.6-luna.\n",
+          program != NULL ? program : "cai_example_smith_terminal");
+}
+
+static int parse_args(int argc, char **argv, const char **auth_json,
+                      const char **model) {
+  int i;
+
+  *auth_json = getenv("CAI_CHATGPT_AUTH_JSON");
+  *model = getenv("CAI_SMITH_MODEL");
+  if (*model == NULL || (*model)[0] == '\0') {
+    *model = getenv("CAI_TERMINAL_CHAT_MODEL");
+  }
+  if (*model == NULL || (*model)[0] == '\0') {
+    *model = CAI_MODEL_GPT_5_6_LUNA;
+  }
+  for (i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--chatgpt-auth") == 0) {
+      continue;
+    }
+    if (strcmp(argv[i], "--chatgpt-auth-json") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fputs("--chatgpt-auth-json requires a path\n", stderr);
+        return 0;
+      }
+      *auth_json = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--model") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fputs("--model requires a model id\n", stderr);
+        return 0;
+      }
+      *model = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      print_usage(argv[0]);
+      return -1;
+    }
+    fprintf(stderr, "unknown argument: %s\n", argv[i]);
+    print_usage(argv[0]);
+    return 0;
+  }
+  return 1;
 }
 
 static int start_review(cai_agent_runtime *parent, const char *command,
@@ -437,9 +495,11 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
   return CAI_OK;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
+  cai_chatgpt_auth_config chatgpt_auth_config;
+  cai_chatgpt_auth *chatgpt_auth;
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_runtime *review;
@@ -447,10 +507,12 @@ int main(void) {
   cai_error error;
   struct pollfd poll_fds[3];
   render_state renderer;
-  char *dotenv_api_key;
+  char *chatgpt_auth_path_display;
   char workspace[4096];
   char line[4096];
   char exported_path[8192];
+  const char *auth_json;
+  const char *model;
   int exit_requested;
   int input_enabled;
   int prompt_shown;
@@ -461,22 +523,45 @@ int main(void) {
   client = NULL;
   runtime = NULL;
   review = NULL;
-  dotenv_api_key = NULL;
+  chatgpt_auth = NULL;
+  chatgpt_auth_path_display = NULL;
   exit_requested = 0;
   prompt_shown = 0;
   wakeup_fd = -1;
   memset(&renderer, 0, sizeof(renderer));
+  rc = parse_args(argc, argv, &auth_json, &model);
+  if (rc < 0) {
+    return 0;
+  }
+  if (rc == 0) {
+    return 2;
+  }
   if (getcwd(workspace, sizeof(workspace)) == NULL) {
     fputs("getcwd failed\n", stderr);
     return 1;
   }
   cai_client_config_init(&client_config);
-  rc = cai_example_load_dotenv_api_key(&client_config, &dotenv_api_key, &error);
+  cai_chatgpt_auth_config_init(&chatgpt_auth_config);
+  chatgpt_auth_config.auth_json_path = auth_json;
+  rc = cai_chatgpt_auth_open(&chatgpt_auth_config, &chatgpt_auth, &error);
   if (rc == CAI_OK) {
+    client_config.chatgpt_auth = chatgpt_auth;
+    if (auth_json != NULL) {
+      fprintf(stderr, "ChatGPT subscription auth: %s\n", auth_json);
+    } else if (cai_chatgpt_auth_default_path(&chatgpt_auth_path_display,
+                                             &error) == CAI_OK) {
+      fprintf(stderr, "ChatGPT subscription auth: %s\n",
+              chatgpt_auth_path_display);
+    } else {
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      fputs("ChatGPT subscription auth: default CAI auth path\n", stderr);
+    }
     rc = cai_client_open(&client_config, &client, &error);
   }
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
+  runtime_config.model = model;
   runtime_config.event_callback = render_event;
   runtime_config.event_context = &renderer;
   if (rc == CAI_OK) {
@@ -631,7 +716,10 @@ int main(void) {
   if (client != NULL) {
     client->close(client);
   }
-  cai_string_destroy(dotenv_api_key);
+  if (chatgpt_auth != NULL) {
+    chatgpt_auth->close(chatgpt_auth);
+  }
+  cai_string_destroy(chatgpt_auth_path_display);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
