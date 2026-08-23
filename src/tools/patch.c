@@ -477,7 +477,7 @@ static int cai_patch_file_matches(int parent_fd, const char *name,
 
   return expected != NULL &&
                  fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) == 0 &&
-                 S_ISREG(actual.st_mode) && actual.st_nlink == 1 &&
+                 S_ISREG(actual.st_mode) &&
                  cai_patch_stat_equal(expected, &actual)
              ? 1
              : 0;
@@ -1561,7 +1561,16 @@ static int cai_patch_write_atomic(
     *out_published = 1;
     if (unlinkat(parent_fd, temporary, 0) != 0) {
       saved_errno = errno;
+      /* A successful retry restores the ordinary single-link publication. If
+       * it cannot be removed, retain the exact two-link identity so rollback
+       * can still remove the destination rather than report failure while
+       * leaving an untracked edit in the workspace. */
       (void)unlinkat(parent_fd, temporary, 0);
+      if (out_published_stat != NULL &&
+          fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+          S_ISREG(st.st_mode)) {
+        *out_published_stat = st;
+      }
       errno = saved_errno;
       return cai_set_error_detail(error, CAI_ERR_INVALID,
                                   "failed to finalize patched file",
@@ -1624,7 +1633,7 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
         &published, &change->published_stat, error);
     if (published) {
       change->target_published = 1;
-      change->published_stat_valid = rc == CAI_OK;
+      change->published_stat_valid = change->published_stat.st_ino != 0;
     }
     if (rc != CAI_OK) {
       goto rollback;

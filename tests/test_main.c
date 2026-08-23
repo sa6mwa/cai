@@ -418,6 +418,8 @@ typedef struct terminal_event_state {
   int cancelled;
   unsigned long long total_output_bytes;
   char terminal_id[48];
+  char command[256];
+  unsigned long long command_id;
 } terminal_event_state;
 
 typedef struct terminal_race_policy_state {
@@ -433,6 +435,13 @@ typedef struct terminal_race_exec_state {
   cai_error error;
   write_state writer;
 } terminal_race_exec_state;
+
+typedef struct terminal_write_state {
+  cai_tool_registry *registry;
+  int rc;
+  cai_error error;
+  write_state writer;
+} terminal_write_state;
 
 typedef struct terminal_workdir_swap_state {
   char root[PATH_MAX];
@@ -3228,6 +3237,9 @@ static int test_terminal_event(void *context, const cai_terminal_event *event,
   }
   snprintf(state->terminal_id, sizeof(state->terminal_id), "%s",
            event->terminal_id != NULL ? event->terminal_id : "");
+  snprintf(state->command, sizeof(state->command), "%s",
+           event->command != NULL ? event->command : "");
+  state->command_id = event->command_id;
   return CAI_OK;
 }
 
@@ -3399,6 +3411,29 @@ static void *test_terminal_race_exec(void *value) {
     state->rc = cai_tool_registry_run(
         state->registry, CAI_TERMINAL_EXEC_TOOL_NAME,
         "{\"cmd\":\"sleep 5\",\"yield_time_ms\":0}", sink, &state->error);
+  }
+  cai_sink_close(sink);
+  return NULL;
+}
+
+static void *test_terminal_concurrent_write(void *value) {
+  terminal_write_state *state;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+
+  state = (terminal_write_state *)value;
+  sink = NULL;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &state->writer;
+  cai_error_init(&state->error);
+  state->rc = cai_sink_from_callbacks(&callbacks, &sink, &state->error);
+  if (state->rc == CAI_OK) {
+    state->rc = cai_tool_registry_run(
+        state->registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+        "{\"session_id\":\"terminal-1\",\"yield_time_ms\":1000}", sink,
+        &state->error);
   }
   cai_sink_close(sink);
   return NULL;
@@ -30634,6 +30669,100 @@ static void test_terminal_concurrent_start(test_state *state) {
   rmdir(dir_template);
 }
 
+static void test_terminal_concurrent_operation(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-operation-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  terminal_event_state events;
+  terminal_write_state write;
+  pthread_t write_thread;
+  write_state writer;
+  cai_error error;
+  struct timespec pause_time;
+  int write_created;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_operation_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&events, 0, sizeof(events));
+  memset(&write, 0, sizeof(write));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  write_created = 0;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 0L;
+  config.max_yield_time_ms = 100L;
+  config.default_poll_yield_time_ms = 1000L;
+  config.max_poll_yield_time_ms = 1000L;
+  config.event_callback = test_terminal_event;
+  config.event_context = &events;
+  expect_int(state, "terminal_operation_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_operation_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  if (registry != NULL) {
+    expect_int(state, "terminal_operation_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (registry != NULL && sink != NULL) {
+    expect_int(state, "terminal_operation_start",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"sleep 1\",\"yield_time_ms\":0}", sink, &error),
+               CAI_OK);
+    write.registry = registry;
+    write_created = pthread_create(&write_thread, NULL,
+                                   test_terminal_concurrent_write, &write) == 0;
+    expect_int(state, "terminal_operation_thread", write_created, 1L);
+    if (write_created) {
+      pause_time.tv_sec = 0;
+      pause_time.tv_nsec = 100000000L;
+      (void)nanosleep(&pause_time, NULL);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      expect_int(state, "terminal_operation_reject_overlap",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                       "{\"cmd\":\"printf wrong\","
+                                       "\"yield_time_ms\":0}",
+                                       sink, &error),
+                 CAI_ERR_INVALID);
+      pthread_join(write_thread, NULL);
+      expect_int(state, "terminal_operation_poll", write.rc, CAI_OK);
+      expect_str(state, "terminal_operation_completion_command", events.command,
+                 "sleep 1");
+      expect_int(state, "terminal_operation_completion_id",
+                 (long long)events.command_id, 1L);
+      cai_error_cleanup(&write.error);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      expect_int(state, "terminal_operation_next_command",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                       "{\"cmd\":\"printf next\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
 static void test_revgeo_tool_decimal_locale(test_state *state,
                                             write_state *writer,
                                             cai_error *error) {
@@ -38260,6 +38389,7 @@ static const test_entry test_entries[] = {
     {"exec_tool", test_exec_tool},
     {"terminal_tools", test_terminal_tools},
     {"terminal_concurrent_start", test_terminal_concurrent_start},
+    {"terminal_concurrent_operation", test_terminal_concurrent_operation},
     {"read_tool", test_read_tool},
     {"view_image_tool", test_view_image_tool},
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},

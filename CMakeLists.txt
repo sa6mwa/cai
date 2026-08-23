@@ -1260,6 +1260,7 @@ if(CAI_BUILD_TESTS)
     searxng_registry_tool
     terminal_tools
     terminal_concurrent_start
+    terminal_concurrent_operation
     exec_tool
     read_tool
     view_image_tool

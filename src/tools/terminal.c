@@ -91,6 +91,10 @@ typedef struct cai_terminal_manager {
   int pty_eof;
   int termination_requested;
   int completion_event_emitted;
+  /* A callback retains exclusive ownership while it collects a result and
+   * emits its lifecycle event. This prevents the next command from replacing
+   * metadata belonging to a just-completed command. */
+  int operation_active;
   int child_status;
   char *output;
   size_t output_length;
@@ -142,6 +146,13 @@ typedef struct cai_terminal_result {
   int detached_processes_possible;
   long long duration_ms;
 } cai_terminal_result;
+
+typedef struct cai_terminal_event_metadata {
+  char terminal_id[48];
+  unsigned long long command_id;
+  char *command;
+  char *workdir;
+} cai_terminal_event_metadata;
 
 static const lonejson_field cai_terminal_exec_arg_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_terminal_exec_args, cmd, "cmd"),
@@ -263,6 +274,29 @@ static void cai_terminal_close_fd(int *fd) {
     close(*fd);
     *fd = -1;
   }
+}
+
+static int cai_terminal_operation_begin(cai_terminal_manager *manager,
+                                        cai_error *error) {
+  int active;
+
+  pthread_mutex_lock(&manager->lock);
+  active = manager->operation_active;
+  if (!active) {
+    manager->operation_active = 1;
+  }
+  pthread_mutex_unlock(&manager->lock);
+  return active
+             ? cai_set_error(error, CAI_ERR_INVALID,
+                             "single terminal is processing another tool call")
+             : CAI_OK;
+}
+
+static void cai_terminal_operation_end(cai_terminal_manager *manager) {
+  pthread_mutex_lock(&manager->lock);
+  manager->operation_active = 0;
+  pthread_cond_broadcast(&manager->changed);
+  pthread_mutex_unlock(&manager->lock);
 }
 
 static int cai_terminal_set_nonblock(int fd) {
@@ -981,24 +1015,97 @@ static int cai_terminal_emit(cai_terminal_manager *manager, int type,
   return manager->event_callback(manager->event_context, &event, error);
 }
 
+static void
+cai_terminal_event_metadata_cleanup(cai_terminal_event_metadata *metadata) {
+  if (metadata == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, metadata->command);
+  cai_free_mem(NULL, metadata->workdir);
+  memset(metadata, 0, sizeof(*metadata));
+}
+
+static int cai_terminal_event_metadata_capture_locked(
+    const cai_terminal_manager *manager, cai_terminal_event_metadata *metadata,
+    cai_error *error) {
+  memset(metadata, 0, sizeof(*metadata));
+  (void)snprintf(metadata->terminal_id, sizeof(metadata->terminal_id), "%s",
+                 manager->terminal_id);
+  metadata->command_id = manager->command_id;
+  metadata->command =
+      cai_strdup(NULL, manager->command != NULL ? manager->command : "");
+  metadata->workdir =
+      cai_strdup(NULL, manager->workdir != NULL ? manager->workdir : "");
+  if (metadata->command == NULL || metadata->workdir == NULL) {
+    cai_terminal_event_metadata_cleanup(metadata);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to snapshot terminal command metadata");
+  }
+  return CAI_OK;
+}
+
+static int cai_terminal_emit_metadata(
+    cai_terminal_manager *manager, int type, const cai_terminal_result *result,
+    const cai_terminal_event_metadata *metadata, cai_error *error) {
+  cai_terminal_event event;
+
+  if (manager->event_callback == NULL) {
+    return CAI_OK;
+  }
+  memset(&event, 0, sizeof(event));
+  event.type = type;
+  event.terminal_id = metadata->terminal_id;
+  event.command_id = metadata->command_id;
+  event.command = metadata->command;
+  event.workdir = metadata->workdir;
+  if (result != NULL) {
+    event.output = result->output;
+    event.output_length = result->output != NULL ? strlen(result->output) : 0U;
+    event.has_exit_code = result->has_exit_code;
+    event.exit_code = result->exit_code;
+    event.has_signal = result->has_signal;
+    event.signal = result->signal;
+    event.duration_ms = (unsigned long long)result->duration_ms;
+    event.total_output_bytes = (unsigned long long)result->original_byte_count;
+    event.output_truncated = result->output_truncated;
+    event.detached_processes_possible = result->detached_processes_possible;
+  }
+  return manager->event_callback(manager->event_context, &event, error);
+}
+
 static int cai_terminal_emit_completion_once(cai_terminal_manager *manager,
                                              const cai_terminal_result *result,
                                              cai_error *error) {
+  cai_terminal_event_metadata metadata;
   int type;
   int emit;
+  int rc;
 
   emit = 0;
+  memset(&metadata, 0, sizeof(metadata));
   type = CAI_TERMINAL_EVENT_COMMAND_COMPLETED;
   pthread_mutex_lock(&manager->lock);
   if (manager->completed && !manager->completion_event_emitted) {
-    manager->completion_event_emitted = 1;
-    emit = 1;
-    if (manager->termination_requested) {
-      type = CAI_TERMINAL_EVENT_COMMAND_CANCELLED;
+    rc = cai_terminal_event_metadata_capture_locked(manager, &metadata, error);
+    if (rc == CAI_OK) {
+      manager->completion_event_emitted = 1;
+      emit = 1;
+      if (manager->termination_requested) {
+        type = CAI_TERMINAL_EVENT_COMMAND_CANCELLED;
+      }
     }
+  } else {
+    rc = CAI_OK;
   }
   pthread_mutex_unlock(&manager->lock);
-  return emit ? cai_terminal_emit(manager, type, result, error) : CAI_OK;
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (emit) {
+    rc = cai_terminal_emit_metadata(manager, type, result, &metadata, error);
+  }
+  cai_terminal_event_metadata_cleanup(&metadata);
+  return rc;
 }
 
 static int cai_terminal_exec_callback(void *value, const void *params,
@@ -1011,6 +1118,7 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   size_t output_limit;
   int rc;
   int workdir_fd;
+  int operation_started;
 
   binding = (cai_terminal_binding *)value;
   args = (const cai_terminal_exec_args *)params;
@@ -1022,12 +1130,17 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   }
   workdir = NULL;
   workdir_fd = -1;
+  operation_started = 0;
   rc = cai_terminal_resolve_workdir(binding->manager, args->workdir, &workdir,
                                     &workdir_fd, error);
   if (rc == CAI_OK && binding->manager->policy != NULL) {
     rc = binding->manager->policy(binding->manager->policy_context, args->cmd,
                                   binding->manager->root_path, workdir,
                                   args->has_tty && args->tty, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_terminal_operation_begin(binding->manager, error);
+    operation_started = rc == CAI_OK;
   }
   if (rc == CAI_OK) {
     rc = cai_terminal_start(binding->manager, args->cmd, workdir, workdir_fd,
@@ -1037,30 +1150,35 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   cai_terminal_close_fd(&workdir_fd);
   cai_free_mem(NULL, workdir);
   if (rc != CAI_OK) {
+    if (operation_started) {
+      cai_terminal_operation_end(binding->manager);
+    }
     return rc;
   }
   rc = cai_terminal_emit(binding->manager, CAI_TERMINAL_EVENT_COMMAND_STARTED,
                          NULL, error);
-  if (rc != CAI_OK) {
-    return rc;
-  }
-  wait_ms = cai_terminal_clamp_yield(
-      args->yield_time_ms, args->has_yield_time_ms,
-      binding->manager->default_yield_ms, binding->manager->max_yield_ms, 0L);
-  output_limit = args->has_max_output_tokens && args->max_output_tokens > 0LL
-                     ? (size_t)args->max_output_tokens
-                     : 0U;
-  (void)cai_terminal_wait(binding->manager, 0U, wait_ms);
-  rc = cai_terminal_fill_result(binding->manager, output_limit, result, error);
   if (rc == CAI_OK) {
-    rc = result->completed ? cai_terminal_emit_completion_once(binding->manager,
-                                                               result, error)
-                           : cai_terminal_emit(binding->manager,
-                                               result->output[0] != '\0'
-                                                   ? CAI_TERMINAL_EVENT_OUTPUT
-                                                   : CAI_TERMINAL_EVENT_WAITING,
-                                               result, error);
+    wait_ms = cai_terminal_clamp_yield(
+        args->yield_time_ms, args->has_yield_time_ms,
+        binding->manager->default_yield_ms, binding->manager->max_yield_ms, 0L);
+    output_limit = args->has_max_output_tokens && args->max_output_tokens > 0LL
+                       ? (size_t)args->max_output_tokens
+                       : 0U;
+    (void)cai_terminal_wait(binding->manager, 0U, wait_ms);
+    rc =
+        cai_terminal_fill_result(binding->manager, output_limit, result, error);
+    if (rc == CAI_OK) {
+      rc = result->completed
+               ? cai_terminal_emit_completion_once(binding->manager, result,
+                                                   error)
+               : cai_terminal_emit(binding->manager,
+                                   result->output[0] != '\0'
+                                       ? CAI_TERMINAL_EVENT_OUTPUT
+                                       : CAI_TERMINAL_EVENT_WAITING,
+                                   result, error);
+    }
   }
+  cai_terminal_operation_end(binding->manager);
   return rc;
 }
 
@@ -1142,6 +1260,10 @@ static int cai_terminal_write_callback(void *value, const void *params,
         error, CAI_ERR_INVALID,
         "write_stdin session_id does not match the single terminal");
   }
+  rc = cai_terminal_operation_begin(binding->manager, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   pthread_mutex_lock(&binding->manager->lock);
   if (!binding->manager->running) {
     int completed;
@@ -1158,20 +1280,32 @@ static int cai_terminal_write_callback(void *value, const void *params,
       if (rc == CAI_OK) {
         rc = cai_terminal_emit_completion_once(binding->manager, result, error);
       }
+      cai_terminal_operation_end(binding->manager);
       return rc;
     }
+    cai_terminal_operation_end(binding->manager);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "single terminal has no running command");
   }
   initial = binding->manager->output_length;
-  fd = binding->manager->pty_fd;
+  fd = fcntl(binding->manager->pty_fd, F_DUPFD_CLOEXEC, 3);
+  if (fd < 0) {
+    pthread_mutex_unlock(&binding->manager->lock);
+    cai_terminal_operation_end(binding->manager);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to pin terminal stdin",
+                                strerror(errno));
+  }
   pthread_mutex_unlock(&binding->manager->lock);
   if (args->chars != NULL && args->chars[0] != '\0') {
     rc = cai_terminal_write_all(fd, args->chars, error);
     if (rc != CAI_OK) {
+      cai_terminal_close_fd(&fd);
+      cai_terminal_operation_end(binding->manager);
       return rc;
     }
   }
+  cai_terminal_close_fd(&fd);
   if ((args->has_terminate && args->terminate) ||
       (args->chars != NULL && args->chars[0] != '\0')) {
     wait_ms =
@@ -1222,6 +1356,7 @@ static int cai_terminal_write_callback(void *value, const void *params,
                                                    : CAI_TERMINAL_EVENT_WAITING,
                                                result, error);
   }
+  cai_terminal_operation_end(binding->manager);
   return rc;
 }
 
