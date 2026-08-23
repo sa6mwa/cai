@@ -435,9 +435,10 @@ fragile group of flags. Its initial defaults are:
 | MCP | enabled when configured |
 | Image generation | enabled only when backend/capability exists |
 
-The test profile overrides only model to `gpt-5.6-luna` and retains medium
-reasoning effort. It must exercise the same tool schemas and prompt asset as
-Smith; a separate testing prompt is prohibited.
+The live test profile overrides model to `gpt-5.6-luna`, uses low reasoning
+effort for coding, and uses medium reasoning effort for isolated review. It
+must exercise the same tool schemas and prompt asset as Smith; a separate
+testing prompt is prohibited.
 
 ### 6.1 Prompt ownership and rendering
 
@@ -1283,19 +1284,20 @@ use observable model/tool/store behavior rather than private fields.
 
 ### 15.2 Live end-to-end proof
 
-With the user-authorized ChatGPT subscription from `~/.codex/auth.json`, run
-the Smith e2e suite against `gpt-5.6-luna`: the coding turn uses low reasoning
-effort and its isolated review uses medium reasoning effort. The suite uses a
-disposable fixture repository and a local deterministic MCP test server. Both
-the C and Lua façades must prove a coding task that reads files, edits through
-`apply_patch`, uses the terminal, calls a configured MCP tool, starts an
-isolated review, hands the JSON report into the parent context, and verifies
-its own result. It must not expose auth tokens in artifacts/logs and must never
-run against a user workspace.
-
-`gpt-5.6-terra` medium is the primary Smith configuration and receives a
-smaller acceptance smoke after the luna suite. Live tests are opt-in and never
-part of an offline default test target.
+With a user-authorized CAI-owned ChatGPT subscription state, run the Smith e2e
+suite against `gpt-5.6-luna`: the coding turn uses low reasoning effort and its
+isolated review uses medium reasoning effort. CAI resolves the state from
+`CAI_CHATGPT_AUTH_JSON` when set, otherwise from
+`cai_chatgpt_auth_default_path` (`$XDG_STATE_HOME/cai/auth.json`, or
+`$HOME/.local/state/cai/auth.json`); `make chatgpt-login` creates that state.
+The suite uses a disposable fixture repository and a local deterministic MCP
+test server. Both the C and Lua façades must prove a coding task that reads
+files, edits through `apply_patch`, uses the terminal, calls a configured MCP
+tool, starts an isolated review, hands the JSON report into the parent context,
+and verifies its own result. It must not expose auth tokens in artifacts/logs,
+must never run against a user workspace, and must never fall back to an OpenAI
+API key. Live tests are opt-in and never part of an offline default test
+target.
 
 ## 16. Acceptance criteria
 

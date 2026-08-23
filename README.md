@@ -47,6 +47,36 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
   deterministic examples, AFL++ fuzzing, ASan/UBSan and Valgrind memory
   checks, and release artifact validation.
 
+## Agent Runtimes and Smith
+
+`cai_agent_runtime` is CAI's host-neutral agent-mode loop: it owns the worker,
+serial tool dispatch, durable checkpoints, and an event queue, while the host
+owns input, rendering, and its application event loop. An event callback is
+delivered only when the owner thread calls `cai_agent_runtime_pump`; a
+poll-only runtime deliberately suppresses presentation events and exposes state
+only. Hosts can use the borrowed wakeup descriptor with `poll`/`select`, copy
+streamed text or provider-issued reasoning summaries into any renderer, and
+call the explicit threadsafe input methods from an input thread.
+
+The built-in `smith` preset is CAI's Codex-inspired coding-agent profile. It
+uses the native `apply_patch`, sandboxed file/image tools, optional MCP and
+image generation, durable goals, and one managed PTY terminal slot with only
+one active command. `submit_steering` queues interactive direction for the
+next safe model/tool boundary; `submit_queued` queues an ordinary FIFO turn
+for after the active turn completes. CAI deliberately does not parse slash
+commands or render a UI: downstream applications map their own controls to
+those APIs, review lifecycle calls, and runtime Markdown export.
+
+Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
+`auto` reasoning summaries. The C and Lua Smith terminal examples intentionally
+use `gpt-5.6-luna` and CAI-owned ChatGPT subscription authentication to keep
+interactive use and opt-in live acceptance economical. Run `make chatgpt-login`
+once; CAI reads its own XDG state file (or `CAI_CHATGPT_AUTH_JSON`) and never
+reads or refreshes Codex's auth state. See
+[the Smith specification](docs/agent-smith-spec.md) and
+[the examples guide](examples/README.md#smith-terminal) for the complete
+runtime, review, storage, and presentation contracts.
+
 ## Release Scope
 
 The first release is focused on the C SDK and Lua 5.5 facade for Responses API
@@ -1250,20 +1280,23 @@ stream APIs, forces tool calls on selected turns, verifies first/current/
 previous turn recall, and exercises transparent token refresh behavior through
 the same Responses WebSocket transport used by ChatGPT-auth streaming sessions.
 
-`CAI_INTEGRATION_CHATGPT_SMITH_E2E=1` is the live Luna-medium acceptance test
-for `cai_agent_runtime`, using a disposable workspace and local JSONL store.
+`CAI_INTEGRATION_CHATGPT_SMITH_E2E=1` is the live Luna-low coding acceptance
+test for `cai_agent_runtime`, using a disposable workspace and local JSONL
+store.
 It proves Smith's runtime event loop, read/patch/read-back flow, one-slot PTY
 terminal start/wait/completion lifecycle, steering delivery after a tool round,
 durable checkpoints, and `resume_latest` continuation. All live Smith tests
 use ChatGPT subscription authentication and GPT-5.6 Luna; they never consume
 an OpenAI API-key budget.
 
-`CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1` is the live Luna-medium Smith
-review-handoff regression. Its harness creates only an empty, locally authored
-Git fixture; Smith creates, builds, runs, and commits a small C/CMake/Makefile
-project. CAI then launches the isolated interactive review of that commit,
-hands its report to the original Smith runtime, and Smith fixes any actionable
-finding before both independent build paths and clean Git state are checked.
+`CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1` is the live Luna Smith
+review-handoff regression: its coding turn uses low reasoning effort and its
+isolated reviewer uses medium effort. Its harness creates only an empty,
+locally authored Git fixture; Smith creates, builds, runs, and commits a small
+C/CMake/Makefile project. CAI then launches the isolated interactive review of
+that commit, hands its report to the original Smith runtime, and Smith fixes
+any actionable finding before both independent build paths and clean Git state
+are checked.
 It is registered with the integration label, so
 `CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` and
 `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` include it.

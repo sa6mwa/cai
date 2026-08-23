@@ -27,11 +27,16 @@ typedef struct cai_view_image_tool_config {
   size_t max_image_bytes;
 } cai_view_image_tool_config;
 
-/** Register `view_image` on a local registry. */
+/**
+ * Register view_image on a local registry. The tool validates a bounded local
+ * image then attaches it as typed input to the next compatible model request;
+ * it does not place base64 image bytes in normal tool output.
+ */
 int cai_tool_registry_register_view_image_tool(
     cai_tool_registry *registry, const cai_view_image_tool_config *config,
     cai_error *error);
-/** Register `view_image` directly on an agent. */
+/** Register view_image directly on an agent with the same registration rules.
+ */
 int cai_agent_register_view_image_tool(cai_agent *agent,
                                        const cai_view_image_tool_config *config,
                                        cai_error *error);

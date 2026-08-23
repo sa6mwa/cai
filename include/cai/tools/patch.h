@@ -1,3 +1,6 @@
+/** @file cai/tools/patch.h
+ *  Native, bounded Codex-style freeform apply_patch tool.
+ */
 #ifndef CAI_TOOLS_PATCH_H
 #define CAI_TOOLS_PATCH_H
 
@@ -24,14 +27,23 @@ typedef struct cai_patch_tool_config {
   size_t max_file_bytes;
 } cai_patch_tool_config;
 
-/** Apply a Codex-style patch within the configured workspace root. */
+/**
+ * Parse, validate, and apply a Codex-style patch within root_path. CAI uses
+ * its native parser/applier and never invokes system diff or patch programs.
+ * On success it streams the changed-file receipt to result; failed parsing,
+ * path validation, or context matching does not publish a partial plan.
+ */
 int cai_apply_patch(const cai_patch_tool_config *config, const char *patch,
                     cai_sink *result, cai_error *error);
-/** Register `apply_patch` on a local tool registry. */
+/**
+ * Register apply_patch as a Responses custom/freeform tool on a local
+ * registry. CAI copies configuration needed by the tool during registration.
+ */
 int cai_tool_registry_register_patch_tool(cai_tool_registry *registry,
                                           const cai_patch_tool_config *config,
                                           cai_error *error);
-/** Register `apply_patch` directly on an agent. */
+/** Register apply_patch directly on an agent with the same registration rules.
+ */
 int cai_agent_register_patch_tool(cai_agent *agent,
                                   const cai_patch_tool_config *config,
                                   cai_error *error);

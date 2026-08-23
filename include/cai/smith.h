@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/** Stable name of the first CAI coding-agent preset. */
+/** Stable built-in coding-agent preset name. */
 #define CAI_SMITH_PRESET "smith"
 /** Stable name of the isolated Smith review preset. */
 #define CAI_SMITH_REVIEW_PRESET "smith-review"
@@ -29,13 +29,21 @@ extern "C" {
  * the local file, terminal, and image-view capabilities; MCP, hosted image
  * generation, and goal state require a live cai_agent_runtime.
  */
+/** Register the sandboxed UTF-8 file reader. */
 #define CAI_AGENT_PRESET_TOOL_READ_FILE (1UL << 0)
+/** Register the sandboxed file lister. */
 #define CAI_AGENT_PRESET_TOOL_LIST_FILES (1UL << 1)
+/** Register the native Codex-style apply_patch tool. */
 #define CAI_AGENT_PRESET_TOOL_APPLY_PATCH (1UL << 2)
+/** Register CAI's one-slot exec_command/write_stdin terminal pair. */
 #define CAI_AGENT_PRESET_TOOL_TERMINAL (1UL << 3)
+/** Register the local image viewer when the selected model supports images. */
 #define CAI_AGENT_PRESET_TOOL_VIEW_IMAGE (1UL << 4)
+/** Register durable goal lifecycle tools on a runtime session. */
 #define CAI_AGENT_PRESET_TOOL_GOAL (1UL << 5)
+/** Permit configured MCP client tools on an ordinary runtime. */
 #define CAI_AGENT_PRESET_TOOL_MCP (1UL << 6)
+/** Permit configured hosted image-generation on an ordinary runtime. */
 #define CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION (1UL << 7)
 
 /** Declarative, host-defined agent profile for CAI's shared runtime. */
@@ -75,7 +83,11 @@ typedef struct cai_agent_preset {
   int supports_review;
 } cai_agent_preset;
 
-/** Initialize a descriptor that exactly selects CAI's built-in Smith policy. */
+/**
+ * Initialize a descriptor that exactly selects CAI's built-in Smith policy.
+ * The resulting descriptor contains borrowed static strings and can be copied
+ * or passed directly to a constructor/runtime open call.
+ */
 void cai_agent_preset_from_smith(cai_agent_preset *preset);
 
 /** Generic per-runtime settings used with a cai_agent_preset. */
@@ -120,7 +132,9 @@ const char *cai_smith_prompt_version(void);
  * Smith always uses client-side history, retains local history, serializes
  * tool calls, and registers read_file, list_files, apply_patch, exec_command,
  * and write_stdin. Models with image-input capability also receive view_image.
- * Smith never registers the legacy synchronous command runner.
+ * Smith never registers the legacy synchronous command runner. client remains
+ * borrowed and must outlive the returned agent; config is consumed during the
+ * call and may be stack allocated.
  */
 int cai_client_new_smith_agent(cai_client *client,
                                const cai_smith_config *config, cai_agent **out,
@@ -131,7 +145,8 @@ int cai_client_new_smith_agent(cai_client *client,
  *
  * This lower-level constructor is useful when the host owns its own session
  * loop. Use cai_agent_runtime_open for persisted sessions, goals, MCP, hosted
- * tools, events, and review-child orchestration.
+ * tools, events, and review-child orchestration. client remains borrowed and
+ * must outlive the returned agent; preset/config are consumed during the call.
  */
 int cai_client_new_preset_agent(cai_client *client,
                                 const cai_agent_preset *preset,
@@ -144,12 +159,18 @@ int cai_client_new_preset_agent(cai_client *client,
  * exec_command, write_stdin, and view_image when the selected model supports
  * images. It never exposes patch, goal, MCP, or image-generation tools.
  * Terminal commands remain subject to the configured host terminal policy.
+ * client remains borrowed and must outlive the returned agent; config is
+ * consumed during the call and may be stack allocated.
  */
 int cai_client_new_smith_review_agent(cai_client *client,
                                       const cai_smith_config *config,
                                       cai_agent **out, cai_error *error);
 
-/** Construct an isolated reviewer from a preset that supports review. */
+/**
+ * Construct an isolated reviewer from a preset that supports review. client
+ * remains borrowed and must outlive the returned agent; preset/config are
+ * consumed during the call.
+ */
 int cai_client_new_preset_review_agent(cai_client *client,
                                        const cai_agent_preset *preset,
                                        const cai_agent_preset_config *config,

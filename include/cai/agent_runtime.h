@@ -17,48 +17,83 @@ typedef struct cai_agent_runtime cai_agent_runtime;
 
 /** Observable execution state of an agent runtime. */
 typedef enum cai_agent_run_state {
+  /** Ready to accept an immediate turn. */
   CAI_AGENT_IDLE = 0,
+  /** A provider response or terminal completion is in progress. */
   CAI_AGENT_SAMPLING = 1,
+  /** CAI is dispatching one model-requested tool call. */
   CAI_AGENT_DISPATCHING_TOOL = 2,
+  /** The current turn completed successfully. */
   CAI_AGENT_COMPLETED = 3,
+  /** The current turn failed. Inspect the terminal event/error for detail. */
   CAI_AGENT_FAILED = 4,
+  /** The current turn was cancelled during runtime shutdown. */
   CAI_AGENT_CANCELLED = 5
 } cai_agent_run_state;
 
 /** Stable semantic outcome classification for a runtime tool event. */
 typedef enum cai_agent_tool_action {
+  /** The event has no classified local-tool action. */
   CAI_AGENT_TOOL_ACTION_NONE = 0,
+  /** A local file was read. */
   CAI_AGENT_TOOL_ACTION_READ = 1,
+  /** Local filesystem entries were listed. */
   CAI_AGENT_TOOL_ACTION_LIST = 2,
+  /** A local image was prepared as model input. */
   CAI_AGENT_TOOL_ACTION_VIEW = 3,
+  /** A native apply_patch operation changed workspace files. */
   CAI_AGENT_TOOL_ACTION_PATCH = 4,
+  /** A terminal command was started or observed. */
   CAI_AGENT_TOOL_ACTION_EXECUTE = 5,
+  /** Bytes were written to, polled from, or used to terminate the terminal. */
   CAI_AGENT_TOOL_ACTION_WRITE_STDIN = 6,
+  /** The current goal was read. */
   CAI_AGENT_TOOL_ACTION_GET_GOAL = 7,
+  /** A new goal was created. */
   CAI_AGENT_TOOL_ACTION_CREATE_GOAL = 8,
+  /** An existing goal was updated. */
   CAI_AGENT_TOOL_ACTION_UPDATE_GOAL = 9,
+  /** The current goal was cleared. */
   CAI_AGENT_TOOL_ACTION_CLEAR_GOAL = 10,
+  /** A hosted or configured image-generation operation ran. */
   CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION = 11,
+  /** A configured MCP or other non-local tool ran. */
   CAI_AGENT_TOOL_ACTION_EXTERNAL = 12
 } cai_agent_tool_action;
 
 /** Event emitted by an agent runtime. */
 typedef enum cai_agent_runtime_event_type {
+  /** A submitted turn started. */
   CAI_AGENT_EVENT_RUN_STARTED = 1,
+  /** The observable run state changed. */
   CAI_AGENT_EVENT_RUN_STATE_CHANGED = 2,
+  /** A normal assistant-text UTF-8 delta arrived. */
   CAI_AGENT_EVENT_TEXT_DELTA = 3,
+  /** The model requested a tool call. */
   CAI_AGENT_EVENT_TOOL_CALL_STARTED = 4,
+  /** A tool call completed successfully. */
   CAI_AGENT_EVENT_TOOL_CALL_COMPLETED = 5,
+  /** A tool call failed. */
   CAI_AGENT_EVENT_TOOL_CALL_FAILED = 6,
+  /** Steering was durably accepted for the next safe boundary. */
   CAI_AGENT_EVENT_STEERING_QUEUED = 7,
+  /** Accepted steering was delivered to the model. */
   CAI_AGENT_EVENT_STEERING_DELIVERED = 8,
+  /** The active turn completed successfully. */
   CAI_AGENT_EVENT_RUN_COMPLETED = 9,
+  /** The active turn failed. */
   CAI_AGENT_EVENT_RUN_FAILED = 10,
+  /** A durable session checkpoint completed. */
   CAI_AGENT_EVENT_SESSION_CHECKPOINTED = 11,
+  /** The managed terminal began a command. */
   CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED = 12,
+  /** The managed terminal emitted output. */
   CAI_AGENT_EVENT_TERMINAL_OUTPUT = 13,
+  /** A terminal wait/poll remains active. */
   CAI_AGENT_EVENT_TERMINAL_WAITING = 14,
+  /** The managed terminal command exited and PTY output was drained. */
   CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED = 15,
+  /** The managed terminal command was cancelled. */
   CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED = 16,
   /** A normal user turn was accepted to run after the active turn. */
   CAI_AGENT_EVENT_TURN_QUEUED = 17,
@@ -80,7 +115,11 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_RESPONSE_COMPLETED = 22
 } cai_agent_runtime_event_type;
 
-/** A borrowed runtime event, valid only for the event callback duration. */
+/**
+ * A borrowed runtime event, valid only for the event callback duration.
+ * Every pointer, including data and the tool/terminal/session identifiers, is
+ * owned by CAI and becomes invalid when the callback returns.
+ */
 typedef struct cai_agent_runtime_event {
   /** CAI_AGENT_EVENT_* discriminator. */
   int type;
@@ -88,7 +127,11 @@ typedef struct cai_agent_runtime_event {
   int state;
   /** Monotonic sequence within this runtime. */
   unsigned long long sequence;
-  /** UTF-8 event data; not NUL-terminated. */
+  /**
+   * UTF-8 event payload; not NUL-terminated. Its exact meaning depends on
+   * type: text/reasoning bytes, a tool receipt/error, terminal output, or a
+   * final review report.
+   */
   const char *data;
   /** Number of bytes in data. */
   size_t data_length;
@@ -130,7 +173,12 @@ typedef struct cai_agent_runtime_event {
   const char *runtime_session_id;
 } cai_agent_runtime_event;
 
-/** Owner-thread callback that receives queued runtime events. */
+/**
+ * Owner-thread callback that receives queued runtime events from
+ * cai_agent_runtime_pump. Return CAI_OK after consuming/copying the borrowed
+ * event. A non-OK return stops that pump call and leaves later events queued.
+ * The callback may close its runtime, but must not re-enter it otherwise.
+ */
 typedef int (*cai_agent_runtime_event_fn)(void *context,
                                           const cai_agent_runtime_event *event,
                                           cai_error *error);
@@ -211,15 +259,25 @@ typedef struct cai_agent_runtime_config {
   const char *review_reasoning_summary;
   /** Optional host developer-instruction extension. */
   const char *developer_instructions_extension;
-  /** Host-owned local MCP clients whose discovered tools Smith registers. */
+  /**
+   * Host-owned local MCP clients whose discovered tools CAI registers. Every
+   * client must remain open and valid until the runtime closes.
+   */
   cai_mcp_client *const *mcp_clients;
   /** Number of entries in mcp_clients. */
   size_t mcp_client_count;
-  /** Optional common registration policy for the configured MCP clients. */
+  /**
+   * Optional common registration policy for the configured MCP clients. Its
+   * callback/context lifetime must cover the runtime.
+   */
   const cai_mcp_tool_registration_config *mcp_tool_config;
   /** Enable OpenAI's hosted image_generation tool for this Smith runtime. */
   int enable_image_generation;
-  /** Optional policy/limit override for Smith's one-slot terminal tools. */
+  /**
+   * Optional policy/limit override for Smith's one-slot terminal tools. CAI
+   * copies scalar/path settings at open; policy and event callback contexts
+   * remain borrowed for the runtime lifetime.
+   */
   const cai_terminal_tool_config *terminal_tool_config;
   /** Non-zero disables Smith's one-slot terminal tools. */
   int disable_terminal;
@@ -272,11 +330,22 @@ typedef struct cai_agent_runtime_config {
 
 /** Initialize a zero-defaultable runtime configuration. */
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config);
-/** Open an event runtime for the requested preset. */
+/**
+ * Open an owner-thread event runtime for the requested preset. The calling
+ * thread becomes its owner and must use the non-threadsafe control, state,
+ * pump, and export functions. CAI snapshots string/profile inputs at open;
+ * it borrows the client, MCP clients, session store, and callback contexts
+ * until close. On success *out is owned by the caller and must be closed.
+ */
 int cai_agent_runtime_open(cai_client *client,
                            const cai_agent_runtime_config *config,
                            cai_agent_runtime **out, cai_error *error);
-/** Submit a new user turn while the runtime is idle or completed. */
+/**
+ * Submit an immediate user turn while an ordinary runtime is idle or
+ * completed. With durable storage the accepted input is journaled before this
+ * call succeeds. Owner-thread-only; use submit_queued_threadsafe for input
+ * arriving on another thread.
+ */
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 /**
@@ -318,7 +387,11 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
 int cai_agent_runtime_finish_review(cai_agent_runtime *parent,
                                     cai_agent_runtime *review,
                                     cai_error *error);
-/** Queue steering for injection after the current model/tool cycle. */
+/**
+ * Queue steering for injection at the next safe model/tool boundary. This is
+ * the default interactive-input path while a turn is active; it is rejected
+ * while idle, stopping, or paused for review. Owner-thread-only.
+ */
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);
 /** Thread-safe variant of cai_agent_runtime_submit_steering. */
@@ -327,7 +400,7 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
                                                  cai_error *error);
 /**
  * Queue a normal user turn. It runs FIFO after the active turn reaches a
- * terminal state, or immediately when the runtime is idle.
+ * terminal state, or immediately when the runtime is idle. Owner-thread-only.
  */
 int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
                                     const char *text, cai_error *error);
@@ -335,17 +408,25 @@ int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
 int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
                                                const char *text,
                                                cai_error *error);
-/** Drain ready events on the owner thread; timeout is currently advisory. */
+/**
+ * Drain queued events on the owner thread. When no event is ready, wait up to
+ * timeout_ms (zero is non-blocking); the timeout is advisory and this function
+ * may return earlier after a wakeup. Poll-only runtimes have no callback and
+ * therefore no events to drain, but may still use this as a synchronization
+ * point before reading state.
+ */
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error);
 /**
  * Return a borrowed pollable descriptor that becomes readable when CAI queues
- * host-visible runtime events. The descriptor remains owned by runtime and is
- * closed by cai_agent_runtime_close. Call pump after readiness to drain it.
+ * host-visible runtime events. It is useful only when event_callback is
+ * non-NULL; poll-only runtimes intentionally do not queue observations. The
+ * descriptor remains owned by runtime and is closed by cai_agent_runtime_close.
+ * Call pump after readiness to drain it.
  */
 int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime, int *out_fd,
                                 cai_error *error);
-/** Read the currently observable runtime state. */
+/** Read the currently observable runtime state on the owner thread. */
 int cai_agent_runtime_state(cai_agent_runtime *runtime,
                             cai_agent_run_state *out, cai_error *error);
 /** Return the runtime's stable session identifier, borrowed until close. */
