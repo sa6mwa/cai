@@ -1282,12 +1282,14 @@ use observable model/tool/store behavior rather than private fields.
 ### 15.2 Live end-to-end proof
 
 With the user-authorized ChatGPT subscription from `~/.codex/auth.json`, run
-the Smith e2e suite against `gpt-5.6-luna` at medium reasoning effort. The
-suite uses a disposable fixture repository and a local deterministic MCP test
-server. It must prove a coding task that reads files, edits through
-`apply_patch`, uses the terminal, receives a steering message during streaming,
-resumes from JSONL, and verifies its own result. It must not expose auth tokens
-in artifacts/logs and must never run against a user workspace.
+the Smith e2e suite against `gpt-5.6-luna`: the coding turn uses low reasoning
+effort and its isolated review uses medium reasoning effort. The suite uses a
+disposable fixture repository and a local deterministic MCP test server. Both
+the C and Lua façades must prove a coding task that reads files, edits through
+`apply_patch`, uses the terminal, calls a configured MCP tool, starts an
+isolated review, hands the JSON report into the parent context, and verifies
+its own result. It must not expose auth tokens in artifacts/logs and must never
+run against a user workspace.
 
 `gpt-5.6-terra` medium is the primary Smith configuration and receives a
 smaller acceptance smoke after the luna suite. Live tests are opt-in and never

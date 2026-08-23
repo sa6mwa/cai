@@ -76,6 +76,7 @@ local function event_state()
     reads = 0,
     patches = 0,
     executions = 0,
+    mcp_echo_completed = 0,
     terminal_started = 0,
     terminal_completed = 0,
     response_completed = 0,
@@ -93,7 +94,9 @@ local function event_callback(events)
     elseif event.type == cai.AGENT_EVENT_REASONING_SUMMARY and event.data ~= nil then
       events.reasoning_summaries[#events.reasoning_summaries + 1] = event.data
     elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED then
-      if event.tool_action == cai.AGENT_TOOL_ACTION_READ then
+      if event.tool_name == "mcp_echo_message" then
+        events.mcp_echo_completed = events.mcp_echo_completed + 1
+      elseif event.tool_action == cai.AGENT_TOOL_ACTION_READ then
         events.reads = events.reads + 1
       elseif event.tool_action == cai.AGENT_TOOL_ACTION_PATCH then
         events.patches = events.patches + 1
@@ -172,6 +175,7 @@ local auth_path = chatgpt_auth_path()
 
 local workspace = make_workspace()
 local client = nil
+local mcp_client = nil
 local parent = nil
 local review = nil
 local success = false
@@ -188,6 +192,10 @@ local function cleanup()
   if client ~= nil then
     client:close()
     client = nil
+  end
+  if mcp_client ~= nil then
+    mcp_client:close()
+    mcp_client = nil
   end
   run("rm -rf " .. shell_quote(workspace), "temporary workspace cleanup")
 end
@@ -233,18 +241,34 @@ local ok, err = xpcall(function()
     timeout_ms = 180000,
   })
   client = assert_ok(opened_client, open_error, "cai.open")
+  local mcp_url = os.getenv("CAI_SMITH_E2E_MCP_URL")
+  local runtime_options = {
+    workspace_directory = workspace,
+    model = cai.MODEL_GPT_5_6_LUNA,
+    reasoning_effort = cai.REASONING_EFFORT_LOW,
+    reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
+    review_model = cai.MODEL_GPT_5_6_LUNA,
+    review_reasoning_effort = cai.REASONING_EFFORT_MEDIUM,
+    review_reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
+    disable_default_session_store = true,
+    event_callback = event_callback(events),
+  }
+  if mcp_url ~= nil and mcp_url ~= "" then
+    mcp_client = assert_ok(cai.mcp_client({
+      url = mcp_url,
+      client_name = "cai-lua-smith-review-live-e2e",
+      timeout_ms = 10000,
+    }), nil, "MCP client")
+    assert_ok(mcp_client:initialize(), nil, "MCP initialize")
+    runtime_options.mcp_clients = { mcp_client }
+    runtime_options.mcp_tool_config = { name_prefix = "mcp_" }
+    build_prompt = build_prompt .. " Before committing, call mcp_echo_message exactly " ..
+      "once with JSON arguments {\"message\":\"cai-smith-mcp-review-e2e\"}. " ..
+      "Use its actual result in your final response and include the exact marker " ..
+      "LUA_SMITH_MCP_CONFIRMED."
+  end
   parent = checked("client:new_smith_runtime", function()
-    return client:new_smith_runtime({
-      workspace_directory = workspace,
-      model = cai.MODEL_GPT_5_6_LUNA,
-      reasoning_effort = cai.REASONING_EFFORT_LOW,
-      reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
-      review_model = cai.MODEL_GPT_5_6_LUNA,
-      review_reasoning_effort = cai.REASONING_EFFORT_MEDIUM,
-      review_reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
-      disable_default_session_store = true,
-      event_callback = event_callback(events),
-    })
+    return client:new_smith_runtime(runtime_options)
   end)
 
   checked("parent:submit build", function()
@@ -253,6 +277,14 @@ local ok, err = xpcall(function()
   pump_until_completed(parent, 240, "Lua Smith build turn")
   assert_contains("Lua Smith build answer", event_answer(events),
     "LUA_SMITH_PROJECT_COMMITTED")
+  if mcp_client ~= nil then
+    assert_contains("Lua Smith MCP build answer", event_answer(events),
+      "LUA_SMITH_MCP_CONFIRMED")
+    if events.mcp_echo_completed ~= 1 then
+      fail("Lua Smith MCP evidence is incomplete (echoes=" ..
+        tostring(events.mcp_echo_completed) .. ")")
+    end
+  end
   if #events.reasoning_summaries == 0 then
     fail("Lua Smith build did not expose a provider reasoning summary")
   end

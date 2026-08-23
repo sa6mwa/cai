@@ -404,6 +404,7 @@ typedef struct integration_smith_runtime_event_state {
   int patch_completed;
   int execute_completed;
   int write_stdin_completed;
+  int mcp_echo_completed;
   int terminal_started;
   int terminal_waiting;
   int terminal_completed;
@@ -710,7 +711,10 @@ static int integration_smith_runtime_event(
   if (event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED) {
     state->steering_requested = 1;
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED) {
-    if (event->tool_action == CAI_AGENT_TOOL_ACTION_READ) {
+    if (event->tool_name != NULL &&
+        strcmp(event->tool_name, "mcp_echo_message") == 0) {
+      state->mcp_echo_completed++;
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_READ) {
       state->read_completed++;
       if (state->first_read_completed_sequence == 0U) {
         state->first_read_completed_sequence = event->sequence;
@@ -4780,7 +4784,7 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
-static int run_chatgpt_smith_review_regression(void) {
+static int run_chatgpt_smith_review_regression(int require_mcp) {
   static const char build_prompt_1[] =
       "You are in a newly initialized, otherwise empty Git repository. "
       "Create a small Hello World project in C. It must include a CMake build "
@@ -4796,6 +4800,11 @@ static int run_chatgpt_smith_review_regression(void) {
       "the repository's configured local Git author. Do not ask questions. "
       "In your final response include the exact marker "
       "SMITH_REVIEW_PROJECT_COMMITTED.";
+  static const char mcp_instruction[] =
+      " Before committing, call mcp_echo_message exactly once with JSON "
+      "arguments {\"message\":\"cai-smith-mcp-review-e2e\"}. Use its actual "
+      "result in your final response and include the exact marker "
+      "SMITH_REVIEW_MCP_CONFIRMED.";
   static const char follow_up_prompt_1[] =
       "Read the developer review handoff now in your context. If it identifies "
       "any actionable defect, fix every valid finding and do not make "
@@ -4831,6 +4840,10 @@ static int run_chatgpt_smith_review_regression(void) {
   cai_chatgpt_auth *auth;
   cai_client *client;
   cai_client_config client_config;
+  cai_mcp_client *mcp_client;
+  cai_mcp_client *mcp_clients[1];
+  cai_mcp_streamable_http_client_config mcp_client_config;
+  cai_mcp_tool_registration_config mcp_tool_config;
   cai_agent_runtime *review;
   cai_agent_runtime *runtime;
   cai_error error;
@@ -4845,6 +4858,7 @@ static int run_chatgpt_smith_review_regression(void) {
   char make_hello_path[PATH_MAX];
   char sessions_root[] = "/tmp/cai-smith-review-sessions-XXXXXX";
   char workspace[] = "/tmp/cai-smith-review-e2e-XXXXXX";
+  const char *mcp_url;
   int cleanup_failed;
   int rc;
   int sessions_root_created;
@@ -4855,11 +4869,15 @@ static int run_chatgpt_smith_review_regression(void) {
   cai_error_init(&error);
   cai_client_config_init(&client_config);
   cai_agent_local_session_store_config_init(&store_config);
+  cai_mcp_streamable_http_client_config_init(&mcp_client_config);
+  memset(&mcp_tool_config, 0, sizeof(mcp_tool_config));
   memset(&store, 0, sizeof(store));
   memset(&events, 0, sizeof(events));
   memset(&review_events, 0, sizeof(review_events));
   auth = NULL;
   client = NULL;
+  mcp_client = NULL;
+  mcp_clients[0] = NULL;
   review = NULL;
   runtime = NULL;
   cleanup_failed = 0;
@@ -4867,9 +4885,18 @@ static int run_chatgpt_smith_review_regression(void) {
   skipped = 0;
   store_open = 0;
   workspace_created = 0;
+  mcp_url = require_mcp ? getenv("CAI_SMITH_E2E_MCP_URL") : NULL;
 
-  if (snprintf(build_prompt, sizeof(build_prompt), "%s%s%s", build_prompt_1,
-               build_prompt_2, build_prompt_3) >= (int)sizeof(build_prompt) ||
+  if (require_mcp && (mcp_url == NULL || mcp_url[0] == '\0')) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith MCP review E2E requires an MCP URL");
+    goto done;
+  }
+
+  if (snprintf(build_prompt, sizeof(build_prompt), "%s%s%s%s", build_prompt_1,
+               build_prompt_2, build_prompt_3,
+               require_mcp ? mcp_instruction : "") >=
+          (int)sizeof(build_prompt) ||
       snprintf(follow_up_prompt, sizeof(follow_up_prompt), "%s%s",
                follow_up_prompt_1,
                follow_up_prompt_2) >= (int)sizeof(follow_up_prompt)) {
@@ -4948,6 +4975,22 @@ static int run_chatgpt_smith_review_regression(void) {
     print_error("Smith review ChatGPT client open", rc, &error);
     goto done;
   }
+  if (require_mcp) {
+    mcp_client_config.url = mcp_url;
+    mcp_client_config.client_name = "cai-smith-review-live-e2e";
+    mcp_client_config.timeout_ms = 10000L;
+    rc = cai_mcp_streamable_http_client_open(&mcp_client_config, &mcp_client,
+                                             &error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_client_initialize(mcp_client, &error);
+    }
+    if (rc != CAI_OK) {
+      print_error("Smith review MCP client open", rc, &error);
+      goto done;
+    }
+    mcp_clients[0] = mcp_client;
+    mcp_tool_config.name_prefix = "mcp_";
+  }
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
   runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
@@ -4962,6 +5005,11 @@ static int run_chatgpt_smith_review_regression(void) {
   runtime_config.event_context = &events;
   runtime_config.review_event_callback = integration_smith_runtime_event;
   runtime_config.review_event_context = &review_events;
+  if (require_mcp) {
+    runtime_config.mcp_clients = mcp_clients;
+    runtime_config.mcp_client_count = 1U;
+    runtime_config.mcp_tool_config = &mcp_tool_config;
+  }
   rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
   if (rc != CAI_OK) {
     print_error("Smith review runtime open", rc, &error);
@@ -4977,6 +5025,10 @@ static int run_chatgpt_smith_review_regression(void) {
   }
   if (!integration_text_contains(events.answer.buffer,
                                  "SMITH_REVIEW_PROJECT_COMMITTED") ||
+      (require_mcp &&
+       (!integration_text_contains(events.answer.buffer,
+                                   "SMITH_REVIEW_MCP_CONFIRMED") ||
+        events.mcp_echo_completed != 1)) ||
       events.terminal_started < 1 || events.terminal_completed < 1 ||
       events.response_completed < 2 ||
       !integration_run_program(git_identity, command_output,
@@ -4986,11 +5038,11 @@ static int run_chatgpt_smith_review_regression(void) {
                                sizeof(command_output)) ||
       command_output[0] != '\0') {
     fprintf(stderr,
-            "Smith review project evidence failed (terminal=%d/%d responses=%d "
-            "identity=%s status=%s answer=%s)\n",
-            events.terminal_started, events.terminal_completed,
-            events.response_completed, command_output, command_output,
-            events.answer.buffer);
+            "Smith review project evidence failed (mcp_echo=%d terminal=%d/%d "
+            "responses=%d identity=%s status=%s answer=%s)\n",
+            events.mcp_echo_completed, events.terminal_started,
+            events.terminal_completed, events.response_completed,
+            command_output, command_output, events.answer.buffer);
     rc = integration_set_error(
         &error, CAI_ERR_PROTOCOL,
         "Smith did not produce a clean, locally authored project commit");
@@ -5090,6 +5142,7 @@ static int run_chatgpt_smith_review_regression(void) {
 done:
   cai_agent_runtime_close(review);
   cai_agent_runtime_close(runtime);
+  cai_mcp_client_destroy(mcp_client);
   cai_client_close(client);
   cai_chatgpt_auth_close(auth);
   if (store_open) {
@@ -5737,6 +5790,7 @@ int main(void) {
   const char *chatgpt_subscription;
   const char *chatgpt_smith;
   const char *chatgpt_smith_review;
+  const char *chatgpt_smith_mcp_review;
   const char *chatgpt_smith_terra;
   const char *chatgpt_defaults;
   const char *e2e;
@@ -5779,7 +5833,13 @@ int main(void) {
   chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
   chatgpt_smith = getenv("CAI_INTEGRATION_CHATGPT_SMITH_E2E");
   chatgpt_smith_review = getenv("CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E");
+  chatgpt_smith_mcp_review =
+      getenv("CAI_INTEGRATION_CHATGPT_SMITH_MCP_REVIEW_E2E");
   chatgpt_smith_terra = getenv("CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE");
+  /* The dedicated MCP acceptance selector wins over inherited live selectors. */
+  if (integration_flag_enabled(chatgpt_smith_mcp_review)) {
+    return run_chatgpt_smith_review_regression(1);
+  }
   if (integration_flag_enabled(chatgpt_smith_terra)) {
     return run_chatgpt_smith_runtime_regression(0);
   }
@@ -5787,7 +5847,7 @@ int main(void) {
     return run_chatgpt_smith_runtime_regression(1);
   }
   if (integration_flag_enabled(chatgpt_smith_review)) {
-    return run_chatgpt_smith_review_regression();
+    return run_chatgpt_smith_review_regression(0);
   }
   if (integration_flag_enabled(chatgpt_subscription)) {
     return run_chatgpt_subscription_session_regression();

@@ -1743,6 +1743,19 @@ if(CAI_BUILD_TESTS)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
+    add_test(NAME cai_integration_chatgpt_smith_mcp_review_e2e
+      COMMAND /bin/sh
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/smith_mcp_live_e2e.sh"
+        $<TARGET_FILE:cai_mcp_http_server>
+        "${CMAKE_COMMAND}" -E env
+          "CAI_INTEGRATION_CHATGPT_SMITH_MCP_REVIEW_E2E=1"
+          "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
+          $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_smith_mcp_review_e2e PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
     add_test(NAME cai_integration_chatgpt_smith_terra_smoke
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1"
@@ -1923,6 +1936,21 @@ if(CAI_BUILD_TESTS)
           "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_smith.lua")
       set_tests_properties(cai_lua_smith_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_SMITH_E2E_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
+      add_test(NAME cai_lua_smith_mcp_e2e
+        COMMAND "/bin/sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/smith_mcp_live_e2e.sh"
+          $<TARGET_FILE:cai_mcp_http_server>
+          "/bin/sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_rock_e2e.sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_smith.lua")
+      set_tests_properties(cai_lua_smith_mcp_e2e PROPERTIES
         LABELS integration
         ENVIRONMENT "${CAI_LUA_SMITH_E2E_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
