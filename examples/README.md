@@ -287,17 +287,19 @@ not enabled by default. Pass `--exec-tool-dir <path>` to register
 that path. `list_files` reports `text_candidate`/`binary_candidate` hints for
 regular files, and `read_file` only returns UTF-8 text without unsafe control
 characters.
-With ChatGPT subscription auth, the example defaults to `gpt-5.4-mini` because
-`gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
-mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
+The example uses CAI's ChatGPT subscription auth by default and selects
+`gpt-5.4-mini`; run `make chatgpt-login` first. `gpt-5-nano` is not accepted
+by the ChatGPT/Codex backend. Override the model with
+`CAI_TERMINAL_CHAT_MODEL` or `--model`. API-key mode remains available only
+through the explicit `CAI_TERMINAL_CHAT_API_KEY=1`/`--api-key` opt-in.
 
 ```sh
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
-make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1
+make -C examples run-lua-terminal-chat
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
-make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+make -C examples run-lua-terminal-chat CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
+make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
+make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 Optional local todo isolation:
@@ -305,7 +307,7 @@ Optional local todo isolation:
 ```sh
 CAI_LUA_TODO_STORE=/tmp/cai-lua-todo.json \
 CAI_LUA_TODO_LOCK=/tmp/cai-lua-todo.lock \
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 ## Lua Conversation
@@ -347,17 +349,19 @@ inspection is also opt-in; pass `--read-tool-dir <path>` to register
 `list_files` and `read_file` rooted to that path. `list_files` reports
 `text_candidate`/`binary_candidate` hints for regular files, and `read_file`
 only returns UTF-8 text without unsafe control characters.
-With ChatGPT subscription auth, the example defaults to `gpt-5.4-mini` because
-`gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
-mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
+The example uses CAI's ChatGPT subscription auth by default and selects
+`gpt-5.4-mini`; run `make chatgpt-login` first. `gpt-5-nano` is not accepted
+by the ChatGPT/Codex backend. Override the model with
+`CAI_TERMINAL_CHAT_MODEL` or `--model`. API-key mode remains available only
+through the explicit `CAI_TERMINAL_CHAT_API_KEY=1`/`--api-key` opt-in.
 
 ```sh
-OPENAI_API_KEY=... make -C examples run-terminal-chat
-make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1
-make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
-OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
-OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+make -C examples run-terminal-chat
+make -C examples run-terminal-chat CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
+make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
+make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 Optional local todo isolation:
@@ -365,7 +369,7 @@ Optional local todo isolation:
 ```sh
 CAI_TODO_STORE=/tmp/cai-todo.json \
 CAI_TODO_LOCK=/tmp/cai-todo.lock \
-OPENAI_API_KEY=... make -C examples run-terminal-chat
+OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 ## Mike Mind

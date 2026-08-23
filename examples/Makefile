@@ -17,6 +17,7 @@ CAI_READ_TOOL_DIR ?= $(abspath $(ROOT))
 CAI_CHATGPT_AUTH ?=
 CAI_CHATGPT_AUTH_JSON ?=
 CAI_CHATGPT_LOGIN_PORT ?= 1455
+CAI_TERMINAL_CHAT_API_KEY ?=
 CAI_TERMINAL_CHAT_MODEL ?=
 CAI_SMITH_MODEL ?=
 CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS ?=
@@ -75,7 +76,14 @@ endif
 ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_SPEND_USD)),)
 TERMINAL_LIMIT_ARGS += --max-spend-usd "$(CAI_TERMINAL_CHAT_MAX_SPEND_USD)"
 endif
-TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS) $(TERMINAL_LIMIT_ARGS)
+ifneq ($(strip $(CAI_TERMINAL_CHAT_API_KEY)),)
+TERMINAL_CHAT_AUTH_ARGS := --api-key
+else ifneq ($(strip $(CAI_CHATGPT_AUTH_JSON)),)
+TERMINAL_CHAT_AUTH_ARGS := --chatgpt-auth-json "$(CAI_CHATGPT_AUTH_JSON)"
+else
+TERMINAL_CHAT_AUTH_ARGS := --chatgpt-auth
+endif
+TERMINAL_CHAT_ARGS := $(TERMINAL_CHAT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS) $(TERMINAL_LIMIT_ARGS)
 SMITH_TERMINAL_ARGS := $(CHATGPT_AUTH_ARGS) $(SMITH_MODEL_ARGS)
 
 define run_c_example
@@ -105,14 +113,16 @@ help:
 		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
 		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
-		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
-		'    run-terminal-chat defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
+		'  make run-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
+		'    run-terminal-chat uses CAI ChatGPT auth by default; set CAI_TERMINAL_CHAT_API_KEY=1 only for explicit API-key use.' \
+		'    It defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
 		'  make run-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna]' \
 		'  make run-mike-mind' \
 		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
-		'    run-lua-terminal-chat defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
+		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
+		'    run-lua-terminal-chat uses CAI ChatGPT auth by default; set CAI_TERMINAL_CHAT_API_KEY=1 only for explicit API-key use.' \
+		'    It defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
 		'  make run-lua-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \

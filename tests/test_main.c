@@ -3360,8 +3360,6 @@ static void test_terminal_workdir_pinning(test_state *state) {
   for (i = 0; rc == CAI_OK && i < 5 &&
               strstr(writer.buffer, "\"completed\":true") == NULL;
        i++) {
-    writer.buffer[0] = '\0';
-    writer.length = 0U;
     rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                                "{\"session_id\":\"terminal-1\","
                                "\"yield_time_ms\":100}",
