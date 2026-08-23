@@ -262,6 +262,8 @@ do
     "Lua client open_response_text_source method missing")
   assert(type(client_methods.new_smith_runtime) == "function",
     "Lua client new_smith_runtime method missing")
+  assert(type(client_methods.new_agent_runtime) == "function",
+    "Lua client new_agent_runtime method missing")
   assert(type(client_methods.new_smith_review_runtime) == "function",
     "Lua client new_smith_review_runtime method missing")
   assert(type(registry["cai.agent_runtime"].__index.submit_review) == "function",
@@ -947,7 +949,36 @@ do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
   end
+  assert_throws(function()
+    dummy_client:new_agent_runtime({
+      workspace_directory = ".",
+      event_callback = function() end,
+    })
+  end, "Lua custom runtimes must require a preset table before retaining callbacks")
   native_store_test.reset_sessions()
+  local custom_runtime = assert_ok(dummy_client:new_agent_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+    preset = {
+      name = "vectis-engineer",
+      prompt_version = "vectis-engineer-1",
+      default_identity = "Vectis Engineer",
+      default_model = cai.MODEL_GPT_5_6_LUNA,
+      default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+      default_reasoning_summary = cai.REASONING_SUMMARY_CONCISE,
+      developer_instructions = "You are {{agent_identity}}, Vectis' coding agent.",
+      tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+    },
+  }))
+  assert_eq(custom_runtime:state(), "idle", "Lua custom preset initial state")
+  local custom_chunks = {}
+  assert_ok(custom_runtime:export_markdown(function(chunk)
+    custom_chunks[#custom_chunks + 1] = chunk
+    return true
+  end), nil, "Lua custom preset export")
+  assert(table.concat(custom_chunks):find("vectis-engineer", 1, true),
+    "Lua custom preset export metadata")
+  custom_runtime:close()
   local native_session_store = assert(native_store_test.new_agent_session())
   local wrong_session_store = assert(native_store_test.new_mcp_session())
   assert_not_ok(cai.native_store("agent_session", nil),

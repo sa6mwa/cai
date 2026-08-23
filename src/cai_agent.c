@@ -85,6 +85,8 @@ typedef struct cai_json_root_array_check {
 typedef struct cai_session_state_doc {
   long long version;
   char *model;
+  char *preset_name;
+  char *preset_prompt_version;
   char *previous_response_id;
   char *conversation_id;
   char *goal_objective;
@@ -107,6 +109,10 @@ static const lonejson_field cai_session_state_fields[] = {
     LONEJSON_FIELD_I64_REQ(cai_session_state_doc, version, "version"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, model,
                                           "model"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, preset_name,
+                                          "preset_name"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
+        cai_session_state_doc, preset_prompt_version, "preset_prompt_version"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
         cai_session_state_doc, previous_response_id, "previous_response_id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc,
@@ -922,6 +928,8 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->previous_response_id = NULL;
   impl->conversation_id = NULL;
   impl->state_model = NULL;
+  impl->state_preset_name = NULL;
+  impl->state_preset_prompt_version = NULL;
   impl->goal_objective = NULL;
   impl->goal_status = NULL;
   impl->goal_token_budget = 0LL;
@@ -2387,6 +2395,8 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->previous_response_id);
   cai_free_mem(allocator, impl->conversation_id);
   cai_free_mem(allocator, impl->state_model);
+  cai_free_mem(allocator, impl->state_preset_name);
+  cai_free_mem(allocator, impl->state_preset_prompt_version);
   cai_free_mem(allocator, impl->goal_objective);
   cai_free_mem(allocator, impl->goal_status);
   cai_free_mem(allocator, impl);
@@ -5474,6 +5484,9 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.model = CAI_SESSION_IMPL(session)->state_model != NULL
                   ? CAI_SESSION_IMPL(session)->state_model
                   : CAI_SESSION_AGENT_IMPL(session)->model;
+  doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
+  doc.preset_prompt_version =
+      CAI_SESSION_IMPL(session)->state_preset_prompt_version;
   doc.goal_objective = CAI_SESSION_IMPL(session)->goal_objective;
   doc.goal_status = CAI_SESSION_IMPL(session)->goal_status;
   doc.goal_token_budget = CAI_SESSION_IMPL(session)->goal_token_budget;
@@ -5566,6 +5579,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   int has_history_json;
   int has_next_history;
   char *next_state_model;
+  char *next_state_preset_name;
+  char *next_state_preset_prompt_version;
   char *next_goal_objective;
   char *next_goal_status;
   int rc;
@@ -5580,6 +5595,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   has_history_json = 0;
   has_next_history = 0;
   next_state_model = NULL;
+  next_state_preset_name = NULL;
+  next_state_preset_prompt_version = NULL;
   next_goal_objective = NULL;
   next_goal_status = NULL;
   rc = CAI_OK;
@@ -5624,6 +5641,24 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     if (next_state_model == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to preserve imported session model");
+      goto done;
+    }
+  }
+  if ((doc.preset_name == NULL) != (doc.preset_prompt_version == NULL)) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has incomplete preset metadata");
+    goto done;
+  }
+  if (doc.preset_name != NULL) {
+    next_state_preset_name = cai_strdup(
+        &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.preset_name);
+    next_state_preset_prompt_version =
+        cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                   doc.preset_prompt_version);
+    if (next_state_preset_name == NULL ||
+        next_state_preset_prompt_version == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve imported session preset");
       goto done;
     }
   }
@@ -5674,6 +5709,17 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                  CAI_SESSION_IMPL(session)->state_model);
     CAI_SESSION_IMPL(session)->state_model = next_state_model;
     next_state_model = NULL;
+  }
+  if (rc == CAI_OK) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_preset_name);
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_preset_prompt_version);
+    CAI_SESSION_IMPL(session)->state_preset_name = next_state_preset_name;
+    CAI_SESSION_IMPL(session)->state_preset_prompt_version =
+        next_state_preset_prompt_version;
+    next_state_preset_name = NULL;
+    next_state_preset_prompt_version = NULL;
   }
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
@@ -5728,6 +5774,10 @@ done:
     next_history.cleanup(&next_history);
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_state_model);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_state_preset_name);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_state_preset_prompt_version);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_goal_objective);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_goal_status);

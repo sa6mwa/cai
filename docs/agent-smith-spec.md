@@ -34,6 +34,56 @@ Smith is a preset, not the name of CAI’s generic agent runtime. Future presets
 may select different prompts, tool exposure, policies, and model defaults over
 the same runtime.
 
+### 1.1 Host-defined presets
+
+CAI exposes `cai_agent_preset` as the declarative profile for the shared agent
+runtime. `cai_agent_preset_from_smith()` initializes the built-in Smith policy;
+a host may copy it, give it a new stable name/prompt revision, replace either
+developer prompt, alter defaults, and select its tool capabilities. A custom
+ordinary prompt is a complete template and may contain the literal
+`{{agent_identity}}`, which CAI substitutes without interpreting any other
+template syntax. Repository instructions and the host extension remain ordered
+after that prompt. When an ordinary template is omitted, CAI renders its
+built-in prompt with an exact tool contract for the preset's selected
+capabilities, so narrowing a Smith-derived preset cannot advertise disabled
+tools. A custom reviewer prompt must retain the review JSON-report contract
+when `supports_review` is enabled.
+
+`cai_agent_runtime_config.preset_descriptor` snapshots the descriptor during
+open, so C callers may use stack storage and the Lua facade may accept an
+ordinary table safely. Smith remains the built-in `preset = "smith"`
+convenience. The durable checkpoint and Markdown handover record the selected
+preset name and prompt revision. On resume, CAI rejects a checkpoint that
+names a different preset or prompt revision; legacy checkpoints without this
+metadata remain resumable and are upgraded at their next checkpoint.
+
+For example, a host can derive a Vectis profile without duplicating Smith's
+tool policy:
+
+```c
+cai_agent_preset preset;
+cai_agent_runtime_config config;
+
+cai_agent_preset_from_smith(&preset);
+preset.name = "vectis-engineer";
+preset.prompt_version = "vectis-engineer-1";
+preset.default_identity = "Vectis Engineer";
+preset.developer_instructions =
+    "You are {{agent_identity}}, the Vectis coding agent.";
+
+cai_agent_runtime_config_init(&config);
+config.workspace_directory = project_directory;
+config.preset_descriptor = &preset; /* copied by cai_agent_runtime_open */
+```
+
+The Lua equivalent is `client:new_agent_runtime { preset = { ... } }`. Its
+`preset` table uses the descriptor field names above and the
+`cai.AGENT_PRESET_TOOL_*` capability constants. The binding only borrows that
+table while calling into CAI; the opened runtime owns independent C copies.
+Both surfaces accept `review_developer_instructions`,
+`review_tool_capabilities`, and `supports_review` for a profile that may launch
+an isolated reviewer.
+
 This first delivery deliberately does **not** implement Codex-style
 multi-agent/worktree coordination or a `wait_agent` tool. Remote capabilities
 belong behind MCP or host-registered CAI tools. The only asynchronous execution

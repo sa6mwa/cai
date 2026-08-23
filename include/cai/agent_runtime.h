@@ -6,6 +6,7 @@
 
 #include <cai/cai.h>
 #include <cai/session_store.h>
+#include <cai/smith.h>
 #include <cai/tools/terminal.h>
 
 #ifdef __cplusplus
@@ -134,7 +135,7 @@ typedef int (*cai_agent_runtime_event_fn)(void *context,
                                           const cai_agent_runtime_event *event,
                                           cai_error *error);
 
-/** Explicit target for an isolated Smith review run. */
+/** Explicit target for an isolated preset review run. */
 typedef enum cai_agent_review_target {
   /** Review staged, unstaged, and untracked workspace changes. */
   CAI_AGENT_REVIEW_UNCOMMITTED = 1,
@@ -166,12 +167,19 @@ void cai_agent_review_request_init(cai_agent_review_request *request);
 /** Configuration for a host-neutral CAI agent runtime. */
 typedef struct cai_agent_runtime_config {
   /**
-   * Preset name; NULL selects smith. Supported values are smith and
-   * smith-review. The review preset is isolated and excludes file-mutation,
-   * goal, MCP, and image-generation tools. It retains Smith's managed
-   * terminal under the embedding host's normal terminal policy.
+   * Built-in preset name; NULL selects smith. Custom profiles use
+   * preset_descriptor instead. Supported built-in values are smith and
+   * smith-review.
    */
   const char *preset;
+  /**
+   * Optional host-defined descriptor. CAI snapshots it during open, so the
+   * caller may use stack or Lua-table-backed input. It takes precedence over
+   * the built-in policy. Combine it with preset = "smith-review" only to open
+   * that descriptor as an isolated review runtime; otherwise leave preset
+   * NULL. Combining it with preset = "smith" is invalid.
+   */
+  const cai_agent_preset *preset_descriptor;
   /** Canonical workspace root. Required by smith file tools. */
   const char *workspace_directory;
   /** Optional identity overriding Cai Smith. */
@@ -269,15 +277,15 @@ int cai_agent_runtime_open(cai_client *client,
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 /**
- * Submit an explicit Codex-style review target to an idle smith-review
+ * Submit an explicit Codex-style review target to an idle isolated review
  * runtime. The request is rendered as the review turn's user instruction.
  */
 int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
                                     const cai_agent_review_request *request,
                                     cai_error *error);
 /**
- * Launch a fresh, isolated Smith reviewer derived from a quiescent ordinary
- * Smith runtime and submit its one review request. A recovered durable review
+ * Launch a fresh, isolated reviewer derived from a quiescent ordinary preset
+ * runtime and submit its one review request. A recovered durable review
  * pause is the sole exception: it may launch a replacement review while its
  * held queued turns remain paused. The returned child has its own session and
  * wakeup descriptor; the host pumps and renders it just like any other

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "preset": "smith",
-  "rendered_asset_version": "smith-3",
+  "rendered_asset_version": "smith-4",
   "identity_placeholder": "{{agent_identity}}",
   "upstream": {
     "project": "openai/codex",

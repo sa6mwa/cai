@@ -96,6 +96,12 @@ typedef struct cai_session_impl {
   char *conversation_id;
   /** Model recorded in the imported/exported portable session state. */
   char *state_model;
+  /** Preset identity recorded in the imported/exported portable session state.
+   */
+  char *state_preset_name;
+  /** Prompt revision recorded in the imported/exported portable session state.
+   */
+  char *state_preset_prompt_version;
   char *goal_objective;
   char *goal_status;
   long long goal_token_budget;

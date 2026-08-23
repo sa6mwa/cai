@@ -24257,7 +24257,8 @@ static void test_smith_profile(test_state *state) {
       "\"syntax\":\"lark\"",
       "This is a FREEFORM tool, so do not wrap the patch in JSON.",
       "Make workspace edits only with apply_patch.",
-      "Create a goal only when the user or system/developer instructions"};
+      "If goal tools are present, create a goal only when the user or "
+      "system/developer instructions"};
   static const char *forbidden[] = {"\"name\":\"shell_command\""};
   static const char *none_required[] = {
       "POST /v1/responses HTTP/", "\"model\":\"gpt-5.6-luna\"",
@@ -24275,6 +24276,14 @@ static void test_smith_profile(test_state *state) {
   http_mock_client mock;
   cai_smith_config config;
   cai_terminal_tool_config terminal_config;
+  cai_agent_preset preset;
+  cai_agent_preset_config preset_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store runtime_store;
+  runtime_session_store_state runtime_store_state;
+  cai_agent_runtime *runtime;
+  cai_agent_runtime *review;
+  cai_agent_review_request review_request;
   cai_agent *agent;
   cai_response *response;
   cai_error error;
@@ -24282,6 +24291,10 @@ static void test_smith_profile(test_state *state) {
   cai_error_init(&error);
   agent = NULL;
   response = NULL;
+  runtime = NULL;
+  review = NULL;
+  memset(&runtime_store, 0, sizeof(runtime_store));
+  memset(&runtime_store_state, 0, sizeof(runtime_store_state));
   cai_smith_config_init(&config);
   expect_str(state, "smith_prompt_version", cai_smith_prompt_version(),
              CAI_SMITH_PROMPT_VERSION);
@@ -24396,6 +24409,156 @@ static void test_smith_profile(test_state *state) {
   cai_error_init(&error);
   if (agent != NULL) {
     cai_agent_destroy(agent);
+  }
+  memset(&preset, 0, sizeof(preset));
+  preset.name = "vectis-engineer";
+  preset.prompt_version = "vectis-engineer-1";
+  preset.default_identity = "Vectis Engineer";
+  preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  preset.default_reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
+  preset.developer_instructions =
+      "You are {{agent_identity}}, the Vectis coding agent.";
+  preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  cai_agent_preset_config_init(&preset_config);
+  preset_config.workspace_directory = "/tmp";
+  preset_config.developer_instructions_extension = "Use Vectis conventions.";
+  expect_int(state, "custom_preset_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_substr(state, "custom_preset_identity",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "You are Vectis Engineer, the Vectis coding agent.");
+    expect_substr(state, "custom_preset_extension",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "Use Vectis conventions.");
+    expect_int(state, "custom_preset_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    expect_str(state, "custom_preset_tool",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 0U),
+               CAI_READ_DEFAULT_TOOL_NAME);
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.preset_descriptor = &preset;
+  runtime_store.checkpoint = test_runtime_session_store_checkpoint;
+  runtime_store.load_latest = test_runtime_session_store_load;
+  runtime_store.append_event = test_runtime_session_store_append_event;
+  runtime_store.load_events_after =
+      test_runtime_session_store_load_events_after;
+  runtime_store.context = &runtime_store_state;
+  runtime_config.session_store = &runtime_store;
+  expect_int(
+      state, "custom_preset_runtime_open",
+      cai_agent_runtime_open(mock.client, &runtime_config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    expect_substr(state, "custom_preset_checkpoint_name",
+                  runtime_store_state.saved_checkpoint,
+                  "\"preset_name\":\"vectis-engineer\"");
+    expect_substr(state, "custom_preset_checkpoint_revision",
+                  runtime_store_state.saved_checkpoint,
+                  "\"preset_prompt_version\":\"vectis-engineer-1\"");
+    cai_agent_review_request_init(&review_request);
+    review_request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "custom_preset_review_rejected",
+               cai_agent_runtime_start_review(runtime, &review_request, &review,
+                                              &error),
+               CAI_ERR_INVALID);
+    if (review != NULL) {
+      cai_agent_runtime_close(review);
+      review = NULL;
+    }
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  preset.supports_review = 1;
+  preset.review_tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  preset.review_developer_instructions =
+      "You are {{agent_identity}}, a Vectis reviewer. Return JSON only.";
+  expect_int(state, "custom_preset_review_open",
+             cai_client_new_preset_review_agent(mock.client, &preset,
+                                                &preset_config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_substr(state, "custom_preset_review_identity",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "You are Vectis Engineer, a Vectis reviewer.");
+    expect_int(state, "custom_preset_review_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  preset.review_tool_capabilities |= CAI_AGENT_PRESET_TOOL_APPLY_PATCH;
+  expect_int(state, "custom_preset_review_patch_rejected",
+             cai_client_new_preset_review_agent(mock.client, &preset,
+                                                &preset_config, &agent, &error),
+             CAI_ERR_INVALID);
+  preset.review_tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_APPLY_PATCH;
+  cai_agent_preset_from_smith(&preset);
+  preset.name = "vectis-read-only";
+  preset.prompt_version = "vectis-read-only-1";
+  preset.default_identity = "Vectis Read Only";
+  preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  expect_int(state, "custom_preset_builtin_prompt_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_substr(state, "custom_preset_builtin_prompt_read",
+                  CAI_AGENT_IMPL(agent)->developer_instructions, "read_file");
+    if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "apply_patch") !=
+            NULL ||
+        strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "exec_command") !=
+            NULL) {
+      test_fail(state, "custom_preset_builtin_prompt_capabilities",
+                "built-in prompt advertised a disabled tool");
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  preset.tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_TERMINAL;
+  preset_config.disable_terminal = 1;
+  expect_int(state, "custom_preset_terminal_disabled_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "custom_preset_terminal_disabled_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "exec_command") !=
+            NULL ||
+        strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "write_stdin") !=
+            NULL) {
+      test_fail(state, "custom_preset_terminal_disabled_prompt",
+                "built-in prompt advertised a host-disabled terminal");
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  preset.tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
+  preset_config.disable_terminal = 0;
+  preset_config.model = CAI_MODEL_O3_MINI;
+  expect_int(state, "custom_preset_nonimage_model_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "custom_preset_nonimage_model_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "view_image") !=
+        NULL) {
+      test_fail(state, "custom_preset_nonimage_model_prompt",
+                "built-in prompt advertised an unavailable image viewer");
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
   }
   http_mock_client_close(state, "smith_mock", &mock);
   cai_error_cleanup(&error);
@@ -24709,8 +24872,11 @@ static void test_smith_review_parent_handoff(test_state *state) {
   static const char *review_required[] = {
       "POST /v1/responses HTTP/",
       "Review the current code changes (staged, unstaged, and untracked files)",
-      "You are Cai Smith, a code reviewer", "\"effort\":\"medium\"",
-      "\"summary\":\"detailed\""};
+      "You are Cai Smith, a code reviewer",
+      "\"effort\":\"medium\"",
+      "\"summary\":\"detailed\"",
+      "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\""};
   static const char *parent_required[] = {
       "POST /v1/responses HTTP/", "act on the review findings",
       "<review_handoff",          "No qualifying defects.",
@@ -24725,6 +24891,7 @@ static void test_smith_review_parent_handoff(test_state *state) {
        "OK", "text/event-stream", NULL, parent_response}};
   http_mock_client mock;
   cai_agent_runtime_config config;
+  cai_agent_preset preset;
   cai_agent_review_request request;
   cai_agent_runtime *parent;
   cai_agent_runtime *review;
@@ -24752,8 +24919,19 @@ static void test_smith_review_parent_handoff(test_state *state) {
   cai_error_init(&error);
   parent = NULL;
   review = NULL;
+  memset(&preset, 0, sizeof(preset));
+  preset.name = "review-terminal-only";
+  preset.prompt_version = "review-terminal-only-1";
+  preset.default_identity = "Cai Smith";
+  preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  preset.review_tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
+      CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
+  preset.supports_review = 1;
   cai_agent_runtime_config_init(&config);
   config.workspace_directory = "/tmp";
+  config.preset_descriptor = &preset;
   config.model = CAI_MODEL_GPT_5_6_LUNA;
   config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;

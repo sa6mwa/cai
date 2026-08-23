@@ -269,10 +269,22 @@ struct cai_agent_runtime {
   char *smith_review_reasoning_effort;
   char *smith_review_reasoning_summary;
   char *smith_developer_instructions_extension;
+  char *preset_name;
+  char *preset_prompt_version;
+  char *preset_default_identity;
+  char *preset_default_model;
+  char *preset_default_reasoning_effort;
+  char *preset_default_reasoning_summary;
+  char *preset_developer_instructions;
+  char *preset_review_developer_instructions;
+  unsigned long preset_tool_capabilities;
+  unsigned long preset_review_tool_capabilities;
+  int preset_supports_review;
   cai_terminal_tool_config smith_terminal_config;
   char *smith_terminal_default_workdir;
   char *smith_terminal_shell_path;
   int smith_has_terminal_config;
+  int smith_disable_terminal;
   int smith_disable_default_session_store;
   cai_agent_runtime_event_fn review_event_callback;
   void *review_event_context;
@@ -658,6 +670,14 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->smith_review_reasoning_effort);
   cai_free_mem(NULL, runtime->smith_review_reasoning_summary);
   cai_free_mem(NULL, runtime->smith_developer_instructions_extension);
+  cai_free_mem(NULL, runtime->preset_name);
+  cai_free_mem(NULL, runtime->preset_prompt_version);
+  cai_free_mem(NULL, runtime->preset_default_identity);
+  cai_free_mem(NULL, runtime->preset_default_model);
+  cai_free_mem(NULL, runtime->preset_default_reasoning_effort);
+  cai_free_mem(NULL, runtime->preset_default_reasoning_summary);
+  cai_free_mem(NULL, runtime->preset_developer_instructions);
+  cai_free_mem(NULL, runtime->preset_review_developer_instructions);
   cai_free_mem(NULL, runtime->smith_terminal_default_workdir);
   cai_free_mem(NULL, runtime->smith_terminal_shell_path);
   runtime->smith_identity = NULL;
@@ -668,20 +688,73 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   runtime->smith_review_reasoning_effort = NULL;
   runtime->smith_review_reasoning_summary = NULL;
   runtime->smith_developer_instructions_extension = NULL;
+  runtime->preset_name = NULL;
+  runtime->preset_prompt_version = NULL;
+  runtime->preset_default_identity = NULL;
+  runtime->preset_default_model = NULL;
+  runtime->preset_default_reasoning_effort = NULL;
+  runtime->preset_default_reasoning_summary = NULL;
+  runtime->preset_developer_instructions = NULL;
+  runtime->preset_review_developer_instructions = NULL;
+  runtime->preset_tool_capabilities = 0UL;
+  runtime->preset_review_tool_capabilities = 0UL;
+  runtime->preset_supports_review = 0;
   runtime->smith_terminal_default_workdir = NULL;
   runtime->smith_terminal_shell_path = NULL;
   memset(&runtime->smith_terminal_config, 0,
          sizeof(runtime->smith_terminal_config));
   runtime->smith_has_terminal_config = 0;
+  runtime->smith_disable_terminal = 0;
 }
 
-static int cai_runtime_capture_smith_profile(
+static int cai_runtime_capture_preset_profile(
     cai_agent_runtime *runtime, const cai_agent_runtime_config *config,
+    const cai_agent_preset *preset,
     const cai_terminal_tool_config *terminal_config, cai_error *error) {
   int rc;
 
-  rc = cai_runtime_copy_optional_string(config->agent_identity,
-                                        &runtime->smith_identity, error);
+  rc = cai_runtime_copy_string(preset->name, &runtime->preset_name, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_string(preset->prompt_version,
+                                 &runtime->preset_prompt_version, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_string(preset->default_identity,
+                                 &runtime->preset_default_identity, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_string(preset->default_model,
+                                 &runtime->preset_default_model, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        preset->default_reasoning_effort,
+        &runtime->preset_default_reasoning_effort, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        preset->default_reasoning_summary,
+        &runtime->preset_default_reasoning_summary, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        preset->developer_instructions, &runtime->preset_developer_instructions,
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        preset->review_developer_instructions,
+        &runtime->preset_review_developer_instructions, error);
+  }
+  if (rc == CAI_OK) {
+    runtime->preset_tool_capabilities = preset->tool_capabilities;
+    runtime->preset_review_tool_capabilities = preset->review_tool_capabilities;
+    runtime->preset_supports_review = preset->supports_review ? 1 : 0;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(config->agent_identity,
+                                          &runtime->smith_identity, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(config->model, &runtime->smith_model,
                                           error);
@@ -733,6 +806,7 @@ static int cai_runtime_capture_smith_profile(
     }
   }
   if (rc == CAI_OK) {
+    runtime->smith_disable_terminal = config->disable_terminal ? 1 : 0;
     runtime->smith_disable_default_session_store =
         config->disable_default_session_store;
     runtime->review_event_callback = config->review_event_callback != NULL
@@ -745,6 +819,51 @@ static int cai_runtime_capture_smith_profile(
     cai_runtime_clear_smith_profile(runtime);
   }
   return rc;
+}
+
+static int cai_runtime_set_session_preset_metadata(cai_agent_runtime *runtime,
+                                                   cai_error *error) {
+  cai_session_impl *session;
+  cai_allocator *allocator;
+  char *name;
+  char *prompt_version;
+
+  session = CAI_SESSION_IMPL(runtime->session);
+  allocator = &CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator;
+  name = cai_strdup(allocator, runtime->preset_name);
+  prompt_version = cai_strdup(allocator, runtime->preset_prompt_version);
+  if (name == NULL || prompt_version == NULL) {
+    cai_free_mem(allocator, name);
+    cai_free_mem(allocator, prompt_version);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve session preset metadata");
+  }
+  cai_free_mem(allocator, session->state_preset_name);
+  cai_free_mem(allocator, session->state_preset_prompt_version);
+  session->state_preset_name = name;
+  session->state_preset_prompt_version = prompt_version;
+  return CAI_OK;
+}
+
+static int cai_runtime_validate_resumed_preset(cai_agent_runtime *runtime,
+                                               cai_error *error) {
+  const cai_session_impl *session;
+
+  session = CAI_SESSION_IMPL(runtime->session);
+  if (session->state_preset_name == NULL &&
+      session->state_preset_prompt_version == NULL) {
+    return cai_runtime_set_session_preset_metadata(runtime, error);
+  }
+  if (session->state_preset_name == NULL ||
+      session->state_preset_prompt_version == NULL ||
+      strcmp(session->state_preset_name, runtime->preset_name) != 0 ||
+      strcmp(session->state_preset_prompt_version,
+             runtime->preset_prompt_version) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session checkpoint preset does not match runtime "
+                         "preset");
+  }
+  return CAI_OK;
 }
 
 static int cai_runtime_copy_review_scope(const char *scope, char **out,
@@ -3013,11 +3132,10 @@ static int cai_runtime_export_handover_markdown(cai_agent_runtime *runtime,
       "It preserves durable conversation context and active developer "
       "instructions available to this runtime.\n\n");
   (void)cai_runtime_export_literal(&exporter, "## Runtime\n\n");
-  (void)cai_runtime_export_write_metadata(
-      &exporter, "Preset",
-      runtime->review_mode ? CAI_SMITH_REVIEW_PRESET : CAI_SMITH_PRESET);
-  (void)cai_runtime_export_write_metadata(&exporter, "Smith prompt version",
-                                          cai_smith_prompt_version());
+  (void)cai_runtime_export_write_metadata(&exporter, "Preset",
+                                          runtime->preset_name);
+  (void)cai_runtime_export_write_metadata(&exporter, "Preset prompt version",
+                                          runtime->preset_prompt_version);
   (void)cai_runtime_export_write_metadata(&exporter, "Active model",
                                           agent->model);
   if (session->state_model != NULL && agent->model != NULL &&
@@ -3134,6 +3252,8 @@ int cai_agent_runtime_open(cai_client *client,
                            cai_agent_runtime **out, cai_error *error) {
   cai_agent_runtime *runtime;
   cai_smith_config smith;
+  cai_agent_preset builtin_preset;
+  const cai_agent_preset *preset;
   cai_terminal_tool_config terminal_config;
   int review_mode;
   int resumed_checkpoint;
@@ -3151,6 +3271,9 @@ int cai_agent_runtime_open(cai_client *client,
         error, CAI_ERR_INVALID,
         "agent runtime client and workspace directory are required");
   }
+  cai_agent_preset_from_smith(&builtin_preset);
+  preset = config->preset_descriptor != NULL ? config->preset_descriptor
+                                             : &builtin_preset;
   review_mode = config->preset != NULL &&
                 strcmp(config->preset, CAI_SMITH_REVIEW_PRESET) == 0;
   resumed_checkpoint = 0;
@@ -3158,16 +3281,35 @@ int cai_agent_runtime_open(cai_client *client,
       !review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID, "unsupported agent preset");
   }
-  if (review_mode && (config->resume_latest || config->session_id != NULL)) {
+  if (config->preset_descriptor != NULL && config->preset != NULL &&
+      strcmp(config->preset, CAI_SMITH_PRESET) == 0) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "custom preset descriptor cannot be combined with smith name");
+  }
+  if (preset->name == NULL || preset->name[0] == '\0' ||
+      preset->prompt_version == NULL || preset->prompt_version[0] == '\0' ||
+      preset->default_identity == NULL || preset->default_identity[0] == '\0' ||
+      preset->default_model == NULL || preset->default_model[0] == '\0') {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "agent preset requires name, prompt version, identity, and model");
+  }
+  if (review_mode && !preset->supports_review) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "Smith review runtime always uses a fresh session and "
-                         "cannot resume or name one");
+                         "agent preset does not support isolated review");
+  }
+  if (review_mode && (config->resume_latest || config->session_id != NULL)) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "isolated review runtime always uses a fresh session and cannot "
+        "resume or name one");
   }
   if (!review_mode && config->session_scope != NULL &&
       strncmp(config->session_scope, CAI_RUNTIME_REVIEW_SCOPE_PREFIX,
               sizeof(CAI_RUNTIME_REVIEW_SCOPE_PREFIX) - 1U) == 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "Smith review storage namespace is reserved");
+                         "isolated review storage namespace is reserved");
   }
   runtime = (cai_agent_runtime *)cai_alloc(NULL, sizeof(*runtime));
   if (runtime == NULL) {
@@ -3192,8 +3334,19 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
   runtime->review_mode = review_mode;
-  runtime->terminal_enabled = config->disable_terminal ? 0 : 1;
-  runtime->image_generation_enabled = config->enable_image_generation ? 1 : 0;
+  runtime->terminal_enabled =
+      !config->disable_terminal &&
+              ((review_mode ? preset->review_tool_capabilities
+                            : preset->tool_capabilities) &
+               CAI_AGENT_PRESET_TOOL_TERMINAL) != 0UL
+          ? 1
+          : 0;
+  runtime->image_generation_enabled =
+      config->enable_image_generation && !review_mode &&
+              (preset->tool_capabilities &
+               CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION) != 0UL
+          ? 1
+          : 0;
   runtime->mcp_client_count = config->mcp_client_count;
   if (pthread_mutex_init(&runtime->lock, NULL) != 0) {
     cai_free_mem(NULL, runtime);
@@ -3227,29 +3380,40 @@ int cai_agent_runtime_open(cai_client *client,
     runtime->terminal_event_callback = terminal_config.event_callback;
     runtime->terminal_event_context = terminal_config.event_context;
   }
-  rc = cai_runtime_capture_smith_profile(runtime, config, &terminal_config,
-                                         error);
+  rc = cai_runtime_capture_preset_profile(runtime, config, preset,
+                                          &terminal_config, error);
   terminal_config.event_callback = cai_runtime_terminal_event;
   terminal_config.event_context = runtime;
   smith.terminal_tool_config = &terminal_config;
-  smith.disable_terminal = config->disable_terminal;
+  smith.disable_terminal = runtime->terminal_enabled ? 0 : 1;
   if (rc == CAI_OK) {
-    rc = review_mode ? cai_client_new_smith_review_agent(client, &smith,
-                                                         &runtime->agent, error)
-                     : cai_client_new_smith_agent(client, &smith,
-                                                  &runtime->agent, error);
+    rc = review_mode ? cai_client_new_preset_review_agent(
+                           client, preset, &smith, &runtime->agent, error)
+                     : cai_client_new_preset_agent(client, preset, &smith,
+                                                   &runtime->agent, error);
   }
   if (rc == CAI_OK && review_mode &&
       (config->mcp_client_count > 0U || config->enable_image_generation)) {
-    rc = cai_set_error(
-        error, CAI_ERR_INVALID,
-        "Smith review runtime does not support MCP or image generation tools");
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "isolated review runtime does not support MCP or image "
+                       "generation tools");
   }
   if (rc == CAI_OK && config->mcp_client_count > 0U &&
       config->mcp_clients == NULL) {
     rc = cai_set_error(
         error, CAI_ERR_INVALID,
         "MCP client array is required when MCP clients are configured");
+  }
+  if (rc == CAI_OK && config->mcp_client_count > 0U &&
+      (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_MCP) == 0UL) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "agent preset does not enable MCP tools");
+  }
+  if (rc == CAI_OK && config->enable_image_generation &&
+      (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION) ==
+          0UL) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "agent preset does not enable image generation");
   }
   for (i = 0U; rc == CAI_OK && i < config->mcp_client_count; i++) {
     if (config->mcp_clients[i] == NULL) {
@@ -3261,14 +3425,20 @@ int cai_agent_runtime_open(cai_client *client,
                                                config->mcp_tool_config, error);
     }
   }
-  if (rc == CAI_OK && config->enable_image_generation) {
+  if (rc == CAI_OK && config->enable_image_generation &&
+      (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION) !=
+          0UL) {
     rc = cai_agent_add_simple_hosted_tool(
         runtime->agent, CAI_HOSTED_TOOL_IMAGE_GENERATION, error);
   }
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
   }
-  if (rc == CAI_OK && !review_mode) {
+  if (rc == CAI_OK) {
+    rc = cai_runtime_set_session_preset_metadata(runtime, error);
+  }
+  if (rc == CAI_OK && !review_mode &&
+      (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_GOAL) != 0UL) {
     rc = cai_agent_register_goal_tools(runtime->agent, runtime->session, error);
   }
   if (rc == CAI_OK) {
@@ -3321,6 +3491,9 @@ int cai_agent_runtime_open(cai_client *client,
           sizeof(session_id), &state, &runtime->applied_event_sequence, error);
       if (rc == CAI_OK && state != NULL) {
         rc = cai_session_import_state_source(runtime->session, state, error);
+        if (rc == CAI_OK) {
+          rc = cai_runtime_validate_resumed_preset(runtime, error);
+        }
         if (rc == CAI_OK) {
           if (CAI_SESSION_IMPL(runtime->session)->goal_status != NULL) {
             CAI_SESSION_IMPL(runtime->session)->goal_token_usage_baseline =
@@ -3624,7 +3797,7 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
   }
   if (runtime->review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "smith-review requires submit_review");
+                         "isolated review runtime requires submit_review");
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_TURN,
                                    error);
@@ -3792,12 +3965,14 @@ int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
     return rc;
   }
   if (!runtime->review_mode) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "review submissions require smith-review preset");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "review submissions require an isolated review runtime");
   }
   if (runtime->review_submitted) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "smith-review accepts exactly one review request");
+                         "isolated review runtime accepts exactly one review "
+                         "request");
   }
   text = NULL;
   rc = cai_runtime_render_review_request(request, &text, error);
@@ -3816,7 +3991,8 @@ static int cai_runtime_parent_review_ready_locked(cai_agent_runtime *parent,
                                                   cai_error *error) {
   if (parent->review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "smith-review cannot launch a nested review");
+                         "isolated review runtime cannot launch a nested "
+                         "review");
   }
   if (parent->stopping) {
     return cai_set_error(error, CAI_ERR_CANCELLED,
@@ -3842,6 +4018,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
                                    cai_agent_runtime **out_review,
                                    cai_error *error) {
   cai_agent_runtime_config config;
+  cai_agent_preset preset;
   cai_agent_runtime *review;
   cai_error event_error;
   int pause_marker_appended;
@@ -3860,6 +4037,10 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   if (request == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "review request is required");
   }
+  if (!parent->preset_supports_review) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent preset does not support isolated review");
+  }
   pthread_mutex_lock(&parent->lock);
   rc = cai_runtime_parent_review_ready_locked(parent, error);
   if (rc == CAI_OK) {
@@ -3872,6 +4053,20 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
 
   cai_agent_runtime_config_init(&config);
   config.preset = CAI_SMITH_REVIEW_PRESET;
+  memset(&preset, 0, sizeof(preset));
+  preset.name = parent->preset_name;
+  preset.prompt_version = parent->preset_prompt_version;
+  preset.default_identity = parent->preset_default_identity;
+  preset.default_model = parent->preset_default_model;
+  preset.default_reasoning_effort = parent->preset_default_reasoning_effort;
+  preset.default_reasoning_summary = parent->preset_default_reasoning_summary;
+  preset.developer_instructions = parent->preset_developer_instructions;
+  preset.review_developer_instructions =
+      parent->preset_review_developer_instructions;
+  preset.tool_capabilities = parent->preset_tool_capabilities;
+  preset.review_tool_capabilities = parent->preset_review_tool_capabilities;
+  preset.supports_review = parent->preset_supports_review;
+  config.preset_descriptor = &preset;
   config.workspace_directory = parent->workspace_directory;
   config.agent_identity = parent->smith_identity;
   config.model = parent->smith_review_model != NULL ? parent->smith_review_model
@@ -3886,7 +4081,10 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
       parent->smith_developer_instructions_extension;
   config.terminal_tool_config =
       parent->smith_has_terminal_config ? &parent->smith_terminal_config : NULL;
-  config.disable_terminal = parent->terminal_enabled ? 0 : 1;
+  /* The ordinary and review capability sets are independent.  Preserve only
+   * the host's explicit terminal policy; the child selects its own terminal
+   * capability from the review profile when it opens. */
+  config.disable_terminal = parent->smith_disable_terminal;
   config.session_store =
       parent->owns_local_store ? NULL : parent->session_store;
   config.session_scope = parent->session_scope;
@@ -4171,7 +4369,8 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
   }
   if (runtime->review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "smith-review does not accept steering input");
+                         "isolated review runtime does not accept steering "
+                         "input");
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_STEERING,
                                    error);
@@ -4196,7 +4395,8 @@ int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
   }
   if (runtime->review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "smith-review accepts exactly one review request");
+                         "isolated review runtime accepts exactly one review "
+                         "request");
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_QUEUED_TURN,
                                    error);

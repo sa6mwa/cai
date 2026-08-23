@@ -2809,19 +2809,30 @@ static int cai_lua_agent_runtime_event(void *context,
 }
 
 static int cai_lua_client_new_smith_runtime_common(lua_State *L,
-                                                   int review_mode) {
+                                                   int review_mode,
+                                                   int custom_preset) {
   cai_lua_client *client;
   cai_lua_agent_runtime *runtime;
   cai_lua_native_store *native_session_store;
   cai_agent_runtime_config config;
+  cai_agent_preset preset;
   cai_error error;
   int rc;
 
   client = cai_lua_check_client(L, 1);
   if (!lua_istable(L, 2)) {
     return luaL_error(L, "%s requires a configuration table",
-                      review_mode ? "new_smith_review_runtime"
-                                  : "new_smith_runtime");
+                      custom_preset ? "new_agent_runtime"
+                                    : (review_mode ? "new_smith_review_runtime"
+                                                   : "new_smith_runtime"));
+  }
+  if (custom_preset) {
+    lua_getfield(L, 2, "preset");
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 1);
+      return luaL_error(L, "new_agent_runtime requires preset table");
+    }
+    lua_pop(L, 1);
   }
   runtime = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*runtime));
   memset(runtime, 0, sizeof(*runtime));
@@ -2841,7 +2852,39 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     lua_pop(L, 1);
   }
   cai_agent_runtime_config_init(&config);
-  config.preset = review_mode ? CAI_SMITH_REVIEW_PRESET : CAI_SMITH_PRESET;
+  memset(&preset, 0, sizeof(preset));
+  if (custom_preset) {
+    lua_getfield(L, 2, "preset");
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 1);
+      return luaL_error(L, "new_agent_runtime requires preset table");
+    }
+    preset.name = cai_lua_opt_string_field(L, -1, "name", NULL);
+    preset.prompt_version =
+        cai_lua_opt_string_field(L, -1, "prompt_version", NULL);
+    preset.default_identity =
+        cai_lua_opt_string_field(L, -1, "default_identity", NULL);
+    preset.default_model =
+        cai_lua_opt_string_field(L, -1, "default_model", NULL);
+    preset.default_reasoning_effort =
+        cai_lua_opt_string_field(L, -1, "default_reasoning_effort", NULL);
+    preset.default_reasoning_summary =
+        cai_lua_opt_string_field(L, -1, "default_reasoning_summary", NULL);
+    preset.developer_instructions =
+        cai_lua_opt_string_field(L, -1, "developer_instructions", NULL);
+    preset.review_developer_instructions =
+        cai_lua_opt_string_field(L, -1, "review_developer_instructions", NULL);
+    preset.tool_capabilities =
+        (unsigned long)cai_lua_opt_size_field(L, -1, "tool_capabilities", 0U);
+    preset.review_tool_capabilities = (unsigned long)cai_lua_opt_size_field(
+        L, -1, "review_tool_capabilities", 0U);
+    preset.supports_review =
+        cai_lua_opt_bool_field(L, -1, "supports_review", 0);
+    lua_pop(L, 1);
+    config.preset_descriptor = &preset;
+  } else {
+    config.preset = review_mode ? CAI_SMITH_REVIEW_PRESET : CAI_SMITH_PRESET;
+  }
   config.workspace_directory =
       cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
   config.workspace_directory =
@@ -2908,8 +2951,9 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
     }
     return luaL_error(L, "%s requires workspace_directory",
-                      review_mode ? "new_smith_review_runtime"
-                                  : "new_smith_runtime");
+                      custom_preset ? "new_agent_runtime"
+                                    : (review_mode ? "new_smith_review_runtime"
+                                                   : "new_smith_runtime"));
   }
   cai_error_init(&error);
   cai_lua_client_enter(client);
@@ -2940,11 +2984,15 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
 }
 
 static int cai_lua_client_new_smith_runtime(lua_State *L) {
-  return cai_lua_client_new_smith_runtime_common(L, 0);
+  return cai_lua_client_new_smith_runtime_common(L, 0, 0);
 }
 
 static int cai_lua_client_new_smith_review_runtime(lua_State *L) {
-  return cai_lua_client_new_smith_runtime_common(L, 1);
+  return cai_lua_client_new_smith_runtime_common(L, 1, 0);
+}
+
+static int cai_lua_client_new_agent_runtime(lua_State *L) {
+  return cai_lua_client_new_smith_runtime_common(L, 0, 1);
 }
 
 static int cai_lua_client_create_conversation(lua_State *L) {
@@ -9462,6 +9510,7 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
 
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
+    {"new_agent_runtime", cai_lua_client_new_agent_runtime},
     {"new_smith_agent", cai_lua_client_new_smith_agent},
     {"new_smith_runtime", cai_lua_client_new_smith_runtime},
     {"new_smith_review_runtime", cai_lua_client_new_smith_review_runtime},
@@ -9914,6 +9963,20 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_REASONING_SUMMARY);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RESPONSE_COMPLETED",
                       CAI_AGENT_EVENT_RESPONSE_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_READ_FILE",
+                      CAI_AGENT_PRESET_TOOL_READ_FILE);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_LIST_FILES",
+                      CAI_AGENT_PRESET_TOOL_LIST_FILES);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_APPLY_PATCH",
+                      CAI_AGENT_PRESET_TOOL_APPLY_PATCH);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_TERMINAL",
+                      CAI_AGENT_PRESET_TOOL_TERMINAL);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_VIEW_IMAGE",
+                      CAI_AGENT_PRESET_TOOL_VIEW_IMAGE);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_GOAL", CAI_AGENT_PRESET_TOOL_GOAL);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_MCP", CAI_AGENT_PRESET_TOOL_MCP);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_IMAGE_GENERATION",
+                      CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);
