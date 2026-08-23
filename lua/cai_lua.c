@@ -15,6 +15,7 @@
 #include <lualib.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <pslog_lua.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +109,8 @@ typedef struct cai_lua_agent_runtime {
   int parent_ref;
   int callback_ref;
   int session_store_ref;
+  int mcp_clients_ref;
+  size_t mcp_client_count;
   int review_parent_ref;
   int review_children_ref;
   int review_finished;
@@ -317,6 +320,14 @@ static int cai_lua_write_stack_json_or_stream(lua_State *L, int index,
                                               cai_sink *output,
                                               cai_error *error);
 static int cai_lua_agent_register_mcp_client_tools(lua_State *L);
+static int cai_lua_runtime_mcp_clients_prepare(lua_State *L, int config_index,
+                                               cai_mcp_client ***out_clients,
+                                               size_t *out_count, int *out_ref);
+static void cai_lua_runtime_mcp_clients_release(lua_State *L,
+                                                cai_lua_agent_runtime *runtime);
+static void
+cai_lua_mcp_registration_config(lua_State *L, int index,
+                                cai_mcp_tool_registration_config *config);
 
 static int cai_lua_tool_event_write_output_lua(lua_State *L) {
   cai_lua_tool_event_ctx *event_ctx;
@@ -2816,7 +2827,11 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_native_store *native_session_store;
   cai_agent_runtime_config config;
   cai_agent_preset preset;
+  cai_mcp_client **mcp_clients;
+  cai_mcp_tool_registration_config mcp_tool_config;
   cai_error error;
+  size_t mcp_client_count;
+  int mcp_clients_ref;
   int rc;
 
   client = cai_lua_check_client(L, 1);
@@ -2834,6 +2849,26 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     }
     lua_pop(L, 1);
   }
+  lua_getfield(L, 2, "mcp_clients");
+  if (!lua_isnil(L, -1)) {
+    size_t count;
+    size_t i;
+
+    luaL_checktype(L, -1, LUA_TTABLE);
+    count = (size_t)lua_rawlen(L, -1);
+    for (i = 0U; i < count; i++) {
+      lua_rawgeti(L, -1, (lua_Integer)i + 1);
+      (void)cai_lua_check_mcp_client(L, -1);
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "mcp_tool_config");
+  cai_lua_mcp_registration_config(L, -1, &mcp_tool_config);
+  lua_pop(L, 1);
+  mcp_clients = NULL;
+  mcp_client_count = 0U;
+  mcp_clients_ref = LUA_NOREF;
   runtime = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*runtime));
   memset(runtime, 0, sizeof(*runtime));
   runtime->L = L;
@@ -2841,6 +2876,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->parent_ref = cai_lua_ref_parent(L, 1);
   runtime->callback_ref = LUA_NOREF;
   runtime->session_store_ref = LUA_NOREF;
+  runtime->mcp_clients_ref = LUA_NOREF;
   runtime->review_parent_ref = LUA_NOREF;
   runtime->review_children_ref = LUA_NOREF;
   native_session_store = NULL;
@@ -2955,10 +2991,16 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
                                     : (review_mode ? "new_smith_review_runtime"
                                                    : "new_smith_runtime"));
   }
+  (void)cai_lua_runtime_mcp_clients_prepare(
+      L, 2, &mcp_clients, &mcp_client_count, &mcp_clients_ref);
+  config.mcp_clients = mcp_clients;
+  config.mcp_client_count = mcp_client_count;
+  config.mcp_tool_config = mcp_client_count > 0U ? &mcp_tool_config : NULL;
   cai_error_init(&error);
   cai_lua_client_enter(client);
   rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
   cai_lua_client_leave(client);
+  free(mcp_clients);
   if (rc != CAI_OK) {
     if (runtime->callback_ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
@@ -2968,6 +3010,9 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     }
     runtime->callback_ref = LUA_NOREF;
     runtime->parent_ref = LUA_NOREF;
+    if (mcp_clients_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, mcp_clients_ref);
+    }
     lua_pop(L, 1);
     return cai_lua_fail(L, rc, &error);
   }
@@ -2976,6 +3021,25 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     lua_getfield(L, 2, "session_store");
     runtime->session_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
     native_session_store->adapter->active_runtimes++;
+  }
+  runtime->mcp_clients_ref = mcp_clients_ref;
+  runtime->mcp_client_count = mcp_client_count;
+  if (runtime->mcp_clients_ref != LUA_NOREF) {
+    size_t i;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, runtime->mcp_clients_ref);
+    for (i = 0U; i < runtime->mcp_client_count; i++) {
+      cai_lua_mcp_client *mcp_client;
+
+      lua_rawgeti(L, -1, (lua_Integer)i + 1);
+      mcp_client =
+          (cai_lua_mcp_client *)luaL_testudata(L, -1, CAI_LUA_MCP_CLIENT);
+      if (mcp_client != NULL) {
+        mcp_client->registered_tool_refs++;
+      }
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
   }
   luaL_getmetatable(L, CAI_LUA_AGENT_RUNTIME);
   lua_setmetatable(L, -2);
@@ -3490,6 +3554,7 @@ static int cai_lua_agent_runtime_gc(lua_State *L) {
     cai_lua_agent_runtime_leave(self);
     self->ptr = NULL;
   }
+  cai_lua_runtime_mcp_clients_release(L, self);
   if (self->callback_ref != LUA_NOREF) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->callback_ref);
     self->callback_ref = LUA_NOREF;
@@ -3703,6 +3768,7 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   review->parent_ref = LUA_NOREF;
   review->callback_ref = LUA_NOREF;
   review->session_store_ref = LUA_NOREF;
+  review->mcp_clients_ref = LUA_NOREF;
   review->review_parent_ref = cai_lua_ref_parent(L, 1);
   review->review_children_ref = LUA_NOREF;
   if (parent->parent_ref != LUA_NOREF) {
@@ -7098,6 +7164,91 @@ cai_lua_mcp_registration_config(lua_State *L, int index,
   config->name_prefix =
       cai_lua_opt_string_field(L, index, "name_prefix", config->name_prefix);
   config->strict = cai_lua_opt_bool_field(L, index, "strict", config->strict);
+}
+
+static int cai_lua_runtime_mcp_clients_prepare(lua_State *L, int config_index,
+                                               cai_mcp_client ***out_clients,
+                                               size_t *out_count,
+                                               int *out_ref) {
+  cai_mcp_client **clients;
+  cai_lua_mcp_client *client;
+  size_t count;
+  size_t i;
+  int clients_index;
+
+  if (out_clients == NULL || out_count == NULL || out_ref == NULL) {
+    return luaL_error(L, "runtime MCP client outputs are required");
+  }
+  *out_clients = NULL;
+  *out_count = 0U;
+  *out_ref = LUA_NOREF;
+  config_index = lua_absindex(L, config_index);
+  lua_getfield(L, config_index, "mcp_clients");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return 0;
+  }
+  luaL_checktype(L, -1, LUA_TTABLE);
+  clients_index = lua_absindex(L, -1);
+  count = (size_t)lua_rawlen(L, clients_index);
+  if (count > (size_t)INT_MAX || count > (size_t)-1 / sizeof(*clients)) {
+    lua_pop(L, 1);
+    return luaL_error(L, "mcp_clients has too many entries");
+  }
+  /* Validate before allocating or retaining Lua state so a bad array element
+   * cannot strand runtime-owned references. */
+  for (i = 0U; i < count; i++) {
+    lua_rawgeti(L, clients_index, (lua_Integer)i + 1);
+    (void)cai_lua_check_mcp_client(L, -1);
+    lua_pop(L, 1);
+  }
+  lua_createtable(L, (int)count, 0);
+  if (count == 0U) {
+    clients = NULL;
+  } else {
+    clients = (cai_mcp_client **)calloc(count, sizeof(*clients));
+    if (clients == NULL) {
+      lua_pop(L, 2);
+      return luaL_error(L, "failed to allocate runtime MCP clients");
+    }
+  }
+  for (i = 0U; i < count; i++) {
+    lua_rawgeti(L, clients_index, (lua_Integer)i + 1);
+    client = cai_lua_check_mcp_client(L, -1);
+    clients[i] = client->ptr;
+    lua_pushvalue(L, -1);
+    lua_rawseti(L, -3, (lua_Integer)i + 1);
+    lua_pop(L, 1);
+  }
+  *out_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  lua_pop(L, 1);
+  *out_clients = clients;
+  *out_count = count;
+  return 0;
+}
+
+static void
+cai_lua_runtime_mcp_clients_release(lua_State *L,
+                                    cai_lua_agent_runtime *runtime) {
+  cai_lua_mcp_client *client;
+  size_t i;
+
+  if (runtime == NULL || runtime->mcp_clients_ref == LUA_NOREF) {
+    return;
+  }
+  lua_rawgeti(L, LUA_REGISTRYINDEX, runtime->mcp_clients_ref);
+  for (i = 0U; i < runtime->mcp_client_count; i++) {
+    lua_rawgeti(L, -1, (lua_Integer)i + 1);
+    client = (cai_lua_mcp_client *)luaL_testudata(L, -1, CAI_LUA_MCP_CLIENT);
+    if (client != NULL && client->registered_tool_refs > 0U) {
+      client->registered_tool_refs--;
+    }
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+  luaL_unref(L, LUA_REGISTRYINDEX, runtime->mcp_clients_ref);
+  runtime->mcp_clients_ref = LUA_NOREF;
+  runtime->mcp_client_count = 0U;
 }
 
 static int cai_lua_optional_buffered_json_from_stack(lua_State *L, int index,

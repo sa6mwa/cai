@@ -84,6 +84,14 @@ Both surfaces accept `review_developer_instructions`,
 `review_tool_capabilities`, and `supports_review` for a profile that may launch
 an isolated reviewer.
 
+For ordinary Lua runtimes, `mcp_clients = { client_a, client_b }` attaches
+already-opened and initialized `cai.mcp_client` userdata at construction, and
+`mcp_tool_config = { name_prefix = "...", strict = true }` supplies the shared
+registration policy. The selected preset must include
+`CAI_AGENT_PRESET_TOOL_MCP`; review runtimes reject MCP attachment. CAI retains
+the Lua clients until the runtime closes, so an attached client cannot be
+closed early and its discovered tools cannot outlive their transport.
+
 This first delivery deliberately does **not** implement Codex-style
 multi-agent/worktree coordination or a `wait_agent` tool. Remote capabilities
 belong behind MCP or host-registered CAI tools. The only asynchronous execution

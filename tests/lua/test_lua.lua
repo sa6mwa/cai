@@ -979,6 +979,32 @@ do
   assert(table.concat(custom_chunks):find("vectis-engineer", 1, true),
     "Lua custom preset export metadata")
   custom_runtime:close()
+  do
+    local rejected_mcp = assert_ok(cai.mcp_client({
+      url = "http://127.0.0.1:1/mcp",
+      timeout_ms = 1,
+    }))
+    local rejected_runtime, rejected_error = dummy_client:new_agent_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      preset = {
+        name = "read-only-engineer",
+        prompt_version = "read-only-engineer-1",
+        default_identity = "Read-only Engineer",
+        default_model = cai.MODEL_GPT_5_6_LUNA,
+        default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+        developer_instructions = "You are {{agent_identity}}.",
+        tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+      },
+      mcp_clients = { rejected_mcp },
+    })
+    local rejection = assert_not_ok(rejected_runtime, rejected_error,
+      "custom preset without MCP capability")
+    assert(tostring(rejection.message or ""):find("does not enable MCP", 1,
+      true), "custom MCP capability rejection")
+    assert_ok(rejected_mcp:close(), nil,
+      "rejected runtime must release MCP client")
+  end
   local native_session_store = assert(native_store_test.new_agent_session())
   local wrong_session_store = assert(native_store_test.new_mcp_session())
   assert_not_ok(cai.native_store("agent_session", nil),
