@@ -3,20 +3,15 @@ local cai = require("cai")
 local auth_json = os.getenv("CAI_CHATGPT_AUTH_JSON")
 local issuer = nil
 local requested_port = cai.CHATGPT_AUTH_DEFAULT_CALLBACK_PORT
-local browser_command = nil
-local open_browser = true
 
 local function usage()
   io.stderr:write(
     "usage: lua examples/lua-chatgpt-login/main.lua [--auth-json <path>] " ..
-    "[--port <port>] [--issuer <url>] [--browser-command <cmd>] " ..
-    "[--no-open-browser]\n\n" ..
+    "[--port <port>] [--issuer <url>]\n\n" ..
     "  --auth-json <path>    CAI auth.json path to write; default is cai's XDG state path.\n" ..
     "  --port <port>         Local callback port, default 1455.\n" ..
-    "  --issuer <url>        OAuth issuer, default https://auth.openai.com.\n" ..
-    "  --browser-command <cmd>\n" ..
-    "                         Browser opener command; default is platform selected.\n" ..
-    "  --no-open-browser     Print the URL without launching a browser.\n\n" ..
+    "  --issuer <url>        OAuth issuer, default https://auth.openai.com.\n\n" ..
+    "The authorization URL is printed for you to click or copy; this example never opens a browser.\n" ..
     "CAI_CHATGPT_AUTH_JSON can override the default auth-json path.\n")
 end
 
@@ -52,16 +47,6 @@ while i <= #arg do
     end
     requested_port = port
     i = i + 2
-  elseif arg[i] == "--browser-command" then
-    if not arg[i + 1] or arg[i + 1] == "" then
-      io.stderr:write("--browser-command requires a command\n")
-      os.exit(2)
-    end
-    browser_command = arg[i + 1]
-    i = i + 2
-  elseif arg[i] == "--no-open-browser" then
-    open_browser = false
-    i = i + 1
   elseif arg[i] == "--help" or arg[i] == "-h" then
     usage()
     os.exit(0)
@@ -114,19 +99,8 @@ if not login then
 end
 local authorize_url = authorize_or_err
 
-io.stderr:write("Open this URL to authenticate:\n" .. authorize_url .. "\n\n")
+io.stderr:write("\nOpen this URL to authenticate:\n\n" .. authorize_url .. "\n\n")
 io.stderr:write("Waiting for OAuth callback on " .. redirect_uri .. "\n")
-if open_browser then
-  local launched, launch_err = cai.chatgpt_login_open_browser(authorize_url, {
-    command = browser_command,
-  })
-  if not launched then
-    io.stderr:write("Could not launch browser; open the URL manually.\n")
-    if type(launch_err) == "table" and launch_err.message then
-      io.stderr:write("detail: " .. launch_err.message .. "\n")
-    end
-  end
-end
 
 local function read_request(client)
   client:settimeout(10)

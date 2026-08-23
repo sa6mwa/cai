@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=${1:-.}
 terminal_chat=${2:-}
+chatgpt_login=${3:-}
 
 cd "$repo_root"
 output=$(make -C examples help)
@@ -19,4 +20,13 @@ if [[ -n "$terminal_chat" ]]; then
   terminal_output=$("$terminal_chat" --help 2>&1)
   grep -F 'gpt-5-nano with API keys and gpt-5.4-mini with ChatGPT auth' \
     <<<"$terminal_output" >/dev/null
+fi
+
+if [[ -n "$chatgpt_login" ]]; then
+  login_output=$("$chatgpt_login" --help 2>&1)
+  grep -F 'click or copy' <<<"$login_output" >/dev/null
+  if grep -F -- '--browser-command' <<<"$login_output" >/dev/null; then
+    printf 'chatgpt-login help must not offer an automatic browser opener\n' >&2
+    exit 1
+  fi
 fi

@@ -62,14 +62,12 @@ ChatGPT auth state path: `$XDG_STATE_HOME/cai/auth.json`, or
 credential storage.
 
 Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
-callback port is unavailable. Both login examples use cai's shared browser
-opener helper, which defaults to `open` on Darwin and `xdg-open` elsewhere, and
-can be overridden with `CAI_CHATGPT_BROWSER_COMMAND`. The helper passes the URL
-as one argv value and does not invoke a shell. The examples are intentionally
-interactive; local unit tests mock the callback and token exchange flow. The Lua
-login example uses cai's Lua OAuth binding for the auth flow and LuaSocket only
-for its tiny example HTTP listener; install LuaSocket separately if you want to
-run that example.
+callback port is unavailable. Both login examples print the authorization URL
+between blank lines for click/copy and never invoke a browser opener. The
+examples are intentionally interactive; local unit tests mock the callback and
+token exchange flow. The Lua login example uses cai's Lua OAuth binding for the
+auth flow and LuaSocket only for its tiny example HTTP listener; install
+LuaSocket separately if you want to run that example.
 
 ## OpenRouter Response
 
