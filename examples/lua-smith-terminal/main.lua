@@ -71,6 +71,9 @@ local render = {
   reasoning_open = false,
   suppress_review_text = false,
   review_report_visible = false,
+  reasoning_heading_seen = false,
+  reasoning_probe = "",
+  last_reasoning_heading = "",
 }
 
 local function remembered_command(value)
@@ -110,6 +113,93 @@ local function close_message()
     render.text_open = false
     render.reasoning_open = false
   end
+end
+
+local function render_reasoning_raw(data)
+  if data == "" then
+    return
+  end
+  if not render.reasoning_open then
+    close_message()
+    io.write(magenta, "Thinking: ", reset)
+    render.reasoning_open = true
+  end
+  io.write(data)
+  io.flush()
+end
+
+local function render_reasoning_body(data)
+  data = data:gsub("^[\r\n]+", "")
+  if data == "" then
+    return
+  end
+  if not render.reasoning_open then
+    io.write("  ")
+    render.reasoning_open = true
+  end
+  io.write(data)
+  io.flush()
+end
+
+local function render_reasoning_heading(data)
+  if data == "*" then
+    return false
+  end
+  if data:sub(1, 2) ~= "**" then
+    return nil
+  end
+  local finish = data:find("**", 3, true)
+  if not finish then
+    return false
+  end
+  local heading = data:sub(3, finish - 1):match("^%s*(.-)%s*$")
+  if heading == "" or #heading > 512 then
+    return nil
+  end
+  if render.last_reasoning_heading ~= heading then
+    close_message()
+    io.write(magenta, "Thinking: ", reset, heading, "\n")
+    io.flush()
+    render.last_reasoning_heading = heading
+  end
+  render.reasoning_heading_seen = true
+  return data:sub(finish + 2)
+end
+
+local function render_reasoning_delta(data)
+  data = render.reasoning_probe .. (data or "")
+  render.reasoning_probe = ""
+  if data:sub(1, 1) == "*" then
+    if #data == 1 or data:sub(2, 2) == "*" then
+      local rest = render_reasoning_heading(data)
+      if rest == false then
+        if #data <= 512 then
+          render.reasoning_probe = data
+          return
+        end
+        render_reasoning_raw(data)
+        return
+      end
+      if rest ~= nil then
+        render_reasoning_body(rest)
+        return
+      end
+    end
+  end
+  if render.reasoning_heading_seen then
+    render_reasoning_body(data)
+  else
+    render_reasoning_raw(data)
+  end
+end
+
+local function reset_reasoning_summary()
+  if render.reasoning_probe ~= "" then
+    render_reasoning_raw(render.reasoning_probe)
+  end
+  render.reasoning_probe = ""
+  render.reasoning_heading_seen = false
+  render.last_reasoning_heading = ""
 end
 
 -- Reviewer strings are model-controlled. Keep decoded control code points
@@ -183,14 +273,11 @@ local function render_review_report(data)
 end
 
 local function render_event(event)
+  if event.type ~= cai.AGENT_EVENT_REASONING_SUMMARY then
+    reset_reasoning_summary()
+  end
   if event.type == cai.AGENT_EVENT_REASONING_SUMMARY then
-    if not render.reasoning_open then
-      close_message()
-      io.write(magenta, "Thinking: ", reset)
-      render.reasoning_open = true
-    end
-    io.write(event.data or "")
-    io.flush()
+    render_reasoning_delta(event.data)
   elseif event.type == cai.AGENT_EVENT_TEXT_DELTA then
     if render.suppress_review_text then
       return

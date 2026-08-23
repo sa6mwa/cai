@@ -15,6 +15,7 @@
 #define GREEN "\033[32m"
 #define MAGENTA "\033[35m"
 #define RED "\033[31m"
+#define REASONING_PROBE_MAX 512U
 
 typedef struct render_state {
   int terminal_lines;
@@ -23,7 +24,11 @@ typedef struct render_state {
   int reasoning_open;
   int suppress_review_text;
   int review_report_visible;
+  int reasoning_heading_seen;
+  size_t reasoning_probe_length;
   char command[161];
+  char reasoning_probe[REASONING_PROBE_MAX + 1U];
+  char last_reasoning_heading[REASONING_PROBE_MAX + 1U];
 } render_state;
 
 typedef struct review_line_range {
@@ -237,6 +242,154 @@ static void render_close_message(render_state *state) {
   }
 }
 
+static void render_reasoning_raw(render_state *state, const char *data,
+                                 size_t length) {
+  if (length == 0U) {
+    return;
+  }
+  if (!state->reasoning_open) {
+    render_close_message(state);
+    fputs(MAGENTA "Thinking: " RESET, stdout);
+    state->reasoning_open = 1;
+  }
+  fwrite(data, 1U, length, stdout);
+  fflush(stdout);
+}
+
+static void render_reasoning_body(render_state *state, const char *data,
+                                  size_t length) {
+  size_t offset;
+
+  offset = 0U;
+  while (offset < length && (data[offset] == '\r' || data[offset] == '\n')) {
+    offset++;
+  }
+  if (offset == length) {
+    return;
+  }
+  if (!state->reasoning_open) {
+    fputs("  ", stdout);
+    state->reasoning_open = 1;
+  }
+  fwrite(data + offset, 1U, length - offset, stdout);
+  fflush(stdout);
+}
+
+static int render_reasoning_heading(render_state *state, const char *data,
+                                    size_t length, size_t *out_after) {
+  size_t closing_start;
+  size_t end;
+  size_t heading_length;
+  size_t start;
+
+  if (out_after == NULL || length == 0U || data[0] != '*') {
+    return 0;
+  }
+  if (length == 1U) {
+    return -1;
+  }
+  if (data[1] != '*') {
+    return 0;
+  }
+  if (length == 2U) {
+    return -1;
+  }
+  for (end = 2U; end + 1U < length; end++) {
+    if (data[end] == '*' && data[end + 1U] == '*') {
+      break;
+    }
+  }
+  if (end + 1U >= length) {
+    return -1;
+  }
+  closing_start = end;
+  start = 2U;
+  while (start < end && (data[start] == ' ' || data[start] == '\t')) {
+    start++;
+  }
+  while (end > start && (data[end - 1U] == ' ' || data[end - 1U] == '\t')) {
+    end--;
+  }
+  heading_length = end - start;
+  if (heading_length == 0U || heading_length > REASONING_PROBE_MAX) {
+    return 0;
+  }
+  if (strncmp(state->last_reasoning_heading, data + start, heading_length) !=
+          0 ||
+      state->last_reasoning_heading[heading_length] != '\0') {
+    render_close_message(state);
+    fputs(MAGENTA "Thinking: " RESET, stdout);
+    fwrite(data + start, 1U, heading_length, stdout);
+    fputc('\n', stdout);
+    memcpy(state->last_reasoning_heading, data + start, heading_length);
+    state->last_reasoning_heading[heading_length] = '\0';
+    fflush(stdout);
+  }
+  state->reasoning_heading_seen = 1;
+  *out_after = closing_start + 2U;
+  return 1;
+}
+
+static void render_reasoning_delta(render_state *state, const char *data,
+                                   size_t length) {
+  size_t after;
+  int heading;
+
+  if (state->reasoning_probe_length > 0U) {
+    if (length > REASONING_PROBE_MAX - state->reasoning_probe_length) {
+      render_reasoning_raw(state, state->reasoning_probe,
+                           state->reasoning_probe_length);
+      state->reasoning_probe_length = 0U;
+      state->reasoning_probe[0] = '\0';
+      render_reasoning_raw(state, data, length);
+      return;
+    }
+    memcpy(state->reasoning_probe + state->reasoning_probe_length, data,
+           length);
+    state->reasoning_probe_length += length;
+    state->reasoning_probe[state->reasoning_probe_length] = '\0';
+    data = state->reasoning_probe;
+    length = state->reasoning_probe_length;
+  }
+  if (length > 0U && data[0] == '*' && (length == 1U || data[1] == '*')) {
+    heading = render_reasoning_heading(state, data, length, &after);
+    if (heading < 0) {
+      if (length <= REASONING_PROBE_MAX) {
+        memcpy(state->reasoning_probe, data, length);
+        state->reasoning_probe[length] = '\0';
+        state->reasoning_probe_length = length;
+        return;
+      }
+      render_reasoning_raw(state, data, length);
+      return;
+    }
+    state->reasoning_probe_length = 0U;
+    state->reasoning_probe[0] = '\0';
+    if (heading > 0) {
+      render_reasoning_body(state, data + after, length - after);
+      return;
+    }
+  }
+  state->reasoning_probe_length = 0U;
+  state->reasoning_probe[0] = '\0';
+  if (state->reasoning_heading_seen) {
+    render_reasoning_body(state, data, length);
+  } else {
+    render_reasoning_raw(state, data, length);
+  }
+}
+
+static void render_reasoning_reset(render_state *state) {
+  if (state->reasoning_probe_length > 0U) {
+    render_reasoning_raw(state, state->reasoning_probe,
+                         state->reasoning_probe_length);
+  }
+  state->reasoning_probe_length = 0U;
+  state->reasoning_probe[0] = '\0';
+  state->reasoning_heading_seen = 0;
+  state->last_reasoning_heading[0] = '\0';
+}
+
 /* Reviewer strings are model-controlled. Render control code points visibly
  * instead of allowing decoded JSON escapes to become terminal commands. */
 static void render_review_text(const char *text, size_t length) {
@@ -421,14 +574,11 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
 
   (void)error;
   state = (render_state *)context;
+  if (event->type != CAI_AGENT_EVENT_REASONING_SUMMARY) {
+    render_reasoning_reset(state);
+  }
   if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY) {
-    if (!state->reasoning_open) {
-      render_close_message(state);
-      fputs(MAGENTA "Thinking: " RESET, stdout);
-      state->reasoning_open = 1;
-    }
-    fwrite(event->data, 1U, event->data_length, stdout);
-    fflush(stdout);
+    render_reasoning_delta(state, event->data, event->data_length);
   } else if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
     if (state->suppress_review_text) {
       return CAI_OK;
