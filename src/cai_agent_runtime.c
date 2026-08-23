@@ -1996,7 +1996,8 @@ static int cai_runtime_replay_journal_event(
     runtime->next_event_sequence = event->sequence;
   }
   input_event = strcmp(event->type, "steering_queued") == 0 ||
-                strcmp(event->type, "turn_queued") == 0;
+                strcmp(event->type, "turn_queued") == 0 ||
+                strcmp(event->type, "turn_submitted") == 0;
   if (strcmp(event->type, "review_pending") == 0 ||
       strcmp(event->type, "review_handoff_committed") == 0) {
     /* A review transition takes effect only once the checkpoint that records
@@ -2048,16 +2049,21 @@ static int cai_runtime_replay_journal_event(
                          "failed to copy queued agent input");
   }
   input->journal_sequence = event->sequence;
-  input->queued_turn = strcmp(event->type, "turn_queued") == 0;
-  input->counts_toward_turn_limit = input->queued_turn;
-  if (input->counts_toward_turn_limit) {
+  /* A restored immediate submission needs the same worker-side activation as
+   * a queued turn, but it must not consume queued-turn capacity. */
+  input->queued_turn = strcmp(event->type, "turn_queued") == 0 ||
+                       strcmp(event->type, "turn_submitted") == 0;
+  input->counts_toward_turn_limit = strcmp(event->type, "turn_queued") == 0;
+  if (input->queued_turn) {
     if (runtime->turn_tail == NULL) {
       runtime->turn_head = input;
     } else {
       runtime->turn_tail->next = input;
     }
     runtime->turn_tail = input;
-    runtime->turn_count++;
+    if (input->counts_toward_turn_limit) {
+      runtime->turn_count++;
+    }
   } else {
     if (runtime->steering_tail == NULL) {
       runtime->steering_head = input;
@@ -3653,9 +3659,17 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   }
   journal_type = kind == CAI_RUNTIME_INPUT_STEERING      ? "steering_queued"
                  : kind == CAI_RUNTIME_INPUT_QUEUED_TURN ? "turn_queued"
-                                                         : NULL;
+                                                         : "turn_submitted";
   activated = 0;
   pthread_mutex_lock(&runtime->lock);
+  /* Once close has begun, no successful submission may be discarded by the
+   * worker's shutdown path.  The caller owns runtime lifetime, so this guard
+   * applies while the runtime remains valid and protected by its lock. */
+  if (runtime->stopping) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
   if (kind == CAI_RUNTIME_INPUT_TURN &&
       (runtime->active_review != NULL || runtime->review_launching ||
        runtime->review_pause_pending || runtime->turn_head != NULL ||
@@ -3674,11 +3688,6 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_LIMIT,
                          "goal token budget is exhausted");
-  }
-  if (kind == CAI_RUNTIME_INPUT_QUEUED_TURN && runtime->stopping) {
-    pthread_mutex_unlock(&runtime->lock);
-    cai_runtime_input_node_free(node);
-    return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
   }
   /* Do not accept work in the interval before start_review has checkpointed
    * its durable pause marker.  Once the live/persisted pause is established,
@@ -3728,10 +3737,14 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   if (kind == CAI_RUNTIME_INPUT_TURN && runtime->review_mode) {
     cai_runtime_clear_review_report_locked(runtime);
   }
-  if (kind != CAI_RUNTIME_INPUT_TURN && runtime->event_callback != NULL) {
+  /* Allocate observational state before the durable append. A successful
+   * submission must either have its journal record and lifecycle event ready
+   * to publish, or fail without leaving replayable work behind. */
+  if (runtime->event_callback != NULL) {
     rc = cai_runtime_require_event_capacity_locked(runtime, error);
     if (rc == CAI_OK) {
-      type = kind == CAI_RUNTIME_INPUT_STEERING
+      type = kind == CAI_RUNTIME_INPUT_TURN ? CAI_AGENT_EVENT_RUN_STARTED
+             : kind == CAI_RUNTIME_INPUT_STEERING
                  ? CAI_AGENT_EVENT_STEERING_QUEUED
                  : CAI_AGENT_EVENT_TURN_QUEUED;
       rc = cai_runtime_event_node_new(type, text, strlen(text), NULL, NULL,
@@ -3746,37 +3759,22 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
       return rc;
     }
   }
-  if (kind != CAI_RUNTIME_INPUT_TURN) {
-    rc = cai_runtime_append_journal_event_locked(
-        runtime, journal_type, node->text, &node->journal_sequence, error);
-    if (rc != CAI_OK) {
-      if (activated) {
-        runtime->state = previous_state;
-      }
-      pthread_mutex_unlock(&runtime->lock);
-      cai_runtime_event_node_free(event_node);
-      cai_runtime_input_node_free(node);
-      return rc;
-    }
-  }
-  type = kind == CAI_RUNTIME_INPUT_TURN ? CAI_AGENT_EVENT_RUN_STARTED
-                                        : CAI_AGENT_EVENT_TURN_QUEUED;
-  if (kind != CAI_RUNTIME_INPUT_TURN) {
-    if (event_node != NULL) {
-      cai_runtime_append_event_node_locked(runtime, event_node);
-    }
-    rc = CAI_OK;
-  } else {
-    rc = cai_runtime_enqueue_locked(runtime, type, text, strlen(text), NULL,
-                                    NULL, runtime->state, error);
-  }
+  /* This synchronous append is the acceptance point. In particular, do not
+   * report an immediate turn as accepted until it can survive a process crash
+   * before the worker reaches its first checkpoint. */
+  rc = cai_runtime_append_journal_event_locked(
+      runtime, journal_type, node->text, &node->journal_sequence, error);
   if (rc != CAI_OK) {
     if (activated) {
       runtime->state = previous_state;
     }
     pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_event_node_free(event_node);
     cai_runtime_input_node_free(node);
     return rc;
+  }
+  if (event_node != NULL) {
+    cai_runtime_append_event_node_locked(runtime, event_node);
   }
   node->queued_turn = kind == CAI_RUNTIME_INPUT_QUEUED_TURN;
   node->counts_toward_turn_limit = node->queued_turn;

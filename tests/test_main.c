@@ -155,6 +155,12 @@ typedef struct runtime_close_callback_state {
   int calls;
 } runtime_close_callback_state;
 
+typedef struct runtime_close_steering_callback_state {
+  cai_agent_runtime *runtime;
+  int calls;
+  int steering_result;
+} runtime_close_steering_callback_state;
+
 typedef struct runtime_session_store_state {
   const char *checkpoint_json;
   read_state reader;
@@ -1880,6 +1886,28 @@ static int test_runtime_close_from_event(void *context,
   state->calls++;
   if (state->runtime != NULL) {
     cai_agent_runtime_close(state->runtime);
+    state->runtime = NULL;
+  }
+  return CAI_OK;
+}
+
+static int test_runtime_close_and_submit_steering(
+    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+  runtime_close_steering_callback_state *state;
+  cai_error submit_error;
+
+  (void)event;
+  (void)error;
+  state = (runtime_close_steering_callback_state *)context;
+  state->calls++;
+  if (state->runtime != NULL) {
+    /* The owner callback defers destruction until pump unwinds, leaving a
+     * valid runtime on which to prove that shutdown rejects new steering. */
+    cai_agent_runtime_close(state->runtime);
+    cai_error_init(&submit_error);
+    state->steering_result = cai_agent_runtime_submit_steering_threadsafe(
+        state->runtime, "must not survive shutdown", &submit_error);
+    cai_error_cleanup(&submit_error);
     state->runtime = NULL;
   }
   return CAI_OK;
@@ -25205,6 +25233,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_mcp_client *mcp_clients[1];
   cai_mcp_tool_registration_config mcp_config;
   runtime_close_callback_state close_state;
+  runtime_close_steering_callback_state close_steering_state;
   cai_error error;
   struct timespec close_callback_delay;
   const char *session_id;
@@ -25217,6 +25246,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime = NULL;
   memset(&events, 0, sizeof(events));
   memset(&close_state, 0, sizeof(close_state));
+  memset(&close_steering_state, 0, sizeof(close_steering_state));
   memset(&store_state, 0, sizeof(store_state));
   memset(&store, 0, sizeof(store));
   store.checkpoint = test_runtime_session_store_checkpoint;
@@ -25344,6 +25374,27 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
     expect_int(state, "runtime_callback_close_called_once", close_state.calls,
                1L);
+    runtime = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_close_and_submit_steering;
+  runtime_config.event_context = &close_steering_state;
+  expect_int(state, "runtime_close_steering_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    close_steering_state.runtime = runtime;
+    expect_int(state, "runtime_close_steering_submit",
+               cai_agent_runtime_submit(runtime, "close then steer", &error),
+               CAI_OK);
+    expect_int(state, "runtime_close_steering_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    expect_int(state, "runtime_close_steering_callback_once",
+               close_steering_state.calls, 1L);
+    expect_int(state, "runtime_close_steering_rejected",
+               close_steering_state.steering_result, CAI_ERR_CANCELLED);
     runtime = NULL;
   }
   cai_agent_runtime_config_init(&runtime_config);
@@ -25482,13 +25533,15 @@ static void test_agent_runtime_queued_turns(test_state *state) {
     expect_int(state, "runtime_queued_steering_event",
                events.saw_steering_queued, 1L);
     expect_int(state, "runtime_queued_journal_events",
-               (long)store_state.appended_events, 5L);
+               (long)store_state.appended_events, 7L);
     expect_str(state, "runtime_queued_journal_v2",
                store_state.replay_event_types[0], "input_journal_v2");
+    expect_str(state, "runtime_queued_journal_submitted",
+               store_state.replay_event_types[1], "turn_submitted");
     expect_str(state, "runtime_queued_journal_last",
                store_state.replay_event_type, "input_consumed");
     expect_int(state, "runtime_queued_journal_watermark",
-               (long)store_state.saved_applied_event_sequence, 5L);
+               (long)store_state.saved_applied_event_sequence, 7L);
     expect_int(state, "runtime_queued_steering_checkpoint_durable",
                store_state.saw_steering_checkpoint_before_watermark, 0L);
     expect_substr(state, "runtime_queued_checkpoint_first",
@@ -25788,7 +25841,7 @@ static void test_agent_runtime_goal_budget(test_state *state) {
     expect_substr(state, "runtime_goal_budget_steering_checkpoint",
                   store_state.saved_checkpoint, "queued at budget boundary");
     expect_int(state, "runtime_goal_budget_rejected_checkpoint_watermark",
-               (long)store_state.saved_applied_event_sequence, 5L);
+               (long)store_state.saved_applied_event_sequence, 7L);
     expect_int(
         state, "runtime_goal_budget_reject_resubmit",
         cai_agent_runtime_submit(runtime, "try after budget limit", &error),
@@ -26195,7 +26248,7 @@ static void test_agent_runtime_resume(test_state *state) {
   store_state.replay_event_sequences[1] = 9U;
   (void)snprintf(store_state.replay_event_types[1],
                  sizeof(store_state.replay_event_types[0]), "%s",
-                 "turn_queued");
+                 "turn_submitted");
   (void)snprintf(store_state.replay_event_data_items[1],
                  sizeof(store_state.replay_event_data_items[1]), "%s",
                  "resume queued normal turn");
