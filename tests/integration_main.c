@@ -4676,7 +4676,7 @@ static int run_chatgpt_smith_runtime_regression(void) {
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
   runtime_config.model = model;
-  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   runtime_config.session_store = &store;
   runtime_config.session_scope = workspace;
   runtime_config.event_callback = integration_smith_runtime_event;
@@ -4769,7 +4769,7 @@ static int run_chatgpt_smith_runtime_regression(void) {
     cai_agent_runtime_config_init(&runtime_config);
     runtime_config.workspace_directory = workspace;
     runtime_config.model = model;
-    runtime_config.reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+    runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
     runtime_config.session_store = &store;
     runtime_config.session_scope = workspace;
     runtime_config.resume_latest = 1;

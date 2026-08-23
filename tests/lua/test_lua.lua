@@ -2096,4 +2096,6 @@ registry:close()
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
 
+dofile("tests/lua/smith_terminal_renderer_test.lua")
+
 print("cai lua tests passed")

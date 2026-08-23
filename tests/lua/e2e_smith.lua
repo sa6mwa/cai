@@ -145,13 +145,6 @@ local function chatgpt_auth_path()
     fail("configured ChatGPT auth file is unavailable: " .. configured)
   end
 
-  local home = os.getenv("HOME")
-  local codex_path = home ~= nil and home ~= "" and
-    home .. "/.codex/auth.json" or nil
-  if readable_file(codex_path) then
-    return codex_path
-  end
-
   local default_path, default_path_error = cai.chatgpt_auth_default_path()
   if default_path == nil or default_path == "" then
     fail("ChatGPT auth path is unavailable: " .. tostring(default_path_error))
@@ -159,7 +152,8 @@ local function chatgpt_auth_path()
   if readable_file(default_path) then
     return default_path
   end
-  fail("ChatGPT auth file is unavailable: " .. default_path)
+  fail("CAI ChatGPT auth file is unavailable: " .. default_path ..
+    "; run `make chatgpt-login` or set CAI_CHATGPT_AUTH_JSON")
 end
 
 if os.getenv("CAI_LUA_SMITH_E2E") ~= "1" then

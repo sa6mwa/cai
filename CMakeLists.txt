@@ -902,6 +902,21 @@ if(CAI_BUILD_TESTS)
   target_compile_definitions(cai_tests PRIVATE CAI_TESTING)
   cai_link_internal_consumer(cai_tests)
   cai_configure_c_target(cai_tests)
+  if(CAI_BUILD_EXAMPLES)
+    add_executable(cai_smith_terminal_renderer_test
+      tests/smith_terminal_renderer_test.c)
+    target_include_directories(cai_smith_terminal_renderer_test PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}"
+      "${CAI_GENERATED_INCLUDE_DIR}"
+      "${CAI_LONEJSON_INCLUDE_DIR}")
+    cai_link_internal_consumer(cai_smith_terminal_renderer_test)
+    cai_configure_c_target(cai_smith_terminal_renderer_test)
+    add_test(NAME cai_smith_terminal_renderer_test
+      COMMAND cai_smith_terminal_renderer_test)
+    set_tests_properties(cai_smith_terminal_renderer_test PROPERTIES
+      LABELS "unit;local;example-smoke"
+      TIMEOUT 3)
+  endif()
   set(CAI_UNIT_TEST_GROUPS
     model_capabilities
     env_precedence
@@ -1746,7 +1761,6 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_integration_chatgpt_subscription_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1"
-        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_subscription_e2e PROPERTIES
       LABELS integration
@@ -1755,7 +1769,6 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_integration_chatgpt_smith_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_E2E=1"
-        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_smith_e2e PROPERTIES
       LABELS integration
@@ -1764,7 +1777,6 @@ if(CAI_BUILD_TESTS)
     add_test(NAME cai_integration_chatgpt_smith_review_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1"
-        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_smith_review_e2e PROPERTIES
       LABELS integration
@@ -1776,7 +1788,6 @@ if(CAI_BUILD_TESTS)
         $<TARGET_FILE:cai_mcp_http_server>
         "${CMAKE_COMMAND}" -E env
           "CAI_INTEGRATION_CHATGPT_SMITH_MCP_REVIEW_E2E=1"
-          "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
           $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_smith_mcp_review_e2e PROPERTIES
       LABELS integration
