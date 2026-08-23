@@ -25,7 +25,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CAI_BUILD_STATIC "Build the static cai library." ON)
 option(CAI_BUILD_SHARED "Build the shared cai library." ON)
 option(CAI_BUILD_TESTS "Build cai unit tests." ON)
-option(CAI_BUILD_INTEGRATION_TESTS "Build integration tests that hit OpenAI when run." OFF)
+option(CAI_BUILD_INTEGRATION_TESTS
+       "Build subscription-auth integration tests that contact ChatGPT when run."
+       OFF)
+option(CAI_REGISTER_API_KEY_EXAMPLE_SMOKE
+       "Register opt-in API-key example smoke coverage (may spend provider credits)."
+       OFF)
 option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_LUA "Build the Lua 5.5 binding and Lua tests." OFF)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
@@ -1679,26 +1684,43 @@ if(CAI_BUILD_TESTS)
       LABELS "integration;offline"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SHORT})
-    add_test(NAME cai_integration_openai_e2e
+    add_test(NAME cai_integration_chatgpt_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_E2E=1"
+        "CAI_INTEGRATION_CHATGPT_E2E=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_openai_e2e PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
-    add_test(NAME cai_integration_usage_limits
-      COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_USAGE_LIMITS=1"
+    add_test(NAME cai_integration_chatgpt_auth_rejection
+      COMMAND /bin/sh
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatgpt_auth_failure_test.sh"
+        c
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_usage_limits PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_auth_rejection PROPERTIES
+      LABELS "integration;offline"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SHORT})
+    add_test(NAME cai_integration_chatgpt_auth_ownership
+      COMMAND /bin/sh
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatgpt_auth_failure_test.sh"
+        ownership-c
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_auth_ownership PROPERTIES
+      LABELS "integration;offline"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SHORT})
+    add_test(NAME cai_integration_chatgpt_usage_limits
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_CHATGPT_USAGE_LIMITS=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_usage_limits PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
     add_test(NAME cai_integration_chatgpt_defaults
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_DEFAULTS=1"
-        "CAI_CHATGPT_TEST_MODEL="
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_defaults PROPERTIES
       LABELS "integration;offline"
@@ -1721,18 +1743,15 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_chatgpt_subscription_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_chatgpt_smith_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_E2E=1"
-        "CAI_CHATGPT_TEST_MODEL=gpt-5.6-luna"
         "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
         $<TARGET_FILE:cai_integration_tests>)
     set_tests_properties(cai_integration_chatgpt_smith_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_chatgpt_smith_review_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
@@ -1742,7 +1761,6 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_chatgpt_smith_review_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
     add_test(NAME cai_integration_chatgpt_smith_mcp_review_e2e
       COMMAND /bin/sh
@@ -1755,79 +1773,67 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_chatgpt_smith_mcp_review_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      SKIP_RETURN_CODE 77
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
-    add_test(NAME cai_integration_chatgpt_smith_terra_smoke
+    add_test(NAME cai_integration_chatgpt_state_restore
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_CHATGPT_SMITH_TERRA_SMOKE=1"
-        "CAI_CHATGPT_TEST_MODEL=gpt-5.6-terra"
-        "CAI_TEST_DISABLE_RESPONSES_WEBSOCKET=1"
+        "CAI_INTEGRATION_CHATGPT_STATE_RESTORE=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_chatgpt_smith_terra_smoke PROPERTIES
-      LABELS integration
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      SKIP_RETURN_CODE 77
-      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
-    add_test(NAME cai_integration_state_restore
-      COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_STATE_RESTORE=1"
-        $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_state_restore PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_state_restore PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-    add_test(NAME cai_integration_compaction
+    add_test(NAME cai_integration_chatgpt_compaction
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_COMPACTION=1"
+        "CAI_INTEGRATION_CHATGPT_COMPACTION=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_compaction PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_compaction PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-    add_test(NAME cai_integration_tool_security
+    add_test(NAME cai_integration_chatgpt_tool_security
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_TOOL_SECURITY=1"
+        "CAI_INTEGRATION_CHATGPT_TOOL_SECURITY=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_tool_security PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_tool_security PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-    add_test(NAME cai_integration_hosted_web_search
+    add_test(NAME cai_integration_chatgpt_hosted_web_search
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_HOSTED_WEB_SEARCH=1"
+        "CAI_INTEGRATION_CHATGPT_HOSTED_WEB_SEARCH=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_hosted_web_search PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_hosted_web_search PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
-    add_test(NAME cai_integration_mcp_client_tool
+    add_test(NAME cai_integration_chatgpt_mcp_client_tool
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mcp_everything_live_test.sh"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_mcp_client_tool PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_mcp_client_tool PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
-    add_test(NAME cai_integration_responses_websocket_e2e
+    add_test(NAME cai_integration_chatgpt_responses_websocket_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1"
+        "CAI_INTEGRATION_CHATGPT_RESPONSES_WEBSOCKET_E2E=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_responses_websocket_e2e PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_responses_websocket_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
-    add_test(NAME cai_integration_exec_tool
+    add_test(NAME cai_integration_chatgpt_exec_tool
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_EXEC_TOOL=1"
+        "CAI_INTEGRATION_CHATGPT_EXEC_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_exec_tool PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_exec_tool PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-    add_test(NAME cai_integration_read_tool
+    add_test(NAME cai_integration_chatgpt_read_tool
       COMMAND "${CMAKE_COMMAND}" -E env
-        "CAI_INTEGRATION_READ_TOOL=1"
+        "CAI_INTEGRATION_CHATGPT_READ_TOOL=1"
         $<TARGET_FILE:cai_integration_tests>)
-    set_tests_properties(cai_integration_read_tool PROPERTIES
+    set_tests_properties(cai_integration_chatgpt_read_tool PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
@@ -1896,40 +1902,62 @@ if(CAI_BUILD_TESTS)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
     if(CAI_BUILD_LUA)
-      add_test(NAME cai_lua_tool_stream_e2e
-        COMMAND "${CAI_LUA_EXECUTABLE}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_tool_stream.lua")
-      set_tests_properties(cai_lua_tool_stream_e2e PROPERTIES
-        LABELS integration
-        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-      add_test(NAME cai_lua_session_continuity_e2e
-        COMMAND "${CAI_LUA_EXECUTABLE}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_session_continuity.lua")
-      set_tests_properties(cai_lua_session_continuity_e2e PROPERTIES
-        LABELS integration
-        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-      add_test(NAME cai_lua_usage_limits_e2e
-        COMMAND "${CMAKE_COMMAND}" -E env
-          "CAI_LUA_USAGE_LIMITS_E2E=1"
+      add_test(NAME cai_lua_chatgpt_auth_rejection
+        COMMAND /bin/sh
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatgpt_auth_failure_test.sh"
+          lua
           "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_usage_limits.lua")
-      set_tests_properties(cai_lua_usage_limits_e2e PROPERTIES
-        LABELS integration
+      set_tests_properties(cai_lua_chatgpt_auth_rejection PROPERTIES
+        LABELS "integration;offline"
         ENVIRONMENT "${CAI_LUA_TEST_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SHORT})
+      add_test(NAME cai_lua_chatgpt_auth_ownership
+        COMMAND /bin/sh
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatgpt_auth_failure_test.sh"
+          ownership-lua
+          "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_usage_limits.lua")
+      set_tests_properties(cai_lua_chatgpt_auth_ownership PROPERTIES
+        LABELS "integration;offline"
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SHORT})
+      add_test(NAME cai_lua_chatgpt_tool_stream_e2e
+        COMMAND "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_tool_stream.lua")
+      set_tests_properties(cai_lua_chatgpt_tool_stream_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_LUA_TOOL_STREAM_E2E=1"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
-      add_test(NAME cai_lua_hosted_web_search_e2e
+      add_test(NAME cai_lua_chatgpt_session_continuity_e2e
+        COMMAND "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_session_continuity.lua")
+      set_tests_properties(cai_lua_chatgpt_session_continuity_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_LUA_SESSION_E2E=1"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+      add_test(NAME cai_lua_chatgpt_usage_limits_e2e
+        COMMAND "${CAI_LUA_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_usage_limits.lua")
+      set_tests_properties(cai_lua_chatgpt_usage_limits_e2e PROPERTIES
+        LABELS integration
+        ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_LUA_USAGE_LIMITS_E2E=1"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+      add_test(NAME cai_lua_chatgpt_hosted_web_search_e2e
         COMMAND "${CAI_LUA_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/e2e_hosted_web_search.lua")
-      set_tests_properties(cai_lua_hosted_web_search_e2e PROPERTIES
+      set_tests_properties(cai_lua_chatgpt_hosted_web_search_e2e PROPERTIES
         LABELS integration
-        ENVIRONMENT "${CAI_LUA_TEST_ENV}"
+        ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_LUA_HOSTED_WEB_SEARCH_E2E=1"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+    endif()
+    if(CAI_BUILD_LUA)
       add_test(NAME cai_lua_smith_e2e
         COMMAND "/bin/sh"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_rock_e2e.sh"
@@ -1940,7 +1968,6 @@ if(CAI_BUILD_TESTS)
         LABELS integration
         ENVIRONMENT "${CAI_LUA_SMITH_E2E_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        SKIP_RETURN_CODE 77
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
       add_test(NAME cai_lua_smith_mcp_e2e
         COMMAND "/bin/sh"
@@ -1955,10 +1982,10 @@ if(CAI_BUILD_TESTS)
         LABELS integration
         ENVIRONMENT "${CAI_LUA_SMITH_E2E_ENV}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        SKIP_RETURN_CODE 77
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
     endif()
-    if(TARGET cai_example_basic_response AND
+    if(CAI_REGISTER_API_KEY_EXAMPLE_SMOKE AND
+        TARGET cai_example_basic_response AND
         TARGET cai_example_streaming_text AND
         TARGET cai_example_history_export AND
         TARGET cai_example_session_state AND
@@ -1974,7 +2001,7 @@ if(CAI_BUILD_TESTS)
           "$<TARGET_FILE:cai_example_terminal_chat>"
           "${CAI_LUA_EXECUTABLE}")
       set_tests_properties(cai_examples_live_smoke PROPERTIES
-        LABELS "integration;example-smoke"
+        LABELS "integration;example-smoke;api-key"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     endif()

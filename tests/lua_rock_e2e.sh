@@ -13,8 +13,8 @@ rock_tree=$root/build/luarocks
 
 if [ ! -f "$rock_tree/lib/lua/5.5/cai.so" ] &&
    [ ! -f "$rock_tree/lib/lua/5.5/cai.dylib" ]; then
-  echo "SKIP: build the local LuaRock before running this Lua e2e" >&2
-  exit 77
+  echo "build the local LuaRock before running this Lua e2e" >&2
+  exit 1
 fi
 
 eval "$(luarocks path --tree "$rock_tree")"

@@ -1,10 +1,5 @@
 local cai = require("cai")
 
-local function skip(message)
-  io.stdout:write("SKIP: " .. message .. "\n")
-  os.exit(77)
-end
-
 local function fail(message)
   error(message, 0)
 end
@@ -147,7 +142,7 @@ local function chatgpt_auth_path()
     if readable_file(configured) then
       return configured
     end
-    skip("configured ChatGPT auth file is unavailable: " .. configured)
+    fail("configured ChatGPT auth file is unavailable: " .. configured)
   end
 
   local home = os.getenv("HOME")
@@ -159,16 +154,16 @@ local function chatgpt_auth_path()
 
   local default_path, default_path_error = cai.chatgpt_auth_default_path()
   if default_path == nil or default_path == "" then
-    skip("ChatGPT auth path is unavailable: " .. tostring(default_path_error))
+    fail("ChatGPT auth path is unavailable: " .. tostring(default_path_error))
   end
   if readable_file(default_path) then
     return default_path
   end
-  skip("ChatGPT auth file is unavailable: " .. default_path)
+  fail("ChatGPT auth file is unavailable: " .. default_path)
 end
 
 if os.getenv("CAI_LUA_SMITH_E2E") ~= "1" then
-  skip("set CAI_LUA_SMITH_E2E=1 to run Lua Smith e2e")
+  fail("set CAI_LUA_SMITH_E2E=1 to run Lua Smith e2e")
 end
 
 local auth_path = chatgpt_auth_path()

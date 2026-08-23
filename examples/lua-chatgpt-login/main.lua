@@ -11,7 +11,7 @@ local function usage()
     "usage: lua examples/lua-chatgpt-login/main.lua [--auth-json <path>] " ..
     "[--port <port>] [--issuer <url>] [--browser-command <cmd>] " ..
     "[--no-open-browser]\n\n" ..
-    "  --auth-json <path>    Codex-style auth.json path to write; default is cai's XDG auth path.\n" ..
+    "  --auth-json <path>    CAI auth.json path to write; default is cai's XDG state path.\n" ..
     "  --port <port>         Local callback port, default 1455.\n" ..
     "  --issuer <url>        OAuth issuer, default https://auth.openai.com.\n" ..
     "  --browser-command <cmd>\n" ..

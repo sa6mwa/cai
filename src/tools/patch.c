@@ -58,10 +58,15 @@ typedef struct cai_patch_change {
   char move_name[PATH_MAX];
   char *before;
   size_t before_length;
+  struct stat before_stat;
+  int before_stat_valid;
   char *after;
   size_t after_length;
   size_t search_offset;
   int target_published;
+  struct stat published_stat;
+  int published_stat_valid;
+  int primary_removed;
 } cai_patch_change;
 
 typedef struct cai_patch_plan {
@@ -425,10 +430,64 @@ static int cai_patch_resolve_new(const cai_patch_context *ctx, const char *path,
   return cai_patch_copy(out, candidate, strlen(candidate), error);
 }
 
+static int cai_patch_stat_equal(const struct stat *left,
+                                const struct stat *right) {
+  if (left == NULL || right == NULL) {
+    return 0;
+  }
+#if defined(__APPLE__)
+  return left->st_dev == right->st_dev && left->st_ino == right->st_ino &&
+         left->st_mode == right->st_mode && left->st_nlink == right->st_nlink &&
+         left->st_uid == right->st_uid && left->st_gid == right->st_gid &&
+         left->st_size == right->st_size &&
+         left->st_mtimespec.tv_sec == right->st_mtimespec.tv_sec &&
+         left->st_mtimespec.tv_nsec == right->st_mtimespec.tv_nsec &&
+         left->st_ctimespec.tv_sec == right->st_ctimespec.tv_sec &&
+         left->st_ctimespec.tv_nsec == right->st_ctimespec.tv_nsec;
+#else
+  return left->st_dev == right->st_dev && left->st_ino == right->st_ino &&
+         left->st_mode == right->st_mode && left->st_nlink == right->st_nlink &&
+         left->st_uid == right->st_uid && left->st_gid == right->st_gid &&
+         left->st_size == right->st_size &&
+         left->st_mtim.tv_sec == right->st_mtim.tv_sec &&
+         left->st_mtim.tv_nsec == right->st_mtim.tv_nsec &&
+         left->st_ctim.tv_sec == right->st_ctim.tv_sec &&
+         left->st_ctim.tv_nsec == right->st_ctim.tv_nsec;
+#endif
+}
+
+static int cai_patch_verify_file(int parent_fd, const char *name,
+                                 const struct stat *expected,
+                                 cai_error *error) {
+  struct stat actual;
+
+  if (expected == NULL ||
+      fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISREG(actual.st_mode) || actual.st_nlink != 1 ||
+      !cai_patch_stat_equal(expected, &actual)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch file changed since preflight");
+  }
+  return CAI_OK;
+}
+
+static int cai_patch_file_matches(int parent_fd, const char *name,
+                                  const struct stat *expected) {
+  struct stat actual;
+
+  return expected != NULL &&
+                 fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) == 0 &&
+                 S_ISREG(actual.st_mode) && actual.st_nlink == 1 &&
+                 cai_patch_stat_equal(expected, &actual)
+             ? 1
+             : 0;
+}
+
 static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
                                char **out, size_t *out_length,
-                               cai_error *error) {
+                               struct stat *out_stat, cai_error *error) {
   struct stat st;
+  struct stat final_st;
   char *data;
   size_t offset;
   size_t allocation_size;
@@ -437,6 +496,10 @@ static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
 
   *out = NULL;
   *out_length = 0U;
+  if (out_stat == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch file metadata output is required");
+  }
   fd = openat(parent_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (fd < 0) {
     return cai_set_error_detail(error, CAI_ERR_INVALID,
@@ -468,10 +531,17 @@ static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
     }
     offset += (size_t)nread;
   }
+  if (fstat(fd, &final_st) != 0 || !cai_patch_stat_equal(&st, &final_st)) {
+    close(fd);
+    cai_free_mem(NULL, data);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch file changed while reading");
+  }
   close(fd);
   data[offset] = '\0';
   *out = data;
   *out_length = offset;
+  *out_stat = st;
   return CAI_OK;
 }
 
@@ -1343,12 +1413,13 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
     if (rc != CAI_OK) {
       return rc;
     }
-    rc = cai_patch_read_file(change->primary_parent_fd, change->primary_name,
-                             ctx->max_file_bytes, &change->before,
-                             &change->before_length, error);
+    rc = cai_patch_read_file(
+        change->primary_parent_fd, change->primary_name, ctx->max_file_bytes,
+        &change->before, &change->before_length, &change->before_stat, error);
     if (rc != CAI_OK) {
       return rc;
     }
+    change->before_stat_valid = 1;
     if (change->kind == CAI_PATCH_DELETE) {
       rc = cai_patch_validate_destinations(plan, i, error);
       if (rc != CAI_OK) {
@@ -1393,10 +1464,10 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
   return CAI_OK;
 }
 
-static int cai_patch_write_atomic(int parent_fd, const char *name,
-                                  const char *data, size_t length,
-                                  int no_replace, int *out_published,
-                                  cai_error *error) {
+static int cai_patch_write_atomic(
+    int parent_fd, const char *name, const char *data, size_t length,
+    int no_replace, const struct stat *expected_destination, int *out_published,
+    struct stat *out_published_stat, cai_error *error) {
   char temporary[64];
   size_t offset;
   ssize_t nwritten;
@@ -1415,6 +1486,9 @@ static int cai_patch_write_atomic(int parent_fd, const char *name,
                          "patch publication output is required");
   }
   *out_published = 0;
+  if (out_published_stat != NULL) {
+    memset(out_published_stat, 0, sizeof(*out_published_stat));
+  }
   fd = -1;
   temporary[0] = '\0';
   for (attempt = 0U; attempt < 128U; attempt++) {
@@ -1434,10 +1508,8 @@ static int cai_patch_write_atomic(int parent_fd, const char *name,
                                 "failed to create patch temporary file",
                                 strerror(errno));
   }
-  mode = 0644;
-  if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-    mode = st.st_mode & 0777;
-  }
+  mode = expected_destination != NULL ? expected_destination->st_mode & 0777
+                                      : 0644;
   if (fchmod(fd, mode) != 0) {
     close(fd);
     unlinkat(parent_fd, temporary, 0);
@@ -1495,15 +1567,30 @@ static int cai_patch_write_atomic(int parent_fd, const char *name,
                                   "failed to finalize patched file",
                                   strerror(errno));
     }
-  } else if (renameat(parent_fd, temporary, parent_fd, name) != 0) {
-    saved_errno = errno;
-    unlinkat(parent_fd, temporary, 0);
-    errno = saved_errno;
-    return cai_set_error_detail(error, CAI_ERR_INVALID,
-                                "failed to publish patched file",
-                                strerror(errno));
   } else {
+    if (cai_patch_verify_file(parent_fd, name, expected_destination, error) !=
+        CAI_OK) {
+      unlinkat(parent_fd, temporary, 0);
+      return error != NULL ? error->code : CAI_ERR_INVALID;
+    }
+    if (renameat(parent_fd, temporary, parent_fd, name) != 0) {
+      saved_errno = errno;
+      unlinkat(parent_fd, temporary, 0);
+      errno = saved_errno;
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to publish patched file",
+                                  strerror(errno));
+    }
     *out_published = 1;
+  }
+  if (*out_published && out_published_stat != NULL) {
+    if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "published patch file is not a private regular file");
+    }
+    *out_published_stat = st;
   }
   return CAI_OK;
 }
@@ -1531,9 +1618,13 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     rc = cai_patch_write_atomic(
         target_parent_fd, target_name, change->after, change->after_length,
         change->kind == CAI_PATCH_ADD || change->resolved_move_path != NULL,
-        &published, error);
+        change->kind == CAI_PATCH_UPDATE && change->resolved_move_path == NULL
+            ? &change->before_stat
+            : NULL,
+        &published, &change->published_stat, error);
     if (published) {
       change->target_published = 1;
+      change->published_stat_valid = rc == CAI_OK;
     }
     if (rc != CAI_OK) {
       goto rollback;
@@ -1545,12 +1636,19 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_DELETE ||
         change->resolved_move_path != NULL) {
+      if (!change->before_stat_valid ||
+          cai_patch_verify_file(change->primary_parent_fd, change->primary_name,
+                                &change->before_stat, error) != CAI_OK) {
+        rc = error != NULL ? error->code : CAI_ERR_INVALID;
+        goto rollback;
+      }
       if (unlinkat(change->primary_parent_fd, change->primary_name, 0) != 0) {
         rc = cai_set_error_detail(error, CAI_ERR_INVALID,
                                   "failed to remove patched file",
                                   strerror(errno));
         goto rollback;
       }
+      change->primary_removed = 1;
     }
   }
   return CAI_OK;
@@ -1561,23 +1659,48 @@ rollback:
 
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_ADD) {
-      if (change->target_published) {
+      if (change->target_published && change->published_stat_valid &&
+          cai_patch_file_matches(change->primary_parent_fd,
+                                 change->primary_name,
+                                 &change->published_stat)) {
         (void)unlinkat(change->primary_parent_fd, change->primary_name, 0);
       }
       continue;
     }
-    if (change->before != NULL) {
+    if (change->before != NULL &&
+        ((change->kind == CAI_PATCH_UPDATE &&
+          change->resolved_move_path == NULL && change->target_published &&
+          change->published_stat_valid &&
+          cai_patch_file_matches(change->primary_parent_fd,
+                                 change->primary_name,
+                                 &change->published_stat)) ||
+         (change->primary_removed &&
+          (change->resolved_move_path == NULL ||
+           (change->target_published && change->published_stat_valid &&
+            cai_patch_file_matches(change->move_parent_fd, change->move_name,
+                                   &change->published_stat)))))) {
       cai_error ignored;
       int ignored_published;
+      struct stat ignored_stat;
 
       cai_error_init(&ignored);
       ignored_published = 0;
       (void)cai_patch_write_atomic(
           change->primary_parent_fd, change->primary_name, change->before,
-          change->before_length, 0, &ignored_published, &ignored);
+          change->before_length,
+          change->kind == CAI_PATCH_UPDATE && change->resolved_move_path == NULL
+              ? 0
+              : 1,
+          change->kind == CAI_PATCH_UPDATE && change->resolved_move_path == NULL
+              ? &change->published_stat
+              : NULL,
+          &ignored_published, &ignored_stat, &ignored);
       cai_error_cleanup(&ignored);
     }
-    if (change->resolved_move_path != NULL && change->target_published) {
+    if (change->resolved_move_path != NULL && change->target_published &&
+        change->published_stat_valid &&
+        cai_patch_file_matches(change->move_parent_fd, change->move_name,
+                               &change->published_stat)) {
       (void)unlinkat(change->move_parent_fd, change->move_name, 0);
     }
   }

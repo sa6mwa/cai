@@ -15,8 +15,9 @@ the returned key to `cai_client_config.api_key`, then release it with
 `cai.load_dotenv_api_key(path, env_name)` and pass the returned string as
 `api_key`.
 
-ChatGPT subscription login is also explicit. Run `run-chatgpt-login` to create
-a Codex-style auth file through the browser OAuth flow, then run chat examples
+ChatGPT subscription login is also explicit. Run `make chatgpt-login` (or
+`make -C examples run-chatgpt-login`) to create CAI's own auth file through the
+browser OAuth flow, then run chat examples
 with `CAI_CHATGPT_AUTH=1` to use cai's default auth path or
 `CAI_CHATGPT_AUTH_JSON=/path/auth.json` for an explicit path.
 
@@ -33,8 +34,9 @@ make -C examples help
 For automated verification, the repo exposes two narrower smoke paths:
 
 - `make example-smoke-local` covers deterministic local example checks.
-- `CAI_ENABLE_INTEGRATION_TESTS=1 make example-smoke-live` runs a curated
-  non-interactive live subset against the real API.
+- `CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` runs the opt-in live
+  ChatGPT-subscription and OpenRouter matrix. API-key example smoke is not a
+  routine test path.
 
 ## Basic Response
 
@@ -44,19 +46,20 @@ make -C examples run-basic-response
 
 ## ChatGPT Login
 
-Start a local callback listener, open the ChatGPT OAuth URL, and write a
-Codex-style auth file:
+Start a local callback listener, open the ChatGPT OAuth URL, and write CAI's
+own Codex-wire-compatible auth file:
 
 ```sh
-make -C examples run-chatgpt-login
-make -C examples run-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+make chatgpt-login
+make chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 make -C examples run-lua-chatgpt-login
 make -C examples run-lua-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 ```
 
 Without `CAI_CHATGPT_AUTH_JSON`, the login example writes cai's default
-ChatGPT auth path: `$XDG_CONFIG_HOME/cai/auth.json`, or
-`$HOME/.config/cai/auth.json`.
+ChatGPT auth state path: `$XDG_STATE_HOME/cai/auth.json`, or
+`$HOME/.local/state/cai/auth.json`. This never reads or modifies Codex's
+credential storage.
 
 Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
 callback port is unavailable. Both login examples use cai's shared browser

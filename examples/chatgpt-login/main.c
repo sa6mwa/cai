@@ -26,8 +26,8 @@ static void print_help(const char *program) {
           "[--browser-command <cmd>] [--no-open-browser]\n\n",
           program != NULL ? program : "cai_example_chatgpt_login");
   fprintf(stderr,
-          "  --auth-json <path>    Codex-style auth.json path to write; "
-          "default is cai's XDG auth path.\n"
+          "  --auth-json <path>    CAI auth.json path to write; default is "
+          "cai's XDG state path.\n"
           "  --port <port>         Local callback port, default 1455.\n"
           "  --issuer <url>        OAuth issuer, default "
           "https://auth.openai.com.\n");

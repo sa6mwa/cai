@@ -1,9 +1,5 @@
 local cai = require("cai")
-
-local function skip(message)
-  io.stdout:write("SKIP: " .. message .. "\n")
-  os.exit(0)
-end
+local chatgpt_e2e = dofile("tests/lua/chatgpt_e2e.lua")
 
 local function fail(message)
   error(message, 0)
@@ -27,28 +23,13 @@ local function assert_ok(value, err, label)
   return value
 end
 
-local function api_key_config()
-  if os.getenv("OPENAI_API_KEY") ~= nil and os.getenv("OPENAI_API_KEY") ~= "" then
-    return nil
-  end
-  local key = cai.load_dotenv_api_key(cai.DEFAULT_DOTENV_PATH, cai.OPENAI_API_KEY_ENV)
-  if key ~= nil and key ~= "" then
-    return key
-  end
-  return nil
-end
-
-if os.getenv("CAI_LUA_TOOL_STREAM_E2E") ~= "1" then
-  skip("set CAI_LUA_TOOL_STREAM_E2E=1 to run Lua streamed tool e2e")
-end
-local api_key = api_key_config()
-if (os.getenv("OPENAI_API_KEY") == nil or os.getenv("OPENAI_API_KEY") == "") and
-    api_key == nil then
-  skip("OPENAI_API_KEY is not set")
-end
+local auth_path = chatgpt_e2e.require_live_auth(cai, "CAI_LUA_TOOL_STREAM_E2E")
 
 local secret = "secret-" .. tostring(os.time()) .. "-gothenburg"
-local client, client_err = cai.open({ timeout_ms = 60000, api_key = api_key })
+local client, client_err = cai.open({
+  timeout_ms = 60000,
+  chatgpt_auth_json = auth_path,
+})
 client = assert_ok(client, client_err, "cai.open")
 local agent, agent_err = client:new_agent({
   model = cai.MODEL_GPT_5_NANO,

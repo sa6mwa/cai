@@ -61,6 +61,7 @@ typedef struct cai_terminal_manager {
   pthread_cond_t changed;
   int refs;
   char *root_path;
+  int root_fd;
   char *default_workdir;
   char *shell_path;
   char *home_environment;
@@ -287,15 +288,88 @@ static int cai_terminal_under_root(const char *root, const char *path) {
              : 0;
 }
 
+static int cai_terminal_open_workdir(cai_terminal_manager *manager,
+                                     const char *resolved, int *out_fd,
+                                     cai_error *error) {
+  char relative[PATH_MAX];
+  char *component;
+  char *next;
+  const char *start;
+  size_t root_length;
+  int fd;
+
+  *out_fd = -1;
+  if (manager == NULL || manager->root_fd < 0 || resolved == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "terminal workspace descriptor is unavailable");
+  }
+  root_length = strlen(manager->root_path);
+  if (strcmp(manager->root_path, "/") == 0) {
+    start = resolved[0] == '/' ? resolved + 1U : NULL;
+  } else if (strncmp(resolved, manager->root_path, root_length) == 0 &&
+             (resolved[root_length] == '\0' || resolved[root_length] == '/')) {
+    start = resolved + root_length;
+    if (*start == '/') {
+      start++;
+    }
+  } else {
+    start = NULL;
+  }
+  if (start == NULL || snprintf(relative, sizeof(relative), "%s", start) >=
+                           (int)sizeof(relative)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "terminal workdir escapes workspace root");
+  }
+  fd = dup(manager->root_fd);
+  if (fd < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+    if (fd >= 0) {
+      close(fd);
+    }
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to pin terminal workdir",
+                                strerror(errno));
+  }
+  component = relative;
+  while (component[0] != '\0') {
+    int next_fd;
+    struct stat st;
+
+    next = strchr(component, '/');
+    if (next != NULL) {
+      *next = '\0';
+    }
+    next_fd =
+        openat(fd, component, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (next_fd < 0 || fstat(next_fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+      if (next_fd >= 0) {
+        close(next_fd);
+      }
+      close(fd);
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to pin terminal workdir",
+                                  strerror(errno));
+    }
+    close(fd);
+    fd = next_fd;
+    if (next == NULL) {
+      break;
+    }
+    component = next + 1U;
+  }
+  *out_fd = fd;
+  return CAI_OK;
+}
+
 static int cai_terminal_resolve_workdir(cai_terminal_manager *manager,
                                         const char *requested, char **out,
-                                        cai_error *error) {
+                                        int *out_fd, cai_error *error) {
   char candidate[PATH_MAX];
   char resolved[PATH_MAX];
   const char *base;
   int written;
 
   *out = NULL;
+  *out_fd = -1;
   base = requested != NULL && requested[0] != '\0' ? requested
                                                    : manager->default_workdir;
   if (base == NULL || base[0] == '\0') {
@@ -313,10 +387,16 @@ static int cai_terminal_resolve_workdir(cai_terminal_manager *manager,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "terminal workdir must resolve below workspace root");
   }
+  if (cai_terminal_open_workdir(manager, resolved, out_fd, error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
   *out = cai_strdup(NULL, resolved);
-  return *out != NULL ? CAI_OK
-                      : cai_set_error(error, CAI_ERR_NOMEM,
-                                      "failed to copy terminal workdir");
+  if (*out == NULL) {
+    cai_terminal_close_fd(out_fd);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy terminal workdir");
+  }
+  return CAI_OK;
 }
 
 static int cai_terminal_output_append(cai_terminal_manager *manager,
@@ -474,6 +554,7 @@ static void cai_terminal_manager_destroy(cai_terminal_manager *manager) {
     pthread_join(manager->reader, NULL);
   }
   cai_terminal_close_fd(&manager->pty_fd);
+  cai_terminal_close_fd(&manager->root_fd);
   cai_free_mem(NULL, manager->root_path);
   cai_free_mem(NULL, manager->default_workdir);
   cai_free_mem(NULL, manager->shell_path);
@@ -530,7 +611,12 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   }
   memset(manager, 0, sizeof(*manager));
   manager->pty_fd = -1;
+  manager->root_fd = -1;
   manager->root_path = cai_strdup(NULL, resolved);
+  if (manager->root_path != NULL) {
+    manager->root_fd =
+        open(resolved, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  }
   manager->default_workdir = config->default_workdir != NULL
                                  ? cai_strdup(NULL, config->default_workdir)
                                  : NULL;
@@ -570,11 +656,12 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   manager->event_callback = config->event_callback;
   manager->event_context = config->event_context;
   snprintf(manager->terminal_id, sizeof(manager->terminal_id), "terminal-1");
-  if (manager->root_path == NULL || manager->shell_path == NULL ||
-      manager->home_environment == NULL || manager->max_yield_ms <= 0L ||
-      manager->max_write_yield_ms <= 0L || manager->max_poll_yield_ms <= 0L ||
-      manager->output_max_bytes == 0U) {
+  if (manager->root_path == NULL || manager->root_fd < 0 ||
+      manager->shell_path == NULL || manager->home_environment == NULL ||
+      manager->max_yield_ms <= 0L || manager->max_write_yield_ms <= 0L ||
+      manager->max_poll_yield_ms <= 0L || manager->output_max_bytes == 0U) {
     cai_free_mem(NULL, manager->root_path);
+    cai_terminal_close_fd(&manager->root_fd);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
     cai_free_mem(NULL, manager->home_environment);
@@ -584,6 +671,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   }
   if (pthread_mutex_init(&manager->lock, NULL) != 0) {
     cai_free_mem(NULL, manager->root_path);
+    cai_terminal_close_fd(&manager->root_fd);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
     cai_free_mem(NULL, manager->home_environment);
@@ -594,6 +682,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   if (pthread_cond_init(&manager->changed, NULL) != 0) {
     pthread_mutex_destroy(&manager->lock);
     cai_free_mem(NULL, manager->root_path);
+    cai_terminal_close_fd(&manager->root_fd);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
     cai_free_mem(NULL, manager->home_environment);
@@ -638,7 +727,8 @@ static long cai_terminal_clamp_yield(long long requested, int has_requested,
 }
 
 static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
-                              const char *workdir, int tty, cai_error *error) {
+                              const char *workdir, int workdir_fd, int tty,
+                              cai_error *error) {
   int master;
   int slave;
   int join_reader;
@@ -656,14 +746,22 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   if (command_copy == NULL || workdir_copy == NULL) {
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
+    cai_terminal_close_fd(&workdir_fd);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to copy terminal command metadata");
+  }
+  if (workdir_fd < 0) {
+    cai_free_mem(NULL, command_copy);
+    cai_free_mem(NULL, workdir_copy);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "terminal workdir descriptor is required");
   }
   pthread_mutex_lock(&manager->lock);
   if (manager->starting || manager->running) {
     pthread_mutex_unlock(&manager->lock);
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
+    cai_terminal_close_fd(&workdir_fd);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "single terminal already has a running command");
   }
@@ -691,6 +789,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     pthread_mutex_unlock(&manager->lock);
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
+    cai_terminal_close_fd(&workdir_fd);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to create terminal PTY",
                                 strerror(errno));
@@ -705,6 +804,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     pthread_mutex_unlock(&manager->lock);
     cai_free_mem(NULL, command_copy);
     cai_free_mem(NULL, workdir_copy);
+    cai_terminal_close_fd(&workdir_fd);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to fork terminal command",
                                 strerror(errno));
@@ -735,12 +835,14 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     if (slave > STDERR_FILENO) {
       close(slave);
     }
-    if (chdir(workdir) != 0) {
+    if (fchdir(workdir_fd) != 0) {
       _exit(126);
     }
+    close(workdir_fd);
     execve(manager->shell_path, argv, environment);
     _exit(127);
   }
+  close(workdir_fd);
   close(slave);
   pthread_mutex_lock(&manager->lock);
   manager->pty_fd = master;
@@ -908,6 +1010,7 @@ static int cai_terminal_exec_callback(void *value, const void *params,
   long wait_ms;
   size_t output_limit;
   int rc;
+  int workdir_fd;
 
   binding = (cai_terminal_binding *)value;
   args = (const cai_terminal_exec_args *)params;
@@ -918,17 +1021,20 @@ static int cai_terminal_exec_callback(void *value, const void *params,
                          "terminal exec command is required");
   }
   workdir = NULL;
+  workdir_fd = -1;
   rc = cai_terminal_resolve_workdir(binding->manager, args->workdir, &workdir,
-                                    error);
+                                    &workdir_fd, error);
   if (rc == CAI_OK && binding->manager->policy != NULL) {
     rc = binding->manager->policy(binding->manager->policy_context, args->cmd,
                                   binding->manager->root_path, workdir,
                                   args->has_tty && args->tty, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_terminal_start(binding->manager, args->cmd, workdir,
+    rc = cai_terminal_start(binding->manager, args->cmd, workdir, workdir_fd,
                             args->has_tty && args->tty, error);
+    workdir_fd = -1;
   }
+  cai_terminal_close_fd(&workdir_fd);
   cai_free_mem(NULL, workdir);
   if (rc != CAI_OK) {
     return rc;

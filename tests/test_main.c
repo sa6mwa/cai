@@ -428,6 +428,13 @@ typedef struct terminal_race_exec_state {
   write_state writer;
 } terminal_race_exec_state;
 
+typedef struct terminal_workdir_swap_state {
+  char root[PATH_MAX];
+  char moved_root[PATH_MAX];
+  char outside[PATH_MAX];
+  int swapped;
+} terminal_workdir_swap_state;
+
 typedef struct failing_callback_state {
   int calls;
 } failing_callback_state;
@@ -983,9 +990,6 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
   expect_int(state, "model_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_NANO), 400000L);
-  expect_str(state, "model_5_6_compaction_hash",
-             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_TERRA),
-             "3000");
   expect_str(state, "model_5_6_luna_compaction_hash",
              cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_LUNA),
              "3000");
@@ -1032,19 +1036,6 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_gpt_5_6_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_6), 1050000L);
-  info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_TERRA);
-  if (info == NULL) {
-    test_fail(state, "model_gpt_5_6_terra_metadata", "model missing");
-    return;
-  }
-  expect_int(state, "model_gpt_5_6_terra_short_input_cents",
-             (long)(info->input_usd_per_million * 100.0 + 0.5), 200L);
-  expect_int(state, "model_gpt_5_6_terra_long_output_cents",
-             (long)(info->long_output_usd_per_million * 100.0 + 0.5), 1800L);
-  expect_int(state, "model_gpt_5_6_terra_reasoning_mode",
-             cai_model_supports(CAI_MODEL_GPT_5_6_TERRA,
-                                CAI_MODEL_CAP_REASONING_PRO_MODE),
-             1L);
   info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_LUNA);
   if (info == NULL) {
     test_fail(state, "model_gpt_5_6_luna_metadata", "model missing");
@@ -3256,6 +3247,113 @@ static int test_terminal_race_policy(void *context, const char *command,
   }
   pthread_mutex_unlock(&state->lock);
   return CAI_OK;
+}
+
+/* The terminal has resolved and pinned workdir before invoking policy. Replace
+ * the pathname at that boundary; the child must fchdir to the pinned directory
+ * rather than follow the replacement symlink. */
+static int test_terminal_workdir_swap_policy(void *context, const char *command,
+                                             const char *workspace,
+                                             const char *workdir, int tty,
+                                             cai_error *error) {
+  terminal_workdir_swap_state *state;
+
+  (void)command;
+  (void)workspace;
+  (void)workdir;
+  (void)tty;
+  state = (terminal_workdir_swap_state *)context;
+  if (state == NULL || state->swapped ||
+      rename(state->root, state->moved_root) != 0 ||
+      symlink(state->outside, state->root) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to replace terminal workspace path");
+  }
+  state->swapped = 1;
+  return CAI_OK;
+}
+
+static void test_terminal_workdir_pinning(test_state *state) {
+  char root_template[] = "/tmp/cai-terminal-pinned-root-XXXXXX";
+  char outside_template[] = "/tmp/cai-terminal-pinned-outside-XXXXXX";
+  char moved_root[PATH_MAX];
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  terminal_workdir_swap_state swap;
+  write_state writer;
+  cai_error error;
+  int rc;
+  int i;
+
+  if (mkdtemp(root_template) == NULL || mkdtemp(outside_template) == NULL) {
+    test_fail(state, "terminal_pinned_workdir_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  if (snprintf(moved_root, sizeof(moved_root), "%s-moved", root_template) >=
+      (int)sizeof(moved_root)) {
+    test_fail(state, "terminal_pinned_workdir_path", "path is too long");
+    rmdir(root_template);
+    rmdir(outside_template);
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&swap, 0, sizeof(swap));
+  memset(&writer, 0, sizeof(writer));
+  (void)snprintf(swap.root, sizeof(swap.root), "%s", root_template);
+  (void)snprintf(swap.moved_root, sizeof(swap.moved_root), "%s", moved_root);
+  (void)snprintf(swap.outside, sizeof(swap.outside), "%s", outside_template);
+  config.root_path = root_template;
+  config.default_workdir = root_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  config.policy = test_terminal_workdir_swap_policy;
+  config.policy_context = &swap;
+  registry = NULL;
+  sink = NULL;
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  rc = cai_tool_registry_new(&registry, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_terminal_tools(registry, &config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                               "{\"cmd\":\"pwd\",\"yield_time_ms\":100}", sink,
+                               &error);
+  }
+  expect_int(state, "terminal_pinned_workdir_exec", rc, CAI_OK);
+  for (i = 0; rc == CAI_OK && i < 5 &&
+              strstr(writer.buffer, "\"completed\":true") == NULL;
+       i++) {
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                               "{\"session_id\":\"terminal-1\","
+                               "\"yield_time_ms\":100}",
+                               sink, &error);
+  }
+  expect_int(state, "terminal_pinned_workdir_poll", rc, CAI_OK);
+  expect_int(state, "terminal_pinned_workdir_swapped", swap.swapped, 1L);
+  expect_substr(state, "terminal_pinned_workdir_original", writer.buffer,
+                moved_root);
+  expect_int(state, "terminal_pinned_workdir_not_outside",
+             strstr(writer.buffer, outside_template) == NULL, 1L);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  if (swap.swapped) {
+    (void)unlink(root_template);
+    (void)rename(moved_root, root_template);
+  }
+  rmdir(root_template);
+  rmdir(outside_template);
 }
 
 static void *test_terminal_race_exec(void *value) {
@@ -21522,7 +21620,7 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   path = NULL;
   cai_error_init(&error);
   test_env_capture(&home_env, "HOME");
-  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  test_env_capture(&xdg_env, "XDG_STATE_HOME");
   xdg_dir[0] = '\0';
   if (mkdtemp(template_dir) == NULL) {
     test_fail(state, "chatgpt_auth_default_tmpdir", "mkdtemp failed");
@@ -21530,8 +21628,8 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   }
 
   setenv("HOME", template_dir, 1);
-  unsetenv("XDG_CONFIG_HOME");
-  snprintf(expected, sizeof(expected), "%s/.config/cai/auth.json",
+  unsetenv("XDG_STATE_HOME");
+  snprintf(expected, sizeof(expected), "%s/.local/state/cai/auth.json",
            template_dir);
   expect_int(state, "chatgpt_auth_default_home",
              cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
@@ -21540,7 +21638,7 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   path = NULL;
 
   snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
-  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  setenv("XDG_STATE_HOME", xdg_dir, 1);
   snprintf(expected, sizeof(expected), "%s/xdg/cai/auth.json", template_dir);
   expect_int(state, "chatgpt_auth_default_xdg",
              cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
@@ -21548,8 +21646,8 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   cai_string_destroy(path);
   path = NULL;
 
-  setenv("XDG_CONFIG_HOME", "relative-xdg", 1);
-  snprintf(expected, sizeof(expected), "%s/.config/cai/auth.json",
+  setenv("XDG_STATE_HOME", "relative-xdg", 1);
+  snprintf(expected, sizeof(expected), "%s/.local/state/cai/auth.json",
            template_dir);
   expect_int(state, "chatgpt_auth_default_relative_xdg",
              cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
@@ -21558,7 +21656,7 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   path = NULL;
 
   setenv("HOME", "relative-home", 1);
-  unsetenv("XDG_CONFIG_HOME");
+  unsetenv("XDG_STATE_HOME");
   expect_int(state, "chatgpt_auth_default_missing_absolute_home",
              cai_chatgpt_auth_default_path(&path, &error), CAI_ERR_INVALID);
   expect_substr(state, "chatgpt_auth_default_error", error.message,
@@ -21593,7 +21691,7 @@ static void test_chatgpt_auth_open_default_path(test_state *state) {
   token = NULL;
   cai_error_init(&error);
   test_env_capture(&home_env, "HOME");
-  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  test_env_capture(&xdg_env, "XDG_STATE_HOME");
   xdg_dir[0] = '\0';
   cai_dir[0] = '\0';
   auth_path[0] = '\0';
@@ -21608,7 +21706,7 @@ static void test_chatgpt_auth_open_default_path(test_state *state) {
     test_fail(state, "chatgpt_auth_default_open_mkdir", "mkdir failed");
     goto cleanup;
   }
-  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  setenv("XDG_STATE_HOME", xdg_dir, 1);
   snprintf(auth_json, sizeof(auth_json),
            "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"%s\","
            "\"access_token\":\"%s\",\"refresh_token\":\"refresh-default\","
@@ -22344,7 +22442,7 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
   memset(&response, 0, sizeof(response));
   cai_error_init(&error);
   test_env_capture(&home_env, "HOME");
-  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  test_env_capture(&xdg_env, "XDG_STATE_HOME");
   if (mkdtemp(template_dir) == NULL) {
     test_fail(state, "chatgpt_login_default_tmpdir", "mkdtemp failed");
     goto cleanup;
@@ -22352,7 +22450,7 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
   snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
   snprintf(cai_dir, sizeof(cai_dir), "%s/xdg/cai", template_dir);
   snprintf(auth_path, sizeof(auth_path), "%s/xdg/cai/auth.json", template_dir);
-  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  setenv("XDG_STATE_HOME", xdg_dir, 1);
   if (http_mock_server_open_script(state, "chatgpt_login_default_mock", script,
                                    sizeof(script) / sizeof(script[0]),
                                    &server) != 0) {
@@ -26422,7 +26520,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
-  runtime_config.model = CAI_MODEL_GPT_5_6_TERRA;
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
   runtime_config.developer_instructions_extension =
       "handover extension instructions";
   runtime_config.session_store = &store;
@@ -26453,7 +26551,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
       expect_substr(state, "runtime_export_workspace", captured.buffer,
                     "- Workspace:\n    /tmp/cai-runtime-export-");
       expect_substr(state, "runtime_export_active_model", captured.buffer,
-                    "- Active model:\n    gpt-5.6-terra");
+                    "- Active model:\n    gpt-5.6-luna");
       expect_substr(state, "runtime_export_recorded_history_model",
                     captured.buffer,
                     "- Recorded history model:\n    gpt-5-nano");
@@ -26631,7 +26729,7 @@ static void test_goal_tools(test_state *state) {
   cai_client_config_init(&client_config);
   client_config.api_key = "test-key";
   cai_agent_config_init(&agent_config);
-  agent_config.model = CAI_MODEL_GPT_5_6_TERRA;
+  agent_config.model = CAI_MODEL_GPT_5_6_LUNA;
   agent_config.enable_local_history = 1;
   expect_int(state, "goal_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -26868,7 +26966,7 @@ static void test_goal_create_allocation_failure(test_state *state) {
   client_config.allocator.malloc_fn = test_fail_allocator_malloc;
   client_config.allocator.realloc_fn = test_fail_allocator_realloc;
   client_config.allocator.free_fn = test_fail_allocator_free;
-  agent_config.model = CAI_MODEL_GPT_5_6_TERRA;
+  agent_config.model = CAI_MODEL_GPT_5_6_LUNA;
   client = NULL;
   sink = NULL;
   callbacks.write = test_write;
@@ -27029,6 +27127,7 @@ static void test_patch_tool(test_state *state) {
   char alias_path[PATH_MAX];
   char ambiguous_path[PATH_MAX];
   char race_path[PATH_MAX];
+  char update_race_path[PATH_MAX];
   char race_temporary_path[PATH_MAX];
   char *contents;
   char *race_patch;
@@ -27060,6 +27159,8 @@ static void test_patch_tool(test_state *state) {
   snprintf(ambiguous_path, sizeof(ambiguous_path), "%s/ambiguous.txt",
            dir_template);
   snprintf(race_path, sizeof(race_path), "%s/raced.txt", dir_template);
+  snprintf(update_race_path, sizeof(update_race_path), "%s/update-raced.txt",
+           dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -27210,6 +27311,106 @@ static void test_patch_tool(test_state *state) {
     config.max_patch_bytes = 0U;
     config.max_file_bytes = 0U;
   }
+  {
+    static const char update_race_patch[] =
+        "*** Begin Patch\n"
+        "*** Update File: update-raced.txt\n"
+        "@@\n"
+        "-before\n"
+        "+after\n"
+        "*** End Patch";
+    int child_status;
+    int child_reaped;
+    int race_fd;
+    int saw_temporary;
+
+    race_capacity = 4U * 1024U * 1024U;
+    race_patch = (char *)malloc(race_capacity);
+    if (race_patch == NULL) {
+      test_fail(state, "patch_update_race_allocate", "allocation failed");
+    } else {
+      memcpy(race_patch, "before\n", sizeof("before\n") - 1U);
+      memset(race_patch + sizeof("before\n") - 1U, 'x',
+             race_capacity - sizeof("before\n") - 1U);
+      race_patch[race_capacity - 2U] = '\n';
+      race_patch[race_capacity - 1U] = '\0';
+      write_file_or_die(update_race_path, race_patch);
+      config.max_patch_bytes = sizeof(update_race_patch);
+      config.max_file_bytes = race_capacity;
+      race_pid = fork();
+      if (race_pid == 0) {
+        cai_error child_error;
+        int child_rc;
+
+        cai_error_init(&child_error);
+        child_rc =
+            cai_apply_patch(&config, update_race_patch, NULL, &child_error);
+        cai_error_cleanup(&child_error);
+        _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+      }
+      if (race_pid < 0) {
+        test_fail(state, "patch_update_race_fork", "fork failed");
+      } else {
+        child_reaped = 0;
+        saw_temporary = 0;
+        (void)snprintf(race_temporary_path, sizeof(race_temporary_path),
+                       "%s/.cai-patch-%ld-0", dir_template, (long)race_pid);
+        for (i = 0U; i < 5000U; i++) {
+          struct timespec pause_time;
+
+          if (access(race_temporary_path, F_OK) == 0) {
+            saw_temporary = 1;
+            break;
+          }
+          if (waitpid(race_pid, &child_status, WNOHANG) == race_pid) {
+            child_reaped = 1;
+            break;
+          }
+          pause_time.tv_sec = 0;
+          pause_time.tv_nsec = 1000000L;
+          (void)nanosleep(&pause_time, NULL);
+        }
+        if (!saw_temporary) {
+          test_fail(state, "patch_update_race_temporary",
+                    "temporary file was not observed");
+        } else if (kill(race_pid, SIGSTOP) != 0 ||
+                   waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+                   !WIFSTOPPED(child_status)) {
+          test_fail(state, "patch_update_race_stop",
+                    "failed to stop patch writer");
+        } else {
+          race_fd = open(update_race_path, O_WRONLY | O_TRUNC | O_CLOEXEC);
+          if (race_fd < 0 || write(race_fd, "external\n", 9U) != 9 ||
+              close(race_fd) != 0) {
+            if (race_fd >= 0) {
+              close(race_fd);
+            }
+            test_fail(state, "patch_update_race_replace",
+                      "failed to replace raced target");
+          }
+          if (kill(race_pid, SIGCONT) != 0) {
+            test_fail(state, "patch_update_race_continue",
+                      "failed to continue patch writer");
+          }
+        }
+        if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
+          child_reaped = 1;
+        }
+        if (!child_reaped || !WIFEXITED(child_status) ||
+            WEXITSTATUS(child_status) != 0) {
+          test_fail(state, "patch_update_race_rejected",
+                    "patch writer did not reject replacement");
+        }
+        contents = read_file_or_die(update_race_path);
+        expect_str(state, "patch_update_race_preserves_external", contents,
+                   "external\n");
+        free(contents);
+      }
+      free(race_patch);
+      config.max_patch_bytes = 0U;
+      config.max_file_bytes = 0U;
+    }
+  }
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "patch_preflight_failure",
@@ -27319,6 +27520,7 @@ static void test_patch_tool(test_state *state) {
   unlink(renamed_path);
   unlink(ambiguous_path);
   unlink(race_path);
+  unlink(update_race_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
 }
@@ -30277,6 +30479,7 @@ static void test_terminal_tools(test_state *state) {
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
   rmdir(dir_template);
+  test_terminal_workdir_pinning(state);
 }
 
 static void test_terminal_concurrent_start(test_state *state) {

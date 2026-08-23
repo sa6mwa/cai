@@ -333,7 +333,7 @@ int cai_chatgpt_auth_default_path(char **out, cai_error *error) {
                          "auth path output pointer is required");
   }
   *out = NULL;
-  xdg = getenv("XDG_CONFIG_HOME");
+  xdg = getenv("XDG_STATE_HOME");
   if (cai_auth_is_absolute_path(xdg)) {
     dir = NULL;
     rc = cai_auth_path_join(&dir, xdg, "cai", error);
@@ -351,15 +351,22 @@ int cai_chatgpt_auth_default_path(char **out, cai_error *error) {
   }
   base = NULL;
   dir = NULL;
-  rc = cai_auth_path_join(&base, home, ".config", error);
+  rc = cai_auth_path_join(&base, home, ".local", error);
   if (rc == CAI_OK) {
-    rc = cai_auth_path_join(&dir, base, "cai", error);
+    rc = cai_auth_path_join(&dir, base, "state", error);
   }
+  cai_free_mem(NULL, base);
+  base = NULL;
   if (rc == CAI_OK) {
-    rc = cai_auth_path_join(out, dir, "auth.json", error);
+    rc = cai_auth_path_join(&base, dir, "cai", error);
   }
   cai_free_mem(NULL, dir);
+  dir = NULL;
+  if (rc == CAI_OK) {
+    rc = cai_auth_path_join(out, base, "auth.json", error);
+  }
   cai_free_mem(NULL, base);
+  cai_free_mem(NULL, dir);
   return rc;
 }
 

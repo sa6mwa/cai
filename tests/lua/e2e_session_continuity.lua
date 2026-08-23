@@ -1,9 +1,5 @@
 local cai = require("cai")
-
-local function skip(message)
-  io.stdout:write("SKIP: " .. message .. "\n")
-  os.exit(0)
-end
+local chatgpt_e2e = dofile("tests/lua/chatgpt_e2e.lua")
 
 local function fail(message)
   error(message, 0)
@@ -18,17 +14,6 @@ local function assert_ok(value, err, label)
     fail((label or "operation") .. " failed: " .. detail)
   end
   return value
-end
-
-local function api_key_config()
-  if os.getenv("OPENAI_API_KEY") ~= nil and os.getenv("OPENAI_API_KEY") ~= "" then
-    return nil
-  end
-  local key = cai.load_dotenv_api_key(cai.DEFAULT_DOTENV_PATH, cai.OPENAI_API_KEY_ENV)
-  if key ~= nil and key ~= "" then
-    return key
-  end
-  return nil
 end
 
 local function stream_turn(session, text)
@@ -54,18 +39,15 @@ local function stream_turn(session, text)
   return table.concat(chunks), table.concat(tool_events, "\n")
 end
 
-if os.getenv("CAI_LUA_SESSION_E2E") ~= "1" then
-  skip("set CAI_LUA_SESSION_E2E=1 to run Lua session continuity e2e")
-end
-local api_key = api_key_config()
-if (os.getenv("OPENAI_API_KEY") == nil or os.getenv("OPENAI_API_KEY") == "") and
-    api_key == nil then
-  skip("OPENAI_API_KEY is not set")
-end
+local auth_path = chatgpt_e2e.require_live_auth(cai, "CAI_LUA_SESSION_E2E")
 
 local secret = "lua-continuity-" .. tostring(os.time()) .. "-gothenburg"
-local client = assert_ok(cai.open({ timeout_ms = 60000, api_key = api_key }), nil, "cai.open")
-local agent = assert_ok(client:new_agent({
+local client, client_err = cai.open({
+  timeout_ms = 60000,
+  chatgpt_auth_json = auth_path,
+})
+client = assert_ok(client, client_err, "cai.open")
+local agent, agent_err = client:new_agent({
   model = cai.MODEL_GPT_5_NANO,
   instructions = table.concat({
     "You are a deterministic Lua SDK integration-test agent.",
@@ -80,7 +62,8 @@ local agent = assert_ok(client:new_agent({
   max_output_tokens = 512,
   session_continuity = cai.CONTINUITY_SERVER,
   prompt_cache_key = "cai:lua-session-continuity-e2e:v1",
-}), nil, "client:new_agent")
+})
+agent = assert_ok(agent, agent_err, "client:new_agent")
 
 local schema = [[
 {"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}

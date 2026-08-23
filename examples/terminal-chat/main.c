@@ -134,7 +134,7 @@ static void print_help(const char *program) {
   fprintf(stderr,
           "  --chatgpt-auth-json <path>\n"
           "                          Use ChatGPT subscription auth from a "
-          "specific Codex-style auth.json file.\n"
+          "specific CAI auth.json file.\n"
           "  --model <model>         Override the model. Defaults to "
           "gpt-5-nano with API keys and gpt-5.4-mini with ChatGPT auth.\n"
           "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"

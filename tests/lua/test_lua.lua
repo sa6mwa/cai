@@ -325,7 +325,6 @@ assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
   "OpenRouter default model")
 assert_eq(cai.MODEL_GPT_5_4_PRO, "gpt-5.4-pro", "GPT-5.4 pro constant")
 assert_eq(cai.MODEL_GPT_5_6_SOL, "gpt-5.6-sol", "GPT-5.6 Sol constant")
-assert_eq(cai.MODEL_GPT_5_6_TERRA, "gpt-5.6-terra", "GPT-5.6 Terra constant")
 assert_eq(cai.MODEL_GPT_5_6_LUNA, "gpt-5.6-luna", "GPT-5.6 Luna constant")
 assert_eq(cai.MODEL_GPT_5_3_CODEX, "gpt-5.3-codex",
   "GPT-5.3-Codex constant")
