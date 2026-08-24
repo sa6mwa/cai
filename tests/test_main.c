@@ -8535,6 +8535,14 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_text.delta\","
       "\"delta\":\"partial\"}\n\n"
       "data: [DONE]\n\n";
+  static const char stream_incomplete_terminal_body[] =
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"partial\"}\n\n"
+      "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":"
+      "\"resp_stream_incomplete\",\"status\":\"incomplete\","
+      "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+      "\"usage\":{\"input_tokens\":3,\"output_tokens\":2,"
+      "\"total_tokens\":5}}}\n\n";
   static const char stream_session_first_body[] =
       "data: {\"type\":\"response.created\",\"response\":{\"id\":"
       "\"resp_stream_session_1\",\"usage\":null,\"instructions\":\"large "
@@ -8825,6 +8833,9 @@ static const char *mock_response_for_request(const char *request) {
       }
       if (strstr(request, "stream missing terminal") != NULL) {
         return stream_missing_terminal_body;
+      }
+      if (strstr(request, "stream incomplete terminal") != NULL) {
+        return stream_incomplete_terminal_body;
       }
       if (strstr(request, "openrouter metadata stream") != NULL) {
         if (stream_openrouter_metadata_body[0] == '\0') {
@@ -33474,7 +33485,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 18);
+    mock_openai_child(pipe_fds[1], 19);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -33637,6 +33648,56 @@ static void test_stream_response_text(test_state *state) {
                 "before response.completed");
   expect_int(state, "stream_missing_terminal_not_completed",
              response_completed.count, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_response_create_params_destroy(custom_params);
+  custom_params = NULL;
+
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_incomplete_terminal_params",
+             cai_response_create_params_new(&custom_params, &error), CAI_OK);
+  expect_int(
+      state, "stream_incomplete_terminal_model",
+      custom_params->set_model(custom_params, CAI_MODEL_GPT_5_NANO, &error),
+      CAI_OK);
+  expect_int(state, "stream_incomplete_terminal_text",
+             custom_params->add_text(custom_params, "user",
+                                     "stream incomplete terminal", &error),
+             CAI_OK);
+  expect_int(state, "stream_incomplete_terminal_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.output_text_suffix.text = "\n";
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
+  {
+    char *response_id;
+
+    response_id = NULL;
+    expect_int(state, "stream_incomplete_terminal_result",
+               cai_client_stream_response_with_id(client, custom_params,
+                                                  &stream_sinks, &response_id,
+                                                  &usage, &error),
+               CAI_ERR_LIMIT);
+    expect_str(state, "stream_incomplete_terminal_text_value", writer.buffer,
+               "partial\n");
+    expect_str(state, "stream_incomplete_terminal_response_id", response_id,
+               "resp_stream_incomplete");
+    expect_int(state, "stream_incomplete_terminal_usage", usage.total_tokens,
+               5L);
+    expect_str(state, "stream_incomplete_terminal_error", error.message,
+               "response ended incomplete");
+    expect_str(state, "stream_incomplete_terminal_reason", error.detail,
+               "max_output_tokens");
+    expect_int(state, "stream_incomplete_terminal_not_completed",
+               response_completed.count, 1L);
+    cai_free_mem(NULL, response_id);
+  }
+  cai_sink_close(sink);
+  sink = NULL;
   cai_error_cleanup(&error);
   cai_error_init(&error);
   cai_response_create_params_destroy(custom_params);
@@ -33891,8 +33952,8 @@ static void test_stream_response_text(test_state *state) {
 
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 19L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 16L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 20L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 17L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
   expect_int(state, "stream_log_error_count", g_test_errorf_count, 3L);
 

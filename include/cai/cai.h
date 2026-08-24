@@ -78,7 +78,7 @@ typedef enum cai_status {
   CAI_ERR_SERVER = 5,
   /** Operation was cancelled. */
   CAI_ERR_CANCELLED = 6,
-  /** Configured usage or spend budget was exceeded. */
+  /** A configured local or provider usage/output limit was reached. */
   CAI_ERR_LIMIT = 7
 } cai_status;
 

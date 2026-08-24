@@ -33,6 +33,7 @@ static const char *const cai_stream_json_event_names[] = {
     "response.created",
     "response.in_progress",
     "response.completed",
+    "response.incomplete",
     "response.output_text.delta",
     "response.reasoning_summary_text.delta",
     "response.reasoning_summary.delta",
@@ -66,6 +67,8 @@ typedef struct cai_stream_usage_doc {
 typedef struct cai_stream_response_doc {
   char *id;
   cai_stream_usage_doc usage;
+  char incomplete_reason[128];
+  int has_incomplete_reason;
 } cai_stream_response_doc;
 
 typedef struct cai_stream_response_event_doc {
@@ -231,6 +234,8 @@ typedef struct cai_sse_state {
   int done_line_start;
   int done_seen;
   int response_completed_seen;
+  int response_incomplete_seen;
+  char response_incomplete_reason[128];
   int event_seen;
   int caller_output_attempted;
   int caller_output_seen;
@@ -564,7 +569,8 @@ typedef enum cai_stream_visitor_context {
   CAI_STREAM_VISITOR_CONTEXT_ARRAY = 2,
   CAI_STREAM_VISITOR_CONTEXT_USAGE = 3,
   CAI_STREAM_VISITOR_CONTEXT_INPUT_DETAILS = 4,
-  CAI_STREAM_VISITOR_CONTEXT_OUTPUT_DETAILS = 5
+  CAI_STREAM_VISITOR_CONTEXT_OUTPUT_DETAILS = 5,
+  CAI_STREAM_VISITOR_CONTEXT_INCOMPLETE_DETAILS = 6
 } cai_stream_visitor_context;
 
 typedef struct cai_stream_type_visitor_state {
@@ -588,6 +594,10 @@ typedef struct cai_stream_response_meta_state {
   size_t id_len;
   int capture_id;
   int has_id;
+  char incomplete_reason[128];
+  size_t incomplete_reason_len;
+  int capture_incomplete_reason;
+  int has_incomplete_reason;
   char number[64];
   size_t number_len;
   long long *current_number_target;
@@ -896,6 +906,9 @@ static lonejson_status cai_stream_response_object_begin(void *user,
   } else if (parent == CAI_STREAM_VISITOR_CONTEXT_USAGE &&
              strcmp(state->current_key, "output_tokens_details") == 0) {
     next = CAI_STREAM_VISITOR_CONTEXT_OUTPUT_DETAILS;
+  } else if (parent == CAI_STREAM_VISITOR_CONTEXT_OBJECT &&
+             strcmp(state->current_key, "incomplete_details") == 0) {
+    next = CAI_STREAM_VISITOR_CONTEXT_INCOMPLETE_DETAILS;
   }
   if ((size_t)state->depth <
       sizeof(state->context_stack) / sizeof(state->context_stack[0])) {
@@ -950,10 +963,18 @@ static lonejson_status cai_stream_response_string_begin(void *user,
                              : CAI_STREAM_VISITOR_CONTEXT_NONE;
   state->capture_id = current == CAI_STREAM_VISITOR_CONTEXT_OBJECT &&
                       strcmp(state->current_key, "id") == 0;
+  state->capture_incomplete_reason =
+      current == CAI_STREAM_VISITOR_CONTEXT_INCOMPLETE_DETAILS &&
+      strcmp(state->current_key, "reason") == 0;
   if (state->capture_id) {
     state->id_len = 0U;
     state->id[0] = '\0';
     state->has_id = 0;
+  }
+  if (state->capture_incomplete_reason) {
+    state->incomplete_reason_len = 0U;
+    state->incomplete_reason[0] = '\0';
+    state->has_incomplete_reason = 0;
   }
   return cai_stream_value_ok(user, error);
 }
@@ -966,7 +987,22 @@ static lonejson_status cai_stream_response_string_chunk(void *user,
   size_t copy_len;
 
   state = (cai_stream_response_meta_state *)user;
-  if (!state->capture_id) {
+  if (!state->capture_id && !state->capture_incomplete_reason) {
+    return cai_stream_value_ok(user, error);
+  }
+  if (state->capture_incomplete_reason) {
+    copy_len = len;
+    if (copy_len >
+        sizeof(state->incomplete_reason) - state->incomplete_reason_len - 1U) {
+      copy_len =
+          sizeof(state->incomplete_reason) - state->incomplete_reason_len - 1U;
+    }
+    if (copy_len > 0U) {
+      memcpy(state->incomplete_reason + state->incomplete_reason_len, data,
+             copy_len);
+      state->incomplete_reason_len += copy_len;
+      state->incomplete_reason[state->incomplete_reason_len] = '\0';
+    }
     return cai_stream_value_ok(user, error);
   }
   copy_len = len;
@@ -989,6 +1025,10 @@ static lonejson_status cai_stream_response_string_end(void *user,
   if (state->capture_id) {
     state->capture_id = 0;
     state->has_id = 1;
+  }
+  if (state->capture_incomplete_reason) {
+    state->capture_incomplete_reason = 0;
+    state->has_incomplete_reason = 1;
   }
   return cai_stream_value_ok(user, error);
 }
@@ -1107,6 +1147,11 @@ static int cai_stream_parse_response_meta(const lonejson_spooled *json,
     }
   }
   response->usage = state.usage;
+  if (state.has_incomplete_reason) {
+    memcpy(response->incomplete_reason, state.incomplete_reason,
+           state.incomplete_reason_len + 1U);
+    response->has_incomplete_reason = 1;
+  }
   return CAI_OK;
 }
 
@@ -1640,6 +1685,7 @@ static int cai_sse_emit_event(cai_sse_state *state,
   int completed_initialized;
   int delta_initialized;
   int done_initialized;
+  int response_incomplete;
 
   event_name = event != NULL ? event->event : NULL;
   owned_event_name = NULL;
@@ -1668,6 +1714,7 @@ static int cai_sse_emit_event(cai_sse_state *state,
   item_doc_initialized = 0;
   function_item_doc_initialized = 0;
   completed_initialized = 0;
+  response_incomplete = 0;
   rc = CAI_OK;
 
   if (strcmp(event_name, "response.output_text.delta") == 0 ||
@@ -1788,7 +1835,9 @@ static int cai_sse_emit_event(cai_sse_state *state,
     goto done;
   }
 
-  if (strcmp(event_name, "response.completed") == 0) {
+  if (strcmp(event_name, "response.completed") == 0 ||
+      strcmp(event_name, "response.incomplete") == 0) {
+    response_incomplete = strcmp(event_name, "response.incomplete") == 0;
     state->done_seen = 1;
     rc = cai_stream_parse_response_event(&state->event_json_storage,
                                          &response_event);
@@ -1811,7 +1860,14 @@ static int cai_sse_emit_event(cai_sse_state *state,
     if (rc == CAI_OK && state->out_usage != NULL) {
       cai_stream_copy_usage(state->out_usage, &response_doc.usage);
     }
-    if (rc == CAI_OK) {
+    if (rc == CAI_OK && response_incomplete) {
+      state->response_incomplete_seen = 1;
+      if (response_doc.has_incomplete_reason) {
+        memcpy(state->response_incomplete_reason,
+               response_doc.incomplete_reason,
+               strlen(response_doc.incomplete_reason) + 1U);
+      }
+    } else if (rc == CAI_OK) {
       state->response_completed_seen = 1;
     }
   }
@@ -2812,6 +2868,13 @@ retry_request:
     if (rc == CAI_OK) {
       rc = cai_ws_receive_events(curl, &state, impl->timeout_ms, error);
     }
+    if (rc == CAI_OK && state.response_incomplete_seen) {
+      rc = cai_set_error_detail(error, CAI_ERR_LIMIT,
+                                "response ended incomplete",
+                                state.response_incomplete_reason[0] != '\0'
+                                    ? state.response_incomplete_reason
+                                    : NULL);
+    }
   }
   if (keep_alive && rc != CAI_OK && reused_keep_alive && !state.event_seen &&
       !retried_transient) {
@@ -3013,6 +3076,8 @@ retry_request:
   state.done_line_start = 1;
   state.done_seen = 0;
   state.response_completed_seen = 0;
+  state.response_incomplete_seen = 0;
+  state.response_incomplete_reason[0] = '\0';
   http_success = 0;
   if (state.sse == NULL) {
     rc = cai_set_error(error, cai_sse_status_to_code(sse_error.code),
@@ -3189,6 +3254,14 @@ retry_request:
     cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
                                  state.failed_message);
     return cai_set_error(error, state.failed_code, state.failed_message);
+  }
+  if (state.response_incomplete_seen) {
+    cai_free_mem(NULL, state.body);
+    return cai_set_error_detail(error, CAI_ERR_LIMIT,
+                                "response ended incomplete",
+                                state.response_incomplete_reason[0] != '\0'
+                                    ? state.response_incomplete_reason
+                                    : NULL);
   }
   if (!state.response_completed_seen) {
     cai_free_mem(NULL, state.body);
