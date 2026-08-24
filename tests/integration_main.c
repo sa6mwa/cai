@@ -467,6 +467,8 @@ typedef struct integration_smith_runtime_event_state {
   integration_write_state terminal_output;
   int read_completed;
   int patch_completed;
+  int goal_created;
+  int goal_updated;
   int execute_completed;
   int write_stdin_completed;
   int mcp_echo_completed;
@@ -794,6 +796,10 @@ static int integration_smith_runtime_event(void *context,
       if (state->first_patch_completed_sequence == 0U) {
         state->first_patch_completed_sequence = event->sequence;
       }
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_CREATE_GOAL) {
+      state->goal_created++;
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_UPDATE_GOAL) {
+      state->goal_updated++;
     } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_EXECUTE) {
       state->execute_completed++;
     } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN) {
@@ -4551,6 +4557,100 @@ static int integration_smith_runtime_wait(
                                "Smith runtime live E2E timed out");
 }
 
+static int run_chatgpt_smith_goal_regression(void) {
+  static const char objective[] = "complete the short Smith goal live test";
+  static const char prompt[] =
+      "Create a goal with the exact objective `complete the short Smith goal "
+      "live test` and no token budget. This explicit task is complete as soon "
+      "as that goal exists, so then call update_goal with status complete. Do "
+      "not call any other tool, do not modify files, and do not run commands. "
+      "In the final response include exactly the marker "
+      "SMITH_GOAL_LIVE_CONFIRMED.";
+  cai_agent_runtime_config runtime_config;
+  cai_agent_goal_snapshot goal;
+  cai_client_config client_config;
+  cai_agent_runtime *runtime;
+  cai_client *client;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  char workspace[] = "/tmp/cai-smith-goal-e2e-XXXXXX";
+  int rc;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  memset(&runtime_config, 0, sizeof(runtime_config));
+  memset(&goal, 0, sizeof(goal));
+  memset(&events, 0, sizeof(events));
+  client = NULL;
+  runtime = NULL;
+  workspace_created = 0;
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith goal workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = integration_open_subscription_client(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith goal ChatGPT client open", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = chatgpt_integration_model();
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_runtime_submit(runtime, prompt, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 90, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_runtime_get_goal(runtime, &goal, &error);
+  }
+  if (rc == CAI_OK &&
+      (events.goal_created < 1 || events.goal_updated < 1 || !goal.has_goal ||
+       goal.objective == NULL || goal.status == NULL ||
+       strcmp(goal.objective, objective) != 0 ||
+       strcmp(goal.status, "complete") != 0 ||
+       !integration_text_contains(events.answer.buffer,
+                                  "SMITH_GOAL_LIVE_CONFIRMED"))) {
+    fprintf(stderr,
+            "Smith goal evidence failed (created=%d updated=%d has_goal=%d "
+            "objective=%s status=%s answer=%s)\n",
+            events.goal_created, events.goal_updated, goal.has_goal,
+            goal.objective != NULL ? goal.objective : "(null)",
+            goal.status != NULL ? goal.status : "(null)", events.answer.buffer);
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith live goal contract was not satisfied");
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith goal live E2E", rc, &error);
+  } else {
+    fprintf(stderr,
+            "[integration-chatgpt-smith-goal] model=%s created=%d updated=%d "
+            "status=%s elapsed=%lld\n",
+            chatgpt_integration_model(), events.goal_created,
+            events.goal_updated, goal.status, goal.elapsed_seconds);
+  }
+
+done:
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace)) {
+    fprintf(stderr, "Smith goal live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_chatgpt_smith_runtime_regression(void) {
   static const char pending_contents[] = "title: Smith live E2E\n"
                                          "state: pending\n"
@@ -5834,6 +5934,7 @@ int main(void) {
   const char *compaction;
   const char *chatgpt_subscription;
   const char *chatgpt_smith;
+  const char *chatgpt_smith_goal;
   const char *chatgpt_smith_review;
   const char *chatgpt_smith_mcp_review;
   const char *chatgpt_defaults;
@@ -5876,6 +5977,7 @@ int main(void) {
   }
   chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
   chatgpt_smith = getenv("CAI_INTEGRATION_CHATGPT_SMITH_E2E");
+  chatgpt_smith_goal = getenv("CAI_INTEGRATION_CHATGPT_SMITH_GOAL_E2E");
   chatgpt_smith_review = getenv("CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E");
   chatgpt_smith_mcp_review =
       getenv("CAI_INTEGRATION_CHATGPT_SMITH_MCP_REVIEW_E2E");
@@ -5883,6 +5985,9 @@ int main(void) {
    */
   if (integration_flag_enabled(chatgpt_smith_mcp_review)) {
     return run_chatgpt_smith_review_regression(1);
+  }
+  if (integration_flag_enabled(chatgpt_smith_goal)) {
+    return run_chatgpt_smith_goal_regression();
   }
   if (integration_flag_enabled(chatgpt_smith)) {
     return run_chatgpt_smith_runtime_regression();
