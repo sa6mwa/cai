@@ -253,6 +253,22 @@ struct cai_agent_runtime {
   char *workspace_directory;
   char *session_scope;
   char *session_id;
+  /* The worker publishes this immutable-to-host projection only at model/tool
+   * safe boundaries.  Owner-thread polling must never dereference the live
+   * session, which the worker mutates while sampling. */
+  char *goal_projection_objective;
+  char *goal_projection_status;
+  int goal_projection_has_goal;
+  int goal_projection_has_token_budget;
+  long long goal_projection_token_budget;
+  long long goal_projection_tokens_used;
+  long long goal_projection_elapsed_seconds;
+  long long goal_projection_active_started_at;
+  long long goal_projection_created_at;
+  long long goal_projection_updated_at;
+  /* Per-owner-call copies returned by get_goal. */
+  char *goal_snapshot_objective;
+  char *goal_snapshot_status;
   unsigned long long applied_event_sequence;
   unsigned long long next_event_sequence;
   unsigned long long journal_v2_start_sequence;
@@ -345,6 +361,9 @@ static unsigned int cai_runtime_session_id_counter = 0U;
 static int cai_runtime_session_id_initialized = 0;
 
 static void cai_agent_runtime_destroy(cai_agent_runtime *runtime);
+
+static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
+                                               cai_error *error);
 
 static int cai_runtime_local_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
@@ -1355,6 +1374,49 @@ static int cai_runtime_goal_replace_status(cai_session *session,
   return CAI_OK;
 }
 
+/* Called only by the worker, or during open before the worker starts.  The
+ * runtime lock publishes a fully copied projection for owner-thread polling;
+ * callers of get_goal never read the concurrently mutable session object. */
+static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
+                                               cai_error *error) {
+  cai_session_impl *goal;
+  char *objective;
+  char *status;
+
+  goal = CAI_SESSION_IMPL(runtime->session);
+  objective = NULL;
+  status = NULL;
+  if (goal->goal_status != NULL) {
+    if (goal->goal_objective == NULL) {
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "goal status has no objective");
+    }
+    objective = cai_strdup(NULL, goal->goal_objective);
+    status = cai_strdup(NULL, goal->goal_status);
+    if (objective == NULL || status == NULL) {
+      cai_free_mem(NULL, objective);
+      cai_free_mem(NULL, status);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to snapshot runtime goal");
+    }
+  }
+  pthread_mutex_lock(&runtime->lock);
+  cai_free_mem(NULL, runtime->goal_projection_objective);
+  cai_free_mem(NULL, runtime->goal_projection_status);
+  runtime->goal_projection_objective = objective;
+  runtime->goal_projection_status = status;
+  runtime->goal_projection_has_goal = goal->goal_status != NULL;
+  runtime->goal_projection_has_token_budget = goal->goal_has_token_budget;
+  runtime->goal_projection_token_budget = goal->goal_token_budget;
+  runtime->goal_projection_tokens_used = goal->goal_tokens_used;
+  runtime->goal_projection_elapsed_seconds = goal->goal_elapsed_seconds;
+  runtime->goal_projection_active_started_at = goal->goal_active_started_at;
+  runtime->goal_projection_created_at = goal->goal_created_at;
+  runtime->goal_projection_updated_at = goal->goal_updated_at;
+  pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
+}
+
 static int cai_runtime_goal_add_context(cai_agent_runtime *runtime,
                                         const char *change, cai_error *error) {
   cai_session_impl *goal;
@@ -1554,6 +1616,9 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   }
   if (rc == CAI_OK) {
     rc = cai_session_commit_pending_inputs(runtime->session, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_refresh_goal_projection(runtime, error);
   }
   if (rc == CAI_OK && runtime->event_callback != NULL) {
     pthread_mutex_lock(&runtime->lock);
@@ -2165,6 +2230,9 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
     rc = cai_runtime_account_goal(runtime, &budget_limited, error);
   }
   if (rc == CAI_OK) {
+    rc = cai_runtime_refresh_goal_projection(runtime, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_runtime_apply_queued_goal_controls(runtime, error);
   }
   if (rc == CAI_OK && cai_runtime_goal_paused(runtime)) {
@@ -2687,11 +2755,17 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
     }
     if (rc == CAI_OK) {
+      rc = cai_runtime_refresh_goal_projection(runtime, &error);
+    }
+    if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
     while (rc == CAI_OK && !budget_limited) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
       rc = cai_session_stream_auto(runtime->session, &options, &sinks, &error);
+      if (rc == CAI_OK) {
+        rc = cai_runtime_refresh_goal_projection(runtime, &error);
+      }
       if (rc != CAI_OK) {
         break;
       }
@@ -2720,6 +2794,9 @@ static void *cai_runtime_worker(void *context) {
     }
     if (rc == CAI_OK) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_runtime_refresh_goal_projection(runtime, &error);
     }
     if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, 1, &error);
@@ -4059,6 +4136,9 @@ int cai_agent_runtime_open(cai_client *client,
       rc = cai_runtime_checkpoint(runtime, 0, error);
     }
   }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_refresh_goal_projection(runtime, error);
+  }
   if (rc == CAI_OK && pthread_create(&runtime->worker_thread, NULL,
                                      cai_runtime_worker, runtime) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -4077,6 +4157,10 @@ int cai_agent_runtime_open(cai_client *client,
     cai_free_mem(NULL, runtime->session_scope);
     cai_free_mem(NULL, runtime->workspace_directory);
     cai_free_mem(NULL, runtime->session_id);
+    cai_free_mem(NULL, runtime->goal_projection_objective);
+    cai_free_mem(NULL, runtime->goal_projection_status);
+    cai_free_mem(NULL, runtime->goal_snapshot_objective);
+    cai_free_mem(NULL, runtime->goal_snapshot_status);
     cai_runtime_clear_smith_profile(runtime);
     cai_free_mem(NULL, runtime->review_handoff);
     cai_free_mem(NULL, runtime->review_handoff_report);
@@ -4913,8 +4997,11 @@ void cai_agent_goal_request_init(cai_agent_goal_request *request) {
 
 int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
                                cai_agent_goal_snapshot *out, cai_error *error) {
-  cai_session_impl *goal;
+  char *objective;
+  char *status;
   long long now;
+  long long elapsed;
+  long long delta;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -4925,27 +5012,53 @@ int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_INVALID, "goal snapshot is required");
   }
   memset(out, 0, sizeof(*out));
-  goal = CAI_SESSION_IMPL(runtime->session);
-  out->has_goal = goal->goal_status != NULL;
+  pthread_mutex_lock(&runtime->lock);
+  cai_free_mem(NULL, runtime->goal_snapshot_objective);
+  cai_free_mem(NULL, runtime->goal_snapshot_status);
+  runtime->goal_snapshot_objective = NULL;
+  runtime->goal_snapshot_status = NULL;
+  out->has_goal = runtime->goal_projection_has_goal;
   if (!out->has_goal) {
+    pthread_mutex_unlock(&runtime->lock);
     return CAI_OK;
   }
+  objective = cai_strdup(NULL, runtime->goal_projection_objective);
+  status = cai_strdup(NULL, runtime->goal_projection_status);
+  if (objective == NULL || status == NULL) {
+    cai_free_mem(NULL, objective);
+    cai_free_mem(NULL, status);
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy runtime goal snapshot");
+  }
+  runtime->goal_snapshot_objective = objective;
+  runtime->goal_snapshot_status = status;
   now = (long long)time(NULL);
-  out->objective = goal->goal_objective;
-  out->status = goal->goal_status;
-  out->has_token_budget = goal->goal_has_token_budget;
-  out->token_budget = goal->goal_token_budget;
-  out->tokens_used = goal->goal_tokens_used;
-  out->remaining_tokens =
-      goal->goal_has_token_budget
-          ? (goal->goal_tokens_used >= goal->goal_token_budget
-                 ? 0LL
-                 : goal->goal_token_budget - goal->goal_tokens_used)
-          : 0LL;
-  out->elapsed_seconds =
-      cai_session_goal_elapsed_seconds(runtime->session, now);
-  out->created_at = goal->goal_created_at;
-  out->updated_at = goal->goal_updated_at;
+  elapsed = runtime->goal_projection_elapsed_seconds;
+  if (elapsed < 0LL) {
+    elapsed = 0LL;
+  }
+  if (runtime->goal_projection_active_started_at > 0LL &&
+      now > runtime->goal_projection_active_started_at) {
+    delta = now - runtime->goal_projection_active_started_at;
+    elapsed = elapsed > LLONG_MAX - delta ? LLONG_MAX : elapsed + delta;
+  }
+  out->objective = runtime->goal_snapshot_objective;
+  out->status = runtime->goal_snapshot_status;
+  out->has_token_budget = runtime->goal_projection_has_token_budget;
+  out->token_budget = runtime->goal_projection_token_budget;
+  out->tokens_used = runtime->goal_projection_tokens_used;
+  out->remaining_tokens = runtime->goal_projection_has_token_budget
+                              ? (runtime->goal_projection_tokens_used >=
+                                         runtime->goal_projection_token_budget
+                                     ? 0LL
+                                     : runtime->goal_projection_token_budget -
+                                           runtime->goal_projection_tokens_used)
+                              : 0LL;
+  out->elapsed_seconds = elapsed;
+  out->created_at = runtime->goal_projection_created_at;
+  out->updated_at = runtime->goal_projection_updated_at;
+  pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }
 
@@ -5459,6 +5572,10 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->workspace_directory);
   cai_free_mem(NULL, runtime->session_scope);
   cai_free_mem(NULL, runtime->session_id);
+  cai_free_mem(NULL, runtime->goal_projection_objective);
+  cai_free_mem(NULL, runtime->goal_projection_status);
+  cai_free_mem(NULL, runtime->goal_snapshot_objective);
+  cai_free_mem(NULL, runtime->goal_snapshot_status);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
   cai_runtime_clear_smith_profile(runtime);
   cai_free_mem(NULL, runtime->review_handoff);

@@ -26258,6 +26258,9 @@ static void test_agent_runtime_poll_only(test_state *state) {
 }
 
 static void test_agent_runtime_host_goal_controls(test_state *state) {
+  static const char *const objectives[] = {
+      "polling objective alpha", "polling objective beta",
+      "polling objective gamma", "polling objective delta"};
   char workspace[] = "/tmp/cai-runtime-host-goal-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config config;
@@ -26268,6 +26271,8 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
   cai_error error;
   struct timespec delay;
   int i;
+  int j;
+  size_t objective_index;
 
   if (mkdtemp(workspace) == NULL) {
     test_fail(state, "runtime_host_goal_workspace", "mkdtemp failed");
@@ -26308,6 +26313,34 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
     expect_str(state, "runtime_host_goal_status", goal.status, "active");
     expect_int(state, "runtime_host_goal_remaining", goal.remaining_tokens,
                20L);
+    for (objective_index = 0U;
+         objective_index < sizeof(objectives) / sizeof(objectives[0]);
+         objective_index++) {
+      expect_int(state, "runtime_host_goal_polling_retarget",
+                 cai_agent_runtime_set_goal_objective(
+                     runtime, objectives[objective_index], &error),
+                 CAI_OK);
+      for (i = 0;
+           i < 20 && (goal.objective == NULL ||
+                      strcmp(goal.objective, objectives[objective_index]) != 0);
+           i++) {
+        (void)nanosleep(&delay, NULL);
+        expect_int(state, "runtime_host_goal_polling_get",
+                   cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+      }
+      expect_str(state, "runtime_host_goal_polling_objective", goal.objective,
+                 objectives[objective_index]);
+      for (j = 0; j < 64; j++) {
+        expect_int(state, "runtime_host_goal_polling_stable_get",
+                   cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+        expect_int(state, "runtime_host_goal_polling_has_goal", goal.has_goal,
+                   1L);
+        expect_str(state, "runtime_host_goal_polling_stable_objective",
+                   goal.objective, objectives[objective_index]);
+        expect_str(state, "runtime_host_goal_polling_stable_status",
+                   goal.status, "active");
+      }
+    }
     expect_int(state, "runtime_host_goal_pause",
                cai_agent_runtime_pause_goal(runtime, &error), CAI_OK);
     for (i = 0;

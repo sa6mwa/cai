@@ -218,7 +218,7 @@ void cai_agent_review_request_init(cai_agent_review_request *request);
 typedef struct cai_agent_goal_snapshot {
   /** Non-zero when a goal exists. */
   int has_goal;
-  /** Objective and status, borrowed until the next runtime operation. */
+  /** Objective and status, borrowed until the next goal snapshot or close. */
   const char *objective;
   const char *status;
   /** Non-zero when token_budget and remaining_tokens are meaningful. */

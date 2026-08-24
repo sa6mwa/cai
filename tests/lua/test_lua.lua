@@ -997,6 +997,33 @@ do
     poll_client:close()
   end
   do
+    local callback_client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local callback_runtime
+    local callback_calls = 0
+
+    callback_runtime = assert_ok(callback_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      event_callback = function()
+        callback_calls = callback_calls + 1
+        callback_runtime:close()
+      end,
+    }))
+    assert_ok(callback_runtime:submit("close from Lua event callback"), nil,
+      "Lua callback-close runtime accepts its turn")
+    assert_eq(callback_runtime:pump(100), "cancelled",
+      "Lua callback-close pump reports cancellation")
+    assert_eq(callback_calls, 1, "Lua callback-close called exactly once")
+    assert_throws(function()
+      callback_runtime:state()
+    end, "Lua callback-close runtime is closed after pump")
+    callback_client:close()
+  end
+  do
     local goal_runtime = assert_ok(dummy_client:new_smith_runtime({
       workspace_directory = ".",
       disable_default_session_store = true,

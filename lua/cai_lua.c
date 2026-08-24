@@ -119,6 +119,8 @@ typedef struct cai_lua_agent_runtime {
   int review_abandoned;
   size_t review_child_count;
   size_t active_calls;
+  size_t callback_calls;
+  int close_requested;
 } cai_lua_agent_runtime;
 
 typedef struct cai_lua_response {
@@ -2911,15 +2913,18 @@ static int cai_lua_agent_runtime_event(void *context,
   lua_setfield(L, -2, "terminal_output_truncated");
   lua_pushboolean(L, event->terminal_detached_processes_possible != 0);
   lua_setfield(L, -2, "terminal_detached_processes_possible");
+  self->callback_calls++;
   if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
     const char *message;
 
+    self->callback_calls--;
     message = lua_tostring(L, -1);
     lua_settop(L, top);
     return cai_lua_set_error(
         error, CAI_ERR_INVALID,
         message != NULL ? message : "Lua agent runtime callback failed");
   }
+  self->callback_calls--;
   lua_settop(L, top);
   return CAI_OK;
 }
@@ -3670,22 +3675,8 @@ static const char *cai_lua_agent_runtime_state_name(cai_agent_run_state state) {
   return "unknown";
 }
 
-static int cai_lua_agent_runtime_gc(lua_State *L) {
-  cai_lua_agent_runtime *self;
-
-  self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
-  if (self->active_calls != 0U ||
-      (self->review_parent_ref != LUA_NOREF && !self->review_finished &&
-       !self->review_abandoned) ||
-      self->review_child_count != 0U) {
-    return 0;
-  }
-  if (self->ptr != NULL) {
-    cai_lua_agent_runtime_enter(self);
-    cai_agent_runtime_close(self->ptr);
-    cai_lua_agent_runtime_leave(self);
-    self->ptr = NULL;
-  }
+static void cai_lua_agent_runtime_release(lua_State *L,
+                                          cai_lua_agent_runtime *self) {
   cai_lua_runtime_mcp_clients_release(L, self);
   if (self->callback_ref != LUA_NOREF) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->callback_ref);
@@ -3740,6 +3731,25 @@ static int cai_lua_agent_runtime_gc(lua_State *L) {
     self->review_children_ref = LUA_NOREF;
   }
   self->parent_client = NULL;
+}
+
+static int cai_lua_agent_runtime_gc(lua_State *L) {
+  cai_lua_agent_runtime *self;
+
+  self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
+  if (self->active_calls != 0U ||
+      (self->review_parent_ref != LUA_NOREF && !self->review_finished &&
+       !self->review_abandoned) ||
+      self->review_child_count != 0U) {
+    return 0;
+  }
+  if (self->ptr != NULL) {
+    cai_lua_agent_runtime_enter(self);
+    cai_agent_runtime_close(self->ptr);
+    cai_lua_agent_runtime_leave(self);
+    self->ptr = NULL;
+  }
+  cai_lua_agent_runtime_release(L, self);
   return 0;
 }
 
@@ -3749,13 +3759,30 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
   cai_error error;
 
   self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
-  if (self->active_calls != 0U) {
+  if (self->active_calls != 0U && self->callback_calls == 0U) {
     cai_error_init(&error);
     return cai_lua_fail(
         L,
         cai_lua_set_error(&error, CAI_ERR_INVALID,
                           "cai agent runtime has an active operation"),
         &error);
+  }
+  if (self->active_calls != 0U) {
+    if ((self->review_parent_ref != LUA_NOREF && !self->review_finished) ||
+        self->review_child_count != 0U) {
+      cai_error_init(&error);
+      return cai_lua_fail(
+          L,
+          cai_lua_set_error(
+              &error, CAI_ERR_INVALID,
+              "finish the active review before closing either agent runtime"),
+          &error);
+    }
+    if (!self->close_requested && self->ptr != NULL) {
+      cai_agent_runtime_close(self->ptr);
+      self->close_requested = 1;
+    }
+    return 0;
   }
   if (self->review_parent_ref != LUA_NOREF && !self->review_finished) {
     /*
@@ -4132,10 +4159,18 @@ static int cai_lua_agent_runtime_pump(lua_State *L) {
   cai_lua_agent_runtime_enter(self);
   rc =
       cai_agent_runtime_pump(self->ptr, (long)luaL_optinteger(L, 2, 0), &error);
-  if (rc == CAI_OK) {
+  if (self->close_requested) {
+    /* A Lua event callback may close its runtime. The C pump owns deferred
+     * teardown and has destroyed ptr before returning to this frame. */
+    self->ptr = NULL;
+    state = CAI_AGENT_CANCELLED;
+  } else if (rc == CAI_OK) {
     rc = cai_agent_runtime_state(self->ptr, &state, &error);
   }
   cai_lua_agent_runtime_leave(self);
+  if (self->close_requested) {
+    cai_lua_agent_runtime_release(L, self);
+  }
   if (rc != CAI_OK) {
     return cai_lua_fail(L, rc, &error);
   }
