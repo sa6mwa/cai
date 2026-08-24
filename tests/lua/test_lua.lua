@@ -1157,6 +1157,15 @@ assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
 assert_not_ok(dummy_agent:add_user_text_spooled({ read = "not callable" }),
   "agent spooled reader with non-callable read must fail")
 local dummy_session = assert_ok(dummy_agent:new_session())
+do
+  local value, err = dummy_session:run_auto({
+    max_tool_calls_per_round = -1,
+  })
+  local rejection = assert_not_ok(value, err,
+    "negative Lua per-round tool-call limit must fail")
+  assert_eq(rejection.status_string, "invalid",
+    "Lua per-round tool-call limit must reach native validation")
+end
 assert_ok(dummy_session:set_usage_limits({
   max_input_tokens = 10,
   max_input_cached_tokens = 10,

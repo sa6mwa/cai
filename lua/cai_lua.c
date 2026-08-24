@@ -4516,6 +4516,10 @@ static int cai_lua_tool_event_trampoline(void *context,
     lua_pushstring(ctx->L, event->name);
     lua_setfield(ctx->L, -2, "name");
   }
+  if (event->call_id != NULL) {
+    lua_pushstring(ctx->L, event->call_id);
+    lua_setfield(ctx->L, -2, "call_id");
+  }
   if (event->arguments_json != NULL) {
     lua_pushstring(ctx->L, event->arguments_json);
     lua_setfield(ctx->L, -2, "arguments_json");
@@ -4569,6 +4573,8 @@ static void cai_lua_run_options_from_table(lua_State *L, int index,
   }
   options->max_tool_rounds = cai_lua_opt_int_field(L, index, "max_tool_rounds",
                                                    options->max_tool_rounds);
+  options->max_tool_calls_per_round = cai_lua_opt_int_field(
+      L, index, "max_tool_calls_per_round", options->max_tool_calls_per_round);
   options->disable_tool_auto_run = cai_lua_opt_int_field(
       L, index, "disable_tool_auto_run", options->disable_tool_auto_run);
   options->tool_output_memory_limit = cai_lua_opt_size_field(

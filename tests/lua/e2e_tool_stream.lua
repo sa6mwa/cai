@@ -97,6 +97,7 @@ local function_deltas = {}
 local function_done = {}
 local output_items = {}
 local tool_events = {}
+local tool_event_call_ids = {}
 local tool_output = {}
 local retained_function_deltas = {}
 local retained_function_done = {}
@@ -148,7 +149,11 @@ ok, err = session:stream({
     return true
   end,
   tool_event = function(event)
+    if type(event.call_id) ~= "string" or event.call_id == "" then
+      fail("tool event did not include a stable call_id")
+    end
     tool_events[#tool_events + 1] = event.kind .. ":" .. (event.name or "")
+    tool_event_call_ids[event.kind] = event.call_id
     if event.arguments_spooled ~= nil then
       retained_tool_event_args[#retained_tool_event_args + 1] = event.arguments_spooled
       local args = event.arguments_spooled:read_all()
@@ -205,6 +210,12 @@ if not table.concat(tool_events, "\n"):match("start:lua_stream_fact") then
 end
 if not table.concat(tool_events, "\n"):match("output:lua_stream_fact") then
   fail("missing tool output event")
+end
+if tool_event_call_ids.start == nil or tool_event_call_ids.output == nil then
+  fail("missing call IDs for Lua tool lifecycle events")
+end
+if tool_event_call_ids.start ~= tool_event_call_ids.output then
+  fail("Lua tool lifecycle events did not retain the same call ID")
 end
 if not output:find(secret, 1, true) then
   fail("streamed tool output did not include secret; output=" .. output)
