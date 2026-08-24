@@ -4532,6 +4532,9 @@ static int cai_session_stream_once(cai_session *session,
   if (rc == CAI_OK && sinks->response_completed != NULL) {
     rc = sinks->response_completed(sinks->response_completed_context, error);
   }
+  if (rc == CAI_ERR_LIMIT && response_id != NULL) {
+    cai_session_clear_inputs(session);
+  }
   cai_response_create_params_destroy(params);
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
@@ -4542,9 +4545,6 @@ static int cai_session_stream_once(cai_session *session,
   }
   if (capture_stream && capture.output_items_initialized) {
     capture.output_items.cleanup(&capture.output_items);
-  }
-  if (rc == CAI_ERR_LIMIT && response_id != NULL) {
-    cai_session_clear_inputs(session);
   }
   return rc;
 }

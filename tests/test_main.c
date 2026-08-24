@@ -33456,6 +33456,7 @@ static void test_stream_response_text(test_state *state) {
   cai_agent *agent;
   cai_session *session;
   cai_session *callback_session;
+  cai_session *incomplete_session;
   cai_source *source;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -33485,7 +33486,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 19);
+    mock_openai_child(pipe_fds[1], 20);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -33521,6 +33522,7 @@ static void test_stream_response_text(test_state *state) {
   agent = NULL;
   session = NULL;
   callback_session = NULL;
+  incomplete_session = NULL;
   params = NULL;
   custom_params = NULL;
   sink = NULL;
@@ -33931,6 +33933,25 @@ static void test_stream_response_text(test_state *state) {
   cai_sink_close(sink);
   sink = NULL;
 
+  expect_int(state, "stream_session_incomplete_new",
+             cai_agent_new_session(agent, &incomplete_session, &error), CAI_OK);
+  expect_int(state, "stream_session_incomplete_add",
+             cai_session_add_user_text(incomplete_session,
+                                       "stream incomplete terminal", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text_delta = test_stream_output_delta;
+  stream_sinks.output_text_context = &output_stream;
+  expect_int(state, "stream_session_incomplete_result",
+             cai_session_stream(incomplete_session, &stream_sinks, &error),
+             CAI_ERR_LIMIT);
+  expect_str(state, "stream_session_incomplete_error", error.message,
+             "response ended incomplete");
+  expect_int(state, "stream_session_incomplete_inputs_cleared",
+             (long)CAI_SESSION_IMPL(incomplete_session)->input_count, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   expect_int(state, "stream_session_completion_failure_new",
              cai_agent_new_session(agent, &callback_session, &error), CAI_OK);
   expect_int(state, "stream_session_completion_failure_add",
@@ -33952,13 +33973,14 @@ static void test_stream_response_text(test_state *state) {
 
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 20L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 17L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 21L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 18L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
   expect_int(state, "stream_log_error_count", g_test_errorf_count, 3L);
 
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(custom_params);
+  cai_session_destroy(incomplete_session);
   cai_session_destroy(callback_session);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
