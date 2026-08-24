@@ -432,6 +432,12 @@ typedef struct terminal_event_state {
   unsigned long long command_id;
 } terminal_event_state;
 
+typedef struct runtime_terminal_close_callback_state {
+  cai_agent_runtime *runtime;
+  int notify_fd;
+  int calls;
+} runtime_terminal_close_callback_state;
+
 typedef struct terminal_race_policy_state {
   pthread_mutex_t lock;
   pthread_cond_t changed;
@@ -1980,6 +1986,29 @@ static int test_runtime_close_and_submit_steering(
         state->runtime, "must not survive shutdown", &submit_error);
     cai_error_cleanup(&submit_error);
     state->runtime = NULL;
+  }
+  return CAI_OK;
+}
+
+static int test_runtime_close_from_terminal_event(
+    void *context, const cai_terminal_event *event, cai_error *error) {
+  runtime_terminal_close_callback_state *state;
+  char signal;
+
+  (void)error;
+  state = (runtime_terminal_close_callback_state *)context;
+  if (state == NULL || event == NULL ||
+      event->type != CAI_TERMINAL_EVENT_COMMAND_STARTED) {
+    return CAI_OK;
+  }
+  state->calls++;
+  if (state->runtime != NULL) {
+    cai_agent_runtime_close(state->runtime);
+    state->runtime = NULL;
+  }
+  signal = 'x';
+  if (state->notify_fd >= 0) {
+    (void)write(state->notify_fd, &signal, 1U);
   }
   return CAI_OK;
 }
@@ -24754,6 +24783,21 @@ static void test_smith_profile(test_state *state) {
     rmdir(policy_dir);
     rmdir(policy_root);
   }
+  /* This remains deliberately relative. CTest runs from the build directory,
+   * which has no repository marker, so Codex-compatible discovery must
+   * canonicalize it before walking parents. */
+  config.workspace_directory = ".";
+  config.agent_config_directory = NULL;
+  config.global_instruction_store = NULL;
+  config.codex_compat_agents_md = 1;
+  expect_int(state, "smith_codex_compat_relative_workspace_open",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  config.codex_compat_agents_md = 0;
   if (mkdtemp(instructions_workspace) == NULL ||
       (external_fd = mkstemp(external_instructions)) < 0 ||
       snprintf(agents_path, sizeof(agents_path), "%s/AGENTS.md",
@@ -25794,6 +25838,112 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   if (client != NULL) {
     cai_client_close(client);
   }
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_terminal_callback_close(test_state *state) {
+  static const char tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_terminal_close\",\"type\":"
+      "\"function_call\",\"call_id\":\"call_terminal_close\","
+      "\"name\":\"exec_command\",\"arguments\":"
+      "\"{\\\"cmd\\\":\\\"printf terminal-close\\\","
+      "\\\"yield_time_ms\\\":1}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_terminal_close_1\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"terminal close complete\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_terminal_close_2\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":1,\"total_tokens\":3}}}\n\n";
+  static const char *first_required[] = {
+      "\"stream\":true", "\"name\":\"exec_command\"",
+      "close from terminal lifecycle callback"};
+  static const char *second_required[] = {
+      "\"type\":\"function_call_output\"",
+      "\"call_id\":\"call_terminal_close\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, tool_response},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, final_response}};
+  http_mock_client mock;
+  cai_agent_runtime_config config;
+  cai_terminal_tool_config terminal_config;
+  runtime_terminal_close_callback_state close_state;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  struct pollfd close_poll;
+  int close_pipe[2];
+  char signal;
+
+  runtime = NULL;
+  close_pipe[0] = -1;
+  close_pipe[1] = -1;
+  memset(&mock, 0, sizeof(mock));
+  memset(&close_state, 0, sizeof(close_state));
+  memset(&terminal_config, 0, sizeof(terminal_config));
+  cai_error_init(&error);
+  if (pipe(close_pipe) != 0) {
+    test_fail(state, "runtime_terminal_callback_close_pipe", "pipe failed");
+    goto cleanup;
+  }
+  if (http_mock_client_open_script(state, "runtime_terminal_callback_close",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    goto cleanup;
+  }
+  close_state.notify_fd = close_pipe[1];
+  terminal_config.event_callback = test_runtime_close_from_terminal_event;
+  terminal_config.event_context = &close_state;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.disable_default_session_store = 1;
+  config.terminal_tool_config = &terminal_config;
+  expect_int(state, "runtime_terminal_callback_close_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    close_state.runtime = runtime;
+    expect_int(state, "runtime_terminal_callback_close_submit",
+               cai_agent_runtime_submit(
+                   runtime, "close from terminal lifecycle callback", &error),
+               CAI_OK);
+    close_poll.fd = close_pipe[0];
+    close_poll.events = POLLIN;
+    close_poll.revents = 0;
+    expect_int(state, "runtime_terminal_callback_close_signal",
+               poll(&close_poll, 1U, 15000L), 1L);
+    if ((close_poll.revents & POLLIN) != 0) {
+      expect_int(state, "runtime_terminal_callback_close_read",
+                 read(close_pipe[0], &signal, 1U), 1L);
+      /* The worker callback has returned from close but is still using the
+       * runtime. Pump owns deferred destruction and joins only after it
+       * unwinds. */
+      expect_int(state, "runtime_terminal_callback_close_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_terminal_callback_close_called",
+                 close_state.calls, 1L);
+      runtime = NULL;
+    }
+  }
+
+cleanup:
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  if (close_pipe[0] >= 0) {
+    close(close_pipe[0]);
+  }
+  if (close_pipe[1] >= 0) {
+    close(close_pipe[1]);
+  }
+  http_mock_client_close(state, "runtime_terminal_callback_close", &mock);
   cai_error_cleanup(&error);
 }
 
@@ -38722,6 +38872,8 @@ static const test_entry test_entries[] = {
     {"smith_review_pause_checkpoint_failure",
      test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_runtime_terminal_callback_close",
+     test_agent_runtime_terminal_callback_close},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
     {"agent_runtime_poll_only", test_agent_runtime_poll_only},

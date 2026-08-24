@@ -4820,6 +4820,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
 
 void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   int owner_callback;
+  int worker_callback;
 
   if (runtime == NULL) {
     return;
@@ -4831,6 +4832,18 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime) {
   }
   runtime->stopping = 1;
   owner_callback = pthread_equal(runtime->owner_thread, pthread_self());
+  worker_callback = runtime->worker_started &&
+                    pthread_equal(runtime->worker_thread, pthread_self());
+  if (worker_callback) {
+    /* Terminal lifecycle callbacks run on the agent worker. Joining or freeing
+     * here would destroy the runtime while the callback dispatcher still uses
+     * it. The owner pump (or a later external close) completes teardown after
+     * this worker frame has unwound. */
+    runtime->close_deferred = 1;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    return;
+  }
   if (runtime->pumping && owner_callback) {
     runtime->close_deferred = 1;
     pthread_cond_broadcast(&runtime->condition);

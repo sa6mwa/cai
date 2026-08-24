@@ -9,9 +9,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+extern char *realpath(const char *path, char *resolved_path);
 
 #define CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS (128U * 1024U)
 #define CAI_AGENT_IDENTITY_TOKEN "{{agent_identity}}"
@@ -641,6 +644,7 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
                                        char **out, cai_error *error) {
   char resolved[PATH_MAX];
   char workspace_path[PATH_MAX];
+  char canonical_workspace[PATH_MAX];
   char *global_path;
   char *global_part;
   char *part;
@@ -737,12 +741,15 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
     }
     return rc;
   }
-  if (strlen(config->workspace_directory) >= sizeof(resolved)) {
+  if (realpath(config->workspace_directory, canonical_workspace) == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith workspace directory must exist");
+  }
+  if (strlen(canonical_workspace) >= sizeof(resolved)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "Smith workspace path is too long");
   }
-  memcpy(resolved, config->workspace_directory,
-         strlen(config->workspace_directory) + 1U);
+  memcpy(resolved, canonical_workspace, strlen(canonical_workspace) + 1U);
   cursor = resolved;
   for (;;) {
     dir_fd = open(cursor, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -767,7 +774,7 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
     cai_free_mem(allocator, global_part);
     if (rc == CAI_OK) {
       rc = cai_smith_load_workspace_instruction_file(
-          allocator, config->workspace_directory, &part, error);
+          allocator, canonical_workspace, &part, error);
     }
     if (rc == CAI_OK) {
       rc = cai_smith_append_instructions(allocator, out, part, 0, error);
@@ -775,8 +782,7 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
     cai_free_mem(allocator, part);
     return rc;
   }
-  memcpy(workspace_path, config->workspace_directory,
-         strlen(config->workspace_directory) + 1U);
+  memcpy(workspace_path, canonical_workspace, strlen(canonical_workspace) + 1U);
   cursor = workspace_path;
   for (;;) {
     char *workspace_part;
