@@ -26401,6 +26401,7 @@ static void test_agent_runtime_goal_budget(test_state *state) {
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
+  cai_agent_goal_snapshot goal;
   struct pollfd poll_fd;
   cai_error error;
   int i;
@@ -26439,6 +26440,7 @@ static void test_agent_runtime_goal_budget(test_state *state) {
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
+  memset(&goal, 0, sizeof(goal));
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   memset(&store, 0, sizeof(store));
@@ -26513,6 +26515,12 @@ static void test_agent_runtime_goal_budget(test_state *state) {
                   store_state.saved_checkpoint, "queued at budget boundary");
     expect_int(state, "runtime_goal_budget_rejected_checkpoint_watermark",
                (long)store_state.saved_applied_event_sequence, 7L);
+    expect_int(state, "runtime_goal_budget_published_snapshot",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_int(state, "runtime_goal_budget_published_snapshot_exists",
+               goal.has_goal, 1L);
+    expect_str(state, "runtime_goal_budget_published_snapshot_status",
+               goal.status, "budget_limited");
     expect_int(
         state, "runtime_goal_budget_reject_resubmit",
         cai_agent_runtime_submit(runtime, "try after budget limit", &error),

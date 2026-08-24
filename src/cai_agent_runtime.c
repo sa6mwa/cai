@@ -4230,8 +4230,12 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "agent runtime already has an active turn");
   }
-  if (kind == CAI_RUNTIME_INPUT_TURN &&
-      cai_runtime_goal_budget_limited(runtime)) {
+  /* Owner-thread input admission must use the worker-published goal
+   * projection.  The session goal fields are mutated by the worker and are
+   * intentionally not safe to inspect while holding only runtime->lock. */
+  if (kind == CAI_RUNTIME_INPUT_TURN && runtime->goal_projection_has_goal &&
+      runtime->goal_projection_status != NULL &&
+      strcmp(runtime->goal_projection_status, "budget_limited") == 0) {
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_LIMIT,
