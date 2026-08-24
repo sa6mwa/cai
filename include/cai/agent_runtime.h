@@ -112,7 +112,9 @@ typedef enum cai_agent_runtime_event_type {
    * One model response finished. A single agent run can contain multiple
    * responses when steering is delivered after a response boundary.
    */
-  CAI_AGENT_EVENT_RESPONSE_COMPLETED = 22
+  CAI_AGENT_EVENT_RESPONSE_COMPLETED = 22,
+  /** Durable goal state changed at a model/tool safe boundary. */
+  CAI_AGENT_EVENT_GOAL_CHANGED = 23
 } cai_agent_runtime_event_type;
 
 /**
@@ -211,6 +213,34 @@ typedef struct cai_agent_review_request {
 
 /** Initialize a zero-defaultable review request. */
 void cai_agent_review_request_init(cai_agent_review_request *request);
+
+/** Borrowed immutable projection of a runtime goal. */
+typedef struct cai_agent_goal_snapshot {
+  /** Non-zero when a goal exists. */
+  int has_goal;
+  /** Objective and status, borrowed until the next runtime operation. */
+  const char *objective;
+  const char *status;
+  /** Non-zero when token_budget and remaining_tokens are meaningful. */
+  int has_token_budget;
+  long long token_budget;
+  long long tokens_used;
+  /** Never negative; zero means the budget is exhausted. */
+  long long remaining_tokens;
+  /** Active wall time, excluding paused and terminal intervals. */
+  long long elapsed_seconds;
+  long long created_at;
+  long long updated_at;
+} cai_agent_goal_snapshot;
+
+/** Request for a host-created goal. objective is required and borrowed. */
+typedef struct cai_agent_goal_request {
+  const char *objective;
+  int has_token_budget;
+  long long token_budget;
+} cai_agent_goal_request;
+
+void cai_agent_goal_request_init(cai_agent_goal_request *request);
 
 /** Configuration for a host-neutral CAI agent runtime. */
 typedef struct cai_agent_runtime_config {
@@ -416,6 +446,28 @@ int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
 int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
                                                const char *text,
                                                cai_error *error);
+/** Return the current durable goal projection on the owner thread. */
+int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
+                               cai_agent_goal_snapshot *out, cai_error *error);
+/**
+ * Queue a host goal control. Controls are journaled before acceptance and
+ * apply at the next model/tool safe boundary; when idle they apply promptly.
+ * These functions are owner-thread-only. They may be called while sampling.
+ */
+int cai_agent_runtime_create_goal(cai_agent_runtime *runtime,
+                                  const cai_agent_goal_request *request,
+                                  cai_error *error);
+int cai_agent_runtime_pause_goal(cai_agent_runtime *runtime, cai_error *error);
+int cai_agent_runtime_resume_goal(cai_agent_runtime *runtime, cai_error *error);
+int cai_agent_runtime_set_goal_objective(cai_agent_runtime *runtime,
+                                         const char *objective,
+                                         cai_error *error);
+int cai_agent_runtime_set_goal_token_budget(cai_agent_runtime *runtime,
+                                            long long token_budget,
+                                            cai_error *error);
+int cai_agent_runtime_clear_goal_token_budget(cai_agent_runtime *runtime,
+                                              cai_error *error);
+int cai_agent_runtime_clear_goal(cai_agent_runtime *runtime, cai_error *error);
 /**
  * Drain queued events on the owner thread. When no event is ready, wait up to
  * timeout_ms (zero is non-blocking); the timeout is advisory and this function

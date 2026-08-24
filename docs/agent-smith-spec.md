@@ -922,9 +922,14 @@ contract:
   desire for clarification is not enough;
 - a budgeted completed goal reports its final usage.
 
-Goal statuses are `active`, `complete`, `blocked`, `usage_limited`, and
-`budget_limited`. Only `active` is model-settable at creation and only
-`complete`/`blocked` at update. Host policy controls pause/resume/usage limits.
+Goal statuses are `active`, `paused`, `complete`, `blocked`, `usage_limited`,
+and `budget_limited`. Only `active` is model-settable at creation and only
+`complete`/`blocked` at update. Hosts can create, pause, resume, replace an
+objective, set or remove a token budget, and clear a goal through the runtime.
+Those controls are accepted during sampling, journaled before success, and
+applied at the next model/tool safe boundary. `cai_agent_runtime_get_goal`
+returns the UI-facing snapshot, including elapsed active seconds and a
+non-negative remaining-token count when a budget exists.
 CAI records at most one blocked assessment for each distinct user-turn
 boundary. A repeated `update_goal({"status":"blocked"})` in the same turn is
 rejected without advancing the count; an intervening active-goal turn that
@@ -937,13 +942,15 @@ atomically records `budget_limited`, checkpoints that terminal state, and
 prevents the next model request. It does **not** auto-continue indefinitely:
 after a completed model turn, a host must call `pump`/submit according to the
 normal runtime policy.
-The first delivery can emit a continuation context item only when an explicit
-host setting enables goal continuation.
+Each host transition appends a compact internal developer-context record with
+the current objective, status, accounting, elapsed active time, and any changed
+budget. This makes resumed or retargeted work explicit to the model without
+pretending that Markdown or UI state is session serialization.
 
 Goal context injection mirrors Codex conceptually: short internal user-context
 fragments are appended for objective updates, continuation, and limits. They
-are session records and model input, but are marked internal so normal
-transcript renderers do not display them as user prose.
+are session records and model input; hosts should render developer-role records
+as internal context rather than presenting them as user prose.
 
 ## 11. Session storage and resume
 

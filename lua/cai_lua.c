@@ -4006,6 +4006,121 @@ static int cai_lua_agent_runtime_submit_queued(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_goal(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_agent_goal_snapshot goal;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_get_goal(self->ptr, &goal, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  lua_newtable(L);
+  lua_pushboolean(L, goal.has_goal);
+  lua_setfield(L, -2, "has_goal");
+  if (goal.has_goal) {
+    lua_pushstring(L, goal.objective);
+    lua_setfield(L, -2, "objective");
+    lua_pushstring(L, goal.status);
+    lua_setfield(L, -2, "status");
+    lua_pushboolean(L, goal.has_token_budget);
+    lua_setfield(L, -2, "has_token_budget");
+    if (goal.has_token_budget) {
+      lua_pushinteger(L, (lua_Integer)goal.token_budget);
+      lua_setfield(L, -2, "token_budget");
+      lua_pushinteger(L, (lua_Integer)goal.remaining_tokens);
+      lua_setfield(L, -2, "remaining_tokens");
+    }
+    lua_pushinteger(L, (lua_Integer)goal.tokens_used);
+    lua_setfield(L, -2, "tokens_used");
+    lua_pushinteger(L, (lua_Integer)goal.elapsed_seconds);
+    lua_setfield(L, -2, "elapsed_seconds");
+    lua_pushinteger(L, (lua_Integer)goal.created_at);
+    lua_setfield(L, -2, "created_at");
+    lua_pushinteger(L, (lua_Integer)goal.updated_at);
+    lua_setfield(L, -2, "updated_at");
+  }
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+enum {
+  CAI_LUA_GOAL_CREATE = 1,
+  CAI_LUA_GOAL_PAUSE = 2,
+  CAI_LUA_GOAL_RESUME = 3,
+  CAI_LUA_GOAL_SET_OBJECTIVE = 4,
+  CAI_LUA_GOAL_SET_BUDGET = 5,
+  CAI_LUA_GOAL_CLEAR_BUDGET = 6,
+  CAI_LUA_GOAL_CLEAR = 7
+};
+
+static int cai_lua_agent_runtime_goal_control(lua_State *L, int kind) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  int rc;
+  cai_agent_goal_request request;
+
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  if (kind == CAI_LUA_GOAL_CREATE) {
+    cai_agent_goal_request_init(&request);
+    if (lua_istable(L, 2)) {
+      lua_getfield(L, 2, "objective");
+      request.objective = luaL_checkstring(L, -1);
+      lua_pop(L, 1);
+      lua_getfield(L, 2, "token_budget");
+      if (!lua_isnil(L, -1)) {
+        request.has_token_budget = 1;
+        request.token_budget = (long long)luaL_checkinteger(L, -1);
+      }
+      lua_pop(L, 1);
+    } else {
+      request.objective = luaL_checkstring(L, 2);
+    }
+    rc = cai_agent_runtime_create_goal(self->ptr, &request, &error);
+  } else if (kind == CAI_LUA_GOAL_PAUSE)
+    rc = cai_agent_runtime_pause_goal(self->ptr, &error);
+  else if (kind == CAI_LUA_GOAL_RESUME)
+    rc = cai_agent_runtime_resume_goal(self->ptr, &error);
+  else if (kind == CAI_LUA_GOAL_SET_OBJECTIVE)
+    rc = cai_agent_runtime_set_goal_objective(self->ptr, luaL_checkstring(L, 2),
+                                              &error);
+  else if (kind == CAI_LUA_GOAL_SET_BUDGET)
+    rc = cai_agent_runtime_set_goal_token_budget(
+        self->ptr, (long long)luaL_checkinteger(L, 2), &error);
+  else if (kind == CAI_LUA_GOAL_CLEAR_BUDGET)
+    rc = cai_agent_runtime_clear_goal_token_budget(self->ptr, &error);
+  else
+    rc = cai_agent_runtime_clear_goal(self->ptr, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+static int cai_lua_agent_runtime_create_goal(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_CREATE);
+}
+static int cai_lua_agent_runtime_pause_goal(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_PAUSE);
+}
+static int cai_lua_agent_runtime_resume_goal(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_RESUME);
+}
+static int cai_lua_agent_runtime_set_goal_objective(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_SET_OBJECTIVE);
+}
+static int cai_lua_agent_runtime_set_goal_token_budget(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_SET_BUDGET);
+}
+static int cai_lua_agent_runtime_clear_goal_token_budget(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_CLEAR_BUDGET);
+}
+static int cai_lua_agent_runtime_clear_goal(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_CLEAR);
+}
+
 static int cai_lua_agent_runtime_pump(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_run_state state;
@@ -9891,6 +10006,14 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"finish_review", cai_lua_agent_runtime_finish_review},
     {"submit_steering", cai_lua_agent_runtime_submit_steering},
     {"submit_queued", cai_lua_agent_runtime_submit_queued},
+    {"goal", cai_lua_agent_runtime_goal},
+    {"create_goal", cai_lua_agent_runtime_create_goal},
+    {"pause_goal", cai_lua_agent_runtime_pause_goal},
+    {"resume_goal", cai_lua_agent_runtime_resume_goal},
+    {"set_goal_objective", cai_lua_agent_runtime_set_goal_objective},
+    {"set_goal_token_budget", cai_lua_agent_runtime_set_goal_token_budget},
+    {"clear_goal_token_budget", cai_lua_agent_runtime_clear_goal_token_budget},
+    {"clear_goal", cai_lua_agent_runtime_clear_goal},
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
     {"session_id", cai_lua_agent_runtime_session_id},
@@ -10311,6 +10434,7 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_REASONING_SUMMARY);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RESPONSE_COMPLETED",
                       CAI_AGENT_EVENT_RESPONSE_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_GOAL_CHANGED", CAI_AGENT_EVENT_GOAL_CHANGED);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_READ_FILE",
                       CAI_AGENT_PRESET_TOOL_READ_FILE);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_LIST_FILES",

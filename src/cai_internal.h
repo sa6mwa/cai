@@ -109,6 +109,10 @@ typedef struct cai_session_impl {
   /** Cumulative session usage at goal creation; not user-visible accounting. */
   long long goal_token_usage_baseline;
   long long goal_tokens_used;
+  /** Accumulated active wall time; excludes paused and terminal intervals. */
+  long long goal_elapsed_seconds;
+  /** Wall clock when the current active interval began, or zero. */
+  long long goal_active_started_at;
   long long goal_created_at;
   long long goal_updated_at;
   /** Monotonic user-turn ordinal used to qualify blocked-goal updates. */
@@ -149,6 +153,11 @@ int cai_set_error_http(cai_error *error, int code, long http_status,
                        const char *message, const char *detail,
                        const char *server_code, const char *request_id);
 int cai_usage_limits_validate(const cai_usage_limits *limits, cai_error *error);
+
+long long cai_session_goal_elapsed_seconds(const cai_session *session,
+                                           long long now);
+void cai_session_goal_start_elapsed(cai_session *session, long long now);
+void cai_session_goal_stop_elapsed(cai_session *session, long long now);
 
 int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, const char *env_name,

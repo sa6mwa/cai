@@ -943,7 +943,7 @@ local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }
 do
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "pump", "state",
+  for _, method in ipairs({ "submit", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
     "session_id", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
@@ -995,6 +995,43 @@ do
       "Lua poll-only runtime does not queue undrainable events")
     poll_runtime:close()
     poll_client:close()
+  end
+  do
+    local goal_runtime = assert_ok(dummy_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+    }))
+    assert_ok(goal_runtime:create_goal({ objective = "Exercise host goals", token_budget = 12 }))
+    local goal
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      goal = goal_runtime:goal()
+      if goal.has_goal then break end
+    end
+    assert(goal and goal.status == "active", "Lua host goal creation")
+    assert(goal.remaining_tokens == 12, "Lua host goal remaining budget")
+    assert_ok(goal_runtime:pause_goal())
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      goal = goal_runtime:goal()
+      if goal.status == "paused" then break end
+    end
+    assert(goal.status == "paused", "Lua host goal pause")
+    assert_ok(goal_runtime:resume_goal())
+    assert_ok(goal_runtime:set_goal_objective("Retargeted host goal"))
+    assert_ok(goal_runtime:clear_goal_token_budget())
+    for _ = 1, 10 do goal_runtime:pump(10) end
+    goal = goal_runtime:goal()
+    assert(goal.status == "active" and goal.objective == "Retargeted host goal",
+      "Lua host goal resume and retarget")
+    assert(not goal.has_token_budget, "Lua host goal budget removal")
+    assert_ok(goal_runtime:clear_goal())
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      if not goal_runtime:goal().has_goal then break end
+    end
+    assert(not goal_runtime:goal().has_goal, "Lua host goal clear")
+    goal_runtime:close()
   end
   do
     local rejected_mcp = assert_ok(cai.mcp_client({

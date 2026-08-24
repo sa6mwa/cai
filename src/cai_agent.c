@@ -95,6 +95,9 @@ typedef struct cai_session_state_doc {
   int has_goal_token_budget;
   long long goal_token_usage_baseline;
   long long goal_tokens_used;
+  long long goal_elapsed_seconds;
+  long long goal_active_started_at;
+  int has_goal_active_started_at;
   long long goal_blocked_attempts;
   long long goal_turn_count;
   int has_goal_turn_count;
@@ -127,6 +130,11 @@ static const lonejson_field cai_session_state_fields[] = {
                        "goal_token_usage_baseline"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_tokens_used,
                        "goal_tokens_used"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, goal_elapsed_seconds,
+                       "goal_elapsed_seconds"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, goal_active_started_at,
+                               has_goal_active_started_at,
+                               "goal_active_started_at"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_blocked_attempts,
                        "goal_blocked_attempts"),
     LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, goal_turn_count,
@@ -146,7 +154,7 @@ LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
 static int cai_session_goal_status_is_valid(const char *status) {
   return status != NULL &&
          (strcmp(status, "active") == 0 || strcmp(status, "complete") == 0 ||
-          strcmp(status, "blocked") == 0 ||
+          strcmp(status, "blocked") == 0 || strcmp(status, "paused") == 0 ||
           strcmp(status, "usage_limited") == 0 ||
           strcmp(status, "budget_limited") == 0);
 }
@@ -3259,6 +3267,54 @@ static int cai_session_replay_history_with_params_input(
   return rc;
 }
 
+long long cai_session_goal_elapsed_seconds(const cai_session *session,
+                                           long long now) {
+  const cai_session_impl *impl;
+  long long elapsed;
+
+  if (session == NULL) {
+    return 0LL;
+  }
+  impl = CAI_SESSION_IMPL(session);
+  elapsed = impl->goal_elapsed_seconds;
+  if (elapsed < 0LL) {
+    elapsed = 0LL;
+  }
+  if (impl->goal_active_started_at > 0LL &&
+      now > impl->goal_active_started_at) {
+    long long delta = now - impl->goal_active_started_at;
+
+    if (elapsed > LLONG_MAX - delta) {
+      return LLONG_MAX;
+    }
+    elapsed += delta;
+  }
+  return elapsed;
+}
+
+void cai_session_goal_start_elapsed(cai_session *session, long long now) {
+  cai_session_impl *impl;
+
+  if (session == NULL || now <= 0LL) {
+    return;
+  }
+  impl = CAI_SESSION_IMPL(session);
+  if (impl->goal_active_started_at == 0LL) {
+    impl->goal_active_started_at = now;
+  }
+}
+
+void cai_session_goal_stop_elapsed(cai_session *session, long long now) {
+  cai_session_impl *impl;
+
+  if (session == NULL) {
+    return;
+  }
+  impl = CAI_SESSION_IMPL(session);
+  impl->goal_elapsed_seconds = cai_session_goal_elapsed_seconds(session, now);
+  impl->goal_active_started_at = 0LL;
+}
+
 static int cai_session_goal_budget_limited(const cai_session *session) {
   return session != NULL && CAI_SESSION_IMPL(session)->goal_status != NULL &&
          strcmp(CAI_SESSION_IMPL(session)->goal_status, "budget_limited") == 0;
@@ -5502,6 +5558,11 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.goal_token_usage_baseline =
       CAI_SESSION_IMPL(session)->goal_token_usage_baseline;
   doc.goal_tokens_used = CAI_SESSION_IMPL(session)->goal_tokens_used;
+  doc.goal_elapsed_seconds = CAI_SESSION_IMPL(session)->goal_elapsed_seconds;
+  doc.goal_active_started_at =
+      CAI_SESSION_IMPL(session)->goal_active_started_at;
+  doc.has_goal_active_started_at =
+      CAI_SESSION_IMPL(session)->goal_active_started_at > 0LL;
   doc.goal_blocked_attempts =
       (long long)CAI_SESSION_IMPL(session)->goal_blocked_attempts;
   doc.goal_turn_count = CAI_SESSION_IMPL(session)->goal_turn_count;
@@ -5748,6 +5809,12 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     CAI_SESSION_IMPL(session)->goal_token_usage_baseline =
         doc.goal_token_usage_baseline;
     CAI_SESSION_IMPL(session)->goal_tokens_used = doc.goal_tokens_used;
+    CAI_SESSION_IMPL(session)->goal_elapsed_seconds =
+        doc.goal_elapsed_seconds < 0LL ? 0LL : doc.goal_elapsed_seconds;
+    CAI_SESSION_IMPL(session)->goal_active_started_at =
+        doc.has_goal_active_started_at && doc.goal_active_started_at > 0LL
+            ? doc.goal_active_started_at
+            : 0LL;
     CAI_SESSION_IMPL(session)->goal_blocked_attempts =
         doc.goal_blocked_attempts < 0LL || doc.goal_blocked_attempts > 2LL
             ? 0

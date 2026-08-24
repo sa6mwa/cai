@@ -33,6 +33,9 @@ typedef struct cai_goal_result {
   long long token_budget;
   int has_token_budget;
   long long tokens_used;
+  long long elapsed_seconds;
+  long long remaining_tokens;
+  int has_remaining_tokens;
   long long created_at;
   long long updated_at;
 } cai_goal_result;
@@ -65,6 +68,9 @@ static const lonejson_field cai_goal_result_fields[] = {
     LONEJSON_FIELD_I64_PRESENT(cai_goal_result, token_budget, has_token_budget,
                                "token_budget"),
     LONEJSON_FIELD_I64_REQ(cai_goal_result, tokens_used, "tokens_used"),
+    LONEJSON_FIELD_I64_REQ(cai_goal_result, elapsed_seconds, "elapsed_seconds"),
+    LONEJSON_FIELD_I64_PRESENT(cai_goal_result, remaining_tokens,
+                               has_remaining_tokens, "remaining_tokens"),
     LONEJSON_FIELD_I64_REQ(cai_goal_result, created_at, "created_at"),
     LONEJSON_FIELD_I64_REQ(cai_goal_result, updated_at, "updated_at")};
 LONEJSON_MAP_DEFINE(cai_goal_result_map, cai_goal_result,
@@ -119,6 +125,15 @@ static int cai_goal_fill_result(cai_goal_context *context,
   result->token_budget = session->goal_token_budget;
   result->has_token_budget = session->goal_has_token_budget;
   result->tokens_used = session->goal_tokens_used;
+  result->elapsed_seconds =
+      cai_session_goal_elapsed_seconds(context->session, cai_goal_now());
+  if (session->goal_has_token_budget) {
+    result->has_remaining_tokens = 1;
+    result->remaining_tokens =
+        session->goal_tokens_used >= session->goal_token_budget
+            ? 0LL
+            : session->goal_token_budget - session->goal_tokens_used;
+  }
   result->created_at = session->goal_created_at;
   result->updated_at = session->goal_updated_at;
   return CAI_OK;
@@ -191,6 +206,8 @@ static int cai_goal_create(void *value, const void *params, void *out,
   session->goal_token_budget = 0LL;
   session->goal_token_usage_baseline = 0LL;
   session->goal_tokens_used = 0LL;
+  session->goal_elapsed_seconds = 0LL;
+  session->goal_active_started_at = 0LL;
   session->goal_created_at = 0LL;
   session->goal_updated_at = 0LL;
   session->goal_blocked_last_turn = -1LL;
@@ -211,6 +228,7 @@ static int cai_goal_create(void *value, const void *params, void *out,
   session->goal_tokens_used = 0LL;
   session->goal_created_at = now;
   session->goal_updated_at = now;
+  cai_session_goal_start_elapsed(context->session, now);
   session->goal_blocked_last_turn = -1LL;
   session->goal_blocked_attempts = 0;
   return cai_goal_fill_result(context, (cai_goal_result *)out, error);
@@ -262,6 +280,7 @@ static int cai_goal_update(void *value, const void *params, void *out,
                session->goal_status);
   session->goal_status = status;
   session->goal_updated_at = cai_goal_now();
+  cai_session_goal_stop_elapsed(context->session, session->goal_updated_at);
   return cai_goal_fill_result(context, (cai_goal_result *)out, error);
 }
 
@@ -288,6 +307,8 @@ static int cai_goal_clear(void *value, const void *params, void *out,
   session->goal_has_token_budget = 0;
   session->goal_token_usage_baseline = 0LL;
   session->goal_tokens_used = 0LL;
+  session->goal_elapsed_seconds = 0LL;
+  session->goal_active_started_at = 0LL;
   session->goal_created_at = 0LL;
   session->goal_updated_at = 0LL;
   session->goal_blocked_last_turn = -1LL;

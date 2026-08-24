@@ -23,6 +23,7 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
 #define CAI_RUNTIME_DEFAULT_TURN_LIMIT 32U
+#define CAI_RUNTIME_DEFAULT_GOAL_CONTROL_LIMIT 32U
 #define CAI_RUNTIME_XID_RAW_BYTES 12U
 #define CAI_RUNTIME_XID_TEXT_BYTES 20U
 #define CAI_RUNTIME_EXPORT_MAX_DEPTH 128U
@@ -144,6 +145,25 @@ typedef enum cai_runtime_input_kind {
   CAI_RUNTIME_INPUT_QUEUED_TURN = 2
 } cai_runtime_input_kind;
 
+typedef enum cai_runtime_goal_control_kind {
+  CAI_RUNTIME_GOAL_CREATE = 1,
+  CAI_RUNTIME_GOAL_PAUSE = 2,
+  CAI_RUNTIME_GOAL_RESUME = 3,
+  CAI_RUNTIME_GOAL_SET_OBJECTIVE = 4,
+  CAI_RUNTIME_GOAL_SET_BUDGET = 5,
+  CAI_RUNTIME_GOAL_CLEAR_BUDGET = 6,
+  CAI_RUNTIME_GOAL_CLEAR = 7
+} cai_runtime_goal_control_kind;
+
+typedef struct cai_runtime_goal_control_node {
+  int kind;
+  char *text;
+  long long token_budget;
+  int has_token_budget;
+  unsigned long long journal_sequence;
+  struct cai_runtime_goal_control_node *next;
+} cai_runtime_goal_control_node;
+
 typedef enum cai_runtime_export_container_kind {
   CAI_RUNTIME_EXPORT_OBJECT = 1,
   CAI_RUNTIME_EXPORT_ARRAY = 2
@@ -256,6 +276,10 @@ struct cai_agent_runtime {
   cai_runtime_input_node *turn_tail;
   cai_runtime_input_node *steering_head;
   cai_runtime_input_node *steering_tail;
+  size_t goal_control_limit;
+  size_t goal_control_count;
+  cai_runtime_goal_control_node *goal_control_head;
+  cai_runtime_goal_control_node *goal_control_tail;
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
   cai_terminal_event_fn terminal_event_callback;
@@ -409,6 +433,15 @@ static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
 }
 
 static void cai_runtime_input_node_free(cai_runtime_input_node *node) {
+  if (node == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, node->text);
+  cai_free_mem(NULL, node);
+}
+
+static void
+cai_runtime_goal_control_node_free(cai_runtime_goal_control_node *node) {
   if (node == NULL) {
     return;
   }
@@ -1282,6 +1315,7 @@ static int cai_runtime_account_goal(cai_agent_runtime *runtime,
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                session->goal_status);
   session->goal_status = status;
+  cai_session_goal_stop_elapsed(runtime->session, session->goal_updated_at);
   if (out_budget_limited != NULL) {
     *out_budget_limited = 1;
   }
@@ -1294,6 +1328,272 @@ static int cai_runtime_goal_budget_limited(const cai_agent_runtime *runtime) {
   session = CAI_SESSION_IMPL(runtime->session);
   return session->goal_status != NULL &&
          strcmp(session->goal_status, "budget_limited") == 0;
+}
+
+static int cai_runtime_goal_paused(const cai_agent_runtime *runtime) {
+  const cai_session_impl *session;
+
+  session = CAI_SESSION_IMPL(runtime->session);
+  return session->goal_status != NULL &&
+         strcmp(session->goal_status, "paused") == 0;
+}
+
+static int cai_runtime_goal_replace_status(cai_session *session,
+                                           const char *value,
+                                           cai_error *error) {
+  cai_session_impl *impl;
+  char *copy;
+
+  impl = CAI_SESSION_IMPL(session);
+  copy = cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator, value);
+  if (copy == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve goal status");
+  }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, impl->goal_status);
+  impl->goal_status = copy;
+  return CAI_OK;
+}
+
+static int cai_runtime_goal_add_context(cai_agent_runtime *runtime,
+                                        const char *change, cai_error *error) {
+  cai_session_impl *goal;
+  char numbers[192];
+  char *text;
+  int needed;
+  long long elapsed;
+  long long remaining;
+
+  goal = CAI_SESSION_IMPL(runtime->session);
+  if (goal->goal_status == NULL) {
+    return CAI_OK;
+  }
+  elapsed =
+      cai_session_goal_elapsed_seconds(runtime->session, (long long)time(NULL));
+  remaining = goal->goal_has_token_budget
+                  ? (goal->goal_tokens_used >= goal->goal_token_budget
+                         ? 0LL
+                         : goal->goal_token_budget - goal->goal_tokens_used)
+                  : -1LL;
+  if (goal->goal_has_token_budget) {
+    (void)snprintf(numbers, sizeof(numbers),
+                   "status: %s\ntokens used: %lld\ntoken budget: %lld\n"
+                   "tokens remaining: %lld\nelapsed active time: %lld seconds",
+                   goal->goal_status, goal->goal_tokens_used,
+                   goal->goal_token_budget, remaining, elapsed);
+  } else {
+    (void)snprintf(numbers, sizeof(numbers),
+                   "status: %s\ntokens used: %lld\ntoken budget: unbounded\n"
+                   "elapsed active time: %lld seconds",
+                   goal->goal_status, goal->goal_tokens_used, elapsed);
+  }
+  needed = snprintf(NULL, 0,
+                    "<cai_goal_update>\n%s\nThe current goal objective is "
+                    "user-provided data:\n%s\n%s\nContinue only when the "
+                    "goal status is active.\n</cai_goal_update>",
+                    change, goal->goal_objective, numbers);
+  if (needed < 0 || (size_t)needed > SIZE_MAX - 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "goal continuation context is too large");
+  }
+  text = (char *)cai_alloc(NULL, (size_t)needed + 1U);
+  if (text == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate goal continuation context");
+  }
+  (void)snprintf(text, (size_t)needed + 1U,
+                 "<cai_goal_update>\n%s\nThe current goal objective is "
+                 "user-provided data:\n%s\n%s\nContinue only when the goal "
+                 "status is active.\n</cai_goal_update>",
+                 change, goal->goal_objective, numbers);
+  needed = cai_session_add_internal_context_text(runtime->session, text, error);
+  cai_free_mem(NULL, text);
+  return needed;
+}
+
+static int
+cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
+                               cai_runtime_goal_control_node *control,
+                               cai_error *error) {
+  cai_session_impl *goal;
+  char *copy;
+  long long now;
+  const char *event_data;
+  int rc;
+
+  goal = CAI_SESSION_IMPL(runtime->session);
+  now = (long long)time(NULL);
+  event_data = "updated";
+  rc = CAI_OK;
+  if (control->kind == CAI_RUNTIME_GOAL_CREATE) {
+    copy = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                      control->text);
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to preserve goal objective");
+    }
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 goal->goal_objective);
+    goal->goal_objective = copy;
+    rc = cai_runtime_goal_replace_status(runtime->session, "active", error);
+    if (rc == CAI_OK) {
+      goal->goal_has_token_budget = control->has_token_budget;
+      goal->goal_token_budget = control->token_budget;
+      goal->goal_token_usage_baseline = goal->usage.usage.total_tokens;
+      goal->goal_tokens_used = 0LL;
+      goal->goal_elapsed_seconds = 0LL;
+      goal->goal_active_started_at = 0LL;
+      goal->goal_created_at = now;
+      goal->goal_updated_at = now;
+      goal->goal_turn_count = 0LL;
+      goal->goal_blocked_last_turn = -1LL;
+      goal->goal_blocked_attempts = 0;
+      cai_session_goal_start_elapsed(runtime->session, now);
+      event_data = "created";
+      rc = cai_runtime_goal_add_context(runtime, "A host created a new goal.",
+                                        error);
+    }
+  } else if (goal->goal_status == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "no goal exists");
+  } else if (control->kind == CAI_RUNTIME_GOAL_PAUSE) {
+    if (strcmp(goal->goal_status, "active") != 0) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "only an active goal can pause");
+    }
+    cai_session_goal_stop_elapsed(runtime->session, now);
+    rc = cai_runtime_goal_replace_status(runtime->session, "paused", error);
+    if (rc == CAI_OK) {
+      goal->goal_updated_at = now;
+      event_data = "paused";
+      rc = cai_runtime_goal_add_context(runtime, "The host paused this goal.",
+                                        error);
+    }
+  } else if (control->kind == CAI_RUNTIME_GOAL_RESUME) {
+    if (strcmp(goal->goal_status, "paused") != 0 &&
+        strcmp(goal->goal_status, "budget_limited") != 0 &&
+        strcmp(goal->goal_status, "blocked") != 0) {
+      return cai_set_error(error, CAI_ERR_INVALID, "goal is not resumable");
+    }
+    rc = cai_runtime_goal_replace_status(runtime->session, "active", error);
+    if (rc == CAI_OK) {
+      goal->goal_updated_at = now;
+      goal->goal_token_usage_baseline = goal->usage.usage.total_tokens;
+      cai_session_goal_start_elapsed(runtime->session, now);
+      event_data = "resumed";
+      rc = cai_runtime_goal_add_context(runtime, "The host resumed this goal.",
+                                        error);
+    }
+  } else if (control->kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE) {
+    copy = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                      control->text);
+    if (copy == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to preserve goal objective");
+    }
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 goal->goal_objective);
+    goal->goal_objective = copy;
+    goal->goal_updated_at = now;
+    event_data = "objective_changed";
+    rc = cai_runtime_goal_add_context(
+        runtime,
+        "The host changed the objective; it supersedes prior objectives.",
+        error);
+  } else if (control->kind == CAI_RUNTIME_GOAL_SET_BUDGET ||
+             control->kind == CAI_RUNTIME_GOAL_CLEAR_BUDGET) {
+    goal->goal_has_token_budget =
+        control->kind == CAI_RUNTIME_GOAL_SET_BUDGET ? 1 : 0;
+    goal->goal_token_budget =
+        goal->goal_has_token_budget ? control->token_budget : 0LL;
+    goal->goal_updated_at = now;
+    if (strcmp(goal->goal_status, "budget_limited") == 0 &&
+        (!goal->goal_has_token_budget ||
+         goal->goal_tokens_used < goal->goal_token_budget)) {
+      rc = cai_runtime_goal_replace_status(runtime->session, "active", error);
+      if (rc == CAI_OK) {
+        goal->goal_token_usage_baseline = goal->usage.usage.total_tokens;
+        cai_session_goal_start_elapsed(runtime->session, now);
+      }
+    }
+    if (rc == CAI_OK) {
+      event_data =
+          goal->goal_has_token_budget ? "budget_changed" : "budget_removed";
+      rc = cai_runtime_goal_add_context(
+          runtime,
+          goal->goal_has_token_budget ? "The host changed the token budget."
+                                      : "The host removed the token budget.",
+          error);
+    }
+  } else if (control->kind == CAI_RUNTIME_GOAL_CLEAR) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 goal->goal_objective);
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 goal->goal_status);
+    goal->goal_objective = NULL;
+    goal->goal_status = NULL;
+    goal->goal_has_token_budget = 0;
+    goal->goal_token_budget = 0LL;
+    goal->goal_token_usage_baseline = 0LL;
+    goal->goal_tokens_used = 0LL;
+    goal->goal_elapsed_seconds = 0LL;
+    goal->goal_active_started_at = 0LL;
+    goal->goal_created_at = 0LL;
+    goal->goal_updated_at = 0LL;
+    goal->goal_turn_count = 0LL;
+    goal->goal_blocked_last_turn = -1LL;
+    goal->goal_blocked_attempts = 0;
+    event_data = "cleared";
+    rc = cai_session_add_internal_context_text(
+        runtime->session,
+        "<cai_goal_update>\nThe host cleared the goal. Continue the current "
+        "user turn without goal tracking unless the user explicitly creates "
+        "another goal.\n</cai_goal_update>",
+        error);
+  } else {
+    return cai_set_error(error, CAI_ERR_INVALID, "unknown goal control");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_inputs(runtime->session, error);
+  }
+  if (rc == CAI_OK && runtime->event_callback != NULL) {
+    pthread_mutex_lock(&runtime->lock);
+    rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_GOAL_CHANGED,
+                                    event_data, strlen(event_data), NULL, NULL,
+                                    runtime->state, error);
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  return rc;
+}
+
+static int cai_runtime_apply_queued_goal_controls(cai_agent_runtime *runtime,
+                                                  cai_error *error) {
+  cai_runtime_goal_control_node *control;
+  int rc;
+
+  for (;;) {
+    pthread_mutex_lock(&runtime->lock);
+    control = runtime->goal_control_head;
+    if (control != NULL) {
+      runtime->goal_control_head = control->next;
+      if (runtime->goal_control_head == NULL) {
+        runtime->goal_control_tail = NULL;
+      }
+      runtime->goal_control_count--;
+    }
+    pthread_mutex_unlock(&runtime->lock);
+    if (control == NULL) {
+      return CAI_OK;
+    }
+    rc = cai_runtime_apply_goal_control(runtime, control, error);
+    cai_runtime_goal_control_node_free(control);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    rc = cai_runtime_checkpoint(runtime, 1, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
 }
 
 static int
@@ -1864,6 +2164,13 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   if (rc == CAI_OK) {
     rc = cai_runtime_account_goal(runtime, &budget_limited, error);
   }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_apply_queued_goal_controls(runtime, error);
+  }
+  if (rc == CAI_OK && cai_runtime_goal_paused(runtime)) {
+    return cai_set_error(error, CAI_ERR_CANCELLED,
+                         "goal paused at a safe model boundary");
+  }
   /* The tool-loop durable boundary checkpoints only after it has committed
    * the safe tool result that accompanies this round. */
   (void)budget_limited;
@@ -2015,6 +2322,7 @@ static int cai_runtime_replay_journal_event(
   cai_agent_runtime *runtime;
   cai_runtime_input_node *input;
   int input_event;
+  int goal_kind;
 
   runtime = (cai_agent_runtime *)context;
   if (runtime == NULL || event == NULL || event->type == NULL) {
@@ -2044,6 +2352,99 @@ static int cai_runtime_replay_journal_event(
       return CAI_OK;
     }
     return cai_runtime_replay_consumed_input(runtime, event, error);
+  }
+  goal_kind = (strcmp(event->type, "goal_create") == 0 ||
+               strcmp(event->type, "goal_create_budget") == 0)
+                  ? CAI_RUNTIME_GOAL_CREATE
+              : strcmp(event->type, "goal_pause") == 0 ? CAI_RUNTIME_GOAL_PAUSE
+              : strcmp(event->type, "goal_resume") == 0
+                  ? CAI_RUNTIME_GOAL_RESUME
+              : strcmp(event->type, "goal_objective_set") == 0
+                  ? CAI_RUNTIME_GOAL_SET_OBJECTIVE
+              : strcmp(event->type, "goal_budget_set") == 0
+                  ? CAI_RUNTIME_GOAL_SET_BUDGET
+              : strcmp(event->type, "goal_budget_clear") == 0
+                  ? CAI_RUNTIME_GOAL_CLEAR_BUDGET
+              : strcmp(event->type, "goal_clear") == 0 ? CAI_RUNTIME_GOAL_CLEAR
+                                                       : 0;
+  if (goal_kind != 0) {
+    cai_runtime_goal_control_node *control;
+    char *end;
+
+    if (event->sequence <= runtime->applied_event_sequence) {
+      return CAI_OK;
+    }
+    if ((goal_kind == CAI_RUNTIME_GOAL_CREATE ||
+         goal_kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE ||
+         goal_kind == CAI_RUNTIME_GOAL_SET_BUDGET) &&
+        (event->data == NULL || event->data[0] == '\0')) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "goal journal event has no required data");
+    }
+    if (runtime->goal_control_count >= runtime->goal_control_limit) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "goal control queue is too small to resume session");
+    }
+    control =
+        (cai_runtime_goal_control_node *)cai_alloc(NULL, sizeof(*control));
+    if (control == NULL)
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to restore goal control");
+    memset(control, 0, sizeof(*control));
+    control->kind = goal_kind;
+    control->journal_sequence = event->sequence;
+    if (goal_kind == CAI_RUNTIME_GOAL_CREATE &&
+        strcmp(event->type, "goal_create_budget") == 0) {
+      const char *newline = strchr(event->data, '\n');
+      size_t objective_length;
+
+      if (newline == NULL) {
+        cai_runtime_goal_control_node_free(control);
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "goal journal create budget is invalid");
+      }
+      errno = 0;
+      control->token_budget = strtoll(event->data, &end, 10);
+      if (errno != 0 || end != newline || control->token_budget <= 0LL ||
+          newline[1] == '\0') {
+        cai_runtime_goal_control_node_free(control);
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "goal journal create budget is invalid");
+      }
+      objective_length = strlen(newline + 1U);
+      control->text = cai_strndup(NULL, newline + 1U, objective_length);
+      if (control->text == NULL) {
+        cai_runtime_goal_control_node_free(control);
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to restore goal objective");
+      }
+      control->has_token_budget = 1;
+    } else if (goal_kind == CAI_RUNTIME_GOAL_CREATE ||
+               goal_kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE) {
+      control->text = cai_strdup(NULL, event->data);
+      if (control->text == NULL) {
+        cai_runtime_goal_control_node_free(control);
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to restore goal objective");
+      }
+    } else if (goal_kind == CAI_RUNTIME_GOAL_SET_BUDGET) {
+      errno = 0;
+      control->token_budget = strtoll(event->data, &end, 10);
+      if (errno != 0 || end == event->data || *end != '\0' ||
+          control->token_budget <= 0LL) {
+        cai_runtime_goal_control_node_free(control);
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "goal journal budget is invalid");
+      }
+      control->has_token_budget = 1;
+    }
+    if (runtime->goal_control_tail == NULL)
+      runtime->goal_control_head = control;
+    else
+      runtime->goal_control_tail->next = control;
+    runtime->goal_control_tail = control;
+    runtime->goal_control_count++;
+    return CAI_OK;
   }
   if (!input_event) {
     return CAI_OK;
@@ -2187,15 +2588,27 @@ static void *cai_runtime_worker(void *context) {
   for (;;) {
     cai_error_init(&error);
     pthread_mutex_lock(&runtime->lock);
-    while (!runtime->stopping &&
-           (runtime->turn_head == NULL || runtime->active_review != NULL ||
-            runtime->review_launching || runtime->review_pause_pending)) {
+    while (!runtime->stopping && runtime->goal_control_head == NULL &&
+           (runtime->turn_head == NULL || cai_runtime_goal_paused(runtime) ||
+            runtime->active_review != NULL || runtime->review_launching ||
+            runtime->review_pause_pending)) {
       pthread_cond_wait(&runtime->condition, &runtime->lock);
     }
     if (runtime->stopping) {
       pthread_mutex_unlock(&runtime->lock);
       break;
     }
+    pthread_mutex_unlock(&runtime->lock);
+    rc = cai_runtime_apply_queued_goal_controls(runtime, &error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(&error);
+      continue;
+    }
+    if (cai_runtime_goal_paused(runtime)) {
+      cai_error_cleanup(&error);
+      continue;
+    }
+    pthread_mutex_lock(&runtime->lock);
     input =
         cai_runtime_take_input_locked(&runtime->turn_head, &runtime->turn_tail);
     if (input != NULL && input->counts_toward_turn_limit &&
@@ -2203,10 +2616,6 @@ static void *cai_runtime_worker(void *context) {
       runtime->turn_count--;
     }
     if (input != NULL && input->queued_turn) {
-      /* A queued turn becomes active while it is still protected by the
-       * runtime lock.  In particular, do not expose COMPLETED between taking
-       * this input and publishing RUN_STARTED: callers must not be able to
-       * submit a competing immediate turn in that interval. */
       runtime->state = CAI_AGENT_SAMPLING;
       runtime->accepting_steering = 1;
       rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_STARTED,
@@ -2287,7 +2696,8 @@ static void *cai_runtime_worker(void *context) {
         break;
       }
       pthread_mutex_lock(&runtime->lock);
-      if (runtime->steering_head == NULL) {
+      if (runtime->steering_head == NULL &&
+          runtime->goal_control_head == NULL) {
         runtime->accepting_steering = 0;
         pthread_mutex_unlock(&runtime->lock);
         break;
@@ -2322,7 +2732,8 @@ static void *cai_runtime_worker(void *context) {
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
     if (rc == CAI_OK ||
-        (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime))) {
+        (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime)) ||
+        (rc == CAI_ERR_CANCELLED && cai_runtime_goal_paused(runtime))) {
       runtime->state = CAI_AGENT_COMPLETED;
       if (runtime->review_mode && runtime->review_report_length > 0U) {
         (void)cai_runtime_enqueue_locked(
@@ -3236,6 +3647,20 @@ static int cai_runtime_export_handover_markdown(cai_agent_runtime *runtime,
     }
     (void)snprintf(number, sizeof(number), "%lld", session->goal_tokens_used);
     (void)cai_runtime_export_write_metadata(&exporter, "Tokens used", number);
+    (void)snprintf(number, sizeof(number), "%lld",
+                   cai_session_goal_elapsed_seconds(runtime->session,
+                                                    (long long)time(NULL)));
+    (void)cai_runtime_export_write_metadata(&exporter, "Elapsed active seconds",
+                                            number);
+    if (session->goal_has_token_budget) {
+      (void)snprintf(number, sizeof(number), "%lld",
+                     session->goal_tokens_used >= session->goal_token_budget
+                         ? 0LL
+                         : session->goal_token_budget -
+                               session->goal_tokens_used);
+      (void)cai_runtime_export_write_metadata(&exporter, "Tokens remaining",
+                                              number);
+    }
     (void)cai_runtime_export_literal(&exporter, "### Objective\n\n");
     (void)cai_runtime_export_write_text(&exporter, session->goal_objective,
                                         strlen(session->goal_objective));
@@ -3385,6 +3810,7 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->turn_limit = config->turn_queue_limit != 0U
                             ? config->turn_queue_limit
                             : CAI_RUNTIME_DEFAULT_TURN_LIMIT;
+  runtime->goal_control_limit = CAI_RUNTIME_DEFAULT_GOAL_CONTROL_LIMIT;
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
   runtime->review_mode = review_mode;
@@ -3556,6 +3982,11 @@ int cai_agent_runtime_open(cai_client *client,
           if (CAI_SESSION_IMPL(runtime->session)->goal_status != NULL) {
             CAI_SESSION_IMPL(runtime->session)->goal_token_usage_baseline =
                 CAI_SESSION_IMPL(runtime->session)->usage.usage.total_tokens;
+            if (strcmp(CAI_SESSION_IMPL(runtime->session)->goal_status,
+                       "active") == 0) {
+              cai_session_goal_start_elapsed(runtime->session,
+                                             (long long)time(NULL));
+            }
           }
           rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
           if (rc == CAI_OK) {
@@ -4474,6 +4905,222 @@ int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
   return cai_agent_runtime_submit_queued_threadsafe(runtime, text, error);
 }
 
+void cai_agent_goal_request_init(cai_agent_goal_request *request) {
+  if (request != NULL) {
+    memset(request, 0, sizeof(*request));
+  }
+}
+
+int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
+                               cai_agent_goal_snapshot *out, cai_error *error) {
+  cai_session_impl *goal;
+  long long now;
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "goal snapshot is required");
+  }
+  memset(out, 0, sizeof(*out));
+  goal = CAI_SESSION_IMPL(runtime->session);
+  out->has_goal = goal->goal_status != NULL;
+  if (!out->has_goal) {
+    return CAI_OK;
+  }
+  now = (long long)time(NULL);
+  out->objective = goal->goal_objective;
+  out->status = goal->goal_status;
+  out->has_token_budget = goal->goal_has_token_budget;
+  out->token_budget = goal->goal_token_budget;
+  out->tokens_used = goal->goal_tokens_used;
+  out->remaining_tokens =
+      goal->goal_has_token_budget
+          ? (goal->goal_tokens_used >= goal->goal_token_budget
+                 ? 0LL
+                 : goal->goal_token_budget - goal->goal_tokens_used)
+          : 0LL;
+  out->elapsed_seconds =
+      cai_session_goal_elapsed_seconds(runtime->session, now);
+  out->created_at = goal->goal_created_at;
+  out->updated_at = goal->goal_updated_at;
+  return CAI_OK;
+}
+
+static int cai_runtime_enqueue_goal_control(cai_agent_runtime *runtime,
+                                            int kind, const char *text,
+                                            int has_token_budget,
+                                            long long token_budget,
+                                            cai_error *error) {
+  cai_runtime_goal_control_node *node;
+  const char *journal_type;
+  char number[32];
+  char *journal_data;
+  const char *data;
+  int rc;
+
+  if (runtime == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
+  }
+  if ((kind == CAI_RUNTIME_GOAL_CREATE ||
+       kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE) &&
+      (text == NULL || text[0] == '\0')) {
+    return cai_set_error(error, CAI_ERR_INVALID, "goal objective is required");
+  }
+  if ((kind == CAI_RUNTIME_GOAL_CREATE ||
+       kind == CAI_RUNTIME_GOAL_SET_BUDGET) &&
+      has_token_budget && token_budget <= 0LL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "goal token budget must be positive");
+  }
+  node = (cai_runtime_goal_control_node *)cai_alloc(NULL, sizeof(*node));
+  if (node == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate goal control");
+  }
+  memset(node, 0, sizeof(*node));
+  node->kind = kind;
+  node->has_token_budget = has_token_budget;
+  node->token_budget = token_budget;
+  if (text != NULL) {
+    node->text = cai_strdup(NULL, text);
+    if (node->text == NULL) {
+      cai_runtime_goal_control_node_free(node);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy goal objective");
+    }
+  }
+  journal_data = NULL;
+  journal_type = kind == CAI_RUNTIME_GOAL_CREATE
+                     ? (has_token_budget ? "goal_create_budget" : "goal_create")
+                 : kind == CAI_RUNTIME_GOAL_PAUSE         ? "goal_pause"
+                 : kind == CAI_RUNTIME_GOAL_RESUME        ? "goal_resume"
+                 : kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE ? "goal_objective_set"
+                 : kind == CAI_RUNTIME_GOAL_SET_BUDGET    ? "goal_budget_set"
+                 : kind == CAI_RUNTIME_GOAL_CLEAR_BUDGET  ? "goal_budget_clear"
+                                                          : "goal_clear";
+  data = text;
+  if (kind == CAI_RUNTIME_GOAL_CREATE && has_token_budget) {
+    int length = snprintf(NULL, 0, "%lld\n%s", token_budget, text);
+    if (length < 0 || (size_t)length > SIZE_MAX - 1U) {
+      cai_runtime_goal_control_node_free(node);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "goal journal data is too large");
+    }
+    journal_data = (char *)cai_alloc(NULL, (size_t)length + 1U);
+    if (journal_data == NULL) {
+      cai_runtime_goal_control_node_free(node);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to encode goal journal data");
+    }
+    (void)snprintf(journal_data, (size_t)length + 1U, "%lld\n%s", token_budget,
+                   text);
+    data = journal_data;
+  }
+  if (kind == CAI_RUNTIME_GOAL_SET_BUDGET) {
+    (void)snprintf(number, sizeof(number), "%lld", token_budget);
+    data = number;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->stopping) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_free_mem(NULL, journal_data);
+    cai_runtime_goal_control_node_free(node);
+    return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
+  if (runtime->goal_control_count >= runtime->goal_control_limit) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_free_mem(NULL, journal_data);
+    cai_runtime_goal_control_node_free(node);
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "agent goal control queue is full");
+  }
+  rc = cai_runtime_append_journal_event_locked(runtime, journal_type, data,
+                                               &node->journal_sequence, error);
+  if (rc == CAI_OK) {
+    if (runtime->goal_control_tail == NULL) {
+      runtime->goal_control_head = node;
+    } else {
+      runtime->goal_control_tail->next = node;
+    }
+    runtime->goal_control_tail = node;
+    runtime->goal_control_count++;
+    pthread_cond_broadcast(&runtime->condition);
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  cai_free_mem(NULL, journal_data);
+  if (rc != CAI_OK) {
+    cai_runtime_goal_control_node_free(node);
+  }
+  return rc;
+}
+
+int cai_agent_runtime_create_goal(cai_agent_runtime *runtime,
+                                  const cai_agent_goal_request *request,
+                                  cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (request == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID, "goal request is required");
+  return cai_runtime_enqueue_goal_control(
+      runtime, CAI_RUNTIME_GOAL_CREATE, request->objective,
+      request->has_token_budget, request->token_budget, error);
+}
+
+int cai_agent_runtime_pause_goal(cai_agent_runtime *runtime, cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  return rc != CAI_OK
+             ? rc
+             : cai_runtime_enqueue_goal_control(runtime, CAI_RUNTIME_GOAL_PAUSE,
+                                                NULL, 0, 0LL, error);
+}
+int cai_agent_runtime_resume_goal(cai_agent_runtime *runtime,
+                                  cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  return rc != CAI_OK
+             ? rc
+             : cai_runtime_enqueue_goal_control(
+                   runtime, CAI_RUNTIME_GOAL_RESUME, NULL, 0, 0LL, error);
+}
+int cai_agent_runtime_set_goal_objective(cai_agent_runtime *runtime,
+                                         const char *objective,
+                                         cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  return rc != CAI_OK
+             ? rc
+             : cai_runtime_enqueue_goal_control(runtime,
+                                                CAI_RUNTIME_GOAL_SET_OBJECTIVE,
+                                                objective, 0, 0LL, error);
+}
+int cai_agent_runtime_set_goal_token_budget(cai_agent_runtime *runtime,
+                                            long long token_budget,
+                                            cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  return rc != CAI_OK
+             ? rc
+             : cai_runtime_enqueue_goal_control(runtime,
+                                                CAI_RUNTIME_GOAL_SET_BUDGET,
+                                                NULL, 1, token_budget, error);
+}
+int cai_agent_runtime_clear_goal_token_budget(cai_agent_runtime *runtime,
+                                              cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  return rc != CAI_OK
+             ? rc
+             : cai_runtime_enqueue_goal_control(
+                   runtime, CAI_RUNTIME_GOAL_CLEAR_BUDGET, NULL, 0, 0LL, error);
+}
+int cai_agent_runtime_clear_goal(cai_agent_runtime *runtime, cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  return rc != CAI_OK
+             ? rc
+             : cai_runtime_enqueue_goal_control(runtime, CAI_RUNTIME_GOAL_CLEAR,
+                                                NULL, 0, 0LL, error);
+}
+
 int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                            cai_error *error) {
   cai_runtime_event_node *node;
@@ -4793,6 +5440,12 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   while ((input = runtime->steering_head) != NULL) {
     runtime->steering_head = input->next;
     cai_runtime_input_node_free(input);
+  }
+  while (runtime->goal_control_head != NULL) {
+    cai_runtime_goal_control_node *control = runtime->goal_control_head;
+
+    runtime->goal_control_head = control->next;
+    cai_runtime_goal_control_node_free(control);
   }
   if (runtime->session != NULL) {
     cai_session_destroy(runtime->session);

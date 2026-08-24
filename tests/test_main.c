@@ -26257,6 +26257,101 @@ static void test_agent_runtime_poll_only(test_state *state) {
   test_agent_runtime_semantic_events_common(state, 1);
 }
 
+static void test_agent_runtime_host_goal_controls(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-host-goal-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_goal_snapshot goal;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  struct timespec delay;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_host_goal_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 1L;
+  expect_int(state, "runtime_host_goal_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.model = CAI_MODEL_GPT_5_NANO;
+  config.disable_default_session_store = 1;
+  expect_int(state, "runtime_host_goal_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  if (runtime != NULL) {
+    cai_agent_goal_request_init(&request);
+    request.objective = "exercise host goal controls";
+    request.has_token_budget = 1;
+    request.token_budget = 20LL;
+    expect_int(state, "runtime_host_goal_create",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    memset(&goal, 0, sizeof(goal));
+    for (i = 0; i < 20 && !goal.has_goal; i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_host_goal_active", goal.has_goal, 1L);
+    expect_str(state, "runtime_host_goal_status", goal.status, "active");
+    expect_int(state, "runtime_host_goal_remaining", goal.remaining_tokens,
+               20L);
+    expect_int(state, "runtime_host_goal_pause",
+               cai_agent_runtime_pause_goal(runtime, &error), CAI_OK);
+    for (i = 0;
+         i < 20 && (goal.status == NULL || strcmp(goal.status, "paused") != 0);
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_paused_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_str(state, "runtime_host_goal_paused", goal.status, "paused");
+    expect_int(state, "runtime_host_goal_resume",
+               cai_agent_runtime_resume_goal(runtime, &error), CAI_OK);
+    expect_int(
+        state, "runtime_host_goal_retarget",
+        cai_agent_runtime_set_goal_objective(runtime, "retargeted", &error),
+        CAI_OK);
+    expect_int(state, "runtime_host_goal_unbounded",
+               cai_agent_runtime_clear_goal_token_budget(runtime, &error),
+               CAI_OK);
+    for (i = 0; i < 20; i++)
+      (void)nanosleep(&delay, NULL);
+    expect_int(state, "runtime_host_goal_final_get",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_host_goal_resumed", goal.status, "active");
+    expect_str(state, "runtime_host_goal_objective", goal.objective,
+               "retargeted");
+    expect_int(state, "runtime_host_goal_budget_removed", goal.has_token_budget,
+               0L);
+    expect_int(state, "runtime_host_goal_clear",
+               cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 20 && goal.has_goal; i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_clear_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_host_goal_cleared", goal.has_goal, 0L);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL)
+    cai_client_close(client);
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
 static void test_agent_runtime_goal_budget(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -27351,6 +27446,10 @@ static void test_goal_tools(test_state *state) {
                 "\"objective\":\"ship Smith\"");
   expect_substr(state, "goal_create_status", writer.buffer,
                 "\"status\":\"active\"");
+  expect_substr(state, "goal_create_remaining", writer.buffer,
+                "\"remaining_tokens\":1000");
+  expect_substr(state, "goal_create_elapsed", writer.buffer,
+                "\"elapsed_seconds\":");
   writer.length = 0U;
   writer.buffer[0] = '\0';
   expect_int(state, "goal_duplicate_create",
@@ -27439,6 +27538,8 @@ static void test_goal_tools(test_state *state) {
                   "\"goal_turn_count\":2");
     expect_substr(state, "goal_blocked_state_last_turn", state_json,
                   "\"goal_blocked_last_turn\":1");
+    expect_substr(state, "goal_blocked_state_elapsed", state_json,
+                  "\"goal_elapsed_seconds\":");
     memset(&source_callbacks, 0, sizeof(source_callbacks));
     memset(&state_reader, 0, sizeof(state_reader));
     state_reader.text = state_json;
@@ -38960,6 +39061,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
     {"agent_runtime_poll_only", test_agent_runtime_poll_only},
+    {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_runtime_resume", test_agent_runtime_resume},
