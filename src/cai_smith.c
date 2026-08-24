@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -398,32 +399,14 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
   return rc;
 }
 
-static int
-cai_smith_load_repository_instructions(const cai_allocator *allocator,
-                                       const char *workspace, char **out,
-                                       cai_error *error) {
+static int cai_smith_read_instructions_fd(const cai_allocator *allocator,
+                                          int instructions_fd, char **out,
+                                          cai_error *error) {
   struct stat st;
   size_t length;
   size_t offset;
   ssize_t nread;
-  int workspace_fd;
-  int instructions_fd;
-
   *out = NULL;
-  workspace_fd = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (workspace_fd < 0) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "failed to open Smith workspace");
-  }
-  instructions_fd =
-      openat(workspace_fd, "AGENTS.md", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  (void)close(workspace_fd);
-  if (instructions_fd < 0) {
-    return errno == ENOENT
-               ? CAI_OK
-               : cai_set_error(error, CAI_ERR_INVALID,
-                               "failed to read repository instructions");
-  }
   if (fstat(instructions_fd, &st) != 0 || !S_ISREG(st.st_mode) ||
       st.st_nlink != 1) {
     (void)close(instructions_fd);
@@ -464,6 +447,369 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
                          "failed to read repository instructions");
   }
   (*out)[length] = '\0';
+  return CAI_OK;
+}
+
+static int
+cai_smith_load_workspace_instruction_file(const cai_allocator *allocator,
+                                          const char *workspace, char **out,
+                                          cai_error *error) {
+  int workspace_fd;
+  int instructions_fd;
+  int rc;
+
+  *out = NULL;
+  workspace_fd = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (workspace_fd < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to open Smith workspace");
+  }
+  instructions_fd =
+      openat(workspace_fd, "AGENTS.md", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  (void)close(workspace_fd);
+  if (instructions_fd < 0) {
+    return errno == ENOENT
+               ? CAI_OK
+               : cai_set_error(error, CAI_ERR_INVALID,
+                               "failed to read repository instructions");
+  }
+  rc = cai_smith_read_instructions_fd(allocator, instructions_fd, out, error);
+  return rc;
+}
+
+static int cai_smith_append_instructions(const cai_allocator *allocator,
+                                         char **out, const char *part,
+                                         int prepend, cai_error *error) {
+  char *merged;
+  size_t old_length;
+  size_t part_length;
+
+  if (part == NULL || part[0] == '\0') {
+    return CAI_OK;
+  }
+  old_length = *out != NULL ? strlen(*out) : 0U;
+  part_length = strlen(part);
+  if (old_length > CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS - part_length ||
+      (old_length > 0U &&
+       old_length > CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS - part_length - 2U)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "combined agent instructions exceed Smith limit");
+  }
+  merged = (char *)cai_alloc(allocator, old_length + part_length +
+                                            (old_length > 0U ? 2U : 0U) + 1U);
+  if (merged == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate repository instructions");
+  }
+  if (prepend && old_length > 0U) {
+    memcpy(merged, part, part_length);
+    memcpy(merged + part_length, "\n\n", 2U);
+    memcpy(merged + part_length + 2U, *out, old_length + 1U);
+  } else if (old_length > 0U) {
+    memcpy(merged, *out, old_length);
+    memcpy(merged + old_length, "\n\n", 2U);
+    memcpy(merged + old_length + 2U, part, part_length + 1U);
+  } else {
+    memcpy(merged, part, part_length + 1U);
+  }
+  cai_free_mem(allocator, *out);
+  *out = merged;
+  return CAI_OK;
+}
+
+static int cai_smith_default_config_directory(const cai_allocator *allocator,
+                                              char **out, cai_error *error) {
+  const char *base;
+  const char *suffix;
+  size_t base_length;
+  size_t suffix_length;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent config directory output is required");
+  }
+  *out = NULL;
+  base = getenv("XDG_CONFIG_HOME");
+  suffix = "/cai";
+  if (base == NULL || base[0] != '/') {
+    base = getenv("HOME");
+    suffix = "/.config/cai";
+  }
+  if (base == NULL || base[0] != '/') {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "XDG_CONFIG_HOME or HOME is required for agent policy");
+  }
+  base_length = strlen(base);
+  suffix_length = strlen(suffix);
+  if (base_length > SIZE_MAX - suffix_length - 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent config directory is too long");
+  }
+  *out = (char *)cai_alloc(allocator, base_length + suffix_length + 1U);
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate agent config directory");
+  }
+  memcpy(*out, base, base_length);
+  memcpy(*out + base_length, suffix, suffix_length + 1U);
+  return CAI_OK;
+}
+
+static int
+cai_smith_load_global_instruction_file(const cai_allocator *allocator,
+                                       const char *path, char **out,
+                                       cai_error *error) {
+  int fd;
+  int rc;
+
+  *out = NULL;
+  fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    return errno == ENOENT ? CAI_OK
+                           : cai_set_error(error, CAI_ERR_INVALID,
+                                           "failed to read global AGENTS.md");
+  }
+  rc = cai_smith_read_instructions_fd(allocator, fd, out, error);
+  return rc;
+}
+
+static int
+cai_smith_load_global_instruction_store(const cai_allocator *allocator,
+                                        const cai_blob_store *store, char **out,
+                                        cai_error *error) {
+  cai_source *source;
+  cai_error source_error;
+  char chunk[4096];
+  char *part;
+  size_t length;
+  size_t nread;
+  int rc;
+
+  *out = NULL;
+  source = NULL;
+  rc = store->load(store->context, "AGENTS.md", &source, error);
+  if (rc != CAI_OK || source == NULL) {
+    return rc;
+  }
+  length = 0U;
+  cai_error_init(&source_error);
+  for (;;) {
+    nread = source->read(source, chunk, sizeof(chunk), &source_error);
+    if (nread == 0U) {
+      break;
+    }
+    if (nread > CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS - length) {
+      cai_source_close(source);
+      cai_error_cleanup(&source_error);
+      cai_free_mem(allocator, *out);
+      *out = NULL;
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "global AGENTS.md exceeds Smith limit");
+    }
+    part = (char *)cai_realloc_mem(allocator, *out, length + nread + 1U);
+    if (part == NULL) {
+      cai_source_close(source);
+      cai_error_cleanup(&source_error);
+      cai_free_mem(allocator, *out);
+      *out = NULL;
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to read global AGENTS.md");
+    }
+    *out = part;
+    memcpy(*out + length, chunk, nread);
+    length += nread;
+    (*out)[length] = '\0';
+  }
+  cai_source_close(source);
+  if (source_error.code != CAI_OK) {
+    rc = cai_set_error_detail(error, source_error.code,
+                              "failed to read global AGENTS.md from storage",
+                              source_error.message);
+    cai_error_cleanup(&source_error);
+    cai_free_mem(allocator, *out);
+    *out = NULL;
+    return rc;
+  }
+  cai_error_cleanup(&source_error);
+  return CAI_OK;
+}
+
+static int
+cai_smith_load_repository_instructions(const cai_allocator *allocator,
+                                       const cai_agent_preset_config *config,
+                                       char **out, cai_error *error) {
+  char resolved[PATH_MAX];
+  char workspace_path[PATH_MAX];
+  char *global_path;
+  char *global_part;
+  char *part;
+  char *cursor;
+  const char *configured_directory;
+  struct stat marker;
+  int dir_fd;
+  int rc;
+
+  *out = NULL;
+  if (config->global_instruction_store != NULL &&
+      ((config->global_agents_md_path != NULL &&
+        config->global_agents_md_path[0] != '\0') ||
+       (config->agent_config_directory != NULL &&
+        config->agent_config_directory[0] != '\0'))) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "global AGENTS.md storage and file settings are exclusive");
+  }
+  if (config->global_instruction_store != NULL &&
+      config->global_instruction_store->load == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "global AGENTS.md storage requires a load callback");
+  }
+  global_path = NULL;
+  global_part = NULL;
+  part = NULL;
+  if (config->global_instruction_store != NULL) {
+    rc = cai_smith_load_global_instruction_store(
+        allocator, config->global_instruction_store, &part, error);
+  } else {
+    if (config->global_agents_md_path != NULL &&
+        config->global_agents_md_path[0] != '\0') {
+      global_path = cai_strdup(allocator, config->global_agents_md_path);
+      rc = global_path != NULL
+               ? CAI_OK
+               : cai_set_error(error, CAI_ERR_NOMEM,
+                               "failed to allocate global AGENTS.md path");
+    } else {
+      configured_directory = config->agent_config_directory;
+      if (configured_directory == NULL || configured_directory[0] == '\0') {
+        rc = cai_smith_default_config_directory(allocator, &global_path, error);
+      } else {
+        size_t length = strlen(configured_directory);
+        global_path =
+            (char *)cai_alloc(allocator, length + sizeof("/AGENTS.md"));
+        if (global_path == NULL) {
+          rc = cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to allocate global AGENTS.md path");
+        } else {
+          memcpy(global_path, configured_directory, length);
+          memcpy(global_path + length, "/AGENTS.md", sizeof("/AGENTS.md"));
+          rc = CAI_OK;
+        }
+      }
+      if (rc == CAI_OK &&
+          (config->global_agents_md_path == NULL ||
+           config->global_agents_md_path[0] == '\0') &&
+          (configured_directory == NULL || configured_directory[0] == '\0')) {
+        size_t length = strlen(global_path);
+        char *with_name = (char *)cai_realloc_mem(
+            allocator, global_path, length + sizeof("/AGENTS.md"));
+        if (with_name == NULL) {
+          cai_free_mem(allocator, global_path);
+          global_path = NULL;
+          rc = cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to allocate global AGENTS.md path");
+        } else {
+          global_path = with_name;
+          memcpy(global_path + length, "/AGENTS.md", sizeof("/AGENTS.md"));
+        }
+      }
+    }
+    if (rc == CAI_OK) {
+      rc = cai_smith_load_global_instruction_file(allocator, global_path, &part,
+                                                  error);
+    }
+  }
+  cai_free_mem(allocator, global_path);
+  global_part = part;
+  part = NULL;
+  if (rc == CAI_OK && !config->codex_compat_agents_md) {
+    rc = cai_smith_append_instructions(allocator, out, global_part, 0, error);
+  }
+  if (rc != CAI_OK || !config->codex_compat_agents_md) {
+    cai_free_mem(allocator, global_part);
+    if (rc == CAI_OK) {
+      rc = cai_smith_load_workspace_instruction_file(
+          allocator, config->workspace_directory, &part, error);
+      if (rc == CAI_OK) {
+        rc = cai_smith_append_instructions(allocator, out, part, 0, error);
+      }
+      cai_free_mem(allocator, part);
+    }
+    return rc;
+  }
+  if (strlen(config->workspace_directory) >= sizeof(resolved)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith workspace path is too long");
+  }
+  memcpy(resolved, config->workspace_directory,
+         strlen(config->workspace_directory) + 1U);
+  cursor = resolved;
+  for (;;) {
+    dir_fd = open(cursor, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd < 0) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "failed to inspect Smith workspace hierarchy");
+    }
+    rc = fstatat(dir_fd, ".git", &marker, AT_SYMLINK_NOFOLLOW) == 0 ? 1 : 0;
+    (void)close(dir_fd);
+    if (rc || strcmp(cursor, "/") == 0) {
+      break;
+    }
+    part = strrchr(cursor, '/');
+    if (part == cursor) {
+      cursor[1] = '\0';
+    } else {
+      *part = '\0';
+    }
+  }
+  if (!rc) {
+    rc = cai_smith_append_instructions(allocator, out, global_part, 0, error);
+    cai_free_mem(allocator, global_part);
+    if (rc == CAI_OK) {
+      rc = cai_smith_load_workspace_instruction_file(
+          allocator, config->workspace_directory, &part, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_smith_append_instructions(allocator, out, part, 0, error);
+    }
+    cai_free_mem(allocator, part);
+    return rc;
+  }
+  memcpy(workspace_path, config->workspace_directory,
+         strlen(config->workspace_directory) + 1U);
+  cursor = workspace_path;
+  for (;;) {
+    char *workspace_part;
+
+    workspace_part = NULL;
+    rc = cai_smith_load_workspace_instruction_file(allocator, cursor, &part,
+                                                   error);
+    if (rc == CAI_OK) {
+      workspace_part = part;
+      part = NULL;
+      rc = cai_smith_append_instructions(allocator, out, workspace_part, 1,
+                                         error);
+    }
+    cai_free_mem(allocator, workspace_part);
+    if (rc != CAI_OK || strcmp(cursor, resolved) == 0) {
+      break;
+    }
+    part = strrchr(cursor, '/');
+    if (part == cursor) {
+      cursor[1] = '\0';
+    } else {
+      *part = '\0';
+    }
+  }
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_smith_append_instructions(allocator, out, global_part, 1, error);
+  cai_free_mem(allocator, global_part);
+  global_part = NULL;
+  if (rc != CAI_OK) {
+    return rc;
+  }
   return CAI_OK;
 }
 
@@ -513,8 +859,7 @@ int cai_client_new_preset_agent(cai_client *client,
   if (!cai_model_supports(model, CAI_MODEL_CAP_IMAGE_INPUT)) {
     tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
   }
-  rc = cai_smith_load_repository_instructions(&client_impl->allocator,
-                                              config->workspace_directory,
+  rc = cai_smith_load_repository_instructions(&client_impl->allocator, config,
                                               &repository_instructions, error);
   if (rc == CAI_OK) {
     rc = cai_smith_render_instructions(
@@ -727,8 +1072,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "review agent identity is invalid");
   }
-  rc = cai_smith_load_repository_instructions(&client_impl->allocator,
-                                              config->workspace_directory,
+  rc = cai_smith_load_repository_instructions(&client_impl->allocator, config,
                                               &repository_instructions, error);
   if (rc != CAI_OK) {
     return rc;

@@ -476,8 +476,14 @@ The Smith renderer produces, in order:
 
 1. Smith base/model instructions with identity substitution;
 2. selected preset policy fragments (terminal, tools, goal, storage);
-3. repository `AGENTS.md` instruction fragments, bounded and ordered from
-   workspace root to current directory;
+3. an optional global `AGENTS.md` policy, followed by the exact
+   `workspace_directory/AGENTS.md` policy. The global default is
+   `${XDG_CONFIG_HOME:-$HOME/.config}/cai/AGENTS.md`; a host may instead set
+   an explicit agent configuration directory, exact file path, or a
+   callback-backed global instruction store. CAI does not traverse workspace
+   ancestors by default. `codex_compat_agents_md` explicitly enables discovery
+   from the nearest `.git` ancestor through `workspace_directory` for hosts
+   that choose Codex-compatible hierarchy semantics;
 4. host-supplied developer extension fragment, if configured;
 5. the user input or internal context fragment.
 
@@ -485,6 +491,16 @@ The runtime records the rendered prompt asset version and SHA-256 in session
 metadata. Existing sessions keep their recorded prompt asset by default; an
 explicit host migration may select a newer asset and will trigger the normal
 compaction compatibility check.
+
+Global policy is always an ordinary file or host-supplied byte source; it is
+not session state and is never stored in pouch. CAI's `cai_blob_store` is the
+common C-only callback contract for named byte objects. Its `load` callback is
+sufficient for `AGENTS.md`; ChatGPT auth requires both `load` and atomic
+`replace`, using the default key `auth.json` or a host-selected opaque key.
+The file-backed auth default remains `$XDG_STATE_HOME/cai/auth.json` (or
+`$HOME/.local/state/cai/auth.json`). Lua accepts only native blob-store
+userdata backed by C callbacks, so these callbacks never enter Lua state from
+an auth refresh or runtime worker.
 
 ### 6.2 Review
 
@@ -1070,17 +1086,20 @@ context)` accepts C lightuserdata and returns a typed Lua handle. The common
 constructor supports `"agent_session"` for a complete
 `cai_agent_session_store` pointer, `"mcp_session"` for a
 `cai_mcp_session_callbacks` pointer plus context, and `"todo"` for a
-`cai_todo_store_callbacks` pointer plus context. The callback table is copied;
+`cai_todo_store_callbacks` pointer plus context. `"blob"` accepts a complete
+`cai_blob_store` pointer (including its context) and is used for callback
+auth storage or `global_instruction_store`. The callback table is copied;
 CAI never frees the opaque context directly.
 
 Attach these handles only at their matching surface: `session_store` on a Smith
-runtime, `session` on an MCP handler, or `store` on the todo tool. Todo and MCP
-handles transfer to their core owner and run their native destruction callback
-exactly once. An agent-session handle is pinned until its runtime closes; its
-native context must remain live for that period. The adapter never calls into
-`lua_State`, so stores remain usable from the runtime worker thread. Lua-level
-MCP callbacks remain supported independently for applications that deliberately
-implement the backend in Lua.
+runtime, `session` on an MCP handler, `store` on the todo tool, `storage` on
+ChatGPT auth/login, or `global_instruction_store` on a Smith runtime. Todo and
+MCP handles transfer to their core owner and run their native destruction
+callback exactly once. Agent-session and blob handles are pinned until their
+consumer closes; their native contexts must remain live for that period. The
+adapter never calls into `lua_State`, so stores remain usable from the runtime
+worker thread. Lua-level MCP callbacks remain supported independently for
+applications that deliberately implement the backend in Lua.
 
 ### 11.5 User-initiated transcript export
 

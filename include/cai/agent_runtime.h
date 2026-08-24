@@ -230,6 +230,14 @@ typedef struct cai_agent_runtime_config {
   const cai_agent_preset *preset_descriptor;
   /** Canonical workspace root. Required by smith file tools. */
   const char *workspace_directory;
+  /** Optional CAI agent configuration directory for the global AGENTS.md. */
+  const char *agent_config_directory;
+  /** Optional exact global AGENTS.md path overriding the config directory. */
+  const char *global_agents_md_path;
+  /** Optional callback-backed global AGENTS.md source. Borrowed until close. */
+  const cai_blob_store *global_instruction_store;
+  /** Enable explicit Codex-compatible ancestor AGENTS.md discovery. */
+  int codex_compat_agents_md;
   /** Optional identity overriding Cai Smith. */
   const char *agent_identity;
   /** Optional model override; Smith defaults to gpt-5.6-terra. */

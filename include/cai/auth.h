@@ -1,6 +1,7 @@
 #ifndef CAI_AUTH_H
 #define CAI_AUTH_H
 
+#include <cai/blob_store.h>
 #include <cai/cai.h>
 #include <stddef.h>
 
@@ -36,6 +37,14 @@ typedef struct cai_chatgpt_auth_config {
    * path: $XDG_STATE_HOME/cai/auth.json, or $HOME/.local/state/cai/auth.json.
    */
   const char *auth_json_path;
+  /**
+   * Optional callback-backed auth storage. When set, auth_json_path must be
+   * NULL/empty and CAI loads and replaces storage_key through this store.
+   * The store and its context remain borrowed until the auth handle closes.
+   */
+  const cai_blob_store *storage;
+  /** Optional opaque storage key; NULL selects "auth.json". */
+  const char *storage_key;
   /** OAuth issuer; NULL selects CAI_CHATGPT_AUTH_DEFAULT_ISSUER. */
   const char *issuer;
   /** OAuth client id; NULL selects CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID. */
@@ -100,6 +109,14 @@ typedef struct cai_chatgpt_login_config {
    * $HOME/.local/state/cai/auth.json.
    */
   const char *auth_json_path;
+  /**
+   * Optional callback-backed auth storage. When set, auth_json_path must be
+   * NULL/empty and CAI persists the completed login through this store. The
+   * store and its context remain borrowed until the login handle closes.
+   */
+  const cai_blob_store *storage;
+  /** Optional opaque storage key; NULL selects "auth.json". */
+  const char *storage_key;
   /** OAuth redirect URI served by the embedding HTTP server. Required. */
   const char *redirect_uri;
   /** Callback path extracted from redirect_uri; NULL selects default. */

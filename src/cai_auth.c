@@ -15,6 +15,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#define CAI_AUTH_STORAGE_KEY_DEFAULT "auth.json"
+#define CAI_AUTH_STORAGE_MAX_BYTES (1024U * 1024U)
+
 typedef struct cai_auth_tokens_doc {
   char *id_token;
   char *access_token;
@@ -54,6 +57,9 @@ typedef struct cai_auth_buffer {
 typedef struct cai_chatgpt_auth_impl {
   cai_allocator allocator;
   char *auth_json_path;
+  cai_blob_store storage;
+  char *storage_key;
+  int has_storage;
   char *issuer;
   char *client_id;
   long long refresh_window_seconds;
@@ -72,6 +78,9 @@ typedef struct cai_chatgpt_auth_impl {
 typedef struct cai_chatgpt_login_impl {
   cai_allocator allocator;
   char *auth_json_path;
+  cai_blob_store storage;
+  char *storage_key;
+  int has_storage;
   char *issuer;
   char *client_id;
   char *redirect_uri;
@@ -413,6 +422,125 @@ static int cai_auth_read_file(const char *path, char **out, cai_error *error) {
   data[read_count] = '\0';
   *out = data;
   return CAI_OK;
+}
+
+static int cai_auth_read_storage(const cai_blob_store *storage, const char *key,
+                                 char **out, cai_error *error) {
+  cai_auth_buffer buffer;
+  cai_error source_error;
+  cai_source *source;
+  char chunk[4096];
+  size_t nread;
+  int rc;
+
+  if (storage == NULL || storage->load == NULL || key == NULL ||
+      key[0] == '\0' || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth storage and key are required");
+  }
+  *out = NULL;
+  source = NULL;
+  rc = storage->load(storage->context, key, &source, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (source == NULL) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT, "auth JSON is not stored");
+  }
+  memset(&buffer, 0, sizeof(buffer));
+  cai_error_init(&source_error);
+  for (;;) {
+    nread = source->read(source, chunk, sizeof(chunk), &source_error);
+    if (nread == 0U) {
+      break;
+    }
+    if (nread > CAI_AUTH_STORAGE_MAX_BYTES - buffer.length) {
+      cai_source_close(source);
+      cai_error_cleanup(&source_error);
+      cai_auth_secure_clear(buffer.data);
+      cai_free_mem(NULL, buffer.data);
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "auth JSON storage value exceeds CAI limit");
+    }
+    if (cai_auth_buffer_write(&buffer, chunk, nread, NULL) !=
+        LONEJSON_STATUS_OK) {
+      cai_source_close(source);
+      cai_error_cleanup(&source_error);
+      cai_auth_secure_clear(buffer.data);
+      cai_free_mem(NULL, buffer.data);
+      return cai_set_error(error, CAI_ERR_NOMEM, "failed to read auth JSON");
+    }
+  }
+  cai_source_close(source);
+  if (source_error.code != CAI_OK) {
+    rc = cai_set_error_detail(error, source_error.code,
+                              "failed to read auth JSON from storage",
+                              source_error.message);
+    cai_error_cleanup(&source_error);
+    cai_auth_secure_clear(buffer.data);
+    cai_free_mem(NULL, buffer.data);
+    return rc;
+  }
+  cai_error_cleanup(&source_error);
+  *out = buffer.data != NULL ? buffer.data : cai_strdup(NULL, "");
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate auth JSON");
+  }
+  return CAI_OK;
+}
+
+typedef struct cai_auth_memory_source {
+  const char *data;
+  size_t length;
+  size_t offset;
+} cai_auth_memory_source;
+
+static size_t cai_auth_memory_source_read(void *context, void *buffer,
+                                          size_t count, cai_error *error) {
+  cai_auth_memory_source *source;
+  size_t amount;
+
+  (void)error;
+  source = (cai_auth_memory_source *)context;
+  if (source == NULL || buffer == NULL || source->offset >= source->length) {
+    return 0U;
+  }
+  amount = source->length - source->offset;
+  if (amount > count) {
+    amount = count;
+  }
+  memcpy(buffer, source->data + source->offset, amount);
+  source->offset += amount;
+  return amount;
+}
+
+static int cai_auth_write_storage(const cai_blob_store *storage,
+                                  const char *key, const char *json,
+                                  cai_error *error) {
+  cai_auth_memory_source context;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  int rc;
+
+  if (storage == NULL || storage->replace == NULL || key == NULL ||
+      key[0] == '\0' || json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth storage, key, and JSON are required");
+  }
+  memset(&context, 0, sizeof(context));
+  context.data = json;
+  context.length = strlen(json);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = cai_auth_memory_source_read;
+  callbacks.context = &context;
+  source = NULL;
+  rc = cai_source_from_callbacks(&callbacks, &source, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = storage->replace(storage->context, key, source, error);
+  cai_source_close(source);
+  return rc;
 }
 
 static int cai_auth_mkdirs_for_file(const char *path, cai_error *error) {
@@ -827,7 +955,10 @@ static int cai_chatgpt_auth_parse_file(cai_chatgpt_auth_impl *auth,
   json = NULL;
   memset(doc, 0, sizeof(*doc));
   CAI_LJ->init(CAI_LJ, &cai_auth_file_map, doc);
-  rc = cai_auth_read_file(auth->auth_json_path, &json, error);
+  rc = auth->has_storage
+           ? cai_auth_read_storage(&auth->storage, auth->storage_key, &json,
+                                   error)
+           : cai_auth_read_file(auth->auth_json_path, &json, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -950,7 +1081,23 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
                          "custom allocator requires malloc, realloc, and free");
   }
   auth_json_path = effective->auth_json_path;
-  if (auth_json_path == NULL || auth_json_path[0] == '\0') {
+  if (effective->storage != NULL && auth_json_path != NULL &&
+      auth_json_path[0] != '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth storage and auth_json_path are exclusive");
+  }
+  if (effective->storage != NULL && (effective->storage->load == NULL ||
+                                     effective->storage->replace == NULL)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth storage requires load and replace callbacks");
+  }
+  if (effective->storage == NULL && effective->storage_key != NULL &&
+      effective->storage_key[0] != '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "auth storage_key requires auth storage");
+  }
+  if (effective->storage == NULL &&
+      (auth_json_path == NULL || auth_json_path[0] == '\0')) {
     rc = cai_chatgpt_auth_default_path(&default_auth_json_path, error);
     if (rc != CAI_OK) {
       return rc;
@@ -977,7 +1124,17 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   memset(impl, 0, sizeof(*impl));
   auth->impl = impl;
   impl->allocator = effective->allocator;
-  impl->auth_json_path = cai_strdup(&impl->allocator, auth_json_path);
+  impl->has_storage = effective->storage != NULL ? 1 : 0;
+  if (impl->has_storage) {
+    impl->storage = *effective->storage;
+    impl->storage_key =
+        cai_strdup(&impl->allocator, effective->storage_key != NULL &&
+                                             effective->storage_key[0] != '\0'
+                                         ? effective->storage_key
+                                         : CAI_AUTH_STORAGE_KEY_DEFAULT);
+  } else {
+    impl->auth_json_path = cai_strdup(&impl->allocator, auth_json_path);
+  }
   cai_free_mem(NULL, default_auth_json_path);
   impl->issuer =
       cai_strdup(&impl->allocator, effective->issuer != NULL
@@ -1000,8 +1157,9 @@ int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
   impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
   impl->logger = effective->logger;
   impl->logger_disabled = effective->logger_disabled;
-  if (impl->auth_json_path == NULL || impl->issuer == NULL ||
-      impl->client_id == NULL ||
+  if ((!impl->has_storage && impl->auth_json_path == NULL) ||
+      (impl->has_storage && impl->storage_key == NULL) ||
+      impl->issuer == NULL || impl->client_id == NULL ||
       (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) ||
       (effective->ca_path != NULL && impl->ca_path == NULL)) {
     auth->close(auth);
@@ -1389,7 +1547,10 @@ static int cai_chatgpt_auth_save(cai_chatgpt_auth_impl *auth,
   json = NULL;
   rc = cai_auth_serialize_cstr(&cai_auth_file_map, &doc, &json, error);
   if (rc == CAI_OK) {
-    rc = cai_auth_write_file(auth->auth_json_path, json, error);
+    rc = auth->has_storage
+             ? cai_auth_write_storage(&auth->storage, auth->storage_key, json,
+                                      error)
+             : cai_auth_write_file(auth->auth_json_path, json, error);
   }
   cai_auth_secure_clear(json);
   cai_free_mem(NULL, json);
@@ -1770,7 +1931,22 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
                          "custom allocator requires malloc, realloc, and free");
   }
   auth_json_path = effective->auth_json_path;
-  if (auth_json_path == NULL || auth_json_path[0] == '\0') {
+  if (effective->storage != NULL && auth_json_path != NULL &&
+      auth_json_path[0] != '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "login storage and auth_json_path are exclusive");
+  }
+  if (effective->storage != NULL && effective->storage->replace == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "login storage requires a replace callback");
+  }
+  if (effective->storage == NULL && effective->storage_key != NULL &&
+      effective->storage_key[0] != '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "login storage_key requires login storage");
+  }
+  if (effective->storage == NULL &&
+      (auth_json_path == NULL || auth_json_path[0] == '\0')) {
     rc = cai_chatgpt_auth_default_path(&default_auth_json_path, error);
     if (rc != CAI_OK) {
       return rc;
@@ -1811,7 +1987,17 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
     rc = cai_auth_random_b64(32U, &generated_verifier, error);
   }
   if (rc == CAI_OK) {
-    impl->auth_json_path = cai_strdup(&impl->allocator, auth_json_path);
+    impl->has_storage = effective->storage != NULL ? 1 : 0;
+    if (impl->has_storage) {
+      impl->storage = *effective->storage;
+      impl->storage_key =
+          cai_strdup(&impl->allocator, effective->storage_key != NULL &&
+                                               effective->storage_key[0] != '\0'
+                                           ? effective->storage_key
+                                           : CAI_AUTH_STORAGE_KEY_DEFAULT);
+    } else {
+      impl->auth_json_path = cai_strdup(&impl->allocator, auth_json_path);
+    }
     impl->issuer =
         cai_strdup(&impl->allocator, effective->issuer != NULL
                                          ? effective->issuer
@@ -1849,11 +2035,12 @@ int cai_chatgpt_login_start(const cai_chatgpt_login_config *config,
     impl->ca_path = cai_strdup(&impl->allocator, effective->ca_path);
     impl->logger = effective->logger;
     impl->logger_disabled = effective->logger_disabled;
-    if (impl->auth_json_path == NULL || impl->issuer == NULL ||
-        impl->client_id == NULL || impl->redirect_uri == NULL ||
-        impl->callback_path == NULL || impl->scopes == NULL ||
-        impl->originator == NULL || impl->state == NULL ||
-        impl->code_verifier == NULL ||
+    if ((!impl->has_storage && impl->auth_json_path == NULL) ||
+        (impl->has_storage && impl->storage_key == NULL) ||
+        impl->issuer == NULL || impl->client_id == NULL ||
+        impl->redirect_uri == NULL || impl->callback_path == NULL ||
+        impl->scopes == NULL || impl->originator == NULL ||
+        impl->state == NULL || impl->code_verifier == NULL ||
         (effective->ca_bundle_path != NULL && impl->ca_bundle_path == NULL) ||
         (effective->ca_path != NULL && impl->ca_path == NULL)) {
       rc = cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate login");
@@ -2020,6 +2207,9 @@ static int cai_chatgpt_login_exchange_code(cai_chatgpt_login_impl *login,
   memset(&auth_view, 0, sizeof(auth_view));
   auth_view.allocator = login->allocator;
   auth_view.auth_json_path = login->auth_json_path;
+  auth_view.storage = login->storage;
+  auth_view.storage_key = login->storage_key;
+  auth_view.has_storage = login->has_storage;
   auth_view.id_token = response.id_token;
   auth_view.access_token = response.access_token;
   auth_view.refresh_token = response.refresh_token;
@@ -2140,6 +2330,7 @@ void cai_chatgpt_login_close(cai_chatgpt_login *login) {
   impl = cai_chatgpt_login_impl_from_public(login);
   if (impl != NULL) {
     cai_free_mem(&impl->allocator, impl->auth_json_path);
+    cai_free_mem(&impl->allocator, impl->storage_key);
     cai_free_mem(&impl->allocator, impl->issuer);
     cai_free_mem(&impl->allocator, impl->client_id);
     cai_free_mem(&impl->allocator, impl->redirect_uri);
@@ -2169,6 +2360,7 @@ void cai_chatgpt_auth_close(cai_chatgpt_auth *auth) {
   impl = cai_chatgpt_auth_impl_from_public(auth);
   if (impl != NULL) {
     cai_free_mem(&impl->allocator, impl->auth_json_path);
+    cai_free_mem(&impl->allocator, impl->storage_key);
     cai_free_mem(&impl->allocator, impl->issuer);
     cai_free_mem(&impl->allocator, impl->client_id);
     cai_free_mem(&impl->allocator, impl->ca_bundle_path);

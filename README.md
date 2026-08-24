@@ -277,7 +277,10 @@ local backend = assert(cai.native_store(kind, callbacks, context))
 context, `"mcp_session"` for a `cai_mcp_session_callbacks` pointer plus its
 opaque context, or `"agent_session"` for a complete
 `cai_agent_session_store` pointer (which already contains its context; pass no
-third argument). The embedding host supplies those pointers as lightuserdata;
+third argument). `"blob"` accepts a `cai_blob_store` pointer (which already
+contains its context; pass no third argument) and is used as `storage` for
+ChatGPT auth/login or as `global_instruction_store` for Smith. The embedding
+host supplies those pointers as lightuserdata;
 CAI copies the callback table before returning the Lua userdata.
 The host must keep the opaque context valid for the handle's documented
 lifetime; the lightuserdata itself is only an embedding boundary and must not

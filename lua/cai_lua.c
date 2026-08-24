@@ -78,6 +78,7 @@ typedef struct cai_lua_client {
   cai_client *ptr;
   cai_chatgpt_auth *chatgpt_auth;
   pslog_lua_logger_ref logger_ref;
+  int chatgpt_auth_store_ref;
   size_t active_calls;
   size_t child_runtimes;
   int has_logger_ref;
@@ -109,6 +110,7 @@ typedef struct cai_lua_agent_runtime {
   int parent_ref;
   int callback_ref;
   int session_store_ref;
+  int instruction_store_ref;
   int mcp_clients_ref;
   size_t mcp_client_count;
   int review_parent_ref;
@@ -137,7 +139,8 @@ typedef struct cai_lua_registry {
 typedef enum cai_lua_native_store_kind {
   CAI_LUA_NATIVE_STORE_TODO = 1,
   CAI_LUA_NATIVE_STORE_AGENT_SESSION = 2,
-  CAI_LUA_NATIVE_STORE_MCP_SESSION = 3
+  CAI_LUA_NATIVE_STORE_MCP_SESSION = 3,
+  CAI_LUA_NATIVE_STORE_BLOB = 4
 } cai_lua_native_store_kind;
 
 /* Native stores hold no lua_State and never re-enter Lua from a callback. */
@@ -147,6 +150,7 @@ typedef struct cai_lua_native_store_adapter {
     cai_todo_store_callbacks todo;
     cai_agent_session_store agent_session;
     cai_mcp_session_callbacks mcp_session;
+    cai_blob_store blob;
   } callbacks;
   void *context;
   size_t references;
@@ -173,6 +177,7 @@ typedef struct cai_lua_mcp_client {
 typedef struct cai_lua_chatgpt_auth {
   cai_chatgpt_auth *ptr;
   pslog_lua_logger_ref logger_ref;
+  int storage_ref;
   size_t active_calls;
   int has_logger_ref;
 } cai_lua_chatgpt_auth;
@@ -181,6 +186,7 @@ typedef struct cai_lua_chatgpt_login {
   cai_chatgpt_login *ptr;
   char *authorize_url;
   pslog_lua_logger_ref logger_ref;
+  int storage_ref;
   size_t active_calls;
   int has_logger_ref;
 } cai_lua_chatgpt_login;
@@ -1363,6 +1369,7 @@ static void cai_lua_push_client(lua_State *L, cai_client *client,
   memset(ud, 0, sizeof(*ud));
   ud->ptr = client;
   ud->chatgpt_auth = chatgpt_auth;
+  ud->chatgpt_auth_store_ref = LUA_NOREF;
   if (has_logger_ref && logger_ref != NULL) {
     ud->logger_ref = *logger_ref;
     ud->has_logger_ref = 1;
@@ -2192,12 +2199,14 @@ static int cai_lua_open(lua_State *L) {
   pslog_lua_logger_ref logger_ref;
   cai_client *client;
   const char *chatgpt_auth_json;
+  cai_lua_native_store *chatgpt_auth_store;
   cai_error error;
   int has_logger_ref;
   int chatgpt_auth_enabled;
   int rc;
   chatgpt_auth = NULL;
   chatgpt_auth_json = NULL;
+  chatgpt_auth_store = NULL;
   memset(&logger_ref, 0, sizeof(logger_ref));
   has_logger_ref = 0;
   chatgpt_auth_enabled = 0;
@@ -2239,6 +2248,21 @@ static int cai_lua_open(lua_State *L) {
     lua_pop(L, 1);
     chatgpt_auth_json =
         cai_lua_opt_string_field(L, 1, "chatgpt_auth_json", NULL);
+    auth_config.storage_key =
+        cai_lua_opt_string_field(L, 1, "chatgpt_auth_storage_key", NULL);
+    lua_getfield(L, 1, "chatgpt_auth_storage");
+    if (!lua_isnil(L, -1)) {
+      chatgpt_auth_store =
+          (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+      if (chatgpt_auth_store == NULL || chatgpt_auth_store->adapter == NULL ||
+          chatgpt_auth_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
+        lua_pop(L, 1);
+        return luaL_error(L,
+                          "chatgpt_auth_storage must be a native blob store");
+      }
+      auth_config.storage = &chatgpt_auth_store->adapter->callbacks.blob;
+    }
+    lua_pop(L, 1);
     chatgpt_auth_enabled =
         cai_lua_opt_bool_field(L, 1, "chatgpt_auth", chatgpt_auth_enabled);
     auth_config.issuer =
@@ -2268,6 +2292,9 @@ static int cai_lua_open(lua_State *L) {
   if (chatgpt_auth_json != NULL && chatgpt_auth_json[0] != '\0') {
     chatgpt_auth_enabled = 1;
   }
+  if (chatgpt_auth_store != NULL) {
+    chatgpt_auth_enabled = 1;
+  }
   if (chatgpt_auth_enabled) {
     auth_config.auth_json_path = chatgpt_auth_json;
     rc = cai_chatgpt_auth_open(&auth_config, &chatgpt_auth, &error);
@@ -2286,6 +2313,12 @@ static int cai_lua_open(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_client(L, client, chatgpt_auth, &logger_ref, has_logger_ref);
+  if (chatgpt_auth_store != NULL) {
+    cai_lua_client *client_ud = (cai_lua_client *)lua_touserdata(L, -1);
+
+    lua_getfield(L, 1, "chatgpt_auth_storage");
+    client_ud->chatgpt_auth_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -2334,6 +2367,7 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
   cai_lua_chatgpt_auth *ud;
   cai_error error;
   int has_logger_ref;
+  cai_lua_native_store *native_store;
   int rc;
 
   auth = NULL;
@@ -2341,9 +2375,23 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
   has_logger_ref = 0;
   cai_error_init(&error);
   cai_chatgpt_auth_config_init(&config);
+  native_store = NULL;
   if (lua_istable(L, 1)) {
     config.auth_json_path =
         cai_lua_opt_string_field(L, 1, "auth_json_path", NULL);
+    config.storage_key = cai_lua_opt_string_field(L, 1, "storage_key", NULL);
+    lua_getfield(L, 1, "storage");
+    if (!lua_isnil(L, -1)) {
+      native_store =
+          (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+      if (native_store == NULL || native_store->adapter == NULL ||
+          native_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
+        lua_pop(L, 1);
+        return luaL_error(L, "storage must be a native blob store");
+      }
+      config.storage = &native_store->adapter->callbacks.blob;
+    }
+    lua_pop(L, 1);
     config.issuer = cai_lua_opt_string_field(L, 1, "issuer", NULL);
     config.client_id = cai_lua_opt_string_field(L, 1, "client_id", NULL);
     config.refresh_window_seconds = cai_lua_opt_ll_field(
@@ -2371,6 +2419,11 @@ static int cai_lua_chatgpt_auth_new(lua_State *L) {
   ud = (cai_lua_chatgpt_auth *)lua_newuserdata(L, sizeof(*ud));
   memset(ud, 0, sizeof(*ud));
   ud->ptr = auth;
+  ud->storage_ref = LUA_NOREF;
+  if (native_store != NULL) {
+    lua_getfield(L, 1, "storage");
+    ud->storage_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
   if (has_logger_ref) {
     ud->logger_ref = logger_ref;
     ud->has_logger_ref = 1;
@@ -2391,6 +2444,10 @@ static int cai_lua_chatgpt_auth_gc(lua_State *L) {
   if (self->ptr != NULL) {
     self->ptr->close(self->ptr);
     self->ptr = NULL;
+  }
+  if (self->storage_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->storage_ref);
+    self->storage_ref = LUA_NOREF;
   }
   cai_lua_unref_pslog_logger(&self->logger_ref, &self->has_logger_ref);
   return 0;
@@ -2454,6 +2511,7 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
   cai_error error;
   char *authorize_url;
   int has_logger_ref;
+  cai_lua_native_store *native_store;
   int rc;
 
   login = NULL;
@@ -2462,9 +2520,23 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
   has_logger_ref = 0;
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&config);
+  native_store = NULL;
   if (lua_istable(L, 1)) {
     config.auth_json_path =
         cai_lua_opt_string_field(L, 1, "auth_json_path", NULL);
+    config.storage_key = cai_lua_opt_string_field(L, 1, "storage_key", NULL);
+    lua_getfield(L, 1, "storage");
+    if (!lua_isnil(L, -1)) {
+      native_store =
+          (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+      if (native_store == NULL || native_store->adapter == NULL ||
+          native_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
+        lua_pop(L, 1);
+        return luaL_error(L, "storage must be a native blob store");
+      }
+      config.storage = &native_store->adapter->callbacks.blob;
+    }
+    lua_pop(L, 1);
     config.redirect_uri = cai_lua_opt_string_field(L, 1, "redirect_uri", NULL);
     config.callback_path =
         cai_lua_opt_string_field(L, 1, "callback_path", NULL);
@@ -2498,6 +2570,11 @@ static int cai_lua_chatgpt_login_new(lua_State *L) {
   ud = (cai_lua_chatgpt_login *)lua_newuserdata(L, sizeof(*ud));
   memset(ud, 0, sizeof(*ud));
   ud->ptr = login;
+  ud->storage_ref = LUA_NOREF;
+  if (native_store != NULL) {
+    lua_getfield(L, 1, "storage");
+    ud->storage_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
   ud->authorize_url = authorize_url;
   if (has_logger_ref) {
     ud->logger_ref = logger_ref;
@@ -2520,6 +2597,10 @@ static int cai_lua_chatgpt_login_gc(lua_State *L) {
   if (self->ptr != NULL) {
     self->ptr->close(self->ptr);
     self->ptr = NULL;
+  }
+  if (self->storage_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->storage_ref);
+    self->storage_ref = LUA_NOREF;
   }
   cai_string_destroy(self->authorize_url);
   self->authorize_url = NULL;
@@ -2641,6 +2722,10 @@ static int cai_lua_client_gc(lua_State *L) {
     self->ptr->close(self->ptr);
     self->ptr = NULL;
   }
+  if (self->chatgpt_auth_store_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->chatgpt_auth_store_ref);
+    self->chatgpt_auth_store_ref = LUA_NOREF;
+  }
   if (self->chatgpt_auth != NULL) {
     self->chatgpt_auth->close(self->chatgpt_auth);
     self->chatgpt_auth = NULL;
@@ -2709,6 +2794,26 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
       cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
   config.workspace_directory =
       cai_lua_opt_string_field(L, 2, "workspace", config.workspace_directory);
+  config.agent_config_directory =
+      cai_lua_opt_string_field(L, 2, "agent_config_directory", NULL);
+  config.global_agents_md_path =
+      cai_lua_opt_string_field(L, 2, "global_agents_md_path", NULL);
+  config.codex_compat_agents_md =
+      cai_lua_opt_bool_field(L, 2, "codex_compat_agents_md", 0);
+  lua_getfield(L, 2, "global_instruction_store");
+  if (!lua_isnil(L, -1)) {
+    cai_lua_native_store *instruction_store =
+        (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (instruction_store == NULL || instruction_store->adapter == NULL ||
+        instruction_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
+      lua_pop(L, 1);
+      return luaL_error(L,
+                        "global_instruction_store must be a native blob store");
+    }
+    config.global_instruction_store =
+        &instruction_store->adapter->callbacks.blob;
+  }
+  lua_pop(L, 1);
   config.agent_identity =
       cai_lua_opt_string_field(L, 2, "agent_identity", NULL);
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
@@ -2876,6 +2981,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->parent_ref = cai_lua_ref_parent(L, 1);
   runtime->callback_ref = LUA_NOREF;
   runtime->session_store_ref = LUA_NOREF;
+  runtime->instruction_store_ref = LUA_NOREF;
   runtime->mcp_clients_ref = LUA_NOREF;
   runtime->review_parent_ref = LUA_NOREF;
   runtime->review_children_ref = LUA_NOREF;
@@ -2925,6 +3031,26 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "workspace_directory", NULL);
   config.workspace_directory =
       cai_lua_opt_string_field(L, 2, "workspace", config.workspace_directory);
+  config.agent_config_directory =
+      cai_lua_opt_string_field(L, 2, "agent_config_directory", NULL);
+  config.global_agents_md_path =
+      cai_lua_opt_string_field(L, 2, "global_agents_md_path", NULL);
+  config.codex_compat_agents_md =
+      cai_lua_opt_bool_field(L, 2, "codex_compat_agents_md", 0);
+  lua_getfield(L, 2, "global_instruction_store");
+  if (!lua_isnil(L, -1)) {
+    cai_lua_native_store *instruction_store =
+        (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (instruction_store == NULL || instruction_store->adapter == NULL ||
+        instruction_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
+      lua_pop(L, 1);
+      return luaL_error(L,
+                        "global_instruction_store must be a native blob store");
+    }
+    config.global_instruction_store =
+        &instruction_store->adapter->callbacks.blob;
+  }
+  lua_pop(L, 1);
   config.agent_identity =
       cai_lua_opt_string_field(L, 2, "agent_identity", NULL);
   config.model = cai_lua_opt_string_field(L, 2, "model", NULL);
@@ -3019,6 +3145,10 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     return cai_lua_fail(L, rc, &error);
   }
   client->child_runtimes++;
+  if (config.global_instruction_store != NULL) {
+    lua_getfield(L, 2, "global_instruction_store");
+    runtime->instruction_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
   if (native_session_store != NULL) {
     lua_getfield(L, 2, "session_store");
     runtime->session_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -3574,6 +3704,10 @@ static int cai_lua_agent_runtime_gc(lua_State *L) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->session_store_ref);
     self->session_store_ref = LUA_NOREF;
   }
+  if (self->instruction_store_ref != LUA_NOREF) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->instruction_store_ref);
+    self->instruction_store_ref = LUA_NOREF;
+  }
   if (self->parent_client != NULL && self->parent_client->child_runtimes > 0U) {
     self->parent_client->child_runtimes--;
   }
@@ -3770,6 +3904,7 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   review->parent_ref = LUA_NOREF;
   review->callback_ref = LUA_NOREF;
   review->session_store_ref = LUA_NOREF;
+  review->instruction_store_ref = LUA_NOREF;
   review->mcp_clients_ref = LUA_NOREF;
   review->review_parent_ref = cai_lua_ref_parent(L, 1);
   review->review_children_ref = LUA_NOREF;
@@ -3789,6 +3924,10 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
       store->adapter->active_runtimes++;
     }
     lua_pop(L, 1);
+  }
+  if (parent->instruction_store_ref != LUA_NOREF) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, parent->instruction_store_ref);
+    review->instruction_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
   }
   if (parent->review_children_ref == LUA_NOREF) {
     lua_newtable(L);
@@ -5325,6 +5464,53 @@ static int cai_lua_native_store_mcp_session(lua_State *L, int callbacks_index,
   return 1;
 }
 
+static int cai_lua_native_store_blob(lua_State *L, int store_index,
+                                     int context_index) {
+  const cai_blob_store *callbacks;
+  cai_lua_native_store_adapter *adapter;
+  cai_lua_native_store *store;
+  cai_error error;
+
+  cai_error_init(&error);
+  if (lua_type(L, store_index) != LUA_TLIGHTUSERDATA ||
+      !lua_isnoneornil(L, context_index)) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(
+            &error, CAI_ERR_INVALID,
+            "blob requires a C blob-store pointer and no context"),
+        &error);
+  }
+  callbacks = (const cai_blob_store *)lua_touserdata(L, store_index);
+  if (callbacks == NULL ||
+      (callbacks->load == NULL && callbacks->replace == NULL)) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "native blob store requires load or replace"),
+        &error);
+  }
+  store = (cai_lua_native_store *)lua_newuserdata(L, sizeof(*store));
+  store->adapter = NULL;
+  adapter = (cai_lua_native_store_adapter *)malloc(sizeof(*adapter));
+  if (adapter == NULL) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_NOMEM,
+                          "failed to allocate native blob-store adapter"),
+        &error);
+  }
+  memset(adapter, 0, sizeof(*adapter));
+  adapter->kind = CAI_LUA_NATIVE_STORE_BLOB;
+  adapter->callbacks.blob = *callbacks;
+  adapter->references = 1U;
+  store->adapter = adapter;
+  luaL_getmetatable(L, CAI_LUA_NATIVE_STORE);
+  lua_setmetatable(L, -2);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_native_store_new(lua_State *L) {
   const char *kind;
 
@@ -5346,6 +5532,9 @@ static int cai_lua_native_store_new(lua_State *L) {
   }
   if (strcmp(kind, "mcp_session") == 0) {
     return cai_lua_native_store_mcp_session(L, 2, 3);
+  }
+  if (strcmp(kind, "blob") == 0) {
+    return cai_lua_native_store_blob(L, 2, 3);
   }
   {
     cai_error error;

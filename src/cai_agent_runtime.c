@@ -269,6 +269,11 @@ struct cai_agent_runtime {
   char *smith_review_reasoning_effort;
   char *smith_review_reasoning_summary;
   char *smith_developer_instructions_extension;
+  char *smith_agent_config_directory;
+  char *smith_global_agents_md_path;
+  cai_blob_store smith_global_instruction_store;
+  int smith_has_global_instruction_store;
+  int smith_codex_compat_agents_md;
   char *preset_name;
   char *preset_prompt_version;
   char *preset_default_identity;
@@ -685,6 +690,8 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->smith_review_reasoning_effort);
   cai_free_mem(NULL, runtime->smith_review_reasoning_summary);
   cai_free_mem(NULL, runtime->smith_developer_instructions_extension);
+  cai_free_mem(NULL, runtime->smith_agent_config_directory);
+  cai_free_mem(NULL, runtime->smith_global_agents_md_path);
   cai_free_mem(NULL, runtime->preset_name);
   cai_free_mem(NULL, runtime->preset_prompt_version);
   cai_free_mem(NULL, runtime->preset_default_identity);
@@ -703,6 +710,12 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   runtime->smith_review_reasoning_effort = NULL;
   runtime->smith_review_reasoning_summary = NULL;
   runtime->smith_developer_instructions_extension = NULL;
+  runtime->smith_agent_config_directory = NULL;
+  runtime->smith_global_agents_md_path = NULL;
+  memset(&runtime->smith_global_instruction_store, 0,
+         sizeof(runtime->smith_global_instruction_store));
+  runtime->smith_has_global_instruction_store = 0;
+  runtime->smith_codex_compat_agents_md = 0;
   runtime->preset_name = NULL;
   runtime->preset_prompt_version = NULL;
   runtime->preset_default_identity = NULL;
@@ -801,6 +814,20 @@ static int cai_runtime_capture_preset_profile(
         config->developer_instructions_extension,
         &runtime->smith_developer_instructions_extension, error);
   }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        config->agent_config_directory, &runtime->smith_agent_config_directory,
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(config->global_agents_md_path,
+                                          &runtime->smith_global_agents_md_path,
+                                          error);
+  }
+  if (rc == CAI_OK && config->global_instruction_store != NULL) {
+    runtime->smith_global_instruction_store = *config->global_instruction_store;
+    runtime->smith_has_global_instruction_store = 1;
+  }
   if (rc == CAI_OK && config->terminal_tool_config != NULL) {
     runtime->smith_terminal_config = *terminal_config;
     runtime->smith_terminal_config.root_path = NULL;
@@ -824,6 +851,8 @@ static int cai_runtime_capture_preset_profile(
     runtime->smith_disable_terminal = config->disable_terminal ? 1 : 0;
     runtime->smith_disable_default_session_store =
         config->disable_default_session_store;
+    runtime->smith_codex_compat_agents_md =
+        config->codex_compat_agents_md ? 1 : 0;
     runtime->review_event_callback = config->review_event_callback != NULL
                                          ? config->review_event_callback
                                          : config->event_callback;
@@ -3393,6 +3422,10 @@ int cai_agent_runtime_open(cai_client *client,
   }
   cai_smith_config_init(&smith);
   smith.workspace_directory = config->workspace_directory;
+  smith.agent_config_directory = config->agent_config_directory;
+  smith.global_agents_md_path = config->global_agents_md_path;
+  smith.global_instruction_store = config->global_instruction_store;
+  smith.codex_compat_agents_md = config->codex_compat_agents_md;
   smith.agent_identity = config->agent_identity;
   smith.model = config->model;
   smith.reasoning_effort = config->reasoning_effort;
@@ -4089,6 +4122,13 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   preset.supports_review = parent->preset_supports_review;
   config.preset_descriptor = &preset;
   config.workspace_directory = parent->workspace_directory;
+  config.agent_config_directory = parent->smith_agent_config_directory;
+  config.global_agents_md_path = parent->smith_global_agents_md_path;
+  config.global_instruction_store =
+      parent->smith_has_global_instruction_store
+          ? &parent->smith_global_instruction_store
+          : NULL;
+  config.codex_compat_agents_md = parent->smith_codex_compat_agents_md;
   config.agent_identity = parent->smith_identity;
   config.model = parent->smith_review_model != NULL ? parent->smith_review_model
                                                     : parent->smith_model;

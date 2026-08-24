@@ -124,6 +124,12 @@ terminal implementation.
 
 Both the direct `cai_smith_config`/`client:new_smith_agent` profile and the
 runtime configuration accept `reasoning_summary`; `auto` is the default.
+Smith loads an optional global policy from `$XDG_CONFIG_HOME/cai/AGENTS.md`
+(or `~/.config/cai/AGENTS.md`), then only `AGENTS.md` in the selected
+workspace. Set `agent_config_directory`, `global_agents_md_path`, or a
+C-backed `global_instruction_store` to select another global source. CAI does
+not search workspace ancestors unless `codex_compat_agents_md` is explicitly
+enabled.
 
 ```sh
 make -C examples run-smith-terminal

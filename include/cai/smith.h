@@ -4,6 +4,7 @@
 #ifndef CAI_SMITH_H
 #define CAI_SMITH_H
 
+#include <cai/blob_store.h>
 #include <cai/cai.h>
 #include <cai/tools/terminal.h>
 
@@ -20,7 +21,7 @@ extern "C" {
 /** Smith's default visible identity. */
 #define CAI_SMITH_DEFAULT_IDENTITY "Cai Smith"
 /** Version of the developer-instruction asset rendered by this preset. */
-#define CAI_SMITH_PROMPT_VERSION "smith-5"
+#define CAI_SMITH_PROMPT_VERSION "smith-6"
 
 /** Tool capabilities selected by an agent preset.
  *
@@ -94,6 +95,29 @@ void cai_agent_preset_from_smith(cai_agent_preset *preset);
 typedef struct cai_agent_preset_config {
   /** Canonical workspace root used to constrain local file tools. */
   const char *workspace_directory;
+  /**
+   * Optional CAI agent configuration directory. NULL selects
+   * $XDG_CONFIG_HOME/cai, or $HOME/.config/cai. CAI reads AGENTS.md directly
+   * below this directory before the workspace policy.
+   */
+  const char *agent_config_directory;
+  /**
+   * Optional exact global AGENTS.md path. It overrides agent_config_directory
+   * and the XDG default. It must not be combined with global_instruction_store.
+   */
+  const char *global_agents_md_path;
+  /**
+   * Optional callback-backed source for the global AGENTS.md value. CAI calls
+   * load with the key "AGENTS.md". This overrides file-based global policy;
+   * replace is unused. The store/context remain borrowed for construction.
+   */
+  const cai_blob_store *global_instruction_store;
+  /**
+   * Non-zero enables Codex-compatible discovery from the nearest .git
+   * ancestor through workspace_directory. The default reads only the exact
+   * workspace_directory/AGENTS.md and never traverses its ancestors.
+   */
+  int codex_compat_agents_md;
   /** Optional visible identity; NULL selects preset->default_identity. */
   const char *agent_identity;
   /** Optional model override; NULL selects preset->default_model. */

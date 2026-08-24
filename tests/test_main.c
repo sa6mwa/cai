@@ -87,6 +87,16 @@ typedef struct read_state {
   int closed;
 } read_state;
 
+typedef struct blob_store_test_state {
+  read_state reader;
+  char loaded_key[64];
+  char saved_key[64];
+  char saved_value[4096];
+  size_t saved_length;
+  int loads;
+  int replaces;
+} blob_store_test_state;
+
 typedef struct fail_after_eof_read_state {
   const char *text;
   size_t offset;
@@ -1474,6 +1484,58 @@ static size_t test_read(void *context, void *buffer, size_t count,
     state->offset += n;
   }
   return n;
+}
+
+static int test_blob_store_load(void *context, const char *key,
+                                cai_source **out, cai_error *error) {
+  blob_store_test_state *store;
+  cai_source_callbacks callbacks;
+
+  store = (blob_store_test_state *)context;
+  if (store == NULL || key == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "blob store load is invalid");
+  }
+  *out = NULL;
+  store->loads++;
+  (void)snprintf(store->loaded_key, sizeof(store->loaded_key), "%s", key);
+  if (store->reader.text == NULL) {
+    return CAI_OK;
+  }
+  store->reader.offset = 0U;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.context = &store->reader;
+  return cai_source_from_callbacks(&callbacks, out, error);
+}
+
+static int test_blob_store_replace(void *context, const char *key,
+                                   cai_source *value, cai_error *error) {
+  blob_store_test_state *store;
+  size_t nread;
+
+  store = (blob_store_test_state *)context;
+  if (store == NULL || key == NULL || value == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "blob store replace is invalid");
+  }
+  store->replaces++;
+  (void)snprintf(store->saved_key, sizeof(store->saved_key), "%s", key);
+  store->saved_length = 0U;
+  for (;;) {
+    if (store->saved_length + 1U >= sizeof(store->saved_value)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "blob store value is too large");
+    }
+    nread = cai_source_read(
+        value, store->saved_value + store->saved_length,
+        sizeof(store->saved_value) - store->saved_length - 1U, error);
+    if (nread == 0U) {
+      break;
+    }
+    store->saved_length += nread;
+  }
+  store->saved_value[store->saved_length] = '\0';
+  return CAI_OK;
 }
 
 static size_t test_failing_zero_read(void *context, void *buffer, size_t count,
@@ -21733,6 +21795,74 @@ cleanup:
   rmdir(template_dir);
 }
 
+static void test_chatgpt_auth_blob_store(test_state *state) {
+  static const char auth_json[] =
+      "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":"
+      "\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old\","
+      "\"refresh_token\":\"refresh-old\",\"account_id\":\"acct_blob\"},"
+      "\"last_refresh\":\"2026-01-01T00:00:00Z\"}";
+  static const char refresh_body[] =
+      "{\"access_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+      "\"refresh_token\":\"refresh-new\"}";
+  static const char *required[] = {"POST /v1/oauth/token HTTP/",
+                                   "\"refresh_token\":\"refresh-old\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, refresh_body}};
+  blob_store_test_state store;
+  cai_blob_store callbacks;
+  cai_chatgpt_auth_config config;
+  cai_chatgpt_auth *auth;
+  cai_error error;
+  http_mock_server server;
+  int server_opened;
+
+  memset(&store, 0, sizeof(store));
+  memset(&callbacks, 0, sizeof(callbacks));
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  auth = NULL;
+  server_opened = 0;
+  cai_error_init(&error);
+  store.reader.text = auth_json;
+  callbacks.load = test_blob_store_load;
+  callbacks.replace = test_blob_store_replace;
+  callbacks.context = &store;
+  if (http_mock_server_open_script(state, "chatgpt_auth_blob_store", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&config);
+  config.storage = &callbacks;
+  config.storage_key = "vectis-auth";
+  config.issuer = server.base_url;
+  expect_int(state, "chatgpt_auth_blob_open",
+             cai_chatgpt_auth_open(&config, &auth, &error), CAI_OK);
+  if (auth != NULL) {
+    expect_int(state, "chatgpt_auth_blob_refresh", auth->refresh(auth, &error),
+               CAI_OK);
+    expect_int(state, "chatgpt_auth_blob_load_count", store.loads, 2L);
+    expect_int(state, "chatgpt_auth_blob_replace_count", store.replaces, 1L);
+    expect_str(state, "chatgpt_auth_blob_load_key", store.loaded_key,
+               "vectis-auth");
+    expect_str(state, "chatgpt_auth_blob_replace_key", store.saved_key,
+               "vectis-auth");
+    expect_substr(state, "chatgpt_auth_blob_saved", store.saved_value,
+                  "refresh-new");
+  }
+
+cleanup:
+  test_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_blob_store", server.pid,
+                      &server.child_status);
+  }
+}
+
 static void test_chatgpt_auth_open_default_path(test_state *state) {
   char template_dir[] = "/tmp/cai-auth-default-open-XXXXXX";
   char xdg_dir[PATH_MAX];
@@ -22305,9 +22435,8 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
       {"POST /v1/oauth/token HTTP/", required,
        sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, token_body}};
-  char template_dir[] = "/tmp/cai-login-test-XXXXXX";
-  char auth_path[PATH_MAX];
-  char *stored;
+  blob_store_test_state store;
+  cai_blob_store storage;
   http_mock_server server;
   cai_chatgpt_login_config config;
   cai_chatgpt_login_request request;
@@ -22317,27 +22446,25 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
   char *authorize_url;
   int server_opened;
 
-  stored = NULL;
   login = NULL;
   authorize_url = NULL;
   server_opened = 0;
+  memset(&store, 0, sizeof(store));
+  memset(&storage, 0, sizeof(storage));
   memset(&server, 0, sizeof(server));
   server.pid = -1;
   cai_error_init(&error);
-  if (mkdtemp(template_dir) == NULL) {
-    test_fail(state, "chatgpt_login_tmpdir", "mkdtemp failed");
-    cai_error_cleanup(&error);
-    return;
-  }
-  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
   if (http_mock_server_open_script(state, "chatgpt_login_exchange_mock", script,
                                    sizeof(script) / sizeof(script[0]),
                                    &server) != 0) {
     goto cleanup;
   }
   server_opened = 1;
+  storage.replace = test_blob_store_replace;
+  storage.context = &store;
   cai_chatgpt_login_config_init(&config);
-  config.auth_json_path = auth_path;
+  config.storage = &storage;
+  config.storage_key = "vectis-login";
   config.redirect_uri = "http://127.0.0.1:1455/auth/callback";
   config.issuer = server.base_url;
   config.state = "state-fixed";
@@ -22359,29 +22486,28 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
              1L);
   expect_substr(state, "chatgpt_login_exchange_body", response.body,
                 "ChatGPT login complete");
-  stored = read_file_or_die(auth_path);
-  expect_substr(state, "chatgpt_login_persisted_mode", stored,
+  expect_int(state, "chatgpt_login_store_replace_count", store.replaces, 1L);
+  expect_str(state, "chatgpt_login_store_replace_key", store.saved_key,
+             "vectis-login");
+  expect_substr(state, "chatgpt_login_persisted_mode", store.saved_value,
                 "\"auth_mode\":\"chatgpt\"");
-  expect_substr(state, "chatgpt_login_persisted_access", stored,
+  expect_substr(state, "chatgpt_login_persisted_access", store.saved_value,
                 "\"access_token\":\"eyJhbGciOiJub25lIn0."
                 "eyJleHAiOjQxMDI0NDQ4MDB9.new\"");
-  expect_substr(state, "chatgpt_login_persisted_refresh", stored,
+  expect_substr(state, "chatgpt_login_persisted_refresh", store.saved_value,
                 "\"refresh_token\":\"refresh-new\"");
-  expect_substr(state, "chatgpt_login_persisted_account", stored,
+  expect_substr(state, "chatgpt_login_persisted_account", store.saved_value,
                 "\"account_id\":\"acct_login\"");
 
 cleanup:
   cai_chatgpt_login_response_cleanup(&response);
   cai_string_destroy(authorize_url);
   test_chatgpt_login_close(login);
-  free(stored);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_login_exchange_mock", server.pid,
                       &server.child_status);
   }
-  unlink(auth_path);
-  rmdir(template_dir);
 }
 
 static void test_chatgpt_login_exchange_http_timeout(test_state *state) {
@@ -24454,6 +24580,17 @@ static void test_smith_profile(test_state *state) {
   char agents_path[PATH_MAX];
   char review_workspace[] = "/tmp/cai-smith-review-instructions-XXXXXX";
   char review_agents_path[PATH_MAX];
+  char policy_root[] = "/tmp/cai-smith-policy-XXXXXX";
+  char policy_dir[PATH_MAX];
+  char policy_global_path[PATH_MAX];
+  char policy_project[PATH_MAX];
+  char policy_workspace[PATH_MAX];
+  char policy_project_agents[PATH_MAX];
+  char policy_workspace_agents[PATH_MAX];
+  char policy_marker[PATH_MAX];
+  blob_store_test_state policy_store_state;
+  cai_blob_store policy_store;
+  test_env_snapshot xdg_config_env;
   int external_fd;
 
   cai_error_init(&error);
@@ -24463,6 +24600,9 @@ static void test_smith_profile(test_state *state) {
   review = NULL;
   memset(&runtime_store, 0, sizeof(runtime_store));
   memset(&runtime_store_state, 0, sizeof(runtime_store_state));
+  memset(&policy_store_state, 0, sizeof(policy_store_state));
+  memset(&policy_store, 0, sizeof(policy_store));
+  test_env_capture(&xdg_config_env, "XDG_CONFIG_HOME");
   cai_smith_config_init(&config);
   expect_str(state, "smith_prompt_version", cai_smith_prompt_version(),
              CAI_SMITH_PROMPT_VERSION);
@@ -24480,6 +24620,140 @@ static void test_smith_profile(test_state *state) {
     return;
   }
   external_fd = -1;
+  if (mkdtemp(policy_root) == NULL ||
+      snprintf(policy_dir, sizeof(policy_dir), "%s/cai", policy_root) >=
+          (int)sizeof(policy_dir) ||
+      snprintf(policy_global_path, sizeof(policy_global_path), "%s/AGENTS.md",
+               policy_dir) >= (int)sizeof(policy_global_path) ||
+      snprintf(policy_project, sizeof(policy_project), "%s/project",
+               policy_root) >= (int)sizeof(policy_project) ||
+      snprintf(policy_workspace, sizeof(policy_workspace), "%s/child",
+               policy_project) >= (int)sizeof(policy_workspace) ||
+      snprintf(policy_project_agents, sizeof(policy_project_agents),
+               "%s/AGENTS.md",
+               policy_project) >= (int)sizeof(policy_project_agents) ||
+      snprintf(policy_workspace_agents, sizeof(policy_workspace_agents),
+               "%s/AGENTS.md",
+               policy_workspace) >= (int)sizeof(policy_workspace_agents) ||
+      snprintf(policy_marker, sizeof(policy_marker), "%s/.git",
+               policy_project) >= (int)sizeof(policy_marker) ||
+      mkdir(policy_dir, 0700) != 0 || mkdir(policy_project, 0700) != 0 ||
+      mkdir(policy_workspace, 0700) != 0 || mkdir(policy_marker, 0700) != 0) {
+    test_fail(state, "smith_global_instructions_setup",
+              "failed to create global instruction fixtures");
+  } else {
+    write_file_or_die(policy_global_path, "Global policy.");
+    write_file_or_die(policy_project_agents, "Ancestor policy.");
+    write_file_or_die(policy_workspace_agents, "Workspace policy.");
+    config.workspace_directory = policy_workspace;
+    config.agent_config_directory = policy_dir;
+    expect_int(state, "smith_global_instructions_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_substr(state, "smith_global_instructions_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Global policy.");
+      expect_substr(state, "smith_workspace_instructions_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Workspace policy.");
+      if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Ancestor policy.") != NULL) {
+        test_fail(state, "smith_no_default_ancestor_discovery",
+                  "default policy discovery traversed a workspace ancestor");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    config.codex_compat_agents_md = 1;
+    expect_int(state, "smith_codex_compat_instructions_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      const char *global_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Global policy.");
+      const char *ancestor_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Ancestor policy.");
+      const char *workspace_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Workspace policy.");
+
+      if (global_policy == NULL || ancestor_policy == NULL ||
+          workspace_policy == NULL || global_policy >= ancestor_policy ||
+          ancestor_policy >= workspace_policy) {
+        test_fail(state, "smith_codex_compat_instruction_order",
+                  "compatibility discovery did not preserve policy order");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    if (rmdir(policy_marker) != 0) {
+      test_fail(state, "smith_codex_compat_no_repo_setup",
+                "failed to remove Git marker");
+    }
+    expect_int(state, "smith_codex_compat_no_repo_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_substr(state, "smith_codex_compat_no_repo_global",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Global policy.");
+      expect_substr(state, "smith_codex_compat_no_repo_workspace",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Workspace policy.");
+      if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Ancestor policy.") != NULL) {
+        test_fail(state, "smith_codex_compat_no_repo_no_parent",
+                  "compatibility discovery escaped a markerless workspace");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    policy_store_state.reader.text = "Stored global policy.";
+    policy_store.load = test_blob_store_load;
+    policy_store.context = &policy_store_state;
+    config.codex_compat_agents_md = 0;
+    config.agent_config_directory = NULL;
+    config.global_instruction_store = &policy_store;
+    expect_int(state, "smith_global_instruction_store_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_str(state, "smith_global_instruction_store_key",
+                 policy_store_state.loaded_key, "AGENTS.md");
+      expect_substr(state, "smith_global_instruction_store_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Stored global policy.");
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    config.global_instruction_store = NULL;
+    config.agent_config_directory = NULL;
+    if (setenv("XDG_CONFIG_HOME", policy_root, 1) != 0) {
+      test_fail(state, "smith_default_global_instructions_setup",
+                "failed to configure XDG_CONFIG_HOME");
+    } else {
+      expect_int(
+          state, "smith_default_global_instructions_open",
+          cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+          CAI_OK);
+      if (agent != NULL) {
+        expect_substr(state, "smith_default_global_instructions_visible",
+                      CAI_AGENT_IMPL(agent)->developer_instructions,
+                      "Global policy.");
+        cai_agent_destroy(agent);
+        agent = NULL;
+      }
+    }
+    test_env_restore(&xdg_config_env);
+    unlink(policy_workspace_agents);
+    unlink(policy_project_agents);
+    unlink(policy_global_path);
+    rmdir(policy_marker);
+    rmdir(policy_workspace);
+    rmdir(policy_project);
+    rmdir(policy_dir);
+    rmdir(policy_root);
+  }
   if (mkdtemp(instructions_workspace) == NULL ||
       (external_fd = mkstemp(external_instructions)) < 0 ||
       snprintf(agents_path, sizeof(agents_path), "%s/AGENTS.md",
@@ -38403,6 +38677,7 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_stream_refresh_retry",
      test_chatgpt_auth_stream_refresh_retry},
     {"chatgpt_auth_default_path", test_chatgpt_auth_default_path},
+    {"chatgpt_auth_blob_store", test_chatgpt_auth_blob_store},
     {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
     {"chatgpt_auth_client_defaults_to_codex_backend",
      test_chatgpt_auth_client_defaults_to_codex_backend},
