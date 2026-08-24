@@ -92,6 +92,7 @@ typedef struct cai_lua_agent {
   size_t active_calls;
   size_t child_sessions;
   int parent_ref;
+  int skill_provider_ref;
 } cai_lua_agent;
 
 typedef struct cai_lua_session {
@@ -111,6 +112,7 @@ typedef struct cai_lua_agent_runtime {
   int callback_ref;
   int session_store_ref;
   int instruction_store_ref;
+  int skill_provider_ref;
   int mcp_clients_ref;
   size_t mcp_client_count;
   int review_parent_ref;
@@ -142,7 +144,8 @@ typedef enum cai_lua_native_store_kind {
   CAI_LUA_NATIVE_STORE_TODO = 1,
   CAI_LUA_NATIVE_STORE_AGENT_SESSION = 2,
   CAI_LUA_NATIVE_STORE_MCP_SESSION = 3,
-  CAI_LUA_NATIVE_STORE_BLOB = 4
+  CAI_LUA_NATIVE_STORE_BLOB = 4,
+  CAI_LUA_NATIVE_STORE_SKILLS = 5
 } cai_lua_native_store_kind;
 
 /* Native stores hold no lua_State and never re-enter Lua from a callback. */
@@ -153,6 +156,7 @@ typedef struct cai_lua_native_store_adapter {
     cai_agent_session_store agent_session;
     cai_mcp_session_callbacks mcp_session;
     cai_blob_store blob;
+    cai_skill_provider skills;
   } callbacks;
   void *context;
   size_t references;
@@ -1429,6 +1433,7 @@ static void cai_lua_push_agent_ref(lua_State *L, cai_agent *agent,
   ud->L = L;
   ud->parent_client = cai_lua_parent_client_at(L, parent_index);
   ud->parent_ref = cai_lua_ref_parent(L, parent_index);
+  ud->skill_provider_ref = LUA_NOREF;
   luaL_getmetatable(L, CAI_LUA_AGENT);
   lua_setmetatable(L, -2);
 }
@@ -2783,12 +2788,16 @@ static int cai_lua_client_new_agent(lua_State *L) {
 static int cai_lua_client_new_smith_agent(lua_State *L) {
   cai_lua_client *self;
   cai_smith_config config;
+  cai_skill_config skills;
+  cai_lua_native_store *skill_store;
   cai_agent *agent;
   cai_error error;
   int rc;
 
   self = cai_lua_check_client(L, 1);
   cai_smith_config_init(&config);
+  cai_skill_config_init(&skills);
+  skill_store = NULL;
   if (!lua_istable(L, 2)) {
     return luaL_error(L, "new_smith_agent requires a configuration table");
   }
@@ -2798,6 +2807,23 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
       cai_lua_opt_string_field(L, 2, "workspace", config.workspace_directory);
   config.agent_config_directory =
       cai_lua_opt_string_field(L, 2, "agent_config_directory", NULL);
+  skills.skills_directory =
+      cai_lua_opt_string_field(L, 2, "skills_directory", NULL);
+  lua_getfield(L, 2, "skill_provider");
+  if (!lua_isnil(L, -1)) {
+    skill_store =
+        (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (skill_store == NULL || skill_store->adapter == NULL ||
+        skill_store->adapter->kind != CAI_LUA_NATIVE_STORE_SKILLS) {
+      lua_pop(L, 1);
+      return luaL_error(L, "skill_provider must be a native skills store");
+    }
+    skills.skill_provider = &skill_store->adapter->callbacks.skills;
+  }
+  lua_pop(L, 1);
+  if (skills.skills_directory != NULL || skills.skill_provider != NULL) {
+    config.skills = &skills;
+  }
   config.global_agents_md_path =
       cai_lua_opt_string_field(L, 2, "global_agents_md_path", NULL);
   config.codex_compat_agents_md =
@@ -2838,6 +2864,13 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   cai_lua_push_agent_ref(L, agent, 1);
+  if (skill_store != NULL) {
+    cai_lua_agent *agent_ud =
+        (cai_lua_agent *)luaL_checkudata(L, -1, CAI_LUA_AGENT);
+    lua_getfield(L, 2, "skill_provider");
+    agent_ud->skill_provider_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    skill_store->adapter->active_runtimes++;
+  }
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -2935,7 +2968,9 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_client *client;
   cai_lua_agent_runtime *runtime;
   cai_lua_native_store *native_session_store;
+  cai_lua_native_store *native_skill_store;
   cai_agent_runtime_config config;
+  cai_skill_config skills;
   cai_agent_preset preset;
   cai_mcp_client **mcp_clients;
   cai_mcp_tool_registration_config mcp_tool_config;
@@ -2987,10 +3022,12 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->callback_ref = LUA_NOREF;
   runtime->session_store_ref = LUA_NOREF;
   runtime->instruction_store_ref = LUA_NOREF;
+  runtime->skill_provider_ref = LUA_NOREF;
   runtime->mcp_clients_ref = LUA_NOREF;
   runtime->review_parent_ref = LUA_NOREF;
   runtime->review_children_ref = LUA_NOREF;
   native_session_store = NULL;
+  native_skill_store = NULL;
   lua_getfield(L, 2, "event_callback");
   if (!lua_isnil(L, -1)) {
     luaL_checktype(L, -1, LUA_TFUNCTION);
@@ -2999,6 +3036,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     lua_pop(L, 1);
   }
   cai_agent_runtime_config_init(&config);
+  cai_skill_config_init(&skills);
   memset(&preset, 0, sizeof(preset));
   if (custom_preset) {
     lua_getfield(L, 2, "preset");
@@ -3038,6 +3076,23 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "workspace", config.workspace_directory);
   config.agent_config_directory =
       cai_lua_opt_string_field(L, 2, "agent_config_directory", NULL);
+  skills.skills_directory =
+      cai_lua_opt_string_field(L, 2, "skills_directory", NULL);
+  lua_getfield(L, 2, "skill_provider");
+  if (!lua_isnil(L, -1)) {
+    native_skill_store =
+        (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (native_skill_store == NULL || native_skill_store->adapter == NULL ||
+        native_skill_store->adapter->kind != CAI_LUA_NATIVE_STORE_SKILLS) {
+      lua_pop(L, 1);
+      return luaL_error(L, "skill_provider must be a native skills store");
+    }
+    skills.skill_provider = &native_skill_store->adapter->callbacks.skills;
+  }
+  lua_pop(L, 1);
+  if (skills.skills_directory != NULL || skills.skill_provider != NULL) {
+    config.skills = &skills;
+  }
   config.global_agents_md_path =
       cai_lua_opt_string_field(L, 2, "global_agents_md_path", NULL);
   config.codex_compat_agents_md =
@@ -3153,6 +3208,11 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   if (config.global_instruction_store != NULL) {
     lua_getfield(L, 2, "global_instruction_store");
     runtime->instruction_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  if (native_skill_store != NULL) {
+    lua_getfield(L, 2, "skill_provider");
+    runtime->skill_provider_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    native_skill_store->adapter->active_runtimes++;
   }
   if (native_session_store != NULL) {
     lua_getfield(L, 2, "session_store");
@@ -3631,6 +3691,19 @@ static int cai_lua_agent_gc(lua_State *L) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->parent_ref);
     self->parent_ref = LUA_NOREF;
   }
+  if (self->skill_provider_ref != LUA_NOREF) {
+    cai_lua_native_store *store;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, self->skill_provider_ref);
+    store = (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (store != NULL && store->adapter != NULL &&
+        store->adapter->active_runtimes > 0U) {
+      store->adapter->active_runtimes--;
+    }
+    lua_pop(L, 1);
+    luaL_unref(L, LUA_REGISTRYINDEX, self->skill_provider_ref);
+    self->skill_provider_ref = LUA_NOREF;
+  }
   return 0;
 }
 
@@ -3698,6 +3771,19 @@ static void cai_lua_agent_runtime_release(lua_State *L,
   if (self->instruction_store_ref != LUA_NOREF) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->instruction_store_ref);
     self->instruction_store_ref = LUA_NOREF;
+  }
+  if (self->skill_provider_ref != LUA_NOREF) {
+    cai_lua_native_store *store;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, self->skill_provider_ref);
+    store = (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (store != NULL && store->adapter != NULL &&
+        store->adapter->active_runtimes > 0U) {
+      store->adapter->active_runtimes--;
+    }
+    lua_pop(L, 1);
+    luaL_unref(L, LUA_REGISTRYINDEX, self->skill_provider_ref);
+    self->skill_provider_ref = LUA_NOREF;
   }
   if (self->parent_client != NULL && self->parent_client->child_runtimes > 0U) {
     self->parent_client->child_runtimes--;
@@ -3932,6 +4018,7 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   review->callback_ref = LUA_NOREF;
   review->session_store_ref = LUA_NOREF;
   review->instruction_store_ref = LUA_NOREF;
+  review->skill_provider_ref = LUA_NOREF;
   review->mcp_clients_ref = LUA_NOREF;
   review->review_parent_ref = cai_lua_ref_parent(L, 1);
   review->review_children_ref = LUA_NOREF;
@@ -3955,6 +4042,16 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   if (parent->instruction_store_ref != LUA_NOREF) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, parent->instruction_store_ref);
     review->instruction_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  if (parent->skill_provider_ref != LUA_NOREF) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, parent->skill_provider_ref);
+    review->skill_provider_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, review->skill_provider_ref);
+    store = (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (store != NULL && store->adapter != NULL) {
+      store->adapter->active_runtimes++;
+    }
+    lua_pop(L, 1);
   }
   if (parent->review_children_ref == LUA_NOREF) {
     lua_newtable(L);
@@ -5667,6 +5764,52 @@ static int cai_lua_native_store_blob(lua_State *L, int store_index,
   return 1;
 }
 
+static int cai_lua_native_store_skills(lua_State *L, int store_index,
+                                       int context_index) {
+  const cai_skill_provider *callbacks;
+  cai_lua_native_store_adapter *adapter;
+  cai_lua_native_store *store;
+  cai_error error;
+
+  cai_error_init(&error);
+  if (lua_type(L, store_index) != LUA_TLIGHTUSERDATA ||
+      !lua_isnoneornil(L, context_index)) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(
+            &error, CAI_ERR_INVALID,
+            "skills requires a C skill-provider pointer and no context"),
+        &error);
+  }
+  callbacks = (const cai_skill_provider *)lua_touserdata(L, store_index);
+  if (callbacks == NULL || callbacks->list == NULL || callbacks->read == NULL) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "native skill provider requires list and read"),
+        &error);
+  }
+  store = (cai_lua_native_store *)lua_newuserdata(L, sizeof(*store));
+  store->adapter = NULL;
+  adapter = (cai_lua_native_store_adapter *)malloc(sizeof(*adapter));
+  if (adapter == NULL) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_NOMEM,
+                          "failed to allocate skill-provider adapter"),
+        &error);
+  }
+  memset(adapter, 0, sizeof(*adapter));
+  adapter->kind = CAI_LUA_NATIVE_STORE_SKILLS;
+  adapter->callbacks.skills = *callbacks;
+  adapter->references = 1U;
+  store->adapter = adapter;
+  luaL_getmetatable(L, CAI_LUA_NATIVE_STORE);
+  lua_setmetatable(L, -2);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_native_store_new(lua_State *L) {
   const char *kind;
 
@@ -5691,6 +5834,9 @@ static int cai_lua_native_store_new(lua_State *L) {
   }
   if (strcmp(kind, "blob") == 0) {
     return cai_lua_native_store_blob(L, 2, 3);
+  }
+  if (strcmp(kind, "skills") == 0) {
+    return cai_lua_native_store_skills(L, 2, 3);
   }
   {
     cai_error error;
@@ -10484,6 +10630,7 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_MCP", CAI_AGENT_PRESET_TOOL_MCP);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_IMAGE_GENERATION",
                       CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_SKILLS", CAI_AGENT_PRESET_TOOL_SKILLS);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);

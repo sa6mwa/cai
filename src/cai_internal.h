@@ -2,6 +2,7 @@
 #define CAI_INTERNAL_H
 
 #include <cai/cai.h>
+#include <cai/skills.h>
 
 #include "cai_lj.h"
 
@@ -388,6 +389,16 @@ int cai_tool_registry_register_custom_spooled_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
     void *context, void (*context_cleanup)(void *context), cai_error *error);
+typedef struct cai_skill_catalog cai_skill_catalog;
+int cai_skills_prepare(const cai_skill_config *config,
+                       const char *agent_config_directory,
+                       cai_skill_catalog **out_catalog, char **out_prompt,
+                       cai_error *error);
+void cai_skills_catalog_cleanup(cai_skill_catalog *catalog);
+int cai_skills_catalog_has_entries(const cai_skill_catalog *catalog);
+int cai_agent_register_skill_tool_owned(cai_agent *agent,
+                                        cai_skill_catalog *catalog,
+                                        cai_error *error);
 /*
  * A local tool may replace its ordinary JSON function-call output with typed
  * response content.  This is intentionally internal until the public tool

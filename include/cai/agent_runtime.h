@@ -6,6 +6,7 @@
 
 #include <cai/cai.h>
 #include <cai/session_store.h>
+#include <cai/skills.h>
 #include <cai/smith.h>
 #include <cai/tools/terminal.h>
 
@@ -266,6 +267,8 @@ typedef struct cai_agent_runtime_config {
   const char *global_agents_md_path;
   /** Optional callback-backed global AGENTS.md source. Borrowed until close. */
   const cai_blob_store *global_instruction_store;
+  /** Optional global skill configuration. NULL selects CAI's default root. */
+  const cai_skill_config *skills;
   /** Enable explicit Codex-compatible ancestor AGENTS.md discovery. */
   int codex_compat_agents_md;
   /** Optional identity overriding Cai Smith. */

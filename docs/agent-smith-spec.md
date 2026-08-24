@@ -484,8 +484,10 @@ The Smith renderer produces, in order:
    ancestors by default. `codex_compat_agents_md` explicitly enables discovery
    from the nearest `.git` ancestor through `workspace_directory` for hosts
    that choose Codex-compatible hierarchy semantics;
-4. host-supplied developer extension fragment, if configured;
-5. the user input or internal context fragment.
+4. the optional global skills catalog, when the selected preset enables
+   `CAI_AGENT_PRESET_TOOL_SKILLS` and discovery finds valid packages;
+5. host-supplied developer extension fragment, if configured;
+6. the user input or internal context fragment.
 
 The runtime records the rendered prompt asset version and SHA-256 in session
 metadata. Existing sessions keep their recorded prompt asset by default; an
@@ -501,6 +503,33 @@ The file-backed auth default remains `$XDG_STATE_HOME/cai/auth.json` (or
 `$HOME/.local/state/cai/auth.json`). Lua accepts only native blob-store
 userdata backed by C callbacks, so these callbacks never enter Lua state from
 an auth refresh or runtime worker.
+
+### 6.1.1 Global skills
+
+Skills are catalog-first instruction packages, not workspace files. CAI only
+discovers them under one configured global root: `skills_directory`, then
+`<agent_config_directory>/skills`, then
+`${XDG_CONFIG_HOME:-$HOME/.config}/cai/skills`. It never probes `.agents`, a
+workspace, or ancestors. A host may replace filesystem discovery with the
+C-only `cai_skill_provider` callback pair; the provider is copied by value and
+must never re-enter a language runtime from an agent worker.
+
+Each package is a directory with a private regular `SKILL.md`. CAI reads its
+small YAML frontmatter at construction, requires a one-line `description`, and
+adds `name: description` to the developer catalog. The catalog tells the model
+to select a skill when the user names it **or** the task clearly matches its
+description, then call `read_skill` to obtain the complete `SKILL.md`. This is
+the same natural-language activation model as Codex; `$name` syntax is neither
+required nor parsed by CAI. `read_skill` also reads package-relative supporting
+resources, rejects absolute paths, traversal, symlinks, and non-private files,
+and is bounded to 1 MiB per resource.
+
+Malformed, inaccessible, duplicate, or excessively large packages are skipped
+without preventing agent startup. If configured, `warning_callback` receives a
+non-fatal diagnostic. A selected package/resource that later cannot be read is
+a normal actionable tool error. The catalog and `read_skill` capability apply
+to ordinary, custom, and isolated review presets when their corresponding tool
+capability includes `CAI_AGENT_PRESET_TOOL_SKILLS`.
 
 ### 6.2 Review
 

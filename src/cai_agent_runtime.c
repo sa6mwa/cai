@@ -313,6 +313,9 @@ struct cai_agent_runtime {
   char *smith_global_agents_md_path;
   cai_blob_store smith_global_instruction_store;
   int smith_has_global_instruction_store;
+  cai_skill_config smith_skills;
+  char *smith_skills_directory;
+  int smith_has_skills;
   int smith_codex_compat_agents_md;
   char *preset_name;
   char *preset_prompt_version;
@@ -744,6 +747,7 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->smith_developer_instructions_extension);
   cai_free_mem(NULL, runtime->smith_agent_config_directory);
   cai_free_mem(NULL, runtime->smith_global_agents_md_path);
+  cai_free_mem(NULL, runtime->smith_skills_directory);
   cai_free_mem(NULL, runtime->preset_name);
   cai_free_mem(NULL, runtime->preset_prompt_version);
   cai_free_mem(NULL, runtime->preset_default_identity);
@@ -764,9 +768,12 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   runtime->smith_developer_instructions_extension = NULL;
   runtime->smith_agent_config_directory = NULL;
   runtime->smith_global_agents_md_path = NULL;
+  runtime->smith_skills_directory = NULL;
   memset(&runtime->smith_global_instruction_store, 0,
          sizeof(runtime->smith_global_instruction_store));
   runtime->smith_has_global_instruction_store = 0;
+  memset(&runtime->smith_skills, 0, sizeof(runtime->smith_skills));
+  runtime->smith_has_skills = 0;
   runtime->smith_codex_compat_agents_md = 0;
   runtime->preset_name = NULL;
   runtime->preset_prompt_version = NULL;
@@ -879,6 +886,16 @@ static int cai_runtime_capture_preset_profile(
   if (rc == CAI_OK && config->global_instruction_store != NULL) {
     runtime->smith_global_instruction_store = *config->global_instruction_store;
     runtime->smith_has_global_instruction_store = 1;
+  }
+  if (rc == CAI_OK && config->skills != NULL) {
+    runtime->smith_skills = *config->skills;
+    rc = cai_runtime_copy_optional_string(config->skills->skills_directory,
+                                          &runtime->smith_skills_directory,
+                                          error);
+    if (rc == CAI_OK) {
+      runtime->smith_skills.skills_directory = runtime->smith_skills_directory;
+      runtime->smith_has_skills = 1;
+    }
   }
   if (rc == CAI_OK && config->terminal_tool_config != NULL) {
     runtime->smith_terminal_config = *terminal_config;
@@ -3928,6 +3945,7 @@ int cai_agent_runtime_open(cai_client *client,
   smith.agent_config_directory = config->agent_config_directory;
   smith.global_agents_md_path = config->global_agents_md_path;
   smith.global_instruction_store = config->global_instruction_store;
+  smith.skills = config->skills;
   smith.codex_compat_agents_md = config->codex_compat_agents_md;
   smith.agent_identity = config->agent_identity;
   smith.model = config->model;
@@ -4647,6 +4665,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
       parent->smith_has_global_instruction_store
           ? &parent->smith_global_instruction_store
           : NULL;
+  config.skills = parent->smith_has_skills ? &parent->smith_skills : NULL;
   config.codex_compat_agents_md = parent->smith_codex_compat_agents_md;
   config.agent_identity = parent->smith_identity;
   config.model = parent->smith_review_model != NULL ? parent->smith_review_model

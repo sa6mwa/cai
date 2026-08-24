@@ -24559,6 +24559,70 @@ static void test_agent_client_history_continuity(test_state *state) {
   }
 }
 
+static void test_global_skills_catalog(test_state *state) {
+  char root_template[] = "/tmp/cai-skills-XXXXXX";
+  char skills_path[PATH_MAX];
+  char valid_path[PATH_MAX];
+  char invalid_path[PATH_MAX];
+  char file_path[PATH_MAX];
+  cai_skill_config config;
+  cai_skill_catalog *catalog;
+  char *prompt;
+  cai_error error;
+
+  cai_error_init(&error);
+  catalog = NULL;
+  prompt = NULL;
+  if (mkdtemp(root_template) == NULL) {
+    test_fail(state, "global_skills_catalog", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(skills_path, sizeof(skills_path), "%s/skills", root_template);
+  snprintf(valid_path, sizeof(valid_path), "%s/format", skills_path);
+  snprintf(invalid_path, sizeof(invalid_path), "%s/broken", skills_path);
+  if (mkdir(skills_path, 0700) != 0 || mkdir(valid_path, 0700) != 0 ||
+      mkdir(invalid_path, 0700) != 0) {
+    test_fail(state, "global_skills_catalog", "mkdir failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", valid_path);
+  write_file_or_die(
+      file_path, "---\nname: format\ndescription: Format a source tree.\n---\n"
+                 "Run the formatter.\n");
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", invalid_path);
+  write_file_or_die(file_path, "not frontmatter\n");
+  cai_skill_config_init(&config);
+  config.skills_directory = skills_path;
+  expect_int(state, "global_skills_prepare",
+             cai_skills_prepare(&config, NULL, &catalog, &prompt, &error),
+             CAI_OK);
+  if (catalog != NULL) {
+    expect_int(state, "global_skills_has_entry",
+               cai_skills_catalog_has_entries(catalog), 1);
+  }
+  if (prompt != NULL) {
+    expect_substr(state, "global_skills_prompt_name", prompt,
+                  "- format: Format a source tree.");
+    expect_substr(state, "global_skills_prompt_trigger", prompt,
+                  "task clearly matches its description");
+  } else {
+    test_fail(state, "global_skills_prompt", "valid skill did not render");
+  }
+  cai_free_mem(NULL, prompt);
+  cai_skills_catalog_cleanup(catalog);
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", invalid_path);
+  unlink(file_path);
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", valid_path);
+  unlink(file_path);
+  rmdir(invalid_path);
+  rmdir(valid_path);
+  rmdir(skills_path);
+  rmdir(root_template);
+  cai_error_cleanup(&error);
+}
+
 static void test_smith_profile(test_state *state) {
   static const char response_body[] =
       "{\"id\":\"resp_smith\",\"status\":\"completed\",\"output\":[{\"type\":"
@@ -39091,6 +39155,7 @@ static const test_entry test_entries[] = {
     {"session_spooled_input_failure_ownership",
      test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
+    {"global_skills_catalog", test_global_skills_catalog},
     {"smith_profile", test_smith_profile},
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},

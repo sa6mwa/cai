@@ -6,6 +6,7 @@
 
 #include <cai/blob_store.h>
 #include <cai/cai.h>
+#include <cai/skills.h>
 #include <cai/tools/terminal.h>
 
 #ifdef __cplusplus
@@ -46,6 +47,8 @@ extern "C" {
 #define CAI_AGENT_PRESET_TOOL_MCP (1UL << 6)
 /** Permit configured hosted image-generation on an ordinary runtime. */
 #define CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION (1UL << 7)
+/** Register configured global skills and the constrained read_skill tool. */
+#define CAI_AGENT_PRESET_TOOL_SKILLS (1UL << 8)
 
 /** Declarative, host-defined agent profile for CAI's shared runtime. */
 typedef struct cai_agent_preset {
@@ -76,8 +79,8 @@ typedef struct cai_agent_preset {
   unsigned long tool_capabilities;
   /**
    * Bitwise OR of CAI_AGENT_PRESET_TOOL_READ_FILE, _LIST_FILES, _TERMINAL,
-   * and _VIEW_IMAGE for read-only review runs. Other capability bits fail
-   * construction rather than granting a reviewer mutation authority.
+   * _VIEW_IMAGE, and _SKILLS for read-only review runs. Other capability bits
+   * fail construction rather than granting a reviewer mutation authority.
    */
   unsigned long review_tool_capabilities;
   /** Non-zero enables isolated review children for this preset. */
@@ -112,6 +115,8 @@ typedef struct cai_agent_preset_config {
    * replace is unused. The store/context remain borrowed for construction.
    */
   const cai_blob_store *global_instruction_store;
+  /** Optional global skill configuration. NULL selects CAI's default root. */
+  const cai_skill_config *skills;
   /**
    * Non-zero enables Codex-compatible discovery from the nearest .git
    * ancestor through workspace_directory. The default reads only the exact

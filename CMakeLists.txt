@@ -648,6 +648,7 @@ set(CAI_SOURCES
   src/cai_agent.c
   src/cai_agent_runtime.c
   src/cai_session_store.c
+  src/cai_skills.c
   src/cai_allocator.c
   src/cai_auth.c
   src/cai_client.c
@@ -1229,6 +1230,7 @@ if(CAI_BUILD_TESTS)
     agent_session
     session_spooled_input_failure_ownership
     agent_client_history_continuity
+    global_skills_catalog
     smith_profile
     smith_review_runtime
     smith_review_parent_handoff

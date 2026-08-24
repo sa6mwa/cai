@@ -94,22 +94,22 @@ void cai_agent_preset_from_smith(cai_agent_preset *preset) {
       CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
       CAI_AGENT_PRESET_TOOL_APPLY_PATCH | CAI_AGENT_PRESET_TOOL_TERMINAL |
       CAI_AGENT_PRESET_TOOL_VIEW_IMAGE | CAI_AGENT_PRESET_TOOL_GOAL |
-      CAI_AGENT_PRESET_TOOL_MCP | CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION;
+      CAI_AGENT_PRESET_TOOL_MCP | CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION |
+      CAI_AGENT_PRESET_TOOL_SKILLS;
   preset->review_tool_capabilities =
       CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
-      CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
+      CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE |
+      CAI_AGENT_PRESET_TOOL_SKILLS;
   preset->supports_review = 1;
 }
 
 const char *cai_smith_prompt_version(void) { return CAI_SMITH_PROMPT_VERSION; }
 
-static int cai_preset_render_template(const cai_allocator *allocator,
-                                      const char *template_text,
-                                      const cai_agent_preset *preset,
-                                      const cai_agent_preset_config *config,
-                                      const char *repository_instructions,
-                                      const char *tool_contract, char **out,
-                                      cai_error *error) {
+static int cai_preset_render_template(
+    const cai_allocator *allocator, const char *template_text,
+    const cai_agent_preset *preset, const cai_agent_preset_config *config,
+    const char *repository_instructions, const char *skill_catalog,
+    const char *tool_contract, char **out, cai_error *error) {
   const char *identity;
   const char *extension;
   const char *cursor;
@@ -120,6 +120,7 @@ static int cai_preset_render_template(const cai_allocator *allocator,
   size_t identity_length;
   size_t tool_contract_length;
   size_t repository_length;
+  size_t skill_catalog_length;
   size_t extension_length;
   size_t total_length;
   size_t part_length;
@@ -139,6 +140,7 @@ static int cai_preset_render_template(const cai_allocator *allocator,
   tool_contract_length = tool_contract != NULL ? strlen(tool_contract) : 0U;
   repository_length =
       repository_instructions != NULL ? strlen(repository_instructions) : 0U;
+  skill_catalog_length = skill_catalog != NULL ? strlen(skill_catalog) : 0U;
   extension_length = extension != NULL ? strlen(extension) : 0U;
   total_length = 0U;
   cursor = template_text;
@@ -181,6 +183,13 @@ static int cai_preset_render_template(const cai_allocator *allocator,
                            "agent preset instructions are too large");
     }
     total_length += 2U + repository_length;
+  }
+  if (skill_catalog_length > 0U) {
+    if (total_length > SIZE_MAX - 2U - skill_catalog_length) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "agent preset instructions are too large");
+    }
+    total_length += 2U + skill_catalog_length;
   }
   if (extension_length > 0U) {
     if (total_length > SIZE_MAX - 2U - extension_length) {
@@ -231,6 +240,12 @@ static int cai_preset_render_template(const cai_allocator *allocator,
     memcpy(instructions + offset, repository_instructions, repository_length);
     offset += repository_length;
   }
+  if (skill_catalog_length > 0U) {
+    memcpy(instructions + offset, "\n\n", 2U);
+    offset += 2U;
+    memcpy(instructions + offset, skill_catalog, skill_catalog_length);
+    offset += skill_catalog_length;
+  }
   if (extension_length > 0U) {
     memcpy(instructions + offset, "\n\n", 2U);
     offset += 2U;
@@ -263,6 +278,9 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   static const char *const mcp = "The host may expose configured MCP tools. ";
   static const char *const image_generation =
       "The host may expose image_generation when it enables that capability. ";
+  static const char *const skills =
+      "Global skills may be available through read_skill; use only skills "
+      "listed in the developer instructions. ";
   static const char *const serial =
       "Tool calls are serial: complete and assess one call before issuing "
       "another.";
@@ -299,6 +317,9 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   }
   if ((capabilities & CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION) != 0UL) {
     parts[count++] = image_generation;
+  }
+  if ((capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
+    parts[count++] = skills;
   }
   parts[count++] = serial;
   length = 0U;
@@ -370,7 +391,8 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
                                          const cai_agent_preset_config *config,
                                          unsigned long tool_capabilities,
                                          const char *repository_instructions,
-                                         char **out, cai_error *error) {
+                                         const char *skill_catalog, char **out,
+                                         cai_error *error) {
   char *tool_contract;
   char *template_text;
   int rc;
@@ -383,7 +405,7 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
   if (preset->developer_instructions != NULL) {
     return cai_preset_render_template(allocator, preset->developer_instructions,
                                       preset, config, repository_instructions,
-                                      NULL, out, error);
+                                      skill_catalog, NULL, out, error);
   }
   tool_contract = NULL;
   template_text = NULL;
@@ -394,8 +416,8 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
   }
   if (rc == CAI_OK) {
     rc = cai_preset_render_template(allocator, template_text, preset, config,
-                                    repository_instructions, tool_contract, out,
-                                    error);
+                                    repository_instructions, skill_catalog,
+                                    tool_contract, out, error);
   }
   cai_free_mem(allocator, template_text);
   cai_free_mem(allocator, tool_contract);
@@ -831,6 +853,8 @@ int cai_client_new_preset_agent(cai_client *client,
   cai_view_image_tool_config view_image_config;
   char *instructions;
   char *repository_instructions;
+  char *skill_catalog_prompt;
+  cai_skill_catalog *skill_catalog;
   const char *model;
   unsigned long tool_capabilities;
   int rc;
@@ -857,6 +881,8 @@ int cai_client_new_preset_agent(cai_client *client,
   }
   instructions = NULL;
   repository_instructions = NULL;
+  skill_catalog_prompt = NULL;
+  skill_catalog = NULL;
   model = config->model != NULL ? config->model : preset->default_model;
   tool_capabilities = preset->tool_capabilities;
   if (config->disable_terminal) {
@@ -867,13 +893,25 @@ int cai_client_new_preset_agent(cai_client *client,
   }
   rc = cai_smith_load_repository_instructions(&client_impl->allocator, config,
                                               &repository_instructions, error);
+  if (rc == CAI_OK &&
+      (tool_capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
+    rc = cai_skills_prepare(config->skills, config->agent_config_directory,
+                            &skill_catalog, &skill_catalog_prompt, error);
+    if (rc == CAI_OK && !cai_skills_catalog_has_entries(skill_catalog)) {
+      tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_SKILLS;
+    }
+  }
   if (rc == CAI_OK) {
     rc = cai_smith_render_instructions(
         &client_impl->allocator, preset, config, tool_capabilities,
-        repository_instructions, &instructions, error);
+        repository_instructions, skill_catalog_prompt, &instructions, error);
   }
   cai_free_mem(&client_impl->allocator, repository_instructions);
+  cai_free_mem(NULL, skill_catalog_prompt);
   if (rc != CAI_OK) {
+    if (skill_catalog != NULL) {
+      cai_skills_catalog_cleanup(skill_catalog);
+    }
     return rc;
   }
   cai_agent_config_init(&agent_config);
@@ -899,6 +937,9 @@ int cai_client_new_preset_agent(cai_client *client,
   rc = cai_client_new_agent(client, &agent_config, out, error);
   cai_free_mem(&client_impl->allocator, instructions);
   if (rc != CAI_OK) {
+    if (skill_catalog != NULL) {
+      cai_skills_catalog_cleanup(skill_catalog);
+    }
     return rc;
   }
   if (!config->disable_terminal &&
@@ -953,9 +994,20 @@ int cai_client_new_preset_agent(cai_client *client,
     view_image_config.default_workdir = config->workspace_directory;
     rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
   }
+  if (rc == CAI_OK &&
+      (tool_capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL &&
+      cai_skills_catalog_has_entries(skill_catalog)) {
+    rc = cai_agent_register_skill_tool_owned(*out, skill_catalog, error);
+    if (rc == CAI_OK) {
+      skill_catalog = NULL;
+    }
+  }
   if (rc != CAI_OK) {
     cai_agent_destroy(*out);
     *out = NULL;
+  }
+  if (skill_catalog != NULL) {
+    cai_skills_catalog_cleanup(skill_catalog);
   }
   return rc;
 }
@@ -981,6 +1033,8 @@ int cai_client_new_preset_review_agent(cai_client *client,
   const char *identity;
   const char *extension;
   char *repository_instructions;
+  char *skill_catalog_prompt;
+  cai_skill_catalog *skill_catalog;
   static const char *const review_suffix_parts[] = {
       ", a code reviewer running in CAI agent mode. You are acting as a "
       "reviewer for a proposed code change made by another engineer.\n\n",
@@ -1035,6 +1089,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
   size_t length;
   size_t offset;
   size_t repository_length;
+  size_t skill_catalog_length;
   size_t extension_length;
   size_t i;
   int rc;
@@ -1042,11 +1097,11 @@ int cai_client_new_preset_review_agent(cai_client *client,
   if ((preset != NULL) &&
       (preset->review_tool_capabilities &
        ~(CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
-         CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE)) !=
-          0UL) {
+         CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE |
+         CAI_AGENT_PRESET_TOOL_SKILLS)) != 0UL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "review presets support only read, list, terminal, "
-                         "and view-image capabilities");
+                         "view-image, and skills capabilities");
   }
 
   if (out == NULL) {
@@ -1071,6 +1126,8 @@ int cai_client_new_preset_review_agent(cai_client *client,
   }
   instructions = NULL;
   repository_instructions = NULL;
+  skill_catalog_prompt = NULL;
+  skill_catalog = NULL;
   identity = config->agent_identity != NULL ? config->agent_identity
                                             : preset->default_identity;
   extension = config->developer_instructions_extension;
@@ -1080,13 +1137,19 @@ int cai_client_new_preset_review_agent(cai_client *client,
   }
   rc = cai_smith_load_repository_instructions(&client_impl->allocator, config,
                                               &repository_instructions, error);
+  if (rc == CAI_OK && (preset->review_tool_capabilities &
+                       CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
+    rc = cai_skills_prepare(config->skills, config->agent_config_directory,
+                            &skill_catalog, &skill_catalog_prompt, error);
+  }
   if (rc != CAI_OK) {
     return rc;
   }
   if (preset->review_developer_instructions != NULL) {
     rc = cai_preset_render_template(
         &client_impl->allocator, preset->review_developer_instructions, preset,
-        config, repository_instructions, NULL, &instructions, error);
+        config, repository_instructions, skill_catalog_prompt, NULL,
+        &instructions, error);
     if (rc != CAI_OK) {
       goto review_instructions_failed;
     }
@@ -1116,6 +1179,16 @@ int cai_client_new_preset_review_agent(cai_client *client,
       goto review_instructions_failed;
     }
     length += 2U + repository_length;
+  }
+  skill_catalog_length =
+      skill_catalog_prompt != NULL ? strlen(skill_catalog_prompt) : 0U;
+  if (skill_catalog_length > 0U) {
+    if (length > SIZE_MAX - 2U - skill_catalog_length - 1U) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review instructions are too large");
+      goto review_instructions_failed;
+    }
+    length += 2U + skill_catalog_length;
   }
   extension_length = extension != NULL ? strlen(extension) : 0U;
   if (extension_length > 0U &&
@@ -1152,6 +1225,12 @@ int cai_client_new_preset_review_agent(cai_client *client,
     memcpy(instructions + offset, repository_instructions, repository_length);
     offset += repository_length;
   }
+  if (skill_catalog_length > 0U) {
+    memcpy(instructions + offset, "\n\n", 2U);
+    offset += 2U;
+    memcpy(instructions + offset, skill_catalog_prompt, skill_catalog_length);
+    offset += skill_catalog_length;
+  }
   if (extension_length > 0U) {
     memcpy(instructions + offset, "\n\n", 2U);
     memcpy(instructions + offset + 2U, extension, extension_length);
@@ -1161,6 +1240,8 @@ int cai_client_new_preset_review_agent(cai_client *client,
 review_instructions_ready:
   cai_free_mem(&client_impl->allocator, repository_instructions);
   repository_instructions = NULL;
+  cai_free_mem(NULL, skill_catalog_prompt);
+  skill_catalog_prompt = NULL;
   cai_agent_config_init(&agent_config);
   agent_config.model =
       config->model != NULL ? config->model : preset->default_model;
@@ -1182,6 +1263,9 @@ review_instructions_ready:
   rc = cai_client_new_agent(client, &agent_config, out, error);
   cai_free_mem(&client_impl->allocator, instructions);
   if (rc != CAI_OK) {
+    if (skill_catalog != NULL) {
+      cai_skills_catalog_cleanup(skill_catalog);
+    }
     return rc;
   }
   memset(&read_config, 0, sizeof(read_config));
@@ -1227,14 +1311,30 @@ review_instructions_ready:
     view_image_config.default_workdir = config->workspace_directory;
     rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
   }
+  if (rc == CAI_OK &&
+      (preset->review_tool_capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) !=
+          0UL &&
+      cai_skills_catalog_has_entries(skill_catalog)) {
+    rc = cai_agent_register_skill_tool_owned(*out, skill_catalog, error);
+    if (rc == CAI_OK) {
+      skill_catalog = NULL;
+    }
+  }
   if (rc != CAI_OK) {
     cai_agent_destroy(*out);
     *out = NULL;
+  }
+  if (skill_catalog != NULL) {
+    cai_skills_catalog_cleanup(skill_catalog);
   }
   return rc;
 
 review_instructions_failed:
   cai_free_mem(&client_impl->allocator, repository_instructions);
+  cai_free_mem(NULL, skill_catalog_prompt);
+  if (skill_catalog != NULL) {
+    cai_skills_catalog_cleanup(skill_catalog);
+  }
   return rc;
 }
 
