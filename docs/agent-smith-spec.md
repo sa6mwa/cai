@@ -667,6 +667,114 @@ the returned child handle, `finish_review` result, and durable session state as
 the authoritative lifecycle boundary rather than treating either observation
 as a delivery guarantee.
 
+### 6.3 Planned synchronous subagents
+
+The next agent-mode extension is a general **synchronous subagent** facility.
+It is deliberately not a background-worker, task-queue, or multi-agent
+coordination system: one parent runtime may run at most one child runtime at a
+time, and the parent remains paused until that child reaches a terminal state
+and its handover is durable. The existing host-driven review lifecycle remains
+valid; the model-facing review tool is the first built-in use of this common
+facility.
+
+#### 6.3.1 Profiles and host configuration
+
+`cai_agent_runtime_config` will accept a bounded list of host-defined
+subagent descriptors. A descriptor has a stable non-empty `name` and
+`prompt_version`, visible identity, complete developer prompt, default model,
+reasoning effort and summary, a selected local/MCP/hosted tool policy, and an
+explicit policy for model-requested model and reasoning overrides. CAI copies
+descriptor strings at open and records the name/prompt version in child and
+parent handover metadata. Names must be unique and are restricted to the
+model-tool identifier grammar.
+
+The built-in `review` profile is reserved. Hosts cannot replace it with a
+custom descriptor, but may disable it with an explicit runtime configuration
+field. The built-in `smith` profile enables it by default. Review continues to
+use CAI's review developer prompt, schema validation, read-oriented tool policy
+and human-readable handover rendering. It inherits the parent model, reasoning
+effort, and summary unless the request supplies an override permitted by the
+host's review policy. Existing `review_model`, `review_reasoning_effort`, and
+`review_reasoning_summary` remain host defaults and are not an unrestricted
+model-selection mechanism.
+
+Custom profiles are opt-in: registering a descriptor makes it available to the
+parent, but it does not give child runtimes the ability to create more
+subagents. Every child is opened with subagents disabled, including the built-in
+reviewer. This non-recursive rule is structural, not prompt guidance: no child
+receives the subagent tool declaration or callback.
+
+Model-requested model/reasoning values are requests, not authority. The host
+must configure an allowlist/resolver and optional budget policy. If omitted,
+the child inherits the active parent values. A rejected override produces a
+normal actionable tool error before a child runtime is opened; CAI must not
+silently substitute a more expensive or unsupported model.
+
+#### 6.3.2 Model-facing tool and lifecycle
+
+An ordinary parent with at least one enabled profile receives one
+`run_subagent` function tool. Its schema is bounded and contains:
+
+```json
+{
+  "profile": "review | host-defined name",
+  "instructions": "delegated task",
+  "model": "optional host-approved override",
+  "reasoning_effort": "optional host-approved override",
+  "reasoning_summary": "optional host-approved override"
+}
+```
+
+The rendered parent developer instructions enumerate only enabled profile names
+and their concise descriptions. The model may select `review` naturally when
+the task calls for review; CAI does not parse a slash command. A host UI may
+still map `/review …` to either the existing host-driven API or an ordinary
+parent turn that causes the model to call `run_subagent`.
+
+Starting a child journals and checkpoints the parent pause before the tool
+reports success. Parent immediate and steering submissions are rejected while
+the child is active; queued turns remain durable but cannot begin. Parent
+cancellation cancels the child. A child terminal failure or cancellation does
+not strand the parent: it yields a durable failed/cancelled handover and then
+releases the parent. The runtime emits correlated start, streamed child-event,
+and terminal handover events carrying parent session ID, child session ID, and
+the originating parent tool-call ID so any TUI/GUI can render the process
+without adopting CAI's presentation layer.
+
+#### 6.3.3 Handover contract
+
+Every profile returns a generic, model-readable handover:
+
+```json
+{
+  "subagent": "profile name",
+  "status": "completed | failed | cancelled",
+  "child_session_id": "xid",
+  "handover_markdown": "human-readable outcome",
+  "structured_result": "profile-defined JSON value or null"
+}
+```
+
+`handover_markdown` is the presentation and parent-context form, not session
+serialization. `structured_result` preserves profile-specific data for a host
+that needs it. The built-in review profile keeps its validated findings JSON as
+the structured result and renders the established review report into the
+handover; raw review JSON must not be shown as the user's only result.
+
+Before CAI returns the tool output or resumes the parent, it appends a
+provenance-delimited assistant-context handover to the parent local history,
+journals the resolution, and checkpoints the parent. Thus the next parent
+request sees the child outcome even across a crash. The same handover becomes
+the `run_subagent` tool result and is sent through lifecycle events for the
+host renderer. A checkpoint failure leaves the parent paused and makes handover
+completion retryable without duplicate injection.
+
+Child sessions remain distinct and exportable for audit, but they are not
+implicitly candidates for parent `resume_latest`; their identity and lifecycle
+are linked from the parent handover record. Version one does not support nested
+subagents, concurrent children, detached/background children, or automatic
+application of review findings.
+
 ## 7. Tool surface
 
 Smith tool definitions must use stable names and schemas derived from the
@@ -686,6 +794,7 @@ to the host as events before they are returned to the model.
 | `get_goal` | function | Read the session’s current goal and accounting. |
 | `create_goal` | function | Create an explicit user-requested goal. |
 | `update_goal` | function | Mark an eligible goal complete or blocked. |
+| `run_subagent` | function | Synchronously run one enabled built-in or host-defined child, then return and durably inject its handover. Planned; Smith enables built-in `review` by default. |
 | MCP tools/resources | dynamic | Register configured remote MCP capabilities as CAI tools with server-qualified names. |
 
 `cai/tools/read.h` already supplies a local reading basis. CAI’s existing local
