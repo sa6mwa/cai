@@ -660,6 +660,7 @@ int cai_skills_prepare(const cai_skill_config *config,
     catalog->provider = *config->skill_provider;
   } else {
     directory = NULL;
+    rc = CAI_OK;
     if (config != NULL && config->skills_directory != NULL &&
         config->skills_directory[0] != '\0')
       directory = cai_strdup(NULL, config->skills_directory);
@@ -670,6 +671,12 @@ int cai_skills_prepare(const cai_skill_config *config,
         (config == NULL || config->skills_directory == NULL ||
          config->skills_directory[0] == '\0'))
       rc = CAI_OK;
+    if (directory == NULL && config != NULL &&
+        config->skills_directory != NULL &&
+        config->skills_directory[0] != '\0') {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate configured skills directory");
+    }
     if (directory == NULL && rc != CAI_OK) {
       cai_skills_catalog_cleanup(catalog);
       return rc;
