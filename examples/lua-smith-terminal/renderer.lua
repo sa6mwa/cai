@@ -265,11 +265,25 @@ function M.new(cai, output, colors)
     elseif event.type == cai.AGENT_EVENT_REVIEW_HANDED_OFF then
       close_message()
       if not render.review_report_visible and event.data and #event.data > 0 then
-        render_review_report(event.data)
+        output.write("Review handoff:\n", event.data)
+        if event.data:sub(-1) ~= "\n" then
+          output.write("\n")
+        end
       end
       render.review_report_visible = false
+    elseif event.type == cai.AGENT_EVENT_SUBAGENT_STARTED then
+      close_message()
+      output.write(gray, "Starting ", event.subagent_name or "delegated",
+        " subagent…\n", reset)
+    elseif event.type == cai.AGENT_EVENT_SUBAGENT_HANDED_OFF then
+      close_message()
+      output.write(event.subagent_name or "Subagent", " handoff:\n", event.data or "")
+      if not event.data or event.data:sub(-1) ~= "\n" then
+        output.write("\n")
+      end
     elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED and
-        event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" then
+        event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" and
+        event.tool_name ~= "run_subagent" then
       close_message()
       local verbs = {
         [cai.AGENT_TOOL_ACTION_READ] = "Read",

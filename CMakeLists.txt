@@ -1234,6 +1234,8 @@ if(CAI_BUILD_TESTS)
     smith_profile
     smith_review_runtime
     smith_review_parent_handoff
+    agent_runtime_subagent
+    agent_runtime_review_subagent
     smith_review_pause_checkpoint_failure
     agent_runtime_lifecycle
     agent_runtime_terminal_callback_close
@@ -1243,6 +1245,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_host_goal_controls
     agent_runtime_goal_budget
     agent_local_session_store
+    agent_local_session_store_rejects_unsafe_scope
     agent_runtime_resume
     agent_runtime_markdown_export
     goal_tools
@@ -1263,6 +1266,7 @@ if(CAI_BUILD_TESTS)
     todo_tool
     todo_callback_store
     searxng_registry_tool
+    terminal_registration_rollback
     terminal_tools
     terminal_concurrent_start
     terminal_concurrent_operation
@@ -1788,6 +1792,14 @@ if(CAI_BUILD_TESTS)
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_chatgpt_smith_subagents_e2e
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_CHATGPT_SMITH_SUBAGENTS_E2E=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_smith_subagents_e2e PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW})
     add_test(NAME cai_integration_chatgpt_smith_review_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1"

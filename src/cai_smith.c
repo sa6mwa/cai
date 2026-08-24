@@ -95,7 +95,7 @@ void cai_agent_preset_from_smith(cai_agent_preset *preset) {
       CAI_AGENT_PRESET_TOOL_APPLY_PATCH | CAI_AGENT_PRESET_TOOL_TERMINAL |
       CAI_AGENT_PRESET_TOOL_VIEW_IMAGE | CAI_AGENT_PRESET_TOOL_GOAL |
       CAI_AGENT_PRESET_TOOL_MCP | CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION |
-      CAI_AGENT_PRESET_TOOL_SKILLS;
+      CAI_AGENT_PRESET_TOOL_SKILLS | CAI_AGENT_PRESET_TOOL_SUBAGENTS;
   preset->review_tool_capabilities =
       CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
       CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE |
@@ -281,10 +281,13 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   static const char *const skills =
       "Global skills may be available through read_skill; use only skills "
       "listed in the developer instructions. ";
+  static const char *const subagents =
+      "Use run_subagent only for an enabled delegated role; it runs one "
+      "isolated child synchronously and returns its durable handover. ";
   static const char *const serial =
       "Tool calls are serial: complete and assess one call before issuing "
       "another.";
-  const char *parts[10];
+  const char *parts[12];
   size_t count;
   size_t length;
   size_t i;
@@ -320,6 +323,9 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   }
   if ((capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
     parts[count++] = skills;
+  }
+  if ((capabilities & CAI_AGENT_PRESET_TOOL_SUBAGENTS) != 0UL) {
+    parts[count++] = subagents;
   }
   parts[count++] = serial;
   length = 0U;

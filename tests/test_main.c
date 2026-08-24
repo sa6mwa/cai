@@ -148,6 +148,9 @@ typedef struct runtime_event_state {
   int saw_review_report;
   int saw_review_started;
   int saw_review_handed_off;
+  int saw_subagent_started;
+  int saw_subagent_handed_off;
+  int subagent_text_delta_count;
   int saw_reasoning_summary;
   int response_completed_count;
   int reasoning_summary_count;
@@ -156,7 +159,9 @@ typedef struct runtime_event_state {
   char failure_message[256];
   char review_report[1024];
   char review_handoff[1024];
+  char subagent_handoff[1024];
   char reasoning_summary[1024];
+  char subagent_session_id[CAI_AGENT_SESSION_ID_MAX];
   int wrong_thread;
 } runtime_event_state;
 
@@ -178,6 +183,7 @@ typedef struct runtime_session_store_state {
   int checkpoints;
   int load_only_saved_scope;
   int fail_checkpoint_once;
+  int fail_checkpoint_after;
   int saw_goal_checkpoint_without_tool_output;
   int saw_steering_checkpoint_before_watermark;
   int appended_events;
@@ -1903,6 +1909,24 @@ static int test_runtime_event(void *context,
                (int)event->data_length, event->data);
     }
   }
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
+    state->saw_subagent_started = 1;
+    if (event->runtime_session_id != NULL) {
+      snprintf(state->subagent_session_id, sizeof(state->subagent_session_id),
+               "%s", event->runtime_session_id);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
+    state->saw_subagent_handed_off = 1;
+    if (event->data != NULL) {
+      snprintf(state->subagent_handoff, sizeof(state->subagent_handoff), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA &&
+      event->subagent_name != NULL) {
+    state->subagent_text_delta_count++;
+  }
   if ((event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED ||
        event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) &&
       event->tool_action == CAI_AGENT_TOOL_ACTION_LIST) {
@@ -2026,9 +2050,13 @@ static int test_runtime_session_store_checkpoint(
   }
   if (store->fail_checkpoint_once > 0 &&
       strcmp(session_id, store->fail_checkpoint_session_id) == 0) {
-    store->fail_checkpoint_once--;
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "injected runtime checkpoint failure");
+    if (store->fail_checkpoint_after > 0) {
+      store->fail_checkpoint_after--;
+    } else {
+      store->fail_checkpoint_once--;
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "injected runtime checkpoint failure");
+    }
   }
   store->checkpoints++;
   store->saved_applied_event_sequence = applied_event_sequence;
@@ -25626,15 +25654,256 @@ static void test_smith_review_parent_handoff(test_state *state) {
                events.saw_review_started, 1L);
     expect_int(state, "smith_review_parent_handoff_event",
                events.saw_review_handed_off, 1L);
-    expect_str(state, "smith_review_parent_handoff_report",
-               events.review_handoff,
-               "{\"findings\":[],\"overall_correctness\":\"patch is "
-               "correct\",\"overall_explanation\":\"No qualifying "
-               "defects.\",\"overall_confidence_score\":0.9}");
+    expect_substr(state, "smith_review_parent_handoff_heading",
+                  events.review_handoff, "# Review handoff");
+    expect_substr(state, "smith_review_parent_handoff_explanation",
+                  events.review_handoff, "No qualifying defects.");
     cai_agent_runtime_close(review);
     cai_agent_runtime_close(parent);
   }
   http_mock_client_close(state, "smith_review_parent_handoff", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_subagent(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_subagent\",\"type\":\"function_call\","
+      "\"call_id\":\"call_subagent\",\"name\":\"run_subagent\","
+      "\"arguments\":\"{\\\"profile\\\":\\\"worker\\\",\\\"instructions\\\":"
+      "\\\"Return delegated result.\\\"}\"}}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_parent_"
+      "subagent\",\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_"
+      "tokens\":4}}}\n\n";
+  static const char child_response[] =
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_child_"
+      "subagent\",\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_"
+      "tokens\":4}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent "
+      "completed\"}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_parent_"
+      "subagent_final\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,"
+      "\"total_tokens\":5}}}\n\n";
+  static const char *parent_required[] = {
+      "delegate this task", "\"name\":\"run_subagent\"", "`worker`"};
+  static const char *child_required[] = {"Return delegated result.",
+                                         "You are Worker"};
+  static const char *final_required[] = {
+      "\"call_id\":\"call_subagent\"",
+      "The subagent completed without a text handover.", "<subagent_handoff"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", child_required,
+       sizeof(child_required) / sizeof(child_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, child_response},
+      {"POST /v1/responses HTTP/", final_required,
+       sizeof(final_required) / sizeof(final_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_agent_runtime_config config;
+  cai_agent_session_store store;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  runtime_session_store_state store_state;
+  cai_error error;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_subagent", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "delegate-parent";
+  parent_preset.prompt_version = "delegate-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "delegate-worker";
+  child_preset.prompt_version = "delegate-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  memset(&profile, 0, sizeof(profile));
+  profile.name = "worker";
+  profile.description = "Return a concise delegated result.";
+  profile.preset = &child_preset;
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.session_store = &store;
+  config.session_scope = "subagent-handoff-checkpoint-retry";
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "agent_runtime_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    (void)snprintf(store_state.fail_checkpoint_session_id,
+                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+                   cai_agent_runtime_session_id(runtime));
+    store_state.fail_checkpoint_once = 1;
+    store_state.fail_checkpoint_after = 2;
+    expect_int(state, "agent_runtime_subagent_submit",
+               cai_agent_runtime_submit(runtime, "delegate this task", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_subagent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_subagent_started_event",
+               events.saw_subagent_started, 1L);
+    expect_int(state, "agent_runtime_subagent_handoff_event",
+               events.saw_subagent_handed_off, 1L);
+    expect_int(state, "agent_runtime_subagent_event_source",
+               events.subagent_session_id[0] != '\0', 1L);
+    expect_int(state, "agent_runtime_subagent_event_owner", events.wrong_thread,
+               0L);
+    expect_int(state, "agent_runtime_subagent_handoff_checkpoint_retried",
+               store_state.fail_checkpoint_once, 0L);
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_subagent", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_review_subagent(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_review\",\"type\":\"function_call\","
+      "\"call_id\":\"call_review\",\"name\":\"run_subagent\","
+      "\"arguments\":\"{\\\"profile\\\":\\\"review\\\",\\\"instructions\\\":"
+      "\\\"Review the requested change.\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_review_tool\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
+  static const char review_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[],\\\"overall_correctness\\\":\\\"patch is "
+      "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
+      "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_review_tool\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":4,\"total_tokens\":7}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"review complete\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_review_final\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
+  static const char *parent_required[] = {
+      "review this change", "\"name\":\"run_subagent\"", "`review`"};
+  static const char *review_required[] = {
+      "Review the requested change.", "You are Cai Smith, a code reviewer",
+      "\"name\":\"exec_command\"", "\"name\":\"write_stdin\""};
+  static const char *final_required[] = {
+      "\"call_id\":\"call_review\"", "<review_handoff",
+      "No qualifying defects.", "structured_result_json"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", review_required,
+       sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, review_response},
+      {"POST /v1/responses HTTP/", final_required,
+       sizeof(final_required) / sizeof(final_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_runtime_config config;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_review_subagent",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset = CAI_SMITH_PRESET;
+  config.disable_default_session_store = 1;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "agent_runtime_review_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "agent_runtime_review_subagent_submit",
+               cai_agent_runtime_submit(runtime, "review this change", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_review_subagent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_review_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_review_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_review_subagent_started_event",
+               events.saw_subagent_started, 1L);
+    expect_int(state, "agent_runtime_review_subagent_handoff_event",
+               events.saw_subagent_handed_off, 1L);
+    expect_int(state, "agent_runtime_review_subagent_no_raw_report",
+               events.saw_review_report, 0L);
+    expect_int(state, "agent_runtime_review_subagent_no_raw_text",
+               events.subagent_text_delta_count, 0L);
+    expect_int(state, "agent_runtime_review_subagent_no_duplicate_handoff",
+               events.saw_review_handed_off, 0L);
+    expect_substr(state, "agent_runtime_review_subagent_markdown",
+                  events.subagent_handoff, "# Review handoff");
+    expect_substr(state, "agent_runtime_review_subagent_explanation",
+                  events.subagent_handoff, "No qualifying defects.");
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
   cai_error_cleanup(&error);
 }
 
@@ -26618,6 +26887,7 @@ static void test_agent_local_session_store(test_state *state) {
   char event_file_path[PATH_MAX];
   char newer_event_file_path[PATH_MAX];
   char incomplete_file_path[PATH_MAX];
+  char invalid_session_file_path[PATH_MAX];
   char linked_event_path[PATH_MAX];
   char external_event_path[PATH_MAX];
   char *linked_contents;
@@ -26745,6 +27015,28 @@ static void test_agent_local_session_store(test_state *state) {
                linked_contents, "external event source\n");
     free(linked_contents);
     linked_contents = NULL;
+  }
+  (void)snprintf(invalid_session_file_path, sizeof(invalid_session_file_path),
+                 "%s/%s/%s", template_directory, scope_path, "bad!.jsonl");
+  fp = fopen(invalid_session_file_path, "wb");
+  if (fp == NULL ||
+      fwrite("{\"record_type\":\"checkpoint\","
+             "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n",
+             1U,
+             strlen("{\"record_type\":\"checkpoint\","
+                    "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n"),
+             fp) !=
+          strlen("{\"record_type\":\"checkpoint\","
+                 "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n")) {
+    test_fail(state, "local_session_store_invalid_id_write",
+              "failed to create invalid session journal");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+    if (chmod(invalid_session_file_path, 0600) != 0) {
+      test_fail(state, "local_session_store_invalid_id_mode",
+                "failed to restrict invalid session journal");
+    }
   }
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_load",
@@ -26941,6 +27233,7 @@ static void test_agent_local_session_store(test_state *state) {
   unlink(opaque_omega_path);
   unlink(newer_event_file_path);
   unlink(incomplete_file_path);
+  unlink(invalid_session_file_path);
   unlink(linked_event_path);
   unlink(external_event_path);
   unlink(event_file_path);
@@ -26954,6 +27247,74 @@ static void test_agent_local_session_store(test_state *state) {
                  opaque_scope_path);
   rmdir(file_path);
   rmdir(template_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_rejects_unsafe_scope(test_state *state) {
+  char root_directory[] = "/tmp/cai-unsafe-session-store-XXXXXX";
+  char scope_path[PATH_MAX];
+  char hash[65];
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  static const char hex[] = "0123456789abcdef";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  read_state reader;
+  cai_error error;
+  size_t i;
+
+  cai_error_init(&error);
+  source = NULL;
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_unsafe_scope_tmpdir",
+              "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  (void)SHA256((const unsigned char *)"unsafe-scope", strlen("unsafe-scope"),
+               digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    hash[i * 2U] = hex[digest[i] >> 4U];
+    hash[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  hash[64] = '\0';
+  (void)snprintf(scope_path, sizeof(scope_path), "%s/%s", root_directory, hash);
+  if (mkdir(scope_path, 0700) != 0 || chmod(scope_path, 0755) != 0) {
+    test_fail(state, "local_session_store_unsafe_scope_create",
+              "failed to create unsafe scoped directory");
+    rmdir(scope_path);
+    rmdir(root_directory);
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  expect_int(state, "local_session_store_unsafe_scope_open",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_OK);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &reader;
+  reader.text = "{}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_unsafe_scope_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_unsafe_scope_rejected",
+               store.checkpoint(store.context, "unsafe-scope", "session_one",
+                                source, 0U, &error),
+               CAI_ERR_TRANSPORT);
+  }
+  cai_source_close(source);
+  cai_agent_local_session_store_close(&store);
+  rmdir(scope_path);
+  rmdir(root_directory);
   cai_error_cleanup(&error);
 }
 
@@ -27582,6 +27943,17 @@ static void test_goal_tools(test_state *state) {
                 "\"status\":\"complete\"");
   writer.length = 0U;
   writer.buffer[0] = '\0';
+  expect_int(state, "goal_complete_immutable",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "goal_complete_immutable_error", error.message,
+             "only an active goal may be updated");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
   expect_int(state, "goal_blocked_create",
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
@@ -27693,6 +28065,13 @@ static void test_goal_tools(test_state *state) {
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
                  "{\"status\":\"blocked\"}", sink, &error),
              CAI_OK);
+  expect_int(state, "goal_blocked_immutable",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"complete\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   writer.length = 0U;
   writer.buffer[0] = '\0';
   expect_int(state, "goal_create_after_blocked",
@@ -27946,6 +28325,7 @@ static void test_patch_tool(test_state *state) {
   size_t race_capacity;
   size_t race_length;
   pid_t race_pid;
+  struct stat renamed_stat;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
@@ -28303,6 +28683,9 @@ static void test_patch_tool(test_state *state) {
   free(contents);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  if (chmod(alpha_path, 0751) != 0) {
+    test_fail(state, "patch_move_executable_mode", "chmod failed");
+  }
   expect_int(state, "patch_move_delete",
              cai_apply_patch(&config, move_patch, NULL, &error), CAI_OK);
   if (access(alpha_path, F_OK) == 0 || access(beta_path, F_OK) == 0) {
@@ -28312,6 +28695,10 @@ static void test_patch_tool(test_state *state) {
   expect_str(state, "patch_move_content", contents,
              "one\nsecond\nthree\nfourth\n");
   free(contents);
+  expect_int(state, "patch_move_preserves_mode",
+             stat(renamed_path, &renamed_stat) == 0 &&
+                 (renamed_stat.st_mode & 0777) == 0751,
+             1L);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "patch_reject_escape",
@@ -30974,6 +31361,44 @@ static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
     test_fail(state, name, "mock child failed");
   }
   return rc;
+}
+
+static void test_terminal_registration_rollback(test_state *state) {
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_error error;
+
+  memset(&config, 0, sizeof(config));
+  config.root_path = "/tmp";
+  config.default_workdir = "/tmp";
+  registry = NULL;
+  cai_error_init(&error);
+  expect_int(state, "terminal_rollback_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(state, "terminal_rollback_preexisting_write",
+               cai_tool_registry_register_raw(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME, "test conflict",
+                   "{\"type\":\"object\",\"properties\":{}}", 0,
+                   test_chunked_json_tool, NULL, &error),
+               CAI_OK);
+    expect_int(
+        state, "terminal_rollback_register_pair",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_rollback_keeps_only_conflict",
+               (long)cai_tool_registry_count(registry), 1L);
+    expect_int(state, "terminal_rollback_exec_reusable",
+               cai_tool_registry_register_raw(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME, "test replacement",
+                   "{\"type\":\"object\",\"properties\":{}}", 0,
+                   test_chunked_json_tool, NULL, &error),
+               CAI_OK);
+    cai_tool_registry_destroy(registry);
+  }
+  cai_error_cleanup(&error);
 }
 
 static void test_terminal_tools(test_state *state) {
@@ -38364,6 +38789,36 @@ static void test_session_state_validation(test_state *state) {
   source = NULL;
 
   reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"active\",\"goal_tokens_used\":-1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_negative_goal_usage_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_negative_goal_usage",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"active\",\"goal_token_budget\":0}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_nonpositive_goal_budget_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_nonpositive_goal_budget",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
                 "\"goal_status\":\"active\",\"goal_blocked_attempts\":2,"
                 "\"goal_turn_count\":0,\"goal_blocked_last_turn\":-1}";
   reader.offset = 0U;
@@ -39159,6 +39614,8 @@ static const test_entry test_entries[] = {
     {"smith_profile", test_smith_profile},
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
+    {"agent_runtime_subagent", test_agent_runtime_subagent},
+    {"agent_runtime_review_subagent", test_agent_runtime_review_subagent},
     {"smith_review_pause_checkpoint_failure",
      test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
@@ -39170,6 +39627,8 @@ static const test_entry test_entries[] = {
     {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
+    {"agent_local_session_store_rejects_unsafe_scope",
+     test_agent_local_session_store_rejects_unsafe_scope},
     {"agent_runtime_resume", test_agent_runtime_resume},
     {"agent_runtime_markdown_export", test_agent_runtime_markdown_export},
     {"goal_tools", test_goal_tools},
@@ -39195,6 +39654,7 @@ static const test_entry test_entries[] = {
     {"todo_callback_store", test_todo_callback_store},
     {"searxng_registry_tool", test_searxng_registry_tool},
     {"exec_tool", test_exec_tool},
+    {"terminal_registration_rollback", test_terminal_registration_rollback},
     {"terminal_tools", test_terminal_tools},
     {"terminal_concurrent_start", test_terminal_concurrent_start},
     {"terminal_concurrent_operation", test_terminal_concurrent_operation},

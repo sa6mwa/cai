@@ -1186,7 +1186,12 @@ static void cai_terminal_send_signal(cai_terminal_manager *manager,
                                      int signal) {
   pthread_mutex_lock(&manager->lock);
   if (manager->running && manager->pid > 0) {
-    (void)kill(-manager->pid, signal);
+    if (kill(-manager->pid, signal) != 0 && errno == ESRCH) {
+      /* The child publishes only after fork, but it may not yet have run
+       * setsid(). In that short window its future process group does not
+       * exist, so signal the child directly before it can exec the shell. */
+      (void)kill(manager->pid, signal);
+    }
   }
   pthread_mutex_unlock(&manager->lock);
 }
@@ -1384,6 +1389,8 @@ int cai_tool_registry_register_terminal_tools(
   cai_terminal_manager *manager;
   cai_terminal_binding *exec_binding;
   cai_terminal_binding *write_binding;
+  size_t registry_count;
+  int released_local_binding;
   int rc;
 
   if (registry == NULL) {
@@ -1393,6 +1400,8 @@ int cai_tool_registry_register_terminal_tools(
   manager = NULL;
   exec_binding = NULL;
   write_binding = NULL;
+  registry_count = cai_tool_registry_count(registry);
+  released_local_binding = 0;
   rc = cai_terminal_manager_new(config, &manager, error);
   if (rc == CAI_OK) {
     rc = cai_terminal_binding_new(manager, &exec_binding, error);
@@ -1416,16 +1425,23 @@ int cai_tool_registry_register_terminal_tools(
           cai_terminal_binding_cleanup, error);
       if (rc == CAI_OK) {
         write_binding = NULL;
+      } else {
+        /* Terminal tools are a contract pair. Roll back exec_command so a
+         * caller can correct the conflicting write_stdin registration and
+         * retry without a stale half-registration. */
+        cai_tool_registry_truncate(registry, registry_count);
       }
     }
   }
   if (exec_binding != NULL) {
     cai_terminal_binding_cleanup(exec_binding);
+    released_local_binding = 1;
   }
   if (write_binding != NULL) {
     cai_terminal_binding_cleanup(write_binding);
+    released_local_binding = 1;
   }
-  if (manager != NULL && manager->refs == 0) {
+  if (manager != NULL && !released_local_binding && manager->refs == 0) {
     cai_terminal_manager_destroy(manager);
   }
   return rc;

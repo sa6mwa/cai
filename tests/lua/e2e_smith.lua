@@ -79,6 +79,9 @@ local function event_state()
     review_reports = {},
     review_started = 0,
     review_handed_off = 0,
+    subagent_started = {},
+    subagent_handovers = {},
+    inline_review_reports = 0,
   }
 end
 
@@ -106,10 +109,17 @@ local function event_callback(events)
       events.response_completed = events.response_completed + 1
     elseif event.type == cai.AGENT_EVENT_REVIEW_REPORT then
       events.review_reports[#events.review_reports + 1] = event.data or ""
+      if event.subagent_name == "review" then
+        events.inline_review_reports = events.inline_review_reports + 1
+      end
     elseif event.type == cai.AGENT_EVENT_REVIEW_STARTED then
       events.review_started = events.review_started + 1
     elseif event.type == cai.AGENT_EVENT_REVIEW_HANDED_OFF then
       events.review_handed_off = events.review_handed_off + 1
+    elseif event.type == cai.AGENT_EVENT_SUBAGENT_STARTED then
+      events.subagent_started[#events.subagent_started + 1] = event.subagent_name or ""
+    elseif event.type == cai.AGENT_EVENT_SUBAGENT_HANDED_OFF then
+      events.subagent_handovers[event.subagent_name or ""] = event.data or ""
     end
   end
 end
@@ -218,6 +228,15 @@ local ok, err = xpcall(function()
     "author, leaving the worktree clean.",
     "In your final response include the exact marker LUA_SMITH_REVIEW_FOLLOWUP.",
   }, " ")
+  local subagent_prompt = table.concat({
+    "Use run_subagent exactly twice before answering.",
+    "First call the `checker` profile with instructions to validate the marker",
+    "SUBAGENT_CHECKER_CONFIRMED. Then call `review` to review the current",
+    "committed project. Do not set model, reasoning_effort, or reasoning_summary",
+    "for either call. Do not call either profile more than once.",
+    "After both handovers return, include exactly the marker",
+    "LUA_SMITH_SUBAGENTS_CONFIRMED.",
+  }, " ")
 
   run("git init --quiet " .. git_workspace, "git init")
   run("git -C " .. git_workspace .. " config user.name " ..
@@ -239,6 +258,24 @@ local ok, err = xpcall(function()
     review_model = cai.MODEL_GPT_5_6_LUNA,
     review_reasoning_effort = cai.REASONING_EFFORT_MEDIUM,
     review_reasoning_summary = cai.REASONING_SUMMARY_DETAILED,
+    subagents = {
+      {
+        name = "checker",
+        description = "Return a compact checker JSON handover.",
+        preset = {
+          name = "checker",
+          prompt_version = "checker-1",
+          default_identity = "CAI Checker",
+          default_model = cai.MODEL_GPT_5_6_LUNA,
+          default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+          default_reasoning_summary = cai.REASONING_SUMMARY_AUTO,
+          developer_instructions = "You are CAI's checker subagent. Return exactly " ..
+            "one compact JSON object and no Markdown: {\"schema\":\"cai.checker.v1\"," ..
+            "\"status\":\"passed\",\"marker\":\"SUBAGENT_CHECKER_CONFIRMED\"}.",
+          tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+        },
+      },
+    },
     disable_default_session_store = true,
     event_callback = event_callback(events),
   }
@@ -346,6 +383,26 @@ local ok, err = xpcall(function()
   assert_contains("Lua Smith handover", handover, "LUA_SMITH_REVIEW_FOLLOWUP")
   assert_contains("Lua Smith handover", handover,
     "<review_handoff source=\"smith-review\"")
+
+  events.answer = {}
+  checked("parent:submit subagents", function()
+    return parent:submit(subagent_prompt)
+  end)
+  pump_until_completed(parent, 240, "Lua Smith subagent turn")
+  assert_contains("Lua Smith subagent answer", event_answer(events),
+    "LUA_SMITH_SUBAGENTS_CONFIRMED")
+  if #events.subagent_started ~= 2 or events.subagent_handovers.checker == nil or
+      events.subagent_handovers.review == nil or events.inline_review_reports ~= 0 then
+    fail("Lua Smith subagent lifecycle evidence is incomplete (started=" ..
+      tostring(#events.subagent_started) .. " raw_review_reports=" ..
+      tostring(events.inline_review_reports) .. ")")
+  end
+  assert_contains("Lua checker handover", events.subagent_handovers.checker,
+    "cai.checker.v1")
+  assert_contains("Lua checker marker", events.subagent_handovers.checker,
+    "SUBAGENT_CHECKER_CONFIRMED")
+  assert_contains("Lua reviewer Markdown", events.subagent_handovers.review,
+    "# Review handoff")
 
   run("cmake -S " .. git_workspace .. " -B " ..
     shell_quote(workspace .. "/build"), "CMake configure")

@@ -49,6 +49,11 @@ extern "C" {
 #define CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION (1UL << 7)
 /** Register configured global skills and the constrained read_skill tool. */
 #define CAI_AGENT_PRESET_TOOL_SKILLS (1UL << 8)
+/**
+ * Register CAI's synchronous run_subagent tool when the runtime has at least
+ * one enabled subagent profile. Child agents never receive this capability.
+ */
+#define CAI_AGENT_PRESET_TOOL_SUBAGENTS (1UL << 9)
 
 /** Declarative, host-defined agent profile for CAI's shared runtime. */
 typedef struct cai_agent_preset {

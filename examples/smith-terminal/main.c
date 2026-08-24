@@ -499,6 +499,20 @@ static void render_review_report(const char *data, size_t length) {
   lonejson_free(json);
 }
 
+static void render_subagent_handoff(const cai_agent_runtime_event *event) {
+  const char *name;
+
+  name = event->subagent_name != NULL ? event->subagent_name : "subagent";
+  fprintf(stdout, "%s handoff:\n", name);
+  if (event->data != NULL && event->data_length > 0U) {
+    fwrite(event->data, 1U, event->data_length, stdout);
+    if (event->data[event->data_length - 1U] != '\n')
+      fputc('\n', stdout);
+  } else {
+    fputs("No handoff content was returned.\n", stdout);
+  }
+}
+
 static int runtime_accepts_prompt(cai_agent_run_state state) {
   return state == CAI_AGENT_IDLE || state == CAI_AGENT_COMPLETED ||
          state == CAI_AGENT_FAILED || state == CAI_AGENT_CANCELLED;
@@ -546,6 +560,8 @@ static const char *tool_action_verb(int action) {
     return "Cleared goal";
   case CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION:
     return "Generated image";
+  case CAI_AGENT_TOOL_ACTION_SUBAGENT:
+    return "Completed subagent";
   default:
     return NULL;
   }
@@ -621,17 +637,27 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_visible = 1;
   } else if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
     render_close_message(state);
-    /* A review child normally emitted its report while it ran. The durable
-     * parent handoff carries that same report as a fallback, so never replace
-     * a result with an opaque implementation receipt. */
+    /* A directly managed reviewer normally emitted its JSON report while it
+     * ran. Its durable parent fallback is already rendered Markdown. */
     if (!state->review_report_visible && event->data_length > 0U) {
-      render_review_report(event->data, event->data_length);
+      fputs("Review handoff:\n", stdout);
+      fwrite(event->data, 1U, event->data_length, stdout);
+      if (event->data[event->data_length - 1U] != '\n')
+        fputc('\n', stdout);
     }
     state->review_report_visible = 0;
+  } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
+    render_close_message(state);
+    fprintf(stdout, GRAY "Starting %s subagent…" RESET "\n",
+            event->subagent_name != NULL ? event->subagent_name : "delegated");
+  } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
+    render_close_message(state);
+    render_subagent_handoff(event);
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
              event->tool_name != NULL &&
              strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
-             strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0) {
+             strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0 &&
+             strcmp(event->tool_name, "run_subagent") != 0) {
     render_close_message(state);
     render_tool_completion(event);
   } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {

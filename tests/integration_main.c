@@ -480,6 +480,10 @@ typedef struct integration_smith_runtime_event_state {
   int review_started;
   int review_handed_off;
   int review_report;
+  int subagent_started;
+  int subagent_handed_off;
+  int checker_handed_off;
+  int reviewer_handed_off;
   int steering_requested;
   int steering_submitted;
   int steering_queued;
@@ -494,6 +498,9 @@ typedef struct integration_smith_runtime_event_state {
   char terminal_command[512];
   char failure_message[512];
   char review_report_json[4096];
+  char checker_handover[4096];
+  char reviewer_handover[4096];
+  char subagent_failure[512];
 } integration_smith_runtime_event_state;
 
 typedef struct integration_stream_debug_state {
@@ -778,6 +785,11 @@ static int integration_smith_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED) {
     state->steering_requested = 1;
+  } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED &&
+             event->tool_action == CAI_AGENT_TOOL_ACTION_SUBAGENT) {
+    integration_runtime_copy_event_text(state->subagent_failure,
+                                        sizeof(state->subagent_failure),
+                                        event->data, event->data_length);
   } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED) {
     if (event->tool_name != NULL &&
         strcmp(event->tool_name, "mcp_echo_message") == 0) {
@@ -838,11 +850,30 @@ static int integration_smith_runtime_event(void *context,
     integration_runtime_copy_event_text(state->review_report_json,
                                         sizeof(state->review_report_json),
                                         event->data, event->data_length);
+  } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
+    state->subagent_started++;
+  } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
+    state->subagent_handed_off++;
+    if (event->subagent_name != NULL &&
+        strcmp(event->subagent_name, "checker") == 0) {
+      state->checker_handed_off++;
+      integration_runtime_copy_event_text(state->checker_handover,
+                                          sizeof(state->checker_handover),
+                                          event->data, event->data_length);
+    } else if (event->subagent_name != NULL &&
+               strcmp(event->subagent_name, "review") == 0) {
+      state->reviewer_handed_off++;
+      integration_runtime_copy_event_text(state->reviewer_handover,
+                                          sizeof(state->reviewer_handover),
+                                          event->data, event->data_length);
+    }
   } else if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
     state->response_completed++;
-  } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
+  } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED &&
+             event->subagent_name == NULL) {
     state->run_completed++;
-  } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
+  } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED &&
+             event->subagent_name == NULL) {
     state->run_failed++;
     integration_runtime_copy_event_text(state->failure_message,
                                         sizeof(state->failure_message),
@@ -5404,6 +5435,247 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_chatgpt_smith_subagent_regression(void) {
+  static const char checker_instructions[] =
+      "You are CAI's checker subagent. Return exactly one compact JSON object "
+      "and no Markdown: {\"schema\":\"cai.checker.v1\",\"status\":"
+      "\"passed\",\"marker\":\"SUBAGENT_CHECKER_CONFIRMED\"}.";
+  static const char parent_prompt[] =
+      "Use run_subagent exactly twice before answering. First call profile "
+      "`checker` with instructions to validate the marker "
+      "SUBAGENT_CHECKER_CONFIRMED. Then call profile `review` to review the "
+      "current uncommitted change. Do not set model, reasoning_effort, or "
+      "reasoning_summary for either call. Do not call either profile more than "
+      "once. "
+      "After both handovers return, briefly state that they were received and "
+      "include exactly the marker SMITH_SUBAGENTS_LIVE_CONFIRMED.";
+  static const cai_agent_preset checker_preset = {
+      "checker",
+      "checker-1",
+      "CAI Checker",
+      CAI_MODEL_GPT_5_6_LUNA,
+      CAI_REASONING_EFFORT_LOW,
+      CAI_REASONING_SUMMARY_AUTO,
+      checker_instructions,
+      NULL,
+      CAI_AGENT_PRESET_TOOL_READ_FILE,
+      0UL,
+      0};
+  static const cai_agent_subagent_profile checker_profile = {
+      "checker",
+      "Return the requested compact checker JSON.",
+      &checker_preset,
+      NULL,
+      0U,
+      NULL,
+      0U,
+      NULL,
+      0U};
+  const char *git_init[] = {"git", "init", NULL, NULL};
+  const char *git_config_name[] = {"git",       "-C",          NULL, "config",
+                                   "user.name", "Test Tester", NULL};
+  const char *git_config_email[] = {
+      "git", "-C", NULL, "config", "user.email", "info@c89.systems", NULL};
+  const char *git_add[] = {"git", "-C", NULL, "add", "README.md", NULL};
+  const char *git_commit[] = {"git", "-C",       NULL, "commit",
+                              "-m",  "baseline", NULL};
+  cai_agent_local_session_store_config store_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_client_config client_config;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  FILE *fixture;
+  char command_output[4096];
+  char fixture_path[PATH_MAX];
+  char sessions_root[] = "/tmp/cai-smith-subagents-sessions-XXXXXX";
+  char workspace[] = "/tmp/cai-smith-subagents-e2e-XXXXXX";
+  int cleanup_failed;
+  int rc;
+  int sessions_root_created;
+  int store_open;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_local_session_store_config_init(&store_config);
+  memset(&store, 0, sizeof(store));
+  memset(&events, 0, sizeof(events));
+  auth = NULL;
+  client = NULL;
+  runtime = NULL;
+  fixture = NULL;
+  cleanup_failed = 0;
+  sessions_root_created = 0;
+  store_open = 0;
+  workspace_created = 0;
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith subagent workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  git_init[2] = workspace;
+  git_config_name[2] = workspace;
+  git_config_email[2] = workspace;
+  git_add[2] = workspace;
+  git_commit[2] = workspace;
+  if (snprintf(fixture_path, sizeof(fixture_path), "%s/README.md", workspace) >=
+      (int)sizeof(fixture_path)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith subagent fixture path is too long");
+    goto done;
+  }
+  fixture = fopen(fixture_path, "wb");
+  if (fixture == NULL || fputs("baseline\n", fixture) == EOF) {
+    if (fixture != NULL) {
+      fclose(fixture);
+      fixture = NULL;
+    }
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith subagent baseline");
+    goto done;
+  }
+  if (fclose(fixture) != 0) {
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to close Smith subagent baseline");
+    goto done;
+  }
+  fixture = NULL;
+  if (!integration_run_program(git_init, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_name, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_email, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_add, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_commit, command_output,
+                               sizeof(command_output))) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to initialize Smith subagent Git fixture");
+    goto done;
+  }
+  fixture = fopen(fixture_path, "wb");
+  if (fixture == NULL ||
+      fputs("baseline\nreview this uncommitted change\n", fixture) == EOF) {
+    if (fixture != NULL) {
+      fclose(fixture);
+      fixture = NULL;
+    }
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith subagent review change");
+    goto done;
+  }
+  if (fclose(fixture) != 0) {
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to close Smith subagent review change");
+    goto done;
+  }
+  fixture = NULL;
+  if (mkdtemp(sessions_root) == NULL) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to create Smith subagent local-session-store root");
+    goto done;
+  }
+  sessions_root_created = 1;
+  store_config.root_directory = sessions_root;
+  rc = cai_agent_local_session_store_open(&store_config, &store, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith subagent session store open", rc, &error);
+    goto done;
+  }
+  store_open = 1;
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith subagent ChatGPT auth open", rc, &error);
+    goto done;
+  }
+  client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith subagent ChatGPT client open", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = workspace;
+  runtime_config.subagents = &checker_profile;
+  runtime_config.subagent_count = 1U;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_submit(runtime, parent_prompt, &error);
+  if (rc == CAI_OK)
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 240, &error);
+  if (rc == CAI_OK &&
+      (!integration_text_contains(events.answer.buffer,
+                                  "SMITH_SUBAGENTS_LIVE_CONFIRMED") ||
+       events.subagent_started != 2 || events.subagent_handed_off != 2 ||
+       events.checker_handed_off != 1 || events.reviewer_handed_off != 1 ||
+       events.review_report != 0 ||
+       !integration_text_contains(events.checker_handover, "cai.checker.v1") ||
+       !integration_text_contains(events.checker_handover,
+                                  "SUBAGENT_CHECKER_CONFIRMED") ||
+       !integration_text_contains(events.reviewer_handover,
+                                  "# Review handoff"))) {
+    fprintf(stderr,
+            "Smith subagent evidence failed (started=%d handed_off=%d "
+            "checker=%d reviewer=%d raw_reports=%d failure=%s answer=%s "
+            "checker_handover=%s review_handover=%s)\n",
+            events.subagent_started, events.subagent_handed_off,
+            events.checker_handed_off, events.reviewer_handed_off,
+            events.review_report, events.subagent_failure, events.answer.buffer,
+            events.checker_handover, events.reviewer_handover);
+    rc =
+        integration_set_error(&error, CAI_ERR_PROTOCOL,
+                              "Smith live subagent contract was not satisfied");
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith subagent live E2E", rc, &error);
+  } else {
+    fprintf(stderr,
+            "[integration-chatgpt-smith-subagents] model=%s checker=%d "
+            "reviewer=%d\n",
+            CAI_MODEL_GPT_5_6_LUNA, events.checker_handed_off,
+            events.reviewer_handed_off);
+  }
+
+done:
+  if (fixture != NULL)
+    fclose(fixture);
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  if (store_open)
+    cai_agent_local_session_store_close(&store);
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace))
+    cleanup_failed = 1;
+  if (sessions_root_created &&
+      !integration_remove_directory_tree(sessions_root))
+    cleanup_failed = 1;
+  if (cleanup_failed) {
+    fprintf(stderr,
+            "Smith subagent live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_chatgpt_subscription_session_regression(void) {
   static const char first_secret[] = "chatgpt-first-key-481";
   static const char tool_code[] = "chatgpt-tool-code-739";
@@ -6024,6 +6296,7 @@ int main(void) {
   const char *chatgpt_smith;
   const char *chatgpt_smith_goal;
   const char *chatgpt_smith_review;
+  const char *chatgpt_smith_subagents;
   const char *chatgpt_smith_mcp_review;
   const char *chatgpt_defaults;
   const char *e2e;
@@ -6067,6 +6340,8 @@ int main(void) {
   chatgpt_smith = getenv("CAI_INTEGRATION_CHATGPT_SMITH_E2E");
   chatgpt_smith_goal = getenv("CAI_INTEGRATION_CHATGPT_SMITH_GOAL_E2E");
   chatgpt_smith_review = getenv("CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E");
+  chatgpt_smith_subagents =
+      getenv("CAI_INTEGRATION_CHATGPT_SMITH_SUBAGENTS_E2E");
   chatgpt_smith_mcp_review =
       getenv("CAI_INTEGRATION_CHATGPT_SMITH_MCP_REVIEW_E2E");
   /* The dedicated MCP acceptance selector wins over inherited live selectors.
@@ -6079,6 +6354,9 @@ int main(void) {
   }
   if (integration_flag_enabled(chatgpt_smith)) {
     return run_chatgpt_smith_runtime_regression();
+  }
+  if (integration_flag_enabled(chatgpt_smith_subagents)) {
+    return run_chatgpt_smith_subagent_regression();
   }
   if (integration_flag_enabled(chatgpt_smith_review)) {
     return run_chatgpt_smith_review_regression(0);

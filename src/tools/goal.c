@@ -253,8 +253,10 @@ static int cai_goal_update(void *value, const void *params, void *out,
                          "goal status must be complete or blocked");
   }
   session = CAI_SESSION_IMPL(context->session);
-  if (session->goal_status == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID, "no active goal exists");
+  if (session->goal_status == NULL ||
+      strcmp(session->goal_status, "active") != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "only an active goal may be updated");
   }
   if (strcmp(args->status, "blocked") == 0) {
     if (session->goal_blocked_last_turn == session->goal_turn_count) {

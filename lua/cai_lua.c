@@ -2875,6 +2875,214 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
   return 1;
 }
 
+typedef struct cai_lua_subagent_config {
+  cai_agent_subagent_profile *profiles;
+  cai_agent_preset *presets;
+  const char ***models;
+  const char ***efforts;
+  const char ***summaries;
+  size_t count;
+  const char **review_models;
+  size_t review_model_count;
+  const char **review_efforts;
+  size_t review_effort_count;
+  const char **review_summaries;
+  size_t review_summary_count;
+} cai_lua_subagent_config;
+
+static void cai_lua_subagent_config_cleanup(cai_lua_subagent_config *config) {
+  size_t i;
+
+  if (config == NULL)
+    return;
+  for (i = 0U; i < config->count; i++) {
+    free((void *)config->models[i]);
+    free((void *)config->efforts[i]);
+    free((void *)config->summaries[i]);
+  }
+  free(config->profiles);
+  free(config->presets);
+  free(config->models);
+  free(config->efforts);
+  free(config->summaries);
+  free((void *)config->review_models);
+  free((void *)config->review_efforts);
+  free((void *)config->review_summaries);
+  memset(config, 0, sizeof(*config));
+}
+
+static int cai_lua_subagent_string_list(lua_State *L, int index,
+                                        const char *field, const char ***out,
+                                        size_t *out_count) {
+  const char **values;
+  size_t count;
+  size_t i;
+
+  *out = NULL;
+  *out_count = 0U;
+  lua_getfield(L, index, field);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return 1;
+  }
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    return 0;
+  }
+  count = (size_t)lua_rawlen(L, -1);
+  if (count > 128U) {
+    lua_pop(L, 1);
+    return 0;
+  }
+  values = NULL;
+  if (count > 0U) {
+    values = (const char **)calloc(count, sizeof(*values));
+    if (values == NULL) {
+      lua_pop(L, 1);
+      return -1;
+    }
+  }
+  for (i = 0U; i < count; i++) {
+    lua_rawgeti(L, -1, (lua_Integer)i + 1);
+    if (!lua_isstring(L, -1) || lua_rawlen(L, -1) == 0U) {
+      lua_pop(L, 2);
+      free((void *)values);
+      return 0;
+    }
+    values[i] = lua_tostring(L, -1);
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+  *out = values;
+  *out_count = count;
+  return 1;
+}
+
+static int cai_lua_subagent_preset_from_table(lua_State *L, int index,
+                                              cai_agent_preset *preset) {
+  memset(preset, 0, sizeof(*preset));
+  preset->name = cai_lua_opt_string_field(L, index, "name", NULL);
+  preset->prompt_version =
+      cai_lua_opt_string_field(L, index, "prompt_version", NULL);
+  preset->default_identity =
+      cai_lua_opt_string_field(L, index, "default_identity", NULL);
+  preset->default_model =
+      cai_lua_opt_string_field(L, index, "default_model", NULL);
+  preset->default_reasoning_effort =
+      cai_lua_opt_string_field(L, index, "default_reasoning_effort", NULL);
+  preset->default_reasoning_summary =
+      cai_lua_opt_string_field(L, index, "default_reasoning_summary", NULL);
+  preset->developer_instructions =
+      cai_lua_opt_string_field(L, index, "developer_instructions", NULL);
+  preset->review_developer_instructions =
+      cai_lua_opt_string_field(L, index, "review_developer_instructions", NULL);
+  preset->tool_capabilities =
+      (unsigned long)cai_lua_opt_size_field(L, index, "tool_capabilities", 0U);
+  preset->review_tool_capabilities = (unsigned long)cai_lua_opt_size_field(
+      L, index, "review_tool_capabilities", 0U);
+  preset->supports_review =
+      cai_lua_opt_bool_field(L, index, "supports_review", 0);
+  return 1;
+}
+
+static int cai_lua_subagent_config_from_table(lua_State *L, int index,
+                                              cai_lua_subagent_config *out) {
+  size_t count;
+  size_t i;
+  int status;
+
+  memset(out, 0, sizeof(*out));
+  status = cai_lua_subagent_string_list(L, index, "review_allowed_models",
+                                        &out->review_models,
+                                        &out->review_model_count);
+  if (status != 1)
+    return status;
+  status = cai_lua_subagent_string_list(
+      L, index, "review_allowed_reasoning_efforts", &out->review_efforts,
+      &out->review_effort_count);
+  if (status != 1) {
+    cai_lua_subagent_config_cleanup(out);
+    return status;
+  }
+  status = cai_lua_subagent_string_list(
+      L, index, "review_allowed_reasoning_summaries", &out->review_summaries,
+      &out->review_summary_count);
+  if (status != 1) {
+    cai_lua_subagent_config_cleanup(out);
+    return status;
+  }
+  lua_getfield(L, index, "subagents");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return 1;
+  }
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    cai_lua_subagent_config_cleanup(out);
+    return 0;
+  }
+  count = (size_t)lua_rawlen(L, -1);
+  if (count > 32U) {
+    lua_pop(L, 1);
+    cai_lua_subagent_config_cleanup(out);
+    return 0;
+  }
+  if (count > 0U) {
+    out->profiles =
+        (cai_agent_subagent_profile *)calloc(count, sizeof(*out->profiles));
+    out->presets = (cai_agent_preset *)calloc(count, sizeof(*out->presets));
+    out->models = (const char ***)calloc(count, sizeof(*out->models));
+    out->efforts = (const char ***)calloc(count, sizeof(*out->efforts));
+    out->summaries = (const char ***)calloc(count, sizeof(*out->summaries));
+    if (out->profiles == NULL || out->presets == NULL || out->models == NULL ||
+        out->efforts == NULL || out->summaries == NULL) {
+      lua_pop(L, 1);
+      cai_lua_subagent_config_cleanup(out);
+      return -1;
+    }
+  }
+  out->count = count;
+  for (i = 0U; i < count; i++) {
+    lua_rawgeti(L, -1, (lua_Integer)i + 1);
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 2);
+      cai_lua_subagent_config_cleanup(out);
+      return 0;
+    }
+    out->profiles[i].name = cai_lua_opt_string_field(L, -1, "name", NULL);
+    out->profiles[i].description =
+        cai_lua_opt_string_field(L, -1, "description", NULL);
+    status =
+        cai_lua_subagent_string_list(L, -1, "allowed_models", &out->models[i],
+                                     &out->profiles[i].allowed_model_count);
+    if (status == 1)
+      out->profiles[i].allowed_models = out->models[i];
+    if (status == 1)
+      status = cai_lua_subagent_string_list(
+          L, -1, "allowed_reasoning_efforts", &out->efforts[i],
+          &out->profiles[i].allowed_reasoning_effort_count);
+    if (status == 1)
+      out->profiles[i].allowed_reasoning_efforts = out->efforts[i];
+    if (status == 1)
+      status = cai_lua_subagent_string_list(
+          L, -1, "allowed_reasoning_summaries", &out->summaries[i],
+          &out->profiles[i].allowed_reasoning_summary_count);
+    if (status == 1)
+      out->profiles[i].allowed_reasoning_summaries = out->summaries[i];
+    lua_getfield(L, -1, "preset");
+    if (status != 1 || !lua_istable(L, -1)) {
+      lua_pop(L, 2);
+      cai_lua_subagent_config_cleanup(out);
+      return status == -1 ? -1 : 0;
+    }
+    (void)cai_lua_subagent_preset_from_table(L, -1, &out->presets[i]);
+    out->profiles[i].preset = &out->presets[i];
+    lua_pop(L, 2);
+  }
+  lua_pop(L, 1);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_event(void *context,
                                        const cai_agent_runtime_event *event,
                                        cai_error *error) {
@@ -2923,6 +3131,14 @@ static int cai_lua_agent_runtime_event(void *context,
   if (event->tool_call_id != NULL) {
     lua_pushstring(L, event->tool_call_id);
     lua_setfield(L, -2, "tool_call_id");
+  }
+  if (event->subagent_name != NULL) {
+    lua_pushstring(L, event->subagent_name);
+    lua_setfield(L, -2, "subagent_name");
+  }
+  if (event->parent_tool_call_id != NULL) {
+    lua_pushstring(L, event->parent_tool_call_id);
+    lua_setfield(L, -2, "parent_tool_call_id");
   }
   if (event->terminal_id != NULL) {
     lua_pushstring(L, event->terminal_id);
@@ -2974,9 +3190,11 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_agent_preset preset;
   cai_mcp_client **mcp_clients;
   cai_mcp_tool_registration_config mcp_tool_config;
+  cai_lua_subagent_config subagent_config;
   cai_error error;
   size_t mcp_client_count;
   int mcp_clients_ref;
+  int subagent_status;
   int rc;
 
   client = cai_lua_check_client(L, 1);
@@ -3037,6 +3255,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   }
   cai_agent_runtime_config_init(&config);
   cai_skill_config_init(&skills);
+  memset(&subagent_config, 0, sizeof(subagent_config));
   memset(&preset, 0, sizeof(preset));
   if (custom_preset) {
     lua_getfield(L, 2, "preset");
@@ -3085,6 +3304,14 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     if (native_skill_store == NULL || native_skill_store->adapter == NULL ||
         native_skill_store->adapter->kind != CAI_LUA_NATIVE_STORE_SKILLS) {
       lua_pop(L, 1);
+      if (runtime->callback_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
+        runtime->callback_ref = LUA_NOREF;
+      }
+      if (runtime->parent_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
+        runtime->parent_ref = LUA_NOREF;
+      }
       return luaL_error(L, "skill_provider must be a native skills store");
     }
     skills.skill_provider = &native_skill_store->adapter->callbacks.skills;
@@ -3104,6 +3331,14 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     if (instruction_store == NULL || instruction_store->adapter == NULL ||
         instruction_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
       lua_pop(L, 1);
+      if (runtime->callback_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
+        runtime->callback_ref = LUA_NOREF;
+      }
+      if (runtime->parent_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
+        runtime->parent_ref = LUA_NOREF;
+      }
       return luaL_error(L,
                         "global_instruction_store must be a native blob store");
     }
@@ -3123,6 +3358,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "review_reasoning_effort", NULL);
   config.review_reasoning_summary =
       cai_lua_opt_string_field(L, 2, "review_reasoning_summary", NULL);
+  config.disable_review_subagent =
+      cai_lua_opt_bool_field(L, 2, "disable_review_subagent", 0);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.enable_image_generation =
@@ -3184,10 +3421,43 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.mcp_clients = mcp_clients;
   config.mcp_client_count = mcp_client_count;
   config.mcp_tool_config = mcp_client_count > 0U ? &mcp_tool_config : NULL;
+  subagent_status = cai_lua_subagent_config_from_table(L, 2, &subagent_config);
+  if (subagent_status != 1) {
+    free(mcp_clients);
+    cai_lua_subagent_config_cleanup(&subagent_config);
+    if (mcp_clients_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, mcp_clients_ref);
+      mcp_clients_ref = LUA_NOREF;
+    }
+    if (runtime->callback_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
+      runtime->callback_ref = LUA_NOREF;
+    }
+    if (runtime->parent_ref != LUA_NOREF) {
+      luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
+      runtime->parent_ref = LUA_NOREF;
+    }
+    return luaL_error(L,
+                      "%s subagents and override allowlists must be bounded "
+                      "string arrays with preset tables",
+                      custom_preset ? "new_agent_runtime"
+                                    : "new_smith_runtime");
+  }
+  config.review_allowed_models = subagent_config.review_models;
+  config.review_allowed_model_count = subagent_config.review_model_count;
+  config.review_allowed_reasoning_efforts = subagent_config.review_efforts;
+  config.review_allowed_reasoning_effort_count =
+      subagent_config.review_effort_count;
+  config.review_allowed_reasoning_summaries = subagent_config.review_summaries;
+  config.review_allowed_reasoning_summary_count =
+      subagent_config.review_summary_count;
+  config.subagents = subagent_config.profiles;
+  config.subagent_count = subagent_config.count;
   cai_error_init(&error);
   cai_lua_client_enter(client);
   rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
   cai_lua_client_leave(client);
+  cai_lua_subagent_config_cleanup(&subagent_config);
   free(mcp_clients);
   if (rc != CAI_OK) {
     if (runtime->callback_ref != LUA_NOREF) {
@@ -10594,6 +10864,8 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_TOOL_ACTION_EXECUTE);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_WRITE_STDIN",
                       CAI_AGENT_TOOL_ACTION_WRITE_STDIN);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_SUBAGENT",
+                      CAI_AGENT_TOOL_ACTION_SUBAGENT);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_COMMAND_STARTED",
                       CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TERMINAL_OUTPUT",
@@ -10616,6 +10888,10 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RESPONSE_COMPLETED",
                       CAI_AGENT_EVENT_RESPONSE_COMPLETED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_GOAL_CHANGED", CAI_AGENT_EVENT_GOAL_CHANGED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_SUBAGENT_STARTED",
+                      CAI_AGENT_EVENT_SUBAGENT_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_SUBAGENT_HANDED_OFF",
+                      CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_READ_FILE",
                       CAI_AGENT_PRESET_TOOL_READ_FILE);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_LIST_FILES",
@@ -10631,6 +10907,8 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_IMAGE_GENERATION",
                       CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_SKILLS", CAI_AGENT_PRESET_TOOL_SKILLS);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_SUBAGENTS",
+                      CAI_AGENT_PRESET_TOOL_SUBAGENTS);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);

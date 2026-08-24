@@ -95,6 +95,28 @@ static int cai_store_directory_fd(const char *path, cai_error *error) {
   return fd;
 }
 
+static int cai_store_validate_private_directory_fd(int fd, cai_error *error) {
+  struct stat st;
+
+  if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid() ||
+      (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "scoped session directory is not private");
+  }
+  return CAI_OK;
+}
+
+static int cai_store_validate_private_regular_fd(int fd, cai_error *error) {
+  struct stat st;
+
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+      st.st_uid != geteuid() || (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "session log is not a private regular file");
+  }
+  return CAI_OK;
+}
+
 static int cai_store_scope_hash(const char *scope, char output[65],
                                 cai_error *error) {
   static const char hex[] = "0123456789abcdef";
@@ -138,6 +160,36 @@ static int cai_store_session_id_valid(const char *session_id) {
   return 1;
 }
 
+static int cai_store_session_filename_valid(const char *filename) {
+  const unsigned char *cursor;
+  size_t length;
+  size_t session_id_length;
+
+  if (filename == NULL) {
+    return 0;
+  }
+  length = strlen(filename);
+  if (length <= 6U || strcmp(filename + length - 6U, ".jsonl") != 0) {
+    return 0;
+  }
+  session_id_length = length - 6U;
+  if (session_id_length == 0U || session_id_length > 128U) {
+    return 0;
+  }
+  cursor = (const unsigned char *)filename;
+  while ((size_t)(cursor - (const unsigned char *)filename) <
+         session_id_length) {
+    if (!((*cursor >= 'a' && *cursor <= 'z') ||
+          (*cursor >= 'A' && *cursor <= 'Z') ||
+          (*cursor >= '0' && *cursor <= '9') || *cursor == '-' ||
+          *cursor == '_')) {
+      return 0;
+    }
+    cursor++;
+  }
+  return 1;
+}
+
 static int cai_store_open_scope(cai_local_session_store *store,
                                 const char *scope, int *out, char hash[65],
                                 cai_error *error) {
@@ -165,6 +217,11 @@ static int cai_store_open_scope(cai_local_session_store *store,
   if (scope_fd < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to open scoped session directory");
+  }
+  rc = cai_store_validate_private_directory_fd(scope_fd, error);
+  if (rc != CAI_OK) {
+    close(scope_fd);
+    return rc;
   }
   *out = scope_fd;
   return CAI_OK;
@@ -278,15 +335,8 @@ static int cai_local_session_checkpoint(
                          "failed to open session checkpoint log");
     }
   }
-  if (rc == CAI_OK) {
-    struct stat st;
-
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
-      rc =
-          cai_set_error(error, CAI_ERR_TRANSPORT,
-                        "session checkpoint log is not a private regular file");
-    }
-  }
+  if (rc == CAI_OK)
+    rc = cai_store_validate_private_regular_fd(fd, error);
   if (rc == CAI_OK && flock(fd, LOCK_EX) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to lock session checkpoint log");
@@ -404,14 +454,8 @@ static int cai_local_session_append_event(void *context, const char *scope,
                          "failed to open session event log");
     }
   }
-  if (rc == CAI_OK) {
-    struct stat st;
-
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
-      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "session event log is not a private regular file");
-    }
-  }
+  if (rc == CAI_OK)
+    rc = cai_store_validate_private_regular_fd(fd, error);
   if (rc == CAI_OK && flock(fd, LOCK_EX) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to lock session event log");
@@ -484,6 +528,8 @@ static int cai_local_session_load_events_after(
                          "failed to open session event log");
     }
   }
+  if (rc == CAI_OK)
+    rc = cai_store_validate_private_regular_fd(fd, error);
   if (rc == CAI_OK && flock(fd, LOCK_SH) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to lock session event log");
@@ -886,9 +932,10 @@ static int cai_local_session_load_latest(
     size_t length;
 
     length = strlen(entry->d_name);
-    if (length <= 6U || strcmp(entry->d_name + length - 6U, ".jsonl") != 0 ||
+    if (!cai_store_session_filename_valid(entry->d_name) ||
         fstatat(scope_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
-        !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        !S_ISREG(st.st_mode) || st.st_nlink != 1 || st.st_uid != geteuid() ||
+        (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
       continue;
     }
     if (length >= sizeof(candidate)) {
@@ -899,6 +946,11 @@ static int cai_local_session_load_latest(
     if (journal_fd < 0) {
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to open session checkpoint log");
+      break;
+    }
+    rc = cai_store_validate_private_regular_fd(journal_fd, error);
+    if (rc != CAI_OK) {
+      close(journal_fd);
       break;
     }
     if (flock(journal_fd, LOCK_SH) != 0) {
@@ -952,6 +1004,12 @@ static int cai_local_session_load_latest(
   if (fd < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to open latest session checkpoint log");
+  }
+  rc = cai_store_validate_private_regular_fd(fd, error);
+  if (rc != CAI_OK) {
+    close(fd);
+    session_id[0] = '\0';
+    return rc;
   }
   if (flock(fd, LOCK_SH) != 0) {
     close(fd);

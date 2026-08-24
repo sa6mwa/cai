@@ -1627,7 +1627,7 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     rc = cai_patch_write_atomic(
         target_parent_fd, target_name, change->after, change->after_length,
         change->kind == CAI_PATCH_ADD || change->resolved_move_path != NULL,
-        change->kind == CAI_PATCH_UPDATE && change->resolved_move_path == NULL
+        change->kind != CAI_PATCH_ADD && change->before_stat_valid
             ? &change->before_stat
             : NULL,
         &published, &change->published_stat, error);
@@ -1700,9 +1700,9 @@ rollback:
           change->kind == CAI_PATCH_UPDATE && change->resolved_move_path == NULL
               ? 0
               : 1,
-          change->kind == CAI_PATCH_UPDATE && change->resolved_move_path == NULL
-              ? &change->published_stat
-              : NULL,
+          change->resolved_move_path != NULL ? &change->before_stat
+          : change->kind == CAI_PATCH_UPDATE ? &change->published_stat
+                                             : NULL,
           &ignored_published, &ignored_stat, &ignored);
       cai_error_cleanup(&ignored);
     }

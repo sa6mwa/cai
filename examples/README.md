@@ -169,7 +169,10 @@ For an isolated review run, C hosts set
 `cai_agent_runtime_config.preset = CAI_SMITH_REVIEW_PRESET`; Lua hosts use
 `client:new_smith_review_runtime(config)`. Submit an explicit target with
 `cai_agent_runtime_submit_review` or `runtime:submit_review`, then render the
-final `CAI_AGENT_EVENT_REVIEW_REPORT` JSON event. The review preset has a
+final `CAI_AGENT_EVENT_REVIEW_REPORT` JSON event as an operator-facing report.
+An inline `run_subagent` review instead delivers one Markdown
+`CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF` result; render that event rather than raw
+review JSON. The review preset has a
 fresh session and no CAI patch, goal, MCP, or image-generation tools. It does
 retain the normal one-slot managed terminal for git inspection and checks, so
 the embedding host's terminal sandbox policy remains authoritative.

@@ -1308,6 +1308,14 @@ It is registered with the integration label, so
 `CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` and
 `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` include it.
 
+`CAI_INTEGRATION_CHATGPT_SMITH_SUBAGENTS_E2E=1` is the live Luna acceptance
+test for model-requested synchronous subagents. A parent uses a configured
+checker profile that returns a constrained JSON handover and the built-in
+reviewer against a disposable uncommitted Git fixture. It fails unless both
+handovers return, the reviewer is presented as Markdown, and raw reviewer JSON
+stays out of the parent event stream. The separate review E2E covers the
+configured medium-effort reviewer policy.
+
 `CAI_INTEGRATION_CHATGPT_E2E=1` runs a 20-turn session regression against the
 ChatGPT subscription backend using GPT-5 Nano. It checks every turn for the current secret,
 the first-turn secret, and the previous-turn secret so the test fails if

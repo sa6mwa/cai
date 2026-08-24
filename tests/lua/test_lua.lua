@@ -954,6 +954,28 @@ do
       event_callback = function() end,
     })
   end, "Lua custom runtimes must require a preset table before retaining callbacks")
+  do
+    local weak = setmetatable({}, { __mode = "v" })
+
+    do
+      local sentinel = {}
+      weak.callback = sentinel
+      assert_throws(function()
+        dummy_client:new_smith_runtime({
+          workspace_directory = ".",
+          disable_default_session_store = true,
+          event_callback = function()
+            return sentinel
+          end,
+          subagents = { "not a profile" },
+        })
+      end, "Lua invalid subagent configuration must fail")
+    end
+    collectgarbage("collect")
+    collectgarbage("collect")
+    assert(weak.callback == nil,
+      "rejected Lua runtime must release callback registry references")
+  end
   native_store_test.reset_sessions()
   local custom_runtime = assert_ok(dummy_client:new_agent_runtime({
     workspace_directory = ".",
@@ -966,7 +988,29 @@ do
       default_reasoning_effort = cai.REASONING_EFFORT_LOW,
       default_reasoning_summary = cai.REASONING_SUMMARY_CONCISE,
       developer_instructions = "You are {{agent_identity}}, Vectis' coding agent.",
-      tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+      tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE + cai.AGENT_PRESET_TOOL_SUBAGENTS,
+    },
+    review_allowed_models = { cai.MODEL_GPT_5_6_LUNA },
+    review_allowed_reasoning_efforts = { cai.REASONING_EFFORT_LOW },
+    review_allowed_reasoning_summaries = { cai.REASONING_SUMMARY_CONCISE },
+    subagents = {
+      {
+        name = "summarizer",
+        description = "Return a compact implementation handover.",
+        allowed_models = { cai.MODEL_GPT_5_6_LUNA },
+        allowed_reasoning_efforts = { cai.REASONING_EFFORT_LOW },
+        allowed_reasoning_summaries = { cai.REASONING_SUMMARY_CONCISE },
+        preset = {
+          name = "vectis-summarizer",
+          prompt_version = "vectis-summarizer-1",
+          default_identity = "Vectis Summarizer",
+          default_model = cai.MODEL_GPT_5_6_LUNA,
+          default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+          default_reasoning_summary = cai.REASONING_SUMMARY_CONCISE,
+          developer_instructions = "You are {{agent_identity}}.",
+          tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+        },
+      },
     },
   }))
   assert_eq(custom_runtime:state(), "idle", "Lua custom preset initial state")

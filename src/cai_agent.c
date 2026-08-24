@@ -5742,6 +5742,20 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                        "session state has invalid goal status");
     goto done;
   }
+  if (doc.goal_objective == NULL &&
+      (doc.has_goal_token_budget || doc.goal_token_usage_baseline != 0LL ||
+       doc.goal_tokens_used != 0LL)) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has goal accounting without a goal");
+    goto done;
+  }
+  if (doc.goal_objective != NULL &&
+      (doc.goal_token_usage_baseline < 0LL || doc.goal_tokens_used < 0LL ||
+       (doc.has_goal_token_budget && doc.goal_token_budget <= 0LL))) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has invalid goal token accounting");
+    goto done;
+  }
   if (doc.goal_objective != NULL) {
     next_goal_objective = cai_strdup(
         &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.goal_objective);

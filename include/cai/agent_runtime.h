@@ -59,7 +59,9 @@ typedef enum cai_agent_tool_action {
   /** A hosted or configured image-generation operation ran. */
   CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION = 11,
   /** A configured MCP or other non-local tool ran. */
-  CAI_AGENT_TOOL_ACTION_EXTERNAL = 12
+  CAI_AGENT_TOOL_ACTION_EXTERNAL = 12,
+  /** A synchronous child agent was launched. */
+  CAI_AGENT_TOOL_ACTION_SUBAGENT = 13
 } cai_agent_tool_action;
 
 /** Event emitted by an agent runtime. */
@@ -115,7 +117,11 @@ typedef enum cai_agent_runtime_event_type {
    */
   CAI_AGENT_EVENT_RESPONSE_COMPLETED = 22,
   /** Durable goal state changed at a model/tool safe boundary. */
-  CAI_AGENT_EVENT_GOAL_CHANGED = 23
+  CAI_AGENT_EVENT_GOAL_CHANGED = 23,
+  /** A synchronous child agent started from a parent tool call. */
+  CAI_AGENT_EVENT_SUBAGENT_STARTED = 24,
+  /** A synchronous child agent handed durable context back to its parent. */
+  CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF = 25
 } cai_agent_runtime_event_type;
 
 /**
@@ -174,6 +180,13 @@ typedef struct cai_agent_runtime_event {
   int terminal_detached_processes_possible;
   /** Stable source runtime session ID, borrowed until the callback returns. */
   const char *runtime_session_id;
+  /** Enabled subagent profile for subagent lifecycle events, otherwise NULL. */
+  const char *subagent_name;
+  /**
+   * Parent run_subagent invocation ID for forwarded child events, otherwise
+   * NULL. tool_call_id remains the child tool's own provider invocation ID.
+   */
+  const char *parent_tool_call_id;
 } cai_agent_runtime_event;
 
 /**
@@ -214,6 +227,37 @@ typedef struct cai_agent_review_request {
 
 /** Initialize a zero-defaultable review request. */
 void cai_agent_review_request_init(cai_agent_review_request *request);
+
+/**
+ * Host-defined profile available to the synchronous run_subagent tool.
+ * Every pointer is borrowed only for cai_agent_runtime_open; CAI snapshots
+ * the descriptor and its allowlists. name is a lowercase ASCII identifier and
+ * may not be "review", which is reserved for Smith's built-in reviewer.
+ * preset selects the child's developer instructions and tool policy. CAI
+ * structurally removes CAI_AGENT_PRESET_TOOL_SUBAGENTS from every child.
+ *
+ * Model and reasoning overrides requested by the parent model are accepted
+ * only when the corresponding allowlist is non-empty and contains the exact
+ * requested value. With no request, a child inherits the parent's active
+ * model, reasoning effort, and reasoning-summary mode.
+ */
+typedef struct cai_agent_subagent_profile {
+  /** Stable lowercase profile identifier, excluding the reserved review. */
+  const char *name;
+  /** Short operator/model-facing description of the delegated role. */
+  const char *description;
+  /** Required host-defined child preset. */
+  const cai_agent_preset *preset;
+  /** Exact allowed model overrides; NULL/zero rejects model overrides. */
+  const char *const *allowed_models;
+  size_t allowed_model_count;
+  /** Exact allowed reasoning-effort overrides; NULL/zero rejects overrides. */
+  const char *const *allowed_reasoning_efforts;
+  size_t allowed_reasoning_effort_count;
+  /** Exact allowed reasoning-summary overrides; NULL/zero rejects overrides. */
+  const char *const *allowed_reasoning_summaries;
+  size_t allowed_reasoning_summary_count;
+} cai_agent_subagent_profile;
 
 /** Borrowed immutable projection of a runtime goal. */
 typedef struct cai_agent_goal_snapshot {
@@ -298,6 +342,26 @@ typedef struct cai_agent_runtime_config {
    * reasoning_summary. Ignored by a directly opened smith-review runtime.
    */
   const char *review_reasoning_summary;
+  /**
+   * Exact model overrides the built-in review subagent may accept. NULL/zero
+   * rejects model overrides; no request inherits this runtime's active model.
+   */
+  const char *const *review_allowed_models;
+  size_t review_allowed_model_count;
+  /** Exact reasoning-effort overrides the built-in reviewer may accept. */
+  const char *const *review_allowed_reasoning_efforts;
+  size_t review_allowed_reasoning_effort_count;
+  /** Exact reasoning-summary overrides the built-in reviewer may accept. */
+  const char *const *review_allowed_reasoning_summaries;
+  size_t review_allowed_reasoning_summary_count;
+  /**
+   * Optional host-defined profiles for run_subagent. CAI snapshots these
+   * descriptors at open; children cannot recursively launch subagents.
+   */
+  const cai_agent_subagent_profile *subagents;
+  size_t subagent_count;
+  /** Disable Smith's otherwise enabled built-in review subagent. */
+  int disable_review_subagent;
   /** Optional host developer-instruction extension. */
   const char *developer_instructions_extension;
   /**

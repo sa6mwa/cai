@@ -355,13 +355,14 @@ continue when a tool result or steering input produces another response. Hosts
 close the active text or reasoning presentation on this event so each following
 response begins with its own visible label.
 
-`REVIEW_REPORT` carries the schema-validated reviewer JSON and
-`REVIEW_HANDED_OFF` carries that same report (or an empty payload for a
-durably recorded failed/cancelled review) after it enters parent history. These
-are operator-facing events, not private orchestration details. A host renders
-the child report inline and treats the parent event as a durable fallback, so
-the result remains visible even when the child reaches a terminal state before
-its final event was observed.
+An independently opened reviewer emits `REVIEW_REPORT`, containing its
+schema-validated JSON, for hosts that explicitly want the structured report.
+`REVIEW_HANDED_OFF` carries a human-readable Markdown rendering after that
+report enters parent history. When a reviewer runs through `run_subagent`, CAI
+does not forward the child raw JSON text or `REVIEW_REPORT` event into the
+parent event stream: the parent receives the Markdown handoff instead. This
+keeps structured data available to the tool caller without making raw JSON the
+operator's visible result.
 
 CAI retains event storage only until the callback returns or the consumer
 releases the event. A host feeding libmdf copies text or reasoning-summary
@@ -667,9 +668,9 @@ the returned child handle, `finish_review` result, and durable session state as
 the authoritative lifecycle boundary rather than treating either observation
 as a delivery guarantee.
 
-### 6.3 Planned synchronous subagents
+### 6.3 Synchronous subagents
 
-The next agent-mode extension is a general **synchronous subagent** facility.
+CAI provides a general **synchronous subagent** facility.
 It is deliberately not a background-worker, task-queue, or multi-agent
 coordination system: one parent runtime may run at most one child runtime at a
 time, and the parent remains paused until that child reaches a terminal state
@@ -679,14 +680,13 @@ facility.
 
 #### 6.3.1 Profiles and host configuration
 
-`cai_agent_runtime_config` will accept a bounded list of host-defined
-subagent descriptors. A descriptor has a stable non-empty `name` and
-`prompt_version`, visible identity, complete developer prompt, default model,
-reasoning effort and summary, a selected local/MCP/hosted tool policy, and an
-explicit policy for model-requested model and reasoning overrides. CAI copies
-descriptor strings at open and records the name/prompt version in child and
-parent handover metadata. Names must be unique and are restricted to the
-model-tool identifier grammar.
+`cai_agent_runtime_config` accepts a bounded list of host-defined
+subagent descriptors. A descriptor has a stable non-empty `name`, concise
+description, and a complete child preset (including prompt revision, identity,
+developer prompt, defaults, and selected local/MCP/hosted tool policy).
+Descriptors also carry explicit allowlists for model-requested model and
+reasoning overrides. CAI copies descriptor strings at open. Names must be
+unique and are restricted to the model-tool identifier grammar.
 
 The built-in `review` profile is reserved. Hosts cannot replace it with a
 custom descriptor, but may disable it with an explicit runtime configuration
@@ -694,8 +694,9 @@ field. The built-in `smith` profile enables it by default. Review continues to
 use CAI's review developer prompt, schema validation, read-oriented tool policy
 and human-readable handover rendering. It inherits the parent model, reasoning
 effort, and summary unless the request supplies an override permitted by the
-host's review policy. Existing `review_model`, `review_reasoning_effort`, and
-`review_reasoning_summary` remain host defaults and are not an unrestricted
+host's review allowlists. Existing `review_model`,
+`review_reasoning_effort`, and `review_reasoning_summary` remain the defaults
+for the separate host-driven review lifecycle and are not an unrestricted
 model-selection mechanism.
 
 Custom profiles are opt-in: registering a descriptor makes it available to the
@@ -705,7 +706,7 @@ reviewer. This non-recursive rule is structural, not prompt guidance: no child
 receives the subagent tool declaration or callback.
 
 Model-requested model/reasoning values are requests, not authority. The host
-must configure an allowlist/resolver and optional budget policy. If omitted,
+must configure exact allowlists. If omitted,
 the child inherits the active parent values. A rejected override produces a
 normal actionable tool error before a child runtime is opened; CAI must not
 silently substitute a more expensive or unsupported model.
@@ -737,9 +738,10 @@ the child is active; queued turns remain durable but cannot begin. Parent
 cancellation cancels the child. A child terminal failure or cancellation does
 not strand the parent: it yields a durable failed/cancelled handover and then
 releases the parent. The runtime emits correlated start, streamed child-event,
-and terminal handover events carrying parent session ID, child session ID, and
-the originating parent tool-call ID so any TUI/GUI can render the process
-without adopting CAI's presentation layer.
+and terminal handover events. Forwarded child events carry the child session ID
+and originating parent tool-call ID; the parent session ID is already known
+from the runtime that delivered them. Any TUI/GUI can therefore render the
+process without adopting CAI's presentation layer.
 
 #### 6.3.3 Handover contract
 
@@ -751,12 +753,12 @@ Every profile returns a generic, model-readable handover:
   "status": "completed | failed | cancelled",
   "child_session_id": "xid",
   "handover_markdown": "human-readable outcome",
-  "structured_result": "profile-defined JSON value or null"
+  "structured_result_json": "optional profile-defined JSON text"
 }
 ```
 
 `handover_markdown` is the presentation and parent-context form, not session
-serialization. `structured_result` preserves profile-specific data for a host
+serialization. `structured_result_json` preserves profile-specific data for a host
 that needs it. The built-in review profile keeps its validated findings JSON as
 the structured result and renders the established review report into the
 handover; raw review JSON must not be shown as the user's only result.
@@ -769,9 +771,10 @@ the `run_subagent` tool result and is sent through lifecycle events for the
 host renderer. A checkpoint failure leaves the parent paused and makes handover
 completion retryable without duplicate injection.
 
-Child sessions remain distinct and exportable for audit, but they are not
+Child sessions remain distinct in the configured session store and are not
 implicitly candidates for parent `resume_latest`; their identity and lifecycle
-are linked from the parent handover record. Version one does not support nested
+are linked from the parent handover record. Store-aware hosts can retain or
+export them for audit. Version one does not support nested
 subagents, concurrent children, detached/background children, or automatic
 application of review findings.
 
@@ -794,7 +797,7 @@ to the host as events before they are returned to the model.
 | `get_goal` | function | Read the session’s current goal and accounting. |
 | `create_goal` | function | Create an explicit user-requested goal. |
 | `update_goal` | function | Mark an eligible goal complete or blocked. |
-| `run_subagent` | function | Synchronously run one enabled built-in or host-defined child, then return and durably inject its handover. Planned; Smith enables built-in `review` by default. |
+| `run_subagent` | function | Synchronously run one enabled built-in or host-defined child, then return and durably inject its handover. Smith enables built-in `review` by default. |
 | MCP tools/resources | dynamic | Register configured remote MCP capabilities as CAI tools with server-qualified names. |
 
 `cai/tools/read.h` already supplies a local reading basis. CAI’s existing local
@@ -1458,10 +1461,12 @@ The suite uses a disposable fixture repository and a local deterministic MCP
 test server. Both the C and Lua façades must prove a coding task that reads
 files, edits through `apply_patch`, uses the terminal, calls a configured MCP
 tool, starts an isolated review, hands the JSON report into the parent context,
-and verifies its own result. It must not expose auth tokens in artifacts/logs,
-must never run against a user workspace, and must never fall back to an OpenAI
-API key. Live tests are opt-in and never part of an offline default test
-target.
+and verifies its own result. A focused subagent acceptance also requires a
+model-requested custom checker and built-in review handover, including the
+absence of raw review JSON from the parent display-event stream. It must not
+expose auth tokens in artifacts/logs, must never run against a user workspace,
+and must never fall back to an OpenAI API key. Live tests are opt-in and never
+part of an offline default test target.
 
 ## 16. Acceptance criteria
 
