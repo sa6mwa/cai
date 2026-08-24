@@ -1785,7 +1785,7 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_integration_chatgpt_smith_goal_e2e PROPERTIES
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
     add_test(NAME cai_integration_chatgpt_smith_review_e2e
       COMMAND "${CMAKE_COMMAND}" -E env
         "CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1"

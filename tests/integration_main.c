@@ -1127,6 +1127,58 @@ static int integration_directory_contains_only(const char *path,
   return valid;
 }
 
+static int integration_has_hello_source(const char *path) {
+  static const char *const extensions[] = {".c", ".py", ".lua", ".sh"};
+  DIR *directory;
+  struct dirent *entry;
+  char source_path[PATH_MAX];
+  char contents[4096];
+  size_t entry_length;
+  size_t extension_index;
+  size_t extension_length;
+  int found;
+
+  if (path == NULL) {
+    return 0;
+  }
+  directory = opendir(path);
+  if (directory == NULL) {
+    return 0;
+  }
+  found = 0;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    if (entry->d_name[0] == '.') {
+      continue;
+    }
+    entry_length = strlen(entry->d_name);
+    for (extension_index = 0U;
+         extension_index < sizeof(extensions) / sizeof(extensions[0]);
+         ++extension_index) {
+      extension_length = strlen(extensions[extension_index]);
+      if (entry_length < extension_length ||
+          strcmp(entry->d_name + entry_length - extension_length,
+                 extensions[extension_index]) != 0) {
+        continue;
+      }
+      if (snprintf(source_path, sizeof(source_path), "%s/%s", path,
+                   entry->d_name) < (int)sizeof(source_path) &&
+          integration_read_file(source_path, contents, sizeof(contents)) &&
+          integration_text_contains(contents, "Hello, world!")) {
+        found = 1;
+      }
+      break;
+    }
+    if (found) {
+      break;
+    }
+  }
+  if (errno != 0 || closedir(directory) != 0) {
+    found = 0;
+  }
+  return found;
+}
+
 static int integration_remove_directory_tree(const char *path) {
   DIR *directory;
   struct dirent *entry;
@@ -4558,12 +4610,20 @@ static int integration_smith_runtime_wait(
 }
 
 static int run_chatgpt_smith_goal_regression(void) {
-  static const char objective[] = "complete the short Smith goal live test";
-  static const char prompt[] =
-      "Create a goal with the exact objective `complete the short Smith goal "
-      "live test` and no token budget. This explicit task is complete as soon "
-      "as that goal exists, so then call update_goal with status complete. Do "
-      "not call any other tool, do not modify files, and do not run commands. "
+  static const char objective[] =
+      "create and run a Hello World program in the temporary Git repository";
+  static const char prompt_prefix[] =
+      "Create an unbudgeted goal with the exact objective `create and run a "
+      "Hello World program in the temporary Git repository`. You are in an "
+      "empty Git repository. Independently choose exactly one of C, Python, "
+      "Lua, or Bash, then write a small top-level Hello World program using "
+      "the conventional .c, .py, .lua, or .sh extension for that language. ";
+  static const char prompt_middle[] =
+      "Use the terminal to run the program and verify it prints exactly "
+      "`Hello, world!` followed by a newline. Use tools in any appropriate "
+      "order; no commit is needed. Only after the successful run is confirmed, "
+      "call update_goal with status complete. ";
+  static const char prompt_suffix[] =
       "In the final response include exactly the marker "
       "SMITH_GOAL_LIVE_CONFIRMED.";
   cai_agent_runtime_config runtime_config;
@@ -4573,7 +4633,11 @@ static int run_chatgpt_smith_goal_regression(void) {
   cai_client *client;
   cai_error error;
   integration_smith_runtime_event_state events;
+  const char *git_init[] = {"git", "init", NULL, NULL};
+  char command_output[1024];
+  char prompt[1024];
   char workspace[] = "/tmp/cai-smith-goal-e2e-XXXXXX";
+  int prompt_length;
   int rc;
   int workspace_created;
 
@@ -4585,12 +4649,27 @@ static int run_chatgpt_smith_goal_regression(void) {
   client = NULL;
   runtime = NULL;
   workspace_created = 0;
+  prompt_length = snprintf(prompt, sizeof(prompt), "%s%s%s", prompt_prefix,
+                           prompt_middle, prompt_suffix);
+  if (prompt_length < 0 || prompt_length >= (int)sizeof(prompt)) {
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith goal prompt did not fit its buffer");
+    goto done;
+  }
   if (mkdtemp(workspace) == NULL) {
     rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
                                "failed to create Smith goal workspace");
     goto done;
   }
   workspace_created = 1;
+  git_init[2] = workspace;
+  if (!integration_run_program(git_init, command_output,
+                               sizeof(command_output))) {
+    rc =
+        integration_set_error(&error, CAI_ERR_TRANSPORT,
+                              "failed to initialize Smith goal Git repository");
+    goto done;
+  }
   client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
   rc = integration_open_subscription_client(&client_config, &client, &error);
   if (rc != CAI_OK) {
@@ -4618,15 +4697,23 @@ static int run_chatgpt_smith_goal_regression(void) {
       (events.goal_created < 1 || events.goal_updated < 1 || !goal.has_goal ||
        goal.objective == NULL || goal.status == NULL ||
        strcmp(goal.objective, objective) != 0 ||
-       strcmp(goal.status, "complete") != 0 ||
+       strcmp(goal.status, "complete") != 0 || events.terminal_started < 1 ||
+       events.terminal_completed < 1 || events.terminal_exit_zero < 1 ||
+       !integration_text_contains(events.terminal_output.buffer,
+                                  "Hello, world!") ||
+       !integration_has_hello_source(workspace) ||
        !integration_text_contains(events.answer.buffer,
                                   "SMITH_GOAL_LIVE_CONFIRMED"))) {
     fprintf(stderr,
             "Smith goal evidence failed (created=%d updated=%d has_goal=%d "
-            "objective=%s status=%s answer=%s)\n",
+            "objective=%s status=%s terminal_started=%d terminal_completed=%d "
+            "terminal_exit_zero=%d terminal_output=%s answer=%s)\n",
             events.goal_created, events.goal_updated, goal.has_goal,
             goal.objective != NULL ? goal.objective : "(null)",
-            goal.status != NULL ? goal.status : "(null)", events.answer.buffer);
+            goal.status != NULL ? goal.status : "(null)",
+            events.terminal_started, events.terminal_completed,
+            events.terminal_exit_zero, events.terminal_output.buffer,
+            events.answer.buffer);
     rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
                                "Smith live goal contract was not satisfied");
   }
@@ -4635,9 +4722,10 @@ static int run_chatgpt_smith_goal_regression(void) {
   } else {
     fprintf(stderr,
             "[integration-chatgpt-smith-goal] model=%s created=%d updated=%d "
-            "status=%s elapsed=%lld\n",
+            "status=%s terminal_runs=%d elapsed=%lld\n",
             chatgpt_integration_model(), events.goal_created,
-            events.goal_updated, goal.status, goal.elapsed_seconds);
+            events.goal_updated, goal.status, events.terminal_completed,
+            goal.elapsed_seconds);
   }
 
 done:
