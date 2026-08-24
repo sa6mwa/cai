@@ -24452,6 +24452,8 @@ static void test_smith_profile(test_state *state) {
   char instructions_workspace[] = "/tmp/cai-smith-instructions-XXXXXX";
   char external_instructions[] = "/tmp/cai-smith-external-XXXXXX";
   char agents_path[PATH_MAX];
+  char review_workspace[] = "/tmp/cai-smith-review-instructions-XXXXXX";
+  char review_agents_path[PATH_MAX];
   int external_fd;
 
   cai_error_init(&error);
@@ -24549,6 +24551,42 @@ static void test_smith_profile(test_state *state) {
     agent = NULL;
   }
   config.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
+  if (mkdtemp(review_workspace) == NULL ||
+      snprintf(review_agents_path, sizeof(review_agents_path), "%s/AGENTS.md",
+               review_workspace) >= (int)sizeof(review_agents_path)) {
+    test_fail(state, "smith_review_repository_instructions_setup",
+              "failed to create review instruction fixture");
+    rmdir(review_workspace);
+  } else {
+    write_file_or_die(review_agents_path, "Review workspace policy.");
+    config.workspace_directory = review_workspace;
+    config.developer_instructions_extension = "Review host extension.";
+    expect_int(
+        state, "smith_review_repository_instructions_open",
+        cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
+        CAI_OK);
+    if (agent != NULL) {
+      const char *repository_policy;
+      const char *host_extension;
+
+      repository_policy = strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                                 "Review workspace policy.");
+      host_extension = strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                              "Review host extension.");
+      if (repository_policy == NULL || host_extension == NULL ||
+          repository_policy >= host_extension) {
+        test_fail(state, "smith_review_repository_instructions_order",
+                  "review instructions did not place repository policy before "
+                  "the host extension");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    unlink(review_agents_path);
+    rmdir(review_workspace);
+  }
+  config.workspace_directory = "/tmp";
+  config.developer_instructions_extension = NULL;
   expect_int(
       state, "smith_review_open",
       cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),

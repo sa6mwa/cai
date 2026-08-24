@@ -629,6 +629,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
   cai_view_image_tool_config view_image_config;
   const char *identity;
   const char *extension;
+  char *repository_instructions;
   static const char *const review_suffix_parts[] = {
       ", a code reviewer running in CAI agent mode. You are acting as a "
       "reviewer for a proposed code change made by another engineer.\n\n",
@@ -682,6 +683,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
   char *instructions;
   size_t length;
   size_t offset;
+  size_t repository_length;
   size_t extension_length;
   size_t i;
   int rc;
@@ -716,6 +718,8 @@ int cai_client_new_preset_review_agent(cai_client *client,
   if (client_impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
   }
+  instructions = NULL;
+  repository_instructions = NULL;
   identity = config->agent_identity != NULL ? config->agent_identity
                                             : preset->default_identity;
   extension = config->developer_instructions_extension;
@@ -723,42 +727,62 @@ int cai_client_new_preset_review_agent(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "review agent identity is invalid");
   }
+  rc = cai_smith_load_repository_instructions(&client_impl->allocator,
+                                              config->workspace_directory,
+                                              &repository_instructions, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   if (preset->review_developer_instructions != NULL) {
     rc = cai_preset_render_template(
         &client_impl->allocator, preset->review_developer_instructions, preset,
-        config, NULL, NULL, &instructions, error);
+        config, repository_instructions, NULL, &instructions, error);
     if (rc != CAI_OK) {
-      return rc;
+      goto review_instructions_failed;
     }
     goto review_instructions_ready;
   }
   if (strlen(identity) > SIZE_MAX - strlen("You are ") - 1U) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "Smith review instructions are too large");
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "Smith review instructions are too large");
+    goto review_instructions_failed;
   }
   length = strlen("You are ") + strlen(identity);
   for (i = 0U; i < sizeof(review_suffix_parts) / sizeof(review_suffix_parts[0]);
        i++) {
     if (strlen(review_suffix_parts[i]) > SIZE_MAX - length) {
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "Smith review instructions are too large");
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review instructions are too large");
+      goto review_instructions_failed;
     }
     length += strlen(review_suffix_parts[i]);
+  }
+  repository_length =
+      repository_instructions != NULL ? strlen(repository_instructions) : 0U;
+  if (repository_length > 0U) {
+    if (length > SIZE_MAX - 2U - repository_length - 1U) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith review instructions are too large");
+      goto review_instructions_failed;
+    }
+    length += 2U + repository_length;
   }
   extension_length = extension != NULL ? strlen(extension) : 0U;
   if (extension_length > 0U &&
       (length > SIZE_MAX - 2U ||
        extension_length > SIZE_MAX - length - 2U - 1U)) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "Smith review instructions are too large");
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "Smith review instructions are too large");
+    goto review_instructions_failed;
   }
   if (extension_length > 0U) {
     length += 2U + extension_length;
   }
   instructions = (char *)cai_alloc(&client_impl->allocator, length + 1U);
   if (instructions == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate Smith review instructions");
+    rc = cai_set_error(error, CAI_ERR_NOMEM,
+                       "failed to allocate Smith review instructions");
+    goto review_instructions_failed;
   }
   memcpy(instructions, "You are ", strlen("You are "));
   offset = strlen("You are ");
@@ -772,12 +796,21 @@ int cai_client_new_preset_review_agent(cai_client *client,
     memcpy(instructions + offset, review_suffix_parts[i], part_length);
     offset += part_length;
   }
+  if (repository_length > 0U) {
+    memcpy(instructions + offset, "\n\n", 2U);
+    offset += 2U;
+    memcpy(instructions + offset, repository_instructions, repository_length);
+    offset += repository_length;
+  }
   if (extension_length > 0U) {
     memcpy(instructions + offset, "\n\n", 2U);
     memcpy(instructions + offset + 2U, extension, extension_length);
+    offset += 2U + extension_length;
   }
   instructions[length] = '\0';
 review_instructions_ready:
+  cai_free_mem(&client_impl->allocator, repository_instructions);
+  repository_instructions = NULL;
   cai_agent_config_init(&agent_config);
   agent_config.model =
       config->model != NULL ? config->model : preset->default_model;
@@ -848,6 +881,10 @@ review_instructions_ready:
     cai_agent_destroy(*out);
     *out = NULL;
   }
+  return rc;
+
+review_instructions_failed:
+  cai_free_mem(&client_impl->allocator, repository_instructions);
   return rc;
 }
 
