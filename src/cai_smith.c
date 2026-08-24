@@ -7,8 +7,10 @@
 #include "cai_internal.h"
 
 #include <errno.h>
-#include <stdio.h>
+#include <fcntl.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS (128U * 1024U)
 #define CAI_AGENT_IDENTITY_TOKEN "{{agent_identity}}"
@@ -400,40 +402,62 @@ static int
 cai_smith_load_repository_instructions(const cai_allocator *allocator,
                                        const char *workspace, char **out,
                                        cai_error *error) {
-  char path[4096];
-  FILE *fp;
-  long length;
-  size_t nread;
+  struct stat st;
+  size_t length;
+  size_t offset;
+  ssize_t nread;
+  int workspace_fd;
+  int instructions_fd;
 
   *out = NULL;
-  if (snprintf(path, sizeof(path), "%s/AGENTS.md", workspace) >=
-      (int)sizeof(path)) {
+  workspace_fd = open(workspace, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (workspace_fd < 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "Smith workspace path is too long");
+                         "failed to open Smith workspace");
   }
-  fp = fopen(path, "rb");
-  if (fp == NULL) {
+  instructions_fd =
+      openat(workspace_fd, "AGENTS.md", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  (void)close(workspace_fd);
+  if (instructions_fd < 0) {
     return errno == ENOENT
                ? CAI_OK
                : cai_set_error(error, CAI_ERR_INVALID,
                                "failed to read repository instructions");
   }
-  if (fseek(fp, 0L, SEEK_END) != 0 || (length = ftell(fp)) < 0L ||
-      (unsigned long)length > CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS ||
-      fseek(fp, 0L, SEEK_SET) != 0) {
-    fclose(fp);
+  if (fstat(instructions_fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+      st.st_nlink != 1) {
+    (void)close(instructions_fd);
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "repository instructions must be a private regular file");
+  }
+  if (st.st_size < 0 ||
+      (unsigned long long)st.st_size >
+          (unsigned long long)CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS) {
+    (void)close(instructions_fd);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "repository instructions exceed Smith limit");
   }
-  *out = (char *)cai_alloc(allocator, (size_t)length + 1U);
+  length = (size_t)st.st_size;
+  *out = (char *)cai_alloc(allocator, length + 1U);
   if (*out == NULL) {
-    fclose(fp);
+    (void)close(instructions_fd);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate repository instructions");
   }
-  nread = fread(*out, 1U, (size_t)length, fp);
-  fclose(fp);
-  if (nread != (size_t)length) {
+  offset = 0U;
+  while (offset < length) {
+    nread = read(instructions_fd, *out + offset, length - offset);
+    if (nread > 0) {
+      offset += (size_t)nread;
+    } else if (nread < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;
+    }
+  }
+  (void)close(instructions_fd);
+  if (offset != length) {
     cai_free_mem(allocator, *out);
     *out = NULL;
     return cai_set_error(error, CAI_ERR_INVALID,

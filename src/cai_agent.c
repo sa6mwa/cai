@@ -143,6 +143,14 @@ static const lonejson_field cai_session_state_fields[] = {
 LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
                     cai_session_state_fields);
 
+static int cai_session_goal_status_is_valid(const char *status) {
+  return status != NULL &&
+         (strcmp(status, "active") == 0 || strcmp(status, "complete") == 0 ||
+          strcmp(status, "blocked") == 0 ||
+          strcmp(status, "usage_limited") == 0 ||
+          strcmp(status, "budget_limited") == 0);
+}
+
 enum {
   CAI_SESSION_INPUT_TEXT = 0,
   CAI_SESSION_INPUT_IMAGE = 1,
@@ -5665,6 +5673,12 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   if ((doc.goal_objective == NULL) != (doc.goal_status == NULL)) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "session state has incomplete goal data");
+    goto done;
+  }
+  if (doc.goal_status != NULL &&
+      !cai_session_goal_status_is_valid(doc.goal_status)) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has invalid goal status");
     goto done;
   }
   if (doc.goal_objective != NULL) {

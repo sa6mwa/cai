@@ -24449,6 +24449,10 @@ static void test_smith_profile(test_state *state) {
   cai_agent *agent;
   cai_response *response;
   cai_error error;
+  char instructions_workspace[] = "/tmp/cai-smith-instructions-XXXXXX";
+  char external_instructions[] = "/tmp/cai-smith-external-XXXXXX";
+  char agents_path[PATH_MAX];
+  int external_fd;
 
   cai_error_init(&error);
   agent = NULL;
@@ -24472,6 +24476,39 @@ static void test_smith_profile(test_state *state) {
                                    &mock) != 0) {
     cai_error_cleanup(&error);
     return;
+  }
+  external_fd = -1;
+  if (mkdtemp(instructions_workspace) == NULL ||
+      (external_fd = mkstemp(external_instructions)) < 0 ||
+      snprintf(agents_path, sizeof(agents_path), "%s/AGENTS.md",
+               instructions_workspace) >= (int)sizeof(agents_path)) {
+    test_fail(state, "smith_repository_instructions_setup",
+              "failed to create repository instruction fixture");
+    if (external_fd >= 0) {
+      close(external_fd);
+    }
+    unlink(external_instructions);
+    rmdir(instructions_workspace);
+  } else {
+    close(external_fd);
+    write_file_or_die(external_instructions, "outside instructions");
+    if (symlink(external_instructions, agents_path) != 0) {
+      test_fail(state, "smith_repository_instructions_symlink",
+                "failed to create repository instruction symlink");
+    } else {
+      config.workspace_directory = instructions_workspace;
+      config.agent_identity = "Vectis Agent Smith";
+      config.model = CAI_MODEL_GPT_5_6_LUNA;
+      expect_int(
+          state, "smith_reject_symlinked_repository_instructions",
+          cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+          CAI_ERR_INVALID);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      unlink(agents_path);
+    }
+    unlink(external_instructions);
+    rmdir(instructions_workspace);
   }
   config.workspace_directory = "/tmp";
   config.agent_identity = "Vectis Agent Smith";
@@ -37538,6 +37575,21 @@ static void test_session_state_validation(test_state *state) {
              cai_source_from_callbacks(&source_callbacks, &source, &error),
              CAI_OK);
   expect_int(state, "state_validation_invalid_both",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"unknown\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_unknown_goal_status_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_unknown_goal_status",
              cai_session_import_state_source(restored, source, &error),
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
