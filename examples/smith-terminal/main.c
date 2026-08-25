@@ -26,7 +26,6 @@ typedef struct render_state {
   int reasoning_open;
   int suppress_review_text;
   int review_report_visible;
-  int show_subagent_instruction;
   int reasoning_heading_seen;
   size_t reasoning_probe_length;
   char command[161];
@@ -122,8 +121,7 @@ static void print_usage(const char *program) {
   fputs("  --model <model>      Override the model. Defaults to "
         "gpt-5.6-luna.\n"
         "  -v, --verbose        Enable debug lifecycle logging on stderr.\n"
-        "  -vv                  Enable trace logging and show delegated "
-        "instructions.\n",
+        "  -vv                  Enable trace lifecycle logging on stderr.\n",
         stderr);
   fputs("\nLogging defaults to disabled; LOG_LEVEL and other LOG_* pslog "
         "settings override these defaults.\n",
@@ -565,8 +563,7 @@ static void render_subagent_handoff(const cai_agent_runtime_event *event) {
 
 /* The delegated task is model-controlled. Keep control bytes visible, and
  * bound the preview so a long subagent request does not overwhelm the chat. */
-static void render_subagent_started(const cai_agent_runtime_event *event,
-                                    const render_state *state) {
+static void render_subagent_started(const cai_agent_runtime_event *event) {
   const char *name;
   size_t displayed;
 
@@ -586,8 +583,7 @@ static void render_subagent_started(const cai_agent_runtime_event *event,
     }
   }
   fputc('\n', stdout);
-  if (state != NULL && state->show_subagent_instruction &&
-      event->subagent_instruction != NULL) {
+  if (event->subagent_instruction != NULL) {
     fputs(GRAY "  instruction: " RESET, stdout);
     render_review_text(event->subagent_instruction,
                        strlen(event->subagent_instruction));
@@ -734,7 +730,7 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_visible = 0;
   } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
     render_close_message(state);
-    render_subagent_started(event, state);
+    render_subagent_started(event);
   } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
     render_close_message(state);
     render_subagent_handoff(event);
@@ -811,7 +807,6 @@ int main(int argc, char **argv) {
     fputs("smith-terminal: failed to initialize logger\n", stderr);
     return 1;
   }
-  renderer.show_subagent_instruction = verbosity >= 2;
   cai_client_config_init(&client_config);
   client_config.logger = logger;
   cai_chatgpt_auth_config_init(&chatgpt_auth_config);

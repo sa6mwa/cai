@@ -97,7 +97,6 @@ static char *capture_fixture(void) {
   }
 
   memset(&renderer, 0, sizeof(renderer));
-  renderer.show_subagent_instruction = 1;
   deliver(&renderer, CAI_AGENT_EVENT_REASONING_SUMMARY, "**Planning ", NULL, 0,
           0, 0);
   deliver(&renderer, CAI_AGENT_EVENT_REASONING_SUMMARY,

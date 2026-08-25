@@ -859,8 +859,9 @@ control-safe task preview
 when the parent delegates work (for example, `Starting review subagent — task:
 review changes against trunk`). It must treat the task text as untrusted model
 output and avoid presenting raw tool-call JSON. The C and Lua Smith terminal
-examples demonstrate this presentation and reveal the full instruction only
-with `-vv`; other hosts can render the same event according to their own UX.
+examples demonstrate this presentation and show the full instruction beneath
+the compact task preview; other hosts can render the same event according to
+their own UX.
 
 #### 6.3.3 Handover contract
 

@@ -17,7 +17,6 @@ function M.new(cai, output, colors)
     reasoning_heading_seen = false,
     reasoning_probe = "",
     last_reasoning_heading = "",
-    show_subagent_instruction = colors.show_subagent_instruction or false,
   }
 
   local function remembered_command(value)
@@ -289,7 +288,7 @@ function M.new(cai, output, colors)
           safe_terminal_text(abbreviated_task(event.data)))
       end
       output.write("\n")
-      if render.show_subagent_instruction and event.subagent_instruction then
+      if event.subagent_instruction then
         output.write(gray, "  instruction: ", reset,
           safe_terminal_text(event.subagent_instruction))
         if event.subagent_instruction:sub(-1) ~= "\n" then

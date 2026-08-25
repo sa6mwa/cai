@@ -165,13 +165,13 @@ the live runtime handover receiver to create
 commands: hosts select `submit_steering`, `submit_queued`, or
 `export_markdown` directly.
 
-Both accept `-v`/`--verbose` for debug lifecycle logs on stderr and `-vv` for
-trace logs plus the exact child instruction at subagent launch. Logging is
-otherwise disabled by default. Standard `LOG_*` pslog configuration overrides
-the example defaults, so `LOG_LEVEL=info` enables runtime and client logs
-without changing command-line flags. The emitted example logger carries
-`component=smith-example`; CAI runtime messages themselves use only lifecycle
-facts and metrics.
+Both render the concise task preview and exact final child instruction at every
+subagent launch. They accept `-v`/`--verbose` for debug lifecycle logs on
+stderr and `-vv` for trace logs. Logging is otherwise disabled by default.
+Standard `LOG_*` pslog configuration overrides the example defaults, so
+`LOG_LEVEL=info` enables runtime and client logs without changing command-line
+flags. The emitted example logger carries `component=smith-example`; CAI
+runtime messages themselves use only lifecycle facts and metrics.
 
 For an isolated review run, C hosts set
 `cai_agent_runtime_config.preset = CAI_SMITH_REVIEW_PRESET`; Lua hosts use

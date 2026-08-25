@@ -62,7 +62,7 @@ while i <= #arg do
     io.stderr:write("usage: lua examples/lua-smith-terminal/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>] [-v|--verbose] [-vv]\n\n" ..
       "Smith uses CAI's ChatGPT subscription auth by default. Run make chatgpt-login first.\n\n" ..
       "  -v, --verbose  Enable debug lifecycle logging on stderr.\n" ..
-      "  -vv            Enable trace logging and show delegated instructions.\n\n" ..
+      "  -vv            Enable trace lifecycle logging on stderr.\n\n" ..
       "Logging defaults to disabled; LOG_LEVEL and other LOG_* pslog settings override these defaults.\n")
     os.exit(0)
   else
@@ -97,7 +97,6 @@ local render = smith_renderer.new(cai, {
   green = green,
   magenta = magenta,
   red = red,
-  show_subagent_instruction = verbosity >= 2,
 })
 
 local function review_request(command)

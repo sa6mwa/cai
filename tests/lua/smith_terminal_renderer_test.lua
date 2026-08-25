@@ -68,7 +68,8 @@ render.event({ type = cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED,
 render.event({ type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED, tool_name = "read_file",
   tool_action = cai.AGENT_TOOL_ACTION_READ, tool_path = "/tmp/project/a.c" })
 render.event({ type = cai.AGENT_EVENT_SUBAGENT_STARTED, subagent_name = "review",
-  data = "Review changes against trunk.\27[31m" })
+  data = "Review changes against trunk.\27[31m",
+  subagent_instruction = "Review the exact delegated change set." })
 render.event({ type = cai.AGENT_EVENT_REVIEW_REPORT, data = report })
 render.event({ type = cai.AGENT_EVENT_REVIEW_HANDED_OFF, data = report })
 
@@ -81,6 +82,8 @@ assert_contains(rendered, "Ran pwd (exit 0, 0.0s)\n", "terminal completion")
 assert_contains(rendered, "Read /tmp/project/a.c\n", "semantic tool receipt")
 assert_contains(rendered, "Starting <reset>review<gray> subagent<reset><gray> — task: " ..
   "<reset>Review changes against trunk.\\x1B[31m\n", "subagent task")
+assert_contains(rendered, "  instruction: <reset>Review the exact delegated change set.\n",
+  "subagent instruction")
 assert_contains(rendered, "One actionable issue.\n", "review explanation")
 assert_contains(rendered, "- Use stable state — /tmp/project/a.c:7-7\n", "review finding")
 assert_contains(rendered, "  Avoid raw JSON.\n", "review body")
