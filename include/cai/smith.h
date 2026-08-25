@@ -22,7 +22,7 @@ extern "C" {
 /** Smith's default visible identity. */
 #define CAI_SMITH_DEFAULT_IDENTITY "Cai Smith"
 /** Version of the developer-instruction asset rendered by this preset. */
-#define CAI_SMITH_PROMPT_VERSION "smith-6"
+#define CAI_SMITH_PROMPT_VERSION "smith-7"
 
 /** Tool capabilities selected by an agent preset.
  *

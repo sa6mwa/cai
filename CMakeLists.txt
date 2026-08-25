@@ -598,6 +598,64 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
+# Smith ships the exact upstream GPT-5.6 Codex instruction asset. The
+# compiled representation replaces only identity phrases with Smith's renderer
+# token and appends the narrow CAI capability overlay token.
+set(CAI_SMITH_GPT_5_6_PROMPT_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/smith/gpt-5.6-codex.md")
+set(CAI_SMITH_PRIVATE_INCLUDE_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/private")
+file(SHA256 "${CAI_SMITH_GPT_5_6_PROMPT_SOURCE}"
+     CAI_SMITH_GPT_5_6_PROMPT_SHA256)
+if(NOT CAI_SMITH_GPT_5_6_PROMPT_SHA256 STREQUAL
+       "35d8b5d513fff3b55344d5f9f3169305cc276aee053f5be140a77708e0926e7c")
+  message(FATAL_ERROR
+    "Smith GPT-5.6 Codex prompt asset hash does not match its pinned upstream "
+    "revision")
+endif()
+file(READ "${CAI_SMITH_GPT_5_6_PROMPT_SOURCE}" CAI_SMITH_PROMPT_TEMPLATE)
+string(REGEX REPLACE
+  "^You are Codex, an agent based on GPT-5\\."
+  "You are {{agent_identity}}, an agent based on GPT-5."
+  CAI_SMITH_PROMPT_TEMPLATE "${CAI_SMITH_PROMPT_TEMPLATE}")
+string(REPLACE "As Codex," "As {{agent_identity}},"
+               CAI_SMITH_PROMPT_TEMPLATE "${CAI_SMITH_PROMPT_TEMPLATE}")
+string(APPEND CAI_SMITH_PROMPT_TEMPLATE "\n{{agent_tools}}\n")
+string(LENGTH "${CAI_SMITH_PROMPT_TEMPLATE}" CAI_SMITH_PROMPT_LENGTH)
+set(CAI_SMITH_PROMPT_OFFSET 0)
+set(CAI_SMITH_PROMPT_C "")
+while(CAI_SMITH_PROMPT_OFFSET LESS CAI_SMITH_PROMPT_LENGTH)
+  math(EXPR CAI_SMITH_PROMPT_REMAINING
+       "${CAI_SMITH_PROMPT_LENGTH} - ${CAI_SMITH_PROMPT_OFFSET}")
+  if(CAI_SMITH_PROMPT_REMAINING GREATER 400)
+    set(CAI_SMITH_PROMPT_CHUNK_LENGTH 400)
+  else()
+    set(CAI_SMITH_PROMPT_CHUNK_LENGTH ${CAI_SMITH_PROMPT_REMAINING})
+  endif()
+  string(SUBSTRING "${CAI_SMITH_PROMPT_TEMPLATE}"
+         ${CAI_SMITH_PROMPT_OFFSET} ${CAI_SMITH_PROMPT_CHUNK_LENGTH}
+         CAI_SMITH_PROMPT_CHUNK)
+  string(REPLACE "\\" "\\\\" CAI_SMITH_PROMPT_CHUNK
+         "${CAI_SMITH_PROMPT_CHUNK}")
+  string(REPLACE "\"" "\\\"" CAI_SMITH_PROMPT_CHUNK
+         "${CAI_SMITH_PROMPT_CHUNK}")
+  string(REPLACE "\r" "\\r" CAI_SMITH_PROMPT_CHUNK
+         "${CAI_SMITH_PROMPT_CHUNK}")
+  string(REPLACE "\n" "\\n" CAI_SMITH_PROMPT_CHUNK
+         "${CAI_SMITH_PROMPT_CHUNK}")
+  string(APPEND CAI_SMITH_PROMPT_C "\"${CAI_SMITH_PROMPT_CHUNK}\",\n")
+  math(EXPR CAI_SMITH_PROMPT_OFFSET
+       "${CAI_SMITH_PROMPT_OFFSET} + ${CAI_SMITH_PROMPT_CHUNK_LENGTH}")
+endwhile()
+file(MAKE_DIRECTORY "${CAI_SMITH_PRIVATE_INCLUDE_DIR}")
+file(WRITE "${CAI_SMITH_PRIVATE_INCLUDE_DIR}/cai_smith_gpt_5_6_prompt.h"
+  "/* Generated from prompts/smith/gpt-5.6-codex.md. */\n"
+  "#ifndef CAI_SMITH_GPT_5_6_PROMPT_H\n"
+  "#define CAI_SMITH_GPT_5_6_PROMPT_H\n"
+  "#define CAI_SMITH_GPT_5_6_PROMPT_SOURCE_SHA256 \"${CAI_SMITH_GPT_5_6_PROMPT_SHA256}\"\n"
+  "static const char *const cai_smith_gpt_5_6_prompt_parts[] = {\n${CAI_SMITH_PROMPT_C}NULL};\n"
+  "#endif\n")
+
 if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)
   find_package(pslog CONFIG QUIET)
@@ -713,6 +771,7 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_include_directories(${_cai_target} PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CAI_SMITH_PRIVATE_INCLUDE_DIR}"
       "${CAI_PSLOG_INCLUDE_DIR}")
     target_include_directories(${_cai_target} PRIVATE ${CURL_INCLUDE_DIRS})
     target_compile_definitions(${_cai_target} PRIVATE
@@ -1423,6 +1482,13 @@ if(CAI_BUILD_TESTS)
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_client_source_contract_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(cai_mcp_client_source_contract_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 3)
+  add_test(NAME cai_smith_prompt_asset_test
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/smith_prompt_asset_test.cmake")
+  set_tests_properties(cai_smith_prompt_asset_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
 

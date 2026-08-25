@@ -232,7 +232,7 @@ typedef struct mcp_source_state {
 } mcp_source_state;
 
 typedef struct mcp_sink_state {
-  char buffer[16384];
+  char buffer[65536];
   size_t length;
   int write_count;
   int fail_after_writes;
@@ -24665,6 +24665,7 @@ static void test_smith_profile(test_state *state) {
       "POST /v1/responses HTTP/",
       "\"model\":\"gpt-5.6-luna\"",
       "You are Vectis Agent Smith",
+      "As Vectis Agent Smith",
       "\"effort\":\"medium\"",
       "\"summary\":\"auto\"",
       "\"parallel_tool_calls\":false",
@@ -24682,9 +24683,10 @@ static void test_smith_profile(test_state *state) {
       "\"syntax\":\"lark\"",
       "This is a FREEFORM tool, so do not wrap the patch in JSON.",
       "Make workspace edits only with apply_patch.",
-      "If goal tools are present, create a goal only when the user or "
-      "system/developer instructions"};
-  static const char *forbidden[] = {"\"name\":\"shell_command\""};
+      "# Personality",
+      "The preceding GPT-5.6 Codex instructions are the default contract.",
+      "Create a goal only when explicitly requested."};
+  static const char *forbidden[] = {"\"name\":\"shell_command\"", "As Codex,"};
   static const char *none_required[] = {
       "POST /v1/responses HTTP/", "\"model\":\"gpt-5.6-luna\"",
       "You are Vectis Agent Smith", "\"effort\":\"medium\""};
@@ -27616,7 +27618,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   char path[PATH_MAX];
   char expected_path[PATH_MAX];
   char failed_path[PATH_MAX];
-  char file_text[16384];
+  char file_text[65536];
   char checkpoint_json[4096];
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;

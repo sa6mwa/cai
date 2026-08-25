@@ -443,7 +443,36 @@ testing prompt is prohibited.
 
 ### 6.1 Prompt ownership and rendering
 
-CAI stores prompt sources under `prompts/smith/`, with a manifest containing:
+CAI stores prompt sources under `prompts/smith/`. Smith's GPT-5.6 base is the
+exact `model_messages.instructions_template` for `gpt-5.6-terra` from the
+checked-in Codex model catalogue. At the pinned revision, Sol, Terra, and Luna
+use the same source hash. `prompts/smith/manifest.json` records that base
+revision, source selector, SHA-256, equivalent model set, renderer version,
+and the separately pinned review-rubric provenance.
+
+The imported `gpt-5.6-codex.md` is deliberately byte-for-byte upstream source
+material, not a CAI rewrite. The build rejects a changed hash. The CMake
+renderer changes only the identity phrases `You are Codex` and `As Codex` to
+`{{agent_identity}}`, then appends the `{{agent_tools}}` CAI overlay.
+That overlay is later developer instruction and MUST state only an actual CAI
+capability or host-interface difference:
+
+| Upstream behavior | CAI replacement |
+| --- | --- |
+| `commentary` and `final` channels | Ordinary assistant output and host-rendered events; a concise visible preamble before tool work and a self-contained final response. |
+| Parallel tool calls | One serial tool dispatch; one managed terminal slot. |
+| Codex tool namespace and approvals | Only registered CAI/MCP tool schemas and host policy callbacks. |
+| A named upstream tool is absent from the selected CAI capability set | The renderer removes only the exact upstream sentence that names it, so a disabled `apply_patch` or terminal is never advertised. |
+| Codex skill discovery/providers | Only the configured global CAI skills catalog and `read_skill`. |
+| `update_plan` | Not available. Goals remain durable state and are not presented as a plan substitute. |
+| Codex AGENTS discovery | CAI's configured global/exact-workspace policy, plus optional explicit Codex-compatible traversal. |
+
+No other upstream behavior may be weakened, removed, or restated in the CAI
+overlay or capability redaction. New divergence requires a documented
+capability reason, prompt snapshot coverage, and representative live evaluation
+before it is accepted.
+
+The manifest has this shape:
 
 ```json
 {
@@ -451,25 +480,28 @@ CAI stores prompt sources under `prompts/smith/`, with a manifest containing:
   "preset": "smith",
   "upstream": {
     "project": "openai/codex",
-    "revision": "<full git SHA>",
-    "assets": ["<source path and SHA-256>"]
+    "base": {
+      "revision": "<full git SHA>",
+      "asset": "<source selector>",
+      "sha256": "<source SHA-256>"
+    }
   },
-  "rendered_asset_version": "smith-2",
+  "rendered_asset_version": "smith-7",
   "identity_placeholder": "{{agent_identity}}"
 }
 ```
 
 Prompt sources are imported as Apache-2.0-compatible source material with
-their provenance and original notices retained. CAI keeps prompt assets
+their provenance and license recorded. CAI keeps prompt assets
 separate from host configuration and never downloads or mutates them at
 runtime. Updating an upstream instruction requires a new reviewed manifest,
 hashes, rendered-request tests, and a compatibility decision for existing
 sessions.
 
-The renderer has exactly one automatic content substitution in imported base
-instructions: only approved identity phrases are replaced with
-`agent_identity`, defaulting to `Cai Smith`. It MUST NOT blanket-replace the
-word “Codex”: product names, tool names, provenance text, or user-supplied
+The renderer has exactly two automatic content substitutions in imported base
+instructions: the `You are Codex` and `As Codex` identity phrases become
+`{{agent_identity}}`, defaulting to `Cai Smith`. It MUST NOT blanket-replace
+the word “Codex”: product names, tool names, provenance text, or user-supplied
 instructions are not identity substitutions. A downstream product changes the
 identity through config; it does not edit the prompt asset.
 
