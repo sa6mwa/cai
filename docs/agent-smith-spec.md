@@ -732,6 +732,11 @@ the task calls for review; CAI does not parse a slash command. A host UI may
 still map `/review …` to either the existing host-driven API or an ordinary
 parent turn that causes the model to call `run_subagent`.
 
+When the built-in review profile is enabled, its conditional developer section
+also directs the parent to use it for a user-requested code-repository review
+unless the user asks for another approach. The parent follows the review
+tool's delegation guidance rather than performing its own preliminary review.
+
 `instructions` is delegation context, not a second developer prompt. The
 `run_subagent` tool description directs the parent to forward the user's
 requested delegation verbatim where practical, or use the shortest faithful

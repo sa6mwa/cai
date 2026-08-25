@@ -1470,8 +1470,10 @@ cai_runtime_build_subagent_instructions(const cai_agent_runtime *runtime,
   if (rc == CAI_OK && runtime->review_subagent_enabled) {
     rc = cai_buffer_append_cstr(
         &builder,
-        "- `review`: independently inspect the requested code and "
-        "return prioritized findings.\n",
+        "- `review`: use this profile for a user-requested code-repository "
+        "review unless the user asks for another approach. Follow its tool "
+        "guidance; it independently inspects the requested code and returns "
+        "prioritized findings.\n",
         error);
   }
   for (i = 0U; rc == CAI_OK && i < runtime->subagent_count; i++) {

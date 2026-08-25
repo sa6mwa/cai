@@ -25836,10 +25836,13 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "\"resp_parent_review_final\",\"usage\":{\"input_tokens\":3,"
       "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
-      "review this change", "\"name\":\"run_subagent\"", "`review`",
+      "review this change",
+      "\"name\":\"run_subagent\"",
+      "`review`",
       "do not invent scope or plans",
       "For review, delegate immediately without inspecting the workspace or "
-      "Git"};
+      "Git",
+      "use this profile for a user-requested code-repository review"};
   static const char *review_required[] = {
       "Review the requested change.", "You are Cai Smith, a code reviewer",
       "\"name\":\"exec_command\"", "\"name\":\"write_stdin\""};
