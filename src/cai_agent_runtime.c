@@ -714,10 +714,11 @@ static void cai_runtime_log_subagent_lifecycle(const cai_agent_runtime *runtime,
                 : "agent subagent handed off";
   runtime->logger->debugf(
       runtime->logger, message,
-      "session_id=%s profile=%s child_session_id=%s instruction_bytes=%zu",
+      "session_id=%s profile=%s child_session_id=%s instruction_bytes=%lu",
       runtime->session_id != NULL ? runtime->session_id : "",
       profile_name != NULL ? profile_name : "",
-      child_session_id != NULL ? child_session_id : "", instruction_length);
+      child_session_id != NULL ? child_session_id : "",
+      (unsigned long)instruction_length);
 }
 
 static void cai_runtime_input_node_free(cai_runtime_input_node *node) {

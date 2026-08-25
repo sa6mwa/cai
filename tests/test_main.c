@@ -752,6 +752,7 @@ static int g_test_tracef_count = 0;
 static int g_test_debugf_count = 0;
 static int g_test_warnf_count = 0;
 static int g_test_errorf_count = 0;
+static char g_test_subagent_started_kvfmt[256];
 
 static void test_pslog_infof(pslog_logger *log, const char *msg,
                              const char *kvfmt, ...) {
@@ -789,6 +790,10 @@ static void test_pslog_debugf(pslog_logger *log, const char *msg,
   va_end(args);
   if (kvfmt != NULL) {
     g_test_debugf_count++;
+    if (msg != NULL && strcmp(msg, "agent subagent started") == 0) {
+      (void)snprintf(g_test_subagent_started_kvfmt,
+                     sizeof(g_test_subagent_started_kvfmt), "%s", kvfmt);
+    }
   }
 }
 
@@ -25881,6 +25886,7 @@ static void test_agent_runtime_subagent(test_state *state) {
   config.event_context = &events;
   g_test_infof_count = 0;
   g_test_debugf_count = 0;
+  g_test_subagent_started_kvfmt[0] = '\0';
   expect_int(state, "agent_runtime_subagent_open",
              cai_agent_runtime_open(mock.client, &config, &runtime, &error),
              CAI_OK);
@@ -25926,6 +25932,10 @@ static void test_agent_runtime_subagent(test_state *state) {
                g_test_infof_count > 0, 1L);
     expect_int(state, "agent_runtime_subagent_lifecycle_logged",
                g_test_debugf_count > 0, 1L);
+    expect_str(state, "agent_runtime_subagent_lifecycle_kvfmt",
+               g_test_subagent_started_kvfmt,
+               "session_id=%s profile=%s child_session_id=%s "
+               "instruction_bytes=%lu");
     expect_int(state, "agent_runtime_subagent_handoff_checkpoint_retried",
                store_state.fail_checkpoint_once, 0L);
     cai_agent_runtime_close(runtime);
