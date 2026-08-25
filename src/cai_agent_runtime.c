@@ -1464,7 +1464,12 @@ cai_runtime_build_subagent_instructions(const cai_agent_runtime *runtime,
       &builder,
       "# Synchronous subagents\n\nUse `run_subagent` only when a task "
       "benefits from an isolated delegated agent. It runs synchronously, "
-      "cannot create further subagents, and returns a durable handover. "
+      "cannot create further subagents, and returns a durable handover. Set "
+      "its `instructions` to the user's delegated request verbatim when "
+      "practical, or as a minimal faithful paraphrase. Do not invent a "
+      "review scope, checklist, plan, assumptions, or other detail the user "
+      "did not provide: the selected profile already supplies its operating "
+      "behavior. "
       "Enabled profiles:\n",
       error);
   if (rc == CAI_OK && runtime->review_subagent_enabled) {
@@ -6279,7 +6284,9 @@ static int cai_runtime_register_subagent_tool(cai_agent_runtime *runtime,
       "Synchronously run one enabled isolated subagent. Use profile review for "
       "the built-in reviewer, or a host-listed delegated profile. The child "
       "cannot launch further subagents; its durable handover becomes parent "
-      "context.",
+      "context. Keep instructions to the user's delegated request verbatim or "
+      "minimally paraphrased; never manufacture scope, checklists, plans, or "
+      "assumptions because the selected profile supplies that behavior.",
       &cai_runtime_subagent_args_map, &cai_runtime_subagent_result_map,
       cai_runtime_run_subagent, runtime, error);
 }

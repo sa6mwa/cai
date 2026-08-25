@@ -25694,7 +25694,8 @@ static void test_agent_runtime_subagent(test_state *state) {
       "subagent_final\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,"
       "\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
-      "delegate this task", "\"name\":\"run_subagent\"", "`worker`"};
+      "delegate this task", "\"name\":\"run_subagent\"", "`worker`",
+      "Do not invent a review scope, checklist, plan, assumptions"};
   static const char *child_required[] = {"Return delegated result.",
                                          "You are Worker"};
   static const char *final_required[] = {
@@ -25836,7 +25837,8 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "\"resp_parent_review_final\",\"usage\":{\"input_tokens\":3,"
       "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
-      "review this change", "\"name\":\"run_subagent\"", "`review`"};
+      "review this change", "\"name\":\"run_subagent\"", "`review`",
+      "Do not invent a review scope, checklist, plan, assumptions"};
   static const char *review_required[] = {
       "Review the requested change.", "You are Cai Smith, a code reviewer",
       "\"name\":\"exec_command\"", "\"name\":\"write_stdin\""};
