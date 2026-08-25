@@ -201,7 +201,7 @@ static pslog_logger *smith_example_logger_open(int verbosity,
   if (root == NULL) {
     return NULL;
   }
-  logger = root->withf(root, "component=%s", "smith-example");
+  logger = root->withf(root, "app=%s", "smith");
   if (logger == NULL) {
     root->destroy(root);
     return NULL;

@@ -86,7 +86,7 @@ local logger = pslog.from_env("LOG_", {
   mode = "console",
   color = "auto",
   min_level = verbosity >= 2 and "trace" or (verbosity == 1 and "debug" or "disabled"),
-}):with("component", "smith-example")
+}):with("app", "smith")
 
 local render = smith_renderer.new(cai, {
   write = io.write,

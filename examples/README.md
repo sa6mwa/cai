@@ -174,7 +174,7 @@ subagent launch. They accept `-v`/`--verbose` for debug lifecycle logs on
 stderr and `-vv` for trace logs. Logging is otherwise disabled by default.
 Standard `LOG_*` pslog configuration overrides the example defaults, so
 `LOG_LEVEL=info` enables runtime and client logs without changing command-line
-flags. The emitted example logger carries `component=smith-example`; CAI
+flags. The emitted example logger carries the compact `app=smith` field; CAI
 runtime messages themselves use only lifecycle facts and metrics.
 
 For an isolated review run, C hosts set
