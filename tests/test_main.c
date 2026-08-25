@@ -159,6 +159,7 @@ typedef struct runtime_event_state {
   char failure_message[256];
   char review_report[1024];
   char review_handoff[1024];
+  char subagent_instruction[1024];
   char subagent_handoff[1024];
   char reasoning_summary[1024];
   char subagent_session_id[CAI_AGENT_SESSION_ID_MAX];
@@ -1911,6 +1912,10 @@ static int test_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
     state->saw_subagent_started = 1;
+    if (event->data != NULL) {
+      snprintf(state->subagent_instruction, sizeof(state->subagent_instruction),
+               "%.*s", (int)event->data_length, event->data);
+    }
     if (event->runtime_session_id != NULL) {
       snprintf(state->subagent_session_id, sizeof(state->subagent_session_id),
                "%s", event->runtime_session_id);
@@ -25790,6 +25795,8 @@ static void test_agent_runtime_subagent(test_state *state) {
                CAI_AGENT_COMPLETED);
     expect_int(state, "agent_runtime_subagent_started_event",
                events.saw_subagent_started, 1L);
+    expect_substr(state, "agent_runtime_subagent_started_instruction",
+                  events.subagent_instruction, "Return delegated result.");
     expect_int(state, "agent_runtime_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_subagent_event_source",
@@ -25889,6 +25896,8 @@ static void test_agent_runtime_review_subagent(test_state *state) {
                CAI_AGENT_COMPLETED);
     expect_int(state, "agent_runtime_review_subagent_started_event",
                events.saw_subagent_started, 1L);
+    expect_substr(state, "agent_runtime_review_subagent_started_instruction",
+                  events.subagent_instruction, "Review the requested change.");
     expect_int(state, "agent_runtime_review_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_review_subagent_no_raw_report",

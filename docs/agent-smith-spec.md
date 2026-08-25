@@ -743,6 +743,15 @@ and originating parent tool-call ID; the parent session ID is already known
 from the runtime that delivered them. Any TUI/GUI can therefore render the
 process without adopting CAI's presentation layer.
 
+`SUBAGENT_STARTED` carries the bounded delegated instruction text in its data
+payload, together with the profile name, child session ID, and originating
+tool-call ID. A terminal UI should show a short, control-safe task preview
+when the parent delegates work (for example, `Starting review subagent — task:
+review changes against trunk`). It must treat the task text as untrusted model
+output and avoid presenting raw tool-call JSON. The C and Lua Smith terminal
+examples demonstrate this presentation; other hosts can render the same event
+according to their own UX.
+
 #### 6.3.3 Handover contract
 
 Every profile returns a generic, model-readable handover:

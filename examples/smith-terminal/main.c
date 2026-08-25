@@ -16,6 +16,7 @@
 #define MAGENTA "\033[35m"
 #define RED "\033[31m"
 #define REASONING_PROBE_MAX 512U
+#define SUBAGENT_TASK_DISPLAY_MAX 240U
 
 typedef struct render_state {
   int terminal_lines;
@@ -513,6 +514,30 @@ static void render_subagent_handoff(const cai_agent_runtime_event *event) {
   }
 }
 
+/* The delegated task is model-controlled. Keep control bytes visible, and
+ * bound the preview so a long subagent request does not overwhelm the chat. */
+static void render_subagent_started(const cai_agent_runtime_event *event) {
+  const char *name;
+  size_t displayed;
+
+  name = event->subagent_name != NULL ? event->subagent_name : "delegated";
+  fputs(GRAY "Starting " RESET, stdout);
+  render_review_string(name);
+  fputs(GRAY " subagent" RESET, stdout);
+  if (event->data != NULL && event->data_length > 0U) {
+    displayed = event->data_length;
+    if (displayed > SUBAGENT_TASK_DISPLAY_MAX) {
+      displayed = SUBAGENT_TASK_DISPLAY_MAX;
+    }
+    fputs(GRAY " — task: " RESET, stdout);
+    render_review_text(event->data, displayed);
+    if (displayed < event->data_length) {
+      fputs("…", stdout);
+    }
+  }
+  fputc('\n', stdout);
+}
+
 static int runtime_accepts_prompt(cai_agent_run_state state) {
   return state == CAI_AGENT_IDLE || state == CAI_AGENT_COMPLETED ||
          state == CAI_AGENT_FAILED || state == CAI_AGENT_CANCELLED;
@@ -648,8 +673,7 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_visible = 0;
   } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
     render_close_message(state);
-    fprintf(stdout, GRAY "Starting %s subagent…" RESET "\n",
-            event->subagent_name != NULL ? event->subagent_name : "delegated");
+    render_subagent_started(event);
   } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
     render_close_message(state);
     render_subagent_handoff(event);

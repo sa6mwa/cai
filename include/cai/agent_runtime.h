@@ -139,7 +139,9 @@ typedef struct cai_agent_runtime_event {
   /**
    * UTF-8 event payload; not NUL-terminated. Its exact meaning depends on
    * type: text/reasoning bytes, a tool receipt/error, terminal output, or a
-   * final review report.
+   * final review report. For CAI_AGENT_EVENT_SUBAGENT_STARTED, this is the
+   * bounded delegated instruction text selected by the parent agent. Hosts
+   * should treat it as untrusted model output when rendering it.
    */
   const char *data;
   /** Number of bytes in data. */

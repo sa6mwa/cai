@@ -51,6 +51,25 @@ static void deliver(render_state *renderer, int type, const char *data,
   cai_error_cleanup(&error);
 }
 
+static void deliver_subagent_started(render_state *renderer, const char *name,
+                                     const char *task) {
+  cai_agent_runtime_event event;
+  cai_error error;
+
+  memset(&event, 0, sizeof(event));
+  cai_error_init(&error);
+  event.type = CAI_AGENT_EVENT_SUBAGENT_STARTED;
+  event.subagent_name = name;
+  event.data = task;
+  event.data_length = task != NULL ? strlen(task) : 0U;
+  if (render_event(renderer, &event, &error) != CAI_OK) {
+    fprintf(stderr, "render subagent start failed: %s\n",
+            error.message != NULL ? error.message : "unknown error");
+    failures++;
+  }
+  cai_error_cleanup(&error);
+}
+
 static char *capture_fixture(void) {
   FILE *capture;
   long length;
@@ -90,6 +109,8 @@ static char *capture_fixture(void) {
           1, 0);
   deliver(&renderer, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, NULL, "read_file",
           CAI_AGENT_TOOL_ACTION_READ, 0, 0);
+  deliver_subagent_started(&renderer, "review",
+                           "Review changes against trunk.\033[31m");
   renderer.review_report_visible = 0;
   report = "{\"findings\":[{\"title\":\"Use stable state\",\"body\":\"Avoid "
            "raw JSON.\","
@@ -140,6 +161,10 @@ int main(void) {
   expect_contains("terminal start", output, "$ pwd\n");
   expect_contains("terminal completion", output, "Ran pwd (exit 0, 0.0s)\n");
   expect_contains("semantic tool receipt", output, "Read\033[0m\n");
+  expect_contains("subagent task", output,
+                  "Starting \033[0mreview\033[90m subagent\033[0m"
+                  "\033[90m — task: \033[0mReview changes against trunk."
+                  "\\x1B[31m\n");
   expect_contains("review explanation", output, "One actionable issue.\n");
   expect_contains("review finding", output,
                   "- Use stable state — /tmp/project/a.c:7-7\n");

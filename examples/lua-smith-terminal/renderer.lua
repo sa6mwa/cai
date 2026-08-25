@@ -167,6 +167,13 @@ function M.new(cai, output, colors)
     return table.concat(rendered)
   end
 
+  local function abbreviated_task(value)
+    if #value <= 240 then
+      return value
+    end
+    return value:sub(1, 240) .. "…"
+  end
+
   local function render_review_body(body)
     local start = 1
     while start <= #body do
@@ -273,8 +280,14 @@ function M.new(cai, output, colors)
       render.review_report_visible = false
     elseif event.type == cai.AGENT_EVENT_SUBAGENT_STARTED then
       close_message()
-      output.write(gray, "Starting ", event.subagent_name or "delegated",
-        " subagent…\n", reset)
+      output.write(gray, "Starting ", reset,
+        safe_terminal_text(event.subagent_name or "delegated"), gray,
+        " subagent", reset)
+      if event.data and #event.data > 0 then
+        output.write(gray, " — task: ", reset,
+          safe_terminal_text(abbreviated_task(event.data)))
+      end
+      output.write("\n")
     elseif event.type == cai.AGENT_EVENT_SUBAGENT_HANDED_OFF then
       close_message()
       output.write(event.subagent_name or "Subagent", " handoff:\n", event.data or "")

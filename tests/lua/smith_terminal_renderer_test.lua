@@ -27,6 +27,7 @@ local cai = {
   AGENT_EVENT_REVIEW_HANDED_OFF = 20,
   AGENT_EVENT_REASONING_SUMMARY = 21,
   AGENT_EVENT_RESPONSE_COMPLETED = 22,
+  AGENT_EVENT_SUBAGENT_STARTED = 24,
   AGENT_EVENT_TOOL_CALL_COMPLETED = 5,
   AGENT_EVENT_RUN_FAILED = 10,
   AGENT_EVENT_RUN_COMPLETED = 9,
@@ -66,6 +67,8 @@ render.event({ type = cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED,
   terminal_exit_code = 0, terminal_duration_ms = 0 })
 render.event({ type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED, tool_name = "read_file",
   tool_action = cai.AGENT_TOOL_ACTION_READ, tool_path = "/tmp/project/a.c" })
+render.event({ type = cai.AGENT_EVENT_SUBAGENT_STARTED, subagent_name = "review",
+  data = "Review changes against trunk.\27[31m" })
 render.event({ type = cai.AGENT_EVENT_REVIEW_REPORT, data = report })
 render.event({ type = cai.AGENT_EVENT_REVIEW_HANDED_OFF, data = report })
 
@@ -76,6 +79,8 @@ assert_not_contains(rendered, "**Planning files**", "raw heading")
 assert_contains(rendered, "$ pwd\n", "terminal start")
 assert_contains(rendered, "Ran pwd (exit 0, 0.0s)\n", "terminal completion")
 assert_contains(rendered, "Read /tmp/project/a.c\n", "semantic tool receipt")
+assert_contains(rendered, "Starting <reset>review<gray> subagent<reset><gray> — task: " ..
+  "<reset>Review changes against trunk.\\x1B[31m\n", "subagent task")
 assert_contains(rendered, "One actionable issue.\n", "review explanation")
 assert_contains(rendered, "- Use stable state — /tmp/project/a.c:7-7\n", "review finding")
 assert_contains(rendered, "  Avoid raw JSON.\n", "review body")
