@@ -1336,6 +1336,7 @@ if(CAI_BUILD_TESTS)
     searxng_registry_tool
     terminal_registration_rollback
     terminal_tools
+    terminal_capture_truncation
     terminal_concurrent_start
     terminal_concurrent_operation
     exec_tool

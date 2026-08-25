@@ -31987,6 +31987,74 @@ static void test_terminal_tools(test_state *state) {
   test_terminal_workdir_pinning(state);
 }
 
+static void test_terminal_capture_truncation(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-truncation-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_truncation_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  config.output_max_bytes = 8U;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_truncation_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_truncation_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_truncation_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    expect_int(state, "terminal_truncation_exec",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"printf 0123456789abcdef\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    for (i = 0; i < 5 && strstr(writer.buffer, "\"completed\":true") == NULL;
+         i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_truncation_poll",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       "{\"session_id\":\"terminal-1\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_truncation_completed", writer.buffer,
+                  "\"completed\":true");
+    expect_substr(state, "terminal_truncation_marked", writer.buffer,
+                  "\"output_truncated\":true");
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
 static void test_terminal_concurrent_start(test_state *state) {
   char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
   cai_terminal_tool_config config;
@@ -39934,6 +40002,7 @@ static const test_entry test_entries[] = {
     {"exec_tool", test_exec_tool},
     {"terminal_registration_rollback", test_terminal_registration_rollback},
     {"terminal_tools", test_terminal_tools},
+    {"terminal_capture_truncation", test_terminal_capture_truncation},
     {"terminal_concurrent_start", test_terminal_concurrent_start},
     {"terminal_concurrent_operation", test_terminal_concurrent_operation},
     {"read_tool", test_read_tool},

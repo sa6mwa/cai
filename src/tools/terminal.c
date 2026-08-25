@@ -496,7 +496,12 @@ static void *cai_terminal_reader(void *value) {
     count = read(manager->pty_fd, buffer, sizeof(buffer));
     if (count > 0) {
       pthread_mutex_lock(&manager->lock);
-      (void)cai_terminal_output_append(manager, buffer, (size_t)count);
+      if (cai_terminal_output_append(manager, buffer, (size_t)count) !=
+          CAI_OK) {
+        /* Keep supervising the command, but never report dropped PTY bytes
+         * as a complete capture when output retention runs out of memory. */
+        manager->output_truncated = 1;
+      }
       pthread_cond_broadcast(&manager->changed);
       pthread_mutex_unlock(&manager->lock);
     } else if (count == 0 || (count < 0 && errno == EIO)) {
@@ -534,7 +539,12 @@ static void *cai_terminal_reader(void *value) {
         count = read(manager->pty_fd, buffer, sizeof(buffer));
         if (count > 0) {
           pthread_mutex_lock(&manager->lock);
-          (void)cai_terminal_output_append(manager, buffer, (size_t)count);
+          if (cai_terminal_output_append(manager, buffer, (size_t)count) !=
+              CAI_OK) {
+            /* See the main read path above: completion remains valid, but
+             * its output must be marked as incomplete. */
+            manager->output_truncated = 1;
+          }
           pthread_cond_broadcast(&manager->changed);
           pthread_mutex_unlock(&manager->lock);
           continue;
