@@ -765,9 +765,9 @@ still map `/review …` to either the existing host-driven API or an ordinary
 parent turn that causes the model to call `run_subagent`.
 
 When the built-in review profile is enabled, its conditional developer section
-also directs the parent to use it for a user-requested code-repository review
-unless the user asks for another approach. The parent follows the review
-tool's delegation guidance rather than performing its own preliminary review.
+also directs the parent to call `run_subagent` immediately for a user-requested
+code-repository review unless the user asks for another approach. The parent
+does not inspect the workspace or Git first: the reviewer owns that discovery.
 
 `instructions` is delegation context, not a second developer prompt. The
 `run_subagent` tool description directs the parent to forward the user's

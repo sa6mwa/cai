@@ -25844,7 +25844,9 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "do not invent scope or plans",
       "For review, delegate immediately without inspecting the workspace or "
       "Git",
-      "use this profile for a user-requested code-repository review"};
+      "for a user-requested code-repository review, call `run_subagent` "
+      "immediately",
+      "Do not inspect the workspace or Git first"};
   static const char *review_required[] = {
       "Review the requested change.", "You are Cai Smith, a code reviewer",
       "\"name\":\"exec_command\"", "\"name\":\"write_stdin\""};
