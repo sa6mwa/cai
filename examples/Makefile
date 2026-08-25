@@ -20,6 +20,7 @@ CAI_CHATGPT_LOGIN_PORT ?= 1455
 CAI_TERMINAL_CHAT_API_KEY ?=
 CAI_TERMINAL_CHAT_MODEL ?=
 CAI_SMITH_MODEL ?=
+CAI_SMITH_ARGS ?=
 CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS ?=
 CAI_TERMINAL_CHAT_MAX_CACHED_INPUT_TOKENS ?=
 CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS ?=
@@ -84,7 +85,7 @@ else
 TERMINAL_CHAT_AUTH_ARGS := --chatgpt-auth
 endif
 TERMINAL_CHAT_ARGS := $(TERMINAL_CHAT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS) $(TERMINAL_LIMIT_ARGS)
-SMITH_TERMINAL_ARGS := $(CHATGPT_AUTH_ARGS) $(SMITH_MODEL_ARGS)
+SMITH_TERMINAL_ARGS := $(strip $(CHATGPT_AUTH_ARGS) $(SMITH_MODEL_ARGS) $(CAI_SMITH_ARGS))
 
 define run_c_example
 	cd "$(ROOT)" && \
@@ -116,14 +117,14 @@ help:
 		'  make run-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
 		'    run-terminal-chat uses CAI ChatGPT auth by default; set CAI_TERMINAL_CHAT_API_KEY=1 only for explicit API-key use.' \
 		'    It defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
-		'  make run-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna]' \
+		'  make run-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna] [CAI_SMITH_ARGS=-v]' \
 		'  make run-mike-mind' \
 		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-lua-basic' \
 		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
 		'    run-lua-terminal-chat uses CAI ChatGPT auth by default; set CAI_TERMINAL_CHAT_API_KEY=1 only for explicit API-key use.' \
 		'    It defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
-		'  make run-lua-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna]' \
+		'  make run-lua-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna] [CAI_SMITH_ARGS=-v]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
 		'' \

@@ -16,6 +16,12 @@ grep -F 'make run-lua-chatgpt-login' <<<"$output" >/dev/null
 grep -F 'make run-lua-terminal-chat' <<<"$output" >/dev/null
 grep -F 'make run-smith-terminal' <<<"$output" >/dev/null
 grep -F 'make run-lua-smith-terminal' <<<"$output" >/dev/null
+grep -F 'CAI_SMITH_ARGS=-v' <<<"$output" >/dev/null
+
+smith_args=$(make -C examples --no-print-directory \
+  --eval='print-smith-args: ; @printf "%s\n" "$(SMITH_TERMINAL_ARGS)"' \
+  print-smith-args CAI_SMITH_ARGS=-v)
+grep -Fx -- '-v' <<<"$smith_args" >/dev/null
 
 if [[ -n "$terminal_chat" ]]; then
   terminal_output=$("$terminal_chat" --help 2>&1)

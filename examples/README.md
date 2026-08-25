@@ -134,13 +134,17 @@ enabled.
 ```sh
 make -C examples run-smith-terminal
 make -C examples run-lua-smith-terminal
+make -C examples run-smith-terminal CAI_SMITH_ARGS=-v
+make -C examples run-lua-smith-terminal CAI_SMITH_ARGS=-vv
 ```
 
 Both Smith examples use CAI's ChatGPT subscription auth by default and select
 `gpt-5.6-luna`; run `make chatgpt-login` first. Set
 `CAI_CHATGPT_AUTH_JSON=/path/auth.json` to select another CAI auth state or
 `CAI_SMITH_MODEL=<model>` to override the model. Exit either example with
-Ctrl-D or `/exit`. Both examples intercept `/review`
+Ctrl-D or `/exit`. Set `CAI_SMITH_ARGS=-v` for debug lifecycle logging or
+`CAI_SMITH_ARGS=-vv` for trace logging; the variable passes supported CLI
+options to both Smith runners. Both examples intercept `/review`
 themselves: `/review` (or `/review uncommitted`) reviews workspace changes,
 `/review base <revision>` compares against a branch, tag, commit, or revision
 such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and
